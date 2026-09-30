@@ -25,9 +25,16 @@ export function toolName(alias: string, tool: string): string {
   return `${full.slice(0, MAX_TOOL_NAME - 5)}_${hash}`;
 }
 
+/** GitHub owner/repo names are case-insensitive: a clone of `geysier/Gey-Mono` is the stored `Geysier/gey-mono`. */
+export function canonicalProject(s: Store, project: string): string {
+  if (project === "*" || s.get("project", project)) return project;
+  const lower = project.toLowerCase();
+  return s.list("project").find(p => p.id.toLowerCase() === lower)?.id ?? project;
+}
+
 /** alias → instance id for a repo: the `*` defaults (unless turned off), overridden by the repo's own. */
 export function aliasesFor(s: Store, project: string): Record<string, string> {
-  const p = project !== "*" ? s.get("project", project) : undefined;
+  const p = project !== "*" ? s.get("project", canonicalProject(s, project)) : undefined;
   const defaults = !p || p.inheritDefaults ? (s.get("project", "*")?.mcp ?? {}) : {};
   return { ...defaults, ...(p?.mcp ?? {}) };
 }
@@ -280,6 +287,7 @@ export class Gateway {
   /** Auto-discovered repos for the UI; written at most every 5 minutes per repo to keep sync quiet. */
   private seen(project: string) {
     if (project === "*") return;
+    project = canonicalProject(this.s, project);
     const p = this.s.get("project", project);
     if (p?.seenAt && this.s.now() - p.seenAt < 5 * 60_000 && p.seenOn === this.s.nodeId) return;
     this.s.put("project", project, { ...(p ?? { id: project }), seenAt: this.s.now(), seenOn: this.s.nodeId });

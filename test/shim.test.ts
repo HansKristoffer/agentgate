@@ -30,6 +30,7 @@ test("aliases merge with * unless the repo turns defaults off", () => {
   expect(aliasesFor(s, "other/repo")).toEqual({ github: "github-main", docs: "context7" });
   s.put("project", "o/r", { ...s.get("project", "o/r")!, inheritDefaults: false });
   expect(aliasesFor(s, "o/r")).toEqual({ posthog: "posthog-r", docs: "docs-r" });
+  expect(aliasesFor(s, "O/R")).toEqual({ posthog: "posthog-r", docs: "docs-r" }); // GitHub names are case-insensitive
 });
 
 test("long tool names are shortened to 64 characters, distinctly", () => {
