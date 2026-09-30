@@ -13,7 +13,13 @@ T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underne
 Requirements: Linux or macOS, [Tailscale](https://tailscale.com) on every machine, `claude` and/or `codex` CLIs for logging in, and Node (`npx`) or uv (`uvx`) for any stdio MCP servers you add.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/<owner>/agentgate/main/install.sh | AGENTGATE_REPO=<owner>/agentgate sh
+npm install -g agentpool   # installs the `agentgate` command (and an `agentpool` alias)
+```
+
+Without npm:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_REPO=HansKristoffer/agentgate sh
 ```
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun src/cli.ts …` directly.
@@ -124,4 +130,4 @@ bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
 bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
 ```
 
-Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, and compiled CLI checks on macOS and Linux.
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Pushing a `v*` tag publishes them to npm (`agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, and compiled CLI checks on macOS and Linux.

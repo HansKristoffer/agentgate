@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { plist, rotateLogs, unit } from "../src/service.ts";
-import { agentEnvironment, codexConfig, primary, setup } from "../src/setup.ts";
+import { agentEnvironment, codexConfig, primary, setup, stableBinary } from "../src/setup.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-")); const paths = { claude: join(dir, "claude"), codex: join(dir, "codex") };
@@ -51,4 +51,13 @@ test("setup ignores triple quotes in comments and single-line strings", () => {
 test("systemd escapes executable dollar/percent signs while preserving literal environment dollars", () => {
   const definition = unit(["/path$literal/%binary"], { PATH: "/bin", AGENTGATE_HOME: "/home/$literal", AGENTGATE_PORT: "9876" });
   expect(definition).toContain('ExecStart="/path$$literal/%%binary"'); expect(definition).toContain('Environment="AGENTGATE_HOME=/home/$literal"');
+});
+
+test("binaries run from an npx/dlx/bunx cache are copied to a stable path", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-stable-")), cached = join(dir, "_npx", "abc", "agentgate");
+  mkdirSync(join(dir, "_npx", "abc"), { recursive: true }); writeFileSync(cached, "binary");
+  expect(stableBinary(join(dir, "agentgate"), join(dir, "bin"))).toBe(join(dir, "agentgate"));
+  const stable = stableBinary(cached, join(dir, "bin"));
+  expect(stable).toBe(join(dir, "bin", "agentgate")); expect(readFileSync(stable, "utf8")).toBe("binary"); expect(statSync(stable).mode & 0o111).toBeTruthy();
+  rmSync(dir, { recursive: true, force: true });
 });

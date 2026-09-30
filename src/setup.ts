@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
@@ -8,7 +8,17 @@ export const CLAUDE_DIR = join(CONFIG_DIR, "claude");
 export const CODEX_DIR = join(CONFIG_DIR, "codex");
 export const PRIMARY_CLAUDE_DIR = join(homedir(), ".claude");
 export function selfCommand(): string[] {
-  return Bun.main.startsWith("/$bunfs/") ? [process.execPath] : [process.execPath, Bun.main];
+  return Bun.main.startsWith("/$bunfs/") ? [stableBinary(process.execPath)] : [process.execPath, Bun.main];
+}
+/** npx, pnpm dlx and bunx run us from a cache they may prune, which would break every config and
+ * service written from there. Copy the binary under AGENTGATE_HOME and point at that copy instead. */
+export function stableBinary(path: string, dir = join(CONFIG_DIR, "bin")): string {
+  if (!/\/(_npx|dlx)\/|\/bunx-/.test(path)) return path;
+  const target = join(dir, "agentgate"), temp = `${target}.${crypto.randomUUID()}.tmp`;
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Rename rather than overwrite: the installed service may be running the current copy.
+  try { copyFileSync(path, temp); chmodSync(temp, 0o755); renameSync(temp, target); } finally { rmSync(temp, { force: true }); }
+  return target;
 }
 export function agentEnvironment() { return { AGENTGATE_HOME: CONFIG_DIR, AGENTGATE_PORT: String(PORT) }; }
 const quote = (s: string) => JSON.stringify(s);
