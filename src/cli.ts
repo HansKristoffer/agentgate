@@ -28,7 +28,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   pair | join <url> <code> | nodes | unpair <node>
   setup                                       write Claude/Codex config, print the T3 settings
-  setup --primary [off]                       route your normal ~/.claude login through agentgate
+  setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
   service install|start|stop|logs
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for the UI over the tailnet`;
@@ -267,7 +267,7 @@ async function main() {
 
     case "setup": {
       const setupMod = await import("./setup.ts");
-      if (opts.primary) return console.log(await setupMod.primary(sub !== "off"));
+      if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}`);
       return console.log(await setupMod.setup());
     }
     case "service":

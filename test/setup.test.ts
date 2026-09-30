@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { plist, rotateLogs, unit, waitForService } from "../src/service.ts";
-import { agentEnvironment, codexConfig, primary, setup, stableBinary } from "../src/setup.ts";
+import { agentEnvironment, codexConfig, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-")); const paths = { claude: join(dir, "claude"), codex: join(dir, "codex") };
@@ -77,5 +77,18 @@ test("binaries run from an npx/dlx/bunx cache are copied to a stable path", () =
   expect(stableBinary(join(dir, "agentgate"), join(dir, "bin"))).toBe(join(dir, "agentgate"));
   const stable = stableBinary(cached, join(dir, "bin"));
   expect(stable).toBe(join(dir, "bin", "agentgate")); expect(readFileSync(stable, "utf8")).toBe("binary"); expect(statSync(stable).mode & 0o111).toBeTruthy();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("primary Codex sends its own login through agentgate and undoes cleanly", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")), file = join(dir, "config.toml");
+  writeFileSync(file, 'model = "gpt-5"\nmodel_provider = "openai"\n[mcp_servers.mine]\ncommand = "mine"\n');
+  await primaryCodex(true, dir); await primaryCodex(true, dir);
+  const on = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
+  expect(on.model_provider).toBe("agentgate"); expect(on.model_providers.agentgate.requires_openai_auth).toBe(true);
+  expect(on.mcp_servers.agentgate).toBeUndefined(); expect(on.mcp_servers.mine.command).toBe("mine"); expect(on.model).toBe("gpt-5");
+  await primaryCodex(false, dir);
+  const off = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
+  expect(off.model_provider).toBe("openai"); expect(off.model_providers).toBeUndefined(); expect(off.mcp_servers.mine.command).toBe("mine");
   rmSync(dir, { recursive: true, force: true });
 });

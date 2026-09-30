@@ -7,6 +7,7 @@ import { CONFIG_DIR, LOCAL_URL, PORT } from "./store.ts";
 export const CLAUDE_DIR = join(CONFIG_DIR, "claude");
 export const CODEX_DIR = join(CONFIG_DIR, "codex");
 export const PRIMARY_CLAUDE_DIR = join(homedir(), ".claude");
+export const PRIMARY_CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 export function selfCommand(): string[] {
   return Bun.main.startsWith("/$bunfs/") ? [stableBinary(process.execPath)] : [process.execPath, Bun.main];
 }
@@ -45,8 +46,8 @@ function multilineState(line: string, state: string): string {
   return state;
 }
 
-/** Own just the agentgate tables and provider choice; preserve other TOML sections verbatim. */
-export function codexConfig(existing = "", command = selfCommand(), env = agentEnvironment()): string {
+/** The config minus agentgate's tables and the top-level model_provider line. */
+function withoutAgentgate(existing: string): string {
   Bun.TOML.parse(existing);
   const lines = existing.split("\n");
   const kept: string[] = []; let table = "", multiline = "";
@@ -66,8 +67,17 @@ export function codexConfig(existing = "", command = selfCommand(), env = agentE
     if (!table && !wasMultiline && /^\s*model_provider\s*=/.test(line)) continue;
     kept.push(line);
   }
+  return kept.join("\n").trim();
+}
+
+/** Own just the agentgate tables and provider choice; preserve other TOML sections verbatim.
+ * `primary` is the user's own ~/.codex: Codex sends its own login (the proxy's last resort) and keeps its MCP servers. */
+export function codexConfig(existing = "", command = selfCommand(), env = agentEnvironment(), primary = false): string {
+  const kept = withoutAgentgate(existing);
   const [executable, ...args] = [...command, "mcp"];
-  const text = `model_provider = "agentgate"\n${kept.join("\n").trim()}\n\n[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(env).map(([k, v]) => `${k} = ${quote(v)}`).join(", ")} }\n`;
+  const provider = `[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n${primary ? "requires_openai_auth = true\n" : ""}`;
+  const mcp = primary ? "" : `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(env).map(([k, v]) => `${k} = ${quote(v)}`).join(", ")} }\n`;
+  const text = `model_provider = "agentgate"\n${kept}\n\n${provider}${mcp}`;
   Bun.TOML.parse(text); return text;
 }
 const json = (file: string) => {
@@ -108,4 +118,23 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
   settings.env = env; if (!Object.keys(env).length) delete settings.env;
   atomicWrite(file, JSON.stringify(settings, null, 2) + "\n"); if (!on && existsSync(undo)) unlinkSync(undo);
   return on ? `New Claude sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.\nKeep the daemon running.` : `Restored the previous base URL in ${file}; other settings are preserved.`;
+}
+
+/** The Codex half of `setup --primary`: point the user's own ~/.codex at the daemon, keeping its login as last resort. */
+export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promise<string> {
+  const file = join(dir, "config.toml"), undo = `${file}.agentgate-undo`;
+  if (!existsSync(dir)) return `No Codex home at ${dir}; skipped Codex.`;
+  const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
+  const current = (Bun.TOML.parse(existing) as { model_provider?: string }).model_provider;
+  if (on) {
+    if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: current !== undefined && current !== "agentgate", value: current }));
+    backup(file); atomicWrite(file, codexConfig(existing, undefined, undefined, true));
+    return `New Codex sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.`;
+  }
+  if (current !== "agentgate") { if (existsSync(undo)) unlinkSync(undo); return `No agentgate setup change to undo in ${file}.`; }
+  const previous = existsSync(undo) ? json(undo) : { hadValue: false };
+  const kept = withoutAgentgate(existing);
+  atomicWrite(file, `${previous.hadValue ? `model_provider = ${quote(previous.value)}\n` : ""}${kept}\n`);
+  if (existsSync(undo)) unlinkSync(undo);
+  return `Restored the previous Codex provider in ${file}; other settings are preserved.`;
 }
