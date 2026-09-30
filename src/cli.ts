@@ -271,7 +271,7 @@ async function main() {
       return console.log(await setupMod.setup());
     }
     case "service":
-      return process.exit((await import("./service.ts")).service(sub ?? ""));
+      return process.exit(await (await import("./service.ts")).service(sub ?? ""));
 
     case "export":
       return console.log(JSON.stringify(exportBackup(s, !opts["no-secrets"]), null, 2));

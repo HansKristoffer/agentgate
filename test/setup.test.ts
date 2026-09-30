@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plist, rotateLogs, unit } from "../src/service.ts";
+import { plist, rotateLogs, unit, waitForService } from "../src/service.ts";
 import { agentEnvironment, codexConfig, primary, setup, stableBinary } from "../src/setup.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
@@ -35,6 +35,24 @@ test("generated service definitions propagate custom configuration and quote exe
 test("launchd logs are rotated with bounded archives without replacing the open inode", () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-log-")), file = join(dir, "agentgate.log"); writeFileSync(file, "12345"); const inode = statSync(file).ino;
   rotateLogs(dir, 1); expect(readFileSync(`${file}.1`, "utf8")).toBe("12345"); expect(statSync(file).size).toBe(0); expect(statSync(file).ino).toBe(inode); rmSync(dir, { recursive: true });
+});
+
+test("service readiness retries startup and reports an unhealthy daemon", async () => {
+  let requests = 0;
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("", { status: ++requests === 1 ? 503 : 200 }) });
+  try {
+    await waitForService(`http://127.0.0.1:${server.port}`, 2000);
+    expect(requests).toBe(2);
+    server.reload({ fetch: () => new Response("", { status: 503 }) });
+    await expect(waitForService(`http://127.0.0.1:${server.port}`, 50)).rejects.toThrow("did not become ready");
+  } finally { server.stop(true); }
+});
+
+test("service readiness reports a refused connection with recovery instructions", async () => {
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("") });
+  const url = `http://127.0.0.1:${server.port}`;
+  server.stop(true);
+  await expect(waitForService(url, 50)).rejects.toThrow("cannot connect until the daemon is running");
 });
 
 test("setup preserves multiline values and quoted/array tables outside managed configuration", () => {
