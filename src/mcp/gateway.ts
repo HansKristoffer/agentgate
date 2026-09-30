@@ -319,12 +319,7 @@ export const needsLogin = (e: unknown) =>
 
 /** Git repos directly inside `dir` whose origin parses as owner/repo. */
 export function scanRepos(dir: string): { repo: string; path: string }[] {
-  let names: string[];
-  try {
-    names = readdirSync(dir).sort((a, b) => a.localeCompare(b));
-  } catch {
-    return [];
-  }
+  const names = readdirSync(dir).sort((a, b) => a.localeCompare(b));
   const out: { repo: string; path: string }[] = [];
   for (const name of names) {
     const path = join(dir, name);

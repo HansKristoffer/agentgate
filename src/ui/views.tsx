@@ -289,7 +289,15 @@ export function registerViews(app: Hono<Env>, ctx: Ctx, page: (c: Context<Env>, 
     const projects = s.list("project").filter((p) => p.id !== "*");
     const defaults = s.get("project", "*") ?? schemas.project.parse({ id: "*" });
     const insts = s.list("mcp");
-    const found = scanRepos(scanDir());
+    let found: ReturnType<typeof scanRepos> = [], scanError = "";
+    try { found = scanRepos(scanDir()); }
+    catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // A launchd service can't show macOS's folder-access prompt, so ~/Documents etc. just fail with EPERM.
+      scanError = code === "ENOENT" ? "That folder doesn't exist." : code === "EPERM" && process.platform === "darwin"
+        ? "macOS doesn't let the agentgate service read this folder. Repos are added automatically when you start a session in them, or give agentgate access: System Settings → Privacy & Security → Full Disk Access → add " + process.execPath + " (again after updates if the list comes back empty), then restart it with agentgate service install."
+        : `Couldn't read this folder: ${code ?? e}`;
+    }
     const pathOf = new Map(found.map((r) => [r.repo, r.path]));
     const added = new Set(projects.map((p) => p.id));
     const fresh = found.filter((r) => !added.has(r.repo));
@@ -357,7 +365,8 @@ export function registerViews(app: Hono<Env>, ctx: Ctx, page: (c: Context<Env>, 
           );
         })}
 
-        <Panel title="Add projects" meta={`${fresh.length} repo${fresh.length === 1 ? "" : "s"} in ${tilde(scanDir())} not added yet`}>
+        <Panel title="Add projects" meta={scanError ? `Can't read ${tilde(scanDir())}` : `${fresh.length} repo${fresh.length === 1 ? "" : "s"} in ${tilde(scanDir())} not added yet`}>
+          {scanError && <p class="dim" style="margin:0 0 .9rem">{scanError}</p>}
           <form method="post" action="/projects/scan-dir" class="command">
             <span class="command-prompt mono">scan</span>
             <input name="dir" value={tilde(scanDir())} class="mono grow" />
