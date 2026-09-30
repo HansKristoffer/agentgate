@@ -21,7 +21,9 @@ test("primary undo restores the previous URL without reverting subsequent settin
   const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-")), file = join(dir, "settings.json");
   writeFileSync(file, '{"env":{"ANTHROPIC_BASE_URL":"https://original"}}'); await primary(true, dir); await primary(true, dir);
   const config = JSON.parse(readFileSync(file, "utf8")); config.theme = "new"; writeFileSync(file, JSON.stringify(config));
-  await primary(false, dir); const restored = JSON.parse(readFileSync(file, "utf8")); expect(restored.env.ANTHROPIC_BASE_URL).toBe("https://original"); expect(restored.theme).toBe("new");
+  expect(JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")).mcpServers.agentgate.args.at(-1)).toBe("mcp");
+  await primary(false, dir); expect(JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")).mcpServers.agentgate).toBeUndefined();
+  const restored = JSON.parse(readFileSync(file, "utf8")); expect(restored.env.ANTHROPIC_BASE_URL).toBe("https://original"); expect(restored.theme).toBe("new");
   rmSync(dir, { recursive: true });
 });
 
@@ -86,7 +88,7 @@ test("primary Codex sends its own login through agentgate and undoes cleanly", a
   await primaryCodex(true, dir); await primaryCodex(true, dir);
   const on = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
   expect(on.model_provider).toBe("agentgate"); expect(on.model_providers.agentgate.requires_openai_auth).toBe(true);
-  expect(on.mcp_servers.agentgate).toBeUndefined(); expect(on.mcp_servers.mine.command).toBe("mine"); expect(on.model).toBe("gpt-5");
+  expect(on.mcp_servers.agentgate.args.at(-1)).toBe("mcp"); expect(on.mcp_servers.mine.command).toBe("mine"); expect(on.model).toBe("gpt-5");
   await primaryCodex(false, dir);
   const off = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
   expect(off.model_provider).toBe("openai"); expect(off.model_providers).toBeUndefined(); expect(off.mcp_servers.mine.command).toBe("mine");

@@ -71,12 +71,12 @@ function withoutAgentgate(existing: string): string {
 }
 
 /** Own just the agentgate tables and provider choice; preserve other TOML sections verbatim.
- * `primary` is the user's own ~/.codex: Codex sends its own login (the proxy's last resort) and keeps its MCP servers. */
+ * `primary` is the user's own ~/.codex: Codex sends its own login along, the proxy's last resort. */
 export function codexConfig(existing = "", command = selfCommand(), env = agentEnvironment(), primary = false): string {
   const kept = withoutAgentgate(existing);
   const [executable, ...args] = [...command, "mcp"];
   const provider = `[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n${primary ? "requires_openai_auth = true\n" : ""}`;
-  const mcp = primary ? "" : `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(env).map(([k, v]) => `${k} = ${quote(v)}`).join(", ")} }\n`;
+  const mcp = `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(env).map(([k, v]) => `${k} = ${quote(v)}`).join(", ")} }\n`;
   const text = `model_provider = "agentgate"\n${kept}\n\n${provider}${mcp}`;
   Bun.TOML.parse(text); return text;
 }
@@ -105,6 +105,12 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
 
 export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
   const file = join(dir, "settings.json"), undo = `${file}.agentgate-undo`;
+  // Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
+  const claudeJson = dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+  const cfg = json(claudeJson), [command, ...args] = [...selfCommand(), "mcp"];
+  if (on) cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
+  else if (cfg.mcpServers?.agentgate) delete cfg.mcpServers.agentgate;
+  if (on || existsSync(claudeJson)) { backup(claudeJson); atomicWrite(claudeJson, JSON.stringify(cfg, null, 2)); }
   const settings = json(file); const env = { ...settings.env }; const url = `${LOCAL_URL}/anthropic`;
   if (on) {
     if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }));
