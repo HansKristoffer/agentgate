@@ -421,6 +421,13 @@ Each phase ends with something you can use and a check that proves it.
 | **6. Install and ship** | `service.ts`, `setup.ts`, compiled binaries, `install.sh`, README | A clean Linux server and a clean Mac go from nothing to working T3 sessions using only the README |
 | **7. Later, when needed** | MCP servers with OAuth login; forwarding resources and prompts; API-key fallback providers; `tailscale whois` pairing check; keychain storage; `onlyOn` restriction per instance; `agentgate upgrade` | — |
 
+**Phase 0 status (2026-09-30).** Read from the installed CLIs (Claude Code 2.1.284, codex-cli 0.159.0), not yet checked against live traffic:
+- Claude OAuth: client id `9d1c250a-e61b-44d9-88ed-5944d1962f5e`, token URL `https://platform.claude.com/v1/oauth/token`, beta header `oauth-2025-04-20`. Quota headers are `anthropic-ratelimit-unified-{status,reset}` and `-{5h,7d}-{utilization,reset,status}`; utilization is a 0–1 fraction. `claude auth login` exists for the temp-dir login.
+- Codex: client id `app_EMoamEEZ73f0CkXaXp7hrann`, token URL `https://auth.openai.com/oauth/token`, account header `chatgpt-account-id`. Quota headers are `x-<family>-{primary,secondary}-{used-percent,window-minutes,reset-at}`. `cli_auth_credentials_store = "file"` makes `codex login` write `auth.json`.
+- Checked live on one Claude Max account with Claude Code 2.1.284 run from the terminal (`CLAUDE_CONFIG_DIR` → agentgate's dir, env from its `settings.json`): placeholder-token mode works; the quota headers parse (5h/7d utilization + reset); the stdio shim starts in the session's working directory (a perSession filesystem server was pinned to the repo); an exhausted pool shows agentgate's 429 message in Claude Code. Web PKCE login needs Claude Code's exact scope list (`org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins`), else claude.ai answers "Invalid request format".
+- T3's Claude instance has no env field, only "CLAUDE_CONFIG_DIR path"; `setup` therefore writes `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` into that dir's `settings.json` (T3 loads `user` setting sources).
+- Still open, needs T3 and real accounts: (a) placeholder-token mode under T3, (b) whether the ChatGPT backend accepts Codex's custom-provider requests unchanged, (d) the working directory of stdio MCP servers inside T3 worktrees (the `roots/list` fallback is not built), (e) whether each refresh rotates the refresh token (the code assumes it does).
+
 **Phase 5 checklist:**
 - **Pairing:** after `pair`/`join`, the server has all accounts, instances and projects within 15 s.
 - **Edits on either node:** a change in either node's UI shows up on the other.

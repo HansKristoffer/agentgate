@@ -1,0 +1,163 @@
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { join } from "node:path";
+import { tokenRequest, type Tokens } from "../credentials.ts";
+import type { Store } from "../store.ts";
+import type { Provider, Window } from "./pool.ts";
+
+// Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
+export const CLAUDE = {
+  api: "https://api.anthropic.com",
+  tokenUrl: "https://platform.claude.com/v1/oauth/token",
+  authorizeUrl: "https://claude.com/cai/oauth/authorize",
+  redirectUri: "https://platform.claude.com/oauth/code/callback",
+  clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
+  scopes: "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins",
+  oauthBeta: "oauth-2025-04-20",
+  quotaPrefix: "anthropic-ratelimit-unified-",
+};
+
+export function toTokens(t: { access_token: string; refresh_token?: string; expires_in: number }, previousRefresh = ""): Tokens {
+  return { accessToken: t.access_token, refreshToken: t.refresh_token ?? previousRefresh, expiresAt: Date.now() + t.expires_in * 1000 };
+}
+
+/** Claude Code puts the account uuid in metadata.user_id, either as JSON or as `user_…_account_<uuid>_session_…`. */
+export function rewriteUserId(userId: string, uuid: string): string {
+  try {
+    const o = JSON.parse(userId);
+    if (o && typeof o === "object" && "account_uuid" in o) return JSON.stringify({ ...o, account_uuid: uuid });
+  } catch {}
+  return userId.replace(/account_[0-9a-f-]*_/, `account_${uuid}_`);
+}
+
+export const claude: Provider = {
+  name: "claude",
+
+  prepare(path, headers, body, cred) {
+    headers.set("authorization", `Bearer ${cred.accessToken}`);
+    const betas = (headers.get("anthropic-beta") ?? "").split(",").map((b) => b.trim()).filter(Boolean);
+    if (!betas.includes(CLAUDE.oauthBeta)) headers.set("anthropic-beta", [...betas, CLAUDE.oauthBeta].join(","));
+    if (body?.length && cred.accountUuid && headers.get("content-type")?.includes("json")) {
+      try {
+        const json = JSON.parse(new TextDecoder().decode(body));
+        if (typeof json?.metadata?.user_id === "string") {
+          json.metadata.user_id = rewriteUserId(json.metadata.user_id, cred.accountUuid);
+          body = new TextEncoder().encode(JSON.stringify(json));
+        }
+      } catch {}
+    }
+    return { url: CLAUDE.api + path, headers, body };
+  },
+
+  usage(h) {
+    const windows: Window[] = [];
+    h.forEach((value, key) => {
+      const m = key.match(new RegExp(`^${CLAUDE.quotaPrefix}(5h|7d(?:_[a-z0-9]+)?)-utilization$`));
+      if (!m) return;
+      const w = m[1]!;
+      const reset = Number(h.get(`${CLAUDE.quotaPrefix}${w}-reset`));
+      const rejected = h.get(`${CLAUDE.quotaPrefix}${w}-status`) === "rejected";
+      windows.push({
+        name: w.replace("_", ":"),
+        usedPct: rejected ? Math.max(100, Number(value) * 100) : Number(value) * 100,
+        resetsAt: reset ? reset * 1000 : undefined,
+      });
+    });
+    const status = h.get(`${CLAUDE.quotaPrefix}status`);
+    if (!windows.length && !status) return undefined;
+    return { windows, status: status === "rejected" ? "exhausted" : status === "allowed_warning" ? "limited" : "ok" };
+  },
+
+  pooled: (path) => path.startsWith("/v1/messages"),
+
+  classify429(h) {
+    return h.get(`${CLAUDE.quotaPrefix}status`) === "rejected" ? "quota" : "rate";
+  },
+
+  async refresh(refreshToken) {
+    const t = await tokenRequest(CLAUDE.tokenUrl, { grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE.clientId });
+    return toTokens(t, refreshToken);
+  },
+};
+
+export function authorizeUrl(challenge: string, state: string) {
+  const q = new URLSearchParams({
+    code: "true", client_id: CLAUDE.clientId, response_type: "code", redirect_uri: CLAUDE.redirectUri,
+    scope: CLAUDE.scopes, code_challenge: challenge, code_challenge_method: "S256", state,
+  });
+  return `${CLAUDE.authorizeUrl}?${q}`;
+}
+
+/** Finish the web login: the callback page shows `code#state`, which the user pastes back. */
+export async function exchange(s: Store, pasted: string, verifier: string, label?: string) {
+  const [code, state] = pasted.trim().split("#");
+  const t = await tokenRequest(CLAUDE.tokenUrl, {
+    grant_type: "authorization_code", code: code!, state: state ?? "", client_id: CLAUDE.clientId, redirect_uri: CLAUDE.redirectUri, code_verifier: verifier,
+  });
+  const { plan } = await profile(t.access_token);
+  return save(s, toTokens(t), { uuid: t.account?.uuid, email: t.account?.email_address, plan }, label);
+}
+
+function save(s: Store, tokens: Tokens, who: { uuid?: string; email?: string; plan?: string }, label?: string) {
+  // Same Claude account logged in twice → same record, fresh tokens.
+  const id = `claude-${(who.uuid ?? crypto.randomUUID()).slice(0, 8)}`;
+  const prev = s.get("account", id);
+  s.put("account", id, { ...prev, id, provider: "claude", label: label ?? prev?.label ?? who.email ?? id, email: who.email, plan: who.plan ?? prev?.plan });
+  s.put("credential", id, { accountId: id, ...tokens, accountUuid: who.uuid, holder: s.nodeId });
+  return id;
+}
+
+async function profile(accessToken: string): Promise<{ uuid?: string; email?: string; plan?: string }> {
+  const res = await fetch(`${CLAUDE.api}/api/oauth/profile`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta } });
+  if (!res.ok) return {};
+  const p = (await res.json()) as any;
+  return { uuid: p.account?.uuid, email: p.account?.email, plan: p.organization?.organization_type };
+}
+
+const keychainNames = (dir: string) => [`Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`, "Claude Code-credentials"];
+
+/** Take over a Claude Code login from a config dir (`.credentials.json`, or the macOS Keychain). */
+export async function importFrom(s: Store, dir: string, label?: string, cleanupKeychain = false) {
+  let raw: string | undefined;
+  const file = join(dir, ".credentials.json");
+  if (existsSync(file)) raw = await Bun.file(file).text();
+  else if (process.platform === "darwin") {
+    const isDefault = dir === join(homedir(), ".claude");
+    for (const name of isDefault ? keychainNames(dir).slice(1) : keychainNames(dir)) {
+      const r = Bun.spawnSync(["security", "find-generic-password", "-a", userInfo().username, "-s", name, "-w"]);
+      if (r.exitCode === 0) {
+        raw = r.stdout.toString().trim();
+        if (cleanupKeychain) Bun.spawnSync(["security", "delete-generic-password", "-a", userInfo().username, "-s", name]);
+        break;
+      }
+    }
+  }
+  const o = raw && JSON.parse(raw).claudeAiOauth;
+  if (!o?.refreshToken) throw new Error(`no Claude login found in ${dir}`);
+  const tokens = { accessToken: o.accessToken, refreshToken: o.refreshToken, expiresAt: o.expiresAt };
+  // Account info lives in .claude.json: inside the dir when CLAUDE_CONFIG_DIR is set, next to ~/.claude otherwise.
+  let who: { uuid?: string; email?: string; plan?: string } = {};
+  for (const f of [join(dir, ".claude.json"), join(dir, "..", ".claude.json")]) {
+    if (!existsSync(f)) continue;
+    const acc = (await Bun.file(f).json()).oauthAccount;
+    if (acc?.accountUuid) {
+      who = { uuid: acc.accountUuid, email: acc.emailAddress, plan: o.subscriptionType };
+      break;
+    }
+  }
+  if (!who.uuid) who = { ...(await profile(tokens.accessToken)), plan: o.subscriptionType };
+  return save(s, tokens, who, label);
+}
+
+/** `agentgate login claude`: the official login in a throwaway config dir, then import and delete it. */
+export async function login(s: Store, label?: string) {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-claude-"));
+  try {
+    const p = Bun.spawn(["claude", "auth", "login"], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir }, stdio: ["inherit", "inherit", "inherit"] });
+    if ((await p.exited) !== 0) throw new Error("claude login failed");
+    return await importFrom(s, dir, label, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

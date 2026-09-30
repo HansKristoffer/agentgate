@@ -1,0 +1,23 @@
+{
+  "name": "agentgate",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "hono": "^4.13.12",
+    "zod": "^4.6.5"
+  },
+  "bin": {
+    "agentgate": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts serve",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit",
+    "build": "for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do bun build src/cli.ts --compile --minify --target=bun-$t --outfile dist/agentgate-$t || exit 1; done"
+  }
+}
