@@ -1,12 +1,12 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { afterAll, expect, test } from "bun:test";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
 import { aliasesFor, parseRemote, renameInstance, toolName } from "../src/mcp/gateway.ts";
 import { DAEMON_DOWN, buildShim } from "../src/mcp/shim.ts";
@@ -48,10 +48,10 @@ async function connectTo(server: import("@modelcontextprotocol/sdk/server/index.
 }
 
 test("a daemon that is down gives an empty but valid server", async () => {
-  const { server } = await buildShim(tmpdir(), "http://127.0.0.1:1", { AGENTGATE_PROJECT: "o/r" });
+  const { server, close } = await buildShim(tmpdir(), "http://127.0.0.1:1", { AGENTGATE_PROJECT: "o/r" });
   const client = await connectTo(server);
   expect((await client.listTools()).tools).toEqual([]);
-  expect(client.getInstructions()).toBe(DAEMON_DOWN);
+  expect(client.getInstructions()).toBe(DAEMON_DOWN); await client.close(); await close();
 });
 
 // End to end: two fake "PostHog" upstreams, a daemon, and a shim per repo.
@@ -93,8 +93,10 @@ test("each repo reaches its own instance under the same alias; * servers reach b
 
   const call = async (c: Client, name: string) => ((await c.callTool({ name, arguments: {} })).content as { text: string }[])[0]!.text;
 
-  const shimA = await connectTo((await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/a" })).server);
-  const shimB = await connectTo((await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/b" })).server);
+  const containerA = await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/a" });
+  const containerB = await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/b" });
+  const shimA = await connectTo(containerA.server);
+  const shimB = await connectTo(containerB.server);
   expect((await shimA.listTools()).tools.map((t) => t.name)).toEqual(["docs__whoami", "posthog__whoami"]);
   expect(await call(shimA, "posthog__whoami")).toBe("A:1");
   expect(await call(shimB, "posthog__whoami")).toBe("B:2");
@@ -108,7 +110,8 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   ctx.gateway.toolsChanged();
   await changed;
   expect((await shimA.listTools()).tools.map((t) => t.name)).toContain("analytics__whoami");
-  await ctx.gateway.close();
+  await shimA.close(); await shimB.close(); await containerA.close(); await containerB.close();
+  await ctx.gateway.close(); s.close(); rmSync(cwd, { recursive: true, force: true });
 });
 
 test("renaming a server moves its repo mappings; an alias equal to the old name follows", () => {
@@ -129,11 +132,74 @@ test("project server toggles: checked servers use their own name, custom prefixe
   s.setLocal("node", "t");
   for (const id of ["posthog-lullu", "geysier", "linear"]) s.put("mcp", id, newInstance({ id, url: "https://example.com/mcp" }));
   s.put("project", "o/r", { id: "o/r", mcp: { posthog: "posthog-lullu", linear: "linear" } });
-  const a = app(makeCtx(s));
+  const ctx = makeCtx(s);
+  const a = app(ctx);
   const body = new URLSearchParams([["present", "1"], ["server", "posthog-lullu"], ["server", "geysier"]]);
   const res = await a.fetch(new Request("http://127.0.0.1:7878/projects/servers?project=o%2Fr", {
     method: "POST", body, headers: { host: "127.0.0.1:7878", origin: "http://127.0.0.1:7878", "content-type": "application/x-www-form-urlencoded" },
   }), { listener: "loopback" });
   expect(res.status).toBe(302);
   expect(s.get("project", "o/r")!.mcp).toEqual({ posthog: "posthog-lullu", geysier: "geysier" });
+  await ctx.gateway.close(); s.close();
+});
+
+test("active MCP calls survive idle sweeps and cached tools acquire a new connection after idle close", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "test");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: fakeUpstream("idle") })); s.put("project", "*", { id: "*", mcp: { fake: "fake" } });
+  const ctx = makeCtx(s), handler = app(ctx); const daemon = Bun.serve({ port: 0, fetch: req => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(tmpdir(), `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "*" }); const client = await connectTo(shim.server);
+  try {
+    await client.listTools(); const before = ctx.gateway.upstreams.get("fake")?.client;
+    let time = Date.now(); s.now = () => time;
+    for (let i = 0; i < 3; i++) { time += 9 * 60000; await client.callTool({ name: "fake__whoami" }); await ctx.gateway.closeIdle(); expect(ctx.gateway.upstreams.get("fake")?.client).toBe(before); }
+    time += 11 * 60000; await ctx.gateway.closeIdle(); expect(ctx.gateway.upstreams.get("fake")).toBeUndefined();
+    const result = await client.callTool({ name: "fake__whoami" }); expect(result.isError).not.toBe(true); expect(ctx.gateway.upstreams.get("fake")?.client).not.toBe(before);
+    s.put("project", "*", { id: "*", mcp: {} }); const removed = await client.callTool({ name: "fake__whoami" }); expect(removed.isError).toBe(true);
+  } finally { await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); }
+});
+
+test("a running shim recovers when the daemon starts late and restarts", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n"); s.put("mcp", "fake", newInstance({ id: "fake", url: fakeUpstream("recovered") })); s.put("project", "*", { id: "*", mcp: { fake: "fake" } });
+  const reserve = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserve") }); const port = reserve.port!; reserve.stop(true);
+  const shim = await buildShim(tmpdir(), `http://127.0.0.1:${port}`, { AGENTGATE_PROJECT: "*" }, { reconnectMs: 20 }); const client = await connectTo(shim.server);
+  expect((await client.listTools()).tools).toEqual([]);
+  let ctx = makeCtx(s), handler = app(ctx); let daemon = Bun.serve({ hostname: "127.0.0.1", port, fetch: req => handler.fetch(req, { listener: "loopback" }) });
+  const untilTools = async () => { for (let i = 0; i < 100; i++) { if ((await client.listTools()).tools.length) return; await Bun.sleep(20); } throw new Error("shim did not recover"); };
+  try { await untilTools(); await ctx.gateway.close(); daemon.stop(true); ctx = makeCtx(s); handler = app(ctx); daemon = Bun.serve({ hostname: "127.0.0.1", port, fetch: req => handler.fetch(req, { listener: "loopback" }) }); await untilTools(); expect((await client.callTool({ name: "fake__whoami" })).isError).not.toBe(true); }
+  finally { await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); }
+});
+
+test("per-session children use each worktree, reconcile mappings, and forward cancellation/progress", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "test");
+  const cwd = mkdtempSync(join(tmpdir(), "agentgate-child-"));
+  s.put("mcp", "local", newInstance({ id: "local", command: process.execPath, args: [join(import.meta.dir, "fixtures", "mcp.ts")], mode: "perSession" })); s.put("project", "*", { id: "*", mcp: { local: "local" } });
+  const ctx = makeCtx(s), handler = app(ctx); const daemon = Bun.serve({ port: 0, fetch: req => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "*" }); const client = await connectTo(shim.server);
+  try {
+    const result = await client.callTool({ name: "local__cwd" }); expect((result.content as { text: string }[])[0]!.text).toBe(realpathSync(cwd));
+    const abort = new AbortController(); let progress = false;
+    const slow = client.callTool({ name: "local__slow" }, undefined, { signal: abort.signal, onprogress: () => { progress = true; abort.abort(); } });
+    await expect(slow).rejects.toThrow(); expect(progress).toBe(true);
+    for (let i = 0; i < 100 && !(await Bun.file(join(cwd, "cancelled")).exists()); i++) await Bun.sleep(10);
+    expect(await Bun.file(join(cwd, "cancelled")).text()).toBe("yes");
+    s.put("project", "*", { id: "*", mcp: {} }); ctx.gateway.toolsChanged(); expect((await client.listTools()).tools).toEqual([]);
+  } finally { await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); }
+});
+
+test("shared long tools stay open during idle sweeps and carry cancellation/progress through both gateways", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agentgate-shared-")), cancelled = join(cwd, "cancelled");
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  const instance = newInstance({ id: "shared", command: process.execPath, args: [join(import.meta.dir, "fixtures", "mcp.ts")] }); instance.env = { AGENTGATE_CANCEL_FILE: cancelled };
+  s.put("mcp", "shared", instance); s.put("project", "*", { id: "*", mcp: { shared: "shared" } });
+  const ctx = makeCtx(s), handler = app(ctx); const daemon = Bun.serve({ port: 0, fetch: req => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "*" }); const client = await connectTo(shim.server);
+  let progressed!: () => void; const progress = new Promise<void>(r => progressed = r); const abort = new AbortController();
+  try {
+    await client.listTools(); const task = client.callTool({ name: "shared__slow" }, undefined, { signal: abort.signal, onprogress: () => progressed() });
+    await progress; expect(ctx.gateway.upstreams.get("shared")?.calls).toBe(1);
+    s.now = () => Date.now() + 31 * 60000; await ctx.gateway.closeIdle(); expect(ctx.gateway.upstreams.get("shared")?.client).toBeDefined();
+    abort.abort(); await expect(task).rejects.toThrow();
+    for (let i = 0; i < 100 && !(await Bun.file(cancelled).exists()); i++) await Bun.sleep(10);
+    expect(await Bun.file(cancelled).text()).toBe("yes");
+  } finally { await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); rmSync(cwd, { recursive: true, force: true }); }
 });

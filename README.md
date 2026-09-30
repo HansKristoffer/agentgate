@@ -6,7 +6,7 @@ One daemon per machine that:
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale, and keeps working when the other machines are offline.
 
-T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. See [PLAN.md](PLAN.md) for the design.
+T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. See [PLAN.md](PLAN.md) for the design and [STABILITY_PLAN.md](STABILITY_PLAN.md) for the code review, reliability fixes, and refactoring order.
 
 ## Install
 
@@ -56,7 +56,7 @@ One instance per provider covers every account; the daemon switches accounts, so
 
 ### Or: your normal Claude login
 
-`agentgate setup --primary` adds only `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the original file is kept as `settings.json.before-agentgate`). Only do this with `agentgate service install`, or Claude Code can't reach Anthropic while the daemon is down.
+`agentgate setup --primary` adds only `ANTHROPIC_BASE_URL` to `~/.claude/settings.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). Only do this with `agentgate service install`, or Claude Code can't reach Anthropic while the daemon is down.
 
 ## MCP servers per repo
 
@@ -96,3 +96,32 @@ bun test
 bun run typecheck
 AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun src/cli.ts init   # a throwaway node
 ```
+
+## Reliability and upgrades
+
+The reliability refactor is implemented; [STABILITY_PLAN.md](STABILITY_PLAN.md#implementation-and-verification--2026-09-30) records the changes, checks, and remaining live release gates. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
+
+Upgrade paired nodes together. This version uses **sync protocol 2**, and older peers are rejected. Existing MCP OAuth credentials migrate automatically into a separate record when the database opens. Deletion history is retained so offline machines cannot resurrect old configuration. Keep a full backup before upgrading.
+
+`export --no-secrets` / **Without secrets** produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
+
+`setup` preserves unrelated Claude/Codex settings and first-run backups. Generated shims/services include `AGENTGATE_HOME` and `AGENTGATE_PORT`; rerun setup and reinstall the service if you change either value or move the binary. An unsuccessful temporary CLI login/import keeps its folder for recovery instead of deleting the only credential copy.
+
+The proxy bounds request bodies to 16 MiB, waits at most 30 seconds for upstream headers, and cancels a response stream after five minutes without data. MCP tool calls allow five minutes without progress, with a 30-minute total limit. Status reports expired logins, refresh failures, sync errors, and quota headers that could not be recognized.
+
+Network partitions can still cause separate machines to compete for a rotating upstream token. Reconnect and sync the newer credential first; if the provider revoked it, log in again. Live subscription traffic, T3 provider sessions, physical Tailscale failover, and installed service reboot/logout behavior remain release checks.
+
+## Development checks
+
+Use Bun 1.4.2 and the committed lockfile:
+
+```sh
+bun install --frozen-lockfile
+bun run typecheck
+bun test
+bun run build
+bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
+bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
+```
+
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, and compiled CLI checks on macOS and Linux.

@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, truncateSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { selfCommand } from "./setup.ts";
+import { atomicWrite } from "./files.ts";
+import { agentEnvironment, selfCommand } from "./setup.ts";
 import { CONFIG_DIR } from "./store.ts";
 
 const LABEL = "dev.agentgate";
@@ -14,31 +15,32 @@ const uid = process.getuid?.() ?? 0;
 const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 
 // The service gets the PATH of the shell that installed it, so stdio MCP servers find npx/uvx.
-function plist() {
+export function plist() {
   const args = [...selfCommand(), "serve"].map((a) => `<string>${xml(a)}</string>`).join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key><array>${args}</array>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(process.env.PATH ?? "")}</string></dict>
+  <key>EnvironmentVariables</key><dict>${Object.entries({ PATH: process.env.PATH ?? "", ...agentEnvironment() }).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join("")}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>${LOGS}/agentgate.log</string>
-  <key>StandardErrorPath</key><string>${LOGS}/agentgate.log</string>
+  <key>StandardOutPath</key><string>${xml(LOGS)}/agentgate.log</string>
+  <key>StandardErrorPath</key><string>${xml(LOGS)}/agentgate.log</string>
 </dict></plist>
 `;
 }
 
-function unit() {
-  const exec = [...selfCommand(), "serve"].map((a) => (a.includes(" ") ? `"${a}"` : a)).join(" ");
+export function unit(command = selfCommand(), environment = { PATH: process.env.PATH ?? "", ...agentEnvironment() }) {
+  const systemd = (s: string) => JSON.stringify(s).replace(/%/g, "%%").replace(/\$/g, () => "$$");
+  const exec = [...command, "serve"].map(systemd).join(" ");
   return `[Unit]
 Description=agentgate
 After=network-online.target
 
 [Service]
 ExecStart=${exec}
-Environment=PATH=${process.env.PATH ?? ""}
+${Object.entries(environment).map(([key, value]) => `Environment=${JSON.stringify(`${key}=${value}`).replace(/%/g, "%%")}`).join("\n")}
 Restart=always
 RestartSec=3
 
@@ -55,15 +57,15 @@ export function service(action: string) {
     case "install":
       if (mac) {
         mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
-        writeFileSync(PLIST, plist());
+        atomicWrite(PLIST, plist());
         run(["launchctl", "bootout", `gui/${uid}/${LABEL}`]);
         return run(["launchctl", "bootstrap", `gui/${uid}`, PLIST]);
       }
       mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
-      writeFileSync(UNIT, unit());
-      run(["systemctl", "--user", "daemon-reload"]);
+      atomicWrite(UNIT, unit());
+      if (run(["systemctl", "--user", "daemon-reload"]) !== 0) throw new Error("systemd reload failed");
       // Keeps the user service running with nobody logged in, and across reboots.
-      run(["loginctl", "enable-linger", process.env.USER ?? ""]);
+      if (run(["loginctl", "enable-linger", process.env.USER ?? ""]) !== 0) throw new Error("could not enable lingering; run loginctl enable-linger for this user, then retry");
       return run(["systemctl", "--user", "enable", "--now", "agentgate"]);
     case "start":
       return mac ? run(["launchctl", "bootstrap", `gui/${uid}`, PLIST]) : run(["systemctl", "--user", "start", "agentgate"]);
@@ -74,4 +76,12 @@ export function service(action: string) {
     default:
       throw new Error("service install|start|stop|logs");
   }
+}
+
+/** Keep launchd's open log descriptor while bounding disk usage. Linux uses journald. */
+export function rotateLogs(dir = LOGS, maxBytes = 5 * 1024 * 1024) {
+  const file = join(dir, "agentgate.log");
+  if (!existsSync(file) || statSync(file).size < maxBytes) return;
+  for (let i = 4; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+  copyFileSync(file, `${file}.1`); truncateSync(file, 0);
 }

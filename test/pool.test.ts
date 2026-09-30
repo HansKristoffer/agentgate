@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { proxy, recordUsage } from "../src/llm/pool.ts";
@@ -40,11 +40,13 @@ const upstream = Bun.serve({
     });
   },
 });
+const originalApi = CLAUDE.api;
 CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
-afterAll(() => upstream.stop(true));
+afterAll(() => { upstream.stop(true); CLAUDE.api = originalApi; });
 
 let s: Store;
 let creds: Credentials;
+afterEach(() => s?.close());
 
 beforeEach(() => {
   modes = {};
@@ -55,7 +57,7 @@ beforeEach(() => {
     s.put("account", id, { id, provider: "claude", label: id, priority: prio });
     s.put("credential", id, { accountId: id, accessToken: `tok-${id}`, refreshToken: `rt-${id}`, expiresAt: Date.now() + 8 * 3600_000, accountUuid: `uuid-${id}`, holder: "n1" });
   }
-  creds = new Credentials(s, () => Promise.reject(new Error("no refresh in this test")), async () => {});
+  creds = new Credentials(s, () => Promise.reject(new Error("no refresh in this test")), async () => { });
 });
 
 const send = () =>
@@ -139,4 +141,36 @@ test("a late success does not erase an exhaustion recorded meanwhile", async () 
   recordUsage(s, "a", { windows: [], status: "exhausted" }, Date.now() + 60_000);
   recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 50 }], status: "ok" });
   expect(s.get("usage", "a")!.exhaustedUntil).toBeGreaterThan(Date.now());
+});
+
+test("an unauthorized account with a failed refresh falls through to the second account", async () => {
+  const original = claude.prepare;
+  const endpoint = Bun.serve({ port: 0, fetch(req) { return req.headers.get("authorization") === "Bearer tok-a" ? new Response("unauthorized", { status: 401 }) : new Response("second account"); } });
+  const provider = { ...claude, prepare: (...args: Parameters<typeof original>) => ({ ...original(...args), url: `http://127.0.0.1:${endpoint.port}` }) };
+  const res = await proxy(s, creds, provider, new Request("http://x", { method: "POST", body: '{"model":"sonnet"}' }), "/v1/messages");
+  expect(res.status).toBe(200); expect(await res.text()).toBe("second account"); endpoint.stop(true);
+});
+
+test("a model-specific quota does not exhaust other models", async () => {
+  const original = claude.prepare;
+  const endpoint = Bun.serve({ port: 0, fetch() { return new Response("quota", { status: 429, headers: { "anthropic-ratelimit-unified-7d_opus-utilization": "1", "anthropic-ratelimit-unified-7d_opus-reset": String(soon), "anthropic-ratelimit-unified-7d_opus-status": "rejected" } }); } });
+  s.put("account", "b", { ...s.get("account", "b")!, enabled: false });
+  const provider = { ...claude, prepare: (...args: Parameters<typeof original>) => ({ ...original(...args), url: `http://127.0.0.1:${endpoint.port}` }), classify429: () => "quota" as const };
+  await proxy(s, creds, provider, new Request("http://x", { method: "POST", body: '{"model":"claude-opus"}' }), "/v1/messages");
+  expect(s.get("usage", "a")?.exhaustedUntil).toBeUndefined();
+  const res = await send(); expect(res.status).toBe(200); await res.text(); endpoint.stop(true);
+});
+
+test("malformed quota headers are ignored; body size is bounded", async () => {
+  expect(claude.usage(new Headers({ "anthropic-ratelimit-unified-5h-utilization": "NaN" }))).toBeUndefined();
+  const response = await proxy(s, creds, claude, new Request("http://x", { method: "POST", body: "a".repeat(100) }), "/v1/messages", { maxBody: 16, headerTimeout: 100, streamIdle: 100 });
+  expect(response.status).toBe(413);
+});
+
+test("an exhausted quota window without a reset cannot permanently disable an account", async () => {
+  const now = s.now();
+  recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 100 }], status: "exhausted" });
+  expect(s.get("usage", "a")?.windows[0]?.resetsAt).toBe(now + 60000);
+  s.now = () => now + 61000;
+  const { choose } = await import("../src/llm/pool.ts"); expect(choose(s, "claude", "sonnet")?.id).toBe("a");
 });

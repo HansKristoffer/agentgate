@@ -6,9 +6,11 @@ import * as codexLogin from "./llm/codex.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
-import { fromPreset, newInstance, parseHeaders, preset, presets } from "./mcp/templates.ts";
-import { exportBackup, importBackup, LOCAL_URL, mask, schemas, store, type Account, type Store } from "./store.ts";
+import { presets } from "./mcp/templates.ts";
+import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+
+import { createInstance, deleteAccount, deleteInstance, saveProject, setAccount } from "./operations.ts";
 
 const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale
 
@@ -69,12 +71,6 @@ const bar = (pct: number) => {
 };
 const mins = (t?: number) => (t ? `${Math.max(0, Math.round((t - Date.now()) / 60_000))} min` : "?");
 
-function setAccount(s: Store, id: string, patch: Partial<Account>) {
-  const a = s.get("account", id) ?? die(`no account ${id}`);
-  if (patch.pinned) for (const o of s.list("account")) if (o.pinned && o.provider === a.provider) s.put("account", o.id, { ...o, pinned: false });
-  s.put("account", id, { ...a, ...patch });
-}
-
 async function main() {
   if (!cmd || opts.help) return console.log(HELP);
 
@@ -86,7 +82,10 @@ async function main() {
     case "init": {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
       const old = s.local("node");
-      if (old && old !== name) s.del("node", old);
+      if (old && old !== name) {
+        if (peers(s).length || s.list("credential").length || s.list("mcpCredential").length) die("cannot rename a paired node or credential holder; keep its existing name");
+        s.del("node", old);
+      }
       s.setLocal("node", name);
       if (!s.local("adminToken")) s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
       const ts = await tailscale();
@@ -98,7 +97,11 @@ async function main() {
     }
     case "serve":
       initialized(s);
-      return (await import("./daemon.ts")).serve(s);
+      const daemon = await (await import("./daemon.ts")).serve(s);
+      let shuttingDown = false;
+      const shutdown = () => { if (shuttingDown) return; shuttingDown = true; void daemon.stop().then(() => { s.close(); process.exit(0); }); };
+      process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
+      return;
 
     case "status": {
       initialized(s);
@@ -108,7 +111,7 @@ async function main() {
         if (!accounts.length) console.log("  (no accounts)");
         for (const a of accounts) {
           const st = accountStatus(s, a);
-          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", st.needsLogin && "NEEDS LOGIN", st.exhausted && "exhausted"].filter(Boolean).join(", ");
+          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", st.needsLogin && "NEEDS LOGIN", st.expired && "TOKEN EXPIRED", st.refreshError && "REFRESH FAILED", st.exhausted && "exhausted"].filter(Boolean).join(", ");
           console.log(`  ${a.id}  ${a.label}${flags ? `  [${flags}]` : ""}  holder ${st.holder ?? "-"}, token expires in ${mins(st.expiresAt)}`);
           for (const w of st.windows) console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
           if (!st.windows.length && !st.needsLogin) console.log("    no quota data yet (or unrecognised quota headers)");
@@ -118,7 +121,7 @@ async function main() {
       for (const n of s.list("node")) {
         const seen = lastSeen(s, n.id);
         const peer = peers(s).find((p) => p.node === n.id);
-        console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}`}`);
+        console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`);
       }
       const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
@@ -149,7 +152,7 @@ async function main() {
       else if (sub === "pin") setAccount(s, id, { pinned: true });
       else if (sub === "unpin") setAccount(s, id, { pinned: false });
       else if (sub === "priority") setAccount(s, id, { priority: Number(rest[1] ?? 0) });
-      else if (sub === "rm") for (const k of ["account", "credential", "usage"] as const) s.del(k, id);
+      else if (sub === "rm") deleteAccount(s, id);
       else if (sub === "exhaust") {
         // Test flag (PLAN §14 phase 1): pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
@@ -167,21 +170,13 @@ async function main() {
       }
       if (sub === "ls") {
         for (const i of s.list("mcp"))
-          console.log(`${i.id.padEnd(20)} ${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${i.oauth?.tokens ? "  logged in" : ""}`);
+          console.log(`${i.id.padEnd(20)} ${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}`);
         return;
       }
       if (sub === "add") {
         const [id, target] = rest;
         if (!id || (!target && !str("command"))) die('mcp add <name> <url|preset> [--header "Name: value"] | mcp add <name> --command "npx …" [--per-session]');
-        const p = target ? preset(target) : undefined;
-        if (s.get("mcp", id!)) die(`${id} already exists`);
-        const cmd = str("command")?.trim().split(/\s+/);
-        const inst = p
-          ? fromPreset(p, id)
-          : cmd
-            ? newInstance({ id: id!, command: cmd[0], args: cmd.slice(1), mode: opts["per-session"] ? "perSession" : "shared" })
-            : newInstance({ id: id!, url: target, headers: parseHeaders(opts.header as string[] | undefined) });
-        s.put("mcp", id!, inst);
+        const inst = createInstance(s, { id: id!, target, command: str("command"), perSession: !!opts["per-session"], headers: opts.header as string[] | undefined });
         if (inst.url) {
           const ok = await connect(inst, process.cwd(), s).then((c) => c.close().then(() => true), (e) => (needsLogin(e) ? false : die(`${id}: ${e}`)));
           if (!ok) console.log(`${id} needs a login: agentgate mcp login ${id}`);
@@ -199,8 +194,8 @@ async function main() {
       if (sub === "test") {
         const inst = s.get("mcp", rest[0] ?? "") ?? die(`no instance ${rest[0]}`);
         const client = await connect(inst, process.cwd(), s).catch((e) => die(needsLogin(e) ? `${inst.id} needs a login: agentgate mcp login ${inst.id}` : String(e)));
-        const tools = await listAllTools(client);
-        await client.close();
+        let tools;
+        try { tools = await listAllTools(client); } finally { await client.close(); }
         console.log(`${inst.id}: ${tools.length} tools`);
         for (const t of tools) console.log(`  ${t.name}`);
         return;
@@ -211,7 +206,7 @@ async function main() {
         renameInstance(s, from!, to!);
         return console.log(`renamed ${from} to ${to}`);
       }
-      if (sub === "rm") return s.del("mcp", rest[0] ?? die("mcp rm <id>"));
+      if (sub === "rm") return deleteInstance(s, rest[0] ?? die("mcp rm <id>"));
       return die(HELP);
     }
 
@@ -238,10 +233,10 @@ async function main() {
             mcp[alias!] = inst;
           } else delete mcp[alias!];
         }
-        s.put("project", id, { ...p, mcp });
+        saveProject(s, id, { mcp });
         return console.log("ok");
       }
-      if (sub === "defaults") return void s.put("project", id, { ...p, inheritDefaults: rest[1] !== "off" });
+      if (sub === "defaults") return void saveProject(s, id, { inheritDefaults: rest[1] !== "off" });
       if (sub === "rm") return s.del("project", id);
       return die(HELP);
     }

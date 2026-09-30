@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { jwtClaims, tokenRequest, type Tokens } from "../credentials.ts";
+import { saveAccount } from "../operations.ts";
 import type { Store } from "../store.ts";
 import type { Provider, Window } from "./pool.ts";
 
@@ -19,7 +20,7 @@ const AUTH_CLAIM = "https://api.openai.com/auth";
 
 function toTokens(t: { access_token: string; refresh_token?: string }, previousRefresh = ""): Tokens {
   const exp = jwtClaims(t.access_token).exp;
-  return { accessToken: t.access_token, refreshToken: t.refresh_token ?? previousRefresh, expiresAt: exp ? exp * 1000 : Date.now() + 3600_000 };
+  return { accessToken: t.access_token, refreshToken: t.refresh_token ?? previousRefresh, expiresAt: typeof exp === "number" && Number.isFinite(exp) && exp > 0 ? Math.floor(exp * 1000) : Date.now() + 3600_000 };
 }
 
 /** Windows are named by their length, never by the primary/secondary slot they arrive in. */
@@ -47,10 +48,11 @@ export const codex: Provider = {
       const minutes = Number(h.get(`${p}-window-minutes`) ?? 0);
       const resetAt = Number(h.get(`${p}-reset-at`) ?? 0);
       const after = Number(h.get(`${p}-reset-after-seconds`) ?? 0);
+      if (!Number.isFinite(minutes) || minutes <= 0 || !Number.isFinite(Number(value)) || Number(value) < 0) return;
       windows.push({
         name: windowName(minutes, m[1]!),
-        usedPct: Number(value),
-        resetsAt: resetAt ? resetAt * 1000 : after ? Date.now() + after * 1000 : undefined,
+        usedPct: Math.min(100, Number(value)),
+        resetsAt: Number.isFinite(resetAt) && resetAt > 0 ? Math.floor(resetAt * 1000) : Number.isFinite(after) && after > 0 ? Date.now() + Math.floor(after * 1000) : undefined,
       });
     });
     if (!windows.length) return undefined;
@@ -81,22 +83,24 @@ export function authorizeUrl(challenge: string, state: string) {
 }
 
 /** Finish the web login: the browser lands on a localhost URL that won't load; the user pastes that URL back. */
-export async function exchange(s: Store, pasted: string, verifier: string, label?: string) {
-  const code = pasted.includes("code=") ? new URL(pasted.trim()).searchParams.get("code")! : pasted.trim();
+export async function exchange(s: Store, pasted: string, verifier: string, label?: string, expectedState?: string) {
+  const callback = pasted.includes("code=") ? new URL(pasted.trim()) : undefined;
+  if (expectedState && callback?.searchParams.get("state") !== expectedState) throw new Error("login state does not match; paste the full callback URL");
+  const code = callback?.searchParams.get("code") ?? pasted.trim();
+  if (!code) throw new Error("no authorization code");
   const t = await tokenRequest(CODEX.tokenUrl, { grant_type: "authorization_code", code, redirect_uri: CODEX.redirectUri, client_id: CODEX.clientId, code_verifier: verifier }, true);
   return save(s, t, label);
 }
 
-function save(s: Store, t: { id_token?: string; access_token: string; refresh_token: string; account_id?: string }, label?: string) {
+function save(s: Store, t: { id_token?: string; access_token: string; refresh_token?: string; account_id?: string }, label?: string) {
+  if (!t.refresh_token) throw new Error("login did not issue a refresh token");
   const claims = jwtClaims(t.id_token ?? "");
   const auth = claims[AUTH_CLAIM] ?? jwtClaims(t.access_token)[AUTH_CLAIM] ?? {};
   const chatgptAccountId: string | undefined = t.account_id ?? auth.chatgpt_account_id;
   const email: string | undefined = claims.email;
   const id = `codex-${(chatgptAccountId ?? crypto.randomUUID()).replace(/-/g, "").slice(0, 8)}${email ? "-" + email.split("@")[0]!.replace(/\W/g, "").slice(0, 8) : ""}`;
   const prev = s.get("account", id);
-  s.put("account", id, { ...prev, id, provider: "codex", label: label ?? prev?.label ?? email ?? id, email, plan: auth.chatgpt_plan_type });
-  s.put("credential", id, { accountId: id, ...toTokens(t), chatgptAccountId, holder: s.nodeId });
-  return id;
+  return saveAccount(s, { ...prev, id, provider: "codex", enabled: prev?.enabled ?? true, priority: prev?.priority ?? 0, label: label ?? prev?.label ?? email ?? id, email, plan: auth.chatgpt_plan_type }, { accountId: id, ...toTokens(t), chatgptAccountId, holder: s.nodeId });
 }
 
 /** Take over a Codex login from a CODEX_HOME (`auth.json`). */
@@ -111,12 +115,15 @@ export async function importFrom(s: Store, dir: string, label?: string) {
 /** `agentgate login codex`: the official login in a throwaway CODEX_HOME, then import and delete it. */
 export async function login(s: Store, label?: string) {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-codex-"));
+  let imported = false;
   try {
     writeFileSync(join(dir, "config.toml"), 'cli_auth_credentials_store = "file"\n');
     const p = Bun.spawn(["codex", "login"], { env: { ...process.env, CODEX_HOME: dir }, stdio: ["inherit", "inherit", "inherit"] });
     if ((await p.exited) !== 0) throw new Error("codex login failed");
-    return await importFrom(s, dir, label);
+    const id = await importFrom(s, dir, label); imported = true; return id;
+  } catch (e) {
+    throw new Error(`Login was not imported: ${e}. Temporary login retained at ${dir}; retry import from that folder.`);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (imported) rmSync(dir, { recursive: true, force: true });
   }
 }

@@ -1,110 +1,152 @@
 import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { McpInstance, Store } from "../store.ts";
+import { z } from "zod";
+import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
+import { fetchHeaders } from "../runtime.ts";
+import type { McpCredential, Store } from "../store.ts";
+import { pullAll } from "../sync.ts";
+import { resolve } from "./templates.ts";
 
-/**
- * MCP OAuth for one instance (discovery, dynamic client registration, PKCE, refresh), stored on the
- * instance record so the login syncs to every node. The verifier and state stay local to this node.
- * ponytail: two nodes refreshing the same rotating token at once can log one out; add holder rules (PLAN §5) if that bites.
- */
-export class InstanceAuth implements OAuthClientProvider {
-  /** Set when the SDK wants the user sent to the login page. */
-  authUrl?: URL;
-
-  constructor(
-    private s: Store,
-    private id: string,
-    /** Only an interactive flow (started from the UI) may start a login; background connects must not clobber its verifier. */
-    private interactive = false,
-  ) {}
-
-  private inst(): McpInstance {
-    const inst = this.s.get("mcp", this.id);
-    if (!inst) throw new Error(`no MCP instance ${this.id}`);
-    return inst;
-  }
-
-  private update(patch: Partial<NonNullable<McpInstance["oauth"]>>) {
-    const inst = this.inst();
-    this.s.put("mcp", this.id, { ...inst, oauth: { ...inst.oauth, ...patch } });
-  }
-
-  get redirectUrl() {
-    return this.inst().oauth?.redirectUri;
-  }
-
-  get clientMetadata(): OAuthClientMetadata {
-    return {
-      client_name: "agentgate",
-      redirect_uris: [this.redirectUrl ?? ""],
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    };
-  }
-
-  state() {
-    const state = Buffer.from(crypto.getRandomValues(new Uint8Array(24))).toString("base64url");
-    if (this.interactive) this.s.setLocal(`oauth-state:${state}`, this.id);
-    return state;
-  }
-
-  clientInformation() {
-    return this.inst().oauth?.client as OAuthClientInformationMixed | undefined;
-  }
-  saveClientInformation(client: OAuthClientInformationMixed) {
-    this.update({ client });
-  }
-
-  tokens() {
-    return this.inst().oauth?.tokens as OAuthTokens | undefined;
-  }
-  saveTokens(tokens: OAuthTokens) {
-    this.update({ tokens });
-  }
-
-  redirectToAuthorization(url: URL) {
-    this.authUrl = url;
-    if (!this.interactive) this.s.log("mcp", this.id, "", 401, 0, "needs login");
-  }
-
-  saveCodeVerifier(verifier: string) {
-    if (this.interactive) this.s.setLocal(`oauth-verifier:${this.id}`, verifier);
-  }
-  codeVerifier() {
-    const v = this.s.local(`oauth-verifier:${this.id}`);
-    if (!v) throw new Error("login expired; start it again");
-    return v;
-  }
-
-  invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
-    if (scope === "verifier" || scope === "all") this.s.setLocal(`oauth-verifier:${this.id}`, undefined);
-    if (scope === "all") this.update({ client: undefined, tokens: undefined });
-    if (scope === "client") this.update({ client: undefined });
-    if (scope === "tokens") this.update({ tokens: undefined });
+const SESSION_TTL = 10 * 60_000;
+const sessionSchema = z.object({ id: z.string(), loginId: z.string(), expiresAt: z.number(), verifier: z.string().optional() });
+export function expireLogins(s: Store) {
+  for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as { key: string; value: string }[]) {
+    let value: unknown; try { value = JSON.parse(row.value); } catch { }
+    const result = sessionSchema.safeParse(value);
+    if (!result.success || result.data.expiresAt <= s.now()) s.setLocal(row.key, undefined);
   }
 }
 
-/** Start a login from the UI. Returns the login page URL, or undefined when no login is needed. */
+/** The SDK handles discovery and PKCE; ownership and persistence are controlled here. */
+export class InstanceAuth implements OAuthClientProvider {
+  authUrl?: URL;
+  staged: Partial<McpCredential> = {};
+  private stateValue?: string;
+  constructor(private s: Store, private id: string, private interactive = false, private deferred = false, private verifier?: string, private snapshot?: McpCredential) { }
+  private credential() {
+    const c = this.snapshot ?? this.s.get("mcpCredential", this.id);
+    if (!c || !this.s.get("mcp", this.id)) throw new NeedsLogin(`${this.id}: needs a login`);
+    return { ...c, ...this.staged };
+  }
+  private update(patch: Partial<McpCredential>) {
+    if (this.deferred) this.staged = { ...this.staged, ...patch };
+    else this.s.put("mcpCredential", this.id, { ...this.credential(), ...patch });
+  }
+  get redirectUrl() { return this.credential().redirectUri; }
+  get clientMetadata(): OAuthClientMetadata {
+    return { client_name: "agentgate", redirect_uris: [this.redirectUrl ?? ""], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
+  }
+  state() {
+    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    const state = crypto.randomUUID();
+    const c = this.credential();
+    this.stateValue = state;
+    this.s.setLocal(`oauth-state:${state}`, JSON.stringify({ id: this.id, loginId: c.loginId, expiresAt: this.s.now() + SESSION_TTL }));
+    return state;
+  }
+  clientInformation() { return this.credential().client as OAuthClientInformationMixed | undefined; }
+  saveClientInformation(client: OAuthClientInformationMixed) { this.update({ client }); }
+  tokens() { return this.credential().tokens as OAuthTokens | undefined; }
+  saveTokens(tokens: OAuthTokens) {
+    this.update({ tokens, expiresAt: tokens.expires_in ? this.s.now() + tokens.expires_in * 1000 : undefined, needsLogin: false });
+  }
+  redirectToAuthorization(url: URL) {
+    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    this.authUrl = url;
+  }
+  saveCodeVerifier(verifier: string) {
+    if (!this.stateValue) throw new Error("no pending login");
+    const key = `oauth-state:${this.stateValue}`;
+    const pending = sessionSchema.parse(JSON.parse(this.s.local(key)!));
+    this.s.setLocal(key, JSON.stringify({ ...pending, verifier }));
+  }
+  codeVerifier() { if (!this.verifier) throw new Error("login expired; start it again"); return this.verifier; }
+  invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
+    if (this.deferred && (scope === "all" || scope === "tokens")) throw new InvalidGrant("MCP refresh token is no longer valid");
+    if (scope === "all") this.update({ client: undefined, tokens: undefined, needsLogin: true });
+    if (scope === "client") this.update({ client: undefined });
+    if (scope === "tokens") this.update({ tokens: undefined, needsLogin: true });
+  }
+}
+
+export async function refreshMcp(s: Store, id: string, force = false): Promise<McpCredential> {
+  const credential = s.get("mcpCredential", id);
+  if (!credential?.tokens || credential.needsLogin) throw new NeedsLogin(`${id}: needs a login`);
+  const requested = s.get("refreshRequest", `mcpCredential:${id}`)?.tokenHash === tokenHash(credential);
+  if (!force && !canRefresh(s, credential) && !(requested && credential.holder === s.nodeId) && (credential.expiresAt === undefined || credential.expiresAt > s.now())) return credential;
+  return refreshOwned(s, "mcpCredential", id, async c => {
+    const inst = s.get("mcp", id);
+    const url = inst && resolve(inst).url;
+    if (!url) throw new NeedsLogin(id);
+    const provider = new InstanceAuth(s, id, false, true, undefined, c);
+    const signal = AbortSignal.timeout(30_000);
+    const result = await auth(provider, { serverUrl: url, fetchFn: (url, init) => fetchHeaders(url, { ...init, signal }) });
+    if (result !== "AUTHORIZED" || !provider.staged.tokens) throw new NeedsLogin(`${id}: needs a login`);
+    return { ...c, ...provider.staged };
+  }, () => pullAll(s), force || requested);
+}
+
+/** Never let an independent SDK transport rotate a shared token itself. */
+export function authenticatedFetch(s: Store, id: string) {
+  return async (url: string | URL, init: RequestInit = {}) => {
+    let c = s.get("mcpCredential", id);
+    if (c?.tokens) c = await refreshMcp(s, id);
+    const send = (token?: string) => {
+      const headers = new Headers(init.headers);
+      if (token) headers.set("authorization", `Bearer ${token}`);
+      return fetchHeaders(url, { ...init, headers }, init.method === "DELETE" ? 2000 : 30000);
+    };
+    const res = await send(c?.tokens?.access_token);
+    if (res.status !== 401 || !c?.tokens) return res;
+    await res.body?.cancel();
+    const next = await refreshMcp(s, id, true);
+    if (!next.tokens || next.tokens.access_token === c.tokens.access_token) throw new NeedsLogin(`${id}: needs a login`);
+    return send(next.tokens.access_token); // 401 guarantees the operation was not accepted
+  };
+}
+
 export async function startLogin(s: Store, id: string, callbackUrl: string): Promise<URL | undefined> {
   const inst = s.get("mcp", id);
   if (!inst?.url) throw new Error(`${id} is not an HTTP server`);
-  // A new redirect URI needs a new client registration; old tokens are dropped since the user asked to log in.
-  const client = inst.oauth?.redirectUri === callbackUrl ? inst.oauth.client : undefined;
-  s.put("mcp", id, { ...inst, oauth: { redirectUri: callbackUrl, client } });
+  expireLogins(s);
+  const previous = s.get("mcpCredential", id);
+  const client = previous?.redirectUri === callbackUrl ? previous.client : undefined;
+  s.put("mcpCredential", id, { instanceId: id, redirectUri: callbackUrl, client, holder: s.nodeId, loginId: crypto.randomUUID() });
   const provider = new InstanceAuth(s, id, true);
-  const result = await auth(provider, { serverUrl: inst.url });
+  const signal = AbortSignal.timeout(30_000);
+  const result = await auth(provider, { serverUrl: resolve(inst).url!, fetchFn: (url, init) => fetchHeaders(url, { ...init, signal }) });
   return result === "REDIRECT" ? provider.authUrl : undefined;
 }
 
-/** The login page redirected back with `code` and `state`. Returns the instance id. */
 export async function finishLogin(s: Store, state: string, code: string): Promise<string> {
-  const id = s.local(`oauth-state:${state}`);
-  if (!id) throw new Error("unknown or expired login; start it again");
-  s.setLocal(`oauth-state:${state}`, undefined);
-  const inst = s.get("mcp", id);
-  if (!inst?.url) throw new Error(`no MCP instance ${id}`);
-  await auth(new InstanceAuth(s, id, true), { serverUrl: inst.url, authorizationCode: code });
-  s.setLocal(`oauth-verifier:${id}`, undefined);
-  return id;
+  const pending = s.transaction(() => {
+    const raw = s.local(`oauth-state:${state}`);
+    if (!raw) throw new Error("unknown or expired login; start it again");
+    s.setLocal(`oauth-state:${state}`, undefined);
+    const session = sessionSchema.parse(JSON.parse(raw));
+    if (session.expiresAt <= s.now() || session.loginId !== s.get("mcpCredential", session.id)?.loginId || !session.verifier) throw new Error("login expired; start it again");
+    return session;
+  });
+  const inst = s.get("mcp", pending.id);
+  if (!inst?.url) throw new Error(`no MCP instance ${pending.id}`);
+  const provider = new InstanceAuth(s, pending.id, true, true, pending.verifier);
+  const signal = AbortSignal.timeout(30_000);
+  const result = await auth(provider, { serverUrl: resolve(inst).url!, authorizationCode: code, fetchFn: (url, init) => fetchHeaders(url, { ...init, signal }) });
+  if (result !== "AUTHORIZED" || !provider.staged.tokens) throw new Error("authorization did not issue tokens");
+  s.transaction(() => {
+    const current = s.get("mcpCredential", pending.id);
+    if (!current || current.loginId !== pending.loginId || !s.get("mcp", pending.id)) throw new Error("login replaced or server deleted; start again");
+    s.put("mcpCredential", pending.id, { ...current, ...provider.staged, holder: s.nodeId, needsLogin: false });
+  });
+  return pending.id;
+}
+
+export async function tickMcp(s: Store, signal?: AbortSignal) {
+  for (const c of s.list("mcpCredential")) {
+    if (signal?.aborted) break;
+    if (c.needsLogin || !c.tokens) continue;
+    if (s.get("node", s.nodeId)?.alwaysOn && c.holder !== s.nodeId && !s.get("node", c.holder)?.alwaysOn && (c.expiresAt ?? 0) - s.now() > 45 * 60_000)
+      s.put("mcpCredential", c.instanceId, { ...c, holder: s.nodeId });
+    await refreshMcp(s, c.instanceId).catch(() => { });
+  }
 }

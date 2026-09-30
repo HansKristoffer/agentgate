@@ -1,7 +1,7 @@
-import { afterAll, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { afterAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { connect, needsLogin } from "../src/mcp/gateway.ts";
 import { finishLogin, startLogin } from "../src/mcp/oauth.ts";
 import { newInstance, parseHeaders } from "../src/mcp/templates.ts";
@@ -85,20 +85,20 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
 
   const authUrl = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback");
   expect(authUrl!.pathname).toBe("/authorize");
-  expect(s.get("mcp", "fake")!.oauth!.client.client_id).toBe("client-1");
+  expect(s.get("mcpCredential", "fake")!.client!.client_id).toBe("client-1");
 
   // The browser: login page → redirect to our callback with code and state.
   const res = await fetch(authUrl!, { redirect: "manual" });
   const back = new URL(res.headers.get("location")!);
   expect(back.pathname).toBe("/oauth/callback");
   expect(await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!)).toBe("fake");
-  const first = s.get("mcp", "fake")!.oauth!.tokens.access_token;
+  const first = s.get("mcpCredential", "fake")!.tokens!.access_token;
   expect(await call(s, "fake")).toBe(`token ${first}`);
 
   // The access token dies; the next connect refreshes with the stored refresh token and saves the new pair.
   access.clear();
   const text = await call(s, "fake");
-  const second = s.get("mcp", "fake")!.oauth!.tokens.access_token;
+  const second = s.get("mcpCredential", "fake")!.tokens!.access_token;
   expect(second).not.toBe(first);
   expect(text).toBe(`token ${second}`);
 
@@ -112,4 +112,34 @@ test("headers parse from lines or pairs; ids and URLs are validated", () => {
   expect(() => newInstance({ id: "bad name", url: "https://x.dev" })).toThrow();
   expect(() => newInstance({ id: "ok", url: "http://example.com/mcp" })).toThrow();
   expect(newInstance({ id: "local", url: "http://localhost:3000/mcp" }).transport).toBe("http");
+});
+
+test("MCP refresh uses holder coordination and concurrent callers rotate once", async () => {
+  const holder = new Store(":memory:"); holder.setLocal("node", "holder"); holder.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(holder, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
+  await finishLogin(holder, back.searchParams.get("state")!, back.searchParams.get("code")!);
+  const remote = new Store(":memory:"); remote.setLocal("node", "remote"); for (const r of holder.changes(0).records) remote.merge(r);
+  remote.db.run("insert into peers values ('holder', 'http://127.0.0.1:1', 'fake', 0, ?)", [remote.now()]);
+  const { refreshMcp } = await import("../src/mcp/oauth.ts"); const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;
+  await expect(refreshMcp(remote, "fake", true)).rejects.toThrow("holder"); expect(remote.get("mcpCredential", "fake")?.tokens?.access_token).toBe(first);
+  expect(remote.get("refreshRequest", "mcpCredential:fake")).toBeDefined();
+  const [a, b] = await Promise.all([refreshMcp(holder, "fake", true), refreshMcp(holder, "fake", true)]); expect(a.tokens?.access_token).toBe(b.tokens?.access_token); expect(a.tokens?.access_token).not.toBe(first);
+  holder.close(); remote.close();
+});
+
+test("expired MCP OAuth state is refused before token exchange", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n"); s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(s, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
+  s.now = () => Date.now() + 11 * 60000; await expect(finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!)).rejects.toThrow("expired"); expect(s.get("mcpCredential", "fake")?.tokens).toBeUndefined(); s.close();
+});
+
+test("tailnet OAuth callback completes with one-time state even without the Strict admin cookie", async () => {
+  const { app, makeCtx } = await import("../src/daemon.ts");
+  const s = new Store(":memory:"); s.setLocal("node", "tailnet"); s.setLocal("adminToken", "admin-token");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` })); const ctx = makeCtx(s);
+  try {
+    const url = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback"); const response = await fetch(url!, { redirect: "manual" });
+    const result = await app(ctx).fetch(new Request(response.headers.get("location")!), { listener: "tailnet" });
+    expect(result.status).toBe(302); expect(s.get("mcpCredential", "fake")?.tokens?.access_token).toBeDefined(); expect(result.headers.get("location")).toContain("Logged");
+  } finally { await ctx.gateway.close(); s.close(); }
 });

@@ -18,6 +18,7 @@
     "start": "bun src/cli.ts serve",
     "test": "bun test",
     "typecheck": "bunx tsc --noEmit",
-    "build": "for t in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do bun build src/cli.ts --compile --minify --target=bun-$t --outfile dist/agentgate-$t || exit 1; done"
-  }
+    "build": "bun scripts/build.ts"
+  },
+  "packageManager": "bun@1.4.2"
 }

@@ -37,6 +37,7 @@ export function parseHeaders(text: string | string[] = ""): Record<string, strin
   for (const line of (Array.isArray(text) ? text : text.split("\n")).map((l) => l.trim()).filter(Boolean)) {
     const m = line.match(/^([^:=\s]+)\s*[:=]\s*(.*)$/);
     if (!m) throw new Error(`bad header: ${line} (use Name: value)`);
+    const valid = new Headers(); valid.set(m[1]!, m[2]!);
     out[m[1]!] = m[2]!;
   }
   return out;
@@ -48,7 +49,7 @@ export function newInstance(o: { id: string; template?: string; url?: string; he
   const base = { id: o.id, template: o.template ?? "custom", secrets: {}, fields: {} };
   if (o.url) {
     const url = new URL(o.url.trim()); // throws on a bad URL
-    if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname)) throw new Error("use an https:// URL");
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("use an https:// URL");
     return { ...base, transport: "http", mode: "shared", url: url.href, headers: o.headers ?? {} };
   }
   if (!o.command) throw new Error("a URL or a command is required");

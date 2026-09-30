@@ -1,14 +1,19 @@
+import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
-import { mkdirSync, chmodSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 
 export const CONFIG_DIR = process.env.AGENTGATE_HOME ?? join(homedir(), ".config", "agentgate");
 export const PORT = Number(process.env.AGENTGATE_PORT ?? 7878);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
 export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
 
-const Window = z.object({ name: z.string(), usedPct: z.number(), resetsAt: z.number().optional() });
+const id = z.string().min(1).max(512);
+const timestamp = z.number().int().nonnegative();
+const Window = z.object({ name: id, usedPct: z.number().min(0).max(100), resetsAt: timestamp.optional() });
+const OAuth = z.object({ redirectUri: z.string().optional(), client: OAuthClientInformationSchema.passthrough().optional(), tokens: OAuthTokensSchema.passthrough().optional() });
 
 export const schemas = {
   account: z.object({
@@ -23,21 +28,27 @@ export const schemas = {
   }),
   credential: z.object({
     accountId: z.string(),
-    accessToken: z.string(),
-    refreshToken: z.string(),
-    expiresAt: z.number(),
+    accessToken: z.string().min(1),
+    refreshToken: z.string().min(1),
+    expiresAt: timestamp,
     accountUuid: z.string().optional(),
     chatgptAccountId: z.string().optional(),
     holder: z.string(),
     needsLogin: z.boolean().optional(),
   }),
+  mcpCredential: OAuth.extend({
+    instanceId: id, holder: id, expiresAt: timestamp.optional(), needsLogin: z.boolean().optional(), loginId: id.optional(),
+  }),
+  refreshRequest: z.object({
+    targetKind: z.enum(["credential", "mcpCredential"]), targetId: id, tokenHash: id, requestedAt: timestamp,
+  }),
   usage: z.object({
     accountId: z.string(),
-    observedAt: z.number(),
+    observedAt: timestamp,
     observedBy: z.string(),
     windows: z.array(Window),
     status: z.enum(["ok", "limited", "exhausted"]),
-    exhaustedUntil: z.number().optional(),
+    exhaustedUntil: timestamp.optional(),
   }),
   mcp: z.object({
     id: z.string(),
@@ -52,21 +63,21 @@ export const schemas = {
     fields: z.record(z.string(), z.string()).default({}),
     mode: z.enum(["shared", "perSession"]).default("shared"),
     /** MCP OAuth state from the SDK (client registration and tokens), set once a login was started. */
-    oauth: z.object({ redirectUri: z.string().optional(), client: z.any().optional(), tokens: z.any().optional() }).optional(),
+    oauth: OAuth.optional(), // accepted only to migrate pre-v1 databases/backups
   }),
   project: z.object({
     id: z.string(),
     mcp: z.record(z.string(), z.string()).default({}),
     inheritDefaults: z.boolean().default(true),
-    seenAt: z.number().optional(),
+    seenAt: timestamp.optional(),
     seenOn: z.string().optional(),
   }),
   node: z.object({ id: z.string(), url: z.string().optional(), alwaysOn: z.boolean().default(false) }),
   setting: z.object({
-    threshold: z.number().default(98),
+    threshold: z.number().min(1).max(100).default(98),
     whenExhausted: z.enum(["fail", "wait"]).default("fail"),
-    retryLimit: z.number().default(3),
-    logRetention: z.number().default(5000),
+    retryLimit: z.number().int().min(0).max(10).default(3),
+    logRetention: z.number().int().min(100).max(100000).default(5000),
   }),
 };
 
@@ -78,6 +89,7 @@ export type Usage = Data<"usage">;
 export type McpInstance = Data<"mcp">;
 export type Project = Data<"project">;
 export type Settings = Data<"setting">;
+export type McpCredential = Data<"mcpCredential">;
 
 export interface Rec {
   kind: Kind;
@@ -90,7 +102,29 @@ export interface Rec {
   seq?: number;
 }
 
-const TOMBSTONE_TTL = 30 * 24 * 3600_000;
+export const recordSchema = z.object({
+  kind: z.enum(Object.keys(schemas) as [Kind, ...Kind[]]), id,
+  rev: z.number().int().nonnegative(), node: id, updated_at: timestamp,
+  deleted: z.union([z.literal(0), z.literal(1)]), data: z.string().max(4 * 1024 * 1024), seq: timestamp.optional(),
+});
+
+export function parseData<K extends Kind>(kind: K, key: string, input: unknown): Data<K> {
+  id.parse(key);
+  const parsed = schemas[kind].parse(input) as Data<K>;
+  const value = parsed as Record<string, unknown>;
+  const payloadId = value.id ?? value.accountId ?? value.instanceId;
+  if (payloadId !== undefined && payloadId !== key) throw new Error(`${kind}: record ID does not match its data`);
+  if (kind === "setting" && key !== "settings") throw new Error("invalid settings ID");
+  if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`) throw new Error("invalid refresh request ID");
+  return parsed;
+}
+
+export function parseRecord(input: unknown): Rec {
+  const r = recordSchema.parse(input);
+  if (!r.deleted) r.data = JSON.stringify(parseData(r.kind, r.id, JSON.parse(r.data)));
+  else r.data = "{}";
+  return r;
+}
 
 export class Store {
   db: Database;
@@ -99,7 +133,7 @@ export class Store {
 
   constructor(path = join(CONFIG_DIR, "agentgate.db")) {
     if (path !== ":memory:") {
-      const dir = path.slice(0, path.lastIndexOf("/"));
+      const dir = dirname(path);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
     this.db = new Database(path, { create: true });
@@ -112,11 +146,35 @@ export class Store {
       seq integer not null, primary key (kind, id))`);
     this.db.run("create index if not exists records_seq on records(seq)");
     this.db.run("create table if not exists local_seq (value integer not null)");
-    if (!this.db.query("select 1 from local_seq").get()) this.db.run("insert into local_seq values (0)");
+    this.db.transaction(() => {
+      if (!this.db.query("select 1 from local_seq").get()) this.db.run("insert into local_seq values (0)");
+    }).immediate();
     this.db.run("create table if not exists peers (node text primary key, url text, token text, cursor integer default 0, last_seen integer)");
     this.db.run("create table if not exists request_log (at integer, provider text, account text, model text, status integer, ms integer, note text)");
     // Node-local settings that are never synced (node name, admin token, pairing code, active account).
     this.db.run("create table if not exists local (key text primary key, value text)");
+    this.migrate();
+  }
+
+  transaction<T>(fn: () => T): T { return this.db.transaction(fn).immediate(); }
+  close() { this.db.close(); }
+
+  private migrate() {
+    this.transaction(() => {
+      const version = (this.db.query("pragma user_version").get() as { user_version: number }).user_version;
+      if (version > 1) throw new Error("database was created by a newer agentgate version");
+      if (version === 0) {
+        for (const row of this.db.query("select * from records where kind = 'mcp' and deleted = 0").all() as Rec[]) {
+          const inst = parseData("mcp", row.id, JSON.parse(row.data));
+          if (inst.oauth) {
+            this.put("mcpCredential", inst.id, { ...inst.oauth, instanceId: inst.id, holder: row.node });
+            const { oauth, ...config } = inst;
+            this.put("mcp", inst.id, config);
+          }
+        }
+        this.db.run("pragma user_version = 1");
+      }
+    });
   }
 
   get nodeId(): string {
@@ -154,8 +212,8 @@ export class Store {
     return rows.map((r) => schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
   }
 
-  put<K extends Kind>(kind: K, id: string, data: z.input<(typeof schemas)[K]>): Data<K> {
-    const parsed = schemas[kind].parse(data) as Data<K>;
+  put<K extends Kind>(kind: K, id: string, data: z.input<(typeof schemas)[K]> | Data<K>): Data<K> {
+    const parsed = parseData(kind, id, data);
     this.write(kind, id, JSON.stringify(parsed), 0);
     return parsed;
   }
@@ -170,7 +228,7 @@ export class Store {
       this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
         kind, id, (prev?.rev ?? 0) + 1, this.nodeId, this.now(), deleted, data, this.nextSeq(),
       ]);
-    })();
+    }).immediate();
   }
 
   settings(): Settings {
@@ -179,13 +237,17 @@ export class Store {
 
   /** Change feed for peers: every record (secrets and tombstones included) newer than `since`. */
   changes(since: number): { records: Rec[]; seq: number } {
-    const records = this.db.query("select * from records where seq > ? order by seq").all(since) as Rec[];
-    return { records, seq: this.seq() };
+    timestamp.parse(since);
+    return this.db.transaction(() => {
+      const seq = this.seq(); // establish the read snapshot before reading its records
+      const records = this.db.query("select * from records where seq > ? and seq <= ? order by seq").all(since, seq) as Rec[];
+      return { records, seq };
+    })();
   }
 
   /** Last-writer-wins by (rev, updated_at, node). Returns true when the incoming record was taken. */
   merge(r: Rec): boolean {
-    if (!(r.kind in schemas)) return false;
+    r = parseRecord(r);
     return this.db.transaction(() => {
       const cur = this.record(r.kind, r.id);
       if (cur && !newer(r, cur)) return false;
@@ -193,11 +255,28 @@ export class Store {
         r.kind, r.id, r.rev, r.node, r.updated_at, r.deleted, r.data, this.nextSeq(),
       ]);
       return true;
-    })();
+    }).immediate();
   }
 
   purgeTombstones() {
-    this.db.run("delete from records where deleted = 1 and updated_at < ?", [this.now() - TOMBSTONE_TTL]);
+    // Keep deletion history: an offline node can return after any amount of time.
+  }
+
+  /** A lease shared by CLI and daemon processes using this database. */
+  acquireLease(key: string, owner: string, ttl = 60_000): boolean {
+    return this.transaction(() => {
+      const raw = this.local(key);
+      const lease = raw ? JSON.parse(raw) as { owner: string; expires: number } : undefined;
+      if (lease && lease.owner !== owner && lease.expires > this.now()) return false;
+      this.setLocal(key, JSON.stringify({ owner, expires: this.now() + ttl }));
+      return true;
+    });
+  }
+  releaseLease(key: string, owner: string) {
+    this.transaction(() => {
+      const raw = this.local(key);
+      if (raw && JSON.parse(raw).owner === owner) this.setLocal(key, undefined);
+    });
   }
 
   log(provider: string, account: string, model: string, status: number, ms: number, note = "") {
@@ -221,25 +300,36 @@ export const mask = (s?: string) => (s ? `••••${s.slice(-4)}` : "");
 let shared: Store | undefined;
 export const store = () => (shared ??= new Store());
 
-/** `agentgate export`: every live record. Without secrets it drops credentials and masks MCP secrets. */
+/** A public inventory deliberately omits all arbitrary strings that may carry credentials. */
+function publicMcp(inst: McpInstance) {
+  return {
+    id: inst.id, template: inst.template, transport: inst.transport, mode: inst.mode, secrets: {}, fields: {},
+    ...(inst.transport === "http" ? { url: "https://configure.invalid/mcp", headers: {} } : { command: "configure-command", args: [], env: {} })
+  };
+}
+
 export function exportBackup(s: Store, secrets = true) {
   const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as { kind: Kind; id: string; data: string }[];
   const records = rows
-    .filter((r) => secrets || r.kind !== "credential")
+    .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest"].includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
-      if (!secrets && r.kind === "mcp") data.secrets = Object.fromEntries(Object.keys(data.secrets ?? {}).map((k) => [k, ""]));
-      return { kind: r.kind, id: r.id, data };
+      return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
-  return { agentgate: 1, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
+  return { agentgate: 2, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
 }
 
-export function importBackup(s: Store, backup: { records: { kind: Kind; id: string; data: unknown }[] }) {
-  let n = 0;
-  for (const r of backup.records) {
-    if (!(r.kind in schemas)) continue;
-    s.put(r.kind, r.id, r.data as any);
-    n++;
-  }
-  return n;
+export function importBackup(s: Store, input: unknown) {
+  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
+  const records = backup.records.map(r => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
+  return s.transaction(() => {
+    for (const r of records) {
+      if (r.kind === "mcp") {
+        const { oauth, ...config } = r.data as McpInstance;
+        s.put("mcp", r.id, config);
+        if (oauth) s.put("mcpCredential", r.id, { ...oauth, instanceId: r.id, holder: s.nodeId });
+      } else s.put(r.kind, r.id, r.data);
+    }
+    return records.length;
+  });
 }

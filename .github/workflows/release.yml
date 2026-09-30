@@ -10,9 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
       - run: bun install --frozen-lockfile
+      - run: bun run typecheck
       - run: bun test
       - run: bun run build
+      - run: bun scripts/smoke.ts dist/agentgate-linux-x64
       - run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}

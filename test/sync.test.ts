@@ -13,7 +13,7 @@ const servers: ReturnType<typeof Bun.serve>[] = [];
 afterAll(() => servers.forEach((x) => x.stop(true)));
 
 function listen(s: Store) {
-  const app = new Hono().route("/peer", peerRoutes(s, () => {}));
+  const app = new Hono().route("/peer", peerRoutes(s, () => { }));
   const server = Bun.serve({ port: 0, fetch: app.fetch });
   servers.push(server);
   return `http://127.0.0.1:${server.port}`;
@@ -32,10 +32,11 @@ test("merge order: rev, then updated_at, then node", () => {
   expect(s.settings().threshold).toBe(5);
 });
 
-test("tombstones propagate and are purged after 30 days", () => {
+test("tombstones propagate and remain after 30 days to prevent resurrection", () => {
   const a = node("a");
   const b = node("b");
   a.put("mcp", "x", { id: "x", template: "custom-http", transport: "http", url: "http://x" });
+  const stale = a.changes(0).records.find(r => r.kind === "mcp")!;
   for (const r of a.changes(0).records) b.merge(r);
   a.del("mcp", "x");
   for (const r of a.changes(0).records) b.merge(r);
@@ -43,7 +44,8 @@ test("tombstones propagate and are purged after 30 days", () => {
   expect(b.record("mcp", "x")!.deleted).toBe(1);
   b.now = () => Date.now() + 31 * 86400_000;
   b.purgeTombstones();
-  expect(b.record("mcp", "x")).toBeUndefined();
+  expect(b.record("mcp", "x")!.deleted).toBe(1);
+  expect(b.merge(stale)).toBe(false);
 });
 
 test("pairing, pull from since=0, and passing records on through a middle node", async () => {
@@ -56,10 +58,10 @@ test("pairing, pull from since=0, and passing records on through a middle node",
 
   // Pair b with a through the join endpoint.
   const code = pairCode(a);
-  const res = await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "b", url: urlB }) });
+  const res = await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "b", url: urlB, protocol: 2 }) });
   const { token } = (await res.json()) as { token: string };
   b.db.run("insert into peers values ('a', ?, ?, 0, null)", [urlA, token]);
-  expect((await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "x", url: "u" }) })).status).toBe(403); // one-time
+  expect((await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "x", url: urlB, protocol: 2 }) })).status).toBe(403); // one-time
 
   await pullPeer(b, peers(b)[0]!);
   expect(b.get("account", "acc")!.label).toBe("work");
@@ -81,4 +83,17 @@ test("pairing, pull from since=0, and passing records on through a middle node",
   expect(a.get("account", "acc")!.label).toBe("renamed");
 
   expect((await fetch(`${urlA}/peer/changes?since=0`)).status).toBe(401);
+});
+
+test("a malformed peer batch changes neither records nor cursor", async () => {
+  const s = node("local");
+  const server = Bun.serve({ port: 0, fetch: () => Response.json({ protocol: 2, seq: 2, records: [{ kind: "account", id: "a", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 1, data: '{"id":"a","provider":"claude","label":"a"}' }, { kind: "setting", id: "settings", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 2, data: '{"threshold":1000}' }] }) });
+  s.db.run("insert into peers values ('peer', ?, 'token', 0, null)", [`http://127.0.0.1:${server.port}`]);
+  try { await expect(pullPeer(s, peers(s)[0]!)).rejects.toThrow(); expect(s.get("account", "a")).toBeUndefined(); expect(peers(s)[0]!.cursor).toBe(0); expect(s.seq()).toBe(0); } finally { server.stop(true); s.close(); }
+});
+
+test("peer cursor validation and protocol mismatch fail cleanly", async () => {
+  const s = node("local"), url = listen(s); s.db.run("insert into peers values ('p', 'http://unused', 'token', 0, null)");
+  expect((await fetch(`${url}/peer/changes?since=NaN`, { headers: { authorization: "Bearer token" } })).status).toBe(400);
+  expect((await fetch(`${url}/peer/join`, { method: "POST", body: JSON.stringify({ protocol: 1, node: "old", url: "http://x", code: pairCode(s) }) })).status).toBe(400);
 });

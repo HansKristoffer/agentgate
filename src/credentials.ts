@@ -1,94 +1,136 @@
-import type { Credential, Store } from "./store.ts";
+import { z } from "zod";
+import { readBody, sleep, Unavailable } from "./runtime.ts";
+import type { Credential, Data, Store } from "./store.ts";
 import { lastSeen } from "./sync.ts";
 
-export interface Tokens {
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: number;
+export interface Tokens { accessToken: string; refreshToken: string; expiresAt: number; }
+export class InvalidGrant extends Error { }
+export class NeedsLogin extends Error { }
+export type OwnedKind = "credential" | "mcpCredential";
+type Owned = Data<OwnedKind>;
+const MIN = 60_000;
+const flights = new WeakMap<Store, Map<string, Promise<Owned>>>();
+export const accessToken = (c: Owned) => "accessToken" in c ? c.accessToken : c.tokens?.access_token ?? "";
+export const tokenHash = (c: Owned) => new Bun.CryptoHasher("sha256").update(accessToken(c)).digest("hex");
+const identity = (c: Owned) => JSON.stringify([accessToken(c), "refreshToken" in c ? c.refreshToken : c.tokens?.refresh_token, c.holder, "loginId" in c ? c.loginId : undefined]);
+
+export function canRefresh(s: Store, c: { holder: string; expiresAt?: number }, force = false): boolean {
+  if (c.holder === s.nodeId) return force || (c.expiresAt ?? Infinity) - s.now() < 30 * MIN;
+  return (force || (c.expiresAt ?? Infinity) - s.now() < 10 * MIN) && s.now() - lastSeen(s, c.holder) > 2 * MIN;
 }
 
-export class InvalidGrant extends Error {}
-export class NeedsLogin extends Error {}
+export function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
+  const key = `${kind}:${id}`;
+  const prev = s.get("refreshRequest", key);
+  if (prev?.tokenHash === tokenHash(c) && s.now() - prev.requestedAt < MIN) return;
+  s.put("refreshRequest", key, { targetKind: kind, targetId: id, tokenHash: tokenHash(c), requestedAt: s.now() });
+}
 
-const MIN = 60_000;
-const HOLDER_REFRESH_AT = 30 * MIN;
-const FAILOVER_REFRESH_AT = 10 * MIN;
-const HOLDER_SILENT_AFTER = 2 * MIN;
-// A reclaim is a write with the old tokens. Doing it only while the current holder is far from
-// refreshing keeps it from racing (and overwriting) a rotated refresh token.
-const RECLAIM_ONLY_ABOVE = 45 * MIN;
+/** Ownership, cross-process lease and guarded persistence shared by both OAuth integrations. */
+export function refreshOwned<K extends OwnedKind>(s: Store, kind: K, id: string, refresh: (c: Data<K>) => Promise<Data<K>>, pull: () => Promise<unknown>, force = true): Promise<Data<K>> {
+  let active = flights.get(s);
+  if (!active) flights.set(s, active = new Map());
+  const key = `${kind}:${id}`;
+  const running = active.get(key);
+  if (running) return running as Promise<Data<K>>;
+  const task = (async (): Promise<Data<K>> => {
+    let c = s.get(kind, id);
+    if (!c || c.needsLogin) throw new NeedsLogin(id);
+    if (!canRefresh(s, c, force)) {
+      const before = identity(c);
+      await pull().catch(() => { });
+      c = s.get(kind, id);
+      if (!c || c.needsLogin) throw new NeedsLogin(id);
+      if (identity(c) !== before && (!c.expiresAt || c.expiresAt > s.now())) return c;
+      requestRefresh(s, kind, id, c);
+      throw new Unavailable(`${id}: waiting for the credential holder to refresh`);
+    }
+    const beforeLease = identity(c);
+    const owner = crypto.randomUUID();
+    const leaseKey = `refresh-lease:${key}`;
+    const deadline = Date.now() + 30_000;
+    while (!s.acquireLease(leaseKey, owner)) {
+      if (Date.now() > deadline) throw new Unavailable(`${id}: refresh is busy`);
+      const previous = identity(c);
+      await sleep(100);
+      const current = s.get(kind, id);
+      if (!current || current.needsLogin) throw new NeedsLogin(id);
+      if (identity(current) !== previous) return current;
+    }
+    const renew = setInterval(() => s.acquireLease(leaseKey, owner), 10_000);
+    renew.unref();
+    try {
+      c = s.get(kind, id);
+      if (!c || c.needsLogin) throw new NeedsLogin(id);
+      if (identity(c) !== beforeLease) return c;
+      if (!canRefresh(s, c, force)) throw new Unavailable(`${id}: credential holder changed`);
+      const original = c;
+      try {
+        const next = await refresh(original);
+        return s.transaction(() => {
+          const current = s.get(kind, id);
+          if (!current || current.needsLogin) throw new NeedsLogin(id);
+          if (identity(current) !== identity(original)) return current;
+          const saved = s.put(kind, id, { ...next, holder: s.nodeId, needsLogin: false });
+          const requested = s.get("refreshRequest", key);
+          if (requested?.tokenHash === tokenHash(original)) s.del("refreshRequest", key);
+          s.setLocal(`refreshError:${key}`, undefined);
+          s.log(kind === "credential" ? s.get("account", id)?.provider ?? "oauth" : "mcp", id, "", 0, 0, original.holder === s.nodeId ? "refresh" : `refresh (took over from ${original.holder})`);
+          return saved;
+        });
+      } catch (e) {
+        if (e instanceof NeedsLogin || e instanceof Unavailable) throw e;
+        await pull().catch(() => { });
+        const current = s.get(kind, id);
+        if (!current || current.needsLogin) throw new NeedsLogin(id);
+        if (identity(current) !== identity(original)) return current;
+        if (e instanceof InvalidGrant) {
+          s.put(kind, id, { ...current, needsLogin: true });
+          s.log(kind === "credential" ? "oauth" : "mcp", id, "", 401, 0, "invalid_grant; needs login");
+          throw new NeedsLogin(id);
+        }
+        s.setLocal(`refreshError:${key}`, JSON.stringify({ at: s.now(), error: "token refresh failed; retrying while the current token is valid" }));
+        s.log(kind === "credential" ? "oauth" : "mcp", id, "", 0, 0, "token refresh failed");
+        if (!force && current.expiresAt && current.expiresAt > s.now()) return current;
+        throw new Unavailable(`${id}: token refresh failed`);
+      }
+    } finally { clearInterval(renew); s.releaseLease(leaseKey, owner); }
+  })().finally(() => active!.delete(key));
+  active.set(key, task);
+  return task;
+}
+
+export async function drainRefresh(s: Store) { await Promise.allSettled(flights.get(s)?.values() ?? []); }
 
 type Refresh = (provider: "claude" | "codex", refreshToken: string) => Promise<Tokens>;
-
-/** Holder rules, refresh, failover and invalid_grant recovery (PLAN §5). */
 export class Credentials {
-  private inflight = new Map<string, Promise<Credential>>();
+  constructor(private s: Store, private refreshFn: Refresh, private pull: () => Promise<unknown>) { }
 
-  constructor(
-    private s: Store,
-    private refreshFn: Refresh,
-    /** Pull from every reachable peer; used after invalid_grant. */
-    private pull: () => Promise<unknown>,
-  ) {}
-
-  /** A credential that is fine to use now, refreshed first if this node should. */
   async token(accountId: string): Promise<Credential> {
     const c = this.s.get("credential", accountId);
     if (!c || c.needsLogin) throw new NeedsLogin(accountId);
-    return this.shouldRefresh(c) ? this.refresh(accountId) : c;
+    const requested = this.s.get("refreshRequest", `credential:${accountId}`)?.tokenHash === tokenHash(c);
+    if (this.shouldRefresh(c) || (requested && c.holder === this.s.nodeId)) return this.refresh(accountId, requested);
+    if (c.expiresAt <= this.s.now()) { requestRefresh(this.s, "credential", accountId, c); throw new Unavailable(`${accountId}: access token has expired`); }
+    return c;
   }
-
-  shouldRefresh(c: Credential): boolean {
-    const left = c.expiresAt - this.s.now();
-    if (c.holder === this.s.nodeId) return left < HOLDER_REFRESH_AT;
-    return left < FAILOVER_REFRESH_AT && this.s.now() - lastSeen(this.s, c.holder) > HOLDER_SILENT_AFTER;
-  }
-
-  /** Refresh now (also used after an upstream 401). One refresh per account at a time. */
-  refresh(accountId: string): Promise<Credential> {
-    let p = this.inflight.get(accountId);
-    if (!p) {
-      p = this.doRefresh(accountId).finally(() => this.inflight.delete(accountId));
-      this.inflight.set(accountId, p);
-    }
-    return p;
-  }
-
-  private async doRefresh(accountId: string): Promise<Credential> {
-    const c = this.s.get("credential", accountId);
-    const account = this.s.get("account", accountId);
-    if (!c || !account || c.needsLogin) throw new NeedsLogin(accountId);
-    try {
+  shouldRefresh(c: Credential) { return canRefresh(this.s, c); }
+  refresh(accountId: string, force = true): Promise<Credential> {
+    return refreshOwned(this.s, "credential", accountId, async c => {
+      const account = this.s.get("account", accountId);
+      if (!account) throw new NeedsLogin(accountId);
       const t = await this.refreshFn(account.provider, c.refreshToken);
-      // Saved before the caller continues: a rotated refresh token that is lost means logging in again.
-      const next = this.s.put("credential", accountId, { ...c, ...t, holder: this.s.nodeId, needsLogin: false });
-      this.s.log(account.provider, accountId, "", 0, 0, c.holder === this.s.nodeId ? "refresh" : `refresh (took over from ${c.holder})`);
-      return next;
-    } catch (e) {
-      if (!(e instanceof InvalidGrant)) {
-        this.s.log(account.provider, accountId, "", 0, 0, `refresh failed: ${e}`);
-        return c; // Network trouble: keep using the current token while it lasts.
-      }
-      await this.pull().catch(() => {});
-      const pulled = this.s.get("credential", accountId);
-      if (pulled && pulled.refreshToken !== c.refreshToken && !pulled.needsLogin) {
-        this.s.log(account.provider, accountId, "", 0, 0, "invalid_grant; using newer copy from a peer");
-        return pulled;
-      }
-      this.s.put("credential", accountId, { ...c, needsLogin: true });
-      this.s.log(account.provider, accountId, "", 0, 0, "invalid_grant; needs login");
-      throw new NeedsLogin(accountId);
-    }
+      return { ...c, ...t };
+    }, this.pull, force);
   }
-
-  /** Background pass: the alwaysOn node claims the holder role, then everyone refreshes what they should. */
-  async tick() {
+  async tick(signal?: AbortSignal) {
     const self = this.s.get("node", this.s.nodeId);
     for (const c of this.s.list("credential")) {
+      if (signal?.aborted) break;
       if (c.needsLogin) continue;
-      if (self?.alwaysOn && c.holder !== this.s.nodeId && !this.s.get("node", c.holder)?.alwaysOn && c.expiresAt - this.s.now() > RECLAIM_ONLY_ABOVE)
+      if (self?.alwaysOn && c.holder !== this.s.nodeId && !this.s.get("node", c.holder)?.alwaysOn && c.expiresAt - this.s.now() > 45 * MIN)
         this.s.put("credential", c.accountId, { ...c, holder: this.s.nodeId });
-      await this.token(c.accountId).catch(() => {});
+      await this.token(c.accountId).catch(() => { });
     }
   }
 }
@@ -110,15 +152,16 @@ export function jwtClaims(jwt: string): Record<string, any> {
 }
 
 /** POST a token request; maps OAuth errors that mean "this refresh token is dead" to InvalidGrant. */
-export async function tokenRequest(url: string, body: Record<string, string>, form = false): Promise<any> {
+const tokenResponse = z.object({ access_token: z.string().min(1), refresh_token: z.string().min(1).optional(), expires_in: z.number().positive().optional(), id_token: z.string().optional(), account_id: z.string().optional(), account: z.object({ uuid: z.string().optional(), email_address: z.string().optional() }).optional() });
+export async function tokenRequest(url: string, body: Record<string, string>, form = false) {
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": form ? "application/x-www-form-urlencoded" : "application/json", accept: "application/json" },
     body: form ? new URLSearchParams(body).toString() : JSON.stringify(body),
     signal: AbortSignal.timeout(30_000),
   });
-  const text = await res.text();
-  if (res.ok) return JSON.parse(text);
-  if (/invalid_grant|refresh_token_(reused|expired|invalidated)/.test(text)) throw new InvalidGrant(text);
-  throw new Error(`token endpoint ${res.status}: ${text.slice(0, 300)}`);
+  const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30000)));
+  if (res.ok) return tokenResponse.parse(JSON.parse(text));
+  if (/invalid_grant|refresh_token_(reused|expired|invalidated)/.test(text)) throw new InvalidGrant("refresh token is no longer valid");
+  throw new Error(`token endpoint returned ${res.status}`);
 }
