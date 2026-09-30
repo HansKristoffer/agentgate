@@ -34,7 +34,7 @@ process.exit(child.status ?? 1);
 `);
 chmodSync(`${main}/bin/agentpool.js`, 0o755);
 await Bun.write(`${main}/package.json`, JSON.stringify({
-  name: "agentpool", version, license: "UNLICENSED", repository,
+  name: "@hanskristoffer/agentpool", version, license: "UNLICENSED", repository,
   description: "Pools Claude and Codex subscriptions, hosts MCP servers per repo, and shares them between machines.",
   bin: { agentpool: "bin/agentpool.js", agentgate: "bin/agentpool.js" },
   optionalDependencies: Object.fromEntries(targets.map(([os, cpu]) => [`agentpool-${os}-${cpu}`, version])),
