@@ -1,13 +1,29 @@
 name: release
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 permissions:
   contents: write
-  id-token: write # npm provenance
+  pull-requests: write
 jobs:
-  release:
+  # Keeps a release PR open with the next version and changelog; merging it tags and creates the release.
+  release-please:
     runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write # npm provenance
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -22,10 +38,10 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # npm first: the script skips versions already published, so a failed run can be rerun.
-      - run: bun scripts/npm.ts "$GITHUB_REF_NAME" --publish
+      # The script skips versions already on npm, so a failed run can be rerun.
+      - run: bun scripts/npm.ts "$TAG" --publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - run: gh release create "$GITHUB_REF_NAME" dist/agentgate-* dist/SHA256SUMS --generate-notes
+      - run: gh release upload "$TAG" dist/agentgate-* dist/SHA256SUMS --clobber
         env:
           GH_TOKEN: ${{ github.token }}
