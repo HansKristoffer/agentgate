@@ -210,6 +210,14 @@ export function ui(ctx: Ctx) {
   };
   const many = (v: string | string[] | undefined) => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
 
+  /** macOS has no prompt for Full Disk Access: open its settings page and show the binary to drag in. */
+  app.post("/projects/grant-access", (c) => {
+    if (process.platform !== "darwin") return back(c, "/projects", "Only needed on macOS");
+    Bun.spawn(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"]);
+    Bun.spawn(["open", "-R", process.execPath]);
+    return back(c, "/projects", "Drag agentgate into the list, switch it on, then run agentgate service install.");
+  });
+
   app.post("/projects/scan-dir", async (c) => {
     const dir = (await form(c)).dir?.trim().replace(/^~/, homedir());
     if (dir) s.setLocal("scanDir", dir);

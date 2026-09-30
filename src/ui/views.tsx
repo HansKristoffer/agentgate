@@ -295,7 +295,7 @@ export function registerViews(app: Hono<Env>, ctx: Ctx, page: (c: Context<Env>, 
       const code = (e as NodeJS.ErrnoException).code;
       // A launchd service can't show macOS's folder-access prompt, so ~/Documents etc. just fail with EPERM.
       scanError = code === "ENOENT" ? "That folder doesn't exist." : code === "EPERM" && process.platform === "darwin"
-        ? "macOS doesn't let the agentgate service read this folder. Repos are added automatically when you start a session in them, or give agentgate access: System Settings → Privacy & Security → Full Disk Access → add " + process.execPath + " (again after updates if the list comes back empty), then restart it with agentgate service install."
+        ? "macOS doesn't let the agentgate service read this folder, and apps can't ask for that access. Repos are added automatically when you start a session in them. To scan here too, click Grant access: drag the agentgate file from the Finder window into the Full Disk Access list, switch it on, then run agentgate service install. After an update you may need to do it again."
         : `Couldn't read this folder: ${code ?? e}`;
     }
     const pathOf = new Map(found.map((r) => [r.repo, r.path]));
@@ -367,6 +367,7 @@ export function registerViews(app: Hono<Env>, ctx: Ctx, page: (c: Context<Env>, 
 
         <Panel title="Add projects" meta={scanError ? `Can't read ${tilde(scanDir())}` : `${fresh.length} repo${fresh.length === 1 ? "" : "s"} in ${tilde(scanDir())} not added yet`}>
           {scanError && <p class="dim" style="margin:0 0 .9rem">{scanError}</p>}
+          {scanError.startsWith("macOS") && <div style="margin:0 0 .9rem"><Post action="/projects/grant-access" label="Grant access" cls="primary" /></div>}
           <form method="post" action="/projects/scan-dir" class="command">
             <span class="command-prompt mono">scan</span>
             <input name="dir" value={tilde(scanDir())} class="mono grow" />
