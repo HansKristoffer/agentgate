@@ -207,12 +207,16 @@ fn config_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "HOME is not set".into())
 }
 
-fn install_binary() -> Result<PathBuf, String> {
+fn bundled_binary() -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let source = executable
+    Ok(executable
         .parent()
         .ok_or("App path is unavailable")?
-        .join("agentgate");
+        .join("agentgate"))
+}
+
+fn install_binary() -> Result<PathBuf, String> {
+    let source = bundled_binary()?;
     let dir = config_home()?.join("bin");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let target = dir.join("agentgate");
@@ -289,11 +293,36 @@ async fn local_action(action: String, connection: Connection) -> Result<String, 
     run_cli(&binary, args).await
 }
 
+/// An app update replaces the bundled daemon but not the copy the service runs.
+/// When the service runs that copy and it differs, install the new one and restart.
+async fn refresh_daemon() -> Result<(), String> {
+    let installed = config_home()?.join("bin/agentgate");
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?);
+    let plist = home.join("Library/LaunchAgents/dev.agentgate.plist");
+    let Ok(service) = tokio::fs::read_to_string(plist).await else {
+        return Ok(());
+    };
+    if !service.contains(&*installed.to_string_lossy()) {
+        return Ok(());
+    }
+    let bundled = tokio::fs::read(bundled_binary()?)
+        .await
+        .map_err(|e| e.to_string())?;
+    if tokio::fs::read(&installed).await.ok().as_ref() == Some(&bundled) {
+        return Ok(());
+    }
+    run_cli(&install_binary()?, &["service", "install"])
+        .await
+        .map(drop)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             api_request,
             load_connection,
@@ -304,6 +333,14 @@ pub fn run() {
             import_backup
         ])
         .setup(|app| {
+            // Debug builds would push a dev daemon into the real service.
+            if !cfg!(debug_assertions) {
+                tauri::async_runtime::spawn(async {
+                    if let Err(e) = refresh_daemon().await {
+                        eprintln!("Could not refresh the Agentgate service: {e}");
+                    }
+                });
+            }
             #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)));

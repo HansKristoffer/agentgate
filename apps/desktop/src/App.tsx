@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import type { Connection, Status } from "@agentgate/protocol";
 import {
+  checkForUpdate,
   loadConnection,
   localAction,
   localConnection,
@@ -65,6 +66,9 @@ export function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [update, setUpdate] =
+    useState<Awaited<ReturnType<typeof checkForUpdate>>>(null);
+  const [installing, setInstalling] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [help, setHelp] = useState(false);
   const current = useRef(connection);
@@ -132,6 +136,18 @@ export function App() {
       window.removeEventListener("focus", focus);
     };
   }, [ready, connection, refresh]);
+  // Checked on launch and every four hours, since the app is left open for days.
+  // Nothing downloads until the user chooses to install; offline is not an error.
+  useEffect(() => {
+    if (!native) return;
+    const run = () =>
+      void checkForUpdate()
+        .then((u) => u && setUpdate(u))
+        .catch(() => {});
+    run();
+    const timer = setInterval(run, 4 * 60 * 60 * 1000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === ",") {
@@ -352,20 +368,46 @@ export function App() {
             )}
           </div>
         </div>
-        {notice && (
+        {(notice || update) && (
           <div className="toasts">
-            <div
-              className={`toast ${notice.startsWith("Error:") ? "err" : ""}`}
-              role="status"
-            >
-              <span>{notice}</span>
-              <button
-                aria-label="Dismiss notification"
-                onClick={() => setNotice("")}
+            {update && (
+              <div className="toast" role="status">
+                <span>Agentgate {update.version} is available.</span>
+                <button
+                  className="toast-action"
+                  disabled={installing}
+                  onClick={() => {
+                    setInstalling(true);
+                    update.install().catch((e) => {
+                      setInstalling(false);
+                      setNotice(`Error: ${String(e)}`);
+                    });
+                  }}
+                >
+                  {installing ? "Installing…" : "Restart to update"}
+                </button>
+                <button
+                  aria-label="Dismiss notification"
+                  onClick={() => setUpdate(null)}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+            {notice && (
+              <div
+                className={`toast ${notice.startsWith("Error:") ? "err" : ""}`}
+                role="status"
               >
-                <X size={14} />
-              </button>
-            </div>
+                <span>{notice}</span>
+                <button
+                  aria-label="Dismiss notification"
+                  onClick={() => setNotice("")}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
           </div>
         )}
       </main>

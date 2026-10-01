@@ -168,5 +168,9 @@ Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [re
 | `APPLE_API_KEY` | App Store Connect API key id |
 | `APPLE_API_ISSUER` | its issuer id |
 | `APPLE_API_KEY_CONTENT` | contents of the `.p8` |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
+
+The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 
 The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The standalone CLI binaries are not signed.
