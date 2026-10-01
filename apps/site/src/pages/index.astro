@@ -1,0 +1,551 @@
+---
+import { Image } from "astro:assets";
+import screenshot from "../assets/app-overview.png";
+import cardAccounts from "../assets/card-accounts.png";
+import cardServers from "../assets/card-servers.png";
+import cardProjects from "../assets/card-projects.png";
+import cardMachines from "../assets/card-machines.png";
+
+// Each card shows the part of the app its text describes, cropped from
+// screenshots of the desktop app running against a demo daemon.
+const features = [
+  {
+    image: cardAccounts,
+    alt: "Two Claude accounts with their 5-hour and 7-day quota bars",
+    title: "Never stop at a limit",
+    body: "Add your Claude and Codex subscriptions once. Agentgate watches how much of each one is used and moves your sessions to the next account before the current one runs out. The session keeps going; you do not notice the switch.",
+  },
+  {
+    image: cardServers,
+    alt: "A list of MCP servers: filesystem, Linear, PostHog and Sentry",
+    title: "Connect your tools once",
+    body: "Paste an MCP server's address, or pick one of the presets for PostHog, Linear, Sentry, Notion, Stripe and more. Sign in once in your browser. Agentgate keeps the login fresh and hands the tools to every session that needs them.",
+  },
+  {
+    image: cardProjects,
+    alt: "Two repositories, each mapped to its own set of MCP servers",
+    title: "Each repository gets its own tools",
+    body: "Your work repo talks to the work PostHog project, your side project to its own. Agentgate reads which repository a session runs in and gives it exactly those tools. Change a mapping and running sessions pick it up.",
+  },
+  {
+    image: cardMachines,
+    alt: "Paired machines next to a log of requests, refreshes and account switches",
+    title: "Every machine, in sync",
+    body: "Pair your laptop with a desktop or an always-on server over Tailscale. Accounts, tools and mappings follow you, and each machine keeps working when the others are offline.",
+  },
+];
+
+const REPO = "https://github.com/HansKristoffer/agentgate";
+const RELEASES = `${REPO}/releases`;
+
+// Resolved at build time, so the button always points at the current DMG
+// without anyone editing this file. An offline or rate-limited build, or a
+// release without a DMG, falls back to the releases page.
+let assets: { name: string; browser_download_url: string }[] = [];
+let version = "";
+try {
+  // GITHUB_TOKEN raises GitHub's per-IP rate limit; it works without one.
+  const token = process.env.GITHUB_TOKEN;
+  const res = await fetch(
+    "https://api.github.com/repos/HansKristoffer/agentgate/releases/latest",
+    token ? { headers: { Authorization: `Bearer ${token}` } } : undefined,
+  );
+  if (res.ok) {
+    const release = await res.json();
+    assets = release.assets ?? [];
+    version = release.tag_name ?? "";
+  }
+} catch {
+  // keep the fallbacks
+}
+const mac =
+  assets.find((a) => a.name.endsWith(".dmg"))?.browser_download_url ?? RELEASES;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agentgate - one pool for every coding agent</title>
+    <meta
+      name="description"
+      content="Agentgate pools your Claude and Codex subscriptions, gives each repository its own MCP tools, and shares your setup between your machines over Tailscale."
+    />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <div class="glow" aria-hidden="true"></div>
+
+    <header>
+      <a class="wordmark" href="/">
+        <img src="/favicon.svg" alt="" width="28" height="28" />
+        Agentgate
+      </a>
+      <a class="source" href={REPO}>GitHub</a>
+    </header>
+
+    <main>
+      <section class="hero">
+        <h1>One pool for every coding agent.</h1>
+        <p class="lede">
+          Agentgate runs quietly in the background on your Mac or Linux machine. It shares your
+          Claude and Codex subscriptions between your sessions, gives each repository the tools it
+          needs, and keeps the whole setup in sync across your machines.
+        </p>
+
+        <div class="downloads">
+          <a class="btn" href={mac}>
+            <span>Download for macOS</span>
+            <small>The app, with the daemon inside</small>
+          </a>
+          <a class="btn secondary" href="#install">
+            <span>Install the CLI</span>
+            <small>macOS and Linux, including servers</small>
+          </a>
+        </div>
+
+        <p class="fineprint">
+          Free and open source. {version && <>{version} · </>}<a href={RELEASES}>All versions</a> ·
+          The app is not signed yet, so macOS blocks it the first time: allow it under System
+          Settings → Privacy &amp; Security.
+        </p>
+      </section>
+
+      <section class="shot">
+        <Image
+          src={screenshot}
+          alt="The Agentgate app: two pooled Claude accounts with their quota, MCP servers, machines and recent activity"
+          widths={[1040, 2080]}
+          sizes="(max-width: 1088px) 100vw, 1040px"
+        />
+      </section>
+
+      <section class="features">
+        {
+          features.map((f) => (
+            <article>
+              <div class="shot-frame">
+                <Image
+                  src={f.image}
+                  alt={f.alt}
+                  widths={[480, 960]}
+                  sizes="(max-width: 780px) 90vw, 480px"
+                />
+              </div>
+              <h2>{f.title}</h2>
+              <p>{f.body}</p>
+            </article>
+          ))
+        }
+      </section>
+
+      <section class="flow" id="install">
+        <h2>Set up in a few minutes</h2>
+        <p class="lede">
+          In the app, press <strong>Set up this machine</strong> and follow along. Or do the same
+          from a terminal, which is also how it runs on a headless Linux server.
+        </p>
+
+        <ol class="steps">
+          <li>
+            <span class="num">1</span>
+            <h3>Start the daemon</h3>
+            <p>
+              It installs as a background service, so it keeps running when you close the app or
+              log out of the server.
+            </p>
+          </li>
+          <li>
+            <span class="num">2</span>
+            <h3>Add accounts and tools</h3>
+            <p>
+              Sign in to Claude or Codex in your browser, connect your MCP servers, and choose
+              which repositories get which tools.
+            </p>
+          </li>
+          <li>
+            <span class="num">3</span>
+            <h3>Point your coding tools at it</h3>
+            <p>
+              Agentgate writes the settings for Claude Code and Codex, and gives you the two paths
+              to paste into T3 Code. Every session from then on goes through the pool.
+            </p>
+          </li>
+        </ol>
+
+        <div class="terminal">
+          <div class="terminal-head">Terminal</div>
+          <pre><code>{`npm install -g @hanskristoffer/agentpool
+
+agentgate init
+agentgate login claude --label work
+agentgate login codex --label personal
+agentgate setup
+agentgate service install`}</code></pre>
+        </div>
+
+        <p class="fineprint">
+          Needs <a href="https://tailscale.com">Tailscale</a> on each machine you want to pair, and
+          the <code>claude</code> or <code>codex</code> CLI for signing in. No npm? Use the{" "}
+          <a href={`${REPO}#install`}>install script</a> instead.
+        </p>
+      </section>
+
+      <section class="trust">
+        <h2>Your setup stays yours.</h2>
+        <p>
+          Agentgate runs on your own machines. There is no account to make and no server of ours in
+          the middle: your logins and settings live in a local database, and travel only to the
+          machines you pair, over your own Tailscale network.
+        </p>
+        <p>
+          That also means you should pair only machines you control, since each one holds working
+          logins. And pool only your own subscriptions, with a person driving the sessions.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <a href={REPO}>GitHub</a>
+      <a href={RELEASES}>Releases</a>
+      <a href="https://www.npmjs.com/package/@hanskristoffer/agentpool">npm</a>
+      <span>© {new Date().getFullYear()} Agentgate</span>
+    </footer>
+  </body>
+</html>
+
+<style>
+  /* Tokens mirror apps/desktop/src/styles.css so the page and the app look like one thing. */
+  :root {
+    --fg: #1d1d1f;
+    --fg-2: #6e6e73;
+    --fg-3: #a1a1a6;
+    --card: #fff;
+    --line: #ececef;
+    --chip: #f1f1f3;
+    --bg: #f2f2f7;
+    --primary: #111113;
+    --primary-fg: #fff;
+    --radius-card: 14px;
+    --radius: 10px;
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+    color-scheme: light dark;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #f5f5f7;
+      --fg-2: rgba(235, 235, 245, 0.6);
+      --fg-3: rgba(235, 235, 245, 0.38);
+      --card: #1c1c1e;
+      --line: #2c2c2e;
+      --chip: #2c2c2e;
+      --bg: #0d0d0f;
+      --primary: #f5f5f7;
+      --primary-fg: #111113;
+    }
+  }
+
+  :global(body) {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.55;
+  }
+
+  /* A cool wash in the icon's blue, behind the page. */
+  .glow {
+    position: fixed;
+    inset: -20vh -10vw auto;
+    height: 80vh;
+    background:
+      radial-gradient(45vw 45vh at 25% 30%, rgba(153, 175, 216, 0.5), transparent 70%),
+      radial-gradient(40vw 40vh at 72% 10%, rgba(180, 160, 255, 0.32), transparent 70%);
+    filter: blur(40px);
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  header,
+  main,
+  footer {
+    max-width: 1040px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 24px;
+    padding-bottom: 24px;
+  }
+
+  .wordmark {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    font-size: 17px;
+    letter-spacing: -0.01em;
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .source,
+  .fineprint a,
+  footer a {
+    color: var(--fg-2);
+  }
+
+  .source {
+    font-size: 14px;
+    font-weight: 500;
+  }
+
+  .source:hover,
+  .fineprint a:hover,
+  footer a:hover {
+    color: var(--fg);
+  }
+
+  .hero {
+    padding: 64px 0 48px;
+    max-width: 760px;
+  }
+
+  h1 {
+    font-size: clamp(38px, 6.5vw, 64px);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    font-weight: 600;
+    margin: 0 0 20px;
+  }
+
+  .lede {
+    font-size: clamp(17px, 2.2vw, 21px);
+    color: var(--fg-2);
+    margin: 0 0 36px;
+    max-width: 62ch;
+  }
+
+  .downloads {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .btn {
+    display: flex;
+    flex-direction: column;
+    padding: 12px 22px;
+    border-radius: var(--radius);
+    background: var(--primary);
+    color: var(--primary-fg);
+    box-shadow: var(--shadow-card);
+    transition:
+      transform 0.15s ease,
+      opacity 0.15s ease;
+  }
+
+  .btn.secondary {
+    background: var(--card);
+    color: var(--fg);
+  }
+
+  .btn:hover {
+    transform: translateY(-1px);
+    opacity: 0.92;
+  }
+
+  .btn span {
+    font-weight: 600;
+    font-size: 16px;
+  }
+
+  .btn small {
+    font-size: 12px;
+    opacity: 0.65;
+  }
+
+  .fineprint {
+    margin-top: 20px;
+    font-size: 13px;
+    color: var(--fg-3);
+    max-width: 62ch;
+  }
+
+  .shot {
+    padding: 8px 0 72px;
+  }
+
+  .shot :global(img) {
+    width: 100%;
+    height: auto;
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    gap: 16px;
+    padding-bottom: 48px;
+  }
+
+  .features article {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-card);
+    padding: 20px 24px 24px;
+  }
+
+  h2 {
+    font-size: 19px;
+    letter-spacing: -0.01em;
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+
+  .features p {
+    margin: 0;
+    color: var(--fg-2);
+    font-size: 15px;
+  }
+
+  /* The app's own pixels, cropped to the part each card talks about. */
+  .shot-frame {
+    height: 176px;
+    margin-bottom: 20px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: #fff;
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+
+  .shot-frame :global(img) {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: left top;
+  }
+
+  .flow {
+    padding: 24px 0 8px;
+    scroll-margin-top: 24px;
+  }
+
+  .flow h2,
+  .trust h2 {
+    font-size: clamp(24px, 3.5vw, 32px);
+    letter-spacing: -0.02em;
+    margin-bottom: 12px;
+  }
+
+  .flow .lede {
+    margin-bottom: 36px;
+  }
+
+  .flow strong {
+    color: var(--fg);
+    font-weight: 600;
+  }
+
+  .steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 24px;
+    margin: 0 0 28px;
+    padding: 0;
+    list-style: none;
+  }
+
+  .steps li {
+    border-top: 2px solid var(--line);
+    padding-top: 16px;
+  }
+
+  .num {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-3);
+    margin-bottom: 6px;
+  }
+
+  .steps h3 {
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+  }
+
+  .steps p {
+    margin: 0;
+    color: var(--fg-2);
+    font-size: 15px;
+  }
+
+  /* Dark, the way a terminal is read everywhere else. */
+  .terminal {
+    border-radius: var(--radius-card);
+    background: #1d1d1f;
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
+  }
+
+  .terminal-head {
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(235, 235, 245, 0.6);
+  }
+
+  .terminal pre {
+    margin: 0;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+
+  .terminal code {
+    color: #f5f5f7;
+  }
+
+  code {
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    font-size: 0.92em;
+  }
+
+  .trust {
+    padding: 56px 0 72px;
+    max-width: 62ch;
+  }
+
+  .trust p {
+    color: var(--fg-2);
+    margin: 0 0 12px;
+  }
+
+  footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    align-items: center;
+    border-top: 1px solid var(--line);
+    padding-top: 24px;
+    padding-bottom: 48px;
+    font-size: 13px;
+    color: var(--fg-3);
+  }
+</style>

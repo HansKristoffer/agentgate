@@ -114,11 +114,16 @@ AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun run cli -- init   # a throwaway n
 |---|---|
 | `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
 | `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
+| `apps/site` (`@agentgate/site`) | Static Astro landing page for Cloudflare Pages |
 | `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
 
 The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
 
 `bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds a macOS `.app` and `.dmg` and bundles a compiled daemon for the requested Tauri target. Use `bun run --filter @agentgate/desktop tauri build --target x86_64-apple-darwin` for an Intel build after installing that Rust target. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
+
+## Landing page
+
+`apps/site` is a static Astro page. It reads the latest GitHub release at build time to link the DMG, so rebuild it after a release. In Cloudflare Pages, keep the repository root as the root directory, set the build command to `bun run build:site` and the output directory to `apps/site/dist`. Set `GITHUB_TOKEN` in the build environment if the release lookup hits GitHub's rate limit. To upload from your machine instead: `bun run --filter @agentgate/site deploy`.
 
 ## Reliability
 

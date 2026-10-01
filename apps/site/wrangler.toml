@@ -1,0 +1,3 @@
+# `bun run deploy` uploads dist/ to this Cloudflare Pages project.
+name = "agentgate"
+pages_build_output_dir = "dist"
