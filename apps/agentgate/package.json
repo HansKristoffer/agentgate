@@ -1,0 +1,19 @@
+{
+  "name": "@agentgate/daemon",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agentgate": "src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun src/cli.ts serve",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@agentgate/protocol": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "hono": "^4.13.12",
+    "zod": "^4.6.5"
+  }
+}

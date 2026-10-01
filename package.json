@@ -3,23 +3,24 @@
   "version": "0.2.0",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "devDependencies": {
     "@types/bun": "latest",
     "typescript": "^5"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
-    "hono": "^4.13.12",
-    "zod": "^4.6.5"
-  },
-  "bin": {
-    "agentgate": "src/cli.ts"
-  },
   "scripts": {
-    "start": "bun src/cli.ts serve",
+    "dev": "bun run --filter @agentgate/desktop dev",
+    "start": "bun run --filter @agentgate/daemon start",
+    "cli": "bun apps/agentgate/src/cli.ts",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit",
-    "build": "bun scripts/build.ts"
+    "typecheck": "bun run --filter '*' typecheck && bunx tsc --noEmit -p tsconfig.json",
+    "build": "bun scripts/build.ts",
+    "build:desktop": "bun run --filter @agentgate/desktop bundle",
+    "build:frontend": "bun run --filter @agentgate/desktop build",
+    "check:native": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "packageManager": "bun@1.4.2"
 }
