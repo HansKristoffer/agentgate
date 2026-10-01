@@ -1,6 +1,8 @@
 import { API_VERSION, type Connection, type Status } from "@agentgate/protocol";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check } from "@tauri-apps/plugin-updater";
 
 export const native = isTauri();
 export function request<T>(
@@ -37,3 +39,16 @@ export const backupFile = (
 ) => invoke<void>("export_backup", { connection, path, secrets });
 export const restoreFile = (connection: Connection, path: string) =>
   invoke<{ restored: number }>("import_backup", { connection, path });
+/** A signed build newer than this one; the pubkey in tauri.conf.json refuses anything else. */
+export async function checkForUpdate() {
+  const update = await check();
+  return (
+    update && {
+      version: update.version,
+      install: async () => {
+        await update.downloadAndInstall();
+        await relaunch();
+      },
+    }
+  );
+}
