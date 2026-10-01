@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.5.0](https://github.com/HansKristoffer/agentgate/compare/v0.4.0...v0.5.0) (2026-10-01)
+
+
+### Features
+
+* **desktop:** migrate app to Taurio and HeroUI ([1f6c5e3](https://github.com/HansKristoffer/agentgate/commit/1f6c5e3f297be2e3a3ac797899fe99087cfd114a))
+* **desktop:** migrate the app to Taurio and HeroUI ([a243d58](https://github.com/HansKristoffer/agentgate/commit/a243d5898dc7661a77c4105eb410d9697cdad563))
+* **desktop:** update the app in place from GitHub releases ([3119319](https://github.com/HansKristoffer/agentgate/commit/31193196a394bdc82b60bfbe67a888ad2bec3399))
+* **desktop:** update the app in place from GitHub releases ([37a7dab](https://github.com/HansKristoffer/agentgate/commit/37a7dabc7afe9c71758e238b000cf1f80a98c711))
+
 ## [0.4.0](https://github.com/HansKristoffer/agentgate/compare/v0.3.0...v0.4.0) (2026-10-01)
 
 
