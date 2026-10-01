@@ -1,6 +1,14 @@
 import { useState } from "react";
 import { Copy, Monitor, Plus } from "lucide-react";
-import { Badge, Modal, Panel } from "../components/ui.tsx";
+import { Button, Switch } from "@heroui/react";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import {
+  Badge,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
@@ -10,36 +18,28 @@ export function Nodes({ data, connection, perform }: ViewProps) {
   const [joinOpen, setJoinOpen] = useState(false);
   return (
     <>
-      <div className="toolbar">
-        <span>
-          {data.nodes.length} {data.nodes.length === 1 ? "machine" : "machines"}{" "}
-          in your setup
-        </span>
-        <div className="row">
-          <button className="button" onClick={() => setJoinOpen(true)}>
-            Join another machine
-          </button>
-          <button
-            className="button primary"
-            onClick={() =>
-              void perform(async () => {
-                const result = await request<{ command: string }>(
-                  connection,
-                  "/nodes/pair",
-                  "POST",
-                );
-                setPair(result.command);
-              })
-            }
-          >
-            <Plus size={15} />
-            Pair a machine
-          </button>
-        </div>
-      </div>
+      <HeaderActions>
+        <Button size="sm" variant="tertiary" onPress={() => setJoinOpen(true)}>
+          Join another machine
+        </Button>
+        <Button
+          size="sm"
+          onPress={() =>
+            void perform(async () => {
+              const result = await request<{ command: string }>(
+                connection,
+                "/nodes/pair",
+                "POST",
+              );
+              setPair(result.command);
+            })
+          }
+        >
+          <Plus size={15} />
+          Pair a machine
+        </Button>
+      </HeaderActions>
       <Panel
-        title="Your machines"
-        detail="Accounts, tools, and project mappings sync between paired nodes."
         foot="Each machine serves its own agents and keeps working offline. Always-on machines take care of token refreshes while your laptop is away."
       >
         {data.nodes.map((n) => (
@@ -61,28 +61,32 @@ export function Nodes({ data, connection, perform }: ViewProps) {
                     : `Last seen ${relative(n.lastSeen)}`)}
               </small>
             </div>
-            <label className="check muted">
-              Always on
-              <input
-                type="checkbox"
-                className="switch"
-                checked={!!n.alwaysOn}
-                onChange={() =>
-                  void perform(() =>
-                    request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                      alwaysOn: !n.alwaysOn,
-                    }),
-                  )
-                }
-              />
-            </label>
+            <Switch
+              isSelected={!!n.alwaysOn}
+              onChange={() =>
+                void perform(() =>
+                  request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
+                    alwaysOn: !n.alwaysOn,
+                  }),
+                )
+              }
+            >
+              <Switch.Content className="check muted">
+                Always on
+                <Switch.Control>
+                  <Switch.Thumb />
+                </Switch.Control>
+              </Switch.Content>
+            </Switch>
             {n.id !== data.node && (
-              <button
-                className="button danger"
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="danger-soft"
+                onPress={async () => {
                   if (
-                    window.confirm(
+                    await confirmDialog(
                       `Unpair ${n.id}? It will stop syncing with this node.`,
+                      { destructive: true, okLabel: "Unpair" },
                     )
                   )
                     void perform(
@@ -93,7 +97,7 @@ export function Nodes({ data, connection, perform }: ViewProps) {
                 }}
               >
                 Unpair
-              </button>
+              </Button>
             )}
           </div>
         ))}
@@ -105,9 +109,10 @@ export function Nodes({ data, connection, perform }: ViewProps) {
             run this command. The code expires in 10 minutes.
           </p>
           <pre>{pair}</pre>
-          <button
-            className="button"
-            onClick={() =>
+          <Button
+            size="sm"
+            variant="tertiary"
+            onPress={() =>
               void perform(
                 () => navigator.clipboard.writeText(pair),
                 "Pairing command copied",
@@ -116,7 +121,7 @@ export function Nodes({ data, connection, perform }: ViewProps) {
           >
             <Copy size={15} />
             Copy command
-          </button>
+          </Button>
           <p className="note">
             Pair only machines you control. Working account and MCP credentials
             are copied to each paired node.
@@ -138,24 +143,22 @@ export function Nodes({ data, connection, perform }: ViewProps) {
               }, "Machine paired");
             }}
           >
-            <label>
-              Other machine's Tailscale address
-              <input
-                name="url"
-                type="url"
-                required
-                placeholder="http://server.tailnet.ts.net:7878"
-              />
-            </label>
-            <label>
-              Pairing code
-              <input
-                name="code"
-                required
-                placeholder="From agentgate pair on the other machine"
-              />
-            </label>
-            <button className="button primary">Join machine</button>
+            <Field
+              label="Other machine's Tailscale address"
+              name="url"
+              type="url"
+              isRequired
+              placeholder="http://server.tailnet.ts.net:7878"
+            />
+            <Field
+              label="Pairing code"
+              name="code"
+              isRequired
+              placeholder="From agentgate pair on the other machine"
+            />
+            <Button type="submit" size="sm">
+              Join machine
+            </Button>
           </form>
         </Modal>
       )}

@@ -1,8 +1,19 @@
 import { useState } from "react";
 import { Check, ExternalLink, Plus, Trash2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { Button, Tabs } from "@heroui/react";
 import type { LoginStart, Provider } from "@agentgate/protocol";
-import { Badge, Empty, Modal, Panel } from "../components/ui.tsx";
+import {
+  Badge,
+  Choice,
+  Empty,
+  Field,
+  Modal,
+  NumberInput,
+  Panel,
+  Quota,
+  HeaderActions,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import {
@@ -33,22 +44,18 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
     });
   return (
     <>
-      <div className="toolbar">
-        <span>
-          {data.accounts.length}{" "}
-          {data.accounts.length === 1 ? "account" : "accounts"} in your pool
-        </span>
-        <button
-          className="button primary"
-          onClick={() => {
+      <HeaderActions>
+        <Button
+          size="sm"
+          onPress={() => {
             setMode("login");
             setAdd(true);
           }}
         >
           <Plus size={15} />
           Add account
-        </button>
-      </div>
+        </Button>
+      </HeaderActions>
       {(["claude", "codex"] as const).map((provider) => (
         <Panel
           key={provider}
@@ -112,7 +119,7 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                             <span>{w.name}</span>
                             <strong>{Math.round(w.usedPct)}%</strong>
                           </div>
-                          <progress max={100} value={w.usedPct} />
+                          <Quota value={w.usedPct} />
                           <small>Resets {relative(w.resetsAt)}</small>
                         </div>
                       ))
@@ -134,22 +141,25 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                     </span>
                     <div className="row wrap">
                       {(a.needsLogin || a.expired) && (
-                        <button
-                          className="button"
-                          onClick={() => void start(provider, a.account.label)}
+                        <Button
+                          size="sm"
+                          variant="tertiary"
+                          onPress={() => void start(provider, a.account.label)}
                         >
                           Sign in again
-                        </button>
+                        </Button>
                       )}
-                      <button
-                        className="button quiet"
-                        onClick={() => setEdit(a.account.id)}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => setEdit(a.account.id)}
                       >
                         Edit
-                      </button>
-                      <button
-                        className="button quiet"
-                        onClick={() =>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() =>
                           void perform(() =>
                             request(
                               connection,
@@ -161,10 +171,11 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                         }
                       >
                         {a.account.pinned ? "Unpin" : "Pin"}
-                      </button>
-                      <button
-                        className="button quiet"
-                        onClick={() =>
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onPress={() =>
                           void perform(() =>
                             request(
                               connection,
@@ -176,13 +187,15 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                         }
                       >
                         {a.account.enabled ? "Disable" : "Enable"}
-                      </button>
-                      <button
-                        className="tool-btn danger"
-                        title="Delete account"
+                      </Button>
+                      <Button
+                        isIconOnly
+                        size="sm"
+                        variant="ghost"
+                        className="delete"
                         aria-label={`Delete ${a.account.label}`}
-                        onClick={() => {
-                          if (confirmDelete(a.account.label))
+                        onPress={async () => {
+                          if (await confirmDelete(a.account.label))
                             void perform(
                               () =>
                                 request(
@@ -195,7 +208,7 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                         }}
                       >
                         <Trash2 size={15} />
-                      </button>
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -205,22 +218,26 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
       ))}
       {add && (
         <Modal title="Add an account" close={() => setAdd(false)}>
-          <div className="segmented">
-            <button
-              className={mode === "login" ? "selected" : ""}
-              onClick={() => setMode("login")}
-            >
-              Sign in
-            </button>
-            {local && (
-              <button
-                className={mode === "import" ? "selected" : ""}
-                onClick={() => setMode("import")}
-              >
-                Import login
-              </button>
-            )}
-          </div>
+          <Tabs
+            className="segmented"
+            selectedKey={mode}
+            onSelectionChange={(key) => setMode(key as "login" | "import")}
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="How to add the account">
+                <Tabs.Tab id="login">
+                  Sign in
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                {local && (
+                  <Tabs.Tab id="import">
+                    Import login
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                )}
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -238,52 +255,54 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                 }, "Account imported");
             }}
           >
-            <label>
-              Provider
-              <select name="provider">
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-              </select>
-            </label>
-            <label>
-              Label
-              <input name="label" placeholder="e.g. Personal or Work" />
-            </label>
+            <Choice
+              label="Provider"
+              name="provider"
+              defaultValue="claude"
+              options={[
+                { id: "claude", label: "Claude" },
+                { id: "codex", label: "Codex" },
+              ]}
+            />
+            <Field
+              label="Label"
+              name="label"
+              placeholder="e.g. Personal or Work"
+            />
             {mode === "import" && (
               <>
-                <label>
-                  Login folder
-                  <div className="row">
-                    <input
-                      required
-                      value={folder}
-                      onChange={(e) => setFolder(e.target.value)}
-                      placeholder="~/.claude or ~/.codex"
-                    />
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() =>
-                        void perform(async () => {
-                          const path = await open({ directory: true });
-                          if (typeof path === "string") setFolder(path);
-                        })
-                      }
-                    >
-                      Choose…
-                    </button>
-                  </div>
-                </label>
+                <div className="row items-end">
+                  <Field
+                    label="Login folder"
+                    isRequired
+                    value={folder}
+                    onChange={setFolder}
+                    placeholder="~/.claude or ~/.codex"
+                  />
+                  <Button
+                    size="sm"
+                    variant="tertiary"
+                    className="mb-3.5"
+                    onPress={() =>
+                      void perform(async () => {
+                        const path = await open({ directory: true });
+                        if (typeof path === "string") setFolder(path);
+                      })
+                    }
+                  >
+                    Choose…
+                  </Button>
+                </div>
                 <p className="note">
                   Agentgate takes ownership of this login. Stop using the
                   original CLI login after importing it.
                 </p>
               </>
             )}
-            <button className="button primary">
+            <Button type="submit" size="sm">
               {mode === "login" ? "Continue in browser" : "Import account"}
               <ExternalLink size={15} />
-            </button>
+            </Button>
           </form>
         </Modal>
       )}
@@ -293,13 +312,14 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
           close={() => setLogin(undefined)}
         >
           <p>Your browser has opened the provider's login page.</p>
-          <button
-            className="button"
-            onClick={() => void perform(() => openExternal(login.url))}
+          <Button
+            size="sm"
+            variant="tertiary"
+            onPress={() => void perform(() => openExternal(login.url))}
           >
             Open login page again
             <ExternalLink size={14} />
-          </button>
+          </Button>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -313,30 +333,31 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
               }, "Account added");
             }}
           >
-            <label>
-              {login.provider === "claude"
-                ? "Paste the code shown after signing in"
-                : "Paste the full localhost:1455 callback address"}
-              <textarea
-                name="code"
-                required
-                autoFocus
-                placeholder={
-                  login.provider === "claude"
-                    ? "code#state"
-                    : "http://localhost:1455/auth/callback?code=…"
-                }
-              />
-            </label>
+            <Field
+              multiline
+              label={
+                login.provider === "claude"
+                  ? "Paste the code shown after signing in"
+                  : "Paste the full localhost:1455 callback address"
+              }
+              name="code"
+              isRequired
+              autoFocus
+              placeholder={
+                login.provider === "claude"
+                  ? "code#state"
+                  : "http://localhost:1455/auth/callback?code=…"
+              }
+            />
             <p className="note">
               {login.provider === "codex"
                 ? "The browser may show a page that cannot load. Copy its full address from the address bar."
                 : "This login belongs to Agentgate and leaves your current CLI login untouched."}
             </p>
-            <button className="button primary">
+            <Button type="submit" size="sm">
               Finish sign in
               <Check size={15} />
-            </button>
+            </Button>
           </form>
         </Modal>
       )}
@@ -360,33 +381,29 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
               }, "Account updated");
             }}
           >
-            <label>
-              Label
-              <input
-                name="label"
-                required
-                defaultValue={
-                  data.accounts.find((a) => a.account.id === edit)?.account
-                    .label
-                }
-              />
-            </label>
-            <label>
-              Priority
-              <input
-                name="priority"
-                type="number"
-                required
-                defaultValue={
-                  data.accounts.find((a) => a.account.id === edit)?.account
-                    .priority
-                }
-              />
-            </label>
+            <Field
+              label="Label"
+              name="label"
+              isRequired
+              defaultValue={
+                data.accounts.find((a) => a.account.id === edit)?.account.label
+              }
+            />
+            <NumberInput
+              label="Priority"
+              name="priority"
+              isRequired
+              defaultValue={
+                data.accounts.find((a) => a.account.id === edit)?.account
+                  .priority
+              }
+            />
             <p className="note">
               Higher priority wins when multiple accounts are available.
             </p>
-            <button className="button primary">Save changes</button>
+            <Button type="submit" size="sm">
+              Save changes
+            </Button>
           </form>
         </Modal>
       )}

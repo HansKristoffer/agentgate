@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { Copy, Terminal } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Modal, Panel } from "../components/ui.tsx";
+import { Button } from "@heroui/react";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import {
+  Choice,
+  Modal,
+  NumberInput,
+  Panel,
+  Toggle,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, request, restoreFile } from "../api.ts";
 import { field } from "./utils.ts";
@@ -37,63 +45,51 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
           title="Pool behavior"
           detail="These settings sync to every paired machine."
         >
-          <label className="item">
-            <span className="label">
-              Switch account at quota
-              <small>Percent used before the next account takes over.</small>
-            </span>
-            <input
-              name="threshold"
-              type="number"
-              min={1}
-              max={100}
-              required
-              defaultValue={data.settings.threshold}
-            />
-          </label>
-          <label className="item">
-            <span className="label">
-              When every account is exhausted
-              <small>What a session gets once the whole pool is used up.</small>
-            </span>
-            <select
-              name="whenExhausted"
-              defaultValue={data.settings.whenExhausted}
-            >
-              <option value="fail">Return a limit response</option>
-              <option value="wait">Wait for the next reset</option>
-            </select>
-          </label>
-          <label className="item">
-            <span className="label">
-              Maximum retries
-              <small>Times a rate-limited request waits and tries again.</small>
-            </span>
-            <input
-              name="retryLimit"
-              type="number"
-              min={0}
-              max={10}
-              required
-              defaultValue={data.settings.retryLimit}
-            />
-          </label>
-          <label className="item">
-            <span className="label">
-              Activity log retention
-              <small>Requests kept in the activity log.</small>
-            </span>
-            <input
-              name="logRetention"
-              type="number"
-              min={100}
-              max={100000}
-              required
-              defaultValue={data.settings.logRetention}
-            />
-          </label>
+          <NumberInput
+            className="item"
+            label="Switch account at quota"
+            description="Percent used before the next account takes over."
+            name="threshold"
+            minValue={1}
+            maxValue={100}
+            isRequired
+            defaultValue={data.settings.threshold}
+          />
+          <Choice
+            className="item"
+            label="When every account is exhausted"
+            description="What a session gets once the whole pool is used up."
+            name="whenExhausted"
+            defaultValue={data.settings.whenExhausted}
+            options={[
+              { id: "fail", label: "Return a limit response" },
+              { id: "wait", label: "Wait for the next reset" },
+            ]}
+          />
+          <NumberInput
+            className="item"
+            label="Maximum retries"
+            description="Times a rate-limited request waits and tries again."
+            name="retryLimit"
+            minValue={0}
+            maxValue={10}
+            isRequired
+            defaultValue={data.settings.retryLimit}
+          />
+          <NumberInput
+            className="item"
+            label="Activity log retention"
+            description="Requests kept in the activity log."
+            name="logRetention"
+            minValue={100}
+            maxValue={100000}
+            isRequired
+            defaultValue={data.settings.logRetention}
+          />
           <div className="item item-actions">
-            <button className="button primary">Save settings</button>
+            <Button type="submit" size="sm">
+              Save settings
+            </Button>
           </div>
         </Panel>
       </form>
@@ -104,35 +100,43 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
             detail="Provider and MCP settings for Claude Code, Codex, and T3 Code."
           >
             <div className="item">
-              <span className="label">
+              <span className="labelled">
                 Configure coding tools
                 <small>
                   Creates dedicated Claude and Codex config folders and prints
                   their paths.
                 </small>
               </span>
-              <button className="button" onClick={() => void action("setup")}>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => void action("setup")}
+              >
                 <Terminal size={14} />
                 Configure
-              </button>
+              </Button>
             </div>
             <div className="item">
-              <span className="label">
+              <span className="labelled">
                 Route existing CLI logins
-                <small>Updates your existing CLI settings to use the pool.</small>
+                <small>
+                  Updates your existing CLI settings to use the pool.
+                </small>
               </span>
-              <button
-                className="button quiet"
-                onClick={() => void action("primary-off")}
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() => void action("primary-off")}
               >
                 Undo
-              </button>
-              <button
-                className="button"
-                onClick={() => void action("primary-on")}
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => void action("primary-on")}
               >
                 Route
-              </button>
+              </Button>
             </div>
           </Panel>
           <Panel
@@ -146,70 +150,75 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
             }
           >
             <div className="item">
-              <span className="label">
+              <span className="labelled">
                 Service
                 <small>Starts the daemon at login and keeps it running.</small>
               </span>
-              <button
-                className="button quiet"
-                onClick={() => {
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={async () => {
                   if (
-                    window.confirm(
+                    await confirmDialog(
                       "Stop Agentgate? Your agents cannot reach its providers or MCP servers until it starts again.",
+                      { destructive: true, okLabel: "Stop" },
                     )
                   )
                     void action("stop");
                 }}
               >
                 Stop
-              </button>
-              <button className="button" onClick={() => void action("start")}>
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => void action("start")}
+              >
                 Start
-              </button>
-              <button
-                className="button"
-                onClick={() => void action("install")}
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => void action("install")}
               >
                 Install / update
-              </button>
+              </Button>
             </div>
             <div className="item">
-              <span className="label">
+              <span className="labelled">
                 Admin token
-                <small>Needed to connect to this daemon from another machine.</small>
+                <small>
+                  Needed to connect to this daemon from another machine.
+                </small>
               </span>
-              <button
-                className="button"
-                onClick={() => void action("admin-token")}
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() => void action("admin-token")}
               >
                 Show token
-              </button>
+              </Button>
             </div>
           </Panel>
           <Panel
             title="Backup & restore"
             detail="Backups are written to the file you choose."
           >
-            <label className="item">
-              <span className="label">
-                Include credentials
-                <small>
-                  {secrets
-                    ? "A full backup contains working credentials. Store it somewhere private."
-                    : "An inventory omits logins and transport secrets. Restored servers need configuration again."}
-                </small>
-              </span>
-              <input
-                type="checkbox"
-                className="switch"
-                checked={secrets}
-                onChange={(e) => setSecrets(e.target.checked)}
-              />
-            </label>
+            <Toggle
+              label="Include credentials"
+              description={
+                secrets
+                  ? "A full backup contains working credentials. Store it somewhere private."
+                  : "An inventory omits logins and transport secrets. Restored servers need configuration again."
+              }
+              isSelected={secrets}
+              onChange={setSecrets}
+            />
             <div className="item item-actions">
-              <button
-                className="button"
-                onClick={() =>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() =>
                   void perform(async () => {
                     const path = await open({
                       multiple: false,
@@ -217,9 +226,10 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
                     });
                     if (
                       typeof path === "string" &&
-                      window.confirm(
+                      (await confirmDialog(
                         "Import this backup into your current setup? Restored records will sync to paired machines.",
-                      )
+                        { destructive: true, okLabel: "Import" },
+                      ))
                     ) {
                       const result = await restoreFile(connection, path);
                       setOutput(`Restored ${result.restored} records`);
@@ -228,10 +238,11 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
                 }
               >
                 Import backup…
-              </button>
-              <button
-                className="button"
-                onClick={() =>
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() =>
                   void perform(async () => {
                     const path = await save({
                       defaultPath: `agentgate-${secrets ? "backup" : "inventory"}.json`,
@@ -245,7 +256,7 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
                 }
               >
                 Export backup…
-              </button>
+              </Button>
             </div>
           </Panel>
         </>
@@ -253,9 +264,10 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
       {output && (
         <Modal title="Agentgate output" close={() => setOutput("")}>
           <pre className="output">{output}</pre>
-          <button
-            className="button"
-            onClick={() =>
+          <Button
+            size="sm"
+            variant="tertiary"
+            onPress={() =>
               void perform(
                 () => navigator.clipboard.writeText(output),
                 "Copied",
@@ -264,7 +276,7 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
           >
             <Copy size={15} />
             Copy
-          </button>
+          </Button>
         </Modal>
       )}
     </>

@@ -1,7 +1,40 @@
-import { useEffect, useRef, type ReactNode } from "react";
-import { X } from "lucide-react";
+import { createPortal } from "react-dom";
+import {
+  createContext,
+  useContext,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
+import {
+  Card,
+  Checkbox,
+  Chip,
+  Description,
+  EmptyState,
+  FieldError,
+  Input,
+  Label,
+  ListBox,
+  Modal as HeroModal,
+  NumberField,
+  ProgressBar,
+  Select,
+  Switch,
+  TextArea,
+  TextField,
+} from "@heroui/react";
 
-/** A titled group of rows, in the manner of System Settings. */
+/** True while an action runs; blocks controls that render outside the workspace, such as dialogs. */
+export const BusyContext = createContext(false);
+
+/** Where a view's page actions go: the card header, beside the title. */
+export const HeaderSlot = createContext<HTMLElement | null>(null);
+export function HeaderActions({ children }: { children: ReactNode }) {
+  const slot = useContext(HeaderSlot);
+  return slot && createPortal(children, slot);
+}
+
+/** A group of rows, in the manner of System Settings. Untitled when it is the whole page. */
 export function Panel({
   title,
   detail,
@@ -9,7 +42,7 @@ export function Panel({
   foot,
   children,
 }: {
-  title: string;
+  title?: string;
   detail?: string;
   action?: ReactNode;
   foot?: ReactNode;
@@ -17,20 +50,22 @@ export function Panel({
 }) {
   return (
     <section className="section">
-      <div className="section-head">
-        <div>
-          <h2>{title}</h2>
-          {detail && <p>{detail}</p>}
+      {title && (
+        <div className="section-head">
+          <div>
+            <h2>{title}</h2>
+            {detail && <p>{detail}</p>}
+          </div>
+          {action}
         </div>
-        {action}
-      </div>
-      <div className="group">{children}</div>
+      )}
+      <Card className="rows">{children}</Card>
       {foot && <p className="group-foot">{foot}</p>}
     </section>
   );
 }
 export function Empty({ children }: { children: ReactNode }) {
-  return <div className="empty">{children}</div>;
+  return <EmptyState className="empty">{children}</EmptyState>;
 }
 export function Badge({
   children,
@@ -39,7 +74,20 @@ export function Badge({
   children: ReactNode;
   good?: boolean;
 }) {
-  return <span className={`badge ${good ? "good" : ""}`}>{children}</span>;
+  return (
+    <Chip size="sm" variant="soft" color={good ? "success" : "default"}>
+      {children}
+    </Chip>
+  );
+}
+export function Quota({ value }: { value: number }) {
+  return (
+    <ProgressBar aria-label="Quota used" size="sm" value={value}>
+      <ProgressBar.Track>
+        <ProgressBar.Fill />
+      </ProgressBar.Track>
+    </ProgressBar>
+  );
 }
 export function Modal({
   title,
@@ -50,26 +98,152 @@ export function Modal({
   children: ReactNode;
   close: () => void;
 }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
-    ref.current?.showModal();
-  }, []);
+  const busy = useContext(BusyContext);
   return (
-    <dialog
-      ref={ref}
-      className="modal"
-      onCancel={close}
-      onClick={(event) => {
-        if (event.target === ref.current) close();
-      }}
-    >
-      <div className="modal-heading">
-        <h2>{title}</h2>
-        <button className="tool-btn" aria-label="Close dialog" onClick={close}>
-          <X size={16} />
-        </button>
-      </div>
-      {children}
-    </dialog>
+    <HeroModal.Backdrop isOpen onOpenChange={(open) => !open && close()}>
+      <HeroModal.Container>
+        <HeroModal.Dialog className="dialog">
+          <HeroModal.CloseTrigger aria-label="Close dialog" />
+          <HeroModal.Header>
+            <HeroModal.Heading>{title}</HeroModal.Heading>
+          </HeroModal.Header>
+          <HeroModal.Body>
+            <fieldset className="workspace" disabled={busy} inert={busy}>
+              {children}
+            </fieldset>
+          </HeroModal.Body>
+        </HeroModal.Dialog>
+      </HeroModal.Container>
+    </HeroModal.Backdrop>
+  );
+}
+const Labelled = ({
+  label,
+  description,
+}: {
+  label: ReactNode;
+  description?: ReactNode;
+}) => (
+  <span className="labelled">
+    <Label>{label}</Label>
+    {description && <Description>{description}</Description>}
+  </span>
+);
+/** A labelled text input; it submits under `name`, like the native input it replaces. */
+export function Field({
+  label,
+  description,
+  placeholder,
+  multiline = false,
+  className = "field",
+  ...props
+}: ComponentProps<typeof TextField> & {
+  label: ReactNode;
+  description?: ReactNode;
+  placeholder?: string;
+  multiline?: boolean;
+}) {
+  return (
+    <TextField className={className} {...props}>
+      <Labelled label={label} description={description} />
+      {multiline ? (
+        <TextArea placeholder={placeholder} />
+      ) : (
+        <Input placeholder={placeholder} />
+      )}
+      <FieldError />
+    </TextField>
+  );
+}
+/** A labelled number input; the raw number submits under `name`. */
+export function NumberInput({
+  label,
+  description,
+  className = "field",
+  ...props
+}: ComponentProps<typeof NumberField> & {
+  label: ReactNode;
+  description?: ReactNode;
+}) {
+  return (
+    <NumberField className={className} {...props}>
+      <Labelled label={label} description={description} />
+      <NumberField.Group>
+        <NumberField.DecrementButton />
+        <NumberField.Input />
+        <NumberField.IncrementButton />
+      </NumberField.Group>
+      <FieldError />
+    </NumberField>
+  );
+}
+/** A labelled select over fixed options; it submits the chosen id under `name`. */
+export function Choice({
+  label,
+  description,
+  options,
+  className = "field",
+  ...props
+}: ComponentProps<typeof Select> & {
+  label: ReactNode;
+  description?: ReactNode;
+  options: { id: string; label: string }[];
+}) {
+  return (
+    <Select className={className} {...props}>
+      <Labelled label={label} description={description} />
+      <Select.Trigger>
+        <Select.Value />
+        <Select.Indicator />
+      </Select.Trigger>
+      <Select.Popover>
+        <ListBox>
+          {options.map((o) => (
+            <ListBox.Item key={o.id} id={o.id} textValue={o.label}>
+              {o.label}
+              <ListBox.ItemIndicator />
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
+    </Select>
+  );
+}
+/** A labelled switch, label first as in System Settings. */
+export function Toggle({
+  label,
+  description,
+  className = "item",
+  ...props
+}: ComponentProps<typeof Switch> & {
+  label: ReactNode;
+  description?: ReactNode;
+}) {
+  return (
+    <Switch className={className} {...props}>
+      <Switch.Content className="toggle">
+        <Labelled label={label} description={description} />
+        <Switch.Control>
+          <Switch.Thumb />
+        </Switch.Control>
+      </Switch.Content>
+    </Switch>
+  );
+}
+/** A checkbox that submits `name=value` (default `on`), like the native one it replaces. */
+export function Check({
+  children,
+  value = "on",
+  ...props
+}: ComponentProps<typeof Checkbox> & { children: ReactNode }) {
+  return (
+    <Checkbox value={value} {...props}>
+      <Checkbox.Content className="check">
+        <Checkbox.Control>
+          <Checkbox.Indicator />
+        </Checkbox.Control>
+        {children}
+      </Checkbox.Content>
+    </Checkbox>
   );
 }

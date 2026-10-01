@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{path::PathBuf, time::Duration};
 use tauri::Manager;
+use taurio::BuilderExt;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Connection {
@@ -318,11 +319,7 @@ async fn refresh_daemon() -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        .shared_plugins()
         .invoke_handler(tauri::generate_handler![
             api_request,
             load_connection,
@@ -341,15 +338,10 @@ pub fn run() {
                     }
                 });
             }
-            #[cfg(target_os = "macos")]
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.set_background_color(Some(tauri::webview::Color(0, 0, 0, 0)));
-                let _ = window_vibrancy::apply_vibrancy(
-                    &window,
-                    window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
-                    Some(window_vibrancy::NSVisualEffectState::Active),
-                    None,
-                );
+                if let Err(e) = taurio::apply_window_appearance(&window) {
+                    eprintln!("{e}");
+                }
             }
             Ok(())
         })
