@@ -19,5 +19,26 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
-      - run: bun build src/cli.ts --compile --minify --outfile dist/agentgate
+      - run: bun run build:frontend
+      - run: bun build apps/agentgate/src/cli.ts --compile --minify --outfile dist/agentgate
       - run: bun scripts/smoke.ts dist/agentgate
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: bun install --frozen-lockfile
+      - run: bun scripts/desktop-prepare.ts
+      - run: bun run build:frontend
+      - run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+      - run: bun run check:native
+      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - run: bun run --filter @agentgate/desktop tauri build --debug --bundles app

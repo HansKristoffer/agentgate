@@ -1,6 +1,6 @@
 # agentgate — build plan
 
-`agentgate` is a small Bun + TypeScript program for Linux and macOS. It is a CLI with a built-in web UI that:
+`agentgate` is a small Bun + TypeScript program for Linux and macOS. It has an independent daemon/CLI and an optional Tauri macOS control app that:
 
 1. Pools several **Claude** and **Codex** subscriptions. When one account reaches its usage limit, it moves on to the next account.
 2. Hosts **MCP servers** and decides which ones each **GitHub repository** gets. Some servers are general and reach every repo. Others belong to one repo, for example a separate PostHog MCP per product.
@@ -55,14 +55,14 @@ Every machine (a **node**) runs the same daemon. There is no permanent hub. A no
  │  agentgate daemon 127.0.0.1:7878      │        │      agentgate daemon 127.0.0.1:7878  │
  │   ├─ LLM proxy  → Anthropic / OpenAI  │        │  LLM proxy  → Anthropic / OpenAI ─┤   │
  │   ├─ MCP gateway → MCP servers        │        │  MCP gateway → MCP servers ───────┤   │
- │   ├─ Web UI                           │        │  Web UI ──────────────────────────┤   │
+ │   ├─ Control API ◄─ optional native app │        │  Control API ◄─ optional native app   │
  │   └─ Store (bun:sqlite) ◄── peer sync over Tailscale (100.x:7878) ──► Store      ┘   │
  └───────────────────────────────────────┘        └───────────────────────────────────────┘
 ```
 
 - **Local traffic:** LLM calls and MCP tool calls from a machine always go through **that machine's own daemon**, straight to the providers or MCP servers.
 - **Traffic between nodes:** only the sync of stored state (accounts, credentials, quota observations, MCP instances, secrets, project mappings, settings).
-- **Editing:** you can make changes in the web UI or CLI of **any** node. They reach the other nodes within seconds, or when a node comes back online.
+- **Editing:** you can make changes in the native app or CLI of **any** node. They reach the other nodes within seconds, or when a node comes back online.
 - **Offline behaviour:** if the primary is offline for a week, the server keeps using every account, refreshes the tokens, and runs every MCP server. When the primary returns, it pulls the changes and continues.
 
 ---
@@ -166,7 +166,7 @@ usage      { accountId, observedAt, observedBy, windows: [{ name: '5h' | '7d' | 
   - *Per-minute rate limit:* keep the account and retry after `retry-after`, up to 3 times. Switching here would throw away the prompt cache for nothing.
 - **Login:**
   - v1: `agentgate login claude` runs `claude` login with a temporary `CLAUDE_CONFIG_DIR`. It then imports from `.credentials.json` (Linux) or the macOS Keychain item `Claude Code-credentials*` (via `security find-generic-password -w`).
-  - Phase 4: native OAuth PKCE in the web UI, using the client id and endpoints Claude Code uses. teamclaude keeps these up to date and is the reference.
+  - Phase 4: native OAuth PKCE in the native app, using the client id and endpoints Claude Code uses. teamclaude keeps these up to date and is the reference.
 
 ### 6.3 Codex
 
@@ -305,20 +305,15 @@ MCP servers that need an OAuth login (Linear, Notion and similar) come in Phase 
 
 ---
 
-## 9. Web UI
+## 9. Native control app
 
-The daemon serves the web UI at `http://127.0.0.1:7878/`, and also at `http://<node>.<tailnet>.ts.net:7878/` after logging in with the admin token. The pages are rendered on the server with Hono JSX and use plain HTML forms. One inline script polls `/api/status` every 5 s for live quota bars. There is no SPA, no bundler and no CSS framework: one small stylesheet.
+The optional Tauri 2 app in `apps/desktop` uses React/Vite and a Rust HTTP bridge to manage a local or Tailscale daemon. It follows the Wallflower reference app's native title bar, system appearance, translucent sidebar, inset content card, and window-state persistence. The app does not host a browser platform.
 
-| Page | Contents |
-|---|---|
-| **Dashboard** | Each provider: the active account, a quota bar per window, reset countdowns. Nodes: online/offline, last sync, who holds which credentials. Activity feed: account switches, refreshes, failovers, MCP errors |
-| **Accounts** | List per provider; add (log in / import), enable/disable, pin, priority, "log in again" for `needsLogin`, delete |
-| **MCP servers** | Instances grouped by template. "Add from template" form (PostHog: API key + project id). Test button: connect and list the tools. Status: running / idle / error, with the last error |
-| **Projects** | Repos, including ones discovered automatically from shim connections ("seen 3 min ago on srv"). Alias → instance mapping with a dropdown; `*` defaults with an "inherit defaults" toggle. Preview of the exact tool list the agent will see |
-| **Nodes** | Paired nodes, the `alwaysOn` flag, URL, last seen, sync cursor. Pair / unpair. "Copy setup commands" for this node |
-| **Settings** | Switch threshold, `whenExhausted`, retry limits, log retention, export/import backup |
+The screens are Overview, Accounts, MCP servers, Projects, Machines, and Settings. Status polls the JSON `/api/status` endpoint every five seconds. Account OAuth opens the system browser and accepts the returned code or callback URL. MCP OAuth returns through the daemon's `/oauth/callback` text landing response. Project mappings, account settings, MCP instance creation/deletion/renaming, machine pairing, and pool settings use validated JSON routes and shared operations.
 
-Every write in the UI goes through the same `store.put`, so it syncs like a CLI change.
+The app bundles a compiled CLI and installs a stable copy in `AGENTGATE_HOME/bin` before managing the service or generating coding-tool settings. The launchd/systemd service owns the daemon lifecycle. Quitting or removing the app does not stop the daemon. Every operation is also available from the standalone CLI, which remains supported on macOS and Linux.
+
+The app can switch to remote daemons using a Tailscale URL and that node's admin bearer token. Connection settings are stored locally with mode 0600. Service control, coding-tool setup, backups, and directory imports require the local connection; they do not accidentally operate on the Mac while a remote node is selected.
 
 ---
 
@@ -349,44 +344,47 @@ agentgate export [--no-secrets] > backup.json | agentgate import-backup backup.j
 ## 11. Security
 
 - **Two listeners** from two `Bun.serve` calls that share the Hono app, each with its own auth middleware:
-  - `127.0.0.1:7878` (loopback): trusted. These are single-user machines, and it is the same trust level as `~/.claude/.credentials.json` on disk. The proxy, the shim endpoint, the UI and the API all need no token here.
-  - `<tailscale ip>:7878` (tailnet): `/peer/*` needs the peer token, and the UI and API need the admin token (a session cookie). The LLM proxy and the MCP endpoint are **not** offered on the tailnet listener, because each node serves its own clients.
+  - `127.0.0.1:7878` (loopback): trusted. These are single-user machines, and it is the same trust level as `~/.claude/.credentials.json` on disk. The proxy, the shim endpoint, the control API need no token here; management rejects browser Origin/Fetch Metadata headers.
+  - `<tailscale ip>:7878` (tailnet): `/peer/*` needs the peer token, and the control API needs the admin token as a bearer token. The LLM proxy and the MCP endpoint are **not** offered on the tailnet listener, because each node serves its own clients.
 
-  The daemon finds the Tailscale IP with `tailscale ip -4` at startup, and retries if Tailscale isn't up yet. It never binds to `0.0.0.0`.
+  The daemon finds the Tailscale IP with `tailscale status --json` at startup, and retries if Tailscale isn't up yet. It never binds to `0.0.0.0`.
 - **Storage:** the DB file and config directory are 0600/0700. Secrets are kept in plain text in the DB, which is the same position Claude Code and Codex take with their own credential files. OS-keychain storage is a later option.
-- **Transport:** the tailnet provides encryption (WireGuard) between nodes. No TLS of our own in v1; `tailscale serve` can add HTTPS for the UI if wanted.
-- **Hiding secrets:** API responses and the UI show secrets as `••••last4`. Only the shim's loopback endpoint and the peer sync return secret values. `export --no-secrets` gives a backup that is safe to share.
+- **Transport:** the tailnet provides encryption (WireGuard) between nodes. No TLS of our own in v1; `tailscale serve` can add HTTPS for the control API if wanted.
+- **Hiding secrets:** Status responses omit provider and MCP credentials, header/environment values, and URL credentials/query strings. Full backup exports and shim configuration are restricted to loopback. Peer sync carries credentials between paired nodes. `export --no-secrets` gives a backup that is safe to share.
 - **Pairing:** a one-time code, valid for 10 minutes. Peer tokens are 32 random bytes and can be revoked with `unpair`.
 - **Later option:** check `tailscale whois` so that only devices of the same tailnet user can pair.
 
 ## 12. Code layout and dependencies
 
-**Dependencies:** `hono`, `@modelcontextprotocol/sdk`, `zod`. Everything else comes with Bun: `bun:sqlite`, `Bun.serve`, `Bun.spawn`, `fetch`, `util.parseArgs`.
+This is a Bun workspace monorepo with one lockfile. The daemon uses `hono`, `@modelcontextprotocol/sdk`, `zod`, and Bun's SQLite/process/HTTP APIs. The native app uses Tauri 2, React, Vite, and a Rust reqwest bridge. Shared types and Zod configuration schemas live in `@agentgate/protocol`.
 
 ```
 agentgate/
-  src/
-    cli.ts             entry point; command dispatch
-    daemon.ts          the two listeners, Hono app, route mounting, startup (token refresh timer, sync timer)
-    store.ts           sqlite schema, zod record schemas, get/put/list, change feed
-    sync.ts            pair/join, pull/poke, merge rule, heartbeats
-    credentials.ts     holder rules, refresh scheduling, failover, invalid_grant handling (§5)
-    llm/pool.ts        account choice, usage bookkeeping, retry on another account, whenExhausted
-    llm/claude.ts      proxy route, header rewrite, quota parsing, OAuth refresh, login/import
-    llm/codex.ts       same for Codex
-    mcp/gateway.ts     upstream clients (stdio/HTTP), shared connections, merged server per project
-    mcp/shim.ts        stdio shim: project detection, perSession children, merged tool list
-    mcp/templates.ts   template catalog (PostHog, GitHub, Railway, Linear, Sentry, Context7, FS, custom)
-    setup.ts           Claude/Codex config writers, T3 instructions
-    service.ts         launchd plist / systemd unit
-    ui/pages.tsx       Hono JSX pages
-    ui/style.css
-  test/
-    pool.test.ts  credentials.test.ts  sync.test.ts  shim.test.ts
-  PLAN.md  README.md  package.json  tsconfig.json
+  apps/
+    agentgate/
+      src/
+        cli.ts          standalone command dispatch
+        daemon.ts       listeners, lifecycle, provider/MCP routes
+        api.ts          JSON administration and OAuth callback
+        store.ts        SQLite and replicated records
+        sync.ts         pairing, pull/poke, merge, heartbeats
+        credentials.ts  holder rules and token refresh
+        llm/            Claude/Codex proxying and pooling
+        mcp/            gateway, OAuth, shim, presets
+        operations.ts   shared CLI/API mutations
+        setup.ts        Claude/Codex config writers
+        service.ts      launchd/systemd management
+      test/             daemon, providers, sync, MCP, setup, API tests
+    desktop/
+      src/              native React screens and styles
+      src-tauri/        Rust bridge, Tauri config, capabilities, icons
+  packages/protocol/    shared types and configuration schemas
+  scripts/              CLI builds, native sidecar preparation, smoke checks, npm packaging
+  package.json          Bun workspace scripts
+  bun.lock              one dependency lockfile
 ```
 
-The build uses `bun build --compile --target=bun-{darwin-arm64,darwin-x64,linux-x64,linux-arm64}`. The resulting binaries are attached to GitHub releases, and `install.sh` places the right one in `~/.local/bin`.
+Standalone binaries compile for macOS/Linux on ARM64 and x64. The native bundle includes a compiled daemon for its Tauri target. `install.sh` installs the standalone CLI in `~/.local/bin`; the app installs its bundled CLI in `~/.config/agentgate/bin`.
 
 ## 13. Install and services
 
@@ -416,7 +414,7 @@ Each phase ends with something you can use and a check that proves it.
 | **1. Store, daemon, Claude pool** | `store.ts`, `daemon.ts` (loopback only), `llm/claude.ts`, `llm/pool.ts`, `credentials.ts` (holder = self), `login`/`import`/`status`/`accounts` | Two Claude accounts; a forced quota 429 (via a test flag that marks A exhausted) moves the next turn to B with no error in T3; a restart keeps state; a refresh is saved before use |
 | **2. Codex pool** | `llm/codex.ts`, Codex `config.toml` writer | Same test as Phase 1, with Codex under T3 |
 | **3. MCP gateway and shim** | `mcp/*`, `project` and `mcp` commands, templates (PostHog, GitHub, Context7, filesystem, custom) | Two PostHog instances mapped to two repos: a session in repo A sees only project A's data, repo B only project B's; `*` servers appear in both; a `perSession` filesystem server runs in the worktree; a mapping change reaches a running session through `list_changed` |
-| **4. Web UI** | `ui/*`, native OAuth PKCE login for Claude and Codex, admin token for tailnet access | Every setup step in Phase 1–3 works from the browser only |
+| **4. Native app** | Tauri/React client, JSON control API, OAuth PKCE, bearer authentication over Tailscale | Accounts, tools, projects, pairing, and settings work in the app; headless CLI remains independent |
 | **5. Multi-node** | Tailnet listener, `sync.ts`, pairing, holder takeover and failover, synced usage | See the checklist below |
 | **6. Install and ship** | `service.ts`, `setup.ts`, compiled binaries, `install.sh`, README | A clean Linux server and a clean Mac go from nothing to working T3 sessions using only the README |
 | **7. Later, when needed** | MCP servers with OAuth login; forwarding resources and prompts; API-key fallback providers; `tailscale whois` pairing check; keychain storage; `onlyOn` restriction per instance; `agentgate upgrade` | — |

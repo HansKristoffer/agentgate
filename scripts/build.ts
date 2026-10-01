@@ -4,7 +4,7 @@ mkdirSync("dist", { recursive: true });
 const checksums: string[] = [];
 for (const target of targets) {
   const file = `agentgate-${target}`;
-  const child = Bun.spawn([process.execPath, "build", "src/cli.ts", "--compile", "--minify", `--target=bun-${target}`, "--outfile", `dist/${file}`], { stdio: ["inherit", "inherit", "inherit"] });
+  const child = Bun.spawn([process.execPath, "build", "apps/agentgate/src/cli.ts", "--compile", "--minify", `--target=bun-${target}`, "--outfile", `dist/${file}`], { stdio: ["inherit", "inherit", "inherit"] });
   if (await child.exited !== 0) process.exit(1);
   checksums.push(`${new Bun.CryptoHasher("sha256").update(await Bun.file(`dist/${file}`).arrayBuffer()).digest("hex")}  ${file}`);
 }

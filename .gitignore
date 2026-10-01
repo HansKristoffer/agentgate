@@ -1,3 +1,7 @@
 node_modules
 dist
 *.db
+target
+apps/desktop/src-tauri/binaries
+apps/desktop/src-tauri/gen
+.DS_Store

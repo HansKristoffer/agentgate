@@ -6,7 +6,7 @@ One daemon per machine that:
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale, and keeps working when the other machines are offline.
 
-T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. See [PLAN.md](PLAN.md) for the design and [STABILITY_PLAN.md](STABILITY_PLAN.md) for the code review, reliability fixes, and refactoring order.
+T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [PLAN.md](PLAN.md) for the design and [STABILITY_PLAN.md](STABILITY_PLAN.md) for the code review, reliability fixes, and refactoring order.
 
 ## Install
 
@@ -22,7 +22,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_REPO=HansKristoffer/agentgate sh
 ```
 
-Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun src/cli.ts …` directly.
+Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
 ## First machine
 
@@ -34,7 +34,9 @@ agentgate setup                     # writes Claude Code / Codex config, prints 
 agentgate service install           # launchd (macOS) or systemd --user (Linux)
 ```
 
-Open http://127.0.0.1:7878 for the web UI. Everything below can also be done there.
+You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, and starts a launchd service. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
+
+The app has Accounts, MCP servers, Projects, Machines, and Settings screens. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine.
 
 ## A second machine (e.g. an always-on server)
 
@@ -47,7 +49,7 @@ agentgate setup
 agentgate service install           # also runs `loginctl enable-linger` so it survives logout/reboot
 ```
 
-The server now has every account, MCP instance and repo mapping, and takes over token refreshes. The UI is reachable at `http://srv.<tailnet>.ts.net:7878` after logging in with `agentgate admin-token`.
+The server now has every account, MCP instance and repo mapping, and takes over token refreshes. To control the server from the native app, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale.
 
 ## T3 Code
 
@@ -58,7 +60,7 @@ The server now has every account, MCP instance and repo mapping, and takes over 
 | Claude | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
 | Codex | `CODEX_HOME path` = `~/.config/agentgate/codex` |
 
-One instance per provider covers every account; the daemon switches accounts, so a thread never breaks when an account runs out. To prefer one account, pin it (`agentgate accounts pin <id>` or the UI).
+One instance per provider covers every account; the daemon switches accounts, so a thread never breaks when an account runs out. To prefer one account, pin it (`agentgate accounts pin <id>` or the app).
 
 ### Or: your normal Claude login
 
@@ -66,7 +68,7 @@ One instance per provider covers every account; the daemon switches accounts, so
 
 ## MCP servers per repo
 
-In the UI (MCP servers page), paste a server's URL and a name and click **Connect**. If the server uses MCP OAuth, you are sent to its login page and back; agentgate keeps the login, refreshes it, and syncs it to your other machines. One-click buttons cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7) and a per-worktree filesystem server. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
+In the native app (MCP servers), paste a server's URL and a name and click **Connect**. If the server uses MCP OAuth, click **Sign in** to open the browser; its callback completes in the daemon and the app updates automatically; agentgate keeps the login, refreshes it, and syncs it to your other machines. Presets cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7) and a per-worktree filesystem server. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
 
 From the CLI:
 
@@ -98,16 +100,31 @@ Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id
 
 ```sh
 bun install
+bun run cli -- init                   # initialize the daemon
+bun start                            # foreground daemon, no app required
+bun dev                              # Tauri app with Vite hot reload (Rust + Xcode tools required)
 bun test
 bun run typecheck
-AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun src/cli.ts init   # a throwaway node
+AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun run cli -- init   # a throwaway node
 ```
 
-## Reliability and upgrades
+## Monorepo
+
+| Workspace | Role |
+|---|---|
+| `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
+| `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
+| `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
+
+The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
+
+`bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds a macOS `.app` and `.dmg` and bundles a compiled daemon for the requested Tauri target. Use `bun run --filter @agentgate/desktop tauri build --target x86_64-apple-darwin` for an Intel build after installing that Rust target. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
+
+## Reliability
 
 The reliability refactor is implemented; [STABILITY_PLAN.md](STABILITY_PLAN.md#implementation-and-verification--2026-09-30) records the changes, checks, and remaining live release gates. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
 
-Upgrade paired nodes together. This version uses **sync protocol 2**, and older peers are rejected. Existing MCP OAuth credentials migrate automatically into a separate record when the database opens. Deletion history is retained so offline machines cannot resurrect old configuration. Keep a full backup before upgrading.
+Nodes use **sync protocol 2** and the app checks **management API version 1** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
 `export --no-secrets` / **Without secrets** produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
 
@@ -126,8 +143,13 @@ bun install --frozen-lockfile
 bun run typecheck
 bun test
 bun run build
+bun run build:frontend
+bun scripts/desktop-prepare.ts         # prepares the bundled daemon for Rust checks
+bun run check:native
+cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+bun run build:desktop
 bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
 bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
 ```
 
-Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, and compiled CLI checks on macOS and Linux.
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also upload a macOS DMG. Apple signing and notarization must be configured before distributing outside local development; current packaging is unsigned.

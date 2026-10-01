@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { app, makeCtx } from "../src/daemon.ts";
-import { CODEX } from "../src/llm/codex.ts";
-import { Store } from "../src/store.ts";
+import { app, makeCtx } from "../apps/agentgate/src/daemon.ts";
+import { CODEX } from "../apps/agentgate/src/llm/codex.ts";
+import { Store } from "../apps/agentgate/src/store.ts";
 
 const observed: object[] = [];
 const item = { id: "msg_review", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "review OK", annotations: [] }] };

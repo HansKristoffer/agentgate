@@ -45,3 +45,23 @@ jobs:
       - run: gh release upload "$TAG" dist/agentgate-* dist/SHA256SUMS --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+  desktop:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - run: bun install --frozen-lockfile
+      - run: bun run build:desktop
+      - run: gh release upload "$TAG" apps/desktop/src-tauri/target/release/bundle/dmg/*.dmg --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
