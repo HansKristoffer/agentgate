@@ -20,6 +20,7 @@
     "build": "bun scripts/build.ts",
     "build:desktop": "bun run --filter @agentgate/desktop bundle",
     "build:frontend": "bun run --filter @agentgate/desktop build",
+    "build:site": "bun run --filter @agentgate/site build",
     "check:native": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings"
   },
   "packageManager": "bun@1.4.2"
