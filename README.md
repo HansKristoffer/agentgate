@@ -6,7 +6,7 @@ One daemon per machine that:
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale, and keeps working when the other machines are offline.
 
-T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [PLAN.md](PLAN.md) for the design and [STABILITY_PLAN.md](STABILITY_PLAN.md) for the code review, reliability fixes, and refactoring order.
+T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [operations and distribution checks](docs/operations.md).
 
 ## Install
 
@@ -94,7 +94,7 @@ Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id
 
 - **Once imported, a login belongs to agentgate.** Don't keep using the original `~/.claude` or `~/.codex` login: its CLI would refresh the token and log agentgate out. `agentgate login` avoids this by using a throwaway directory.
 - **Secrets are stored in plain text** in `~/.config/agentgate/agentgate.db` (mode 0600) and copied to every paired node. Pair only machines you control.
-- **Terms of service.** Pool only your own accounts and keep a person driving the sessions; see PLAN.md §16.
+- **Terms of service.** Pool only your own accounts and keep a person driving the sessions; follow the providers’ applicable terms.
 
 ## Development
 
@@ -127,7 +127,7 @@ The app uses Tauri commands to send HTTP requests from Rust. It has no browser H
 
 ## Reliability
 
-The reliability refactor is implemented; [STABILITY_PLAN.md](STABILITY_PLAN.md#implementation-and-verification--2026-09-30) records the changes, checks, and remaining live release gates. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
+See [operations](docs/operations.md) for backup, upgrade, and live distribution checks. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
 
 Nodes use **sync protocol 2** and the app checks **management API version 1** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
@@ -157,7 +157,7 @@ bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
 bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
 ```
 
-Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; npm trusted publishing is configured for each generated package) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
 
 | Secret | Value |
 |---|---|
@@ -174,3 +174,5 @@ Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [re
 The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 
 The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The standalone CLI binaries are not signed.
+
+See [release and recovery instructions](docs/releasing.md).

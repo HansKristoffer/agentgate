@@ -2,53 +2,95 @@ name: release
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to recover (for example v0.5.0)
+        required: true
+        type: string
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
 jobs:
   # Keeps a release PR open with the next version and changelog; merging it tags and creates the release.
   release-please:
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+      # GITHUB_TOKEN cannot trigger PR CI automatically; dispatch it explicitly.
+      - name: Check the release PR
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/github-script@v8
+        env:
+          RELEASE_PRS: ${{ steps.release.outputs.prs }}
+        with:
+          script: |
+            for (const pr of JSON.parse(process.env.RELEASE_PRS || '[]')) {
+              const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: pr.number });
+              if (data.state !== 'open' || data.head.repo.full_name !== context.payload.repository.full_name) continue;
+              await github.rest.actions.createWorkflowDispatch({
+                ...context.repo, workflow_id: 'ci.yml', ref: data.head.ref,
+              });
+            }
   publish:
     needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
       id-token: write # npm provenance
     env:
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ inputs.tag || needs.release-please.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Validate the existing release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName
+      - uses: actions/checkout@v5
+      - name: Keep package recovery tools
+        run: cp scripts/npm.ts "$RUNNER_TEMP/agentgate-npm.ts"
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
+      - run: node -e 'if (require("./package.json").version !== process.env.TAG.slice(1)) process.exit(1)'
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
       - run: bun run build
       - run: bun scripts/smoke.ts dist/agentgate-linux-x64
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 22
-          registry-url: https://registry.npmjs.org
+          node-version: '24'
       # The script skips versions already on npm, so a failed run can be rerun.
-      - run: bun scripts/npm.ts "$TAG" --publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: bun "$RUNNER_TEMP/agentgate-npm.ts" "$TAG" --publish
       - run: gh release upload "$TAG" dist/agentgate-* dist/SHA256SUMS --clobber
         env:
           GH_TOKEN: ${{ github.token }}
   desktop:
+    permissions:
+      contents: write
     needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
     uses: ./.github/workflows/build-macos.yml
     with:
-      tag_name: ${{ needs.release-please.outputs.tag }}
+      tag_name: ${{ inputs.tag || needs.release-please.outputs.tag }}
     secrets: inherit
