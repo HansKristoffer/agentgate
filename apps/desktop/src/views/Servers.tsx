@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Boxes, ExternalLink, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Boxes, Plus, Trash2 } from "lucide-react";
 import type { Preset, ToolPreview } from "@agentgate/protocol";
 import { Badge, Empty, Modal, Panel } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
@@ -35,54 +35,59 @@ export function Servers({ data, connection, perform }: ViewProps) {
     }, "Login started. Complete it in your browser; the server updates automatically.");
   return (
     <>
-      <div className="section-toolbar">
-        <span className="muted">{data.servers.length} connected servers</span>
+      <div className="toolbar">
+        <span>
+          {data.servers.length}{" "}
+          {data.servers.length === 1 ? "connected server" : "connected servers"}
+        </span>
         <button className="button primary" onClick={() => setAdd(true)}>
           <Plus size={15} />
           Connect server
         </button>
       </div>
-      {!data.servers.length && (
-        <Panel title="A tool for every project">
+      <Panel
+        title="MCP servers"
+        detail="Map servers to projects to give their sessions these tools."
+      >
+        {!data.servers.length && (
           <Empty>
-            <Boxes size={26} />
+            <Boxes size={22} />
             <strong>Connect your first MCP server.</strong>
             <p>Use a hosted server, a preset, or a local command.</p>
           </Empty>
-        </Panel>
-      )}
-      {data.servers.map((server) => (
-        <Panel
-          key={server.id}
-          title={server.id}
-          detail={server.endpoint}
-          action={
-            <Badge good={server.loggedIn}>
-              {server.needsLogin
-                ? "Needs login"
-                : server.mode === "perSession"
-                  ? "Per session"
-                  : server.loggedIn
-                    ? "Signed in"
-                    : server.transport === "http"
-                      ? "HTTP"
-                      : "Local"}
-            </Badge>
-          }
-        >
-          <div className="server-body">
-            <span className="muted">
-              {
-                data.projects.filter((p) =>
-                  Object.values(p.mcp).includes(server.id),
-                ).length
-              }{" "}
-              project mappings
-              {server.refreshError ? ` · ${server.refreshError}` : ""}
-            </span>
-            <div className="row wrap">
+        )}
+        {data.servers.map((server) => {
+          const mappings = data.projects.filter((p) =>
+            Object.values(p.mcp).includes(server.id),
+          ).length;
+          return (
+            <div className="item" key={server.id}>
+              <div className="machine-icon">
+                <Boxes size={16} />
+              </div>
+              <div className="grow">
+                <div className="row">
+                  <strong>{server.id}</strong>
+                  <Badge good={server.loggedIn}>
+                    {server.needsLogin
+                      ? "Needs login"
+                      : server.mode === "perSession"
+                        ? "Per session"
+                        : server.loggedIn
+                          ? "Signed in"
+                          : server.transport === "http"
+                            ? "HTTP"
+                            : "Local"}
+                  </Badge>
+                </div>
+                <small>{server.endpoint}</small>
+                <small className={server.refreshError ? "danger" : ""}>
+                  {server.refreshError ??
+                    `${mappings} ${mappings === 1 ? "project" : "projects"}`}
+                </small>
+              </div>
               <button
-                className="button"
+                className="button quiet"
                 onClick={() =>
                   void perform(async () => {
                     const result = await request<{ tools: ToolPreview[] }>(
@@ -94,15 +99,14 @@ export function Servers({ data, connection, perform }: ViewProps) {
                   })
                 }
               >
-                Test connection
+                Test
               </button>
               {server.transport === "http" && (
                 <button
-                  className="button"
+                  className="button quiet"
                   onClick={() => void signIn(server.id)}
                 >
                   Sign in
-                  <ExternalLink size={14} />
                 </button>
               )}
               <button
@@ -112,7 +116,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 Rename
               </button>
               <button
-                className="icon-button danger"
+                className="tool-btn danger"
+                title="Delete server"
                 aria-label={`Delete ${server.id}`}
                 onClick={() => {
                   if (confirmDelete(server.id))
@@ -127,12 +132,12 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     );
                 }}
               >
-                <Trash2 size={16} />
+                <Trash2 size={15} />
               </button>
             </div>
-          </div>
-        </Panel>
-      ))}
+          );
+        })}
+      </Panel>
       {add && (
         <Modal title="Connect an MCP server" close={() => setAdd(false)}>
           <form

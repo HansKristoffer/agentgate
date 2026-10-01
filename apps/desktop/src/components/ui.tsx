@@ -1,27 +1,31 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { X } from "lucide-react";
 
+/** A titled group of rows, in the manner of System Settings. */
 export function Panel({
   title,
   detail,
   action,
+  foot,
   children,
 }: {
   title: string;
   detail?: string;
   action?: ReactNode;
+  foot?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="panel">
-      <div className="panel-heading">
+    <section className="section">
+      <div className="section-head">
         <div>
           <h2>{title}</h2>
           {detail && <p>{detail}</p>}
         </div>
         {action}
       </div>
-      {children}
+      <div className="group">{children}</div>
+      {foot && <p className="group-foot">{foot}</p>}
     </section>
   );
 }
@@ -61,12 +65,8 @@ export function Modal({
     >
       <div className="modal-heading">
         <h2>{title}</h2>
-        <button
-          className="icon-button"
-          aria-label="Close dialog"
-          onClick={close}
-        >
-          <X size={18} />
+        <button className="tool-btn" aria-label="Close dialog" onClick={close}>
+          <X size={16} />
         </button>
       </div>
       {children}

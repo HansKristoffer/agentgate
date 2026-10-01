@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, Copy, ExternalLink, Plus, Trash2 } from "lucide-react";
+import { Check, ExternalLink, Plus, Trash2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { LoginStart, Provider } from "@agentgate/protocol";
 import { Badge, Empty, Modal, Panel } from "../components/ui.tsx";
@@ -33,9 +33,10 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
     });
   return (
     <>
-      <div className="section-toolbar">
-        <span className="muted">
-          {data.accounts.length} accounts in your pool
+      <div className="toolbar">
+        <span>
+          {data.accounts.length}{" "}
+          {data.accounts.length === 1 ? "account" : "accounts"} in your pool
         </span>
         <button
           className="button primary"
@@ -57,6 +58,10 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
               ? "Claude subscriptions, shared across your sessions."
               : "ChatGPT subscriptions for your Codex sessions."
           }
+          foot={
+            data.unknownQuota[provider] &&
+            `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
+          }
         >
           {!data.accounts.some((a) => a.account.provider === provider) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
@@ -64,7 +69,7 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
             data.accounts
               .filter((a) => a.account.provider === provider)
               .map((a) => (
-                <div className="account-card" key={a.account.id}>
+                <div className="item stack" key={a.account.id}>
                   <div className="row">
                     <div className={`provider-icon ${provider}`}>
                       {provider === "claude" ? "✳" : "◎"}
@@ -118,7 +123,7 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                     )}
                   </div>
                   <div className="account-footer">
-                    <span className="muted">
+                    <span>
                       {a.needsLogin
                         ? "Sign in again to use this account."
                         : a.expired
@@ -173,7 +178,8 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                         {a.account.enabled ? "Disable" : "Enable"}
                       </button>
                       <button
-                        className="icon-button danger"
+                        className="tool-btn danger"
+                        title="Delete account"
                         aria-label={`Delete ${a.account.label}`}
                         onClick={() => {
                           if (confirmDelete(a.account.label))
@@ -194,12 +200,6 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                   </div>
                 </div>
               ))
-          )}
-          {data.unknownQuota[provider] && (
-            <p className="note">
-              Quota headers were not recognized for {providerName(provider)}.
-              Routing still uses provider limit responses.
-            </p>
           )}
         </Panel>
       ))}

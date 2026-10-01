@@ -1,7 +1,6 @@
 import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
 import { Badge, Empty, Panel } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
 import { providerName } from "./utils.ts";
 
 export function Dashboard({
@@ -37,8 +36,8 @@ export function Dashboard({
             onClick={() => navigate(stat.view)}
           >
             <div className="stat-top">
-              <stat.icon size={19} />
-              <ArrowRight size={15} />
+              <stat.icon size={16} />
+              <ArrowRight size={14} />
             </div>
             <strong>{stat.value}</strong>
             <span>{stat.label}</span>
@@ -51,7 +50,7 @@ export function Dashboard({
       >
         {!data.accounts.length ? (
           <Empty>
-            <Users size={24} />
+            <Users size={22} />
             <strong>Your pool starts with one account.</strong>
             <p>
               Add a Claude or Codex login to route your sessions through
@@ -64,7 +63,7 @@ export function Dashboard({
           </Empty>
         ) : (
           data.accounts.map((a) => (
-            <div className="list-row" key={a.account.id}>
+            <div className="item" key={a.account.id}>
               <div className={`provider-icon ${a.account.provider}`}>
                 {a.account.provider === "claude" ? "✳" : "◎"}
               </div>
@@ -95,7 +94,7 @@ export function Dashboard({
                   a.windows.map((w) => (
                     <div key={w.name}>
                       <span>{w.name}</span>
-                      <meter min={0} max={100} value={w.usedPct} />
+                      <progress max={100} value={w.usedPct} />
                       <small>{Math.round(w.usedPct)}%</small>
                     </div>
                   ))
@@ -110,15 +109,15 @@ export function Dashboard({
       <div className="columns">
         <Panel
           title="Machines"
+          detail="Paired over your Tailscale network."
           action={
-            <button className="text-button" onClick={() => navigate("nodes")}>
+            <button className="link-btn" onClick={() => navigate("nodes")}>
               Manage
-              <ArrowRight size={14} />
             </button>
           }
         >
           {data.nodes.map((n) => (
-            <div className="list-row" key={n.id}>
+            <div className="item" key={n.id}>
               <span className={`dot ${n.online ? "online" : ""}`} />
               <div className="grow">
                 <strong>{n.id}</strong>
@@ -140,9 +139,9 @@ export function Dashboard({
           detail="Account switches, requests, and refreshes."
         >
           {data.activity.length ? (
-            <div className="activity-list">
+            <>
               {data.activity.slice(0, 8).map((a, i) => (
-                <div className="activity-row" key={`${a.at}-${i}`}>
+                <div className="item" key={`${a.at}-${i}`}>
                   <span
                     className={`dot ${a.status > 0 && a.status < 400 ? "online" : ""}`}
                   />
@@ -152,7 +151,7 @@ export function Dashboard({
                     </strong>
                     <small>{a.account || a.provider}</small>
                   </div>
-                  <time>
+                  <time className="activity-time">
                     {new Date(a.at).toLocaleTimeString(undefined, {
                       hour: "2-digit",
                       minute: "2-digit",
@@ -160,7 +159,7 @@ export function Dashboard({
                   </time>
                 </div>
               ))}
-            </div>
+            </>
           ) : (
             <Empty>
               All quiet. Activity appears when your agents start working.

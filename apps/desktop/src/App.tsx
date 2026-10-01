@@ -2,18 +2,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
 import {
   Activity,
-  ArrowUpRight,
   Boxes,
   ChevronRight,
   CircleHelp,
-  Command,
-  Cpu,
   FolderGit2,
   LayoutDashboard,
   Monitor,
-  PanelLeft,
   RefreshCw,
-  Settings2,
+  Settings as Gear,
   ShieldCheck,
   Users,
   X,
@@ -45,7 +41,7 @@ const navigation = [
   { id: "servers", title: "MCP servers", icon: Boxes },
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
-  { id: "settings", title: "Settings", icon: Settings2 },
+  { id: "settings", title: "Settings", icon: Gear },
 ] as const;
 type View = (typeof navigation)[number]["id"];
 const descriptions: Record<View, string> = {
@@ -59,7 +55,6 @@ const descriptions: Record<View, string> = {
 
 export function App() {
   const [view, setView] = useState<View>("overview");
-  const [sidebar, setSidebar] = useState(true);
   const [connection, setConnection] = useState<Connection>({
     url: "http://127.0.0.1:7878",
   });
@@ -139,10 +134,6 @@ export function App() {
   }, [ready, connection, refresh]);
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key.toLowerCase() === "b") {
-        e.preventDefault();
-        setSidebar((s) => !s);
-      }
       if (e.metaKey && e.key === ",") {
         e.preventDefault();
         setView("settings");
@@ -151,6 +142,12 @@ export function App() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+  // Confirmations fade on their own; errors stay until dismissed.
+  useEffect(() => {
+    if (!notice || notice.startsWith("Error:")) return;
+    const timer = setTimeout(() => setNotice(""), 4000);
+    return () => clearTimeout(timer);
+  }, [notice]);
   const perform: Perform = async (task, message) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -177,193 +174,200 @@ export function App() {
     settings: <Settings {...props} />,
   };
   return (
-    <div className={`app ${sidebar ? "" : "sidebar-closed"}`}>
-      <div className="titlebar" data-tauri-drag-region>
-        <button
-          className="icon-button"
-          aria-label="Toggle sidebar"
-          onClick={() => setSidebar((s) => !s)}
-        >
-          <PanelLeft size={17} />
-        </button>
-        <span data-tauri-drag-region>Agentgate</span>
-      </div>
-      {sidebar && (
-        <aside className="sidebar">
-          <div className="brand">
-            <div className="brand-mark">
-              <Command size={22} />
-            </div>
-            <div>
-              <strong>Agentgate</strong>
-              <small>Your agent infrastructure</small>
-            </div>
-          </div>
-          <div className="nav-label">WORKSPACE</div>
-          <nav>
-            {navigation.slice(0, 5).map((n) => (
-              <button
-                key={n.id}
-                className={`nav-item ${view === n.id ? "selected" : ""}`}
-                onClick={() => setView(n.id)}
-              >
-                <n.icon size={18} />
-                {n.title}
-                {data && n.id === "accounts" && (
-                  <span className="count">{data.accounts.length}</span>
-                )}
-                {data && n.id === "servers" && (
-                  <span className="count">{data.servers.length}</span>
-                )}
-              </button>
-            ))}
-          </nav>
-          <div className="sidebar-bottom">
+    <div className="app" data-tauri-drag-region>
+      <aside
+        className="sidebar"
+        data-tauri-drag-region="deep"
+      >
+        <div className="drag-strip" />
+        <nav className="nav">
+          {navigation.slice(0, 5).map((n) => (
             <button
-              className={`nav-item ${view === "settings" ? "selected" : ""}`}
-              onClick={() => setView("settings")}
+              key={n.id}
+              className={`nav-item ${view === n.id ? "active" : ""}`}
+              onClick={() => setView(n.id)}
             >
-              <Settings2 size={18} />
-              Settings<span className="key">⌘,</span>
+              <n.icon size={16} />
+              {n.title}
+              {data && n.id === "accounts" && (
+                <span className="count">{data.accounts.length}</span>
+              )}
+              {data && n.id === "servers" && (
+                <span className="count">{data.servers.length}</span>
+              )}
+              {data && n.id === "projects" && (
+                <span className="count">
+                  {data.projects.filter((p) => p.id !== "*").length}
+                </span>
+              )}
+              {data && n.id === "nodes" && (
+                <span className="count">{data.nodes.length}</span>
+              )}
             </button>
-            <button className="nav-item" onClick={() => setHelp(true)}>
-              <CircleHelp size={18} />
-              Getting started
-              <ArrowUpRight size={14} className="end" />
+          ))}
+        </nav>
+        <div className="sidebar-bottom">
+          <button
+            className={`icon-btn ${view === "settings" ? "active" : ""}`}
+            title="Settings (⌘,)"
+            aria-label="Settings"
+            onClick={() => setView("settings")}
+          >
+            <Gear size={16} />
+          </button>
+          <button
+            className="icon-btn"
+            title="Getting started"
+            aria-label="Getting started"
+            onClick={() => setHelp(true)}
+          >
+            <CircleHelp size={16} />
+          </button>
+          <button
+            className="connection"
+            title={
+              data && !error
+                ? `Connected to ${connection.url}`
+                : "Daemon disconnected"
+            }
+            onClick={() => setConnectOpen(true)}
+          >
+            <span className={`dot ${data && !error ? "online" : ""}`} />
+            <span>
+              {data && !error ? (data.node ?? "This machine") : "Offline"}
+            </span>
+            <ChevronRight size={14} />
+          </button>
+        </div>
+      </aside>
+      <main className="main">
+        <div className="drag-strip" data-tauri-drag-region="deep" />
+        <header className="card-header" data-tauri-drag-region="deep">
+          <div className="card-title-row">
+            <h1>{selected.title}</h1>
+            {!local && <Badge>Remote</Badge>}
+            <button
+              className="tool-btn"
+              title="Refresh"
+              aria-label="Refresh"
+              disabled={busy || !native}
+              onClick={() => void refresh()}
+            >
+              <RefreshCw size={15} className={busy ? "spin" : ""} />
             </button>
-            <button className="connection" onClick={() => setConnectOpen(true)}>
-              <span className={`dot ${data && !error ? "online" : ""}`} />
-              <div>
-                <strong>{data?.node ?? "This machine"}</strong>
+          </div>
+          <p className="card-sub">{descriptions[view]}</p>
+        </header>
+        <div className="pane">
+          <div className="pane-inner">
+            {error && (
+              <div className="callout error" role="alert">
+                <span>{error}</span>
+                <div className="row">
+                  {native && local && data && (
+                    <button
+                      className="button"
+                      disabled={busy}
+                      onClick={() =>
+                        void perform(
+                          () => localAction("start", connection),
+                          "Service started",
+                        )
+                      }
+                    >
+                      Start service
+                    </button>
+                  )}
+                  <button
+                    className="button"
+                    onClick={() => setConnectOpen(true)}
+                  >
+                    Connection settings
+                  </button>
+                </div>
+              </div>
+            )}
+            {props && views ? (
+              <fieldset
+                key={connection.url}
+                disabled={busy || !!error}
+                className="workspace"
+              >
+                {views[view]}
+                {view === "settings" && (
+                  <p className="version-line">
+                    Agentgate{version ? ` ${version}` : ""} · The daemon keeps
+                    running when you close this app.
+                  </p>
+                )}
+              </fieldset>
+            ) : (
+              <div className="welcome">
+                <div className="welcome-mark">
+                  <ShieldCheck size={26} />
+                </div>
+                <h2>A home for your agent setup</h2>
+                <p>
+                  Pool your subscriptions, connect your tools, and keep every
+                  machine in sync. The app is a window into Agentgate; the
+                  daemon keeps things running.
+                </p>
+                <div className="welcome-features">
+                  <span>
+                    <Users size={14} />
+                    Claude & Codex accounts
+                  </span>
+                  <span>
+                    <Boxes size={14} />
+                    Tools per repository
+                  </span>
+                  <span>
+                    <Monitor size={14} />
+                    Tailscale machines
+                  </span>
+                </div>
+                <div className="row">
+                  <button
+                    className="button primary"
+                    disabled={busy || !native || !local}
+                    onClick={() =>
+                      void perform(async () => {
+                        await localAction("install", connection);
+                      }, "Agentgate installed and running. Add an account to get started.")
+                    }
+                  >
+                    {busy ? "Starting Agentgate…" : "Set up this machine"}
+                  </button>
+                  <button
+                    className="button"
+                    onClick={() => setConnectOpen(true)}
+                  >
+                    Connect to a daemon
+                  </button>
+                </div>
                 <small>
-                  {data && !error ? "Daemon connected" : "Daemon disconnected"}
+                  Already using the CLI? Connect to your existing daemon.
                 </small>
               </div>
-              <ChevronRight size={15} />
-            </button>
+            )}
           </div>
-        </aside>
-      )}
-      <main>
-        <header className="page-heading">
-          <div>
-            <div className="eyebrow">
-              AGENTGATE <span>/</span> {local ? "LOCAL SETUP" : "REMOTE SETUP"}
-            </div>
-            <h1>{selected.title}</h1>
-            <p>{descriptions[view]}</p>
-          </div>
-          <button
-            className="button quiet"
-            disabled={busy || !native}
-            onClick={() => void refresh()}
-          >
-            <RefreshCw size={15} className={busy ? "spin" : ""} />
-            Refresh
-          </button>
-        </header>
+        </div>
         {notice && (
-          <div
-            className={`notice ${notice.startsWith("Error:") ? "error" : ""}`}
-            role="status"
-          >
-            <span>{notice}</span>
-            <button
-              className="icon-button"
-              aria-label="Dismiss notification"
-              onClick={() => setNotice("")}
+          <div className="toasts">
+            <div
+              className={`toast ${notice.startsWith("Error:") ? "err" : ""}`}
+              role="status"
             >
-              <X size={15} />
-            </button>
-          </div>
-        )}
-        {error && (
-          <div className="notice error" role="alert">
-            <span>{error}</span>
-            <div className="row">
-              {native && local && data && (
-                <button
-                  className="button"
-                  disabled={busy}
-                  onClick={() =>
-                    void perform(
-                      () => localAction("start", connection),
-                      "Service started",
-                    )
-                  }
-                >
-                  Start service
-                </button>
-              )}
-              <button className="button" onClick={() => setConnectOpen(true)}>
-                Connection settings
-              </button>
-            </div>
-          </div>
-        )}
-        {props && views ? (
-          <fieldset
-            key={connection.url}
-            disabled={busy || !!error}
-            className="workspace"
-          >
-            {views[view]}
-          </fieldset>
-        ) : (
-          <div className="welcome">
-            <div className="welcome-mark">
-              <ShieldCheck size={36} />
-            </div>
-            <Badge>RUNS INDEPENDENTLY</Badge>
-            <h2>A home for your agent setup.</h2>
-            <p>
-              Pool your subscriptions, connect your tools, and keep every
-              machine in sync. The app gives you a window into Agentgate. The
-              daemon keeps things running.
-            </p>
-            <div className="welcome-features">
-              <span>
-                <Users size={18} />
-                Claude & Codex accounts
-              </span>
-              <span>
-                <Boxes size={18} />
-                Tools per repository
-              </span>
-              <span>
-                <Monitor size={18} />
-                Your Tailscale machines
-              </span>
-            </div>
-            <div className="row">
+              <span>{notice}</span>
               <button
-                className="button primary"
-                disabled={busy || !native || !local}
-                onClick={() =>
-                  void perform(async () => {
-                    await localAction("install", connection);
-                  }, "Agentgate installed and running. Add an account to get started.")
-                }
+                aria-label="Dismiss notification"
+                onClick={() => setNotice("")}
               >
-                {busy ? "Starting Agentgate…" : "Set up this machine"}
-                <ChevronRight size={16} />
-              </button>
-              <button className="button" onClick={() => setConnectOpen(true)}>
-                Connect to a daemon
+                <X size={14} />
               </button>
             </div>
-            <small>
-              Already using the CLI? Connect to your existing daemon.
-            </small>
           </div>
         )}
-        <footer>
-          <span>
-            <Cpu size={13} />
-            The daemon keeps running when you close this app.
-          </span>
-          <span>Agentgate{version ? ` ${version}` : ""}</span>
-        </footer>
       </main>
       {connectOpen && (
         <Modal title="Connect to Agentgate" close={() => setConnectOpen(false)}>

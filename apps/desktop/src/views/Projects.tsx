@@ -13,8 +13,8 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
   const defaults = data.projects.find((p) => p.id === "*");
   return (
     <>
-      <div className="section-toolbar">
-        <span className="muted">
+      <div className="toolbar">
+        <span>
           {data.projects.filter((p) => p.id !== "*").length} repositories
         </span>
         <div className="row">
@@ -43,8 +43,10 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
           data.projects
             .filter((p) => p.id !== "*")
             .map((p) => (
-              <div className="list-row project-row" key={p.id}>
-                <FolderGit2 size={21} className="muted" />
+              <div className="item" key={p.id}>
+                <div className="machine-icon">
+                  <FolderGit2 size={16} />
+                </div>
                 <div className="grow">
                   <strong>{p.id}</strong>
                   <small>
@@ -73,11 +75,12 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                 >
                   Preview
                 </button>
-                <button className="button" onClick={() => setEdit(p)}>
+                <button className="button quiet" onClick={() => setEdit(p)}>
                   Edit
                 </button>
                 <button
-                  className="icon-button danger"
+                  className="tool-btn danger"
+                  title="Remove project"
                   aria-label={`Delete ${p.id}`}
                   onClick={() => {
                     if (confirmDelete(p.id))
@@ -98,7 +101,7 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
             ))
         ) : (
           <Empty>
-            <FolderGit2 size={26} />
+            <FolderGit2 size={22} />
             <strong>Give your repositories their own tools.</strong>
             <p>
               Add owner/repo identifiers, or scan a local folder. Sessions also
@@ -113,7 +116,7 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
           detail="Scan a local folder for Git repositories."
         >
           <form
-            className="inline-form"
+            className="item inline-form"
             onSubmit={(e) => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
@@ -136,16 +139,16 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
             <button className="button">Scan folder</button>
           </form>
           {repos && (
-            <div className="discovered">
+            <>
               {repos.length ? (
                 repos.map((repo) => (
-                  <div className="list-row" key={repo.path}>
+                  <div className="item" key={repo.path}>
                     <div className="grow">
                       <strong>{repo.repo}</strong>
                       <small>{repo.path}</small>
                     </div>
                     <button
-                      className="button"
+                      className="button quiet"
                       disabled={data.projects.some((p) => p.id === repo.repo)}
                       onClick={() =>
                         setEdit({
@@ -162,9 +165,9 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                   </div>
                 ))
               ) : (
-                <p className="muted">No repositories found in this folder.</p>
+                <div className="empty">No repositories found in this folder.</div>
               )}
-            </div>
+            </>
           )}
         </Panel>
       )}

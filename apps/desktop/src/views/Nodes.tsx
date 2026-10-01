@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, Monitor, Plus, ShieldCheck } from "lucide-react";
+import { Copy, Monitor, Plus } from "lucide-react";
 import { Badge, Modal, Panel } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
@@ -10,9 +10,10 @@ export function Nodes({ data, connection, perform }: ViewProps) {
   const [joinOpen, setJoinOpen] = useState(false);
   return (
     <>
-      <div className="section-toolbar">
-        <span className="muted">
-          {data.nodes.length} machines in your setup
+      <div className="toolbar">
+        <span>
+          {data.nodes.length} {data.nodes.length === 1 ? "machine" : "machines"}{" "}
+          in your setup
         </span>
         <div className="row">
           <button className="button" onClick={() => setJoinOpen(true)}>
@@ -39,11 +40,12 @@ export function Nodes({ data, connection, perform }: ViewProps) {
       <Panel
         title="Your machines"
         detail="Accounts, tools, and project mappings sync between paired nodes."
+        foot="Each machine serves its own agents and keeps working offline. Always-on machines take care of token refreshes while your laptop is away."
       >
         {data.nodes.map((n) => (
-          <div className="list-row machine-row" key={n.id}>
+          <div className="item" key={n.id}>
             <div className="machine-icon">
-              <Monitor size={22} />
+              <Monitor size={16} />
             </div>
             <div className="grow">
               <div className="row">
@@ -59,18 +61,21 @@ export function Nodes({ data, connection, perform }: ViewProps) {
                     : `Last seen ${relative(n.lastSeen)}`)}
               </small>
             </div>
-            <button
-              className="button quiet"
-              onClick={() =>
-                void perform(() =>
-                  request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                    alwaysOn: !n.alwaysOn,
-                  }),
-                )
-              }
-            >
-              {n.alwaysOn ? "Always on ✓" : "Mark always on"}
-            </button>
+            <label className="check muted">
+              Always on
+              <input
+                type="checkbox"
+                className="switch"
+                checked={!!n.alwaysOn}
+                onChange={() =>
+                  void perform(() =>
+                    request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
+                      alwaysOn: !n.alwaysOn,
+                    }),
+                  )
+                }
+              />
+            </label>
             {n.id !== data.node && (
               <button
                 className="button danger"
@@ -93,16 +98,6 @@ export function Nodes({ data, connection, perform }: ViewProps) {
           </div>
         ))}
       </Panel>
-      <div className="info-card">
-        <ShieldCheck size={22} />
-        <div>
-          <strong>Your machines keep working offline.</strong>
-          <p>
-            Each machine serves its own agents. Always-on nodes take care of
-            token refreshes when your laptop is away.
-          </p>
-        </div>
-      </div>
       {pair && (
         <Modal title="Pair another machine" close={() => setPair("")}>
           <p>
