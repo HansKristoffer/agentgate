@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.0](https://github.com/HansKristoffer/agentgate/compare/v0.3.0...v0.4.0) (2026-10-01)
+
+
+### Features
+
+* **projects:** select MCP servers from a checklist ([c5997b3](https://github.com/HansKristoffer/agentgate/commit/c5997b324f6c7b9cf7738f8413dd22e673c1262d))
+* **projects:** select MCP servers from a checklist ([9c99a7d](https://github.com/HansKristoffer/agentgate/commit/9c99a7dc444fdc9fd3ddda56a4f77d01228128dd))
+
 ## [0.3.0](https://github.com/HansKristoffer/agentgate/compare/v0.2.0...v0.3.0) (2026-10-01)
 
 
