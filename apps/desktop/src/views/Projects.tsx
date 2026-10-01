@@ -6,6 +6,9 @@ import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, confirmDelete } from "./utils.ts";
 
+const aliasOf = (p: Project, server: string) =>
+  Object.entries(p.mcp).find(([, id]) => id === server)?.[0];
+
 export function Projects({ data, connection, perform, local }: ViewProps) {
   const [edit, setEdit] = useState<Project>();
   const [repos, setRepos] = useState<{ repo: string; path: string }[]>();
@@ -187,18 +190,10 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
+                // Keep an existing custom alias; new picks use the server id.
                 const mcp: Record<string, string> = {};
-                for (const line of field(f, "mcp")
-                  .split("\n")
-                  .filter((l) => l.trim())) {
-                  const [alias, instance, extra] = line
-                    .split("=")
-                    .map((s) => s.trim());
-                  if (!alias || !instance || extra !== undefined)
-                    throw new Error("Use one alias=server mapping per line");
-                  if (alias in mcp) throw new Error(`Duplicate alias ${alias}`);
-                  mcp[alias] = instance;
-                }
+                for (const id of f.getAll("server") as string[])
+                  mcp[aliasOf(edit, id) ?? id] = id;
                 await request(connection, "/projects", "PUT", {
                   id: field(f, "id"),
                   mcp,
@@ -219,23 +214,34 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                 placeholder="owner/repo"
               />
             </label>
-            <label>
-              Tool mappings
-              <textarea
-                name="mcp"
-                className="mono"
-                rows={5}
-                defaultValue={Object.entries(edit.mcp)
-                  .map(([a, i]) => `${a}=${i}`)
-                  .join("\n")}
-                placeholder={"posthog=posthog-work\nfilesystem=fs"}
-              />
-            </label>
-            <p className="note">
-              One alias=server per line. Available servers:{" "}
-              {data.servers.map((s) => s.id).join(", ") ||
-                "Connect a server first."}
-            </p>
+            <fieldset className="checklist">
+              <legend>MCP servers</legend>
+              <div className="group">
+                {data.servers.length ? (
+                  data.servers.map((s) => {
+                    const alias = aliasOf(edit, s.id);
+                    return (
+                      <label className="item check" key={s.id}>
+                        <input
+                          type="checkbox"
+                          name="server"
+                          value={s.id}
+                          defaultChecked={!!alias}
+                        />
+                        <span className="grow">
+                          <strong>{s.id}</strong>
+                          {alias && alias !== s.id && (
+                            <small>Tool prefix: {alias}</small>
+                          )}
+                        </span>
+                      </label>
+                    );
+                  })
+                ) : (
+                  <Empty>Connect a server first.</Empty>
+                )}
+              </div>
+            </fieldset>
             {edit.id !== "*" && (
               <label className="check">
                 <input
