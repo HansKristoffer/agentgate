@@ -119,7 +119,7 @@ AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun run cli -- init   # a throwaway n
 
 The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
 
-`bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds a macOS `.app` and `.dmg` and bundles a compiled daemon for the requested Tauri target. Use `bun run --filter @agentgate/desktop tauri build --target x86_64-apple-darwin` for an Intel build after installing that Rust target. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
+`bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds a macOS `.app` and `.dmg` and bundles a compiled daemon for the requested Tauri target. Use `bun run --filter @agentgate/desktop tauri build --target universal-apple-darwin` for the universal build releases ship, after `rustup target add x86_64-apple-darwin aarch64-apple-darwin`. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
 
 ## Landing page
 
@@ -157,4 +157,16 @@ bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
 bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
 ```
 
-Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also upload a macOS DMG. Apple signing and notarization must be configured before distributing outside local development; current packaging is unsigned.
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; needs the `NPM_TOKEN` secret) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
+
+| Secret | Value |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12`, including the G2 intermediate |
+| `APPLE_CERTIFICATE_PASSWORD` | its password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
+| `APPLE_TEAM_ID` | ten-character team id |
+| `APPLE_API_KEY` | App Store Connect API key id |
+| `APPLE_API_ISSUER` | its issuer id |
+| `APPLE_API_KEY_CONTENT` | contents of the `.p8` |
+
+The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The standalone CLI binaries are not signed.
