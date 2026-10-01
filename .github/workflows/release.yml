@@ -20,7 +20,6 @@ jobs:
       contents: write
       pull-requests: write
       issues: write
-      actions: write
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -30,21 +29,6 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
-      # GITHUB_TOKEN cannot trigger PR CI automatically; dispatch it explicitly.
-      - name: Check the release PR
-        if: steps.release.outputs.prs_created == 'true'
-        uses: actions/github-script@v8
-        env:
-          RELEASE_PRS: ${{ steps.release.outputs.prs }}
-        with:
-          script: |
-            for (const pr of JSON.parse(process.env.RELEASE_PRS || '[]')) {
-              const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: pr.number });
-              if (data.state !== 'open' || data.head.repo.full_name !== context.payload.repository.full_name) continue;
-              await github.rest.actions.createWorkflowDispatch({
-                ...context.repo, workflow_id: 'ci.yml', ref: data.head.ref,
-              });
-            }
   publish:
     needs: release-please
     if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
