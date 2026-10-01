@@ -1,7 +1,15 @@
 import { useState } from "react";
 import { FolderGit2, Plus, Trash2 } from "lucide-react";
 import type { Project, ToolPreview } from "@agentgate/protocol";
-import { Empty, Modal, Panel } from "../components/ui.tsx";
+import { Button, Input, TextField } from "@heroui/react";
+import {
+  Check,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, confirmDelete } from "./utils.ts";
@@ -16,28 +24,24 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
   const defaults = data.projects.find((p) => p.id === "*");
   return (
     <>
-      <div className="toolbar">
-        <span>
-          {data.projects.filter((p) => p.id !== "*").length} repositories
-        </span>
-        <div className="row">
-          <button
-            className="button"
-            onClick={() =>
-              setEdit(defaults ?? { id: "*", mcp: {}, inheritDefaults: true })
-            }
-          >
-            Global defaults
-          </button>
-          <button
-            className="button primary"
-            onClick={() => setEdit({ id: "", mcp: {}, inheritDefaults: true })}
-          >
-            <Plus size={15} />
-            Add project
-          </button>
-        </div>
-      </div>
+      <HeaderActions>
+        <Button
+          size="sm"
+          variant="tertiary"
+          onPress={() =>
+            setEdit(defaults ?? { id: "*", mcp: {}, inheritDefaults: true })
+          }
+        >
+          Global defaults
+        </Button>
+        <Button
+          size="sm"
+          onPress={() => setEdit({ id: "", mcp: {}, inheritDefaults: true })}
+        >
+          <Plus size={15} />
+          Add project
+        </Button>
+      </HeaderActions>
       <Panel
         title="Project tools"
         detail="Aliases become tool prefixes. Changes reach running sessions automatically."
@@ -63,9 +67,10 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                       : "Project tools only"}
                   </small>
                 </div>
-                <button
-                  className="button quiet"
-                  onClick={() =>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onPress={() =>
                     void perform(async () =>
                       setTools(
                         await request<ToolPreview[]>(
@@ -77,16 +82,18 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                   }
                 >
                   Preview
-                </button>
-                <button className="button quiet" onClick={() => setEdit(p)}>
+                </Button>
+                <Button size="sm" variant="ghost" onPress={() => setEdit(p)}>
                   Edit
-                </button>
-                <button
-                  className="tool-btn danger"
-                  title="Remove project"
+                </Button>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  className="delete"
                   aria-label={`Delete ${p.id}`}
-                  onClick={() => {
-                    if (confirmDelete(p.id))
+                  onPress={async () => {
+                    if (await confirmDelete(p.id))
                       void perform(
                         () =>
                           request(
@@ -99,7 +106,7 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                   }}
                 >
                   <Trash2 size={15} />
-                </button>
+                </Button>
               </div>
             ))
         ) : (
@@ -133,13 +140,18 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
               });
             }}
           >
-            <input
+            <TextField
               name="dir"
-              required
+              isRequired
               aria-label="Repository folder"
               defaultValue="~/Documents/GitHub"
-            />
-            <button className="button">Scan folder</button>
+              className="grow"
+            >
+              <Input />
+            </TextField>
+            <Button type="submit" size="sm" variant="tertiary">
+              Scan folder
+            </Button>
           </form>
           {repos && (
             <>
@@ -150,10 +162,11 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                       <strong>{repo.repo}</strong>
                       <small>{repo.path}</small>
                     </div>
-                    <button
-                      className="button quiet"
-                      disabled={data.projects.some((p) => p.id === repo.repo)}
-                      onClick={() =>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      isDisabled={data.projects.some((p) => p.id === repo.repo)}
+                      onPress={() =>
                         setEdit({
                           id: repo.repo,
                           mcp: {},
@@ -164,11 +177,11 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
                       {data.projects.some((p) => p.id === repo.repo)
                         ? "Added"
                         : "Add"}
-                    </button>
+                    </Button>
                   </div>
                 ))
               ) : (
-                <div className="empty">No repositories found in this folder.</div>
+                <Empty>No repositories found in this folder.</Empty>
               )}
             </>
           )}
@@ -203,38 +216,36 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
               }, "Project saved");
             }}
           >
-            <label>
-              Repository
-              <input
-                name="id"
-                required
-                readOnly={!!edit.id}
-                defaultValue={edit.id}
-                pattern={edit.id === "*" ? undefined : "[^/\\s]+/[^/\\s]+"}
-                placeholder="owner/repo"
-              />
-            </label>
+            <Field
+              label="Repository"
+              name="id"
+              isRequired
+              isReadOnly={!!edit.id}
+              defaultValue={edit.id}
+              pattern={edit.id === "*" ? undefined : "[^/\\s]+/[^/\\s]+"}
+              placeholder="owner/repo"
+            />
             <fieldset className="checklist">
               <legend>MCP servers</legend>
-              <div className="group">
+              <div className="rows">
                 {data.servers.length ? (
                   data.servers.map((s) => {
                     const alias = aliasOf(edit, s.id);
                     return (
-                      <label className="item check" key={s.id}>
-                        <input
-                          type="checkbox"
-                          name="server"
-                          value={s.id}
-                          defaultChecked={!!alias}
-                        />
+                      <Check
+                        className="item"
+                        key={s.id}
+                        name="server"
+                        value={s.id}
+                        defaultSelected={!!alias}
+                      >
                         <span className="grow">
                           <strong>{s.id}</strong>
                           {alias && alias !== s.id && (
                             <small>Tool prefix: {alias}</small>
                           )}
                         </span>
-                      </label>
+                      </Check>
                     );
                   })
                 ) : (
@@ -243,16 +254,13 @@ export function Projects({ data, connection, perform, local }: ViewProps) {
               </div>
             </fieldset>
             {edit.id !== "*" && (
-              <label className="check">
-                <input
-                  type="checkbox"
-                  name="inherit"
-                  defaultChecked={edit.inheritDefaults}
-                />
+              <Check name="inherit" defaultSelected={edit.inheritDefaults}>
                 Include global defaults
-              </label>
+              </Check>
             )}
-            <button className="button primary">Save project</button>
+            <Button type="submit" size="sm">
+              Save project
+            </Button>
           </form>
         </Modal>
       )}

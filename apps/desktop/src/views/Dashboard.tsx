@@ -1,5 +1,6 @@
 import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
-import { Badge, Empty, Panel } from "../components/ui.tsx";
+import { Button } from "@heroui/react";
+import { Badge, Empty, Panel, Quota } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { providerName } from "./utils.ts";
 
@@ -56,10 +57,14 @@ export function Dashboard({
               Add a Claude or Codex login to route your sessions through
               Agentgate.
             </p>
-            <button className="button" onClick={() => navigate("accounts")}>
+            <Button
+              size="sm"
+              variant="tertiary"
+              onPress={() => navigate("accounts")}
+            >
               Add an account
               <ArrowRight size={14} />
-            </button>
+            </Button>
           </Empty>
         ) : (
           data.accounts.map((a) => (
@@ -94,7 +99,7 @@ export function Dashboard({
                   a.windows.map((w) => (
                     <div key={w.name}>
                       <span>{w.name}</span>
-                      <progress max={100} value={w.usedPct} />
+                      <Quota value={w.usedPct} />
                       <small>{Math.round(w.usedPct)}%</small>
                     </div>
                   ))
@@ -111,9 +116,9 @@ export function Dashboard({
           title="Machines"
           detail="Paired over your Tailscale network."
           action={
-            <button className="link-btn" onClick={() => navigate("nodes")}>
+            <Button size="sm" variant="ghost" onPress={() => navigate("nodes")}>
               Manage
-            </button>
+            </Button>
           }
         >
           {data.nodes.map((n) => (

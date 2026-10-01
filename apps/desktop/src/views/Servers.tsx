@@ -1,10 +1,23 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Boxes, Plus, Trash2 } from "lucide-react";
 import type { Preset, ToolPreview } from "@agentgate/protocol";
-import { Badge, Empty, Modal, Panel } from "../components/ui.tsx";
+import { Button } from "@heroui/react";
+import {
+  Badge,
+  Check,
+  Choice,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { field, idPath, confirmDelete } from "./utils.ts";
+
+// The preset select's "no preset" entry; a list item cannot have an empty id.
+const custom = "__custom";
 
 export function Servers({ data, connection, perform }: ViewProps) {
   const [add, setAdd] = useState(false);
@@ -35,20 +48,13 @@ export function Servers({ data, connection, perform }: ViewProps) {
     }, "Login started. Complete it in your browser; the server updates automatically.");
   return (
     <>
-      <div className="toolbar">
-        <span>
-          {data.servers.length}{" "}
-          {data.servers.length === 1 ? "connected server" : "connected servers"}
-        </span>
-        <button className="button primary" onClick={() => setAdd(true)}>
+      <HeaderActions>
+        <Button size="sm" onPress={() => setAdd(true)}>
           <Plus size={15} />
           Connect server
-        </button>
-      </div>
-      <Panel
-        title="MCP servers"
-        detail="Map servers to projects to give their sessions these tools."
-      >
+        </Button>
+      </HeaderActions>
+      <Panel>
         {!data.servers.length && (
           <Empty>
             <Boxes size={22} />
@@ -86,9 +92,10 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     `${mappings} ${mappings === 1 ? "project" : "projects"}`}
                 </small>
               </div>
-              <button
-                className="button quiet"
-                onClick={() =>
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() =>
                   void perform(async () => {
                     const result = await request<{ tools: ToolPreview[] }>(
                       connection,
@@ -100,27 +107,31 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 }
               >
                 Test
-              </button>
+              </Button>
               {server.transport === "http" && (
-                <button
-                  className="button quiet"
-                  onClick={() => void signIn(server.id)}
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onPress={() => void signIn(server.id)}
                 >
                   Sign in
-                </button>
+                </Button>
               )}
-              <button
-                className="button quiet"
-                onClick={() => setRename(server.id)}
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() => setRename(server.id)}
               >
                 Rename
-              </button>
-              <button
-                className="tool-btn danger"
-                title="Delete server"
+              </Button>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                className="delete"
                 aria-label={`Delete ${server.id}`}
-                onClick={() => {
-                  if (confirmDelete(server.id))
+                onPress={async () => {
+                  if (await confirmDelete(server.id))
                     void perform(
                       () =>
                         request(
@@ -133,7 +144,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 }}
               >
                 <Trash2 size={15} />
-              </button>
+              </Button>
             </div>
           );
         })}
@@ -161,29 +172,22 @@ export function Servers({ data, connection, perform }: ViewProps) {
               }, "Server added. Test the connection or sign in, then map it to a project.");
             }}
           >
-            <label>
-              Server name
-              <input
-                name="id"
-                required
-                pattern="[A-Za-z0-9_-]+"
-                placeholder="e.g. posthog-work"
-              />
-            </label>
-            <label>
-              Preset
-              <select
-                value={preset}
-                onChange={(e) => setPreset(e.target.value)}
-              >
-                <option value="">Custom server</option>
-                {presets.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.id}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <Field
+              label="Server name"
+              name="id"
+              isRequired
+              pattern="[A-Za-z0-9_-]+"
+              placeholder="e.g. posthog-work"
+            />
+            <Choice
+              label="Preset"
+              value={preset || custom}
+              onChange={(key) => setPreset(key === custom ? "" : String(key))}
+              options={[
+                { id: custom, label: "Custom server" },
+                ...presets.map((p) => ({ id: p.id, label: p.id })),
+              ]}
+            />
             {preset ? (
               <p className="note">
                 {presets.find((p) => p.id === preset)?.note ??
@@ -192,55 +196,48 @@ export function Servers({ data, connection, perform }: ViewProps) {
               </p>
             ) : (
               <>
-                <label>
-                  Connection type
-                  <select
-                    value={mode}
-                    onChange={(e) => setMode(e.target.value)}
-                  >
-                    <option value="http">HTTP server</option>
-                    <option value="stdio">Local command</option>
-                  </select>
-                </label>
+                <Choice
+                  label="Connection type"
+                  value={mode}
+                  onChange={(key) => setMode(String(key))}
+                  options={[
+                    { id: "http", label: "HTTP server" },
+                    { id: "stdio", label: "Local command" },
+                  ]}
+                />
                 {mode === "http" ? (
-                  <label>
-                    Server URL
-                    <input
-                      name="url"
-                      type="url"
-                      required
-                      placeholder="https://example.com/mcp"
-                    />
-                  </label>
+                  <Field
+                    label="Server URL"
+                    name="url"
+                    type="url"
+                    isRequired
+                    placeholder="https://example.com/mcp"
+                  />
                 ) : (
                   <>
-                    <label>
-                      Command
-                      <input
-                        name="command"
-                        required
-                        placeholder="npx -y @modelcontextprotocol/server-filesystem"
-                      />
-                    </label>
-                    <label className="check">
-                      <input name="perSession" type="checkbox" />
+                    <Field
+                      label="Command"
+                      name="command"
+                      isRequired
+                      placeholder="npx -y @modelcontextprotocol/server-filesystem"
+                    />
+                    <Check name="perSession">
                       Start separately in each session's worktree
-                    </label>
+                    </Check>
                   </>
                 )}
               </>
             )}
-            <label>
-              Extra headers
-              <textarea
-                name="headers"
-                placeholder={"Authorization: Bearer …\nx-project-id: …"}
-              />
-            </label>
-            <button className="button primary">
+            <Field
+              multiline
+              label="Extra headers"
+              name="headers"
+              placeholder={"Authorization: Bearer …\nx-project-id: …"}
+            />
+            <Button type="submit" size="sm">
               Connect server
               <ArrowRight size={15} />
-            </button>
+            </Button>
           </form>
         </Modal>
       )}
@@ -276,16 +273,16 @@ export function Servers({ data, connection, perform }: ViewProps) {
               }, "Server renamed; project mappings updated");
             }}
           >
-            <label>
-              Server name
-              <input
-                name="id"
-                required
-                pattern="[A-Za-z0-9_-]+"
-                defaultValue={rename}
-              />
-            </label>
-            <button className="button primary">Save name</button>
+            <Field
+              label="Server name"
+              name="id"
+              isRequired
+              pattern="[A-Za-z0-9_-]+"
+              defaultValue={rename}
+            />
+            <Button type="submit" size="sm">
+              Save name
+            </Button>
           </form>
         </Modal>
       )}
