@@ -314,6 +314,10 @@ input[readonly] { color: var(--fg-2); background: var(--chip); }
 textarea { resize: vertical; min-height: 76px; line-height: 1.5; }
 input[type="checkbox"] { width: 16px; min-height: 0; padding: 0; margin: 0; accent-color: var(--primary); }
 label.check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
+.checklist { border: none; padding: 0; margin: 0 0 14px; min-width: 0; }
+.checklist legend { font-size: 13px; font-weight: 500; padding: 0; margin-bottom: 5px; }
+.checklist .group { max-height: 280px; overflow: auto; }
+.checklist .item { min-height: 40px; cursor: pointer; }
 
 .switch {
   appearance: none; -webkit-appearance: none; margin: 0; flex: 0 0 34px; width: 34px; height: 20px;
