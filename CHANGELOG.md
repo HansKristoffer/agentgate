@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/HansKristoffer/agentgate/compare/v0.2.0...v0.3.0) (2026-10-01)
+
+
+### Features
+
+* **desktop:** add a native macOS control app ([95f878f](https://github.com/HansKristoffer/agentgate/commit/95f878f24f21a3405590ee17d19afc393583f863))
+* **desktop:** add native macOS control app ([23597a7](https://github.com/HansKristoffer/agentgate/commit/23597a7220723ea7f366a8ed973514854594d730))
+* **desktop:** restyle the app to match Wallflower ([48679a5](https://github.com/HansKristoffer/agentgate/commit/48679a53079a6edef2e92917dea30a83c9271da7))
+* **desktop:** ship a signed, notarized universal DMG ([173a217](https://github.com/HansKristoffer/agentgate/commit/173a217077a54915c4ca968173265db59839102b))
+* **desktop:** ship a signed, notarized universal DMG ([b60e993](https://github.com/HansKristoffer/agentgate/commit/b60e9930405944a4c1666c91cff7580052fe9f8e))
+* **site:** add Agentgate landing page ([04b2702](https://github.com/HansKristoffer/agentgate/commit/04b270240c161b8778a1c115ffdc44c0c300892e))
+* **site:** add Agentgate landing page ([2d9136a](https://github.com/HansKristoffer/agentgate/commit/2d9136a521ad074b68ef8deeaee02873311c2124))
+
 ## [0.2.0](https://github.com/HansKristoffer/agentgate/compare/v0.1.2...v0.2.0) (2026-09-30)
 
 
