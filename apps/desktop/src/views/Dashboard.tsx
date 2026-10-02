@@ -52,17 +52,33 @@ export function Dashboard({
         {!data.accounts.length ? (
           <Empty>
             <Users size={22} />
-            <strong>Your pool starts with one account.</strong>
-            <p>
-              Add a Claude or Codex login to route your sessions through
-              Agentgate.
-            </p>
+            {data.detected.length ? (
+              <>
+                <strong>
+                  You're signed in to{" "}
+                  {data.detected.map((d) => providerName(d.provider)).join(" and ")}{" "}
+                  on this machine.
+                </strong>
+                <p>
+                  {data.detected.map((d) => d.email).filter((e, i, all) => all.indexOf(e) === i).join(", ")}. Add{" "}
+                  {data.detected.length === 1 ? "it" : "them"} to the pool with one browser confirmation each.
+                </p>
+              </>
+            ) : (
+              <>
+                <strong>Your pool starts with one account.</strong>
+                <p>
+                  Add a Claude or Codex login to route your sessions through
+                  Agentgate.
+                </p>
+              </>
+            )}
             <Button
               size="sm"
               variant="tertiary"
               onPress={() => navigate("accounts")}
             >
-              Add an account
+              {data.detected.length ? "Add to pool" : "Add an account"}
               <ArrowRight size={14} />
             </Button>
           </Empty>

@@ -1,4 +1,5 @@
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { API_VERSION } from "../packages/protocol/src/index.ts";
+import { mkdirSync, mkdtempSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 const binary = resolve(Bun.argv[2] ?? "dist/agentgate");
@@ -55,7 +56,7 @@ try {
       if (
         !response.ok ||
         status.node !== "smoke" ||
-        status.apiVersion !== 1 ||
+        status.apiVersion !== API_VERSION ||
         status.html !== undefined
       )
         throw new Error("invalid native status");
@@ -76,11 +77,33 @@ try {
     ).status !== 403
   )
     throw new Error("browser control API access allowed");
+  const checkout = join(home, "checkout");
+  mkdirSync(checkout);
+  if (Bun.spawnSync(["git", "init", checkout], { stdout: "pipe", stderr: "pipe" }).exitCode !== 0)
+    throw new Error("could not initialize smoke checkout");
+  const markdown = join(home, "SKILL.md");
+  await Bun.write(markdown, "---\nname: smoke-skill\ndescription: Compiled CLI skill smoke test.\n---\n\nUse this skill for the smoke test.\n");
+  for (const args of [
+    ["skills", "new", "smoke-skill", "--file", markdown],
+    ["skills", "projects", "smoke-skill", "smoke/repo"],
+    ["skills", "prepare", checkout, "--project", "smoke/repo"],
+  ]) {
+    const child = Bun.spawnSync([binary, ...args], {
+      env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
+  }
+  for (const folder of [".agents", ".claude"]) {
+    const link = join(checkout, folder, "skills", "smoke-skill");
+    if (!readlinkSync(link) || !(await Bun.file(join(link, "SKILL.md")).text()).includes("Compiled CLI skill smoke test."))
+      throw new Error("compiled skills prepare did not publish skill links");
+  }
   daemon.kill("SIGTERM");
   await daemon.exited;
   daemon = undefined;
   console.log(
-    "compiled CLI smoke passed (init, setup, exports, shim config, headless daemon, native API, no web UI)",
+    "compiled CLI smoke passed (init, setup, exports, shim config, headless daemon, native API, skill creation/assignment/preparation, no web UI)",
   );
 } finally {
   if (daemon) {
