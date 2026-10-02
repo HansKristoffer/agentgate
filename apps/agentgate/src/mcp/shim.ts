@@ -21,6 +21,9 @@ export function detectProject(cwd: string, env = process.env): string {
 export async function buildShim(cwd: string, daemonUrl = LOCAL_URL, env = process.env, options: { reconnectMs?: number } = {}) {
   const project = detectProject(cwd, env);
   const q = `project=${encodeURIComponent(project)}`;
+  // Too late for this session's skills (agents read them before starting MCP servers), but it lets the
+  // daemon link project skills into this repo's worktrees ahead of the next session.
+  if (project !== "*") void fetchHeaders(`${daemonUrl}/api/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: cwd, project }) }, 5000).then(r => r.body?.cancel(), () => { });
   let daemon: Client | undefined, transport: StreamableHTTPClientTransport | undefined;
   let closed = false, flight: Promise<void> | undefined;
   const children = new Map<string, { config: string; client: Client }>();

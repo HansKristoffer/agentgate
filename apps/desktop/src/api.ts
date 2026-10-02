@@ -1,4 +1,4 @@
-import { API_VERSION, type Connection, type Status } from "@agentgate/protocol";
+import { API_VERSION, statusSchema, type Connection } from "@agentgate/protocol";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -16,12 +16,14 @@ export function request<T>(
   return invoke<T>("api_request", { connection, path, method, body });
 }
 export async function status(connection: Connection) {
-  const data = await request<Status>(connection, "/status");
-  if (data.apiVersion !== API_VERSION)
+  const data = await request<unknown>(connection, "/status");
+  if (!data || typeof data !== "object" || !("apiVersion" in data) || data.apiVersion !== API_VERSION)
     throw new Error(
       "This daemon uses a different API version. Update Agentgate on both machines.",
     );
-  return data;
+  const parsed = statusSchema.safeParse(data);
+  if (!parsed.success) throw new Error("The daemon returned incompatible status data. Update Agentgate on both machines.");
+  return parsed.data;
 }
 export const openExternal = (url: string) => openUrl(url);
 export const localAction = (action: string, connection: Connection) =>

@@ -1,5 +1,7 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
+import { projectIdSchema } from "@agentgate/protocol";
+import { canonicalProject } from "./mcp/gateway.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
 export function parseCommand(text: string): string[] {
@@ -88,10 +90,12 @@ export function renameInstance(s: Store, from: string, to: string) {
   });
 }
 export function saveProject(s: Store, id: string, patch: Partial<Project>) {
-  const prev = s.get("project", id) ?? { id, mcp: {}, inheritDefaults: true };
+  id = canonicalProject(s, projectIdSchema.parse(id));
+  const prev = s.get("project", id) ?? { id, mcp: {}, skills: [], inheritDefaults: true };
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {
     if (!validId(alias)) throw new Error(`invalid tool prefix ${alias}`);
     if (!s.get("mcp", target)) throw new Error(`no MCP instance ${target}`);
   }
-  return s.put("project", id, { ...prev, ...patch, id });
+  for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);
+  return s.put("project", id, { ...prev, ...patch, ...(patch.skills && { skills: [...new Set(patch.skills)] }), id });
 }

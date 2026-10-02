@@ -1,20 +1,25 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Status } from "@agentgate/protocol";
+import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
+import { choose } from "../src/llm/pool.ts";
+import { SkillImports } from "../src/skill-import.ts";
+import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((fn) => fn()));
 });
-function fixture() {
+function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
   const s = new Store(":memory:");
   s.setLocal("node", "test");
   s.setLocal("adminToken", "admin-secret");
-  const ctx = makeCtx(s),
+  const ctx = makeCtx(s, options),
     handler = app(ctx);
   cleanup.push(async () => {
+    ctx.abort.abort(); ctx.skills.close(); ctx.imports.close();
+    await ctx.imports.drain();
     await ctx.gateway.close();
     s.close();
   });
@@ -37,8 +42,42 @@ function fixture() {
       }),
       { listener },
     );
-  return { s, call, handler };
+  return { s, call, handler, ctx };
 }
+
+test("subscription selection switches each provider independently and keeps quota fallback", async () => {
+  const { s, call } = fixture();
+  for (const provider of ["claude", "codex"] as const) {
+    for (const label of ["personal", "work"]) {
+      const id = `${provider}-${label}`;
+      s.put("account", id, { id, provider, label });
+      s.put("credential", id, {
+        accountId: id, accessToken: id, refreshToken: id,
+        expiresAt: s.now() + 3600000, holder: "test",
+      });
+    }
+    s.setLocal(`active:${provider}`, `${provider}-personal`);
+    expect((await call(`/api/accounts/${provider}-work`, "PATCH", { pinned: true })).status).toBe(200);
+    expect(choose(s, provider, undefined)?.id).toBe(`${provider}-work`);
+  }
+  // Switching Claude leaves the Codex preference intact and replaces the old pin.
+  expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: true })).status).toBe(200);
+  expect(s.get("account", "claude-work")?.pinned).toBe(false);
+  expect(choose(s, "codex", undefined)?.id).toBe("codex-work");
+  // A selected subscription at its limit falls back without clearing the preference.
+  s.put("usage", "codex-work", {
+    accountId: "codex-work", windows: [], status: "exhausted",
+    exhaustedUntil: s.now() + 60000, observedAt: s.now(), observedBy: "test",
+  });
+  expect(choose(s, "codex", undefined)?.id).toBe("codex-personal");
+  expect(s.get("account", "codex-work")?.pinned).toBe(true);
+  // Automatic selection clears the pin and respects the account used most recently.
+  s.setLocal("active:claude", "claude-work");
+  expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: false })).status).toBe(200);
+  expect(choose(s, "claude", undefined)?.id).toBe("claude-work");
+  const status = await (await call("/api/status")).json() as Status;
+  expect(status.accounts.filter(a => a.account.pinned).map(a => a.account.id)).toEqual(["codex-work"]);
+});
 
 test("web pages, assets, and cookie login are removed", async () => {
   const { call } = fixture();
@@ -139,7 +178,8 @@ test("status contains native data and omits provider, peer and MCP secrets", asy
   expect(response.headers.get("cache-control")).toBe("no-store");
   const text = await response.text();
   const status = JSON.parse(text) as Status;
-  expect(status.apiVersion).toBe(1);
+  expect(status.apiVersion).toBe(API_VERSION);
+  expect(statusSchema.safeParse(status).success).toBe(true);
   expect(status.servers[0]?.endpoint).toBe("https://example.com/mcp");
   expect(status.accounts[0]?.account.label).toBe("Work");
   expect(status.nodes[0]?.online).toBe(true);
@@ -263,4 +303,84 @@ test("malformed JSON and form submissions get clear errors without changing sett
     expect(((await response.json()) as { error: string }).error).toBeTruthy();
   }
   expect(s.get("setting", "settings")).toBeUndefined();
+});
+
+test("signed-in Claude Code and Codex logins are detected by identity only, and pre-selected at sign-in", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const claude = await import("../src/llm/claude.ts"), codex = await import("../src/llm/codex.ts");
+  const dir = mkdtempSync(join((await import("node:os")).tmpdir(), "agentgate-detect-"));
+  writeFileSync(join(dir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "a@b.dk", organizationType: "claude_max" } }));
+  const claims = Buffer.from(JSON.stringify({ email: "c@d.dk", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" } })).toString("base64url");
+  writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { id_token: `x.${claims}.y`, refresh_token: "secret" } }));
+  expect(claude.detect(dir)).toEqual({ email: "a@b.dk", plan: "claude_max" });
+  expect(codex.detect(dir)).toEqual({ email: "c@d.dk", plan: "pro" });
+  expect(codex.detect(join(dir, "missing"))).toBeUndefined();
+  for (const mod of [claude, codex]) {
+    expect(new URL(mod.authorizeUrl("c", "s", "a@b.dk")).searchParams.get("login_hint")).toBe("a@b.dk");
+    expect(new URL(mod.authorizeUrl("c", "s")).searchParams.has("login_hint")).toBe(false);
+  }
+});
+
+test("checkout writes share the browser guard, JSON validation, and loopback restriction", async () => {
+  const { call, ctx } = fixture();
+  let registered = 0;
+  ctx.skills.register = () => { registered++; return "/repo"; };
+  const body = { path: "/repo", project: "owner/repo" };
+  for (const headers of [{ origin: "https://example.com" }, { "sec-fetch-site": "cross-site" }] as Record<string, string>[]) {
+    expect((await call("/api/checkout", "POST", body, "loopback", headers)).status).toBe(403);
+  }
+  expect((await call("/api/checkout", "POST", body, "loopback", { "content-type": "text/plain" })).status).toBe(415);
+  expect((await call("/api/checkout", "POST", { ...body, project: "invalid" })).status).toBe(400);
+  expect((await call("/api/checkout", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(404);
+  expect(registered).toBe(0);
+  expect((await call("/api/checkout", "POST", body)).status).toBe(200);
+  expect(registered).toBe(1);
+});
+
+test("installation uses the reviewed artifact and expired previews never refetch implicitly", async () => {
+  let now = 0, fetches = 0;
+  const imports = new SkillImports(async () => {
+    fetches++;
+    return [{ id: "x", description: "x", files: [{ path: "SKILL.md", data: Buffer.from(`version-${fetches}`).toString("base64") }] }];
+  }, () => now);
+  const { call, s } = fixture({ imports });
+  const preview = await (await call("/api/skills/fetch", "POST", { source: "owner/pack" })).json() as SkillPreviewResponse;
+  expect(preview.skills[0]!.size).toBe(9);
+  expect((await call("/api/skills", "POST", { token: preview.token, ids: ["x"], projects: ["owner/repo"] })).status).toBe(201);
+  expect(fetches).toBe(1);
+  expect(Buffer.from(s.get("skill", "x")!.files[0]!.data, "base64").toString()).toBe("version-1");
+  now = 10 * 60_000;
+  expect((await call("/api/skills", "POST", { token: preview.token, ids: ["x"] })).status).toBe(409);
+  expect(fetches).toBe(1);
+  expect((await call("/api/skills", "POST", { source: "owner/pack", ids: ["x"] })).status).toBe(400);
+  const different = await (await call("/api/skills/fetch", "POST", { source: "different/pack" })).json() as SkillPreviewResponse;
+  expect(different.skills[0]!.conflict).toContain("owner/pack");
+  expect((await call("/api/skills", "POST", { token: different.token, ids: ["x"] })).status).toBe(409);
+});
+
+test("skill editor requires revision preconditions and preserves newer content", async () => {
+  const { call, s } = fixture();
+  expect((await call("/api/skills/x", "PUT", { skillMd: "first", revision: null })).status).toBe(200);
+  const first = await (await call("/api/skills/x")).json() as { revision: string };
+  expect(typeof first.revision).toBe("string");
+  expect((await call("/api/skills/x", "PUT", { skillMd: "unguarded" })).status).toBe(400);
+  expect((await call("/api/skills/x", "PUT", { skillMd: "duplicate creation", revision: null })).status).toBe(409);
+  expect((await call("/api/skills/x", "PUT", { skillMd: "newer", revision: first.revision })).status).toBe(200);
+  expect((await call("/api/skills/x", "PUT", { skillMd: "stale", revision: first.revision })).status).toBe(409);
+  expect(Buffer.from(s.get("skill", "x")!.files[0]!.data, "base64").toString()).toBe("newer");
+});
+
+test("omitted project skills preserve explicit assignments and malformed status fails validation", async () => {
+  const { call, s } = fixture();
+  writeSkillMd(s, "x", "instructions");
+  s.put("project", "Owner/Repo", { id: "Owner/Repo", skills: ["x"] });
+  expect((await call("/api/projects", "PUT", { id: "owner/repo", mcp: {}, inheritDefaults: false })).status).toBe(200);
+  expect(s.get("project", "Owner/Repo")!.skills).toEqual(["x"]);
+  expect(s.get("project", "owner/repo")).toBeUndefined();
+  const data = await (await call("/api/status")).json() as Status;
+  expect(statusSchema.safeParse(data).success).toBe(true);
+  expect(statusSchema.safeParse({ ...data, apiVersion: API_VERSION - 1 }).success).toBe(false);
+  const { skills, ...missing } = data;
+  expect(statusSchema.safeParse(missing).success).toBe(false);
 });

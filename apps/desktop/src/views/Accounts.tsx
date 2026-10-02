@@ -24,19 +24,85 @@ import {
   confirmDelete,
 } from "./utils.ts";
 
+function SubscriptionSelector({
+  data,
+  connection,
+  perform,
+  provider,
+}: Pick<ViewProps, "data" | "connection" | "perform"> & { provider: Provider }) {
+  const accounts = data.accounts.filter((a) => a.account.provider === provider);
+  const selected = accounts.find((a) => a.account.pinned);
+  return (
+    <Choice
+      className="item"
+      label={`Active ${providerName(provider)} subscription`}
+      description="Applies to the next request in all routed sessions. Falls back if unavailable."
+      value={selected ? `account:${selected.account.id}` : "automatic"}
+      disabledKeys={accounts
+        .filter((a) => !a.account.enabled || a.needsLogin)
+        .map((a) => `account:${a.account.id}`)}
+      onChange={(key) => {
+        if (!key) return;
+        const value = String(key);
+        void perform(
+          async () => {
+            if (value === "automatic") {
+              for (const a of accounts.filter((a) => a.account.pinned))
+                await request(
+                  connection,
+                  `/accounts/${idPath(a.account.id)}`,
+                  "PATCH",
+                  { pinned: false },
+                );
+            } else {
+              await request(
+                connection,
+                `/accounts/${idPath(value.slice("account:".length))}`,
+                "PATCH",
+                { pinned: true },
+              );
+            }
+          },
+          value === "automatic"
+            ? `${providerName(provider)} uses automatic selection`
+            : `${providerName(provider)} subscription selected`,
+        );
+      }}
+      options={[
+        { id: "automatic", label: "Automatic" },
+        ...accounts.map((a) => {
+          const unavailable = !a.account.enabled
+            ? "Disabled"
+            : a.needsLogin
+              ? "Needs login"
+              : a.exhausted
+                ? "Exhausted"
+                : undefined;
+          return {
+            id: `account:${a.account.id}`,
+            label: [a.account.label, a.account.email, unavailable]
+              .filter(Boolean)
+              .join(" · "),
+          };
+        }),
+      ]}
+    />
+  );
+}
+
 export function Accounts({ data, connection, perform, local }: ViewProps) {
   const [login, setLogin] = useState<LoginStart>();
   const [add, setAdd] = useState(false);
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<string>();
-  const start = (provider: Provider, label: string) =>
+  const start = (provider: Provider, label: string, email?: string) =>
     perform(async () => {
       const result = await request<LoginStart>(
         connection,
         "/accounts/login",
         "POST",
-        { provider, label: label || undefined },
+        { provider, label: label || undefined, email },
       );
       setLogin(result);
       setAdd(false);
@@ -56,6 +122,31 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
           Add account
         </Button>
       </HeaderActions>
+      {data.detected.length > 0 && (
+        <Panel
+          title={local ? "Signed in on this Mac" : `Signed in on ${data.node}`}
+          detail="Add these accounts to the pool. You confirm once in the browser, so Claude Code and Codex keep their own logins."
+        >
+          {data.detected.map((d) => (
+            <div className="item" key={d.provider}>
+              <div className={`provider-icon ${d.provider}`}>
+                {d.provider === "claude" ? "✳" : "◎"}
+              </div>
+              <div className="grow">
+                <strong>{d.email}</strong>
+                <small>
+                  {providerName(d.provider)} · {d.source}
+                </small>
+              </div>
+              {d.plan && <Badge>{d.plan.replace(/^claude_/, "")}</Badge>}
+              <Button size="sm" onPress={() => void start(d.provider, "", d.email)}>
+                Add to pool
+                <ExternalLink size={14} />
+              </Button>
+            </div>
+          ))}
+        </Panel>
+      )}
       {(["claude", "codex"] as const).map((provider) => (
         <Panel
           key={provider}
@@ -70,6 +161,14 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
+          {data.accounts.some((a) => a.account.provider === provider) && (
+            <SubscriptionSelector
+              data={data}
+              connection={connection}
+              perform={perform}
+              provider={provider}
+            />
+          )}
           {!data.accounts.some((a) => a.account.provider === provider) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
           ) : (
@@ -88,6 +187,7 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                     {a.account.plan && (
                       <Badge>{a.account.plan.replace(/^claude_/, "")}</Badge>
                     )}
+                    {a.account.pinned && <Badge>Selected</Badge>}
                     <Badge
                       good={
                         a.active &&
@@ -159,6 +259,10 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                       <Button
                         size="sm"
                         variant="ghost"
+                        isDisabled={
+                          !a.account.pinned &&
+                          (!a.account.enabled || a.needsLogin)
+                        }
                         onPress={() =>
                           void perform(() =>
                             request(
@@ -167,10 +271,13 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                               "PATCH",
                               { pinned: !a.account.pinned },
                             ),
+                            a.account.pinned
+                              ? `${providerName(provider)} uses automatic selection`
+                              : `${providerName(provider)} subscription selected`,
                           )
                         }
                       >
-                        {a.account.pinned ? "Unpin" : "Pin"}
+                        {a.account.pinned ? "Use automatic" : "Use subscription"}
                       </Button>
                       <Button
                         size="sm"

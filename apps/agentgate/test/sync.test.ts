@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { type Rec, Store } from "../src/store.ts";
-import { pairCode, peerRoutes, peers, pullPeer } from "../src/sync.ts";
+import { pairCode, peerRoutes, peers, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
 
 function node(name: string) {
   const s = new Store(":memory:");
@@ -58,10 +58,10 @@ test("pairing, pull from since=0, and passing records on through a middle node",
 
   // Pair b with a through the join endpoint.
   const code = pairCode(a);
-  const res = await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "b", url: urlB, protocol: 2 }) });
+  const res = await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "b", url: urlB, protocol: SYNC_PROTOCOL }) });
   const { token } = (await res.json()) as { token: string };
   b.db.run("insert into peers values ('a', ?, ?, 0, null)", [urlA, token]);
-  expect((await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "x", url: urlB, protocol: 2 }) })).status).toBe(403); // one-time
+  expect((await fetch(`${urlA}/peer/join`, { method: "POST", body: JSON.stringify({ code, node: "x", url: urlB, protocol: SYNC_PROTOCOL }) })).status).toBe(403); // one-time
 
   await pullPeer(b, peers(b)[0]!);
   expect(b.get("account", "acc")!.label).toBe("work");
@@ -87,7 +87,7 @@ test("pairing, pull from since=0, and passing records on through a middle node",
 
 test("a malformed peer batch changes neither records nor cursor", async () => {
   const s = node("local");
-  const server = Bun.serve({ port: 0, fetch: () => Response.json({ protocol: 2, seq: 2, records: [{ kind: "account", id: "a", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 1, data: '{"id":"a","provider":"claude","label":"a"}' }, { kind: "setting", id: "settings", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 2, data: '{"threshold":1000}' }] }) });
+  const server = Bun.serve({ port: 0, fetch: () => Response.json({ protocol: SYNC_PROTOCOL, seq: 2, records: [{ kind: "account", id: "a", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 1, data: '{"id":"a","provider":"claude","label":"a"}' }, { kind: "setting", id: "settings", rev: 1, node: "peer", updated_at: 1, deleted: 0, seq: 2, data: '{"threshold":1000}' }] }) });
   s.db.run("insert into peers values ('peer', ?, 'token', 0, null)", [`http://127.0.0.1:${server.port}`]);
   try { await expect(pullPeer(s, peers(s)[0]!)).rejects.toThrow(); expect(s.get("account", "a")).toBeUndefined(); expect(peers(s)[0]!.cursor).toBe(0); expect(s.seq()).toBe(0); } finally { server.stop(true); s.close(); }
 });
@@ -96,4 +96,62 @@ test("peer cursor validation and protocol mismatch fail cleanly", async () => {
   const s = node("local"), url = listen(s); s.db.run("insert into peers values ('p', 'http://unused', 'token', 0, null)");
   expect((await fetch(`${url}/peer/changes?since=NaN`, { headers: { authorization: "Bearer token" } })).status).toBe(400);
   expect((await fetch(`${url}/peer/join`, { method: "POST", body: JSON.stringify({ protocol: 1, node: "old", url: "http://x", code: pairCode(s) }) })).status).toBe(400);
+});
+
+test("byte-bounded pages let initial pairing and offline catch-up exceed 16 MiB", async () => {
+  const a = node("large-a"), b = node("large-b");
+  try {
+    a.put("account", "acc", { id: "acc", provider: "claude", label: "before skills" });
+    const payload = Buffer.alloc(2 * 1024 * 1024, "x").toString("base64");
+    for (let i = 0; i < 6; i++) a.put("skill", `skill-${i}`, { id: `skill-${i}`, updatedAt: 1, files: [{ path: "SKILL.md", data: "aW5zdHJ1Y3Rpb25z" }, { path: "assets/data", data: payload }] });
+    expect(Buffer.byteLength(JSON.stringify(a.changes(0)))).toBeGreaterThan(16 * 1024 * 1024);
+    const url = listen(a);
+    a.db.run("insert into peers values ('large-b', 'http://unused', 'token', 0, null)");
+    b.db.run("insert into peers values ('large-a', ?, 'token', 0, null)", [url]);
+    const first = await (await fetch(`${url}/peer/changes?since=0`, { headers: { authorization: "Bearer token" } })).text();
+    expect(Buffer.byteLength(first)).toBeLessThan(9 * 1024 * 1024);
+    const page = JSON.parse(first); expect(page.more).toBe(true);
+    expect(page.seq).toBe(page.records.at(-1).seq);
+    expect(await pullPeer(b, peers(b)[0]!)).toBe(7);
+    expect(b.list("skill")).toHaveLength(6);
+    expect(b.get("account", "acc")!.label).toBe("before skills");
+    expect(peers(b)[0]!.cursor).toBe(a.seq());
+    a.del("skill", "skill-0");
+    a.put("account", "acc", { id: "acc", provider: "claude", label: "after offline edit" });
+    await pullPeer(b, peers(b)[0]!);
+    expect(b.get("skill", "skill-0")).toBeUndefined();
+    expect(b.get("account", "acc")!.label).toBe("after offline edit");
+    expect(peers(b)[0]!.cursor).toBe(a.seq());
+  } finally { a.close(); b.close(); }
+});
+
+test("an interrupted paginated pull resumes after the last committed page", async () => {
+  const s = node("receiver");
+  let fail = true;
+  const record = (id: string, seq: number) => ({ kind: "account", id, rev: 1, node: "sender", updated_at: 1, deleted: 0, seq, data: JSON.stringify({ id, provider: "claude", label: id }) });
+  const cursors: number[] = [];
+  const server = Bun.serve({ port: 0, fetch: req => {
+    const since = Number(new URL(req.url).searchParams.get("since")); cursors.push(since);
+    if (since === 0) return Response.json({ protocol: SYNC_PROTOCOL, records: [record("first", 1)], seq: 1, more: true });
+    if (fail) return new Response("interrupted", { status: 503 });
+    return Response.json({ protocol: SYNC_PROTOCOL, records: [record("second", 2)], seq: 2, more: false });
+  } });
+  try {
+    s.db.run("insert into peers values ('sender', ?, 'token', 0, null)", [`http://127.0.0.1:${server.port}`]);
+    await expect(pullPeer(s, peers(s)[0]!)).rejects.toThrow();
+    expect(peers(s)[0]!.cursor).toBe(1); expect(s.get("account", "first")).toBeDefined();
+    fail = false; await pullPeer(s, peers(s)[0]!);
+    expect(peers(s)[0]!.cursor).toBe(2); expect(s.get("account", "second")).toBeDefined();
+    expect(cursors).toEqual([0, 1, 1]);
+  } finally { server.stop(true); s.close(); }
+});
+
+test("a continuation page cannot skip records by advertising a higher sequence", async () => {
+  const s = node("receiver");
+  const server = Bun.serve({ port: 0, fetch: () => Response.json({ protocol: SYNC_PROTOCOL, seq: 100, more: true, records: [{ kind: "account", id: "a", rev: 1, node: "sender", updated_at: 1, deleted: 0, seq: 1, data: '{"id":"a","provider":"claude","label":"a"}' }] }) });
+  try {
+    s.db.run("insert into peers values ('sender', ?, 'token', 0, null)", [`http://127.0.0.1:${server.port}`]);
+    await expect(pullPeer(s, peers(s)[0]!)).rejects.toThrow(/sequence/);
+    expect(s.seq()).toBe(0); expect(peers(s)[0]!.cursor).toBe(0);
+  } finally { server.stop(true); s.close(); }
 });

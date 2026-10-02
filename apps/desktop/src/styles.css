@@ -83,6 +83,8 @@ pre {
 .checklist .rows { max-height: 280px; overflow: auto; }
 .checklist .item { min-height: 40px; }
 .inline-form { display: flex; gap: 8px; align-items: center; }
+.skill-md textarea { min-height: 320px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
+.tool-list > .row .grow { min-width: 0; }
 
 .delete:hover:not([data-disabled]) { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 
