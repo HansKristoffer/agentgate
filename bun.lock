@@ -25,7 +25,7 @@
       "name": "@agentgate/desktop",
       "dependencies": {
         "@agentgate/protocol": "workspace:*",
-        "@hanskristoffer/taurio": "0.1.0",
+        "@hanskristoffer/taurio": "^0.1.0",
         "@heroui/react": "3.2.6",
         "@heroui/styles": "3.2.6",
         "@tauri-apps/api": "^2",
