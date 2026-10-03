@@ -18,19 +18,53 @@ export const accountSchema = z.object({
   pinned: z.boolean().optional(),
   policy: modelPolicySchema.optional(),
 });
+const b64url = (bytes: number) => z.string().length(Math.ceil(bytes * 4 / 3)).regex(/^[A-Za-z0-9_-]+$/);
+export const remoteSchema = z.object({
+  /** Names the relay endpoint: `/mcp/<key>`. */
+  key: b64url(16),
+  /** What the client sends as `Authorization: Bearer <secret>`. */
+  secret: b64url(32),
+  /** What the serving node authenticates to the relay with. */
+  token: b64url(32),
+  enabled: z.boolean(),
+  servedBy: z.string().min(1).max(512),
+  /** Relay base URL, fixed when the endpoint is created. */
+  relay: z.string().url().max(2000),
+});
 export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
   /** Skill ids linked into this repo's checkouts; on `*`, linked for every session. */
   skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => [...new Set(ids)]),
   inheritDefaults: z.boolean().default(true),
+  /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
+  remote: remoteSchema.optional(),
   seenAt: z.number().int().nonnegative().optional(),
   seenOn: z.string().optional(),
 });
+/** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
+export const remoteSummarySchema = z.object({
+  enabled: z.boolean(),
+  servedBy: z.string(),
+  url: z.string(),
+  /** Known only on the serving node. */
+  connected: z.boolean().optional(),
+  /** The relay has not acknowledged the current secret yet. */
+  updating: z.boolean().optional(),
+  error: z.string().optional(),
+  /** Servers that could not be reached on the serving node at the last request. */
+  failedAliases: z.array(z.string()).optional(),
+  lastCall: z.number().optional(),
+});
+export type RemoteSummary = z.infer<typeof remoteSummarySchema>;
+export const publicProjectSchema = projectSchema.extend({ remote: remoteSummarySchema.optional() });
+export type PublicProject = z.infer<typeof publicProjectSchema>;
 export const nodeSchema = z.object({
   id: z.string(),
   url: z.string().optional(),
   alwaysOn: z.boolean().default(false),
+  /** Sync features this node's daemon understands; 2 = remote MCP endpoints. Absent on older daemons. */
+  protocol: z.number().int().optional(),
 });
 export const settingsSchema = z.object({
   threshold: z.number().min(1).max(100).default(98),
@@ -152,7 +186,7 @@ export interface Status {
   /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
   detected: { provider: Provider; email: string; plan?: string; source: string }[];
   servers: ServerSummary[];
-  projects: Project[];
+  projects: PublicProject[];
   skills: SkillSummary[];
   /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: string[];
@@ -251,7 +285,7 @@ export const statusSchema = z.object({
   accounts: z.array(accountStatusSchema),
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
   servers: z.array(z.object({ id: z.string(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), refreshError: z.string().optional() })),
-  projects: z.array(projectSchema),
+  projects: z.array(publicProjectSchema),
   skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
   skillConflicts: z.array(z.string()),
   skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),

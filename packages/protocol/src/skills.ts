@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 export const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
-export const PROJECT_ID = /^(\*|[^/\s]+\/[^/\s]+)$/;
+/** `*`, a GitHub `owner/repo`, or a virtual project `@name` (GitHub owners can't start with `@`). */
+export const PROJECT_ID = /^(\*|[^/\s@][^/\s]*\/[^/\s]+|@[a-z0-9][a-z0-9-]{0,63})$/;
+export const isVirtual = (project: string) => project.startsWith("@");
 export const MAX_SKILL = 3 * 1024 * 1024; // Encoded payload, about 2.25 MiB decoded.
 export const MAX_SKILL_FILES = 5000;
 export const MAX_RECORD = 4 * 1024 * 1024;

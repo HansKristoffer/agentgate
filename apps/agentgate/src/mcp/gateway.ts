@@ -7,9 +7,11 @@ import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.j
 import { CallToolRequestSchema, ListToolsRequestSchema, ToolListChangedNotificationSchema, type CallToolRequest, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { isVirtual } from "@agentgate/protocol";
 import { fetchHeaders } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
 import { authenticatedFetch } from "./oauth.ts";
+import { skillsSource } from "./skills.ts";
 import { resolve } from "./templates.ts";
 export { renameInstance } from "../operations.ts";
 
@@ -35,6 +37,7 @@ export function canonicalProject(s: Store, project: string): string {
 /** alias → instance id for a repo: the `*` defaults (unless turned off), overridden by the repo's own. */
 export function aliasesFor(s: Store, project: string): Record<string, string> {
   const p = project !== "*" ? s.get("project", canonicalProject(s, project)) : undefined;
+  if (isVirtual(project)) return { ...(p?.mcp ?? {}) };
   const defaults = !p || p.inheritDefaults ? (s.get("project", "*")?.mcp ?? {}) : {};
   return { ...defaults, ...(p?.mcp ?? {}) };
 }
@@ -116,7 +119,7 @@ export function mergeInstructions(sources: Source[]): string {
 }
 
 /** One MCP server in front of many: the tools of every source under their aliases. */
-export function mergedServer(instructions: string, sources: () => Promise<Source[]>, onError: (alias: string, e: unknown) => void = () => { }, resolveSource?: (alias: string) => Promise<Source | undefined>, activity?: (change: number) => void): Server {
+export function mergedServer(instructions: string, sources: () => Promise<Source[]>, onError: (alias: string, e: unknown) => void = () => { }, resolveSource?: (alias: string) => Promise<Source | undefined>, activity?: (change: number) => void, signal?: AbortSignal): Server {
   const server = new Server({ name: "agentgate", version: VERSION }, { capabilities: { tools: { listChanged: true } }, instructions });
   let routes = new Map<string, { alias: string; tool: string }>();
 
@@ -146,7 +149,8 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
       if (!route || !source) return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
-        signal: extra.signal, timeout: 5 * 60_000, maxTotalTimeout: 30 * 60_000, resetTimeoutOnProgress: true,
+        // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
+        signal: signal ? AbortSignal.any([extra.signal, signal]) : extra.signal, timeout: 5 * 60_000, maxTotalTimeout: 30 * 60_000, resetTimeoutOnProgress: true,
         onprogress: progressToken === undefined ? undefined : p => { void extra.sendNotification({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
       };
       const params = { ...req.params, name: route.tool };
@@ -277,6 +281,52 @@ export class Gateway {
       if (response.status >= 400 && !transport.sessionId) await server.close();
       return response;
     } catch (e) { await server.close().catch(() => { }); throw e; }
+  }
+
+  /**
+   * The endpoint of a virtual project, for remote clients through the relay: stateless JSON, one server and
+   * transport per POST, shared instances plus the built-in skill tools. Never reachable through an HTTP listener.
+   */
+  async handleRemote(project: string, body: string, headers: Record<string, string>, signal: AbortSignal): Promise<{ response: Response; failed: string[] }> {
+    const error = (status: number, code: number, message: string) => ({ response: Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status }), failed: [] });
+    if (this.closed) return error(503, -32000, "agentgate is stopping");
+    let message: unknown;
+    try { message = JSON.parse(body); } catch { return error(400, -32700, "Parse error"); }
+    if (Array.isArray(message)) return error(400, -32600, "JSON-RPC batches are not supported");
+    const failed = new Set<string>();
+    const skills = await skillsSource(this.s, project);
+    const sources = async (): Promise<Source[]> => {
+      const out = await Promise.all(Object.keys(aliasesFor(this.s, project)).filter(alias => alias !== skills.alias).map(async alias => {
+        try { return await this.source(project, alias); }
+        catch (e) { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`); return undefined; }
+      }));
+      return [...out.filter((source): source is Source => !!source), skills];
+    };
+    const resolveSource = (alias: string) => alias === skills.alias ? Promise.resolve(skills) : this.source(project, alias);
+    // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
+    const instructions = (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
+    const server = mergedServer(instructions, sources, (alias, e) => { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`); }, resolveSource, undefined, signal);
+    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    try {
+      await server.connect(transport);
+      // We always answer with JSON, so a client that only accepts JSON is fine; the SDK insists on both types.
+      const request = new Request("http://agentgate.invalid/mcp", {
+        method: "POST", body, signal,
+        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(headers["mcp-protocol-version"] && { "mcp-protocol-version": headers["mcp-protocol-version"] }) },
+      });
+      const aborted = new Promise<never>((_, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+      aborted.catch(() => { });
+      const response = await Promise.race([transport.handleRequest(request), aborted]);
+      // Read the body before closing the server, which would cut a JSON response short.
+      const text = await response.text();
+      return { response: new Response(text || null, { status: response.status, headers: response.headers }), failed: [...failed] };
+    } finally {
+      await server.close().catch(() => { });
+      await skills.client.close().catch(() => { });
+    }
   }
 
   /** Tell every running session to re-list its tools (a mapping or instance changed). */

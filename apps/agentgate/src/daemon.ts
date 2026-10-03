@@ -20,6 +20,7 @@ import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgat
 import { jsonInput } from "./http.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
+import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -34,6 +35,7 @@ export interface Ctx {
   pending: Set<Promise<void>>;
   quotas: Quotas;
   proxyOperations: ProxyOperations;
+  remote: RemoteEndpoints;
 }
 
 export { providers } from "./llm/providers.ts";
@@ -41,7 +43,8 @@ export { providers } from "./llm/providers.ts";
 export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
-  return { s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway: new Gateway(s), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
+  const gateway = new Gateway(s);
+  return { s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
 }
 
 export function app(ctx: Ctx) {
@@ -123,6 +126,9 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   const listen = (hostname: string, listener: Listener, port: number) =>
     Bun.serve({ hostname, port, idleTimeout: 0, maxRequestBodySize: MAX_BODY, fetch: req => a.fetch(req, { listener }) });
   const loopback = listen("127.0.0.1", "loopback", options.port ?? PORT);
+  // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate).
+  const me = s.get("node", s.nodeId);
+  if (me && (me.protocol ?? 0) < NODE_PROTOCOL) s.put("node", s.nodeId, { ...me, protocol: NODE_PROTOCOL });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
@@ -150,7 +156,9 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     lastSeq = snapshot.seq; poke(s); void relaySync(s, { pull: false });
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
     if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
+    if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
   }, 1000);
+  schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
@@ -163,6 +171,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
       stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
+      ctx.remote.close();
       await ctx.gateway.close();
       await stopRelay(s);
       await Promise.allSettled([...jobs, ...ctx.pending]); await ctx.imports.drain(); await drainRefresh(s); await drainPulls(s);

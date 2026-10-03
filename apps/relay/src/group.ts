@@ -76,7 +76,7 @@ export function sameHash(a: string, b: string) {
   return diff === 0;
 }
 
-class Window {
+export class Window {
   private start = 0;
   private count = 0;
   hit(limit: number, now: number): number | undefined {
@@ -305,17 +305,20 @@ export class AdmissionCore {
     sql.run("create table if not exists ip_day (ip text not null, day integer not null, count integer not null, primary key (ip, day))");
   }
 
-  async reserve(groupId: string, ipHash: string): Promise<Reply | undefined> {
+  /** `limits` lets remote endpoints keep their own caps in this same table, under `e:`-prefixed ids. */
+  async reserve(groupId: string, ipHash: string, limits: { max: number; perIpPerDay: number } = { max: this.config.maxGroups, perIpPerDay: this.config.groupsPerIpPerDay }): Promise<Reply | undefined> {
     return this.sql.tx(() => {
       if (this.sql.all("select 1 from groups where id = ?", groupId).length) return undefined;
       if (this.config.newGroupsDisabled) return fail(503, "this relay is not accepting new groups", { code: "disabled" });
+      const endpoint = groupId.startsWith("e:"), kind = endpoint ? "groups.id like 'e:%'" : "groups.id not like 'e:%'";
       const day = Math.floor(this.now() / 86_400_000);
       this.sql.run("delete from ip_day where day < ?", day - 1);
-      const used = this.sql.all<{ count: number }>("select count from ip_day where ip = ? and day = ?", ipHash, day)[0]?.count ?? 0;
-      if (used >= this.config.groupsPerIpPerDay) return { ...fail(429, "too many new groups from this address today", { code: "rate" }), retryAfter: 3600 };
-      if (this.sql.all<{ n: number }>("select count(*) as n from groups")[0]!.n >= this.config.maxGroups) return fail(507, "this relay is full", { code: "full" });
+      const ip = endpoint ? `e:${ipHash}` : ipHash;
+      const used = this.sql.all<{ count: number }>("select count from ip_day where ip = ? and day = ?", ip, day)[0]?.count ?? 0;
+      if (used >= limits.perIpPerDay) return { ...fail(429, `too many new ${endpoint ? "endpoints" : "groups"} from this address today`, { code: "rate" }), retryAfter: 3600 };
+      if (this.sql.all<{ n: number }>(`select count(*) as n from groups where ${kind}`)[0]!.n >= limits.max) return fail(507, "this relay is full", { code: "full" });
       this.sql.run("insert into groups values (?, ?)", groupId, this.now());
-      this.sql.run("insert or replace into ip_day values (?, ?, ?)", ipHash, day, used + 1);
+      this.sql.run("insert or replace into ip_day values (?, ?, ?)", ip, day, used + 1);
       return undefined;
     });
   }
@@ -324,5 +327,5 @@ export class AdmissionCore {
     this.sql.run("delete from groups where id = ?", groupId);
   }
 
-  count() { return this.sql.all<{ n: number }>("select count(*) as n from groups")[0]!.n; }
+  count() { return this.sql.all<{ n: number }>("select count(*) as n from groups where id not like 'e:%'")[0]!.n; }
 }

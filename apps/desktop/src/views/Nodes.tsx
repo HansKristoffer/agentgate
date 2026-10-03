@@ -107,9 +107,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                       : undefined
                   }
                   onPress={async () => {
-                    const message = viaRelay
+                    const endpoints = data.projects.some((p) => p.remote)
+                      ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
+                      : "";
+                    const message = (viaRelay
                       ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
-                      : `Unpair ${n.id}? It will stop syncing with this node.`;
+                      : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
                     if (
                       await confirmDialog(message, {
                         destructive: true,
