@@ -13,6 +13,12 @@ import { rotateLogs } from "./service.ts";
 import { PORT, type Store } from "./store.ts";
 import { PULL_INTERVAL, drainPulls, peerRoutes, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
+import { SkillLinks } from "./skills.ts";
+import { z } from "zod";
+import { projectIdSchema, SkillConflict } from "@agentgate/protocol";
+import { jsonInput } from "./http.ts";
+import { SkillImports } from "./skill-import.ts";
+import { relaySync, stopRelay, syncAll } from "./relay.ts";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -21,15 +27,17 @@ export interface Ctx {
   s: Store;
   creds: Credentials;
   gateway: Gateway;
+  skills: SkillLinks;
+  imports: SkillImports;
   abort: AbortController;
   pending: Set<Promise<void>>;
 }
 
 export const providers: Record<"claude" | "codex", Provider> = { claude, codex };
 
-export function makeCtx(s: Store): Ctx {
-  const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => pullAll(s));
-  return { s, creds, gateway: new Gateway(s), abort: new AbortController(), pending: new Set() };
+export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports } = {}): Ctx {
+  const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
+  return { s, creds, gateway: new Gateway(s), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
 }
 
 export function app(ctx: Ctx) {
@@ -39,6 +47,7 @@ export function app(ctx: Ctx) {
 
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message || "Request failed" }, error.status);
+    if (error instanceof SkillConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
     console.error(`request failed: ${error.name}`);
@@ -57,6 +66,17 @@ export function app(ctx: Ctx) {
     await next();
   });
 
+  // Register before every API handler, including the MCP shim's checkout write.
+  app.use("/api/*", async (c, next) => {
+    c.header("Cache-Control", "no-store");
+    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
+    if (c.env.listener === "tailnet") {
+      const token = s.local("adminToken");
+      if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
+    }
+    await next();
+  });
+
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.
   app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
@@ -69,19 +89,16 @@ export function app(ctx: Ctx) {
     return c.json(out);
   });
 
+  // The shim reports its checkout, so that repo's worktrees get their project skills before the next session starts.
+  app.post("/api/checkout", loopbackOnly, async (c) => {
+    const f = z.object({ path: z.string().min(1).max(4096), project: projectIdSchema.optional() }).strict().parse(await jsonInput(c.req.raw));
+    const checkout = ctx.skills.register(f.path, f.project) ?? null;
+    return c.json({ checkout, errors: ctx.skills.health().errors });
+  });
+
   app.route("/peer", peerRoutes(s));
 
   app.get("/oauth/callback", oauthCallback(ctx));
-  // The native bridge and CLI send no browser headers. No CORS or cookie login exists.
-  app.use("/api/*", async (c, next) => {
-    c.header("Cache-Control", "no-store");
-    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
-    if (c.env.listener === "tailnet") {
-      const token = s.local("adminToken");
-      if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
-    }
-    await next();
-  });
   app.route("/api", management(ctx));
   return app;
 }
@@ -125,21 +142,24 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => {
     const snapshot = s.changes(lastSeq);
     if (snapshot.seq === lastSeq) return;
-    lastSeq = snapshot.seq; poke(s);
+    lastSeq = snapshot.seq; poke(s); void relaySync(s, { pull: false });
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
+    if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
   }, 1000);
-  schedule(() => pullAll(s), PULL_INTERVAL);
+  schedule(async () => { ctx.skills.sync(); }, 30000);
+  schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); await pollUsage(s, (id) => ctx.creds.token(id), ctx.abort.signal); }, 60000);
   schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   let stopping: Promise<void> | undefined;
   return {
     ctx, loopback, stop: () => stopping ??= (async () => {
-      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval);
+      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
       await ctx.gateway.close();
-      await Promise.allSettled([...jobs, ...ctx.pending]); await drainRefresh(s); await drainPulls(s);
+      await stopRelay(s);
+      await Promise.allSettled([...jobs, ...ctx.pending]); await ctx.imports.drain(); await drainRefresh(s); await drainPulls(s);
     })()
   };
 }

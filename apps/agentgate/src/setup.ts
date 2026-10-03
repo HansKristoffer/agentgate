@@ -103,6 +103,15 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
 }
 
+/** Whether `setup --primary` currently routes your own ~/.claude and ~/.codex through this daemon. */
+export function primaryState(claudeDir = PRIMARY_CLAUDE_DIR, codexDir = PRIMARY_CODEX_DIR) {
+  const read = <T>(fn: () => T) => { try { return fn(); } catch { return undefined; } };
+  return {
+    claude: read(() => json(join(claudeDir, "settings.json")).env?.ANTHROPIC_BASE_URL) === `${LOCAL_URL}/anthropic`,
+    codex: read(() => (Bun.TOML.parse(readFileSync(join(codexDir, "config.toml"), "utf8")) as { model_provider?: string }).model_provider) === "agentgate",
+  };
+}
+
 // Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
 const claudeJsonIn = (dir: string) => dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
 

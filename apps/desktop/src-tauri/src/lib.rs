@@ -194,8 +194,11 @@ async fn export_backup(connection: Connection, path: PathBuf, secrets: bool) -> 
 #[tauri::command]
 async fn import_backup(connection: Connection, path: PathBuf) -> Result<Value, String> {
     let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-    let data = serde_json::from_slice(&bytes)
+    let data: Value = serde_json::from_slice(&bytes)
         .map_err(|_| "Choose a valid Agentgate JSON backup".to_string())?;
+    if serde_json::to_vec(&data).map_err(|e| e.to_string())?.len() > 16 * 1024 * 1024 {
+        return Err("This backup exceeds the app's 16 MiB restore limit. Use agentgate import <backup-file> on the daemon's machine.".into());
+    }
     send(&connection, "/backup", "POST", Some(data)).await
 }
 

@@ -1,4 +1,5 @@
-import { accountSchema, projectSchema, nodeSchema, settingsSchema } from "@agentgate/protocol";
+import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, MAX_RECORD } from "@agentgate/protocol";
+export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
 import { chmodSync, mkdirSync } from "node:fs";
@@ -57,6 +58,7 @@ export const schemas = {
     /** MCP OAuth state from the SDK (client registration and tokens), set once a login was started. */
     oauth: OAuth.optional(), // accepted only to migrate pre-v1 databases/backups
   }),
+  skill: skillSchema,
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
@@ -71,6 +73,7 @@ export type McpInstance = Data<"mcp">;
 export type Project = Data<"project">;
 export type Settings = Data<"setting">;
 export type McpCredential = Data<"mcpCredential">;
+export type Skill = Data<"skill">;
 
 export interface Rec {
   kind: Kind;
@@ -86,7 +89,7 @@ export interface Rec {
 export const recordSchema = z.object({
   kind: z.enum(Object.keys(schemas) as [Kind, ...Kind[]]), id,
   rev: z.number().int().nonnegative(), node: id, updated_at: timestamp,
-  deleted: z.union([z.literal(0), z.literal(1)]), data: z.string().max(4 * 1024 * 1024), seq: timestamp.optional(),
+  deleted: z.union([z.literal(0), z.literal(1)]), data: z.string().max(MAX_RECORD), seq: timestamp.optional(),
 });
 
 export function parseData<K extends Kind>(kind: K, key: string, input: unknown): Data<K> {
@@ -102,6 +105,7 @@ export function parseData<K extends Kind>(kind: K, key: string, input: unknown):
 
 export function parseRecord(input: unknown): Rec {
   const r = recordSchema.parse(input);
+  if (Buffer.byteLength(r.data) > MAX_RECORD) throw new Error("record exceeds 4 MiB");
   if (!r.deleted) r.data = JSON.stringify(parseData(r.kind, r.id, JSON.parse(r.data)));
   else r.data = "{}";
   return r;
@@ -209,6 +213,7 @@ export class Store {
   }
 
   private write(kind: Kind, id: string, data: string, deleted: number) {
+    if (Buffer.byteLength(data) > MAX_RECORD) throw new Error("record exceeds 4 MiB");
     this.db.transaction(() => {
       const prev = this.record(kind, id);
       this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
@@ -228,6 +233,27 @@ export class Store {
       const seq = this.seq(); // establish the read snapshot before reading its records
       const records = this.db.query("select * from records where seq > ? and seq <= ? order by seq").all(since, seq) as Rec[];
       return { records, seq };
+    })();
+  }
+
+  /** A peer cursor acknowledges only records actually present in this byte-bounded page. */
+  changePage(since: number, maxBytes = 8 * 1024 * 1024): { records: Rec[]; seq: number; more: boolean } {
+    timestamp.parse(since);
+    return this.db.transaction(() => {
+      const high = this.seq(), records: Rec[] = [];
+      let bytes = 0;
+      const statement = this.db.prepare("select * from records where seq > ? and seq <= ? order by seq");
+      try {
+        for (const row of statement.iterate(since, high) as Iterable<Rec>) {
+          const size = Buffer.byteLength(JSON.stringify(row)) + 1;
+          if (bytes + size > maxBytes) {
+            if (!records.length) throw new Error("one record exceeds the sync page limit");
+            return { records, seq: records.at(-1)!.seq!, more: true };
+          }
+          records.push(row); bytes += size;
+        }
+      } finally { statement.finalize(); }
+      return { records, seq: high, more: false };
     })();
   }
 
@@ -299,11 +325,11 @@ export function exportBackup(s: Store, secrets = true) {
       const data = JSON.parse(r.data);
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
-  return { agentgate: 2, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
+  return { agentgate: 3, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
 }
 
 export function importBackup(s: Store, input: unknown) {
-  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
+  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2), z.literal(3)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
   const records = backup.records.map(r => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
   return s.transaction(() => {
     for (const r of records) {

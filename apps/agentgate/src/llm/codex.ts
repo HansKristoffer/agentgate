@@ -1,5 +1,5 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { jwtClaims, tokenRequest, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
@@ -73,8 +73,10 @@ export const codex: Provider = {
   },
 };
 
-export function authorizeUrl(challenge: string, state: string) {
+/** `email` pre-selects that account on the login page (OAuth login_hint). */
+export function authorizeUrl(challenge: string, state: string, email?: string) {
   const q = new URLSearchParams({
+    ...(email && { login_hint: email }),
     response_type: "code", client_id: CODEX.clientId, redirect_uri: CODEX.redirectUri, scope: "openid profile email offline_access",
     code_challenge: challenge, code_challenge_method: "S256", id_token_add_organizations: "true", codex_cli_simplified_flow: "true",
     state, originator: "codex_cli_rs",
@@ -104,6 +106,15 @@ function save(s: Store, t: { id_token?: string; access_token: string; refresh_to
 }
 
 /** Take over a Codex login from a CODEX_HOME (`auth.json`). */
+/** Who Codex itself is signed in as on this machine: the ID token's identity claims, nothing that grants access. */
+export function detect(dir = process.env.CODEX_HOME ?? join(homedir(), ".codex")): { email: string; plan?: string } | undefined {
+  try {
+    const claims = jwtClaims(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")).tokens?.id_token) as { email?: unknown; "https://api.openai.com/auth"?: { chatgpt_plan_type?: unknown } } | undefined;
+    const plan = claims?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
+    return typeof claims?.email === "string" ? { email: claims.email, plan: typeof plan === "string" ? plan : undefined } : undefined;
+  } catch { return undefined; }
+}
+
 export async function importFrom(s: Store, dir: string, label?: string) {
   const file = join(dir, "auth.json");
   if (!existsSync(file)) throw new Error(`no auth.json in ${dir} (Codex may keep it in the OS keyring; set cli_auth_credentials_store = "file")`);

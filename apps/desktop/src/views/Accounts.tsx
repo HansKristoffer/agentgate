@@ -30,6 +30,72 @@ import {
   windowName,
 } from "./utils.ts";
 
+function SubscriptionSelector({
+  data,
+  connection,
+  perform,
+  provider,
+}: Pick<ViewProps, "data" | "connection" | "perform"> & { provider: Provider }) {
+  const accounts = data.accounts.filter((a) => a.account.provider === provider);
+  const selected = accounts.find((a) => a.account.pinned);
+  return (
+    <Choice
+      className="item"
+      label={`Active ${providerName(provider)} subscription`}
+      description="Applies to the next request in all routed sessions. Falls back if unavailable."
+      value={selected ? `account:${selected.account.id}` : "automatic"}
+      disabledKeys={accounts
+        .filter((a) => !a.account.enabled || a.needsLogin)
+        .map((a) => `account:${a.account.id}`)}
+      onChange={(key) => {
+        if (!key) return;
+        const value = String(key);
+        void perform(
+          async () => {
+            if (value === "automatic") {
+              for (const a of accounts.filter((a) => a.account.pinned))
+                await request(
+                  connection,
+                  `/accounts/${idPath(a.account.id)}`,
+                  "PATCH",
+                  { pinned: false },
+                );
+            } else {
+              await request(
+                connection,
+                `/accounts/${idPath(value.slice("account:".length))}`,
+                "PATCH",
+                { pinned: true },
+              );
+            }
+          },
+          value === "automatic"
+            ? `${providerName(provider)} uses automatic selection`
+            : `${providerName(provider)} subscription selected`,
+        );
+      }}
+      options={[
+        { id: "automatic", label: "Automatic" },
+        ...accounts.map((a) => {
+          const unavailable = !a.account.enabled
+            ? "Disabled"
+            : a.needsLogin
+              ? "Needs login"
+              : a.exhausted
+                ? "Exhausted"
+                : undefined;
+          return {
+            id: `account:${a.account.id}`,
+            label: [a.account.label, a.account.email, unavailable]
+              .filter(Boolean)
+              .join(" · "),
+          };
+        }),
+      ]}
+    />
+  );
+}
+
 export function Accounts({ data, connection, perform, local, desktop }: ViewProps) {
   const [add, setAdd] = useState(false);
   const [mode, setMode] = useState<"login" | "import">("login");
@@ -47,9 +113,9 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
   const problem = (a: AccountStatus) =>
     a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
-  const start = (provider: Provider, label: string) => {
+  const start = (provider: Provider, label: string, email?: string) => {
     setAdd(false);
-    return begin(provider, label);
+    return begin(provider, label, email);
   };
   return (
     <>
@@ -76,6 +142,31 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           <DesktopPanel data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
         </>
       )}
+      {data.detected.length > 0 && (
+        <Panel
+          title={local ? "Signed in on this Mac" : `Signed in on ${data.node}`}
+          detail="Add these accounts to the pool. You confirm once in the browser, so Claude Code and Codex keep their own logins."
+        >
+          {data.detected.map((d) => (
+            <div className="item" key={d.provider}>
+              <div className={`provider-icon ${d.provider}`}>
+                {d.provider === "claude" ? "✳" : "◎"}
+              </div>
+              <div className="grow">
+                <strong>{d.email}</strong>
+                <small>
+                  {providerName(d.provider)} · {d.source}
+                </small>
+              </div>
+              {d.plan && <Badge>{d.plan.replace(/^claude_/, "")}</Badge>}
+              <Button size="sm" onPress={() => void start(d.provider, "", d.email)}>
+                Add to pool
+                <ExternalLink size={14} />
+              </Button>
+            </div>
+          ))}
+        </Panel>
+      )}
       {(["claude", "codex"] as const).map((provider) => (
         <Panel
           key={provider}
@@ -90,6 +181,14 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
+          {data.accounts.some((a) => a.account.provider === provider) && (
+            <SubscriptionSelector
+              data={data}
+              connection={connection}
+              perform={perform}
+              provider={provider}
+            />
+          )}
           {!data.accounts.some((a) => a.account.provider === provider) &&
           !(provider === "claude" && desktopOnly.length) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
@@ -109,7 +208,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           a.account.email && a.account.email !== a.account.label && a.account.email,
                           a.account.plan && planName(a.account.plan),
                           a.active && a.account.enabled && "Used by your sessions now",
-                          a.account.pinned && "Pinned",
+                          a.account.pinned && "Selected",
                           app && desktopNote(app, loginFor(a.account.id)),
                         ]
                           .filter(Boolean)
@@ -118,7 +217,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     </div>
                     {problem(a) && <Badge>{problem(a)}</Badge>}
                     {(a.needsLogin || a.expired) && (
-                      <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label)}>
+                      <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
                         Sign in again
                       </Button>
                     )}
@@ -134,7 +233,14 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       label={`More for ${a.account.label}`}
                       items={[
                         { label: "Edit", onAction: () => setEdit(a.account.id) },
-                        { label: a.account.pinned ? "Unpin" : "Pin", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: !a.account.pinned })) },
+                        (a.account.pinned || (a.account.enabled && !a.needsLogin)) && {
+                          label: a.account.pinned ? "Use automatic" : "Use this subscription",
+                          onAction: () =>
+                            void perform(
+                              () => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: !a.account.pinned }),
+                              a.account.pinned ? `${providerName(provider)} uses automatic selection` : `${providerName(provider)} subscription selected`,
+                            ),
+                        },
                         { label: a.account.enabled ? "Disable" : "Enable", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { enabled: !a.account.enabled })) },
                         !!app && !!loginFor(a.account.id) && !(app.mode === "signed-in" && app.current?.accountId === a.account.id) &&
                           { label: "Forget Claude Desktop login", onAction: () => void forgetLogin(connection, perform, loginFor(a.account.id)!)() },

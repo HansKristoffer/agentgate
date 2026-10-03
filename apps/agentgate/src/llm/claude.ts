@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { tokenRequest, type Tokens } from "../credentials.ts";
@@ -129,10 +129,11 @@ export async function pollUsage(s: Store, token: (accountId: string) => Promise<
   }
 }
 
-export function authorizeUrl(challenge: string, state: string) {
+/** `email` pre-selects that account on the login page (OAuth login_hint). */
+export function authorizeUrl(challenge: string, state: string, email?: string) {
   const q = new URLSearchParams({
     code: "true", client_id: CLAUDE.clientId, response_type: "code", redirect_uri: CLAUDE.redirectUri,
-    scope: CLAUDE.scopes, code_challenge: challenge, code_challenge_method: "S256", state,
+    scope: CLAUDE.scopes, code_challenge: challenge, code_challenge_method: "S256", state, ...(email && { login_hint: email }),
   });
   return `${CLAUDE.authorizeUrl}?${q}`;
 }
@@ -178,6 +179,15 @@ async function enrich(s: Store, id: string) {
 const keychainNames = (dir: string) => [`Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`, "Claude Code-credentials"];
 
 /** Take over a Claude Code login from a config dir (`.credentials.json`, or the macOS Keychain). */
+/** Who Claude Code itself is signed in as on this machine. Reads only ~/.claude.json, never the keychain or tokens. */
+export function detect(dir = join(homedir(), ".claude")): { email: string; plan?: string } | undefined {
+  const file = dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+  try {
+    const a = JSON.parse(readFileSync(file, "utf8")).oauthAccount;
+    return typeof a?.emailAddress === "string" ? { email: a.emailAddress, plan: typeof a.organizationType === "string" ? a.organizationType : undefined } : undefined;
+  } catch { return undefined; }
+}
+
 export async function importFrom(s: Store, dir: string, label?: string, cleanupKeychain = false) {
   let raw: string | undefined;
   let cleanupName: string | undefined;

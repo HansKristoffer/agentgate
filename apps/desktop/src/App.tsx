@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Settings as Gear,
   ShieldCheck,
+  Sparkles,
   Users,
 } from "lucide-react";
 import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
@@ -37,6 +38,7 @@ import {
   Projects,
   Servers,
   Settings,
+  Skills,
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
@@ -54,6 +56,7 @@ const navigation = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "accounts", title: "Accounts", icon: Users },
   { id: "servers", title: "MCP servers", icon: Boxes },
+  { id: "skills", title: "Skills", icon: Sparkles },
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "settings", title: "Settings", icon: Gear },
@@ -63,6 +66,7 @@ const descriptions: Record<View, string> = {
   overview: "Your agents, connected.",
   accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
   servers: "Connect tools once. Use them across your projects.",
+  skills: "Install skills once. Choose which projects use them.",
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   settings: "Make Agentgate work the way you do.",
@@ -199,6 +203,7 @@ export function App() {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
     servers: <Servers {...props} />,
+    skills: <Skills {...props} />,
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     settings: <Settings {...props} />,
@@ -207,6 +212,7 @@ export function App() {
     ? {
         accounts: data.accounts.length,
         servers: data.servers.length,
+        skills: data.skills.length,
         projects: data.projects.filter((p) => p.id !== "*").length,
         nodes: data.nodes.length,
       }
@@ -219,11 +225,7 @@ export function App() {
             <>
               <div className="tau-drag-strip" />
               <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                {navigation
-                  .filter(
-                    (n) => n.id !== "settings",
-                  )
-                  .map((n) => (
+                {navigation.slice(0, 6).map((n) => (
                   <button
                     key={n.id}
                     aria-current={view === n.id ? "page" : undefined}
@@ -534,8 +536,8 @@ export function App() {
               <li>
                 <strong>Add your accounts and tools</strong>
                 <p>
-                  Sign in to Claude or Codex in Accounts. Connect MCP servers,
-                  then assign them to Projects.
+                  Sign in to Claude or Codex in Accounts. Connect MCP servers
+                  and install skills, then assign them to Projects.
                 </p>
               </li>
               <li>

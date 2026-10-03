@@ -10,13 +10,14 @@ import { Field, Modal } from "./ui.tsx";
 /** The browser sign-in for a Claude or Codex account: `start` opens the login page, `dialog` takes the pasted code. */
 export function useAccountLogin(connection: Connection, perform: Perform, done?: () => void) {
   const [login, setLogin] = useState<LoginStart>();
-  const start = (provider: Provider, label: string) =>
+  /** `email` pre-selects that account on the provider's login page. */
+  const start = (provider: Provider, label: string, email?: string) =>
     perform(async () => {
       const result = await request<LoginStart>(
         connection,
         "/accounts/login",
         "POST",
-        { provider, label: label || undefined },
+        { provider, label: label || undefined, email },
       );
       setLogin({ ...result, provider }); // the dialog follows what was clicked, not the reply
       await openExternal(result.url);
