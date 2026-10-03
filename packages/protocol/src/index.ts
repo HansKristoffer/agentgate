@@ -128,7 +128,10 @@ export interface Status {
     lastSeen: number;
     online: boolean;
     syncError?: string;
+    /** Observed paths to this node; not proof of membership. */
+    via?: ("tailnet" | "relay")[];
   })[];
+  relay?: RelayStatus;
   peers: {
     node: string;
     url: string;
@@ -139,6 +142,20 @@ export interface Status {
   unknownQuota: Record<string, string | undefined>;
   settings: Settings;
   activity: Activity[];
+}
+export interface RelayStatus {
+  url: string;
+  hosted: boolean;
+  generation?: string;
+  cursor: number;
+  pushed: number;
+  reconciling: boolean;
+  rotating: boolean;
+  cleanupPending: boolean;
+  pushError?: string;
+  pullError?: string;
+  /** Entries that could not be decrypted or validated since the last full read. */
+  skipped?: number;
 }
 export interface LoginStart {
   state: string;

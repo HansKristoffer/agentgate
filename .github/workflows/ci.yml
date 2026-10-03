@@ -41,6 +41,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      - run: bun run --filter @agentgate/relay test:workers
       - run: bun run build:frontend
       - run: bun build apps/agentgate/src/cli.ts --compile --minify --outfile dist/agentgate
       - run: bun scripts/smoke.ts dist/agentgate

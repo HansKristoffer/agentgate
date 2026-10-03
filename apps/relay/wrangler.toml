@@ -1,0 +1,33 @@
+# The hosted relay: `bun run --filter @agentgate/relay deploy`. Self-hosters can deploy the same Worker.
+name = "agentgate-relay"
+main = "src/index.ts"
+compatibility_date = "2026-08-15"
+
+[[durable_objects.bindings]]
+name = "GROUPS"
+class_name = "RelayGroup"
+
+[[durable_objects.bindings]]
+name = "ADMISSION"
+class_name = "RelayAdmission"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelayGroup", "RelayAdmission"]
+
+# Aggregate per-address throttle (requests per 60 s). Remove to disable.
+[[ratelimits]]
+name = "IP_LIMITER"
+namespace_id = "7801"
+simple = { limit = 1200, period = 60 }
+
+[vars]
+RELAY_MAX_GROUPS = "1000"
+RELAY_GROUP_MAX_BYTES = "52428800"
+RELAY_RETENTION_DAYS = "180"
+RELAY_GROUPS_PER_IP_PER_DAY = "5"
+RELAY_GROUP_REQUESTS_PER_MINUTE = "600"
+RELAY_FAILED_AUTH_PER_MINUTE = "20"
+# Operator switch: "1" stops new groups; existing groups keep working.
+RELAY_DISABLE_NEW_GROUPS = "0"
+# Self-hosting: `wrangler secret put RELAY_KEY` to require x-relay-key on every request.

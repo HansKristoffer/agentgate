@@ -4,7 +4,7 @@ import { z } from "zod";
 import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
 import { fetchHeaders } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
-import { pullAll } from "../sync.ts";
+import { syncAll } from "../relay.ts";
 import { resolve } from "./templates.ts";
 
 const SESSION_TTL = 10 * 60_000;
@@ -83,7 +83,7 @@ export async function refreshMcp(s: Store, id: string, force = false): Promise<M
     const result = await auth(provider, { serverUrl: url, fetchFn: (url, init) => fetchHeaders(url, { ...init, signal }) });
     if (result !== "AUTHORIZED" || !provider.staged.tokens) throw new NeedsLogin(`${id}: needs a login`);
     return { ...c, ...provider.staged };
-  }, () => pullAll(s), force || requested);
+  }, () => syncAll(s), force || requested);
 }
 
 /** Never let an independent SDK transport rotate a shared token itself. */

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Copy, Monitor, Plus } from "lucide-react";
+import { Copy, Globe, Monitor, Network, Plus } from "lucide-react";
 import { Button, Switch } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
@@ -13,28 +13,37 @@ import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
-export function Nodes({ data, connection, perform }: ViewProps) {
-  const [pair, setPair] = useState("");
+type Method = "tailnet" | "relay";
+type Shown = { command: string; method: Method; rotated?: boolean };
+
+export function Nodes({ data, connection, perform, local }: ViewProps) {
+  const [choosing, setChoosing] = useState(false);
+  const [shown, setShown] = useState<Shown>();
   const [joinOpen, setJoinOpen] = useState(false);
+  const relay = data.relay;
+  const pair = (method: Method) =>
+    void perform(async () => {
+      const result = await request<{ command: string }>(
+        connection,
+        "/nodes/pair",
+        "POST",
+        { method },
+      );
+      setChoosing(false);
+      setShown({ command: result.command, method });
+    });
+  const relayState = relay && [
+    relay.reconciling && "Reconciling",
+    relay.rotating && "Rotation pending",
+    relay.cleanupPending && "Old group cleanup pending",
+  ].filter(Boolean);
   return (
     <>
       <HeaderActions>
         <Button size="sm" variant="tertiary" onPress={() => setJoinOpen(true)}>
           Join another machine
         </Button>
-        <Button
-          size="sm"
-          onPress={() =>
-            void perform(async () => {
-              const result = await request<{ command: string }>(
-                connection,
-                "/nodes/pair",
-                "POST",
-              );
-              setPair(result.command);
-            })
-          }
-        >
+        <Button size="sm" onPress={() => setChoosing(true)}>
           <Plus size={15} />
           Pair a machine
         </Button>
@@ -42,79 +51,215 @@ export function Nodes({ data, connection, perform }: ViewProps) {
       <Panel
         foot="Each machine serves its own agents and keeps working offline. Always-on machines take care of token refreshes while your laptop is away."
       >
-        {data.nodes.map((n) => (
-          <div className="item" key={n.id}>
-            <div className="machine-icon">
-              <Monitor size={16} />
+        {data.nodes.map((n) => {
+          const viaRelay = !!n.via?.includes("relay");
+          return (
+            <div className="item" key={n.id}>
+              <div className="machine-icon">
+                <Monitor size={16} />
+              </div>
+              <div className="grow">
+                <div className="row">
+                  <strong>{n.id}</strong>
+                  {n.id === data.node && <Badge>This node</Badge>}
+                  <Badge good={n.online}>{n.online ? "Online" : "Offline"}</Badge>
+                  {n.via?.includes("tailnet") && <Badge>Tailscale</Badge>}
+                  {viaRelay && <Badge>Relay</Badge>}
+                </div>
+                <small>
+                  {n.url ??
+                    (viaRelay
+                      ? "Connected through the relay"
+                      : "Tailscale address not available")}
+                </small>
+                <small>
+                  {n.syncError ??
+                    (n.id === data.node
+                      ? "Local daemon"
+                      : `Last seen ${relative(n.lastSeen)}`)}
+                </small>
+              </div>
+              <Switch
+                isSelected={!!n.alwaysOn}
+                onChange={() =>
+                  void perform(() =>
+                    request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
+                      alwaysOn: !n.alwaysOn,
+                    }),
+                  )
+                }
+              >
+                <Switch.Content className="check muted">
+                  Always on
+                  <Switch.Control>
+                    <Switch.Thumb />
+                  </Switch.Control>
+                </Switch.Content>
+              </Switch>
+              {n.id !== data.node && (
+                <Button
+                  size="sm"
+                  variant="danger-soft"
+                  isDisabled={viaRelay && !local}
+                  aria-label={
+                    viaRelay && !local
+                      ? "Removing a relay machine changes the relay secret; do it on that daemon's own machine"
+                      : undefined
+                  }
+                  onPress={async () => {
+                    const message = viaRelay
+                      ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
+                      : `Unpair ${n.id}? It will stop syncing with this node.`;
+                    if (
+                      await confirmDialog(message, {
+                        destructive: true,
+                        okLabel: viaRelay ? "Remove and rotate" : "Unpair",
+                      })
+                    )
+                      void perform(async () => {
+                        const result = await request<{
+                          rotated?: boolean;
+                          command?: string;
+                        }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
+                        if (result.rotated && result.command)
+                          setShown({
+                            command: result.command,
+                            method: "relay",
+                            rotated: true,
+                          });
+                      }, viaRelay ? undefined : "Machine unpaired");
+                  }}
+                >
+                  {viaRelay ? "Remove" : "Unpair"}
+                </Button>
+              )}
             </div>
+          );
+        })}
+      </Panel>
+      {relay && (
+        <Panel
+          title="Relay"
+          detail={`${relay.hosted ? "Agentgate relay" : relay.url || "No active group"}. End-to-end encrypted: the relay can't read your credentials.`}
+          action={
+            relay.url && (
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={() =>
+                  void perform(
+                    () => request(connection, "/relay/reconcile", "POST"),
+                    "Relay reconciled",
+                  )
+                }
+              >
+                Reconcile now
+              </Button>
+            )
+          }
+        >
+          <div className="item">
             <div className="grow">
               <div className="row">
-                <strong>{n.id}</strong>
-                {n.id === data.node && <Badge>This node</Badge>}
-                <Badge good={n.online}>{n.online ? "Online" : "Offline"}</Badge>
+                {relayState?.length ? (
+                  relayState.map((s) => <Badge key={String(s)}>{s}</Badge>)
+                ) : (
+                  <Badge good>In sync</Badge>
+                )}
               </div>
-              <small>{n.url ?? "Tailscale address not available"}</small>
-              <small>
-                {n.syncError ??
-                  (n.id === data.node
-                    ? "Local daemon"
-                    : `Last seen ${relative(n.lastSeen)}`)}
-              </small>
+              {relay.pushError && <small>Upload: {relay.pushError}</small>}
+              {relay.pullError && <small>Download: {relay.pullError}</small>}
+              {!!relay.skipped && (
+                <small>
+                  {relay.skipped} entries could not be decrypted. Reconcile to
+                  retry them.
+                </small>
+              )}
             </div>
-            <Switch
-              isSelected={!!n.alwaysOn}
-              onChange={() =>
-                void perform(() =>
-                  request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                    alwaysOn: !n.alwaysOn,
-                  }),
-                )
-              }
-            >
-              <Switch.Content className="check muted">
-                Always on
-                <Switch.Control>
-                  <Switch.Thumb />
-                </Switch.Control>
-              </Switch.Content>
-            </Switch>
-            {n.id !== data.node && (
+            {relay.url && (
               <Button
                 size="sm"
                 variant="danger-soft"
                 onPress={async () => {
                   if (
                     await confirmDialog(
-                      `Unpair ${n.id}? It will stop syncing with this node.`,
-                      { destructive: true, okLabel: "Unpair" },
+                      "Stop using the relay on this machine? Other machines keep their copies and can keep using the group.",
+                      { destructive: true, okLabel: "Leave relay" },
                     )
                   )
                     void perform(
-                      () =>
-                        request(connection, `/nodes/${idPath(n.id)}`, "DELETE"),
-                      "Machine unpaired",
+                      () => request(connection, "/relay/leave", "POST", {}),
+                      "Left the relay",
                     );
                 }}
               >
-                Unpair
+                Leave
               </Button>
             )}
           </div>
-        ))}
-      </Panel>
-      {pair && (
-        <Modal title="Pair another machine" close={() => setPair("")}>
+        </Panel>
+      )}
+      {choosing && (
+        <Modal title="Pair another machine" close={() => setChoosing(false)}>
+          <p>How will the other machine connect?</p>
+          <div className="rows">
+            <div className="item">
+              <div className="machine-icon">
+                <Network size={16} />
+              </div>
+              <div className="grow">
+                <strong>Same network (Tailscale)</strong>
+                <small>
+                  Both machines are on your tailnet. The code expires in 10
+                  minutes.
+                </small>
+              </div>
+              <Button size="sm" onPress={() => pair("tailnet")}>
+                Use Tailscale
+              </Button>
+            </div>
+            <div className="item">
+              <div className="machine-icon">
+                <Globe size={16} />
+              </div>
+              <div className="grow">
+                <strong>Agentgate relay</strong>
+                <small>
+                  {local
+                    ? "Works on any network. End-to-end encrypted: the relay can't read your credentials."
+                    : "The relay invite is a master key, so it is only shown on the daemon's own machine. Run this there."}
+                </small>
+              </div>
+              <Button
+                size="sm"
+                isDisabled={!local}
+                onPress={() => pair("relay")}
+              >
+                Use the relay
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {shown && (
+        <Modal
+          title={shown.rotated ? "New relay secret" : "Pair another machine"}
+          close={() => setShown(undefined)}
+        >
           <p>
-            On the other machine, initialize Agentgate, start Tailscale, then
-            run this command. The code expires in 10 minutes.
+            {shown.rotated
+              ? "Run this on every relay machine you keep. The old secret no longer reaches this machine."
+              : shown.method === "relay"
+                ? "On the other machine, initialize Agentgate, then run this command."
+                : "On the other machine, initialize Agentgate, start Tailscale, then run this command. The code expires in 10 minutes."}
           </p>
-          <pre>{pair}</pre>
+          <pre>{shown.command}</pre>
           <Button
             size="sm"
             variant="tertiary"
             onPress={() =>
               void perform(
-                () => navigator.clipboard.writeText(pair),
+                () => navigator.clipboard.writeText(shown.command),
                 "Pairing command copied",
               )
             }
@@ -123,8 +268,9 @@ export function Nodes({ data, connection, perform }: ViewProps) {
             Copy command
           </Button>
           <p className="note">
-            Pair only machines you control. Working account and MCP credentials
-            are copied to each paired node.
+            {shown.method === "relay"
+              ? "This invite does not expire. Anyone who has it can read every account and MCP login: share it privately. If it leaks, remove and re-add machines to change the secret."
+              : "Pair only machines you control. Working account and MCP credentials are copied to each paired node."}
           </p>
         </Modal>
       )}
@@ -136,25 +282,18 @@ export function Nodes({ data, connection, perform }: ViewProps) {
               const f = new FormData(e.currentTarget);
               void perform(async () => {
                 await request(connection, "/nodes/join", "POST", {
-                  url: field(f, "url"),
-                  code: field(f, "code"),
+                  command: field(f, "command"),
                 });
                 setJoinOpen(false);
               }, "Machine paired");
             }}
           >
             <Field
-              label="Other machine's Tailscale address"
-              name="url"
-              type="url"
+              label="Pairing command"
+              name="command"
               isRequired
-              placeholder="http://server.tailnet.ts.net:7878"
-            />
-            <Field
-              label="Pairing code"
-              name="code"
-              isRequired
-              placeholder="From agentgate pair on the other machine"
+              multiline
+              placeholder="agentgate join …, from Pair a machine on the other machine"
             />
             <Button type="submit" size="sm">
               Join machine

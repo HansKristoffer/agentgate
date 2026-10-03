@@ -17,6 +17,7 @@ import { z } from "zod";
 import { projectIdSchema, SkillConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
 import { SkillImports } from "./skill-import.ts";
+import { relaySync, stopRelay, syncAll } from "./relay.ts";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -34,7 +35,7 @@ export interface Ctx {
 export const providers: Record<"claude" | "codex", Provider> = { claude, codex };
 
 export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports } = {}): Ctx {
-  const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => pullAll(s));
+  const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   return { s, creds, gateway: new Gateway(s), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
 }
 
@@ -140,12 +141,12 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => {
     const snapshot = s.changes(lastSeq);
     if (snapshot.seq === lastSeq) return;
-    lastSeq = snapshot.seq; poke(s);
+    lastSeq = snapshot.seq; poke(s); void relaySync(s, { pull: false });
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
     if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
   }, 1000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
-  schedule(() => pullAll(s), PULL_INTERVAL);
+  schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   let stopping: Promise<void> | undefined;
@@ -155,6 +156,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
       await ctx.gateway.close();
+      await stopRelay(s);
       await Promise.allSettled([...jobs, ...ctx.pending]); await ctx.imports.drain(); await drainRefresh(s); await drainPulls(s);
     })()
   };

@@ -10,10 +10,11 @@ import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import { cleanupRelay, createRelay, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, saveProject, setAccount } from "./operations.ts";
 
-const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale
+const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
   init [--always-on] [--name srv]             create the store, name this node
   serve                                       run the daemon in the foreground
@@ -33,7 +34,10 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
-  pair | join <url> <code> | nodes | unpair <node>
+  pair [--tailnet | --relay [--relay-url <url>]]   print the command for connecting another machine
+  join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
+  nodes | unpair <node>
+  relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
   service install|start|stop|logs
@@ -62,6 +66,13 @@ const { values: opts, positionals: pos } = parseArgs({
     skill: { type: "string" },
     project: { type: "string", multiple: true },
     file: { type: "string" },
+    tailnet: { type: "boolean" },
+    relay: { type: "boolean" },
+    "relay-url": { type: "string" },
+    force: { type: "boolean" },
+    wipe: { type: "boolean" },
+    abandon: { type: "boolean" },
+    clear: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -93,7 +104,7 @@ async function main() {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
       const old = s.local("node");
       if (old && old !== name) {
-        if (peers(s).length || s.list("credential").length || s.list("mcpCredential").length) die("cannot rename a paired node or credential holder; keep its existing name");
+        if (peers(s).length || usesRelay(s) || s.list("credential").length || s.list("mcpCredential").length) die("cannot rename a paired node, relay member or credential holder; keep its existing name");
         s.del("node", old);
       }
       s.setLocal("node", name);
@@ -102,7 +113,7 @@ async function main() {
       const prev = s.get("node", name);
       s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn });
       console.log(`node ${name}${opts["always-on"] ? " (always on)" : ""}, store ${s.db.filename}`);
-      console.log(ts ? `tailnet: ${ts.url}` : "Tailscale not found; the daemon will keep looking for it.");
+      console.log(ts ? `tailnet: ${ts.url}` : "Tailscale not found; the daemon will keep looking for it. Without Tailscale, connect machines with `agentgate pair --relay`.");
       return;
     }
     case "serve":
@@ -133,6 +144,8 @@ async function main() {
         const peer = peers(s).find((p) => p.node === n.id);
         console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`);
       }
+      const relay = relayStatus(s);
+      if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
       const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
@@ -317,14 +330,34 @@ async function main() {
 
     case "pair": {
       initialized(s);
-      const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL; is Tailscale running?");
+      let method = opts.tailnet ? "tailnet" : opts.relay || str("relay-url") ? "relay" : undefined;
+      if (!method && process.stdin.isTTY && process.stdout.isTTY) {
+        const answer = prompt("How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:")?.trim();
+        method = answer === "2" ? "relay" : answer === "1" ? "tailnet" : die("Choose 1 or 2.");
+      }
+      method ??= (await tailscale()) ? "tailnet" : "relay";
+      if (method === "relay") {
+        const invite = await createRelay(s, str("relay-url"));
+        console.log(`On the other machine run:\n\n  agentgate join ${invite}\n`);
+        console.log("This invite does not expire. Anyone who has it can read every account and MCP login, so share it privately.\nIf it leaks, run `agentgate relay rotate` and have every relay machine join again.");
+        if (process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey")) console.log("This relay needs a service key: set AGENTGATE_RELAY_KEY on the other machine before joining.");
+        const status = relayStatus(s);
+        if (status?.pushError) console.warn(`\nUpload not finished yet: ${status.pushError}. The daemon keeps retrying.`);
+        return;
+      }
+      const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL; is Tailscale running? Use `agentgate pair --relay` to connect over the relay instead.");
       console.log(`On the other machine run (valid 10 minutes):\n\n  agentgate join ${url} ${pairCode(s)}\n`);
       return;
     }
     case "join": {
       initialized(s);
+      if (sub?.startsWith("agr1.")) {
+        await joinRelay(s, sub, !!opts.force);
+        console.log(`joined the relay; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`);
+        return;
+      }
       const [url, code] = [sub, rest[0]];
-      if (!url || !code) die("join <url> <code>");
+      if (!url || !code) die("join <url> <code>, or join agr1.…");
       const self = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL for this node; is Tailscale running?");
       const peer = await join(s, url!, code!, self);
       console.log(`paired with ${peer}; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`);
@@ -332,12 +365,59 @@ async function main() {
     }
     case "nodes":
       initialized(s);
-      for (const p of peers(s)) console.log(`${p.node.padEnd(16)} ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
+      for (const p of peers(s)) console.log(`${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
+      for (const n of relayNodes(s)) console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
       return;
-    case "unpair":
+    case "unpair": {
       initialized(s);
-      unpair(s, sub ?? die("unpair <node>"));
-      return console.log("ok");
+      const node = sub ?? die("unpair <node>");
+      if (!via(s, node).includes("relay")) { unpair(s, node); return console.log("ok"); }
+      if (peers(s).some((p) => p.node === node)) unpair(s, node);
+      const rotated = await rotateRelay(s);
+      console.log(`Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`);
+      console.log(`Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`);
+      if (rotated.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
+      return;
+    }
+    case "relay": {
+      initialized(s);
+      switch (sub) {
+        case "status": case undefined: {
+          const r = relayStatus(s);
+          if (!r) return console.log("This machine does not use a relay. Connect one with `agentgate pair --relay`.");
+          console.log(`relay       ${r.url}${r.hosted ? " (hosted)" : ""}\ngeneration  ${r.generation ?? "-"}\ncursor      ${r.cursor}\nuploaded    ${r.pushed} of ${s.seq()}\nstate       ${[r.reconciling && "reconciling", r.rotating && "rotation pending", r.cleanupPending && "cleanup pending"].filter(Boolean).join(", ") || "in sync"}`);
+          if (r.pushError) console.log(`upload      ${r.pushError}`);
+          if (r.pullError) console.log(`download    ${r.pullError}`);
+          if (r.skipped) console.log(`skipped     ${r.skipped} entries could not be decrypted (agentgate relay reconcile retries them)`);
+          for (const n of relayNodes(s)) console.log(`machine     ${n.node}, last seen ${new Date(n.lastSeen).toISOString()}`);
+          return;
+        }
+        case "reconcile":
+          await reconcileRelay(s);
+          return console.log("reconciled");
+        case "rotate": {
+          const r = await rotateRelay(s);
+          console.log(`New relay secret. Every other relay machine must join again:\n\n  ${r.command}\n`);
+          if (r.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
+          return;
+        }
+        case "leave": {
+          const r = await leaveRelay(s, !!opts.wipe);
+          console.log(`This machine no longer uses the relay.${r.cleanupPending ? " Deleting the group failed; it will be retried (agentgate relay cleanup)." : ""}`);
+          return;
+        }
+        case "cleanup": {
+          const r = await cleanupRelay(s, !!opts.abandon);
+          return console.log(r.cleanupPending ? "Some old relay groups could not be deleted yet." : "No cleanup pending.");
+        }
+        case "key":
+          if (!opts.clear && !rest[0]) die("relay key <value> | relay key --clear");
+          setServiceKey(s, opts.clear ? undefined : rest[0]);
+          return console.log("ok");
+        default:
+          return die(HELP);
+      }
+    }
 
     case "setup": {
       const setupMod = await import("./setup.ts");
