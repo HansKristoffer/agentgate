@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/HansKristoffer/agentgate/compare/v0.6.0...v0.7.0) (2026-10-03)
+
+
+### Features
+
+* **proxy:** add quota-aware routing and request diagnostics ([#19](https://github.com/HansKristoffer/agentgate/issues/19)) ([7f0d756](https://github.com/HansKristoffer/agentgate/commit/7f0d756fa2e38dca038b1f96036fbee16e78caaa))
+
 ## [0.6.0](https://github.com/HansKristoffer/agentgate/compare/v0.5.0...v0.6.0) (2026-10-03)
 
 
