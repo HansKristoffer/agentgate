@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { skillIdSchema } from "./skills.ts";
+import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema } from "./proxy.ts";
 export * from "./skills.ts";
+export * from "./proxy.ts";
 
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 export const providerSchema = z.enum(["claude", "codex"]);
 export type Provider = z.infer<typeof providerSchema>;
 export const accountSchema = z.object({
@@ -14,6 +16,7 @@ export const accountSchema = z.object({
   enabled: z.boolean().default(true),
   priority: z.number().finite().default(0),
   pinned: z.boolean().optional(),
+  policy: modelPolicySchema.optional(),
 });
 export const projectSchema = z.object({
   id: z.string().min(1),
@@ -34,24 +37,55 @@ export const settingsSchema = z.object({
   whenExhausted: z.enum(["fail", "wait"]).default("fail"),
   retryLimit: z.number().int().min(0).max(10).default(3),
   logRetention: z.number().int().min(100).max(100000).default(5000),
+  logRetentionBytes: z.number().int().min(65536).max(256 * 1024 * 1024).default(16 * 1024 * 1024),
+  strategy: z.enum(["automatic", "priority", "round-robin"]).default("automatic"),
+  sessionAffinity: z.boolean().default(false),
+  affinityTtlMs: z.number().int().min(1000).max(86400000).default(1800000),
+  maxAccounts: z.number().int().min(1).max(1000).default(100),
+  bootstrapTimeoutMs: z.number().int().min(1000).max(900000).default(660000),
+  aliases: aliasesSchema.default([]),
+  codexQuotaPolling: z.boolean().default(false),
 });
+/** Remove defaults before making patches optional: omission must never reset a field. */
+export const accountPatchSchema = z.object({
+  label: accountSchema.shape.label.optional(), enabled: accountSchema.shape.enabled.removeDefault().optional(),
+  priority: accountSchema.shape.priority.removeDefault().optional(), pinned: accountSchema.shape.pinned, policy: accountSchema.shape.policy,
+}).strict();
+export const settingsPatchSchema = z.object({
+  threshold: settingsSchema.shape.threshold.removeDefault().optional(), whenExhausted: settingsSchema.shape.whenExhausted.removeDefault().optional(),
+  retryLimit: settingsSchema.shape.retryLimit.removeDefault().optional(), logRetention: settingsSchema.shape.logRetention.removeDefault().optional(),
+  logRetentionBytes: settingsSchema.shape.logRetentionBytes.removeDefault().optional(), strategy: settingsSchema.shape.strategy.removeDefault().optional(),
+  sessionAffinity: settingsSchema.shape.sessionAffinity.removeDefault().optional(), affinityTtlMs: settingsSchema.shape.affinityTtlMs.removeDefault().optional(),
+  maxAccounts: settingsSchema.shape.maxAccounts.removeDefault().optional(), bootstrapTimeoutMs: settingsSchema.shape.bootstrapTimeoutMs.removeDefault().optional(),
+  aliases: settingsSchema.shape.aliases.removeDefault().optional(), codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
+}).strict();
 export type Account = z.infer<typeof accountSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
-export interface AccountStatus {
-  account: Account;
-  windows: { name: string; usedPct: number; resetsAt?: number }[];
-  active: boolean;
-  exhausted: boolean;
-  needsLogin: boolean;
-  expired: boolean;
-  exhaustedUntil?: number;
-  observedAt?: number;
-  observedBy?: string;
-  holder?: string;
-  expiresAt?: number;
-  refreshError?: string;
-}
+/** Saved settings plus the revision produced by the same transaction. */
+export type SettingsUpdateResult = Settings & { revision: string };
+export const accountStatusSchema = z.object({
+  account: accountSchema,
+  windows: z.array(quotaWindowSchema),
+  revision: z.string().optional(),
+  quotaState: z.enum(["unknown", "stale", "fresh"]).optional(),
+  quotaHealth: quotaHealthSchema.optional(),
+  cooldowns: z.array(cooldownSchema).optional(),
+  models: modelSnapshotSchema.optional(),
+  modelError: z.string().optional(),
+  active: z.boolean(),
+  exhausted: z.boolean(),
+  needsLogin: z.boolean(),
+  expired: z.boolean(),
+  exhaustedUntil: z.number().optional(),
+  observedAt: z.number().optional(),
+  observedBy: z.string().optional(),
+  observationSource: z.enum(["headers", "poll", "manual"]).optional(),
+  holder: z.string().optional(),
+  expiresAt: z.number().optional(),
+  refreshError: z.string().optional(),
+});
+export type AccountStatus = z.infer<typeof accountStatusSchema>;
 export interface ServerSummary {
   id: string;
   template: string;
@@ -143,6 +177,9 @@ export interface Status {
   unknownQuota: Record<string, string | undefined>;
   settings: Settings;
   activity: Activity[];
+  settingsRevision?: string;
+  daemon?: { version: string; build: string; providers: Record<Provider, import("./proxy.ts").ProviderCapabilities> };
+  metrics?: import("./proxy.ts").ProxyMetrics;
 }
 export interface RelayStatus {
   url: string;
@@ -211,12 +248,7 @@ export interface DesktopStatus {
 /** Validate native status before views access required fields from a remote daemon. */
 export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION), node: z.string(),
-  accounts: z.array(z.object({
-    account: accountSchema,
-    windows: z.array(z.object({ name: z.string(), usedPct: z.number(), resetsAt: z.number().optional() })),
-    active: z.boolean(), exhausted: z.boolean(), needsLogin: z.boolean(), expired: z.boolean(),
-    exhaustedUntil: z.number().optional(), observedAt: z.number().optional(), observedBy: z.string().optional(), holder: z.string().optional(), expiresAt: z.number().optional(), refreshError: z.string().optional(),
-  })),
+  accounts: z.array(accountStatusSchema),
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
   servers: z.array(z.object({ id: z.string(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), refreshError: z.string().optional() })),
   projects: z.array(projectSchema),
@@ -228,4 +260,7 @@ export const statusSchema = z.object({
   peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),
   unknownQuota: z.record(z.string(), z.string().optional()), settings: settingsSchema,
   activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
+  settingsRevision: z.string().optional(),
+  daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema }) }).optional(),
+  metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });

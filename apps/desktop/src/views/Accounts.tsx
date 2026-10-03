@@ -10,24 +10,22 @@ import {
   Empty,
   Field,
   Modal,
-  NumberInput,
   Panel,
-  Quota,
   HeaderActions,
   RowMenu,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { DesktopAlerts, DesktopButton, DesktopHelp, DesktopPanel, desktopActions, desktopNote, forgetLogin, nameOf } from "./ClaudeDesktop.tsx";
 import { request } from "../api.ts";
+import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
+import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
+import { useAccountActions } from "../features/proxy/AccountActions.tsx";
 import {
   field,
   idPath,
   providerName,
   confirmDelete,
-  ago,
   planName,
-  resetIn,
-  windowName,
 } from "./utils.ts";
 
 function SubscriptionSelector({
@@ -100,7 +98,10 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const [add, setAdd] = useState(false);
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
-  const [edit, setEdit] = useState<string>();
+  const [edit, setEdit] = useState<AccountStatus>();
+  const [selected, setSelected] = useState(new Set<string>());
+  const [models, setModels] = useState({ claude: "", codex: "" });
+  const actions = useAccountActions({ data, connection, perform, local, desktop }, selected, setSelected);
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
@@ -108,8 +109,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const act = desktopActions(connection, perform);
   const loginFor = (id: string) => app?.logins.find((l) => l.accountId === id);
   const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
-  // Windows that have already reset say nothing; hide them.
-  const shown = (a: AccountStatus) => a.windows.filter((w) => !w.resetsAt || w.resetsAt > Date.now());
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
   const problem = (a: AccountStatus) =>
     a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
@@ -136,6 +135,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           Add account
         </Button>
       </HeaderActions>
+      {actions.controls}
       {app && (
         <>
           <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
@@ -176,11 +176,13 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               ? "Claude subscriptions, shared across your sessions."
               : "ChatGPT subscriptions for your Codex sessions."
           }
+          action={<Button size="sm" variant="ghost" isDisabled={!data.accounts.some(a => a.account.provider === provider)} onPress={() => { setSelected(new Set(data.accounts.filter(a => a.account.provider === provider).slice(0, 100).map(a => a.account.id))); }}>Select provider</Button>}
           foot={
             data.unknownQuota[provider] &&
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
+          <Field label="Quota for model" placeholder="All measured windows, or enter an exact model" value={models[provider]} onChange={value => setModels(old => ({ ...old, [provider]: value }))} />
           {data.accounts.some((a) => a.account.provider === provider) && (
             <SubscriptionSelector
               data={data}
@@ -198,6 +200,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               .map((a) => (
                 <div className="item stack" key={a.account.id}>
                   <div className="row">
+                    <input type="checkbox" aria-label={`Select ${a.account.label}`} checked={selected.has(a.account.id)} onChange={e => setSelected(old => { const next = new Set(old); if (e.target.checked && next.size < 100) next.add(a.account.id); else next.delete(a.account.id); return next; })} />
                     <div className={`provider-icon ${provider}`}>
                       {provider === "claude" ? "✳" : "◎"}
                     </div>
@@ -232,7 +235,13 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        { label: "Edit", onAction: () => setEdit(a.account.id) },
+                        { label: "Edit policy", onAction: () => setEdit(a) },
+                        actions.supported(a, "quota") && { label: "Refresh usage", onAction: () => void actions.run(a.account.id, "quota") },
+                        { label: "Verify (read-only)", onAction: () => void actions.run(a.account.id, "verify") },
+                        actions.supported(a, "models") && { label: "Discover models", onAction: () => void actions.run(a.account.id, "models") },
+                        { label: "Refresh login", onAction: () => void actions.run(a.account.id, "refresh") },
+                        { label: "Reset local backoff", onAction: () => void actions.run(a.account.id, "reset-cooldown") },
+                        actions.supported(a, "probe") && { label: "Inference probe…", onAction: () => actions.probe(a) },
                         (a.account.pinned || (a.account.enabled && !a.needsLogin)) && {
                           label: a.account.pinned ? "Use automatic" : "Use this subscription",
                           onAction: () =>
@@ -255,22 +264,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       ]}
                     />
                   </div>
-                  <div className="usage" title={a.observedAt ? `Usage checked ${ago(a.observedAt)}` : undefined}>
-                    {shown(a).length ? (
-                      shown(a).map((w) => (
-                        <div key={w.name}>
-                          <span>{windowName(w.name)}</span>
-                          <Quota value={w.usedPct} />
-                          <strong>{Math.round(w.usedPct)}%</strong>
-                          <small>{resetIn(w.resetsAt) && `resets ${resetIn(w.resetsAt)}`}</small>
-                        </div>
-                      ))
-                    ) : (
-                      <small className="muted">
-                        {provider === "claude" ? "Usage appears within a few minutes." : "Usage appears after the first request."}
-                      </small>
-                    )}
-                  </div>
+                  <AccountQuota account={a} model={models[provider].trim() || undefined} />
                 </div>
               ))
           )}
@@ -391,52 +385,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       )}
       {login}
       {help && <DesktopHelp close={() => setHelp(false)} />}
-      {edit && (
-        <Modal title="Edit account" close={() => setEdit(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              void perform(async () => {
-                await request(
-                  connection,
-                  `/accounts/${idPath(edit)}`,
-                  "PATCH",
-                  {
-                    label: field(f, "label"),
-                    priority: Number(f.get("priority")),
-                  },
-                );
-                setEdit(undefined);
-              }, "Account updated");
-            }}
-          >
-            <Field
-              label="Label"
-              name="label"
-              isRequired
-              defaultValue={
-                data.accounts.find((a) => a.account.id === edit)?.account.label
-              }
-            />
-            <NumberInput
-              label="Priority"
-              name="priority"
-              isRequired
-              defaultValue={
-                data.accounts.find((a) => a.account.id === edit)?.account
-                  .priority
-              }
-            />
-            <p className="note">
-              Higher priority wins when multiple accounts are available.
-            </p>
-            <Button type="submit" size="sm">
-              Save changes
-            </Button>
-          </form>
-        </Modal>
-      )}
+      {edit && <AccountPolicy account={edit} connection={connection} perform={perform} close={() => setEdit(undefined)} />}
     </>
   );
 }

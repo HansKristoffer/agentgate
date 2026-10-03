@@ -2,6 +2,8 @@ import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/te
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
 import { projectIdSchema } from "@agentgate/protocol";
 import { canonicalProject } from "./mcp/gateway.ts";
+import { resetCooldown } from "./llm/policy.ts";
+import { resetRouting } from "./llm/routing.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
 export function parseCommand(text: string): string[] {
@@ -28,6 +30,8 @@ export function saveAccount(s: Store, account: Account, credential: Credential) 
     s.del("usage", account.id);
     s.del("refreshRequest", `credential:${account.id}`);
     s.setLocal(`refreshError:credential:${account.id}`, undefined);
+    for (const key of ["models", "modelError", "quotaHealth"]) s.setLocal(`${key}:${account.id}`, undefined);
+    resetCooldown(s, account.id); resetRouting(s, account.id);
     return account.id;
   });
 }
@@ -45,6 +49,8 @@ export function deleteAccount(s: Store, id: string) {
     for (const kind of ["account", "credential", "usage"] as const) s.del(kind, id);
     s.del("refreshRequest", `credential:${id}`);
     s.setLocal(`refreshError:credential:${id}`, undefined);
+    for (const key of ["models", "modelError", "quotaHealth"]) s.setLocal(`${key}:${id}`, undefined);
+    resetCooldown(s, id); resetRouting(s, id);
     if (provider && s.local(`active:${provider}`) === id) s.setLocal(`active:${provider}`, undefined);
   });
 }

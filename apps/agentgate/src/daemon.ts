@@ -2,9 +2,10 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { Credentials, drainRefresh } from "./credentials.ts";
-import { claude, pollUsage } from "./llm/claude.ts";
-import { codex } from "./llm/codex.ts";
-import { proxy, type Provider } from "./llm/pool.ts";
+import { proxy } from "./llm/pool.ts";
+import { providers } from "./llm/providers.ts";
+import { Quotas } from "./llm/quota.ts";
+import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
@@ -15,7 +16,7 @@ import { PULL_INTERVAL, drainPulls, peerRoutes, poke, pullAll, tailscale } from 
 import { management, oauthCallback } from "./api.ts";
 import { SkillLinks } from "./skills.ts";
 import { z } from "zod";
-import { projectIdSchema, SkillConflict } from "@agentgate/protocol";
+import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
@@ -31,13 +32,16 @@ export interface Ctx {
   imports: SkillImports;
   abort: AbortController;
   pending: Set<Promise<void>>;
+  quotas: Quotas;
+  proxyOperations: ProxyOperations;
 }
 
-export const providers: Record<"claude" | "codex", Provider> = { claude, codex };
+export { providers } from "./llm/providers.ts";
 
 export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
-  return { s, creds, gateway: new Gateway(s), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
+  const quotas = new Quotas(s, creds, providers);
+  return { s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway: new Gateway(s), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
 }
 
 export function app(ctx: Ctx) {
@@ -48,6 +52,7 @@ export function app(ctx: Ctx) {
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message || "Request failed" }, error.status);
     if (error instanceof SkillConflict) return c.json({ error: error.message }, 409);
+    if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
     console.error(`request failed: ${error.name}`);
@@ -78,8 +83,8 @@ export function app(ctx: Ctx) {
   });
 
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.
-  app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
-  app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
+  app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
+  app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/mcp", loopbackOnly, (c) => ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
@@ -148,7 +153,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   }, 1000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
-  schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); await pollUsage(s, (id) => ctx.creds.token(id), ctx.abort.signal); }, 60000);
+  schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
+  schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   let stopping: Promise<void> | undefined;

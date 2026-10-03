@@ -4,7 +4,7 @@ The daemon owns the local SQLite store, subscription pool, MCP gateway and peer 
 
 Account and MCP OAuth refreshes use holder coordination and a local cross-process lease. During a network partition, separate machines can still compete for a rotating provider token. Reconnect peers and sync the newer credential first; sign in again if the provider invalidated it. This is not a consensus protocol.
 
-Back up before upgrading and upgrade paired nodes together. Management API 2 and sync protocol 4 reject incompatible app/daemon and peer versions. New backups use format 3; current Agentgate can also restore formats 1 and 2. Re-run setup and reinstall the user service after changing the home, port or binary location. The service executable is kept outside the desktop bundle so closing or updating the app does not remove the daemon.
+Back up before upgrading and upgrade paired nodes together. Management API 3 and sync protocol 5 reject incompatible app/daemon and peer versions. New backups use format 4; current Agentgate can also restore formats 1–3. Relay records use a versioned encrypted payload; upgrade every node, then reconcile if incompatible entries were skipped. Re-run setup and reinstall the user service after changing the home, port or binary location. The service executable is kept outside the desktop bundle so closing or updating the app does not remove the daemon.
 
 A backup exported without secrets is a configuration inventory, not a working credential backup. Restore transports and logins separately; use a private full backup to restore working credentials. Deleted-record history is kept for safe offline peer catch-up.
 
@@ -15,6 +15,8 @@ Local skill reconciliation runs independently every 30 seconds, with event-drive
 The app/API restore limit is 16 MiB of serialized JSON. For larger inventories, restore on the daemon's machine with `agentgate import /absolute/path/backup.json`; the CLI validates the full backup before committing it. Exported backups can exceed the app restore limit. Protect skill sources and script contents as part of the backup.
 
 Only pool accounts you own and use them within the provider's applicable terms. Automated fixture checks do not establish provider permission or support for every live CLI version.
+
+Proxy routing, account policies, verification, request diagnostics, and upgrade behavior are described in [proxy-operations.md](proxy-operations.md).
 
 ## Distribution checks
 

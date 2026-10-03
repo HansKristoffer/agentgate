@@ -171,7 +171,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               {relay.pullError && <small>Download: {relay.pullError}</small>}
               {!!relay.skipped && (
                 <small>
-                  {relay.skipped} entries could not be decrypted. Reconcile to
+                  {relay.skipped} entries could not be decrypted or validated. Update all nodes and reconcile to
                   retry them.
                 </small>
               )}

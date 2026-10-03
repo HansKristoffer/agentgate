@@ -21,6 +21,12 @@ import type { Ctx, Env } from "./daemon.ts";
 import * as claude from "./llm/claude.ts";
 import * as codex from "./llm/codex.ts";
 import { accountStatus } from "./llm/pool.ts";
+import { providerCapabilities, providerLogins } from "./llm/providers.ts";
+import { requests, requestDetail, metrics } from "./llm/telemetry.ts";
+import { route } from "./llm/routing.ts";
+import { checkRevision, patchSettings, revision } from "./configuration.ts";
+import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
+import packageInfo from "../../../package.json";
 import {
   aliasesFor,
   connect,
@@ -73,8 +79,7 @@ import {
 const required = (value: unknown, name: string) => {
   if (!value) throw new HTTPException(404, { message: `No such ${name}` });
 };
-const moduleFor = (provider: "claude" | "codex") =>
-  provider === "claude" ? claude : codex;
+const moduleFor = (provider: "claude" | "codex") => providerLogins[provider];
 const readableEndpoint = (url?: string) => {
   if (!url) return "Local command";
   try {
@@ -137,7 +142,7 @@ export function management(ctx: Ctx) {
     try {
       return fn();
     } catch (error) {
-      if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof SkillConflict)
+      if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof SkillConflict || error instanceof ConfigurationConflict)
         throw error;
       throw new HTTPException(400, {
         message: error instanceof Error ? error.message : "Invalid operation",
@@ -154,6 +159,9 @@ export function management(ctx: Ctx) {
   app.get("/status", (c) => {
     const status: Status = {
       apiVersion: API_VERSION,
+      daemon: { version: packageInfo.version, build: process.env.AGENTGATE_BUILD ?? "development", providers: providerCapabilities() },
+      settingsRevision: revision(s, "setting", "settings"),
+      metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: (["claude", "codex"] as const).flatMap((provider) => {
@@ -210,12 +218,36 @@ export function management(ctx: Ctx) {
   });
   app.patch("/accounts/:id", async (c) => {
     required(s.get("account", c.req.param("id")), "account");
-    const patch = accountSchema
-      .pick({ label: true, enabled: true, priority: true, pinned: true })
-      .partial()
+    const patch = accountPatchSchema
+      .extend({ revision: z.string().length(64).optional() })
       .strict()
       .parse(await json(c.req.raw));
-    return c.json(input(() => setAccount(s, c.req.param("id"), patch)));
+    const { revision: expected, ...fields } = patch;
+    if ((fields.label !== undefined || fields.priority !== undefined || fields.policy !== undefined) && !expected) throw new ConfigurationConflict();
+    return c.json(input(() => s.transaction(() => {
+      if (expected) checkRevision(s, "account", c.req.param("id"), expected);
+      return setAccount(s, c.req.param("id"), fields);
+    })));
+  });
+  app.get("/requests", (c) => {
+    const f = z.object({ provider: providerSchema.optional(), account: z.string().max(512).optional(), model: modelIdSchema.optional(), outcome: z.enum(["pending", "success", "failed", "interrupted", "cancelled"]).optional(), failure: failureSchema.optional(), search: z.string().max(128).optional(), since: z.coerce.number().int().nonnegative().optional(), until: z.coerce.number().int().nonnegative().optional(), cursor: z.string().regex(/^\d{1,16}$/).optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).strict().parse(c.req.query());
+    return c.json(input(() => requests(s, f)));
+  });
+  app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
+  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
+  app.get("/proxy/route", (c) => {
+    const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
+    return c.json(route(s, f.provider, f.model));
+  });
+  app.post("/accounts/batch", async (c) => {
+    const f = z.object({ ids: z.array(z.string().min(1).max(512)).min(1).max(100), action: z.enum(["quota", "verify", "enable", "disable", "refresh", "models", "reset-cooldown"]) }).strict().parse(await json(c.req.raw));
+    return c.json(await ctx.proxyOperations.batch(f.ids, f.action, AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)])));
+  });
+  app.post("/accounts/:id/verify", async (c) => {
+    required(s.get("account", c.req.param("id")), "account");
+    const f = z.object({ probe: z.boolean().default(false), model: modelIdSchema.optional() }).strict().parse(await optionalJson(c.req.raw));
+    if (f.probe && !f.model) throw new HTTPException(400, { message: "Choose a model for the quota-consuming probe" });
+    return c.json(await ctx.proxyOperations.verify(c.req.param("id"), AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)]), f));
   });
   app.delete("/accounts/:id", (c) => {
     required(s.get("account", c.req.param("id")), "account");
@@ -254,6 +286,10 @@ export function management(ctx: Ctx) {
       provider: f.provider,
       url: moduleFor(f.provider).authorizeUrl(challenge, state, f.email),
     });
+  });
+  app.delete("/accounts/login/:state", (c) => {
+    pending.delete(c.req.param("state"));
+    return c.json({ ok: true });
   });
   app.post("/accounts/login/finish", async (c) => {
     const f = z
@@ -548,15 +584,15 @@ export function management(ctx: Ctx) {
     input(() => unpair(s, id));
     return c.json({ ok: true });
   });
-  app.put("/settings", async (c) =>
-    c.json(
-      s.put(
-        "setting",
-        "settings",
-        settingsSchema.strict().parse(await json(c.req.raw)),
-      ),
-    ),
-  );
+  app.patch("/settings", async (c) => {
+    const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));
+    return c.json(patchSettings(s, f.patch, f.revision));
+  });
+  app.put("/settings", async (c) => {
+    const f = settingsSchema.extend({ revision: z.string().length(64) }).strict().parse(await json(c.req.raw));
+    const { revision: expected, ...settings } = f;
+    return c.json(patchSettings(s, settings, expected));
+  });
   app.get("/backup", (c) => {
     local(c.env.listener);
     return c.json(exportBackup(s, c.req.query("secrets") === "true"));

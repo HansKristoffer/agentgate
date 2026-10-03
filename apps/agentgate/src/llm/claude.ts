@@ -4,9 +4,10 @@ import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { tokenRequest, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
-import { fetchHeaders } from "../runtime.ts";
+import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import { recordUsage, type Provider, type Window } from "./pool.ts";
+import type { Provider, Window } from "./provider.ts";
+import { Quotas } from "./quota.ts";
 
 // Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
 export const CLAUDE = {
@@ -35,6 +36,24 @@ export function rewriteUserId(userId: string, uuid: string): string {
 
 export const claude: Provider = {
   name: "claude",
+  modelList: path => /^\/v1\/models(?:\?|$)/.test(path) ? { collection: "data", id: "id" } : undefined,
+  fetchQuota: (credential, signal) => fetchUsage(credential.accessToken, signal),
+  discoverModels: async (credential, signal) => {
+    const result = await fetchHeaders(`${CLAUDE.api}/v1/models?limit=1000`, { headers: { authorization: `Bearer ${credential.accessToken}`, "anthropic-beta": CLAUDE.oauthBeta, "anthropic-version": "2023-06-01" }, signal }, 10000);
+    if (!result.ok) { await result.body?.cancel(); throw new Error("Model discovery failed"); }
+    const payload = JSON.parse(new TextDecoder().decode(await readBody(result.body, 256 * 1024, signal)));
+    if (!Array.isArray(payload.data)) throw new Error("Unrecognized model response");
+    return payload.data.flatMap((m: { id?: unknown }) => typeof m.id === "string" ? [m.id] : []);
+  },
+  session: (_headers, body) => {
+    const metadata = body?.metadata as { user_id?: string } | undefined;
+    if (typeof metadata?.user_id !== "string") return undefined;
+    try { const parsed = JSON.parse(metadata.user_id); if (typeof parsed.session_id === "string") return new Bun.CryptoHasher("sha256").update(parsed.session_id).digest("hex"); } catch {}
+    const id = metadata.user_id.match(/_session_([\w-]{1,128})$/)?.[1];
+    return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
+  },
+  classifyFailure: (status, _headers, body) => status === 404 && /model/i.test(body) ? "model" : status >= 500 ? "transient" : "request",
+  probe: { path: "/v1/messages", body: model => ({ model, max_tokens: 1, messages: [{ role: "user", content: "Reply OK" }], stream: true }) },
 
   prepare(path, headers, body, cred) {
     headers.set("authorization", `Bearer ${cred.accessToken}`);
@@ -103,30 +122,14 @@ export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exha
 export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
   const timeout = AbortSignal.timeout(10_000);
   const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, 10_000);
-  if (!res.ok) throw new Error(`usage request failed (${res.status})`);
-  return parseUsage(await res.json());
+  if (!res.ok) { await res.body?.cancel(); throw new Error(`usage request failed (${res.status})`); }
+  return parseUsage(JSON.parse(new TextDecoder().decode(await readBody(res.body, 256 * 1024, signal))));
 }
 
-const USAGE_STALE = 10 * 60_000;
-
-/** Accounts nobody sends requests through (e.g. Claude Desktop users) still need quota for the UI and for switching. */
-export async function pollUsage(s: Store, token: (accountId: string) => Promise<{ accessToken: string }>, signal?: AbortSignal) {
-  const now = s.now();
-  for (const a of s.list("account")) {
-    if (signal?.aborted) return;
-    if (a.provider !== "claude" || !a.enabled) continue;
-    const c = s.get("credential", a.id);
-    if (!c || c.needsLogin) continue;
-    if (now - (s.get("usage", a.id)?.observedAt ?? 0) < USAGE_STALE) continue;
-    if (now - Number(s.local(`usagePolled:${a.id}`) ?? 0) < USAGE_STALE) continue;
-    s.setLocal(`usagePolled:${a.id}`, String(now));
-    const seen = s.get("usage", a.id)?.observedAt;
-    try {
-      const usage = await fetchUsage((await token(a.id)).accessToken, signal);
-      // Live traffic may have recorded newer usage while this request was out; that one wins.
-      if (usage && !signal?.aborted && s.get("usage", a.id)?.observedAt === seen) recordUsage(s, a.id, usage);
-    } catch { } // a later request or poll fills it in
-  }
+/** Compatibility wrapper for callers that already provide coordinated tokens. */
+export async function pollUsage(s: Store, token: (accountId: string) => Promise<{ accessToken: string }>, signal = new AbortController().signal) {
+  const service = new Quotas(s, { token: async id => ({ ...s.get("credential", id)!, ...await token(id) }) }, { claude });
+  await service.poll(signal);
 }
 
 /** `email` pre-selects that account on the login page (OAuth login_hint). */

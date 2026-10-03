@@ -2,8 +2,10 @@
 import { homedir, hostname } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import * as claudeLogin from "./llm/claude.ts";
-import * as codexLogin from "./llm/codex.ts";
+import { providerLogins } from "./llm/providers.ts";
+import { patchSettings, revision, checkRevision } from "./configuration.ts";
+import { modelPolicySchema } from "@agentgate/protocol";
+import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
@@ -22,6 +24,14 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   login claude|codex [--label work]           log in in a temporary dir and import it
   import claude|codex --from <dir> [--label]  take over an existing login
   accounts [enable|disable|pin|unpin|rm|exhaust] <id> [minutes]
+  accounts quota|verify|models|refresh|reset-cooldown <id> [...] (daemon operations)
+  accounts verify <id> --probe --model <model>  quota-consuming inference check
+  accounts policy <id> --file policy.json    revision-safe account policy edit
+  settings show | set --file patch.json      revision-safe partial settings edit
+  proxy route <claude|codex> [--model <id>]   explain selection without sending traffic
+  proxy capabilities                         daemon version and provider features
+  requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
+                                             structured local request diagnostics
   mcp                                         (the stdio shim, started by Claude Code / Codex)
   mcp add <name> <url|preset> [--header "Name: value" ...]
   mcp add <name> --command "npx -y …" [--per-session]
@@ -59,6 +69,7 @@ const { values: opts, positionals: pos } = parseArgs({
   strict: false,
   options: {
     name: { type: "string" },
+    model: { type: "string" }, provider: { type: "string" }, account: { type: "string" }, outcome: { type: "string" }, failure: { type: "string" }, search: { type: "string" }, since: { type: "string" }, until: { type: "string" }, limit: { type: "string" }, cursor: { type: "string" }, probe: { type: "boolean" },
     "always-on": { type: "boolean" },
     label: { type: "string" },
     from: { type: "string" },
@@ -85,6 +96,13 @@ const str = (k: string) => opts[k] as string | undefined;
 const kv = (list: unknown) => Object.fromEntries(((list as string[] | undefined) ?? []).map((p) => [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)]));
 
 const [cmd, sub, ...rest] = pos;
+async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+  const signal = AbortSignal.timeout(100000);
+  const res = await fetchHeaders(`${LOCAL_URL}/api${path}`, { method, signal, redirect: "manual", headers: body === undefined ? {} : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, 100000);
+  const result = JSON.parse(new TextDecoder().decode(await readBody(res.body, 2 * 1024 * 1024, signal)));
+  if (!res.ok) throw new Error(result.error ?? "Daemon rejected the operation");
+  return result;
+}
 
 function initialized(s: Store) {
   if (!s.local("node")) die("Run `agentgate init` first.");
@@ -159,7 +177,7 @@ async function main() {
     case "login":
     case "import": {
       initialized(s);
-      const mod = sub === "claude" ? claudeLogin : sub === "codex" ? codexLogin : die(`${cmd} claude|codex`);
+      const mod = sub === "claude" || sub === "codex" ? providerLogins[sub] : die(`${cmd} claude|codex`);
       if (cmd === "login") return console.log(`added ${await mod.login(s, str("label"))}`);
       const dir = (str("from") ?? die("--from <dir> is required")).replace(/^~/, process.env.HOME ?? "~");
       const id = await mod.importFrom(s, dir, str("label"));
@@ -175,6 +193,15 @@ async function main() {
         return;
       }
       const id = rest[0] ?? die(`accounts ${sub} <id>`);
+      if (sub === "verify" && opts.probe) return console.log(JSON.stringify(await management(`/accounts/${encodeURIComponent(id)}/verify`, "POST", { probe: true, model: str("model") ?? die("--model is required for an inference probe") }), null, 2));
+      if (["quota", "verify", "models", "refresh", "reset-cooldown"].includes(sub)) return console.log(JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2));
+      if ((sub === "enable" || sub === "disable") && rest.length > 1) return console.log(JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2));
+      if (sub === "policy") {
+        const expected = revision(s, "account", id);
+        const policy = modelPolicySchema.parse(await Bun.file(str("file") ?? die("--file policy.json is required")).json());
+        s.transaction(() => { checkRevision(s, "account", id, expected); setAccount(s, id, { policy }); });
+        return console.log("Policy saved; synchronizes to paired machines");
+      }
       if (sub === "enable") setAccount(s, id, { enabled: true });
       else if (sub === "disable") setAccount(s, id, { enabled: false });
       else if (sub === "pin") setAccount(s, id, { pinned: true });
@@ -185,9 +212,40 @@ async function main() {
         // Test flag (PLAN §14 phase 1): pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
         const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
-        s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until });
+        s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until, source: "manual" });
       } else die(HELP);
       return console.log("ok");
+    }
+
+    case "settings": {
+      initialized(s);
+      if (!sub || sub === "show") return console.log(JSON.stringify(s.settings(), null, 2));
+      if (sub !== "set") die("settings show | settings set --file patch.json");
+      const expected = revision(s, "setting", "settings");
+      const patch = await Bun.file(str("file") ?? die("--file patch.json is required")).json();
+      return console.log(JSON.stringify(patchSettings(s, patch, expected), null, 2));
+    }
+    case "proxy": {
+      initialized(s);
+      if (sub === "capabilities") { const st = await management<{ daemon: unknown }>("/status"); return console.log(JSON.stringify(st.daemon, null, 2)); }
+      if (sub !== "route" || !["claude", "codex"].includes(rest[0] ?? "")) die("proxy route claude|codex [--model <id>]");
+      const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
+      return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
+    }
+    case "requests": {
+      initialized(s);
+      if (sub && sub !== "export") return console.log(JSON.stringify(await management(`/requests/${encodeURIComponent(sub)}`), null, 2));
+      const query = new URLSearchParams();
+      for (const key of ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"]) if (str(key)) query.set(key, str(key)!);
+      if (sub !== "export") return console.log(JSON.stringify(await management(`/requests?${query}`), null, 2));
+      query.set("limit", "100");
+      for (let pages = 0; pages < 1000; pages++) {
+        const page = await management<import("@agentgate/protocol").RequestPage>(`/requests?${query}`);
+        for (const request of page.requests) console.log(JSON.stringify(await management(`/requests/${request.id}`)));
+        if (!page.nextCursor) break;
+        query.set("cursor", page.nextCursor);
+      }
+      return;
     }
 
     case "mcp": {

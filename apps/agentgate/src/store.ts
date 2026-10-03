@@ -1,4 +1,4 @@
-import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, MAX_RECORD } from "@agentgate/protocol";
+import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, MAX_RECORD } from "@agentgate/protocol";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
@@ -14,7 +14,7 @@ export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
 
 const id = z.string().min(1).max(512);
 const timestamp = z.number().int().nonnegative();
-const Window = z.object({ name: id, usedPct: z.number().min(0).max(100), resetsAt: timestamp.optional() });
+const Window = quotaWindowSchema;
 const OAuth = z.object({ redirectUri: z.string().optional(), client: OAuthClientInformationSchema.passthrough().optional(), tokens: OAuthTokensSchema.passthrough().optional() });
 
 export const schemas = {
@@ -42,6 +42,7 @@ export const schemas = {
     windows: z.array(Window),
     status: z.enum(["ok", "limited", "exhausted"]),
     exhaustedUntil: timestamp.optional(),
+    source: z.enum(["headers", "poll", "manual"]).optional(),
   }),
   mcp: z.object({
     id: z.string(),
@@ -113,6 +114,7 @@ export function parseRecord(input: unknown): Rec {
 
 export class Store {
   db: Database;
+  closed = false;
   /** Overridable clock, so tests can fake time. */
   now = () => Date.now();
 
@@ -142,12 +144,12 @@ export class Store {
   }
 
   transaction<T>(fn: () => T): T { return this.db.transaction(fn).immediate(); }
-  close() { this.db.close(); }
+  close() { this.closed = true; this.db.close(); }
 
   private migrate() {
     this.transaction(() => {
       const version = (this.db.query("pragma user_version").get() as { user_version: number }).user_version;
-      if (version > 1) throw new Error("database was created by a newer agentgate version");
+      if (version > 2) throw new Error("database was created by a newer agentgate version");
       if (version === 0) {
         for (const row of this.db.query("select * from records where kind = 'mcp' and deleted = 0").all() as Rec[]) {
           const inst = parseData("mcp", row.id, JSON.parse(row.data));
@@ -158,6 +160,16 @@ export class Store {
           }
         }
         this.db.run("pragma user_version = 1");
+      }
+      if (version < 2) {
+        this.db.run("create table if not exists proxy_requests (seq integer primary key autoincrement, id text unique not null, at integer not null, provider text not null, account text not null, model text not null, outcome text not null, failure text, bytes integer not null, data text not null)");
+        this.db.run("create table if not exists proxy_attempts (id text primary key, request_id text not null, number integer not null, bytes integer not null, data text not null)");
+        this.db.run("create index if not exists proxy_requests_time on proxy_requests(at)");
+        this.db.run("create index if not exists proxy_attempts_request on proxy_attempts(request_id)");
+        // Re-publish existing relay records in the versioned encrypted payload format.
+        for (const [key] of this.localPrefixed("relay:")) if (key.endsWith(":pushed") || key === "relay:pushed") this.setLocal(key, undefined);
+        if (this.db.query("select name from sqlite_master where type='table' and name='relay_pending'").get()) this.db.run("delete from relay_pending");
+        this.db.run("pragma user_version = 2");
       }
     });
   }
@@ -325,11 +337,11 @@ export function exportBackup(s: Store, secrets = true) {
       const data = JSON.parse(r.data);
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
-  return { agentgate: 3, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
+  return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
 }
 
 export function importBackup(s: Store, input: unknown) {
-  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2), z.literal(3)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
+  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
   const records = backup.records.map(r => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
   return s.transaction(() => {
     for (const r of records) {

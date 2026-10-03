@@ -218,7 +218,7 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   expect(s.get("usage", "claude-idle")?.windows[0]?.usedPct).toBe(42);
 
   // Live traffic records newer usage while a poll is out: the poll's older answer is dropped.
-  s.setLocal("usagePolled:claude-idle", undefined);
+  s.setLocal("quotaHealth:claude-idle", undefined);
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
   let answer!: () => void;
   globalThis.fetch = (() => new Promise<Response>((r) => { answer = () => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } }))); })) as unknown as typeof fetch;
@@ -232,7 +232,7 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
 
   // Stopping the daemon aborts the request and records nothing.
-  s.setLocal("usagePolled:claude-idle", undefined);
+  s.setLocal("quotaHealth:claude-idle", undefined);
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
   const stop = new AbortController();
   let sawAbort = false;

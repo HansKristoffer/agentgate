@@ -5,7 +5,7 @@ import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
 
 export const PULL_INTERVAL = 15_000;
 // 4: byte-bounded pages with explicit continuation, plus validated skill bundles.
-export const SYNC_PROTOCOL = 4;
+export const SYNC_PROTOCOL = 5;
 // An origin only: a path or query would let a caller aim `${url}/peer/…` at any route, e.g. this daemon's own API.
 const peerUrl = z.string().refine(v => {
   try {

@@ -40,6 +40,7 @@ import {
   Settings,
   Skills,
 } from "./views/index.ts";
+import { ActivityView } from "./views/Activity.tsx";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 
@@ -55,6 +56,7 @@ import {
 const navigation = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "accounts", title: "Accounts", icon: Users },
+  { id: "activity", title: "Activity", icon: Activity },
   { id: "servers", title: "MCP servers", icon: Boxes },
   { id: "skills", title: "Skills", icon: Sparkles },
   { id: "projects", title: "Projects", icon: FolderGit2 },
@@ -65,6 +67,7 @@ type View = (typeof navigation)[number]["id"];
 const descriptions: Record<View, string> = {
   overview: "Your agents, connected.",
   accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
+  activity: "Inspect requests, retries, and stream outcomes on this daemon.",
   servers: "Connect tools once. Use them across your projects.",
   skills: "Install skills once. Choose which projects use them.",
   projects: "Give each repository the tools it needs.",
@@ -202,6 +205,7 @@ export function App() {
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
+    activity: <ActivityView {...props} />,
     servers: <Servers {...props} />,
     skills: <Skills {...props} />,
     projects: <Projects {...props} />,
@@ -225,7 +229,7 @@ export function App() {
             <>
               <div className="tau-drag-strip" />
               <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                {navigation.slice(0, 6).map((n) => (
+                {navigation.filter(n => n.id !== "settings").map((n) => (
                   <button
                     key={n.id}
                     aria-current={view === n.id ? "page" : undefined}
@@ -344,7 +348,7 @@ export function App() {
               )}
               {props && views ? (
                 <fieldset
-                  key={connection.url}
+                  key={JSON.stringify([connection.url, connection.token])}
                   disabled={busy || !!error}
                   inert={busy || !!error}
                   className="workspace"
