@@ -20,6 +20,20 @@ const subscribe = (listener: () => void) => {
   };
 };
 const snapshot = () => Math.floor(Date.now() / 1000);
+/** "Resets 20:40 · in 3 h 47 min", or the weekday when it is more than a day away. */
+const resetText = (at: number | undefined, now: number, estimated?: boolean) => {
+  if (!at) return "Reset unknown";
+  if (at <= now) return "Reset passed · last measured";
+  const m = Math.max(1, Math.ceil((at - now) / 60_000));
+  const left =
+    m < 60 ? `${m} min` : m < 1440 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
+  const when = new Date(at).toLocaleString([], {
+    ...(m >= 1440 && { weekday: "short" }),
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `Resets ${when} · in ${left}${estimated ? " (estimated)" : ""}`;
+};
 export function AccountQuota({
   account,
   model,
@@ -52,29 +66,20 @@ export function AccountQuota({
       </small>
       <div className="usage">
         {windows.map((w) => {
-          const passed = !!w.resetsAt && w.resetsAt <= now;
+          const name = `${windowName(w.name)}${w.scope?.kind === "model" ? ` · ${w.scope.model}` : ""}`;
           return (
             <div
               key={w.name}
               title={
                 w.resetsAt
-                  ? new Date(w.resetsAt).toLocaleString()
+                  ? `Resets ${new Date(w.resetsAt).toLocaleString()}`
                   : "Reset time unknown"
               }
             >
-              <span>
-                {windowName(w.name)}
-                {w.scope?.kind === "model" ? ` · ${w.scope.model}` : ""}
-              </span>
+              <span title={name}>{name}</span>
               <Quota value={w.usedPct} />
               <strong>{Math.round(w.usedPct)}%</strong>
-              <small>
-                {passed
-                  ? "Reset passed; last measurement"
-                  : w.resetsAt
-                    ? `Resets in ${Math.max(1, Math.ceil((w.resetsAt - now) / 60000))} min · ${new Date(w.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${w.inferredReset ? " (estimated)" : ""}`
-                    : "Reset unknown"}
-              </small>
+              <small>{resetText(w.resetsAt, now, w.inferredReset)}</small>
             </div>
           );
         })}

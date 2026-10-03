@@ -79,7 +79,9 @@ export function useAccountActions(
       {needed.length > 0 && (
         <div className="item">
           <span className="grow">
-            <strong>{needed.length} accounts need attention</strong>
+            <strong>
+              {needed.length} {needed.length === 1 ? "account needs" : "accounts need"} attention
+            </strong>
             <small>
               {needed
                 .slice(0, 4)
@@ -90,7 +92,7 @@ export function useAccountActions(
           </span>
           <Button
             size="sm"
-            variant="ghost"
+            variant="tertiary"
             onPress={() =>
               setSelected(
                 new Set(needed.slice(0, 100).map((a) => a.account.id)),
@@ -101,14 +103,20 @@ export function useAccountActions(
           </Button>
         </div>
       )}
-      <div className="item proxy-actions">
-        <Choice
-          label="Action"
-          value={action}
-          onChange={(v) => setAction(String(v))}
-          options={actions}
-          disabledKeys={disabled}
-        />
+      <Choice
+        className="item"
+        label="Action"
+        description={
+          selected.size
+            ? `${selected.size} ${selected.size === 1 ? "account" : "accounts"} selected below.`
+            : "Select accounts below, or select them all."
+        }
+        value={action}
+        onChange={(v) => setAction(String(v))}
+        options={actions}
+        disabledKeys={disabled}
+      />
+      <div className="item item-actions">
         <Button
           size="sm"
           variant="ghost"

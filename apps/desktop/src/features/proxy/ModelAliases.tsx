@@ -10,12 +10,14 @@ export function ModelAliases({
   change: (aliases: Settings["aliases"]) => void;
 }) {
   return (
-    <div className="policy-preview">
-      <h3>Model aliases</h3>
-      <p className="note">
-        Map a client-facing model name to an exact upstream model. Aliases
-        resolve before routing; duplicate names and cycles are rejected.
-      </p>
+    <div className="item stack">
+      <span className="labelled">
+        Model aliases
+        <small>
+          Map a client-facing model name to an exact upstream model. Aliases
+          resolve before routing; duplicate names and cycles are rejected.
+        </small>
+      </span>
       {aliases.map((alias, index) => (
         <div className="alias-row" key={index}>
           <Choice
@@ -69,6 +71,7 @@ export function ModelAliases({
       <Button
         size="sm"
         variant="tertiary"
+        className="self-start"
         isDisabled={aliases.length >= 200}
         onPress={() =>
           change([...aliases, { provider: "claude", alias: "", target: "" }])

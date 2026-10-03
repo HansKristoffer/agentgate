@@ -1,6 +1,6 @@
 import type { Status } from "@agentgate/protocol";
 import { Check, Empty } from "./ui.tsx";
-import { projectSkillChoices } from "../skill-assignment.ts";
+import { projectSkillChoices, repoClashes } from "../skill-assignment.ts";
 
 function AssignmentChecks({ title, name, choices }: { title: string; name: string; choices: { id: string; label?: string; detail?: string; selected: boolean }[] }) {
   return <fieldset className="checklist">
@@ -11,9 +11,14 @@ function AssignmentChecks({ title, name, choices }: { title: string; name: strin
   </fieldset>;
 }
 
-export function ProjectChecks({ data, selected }: { data: Status; selected: string[] }) {
+/** `skills` are the skills being assigned; the every-session choice warns when a local repository has its own by that name. */
+export function ProjectChecks({ data, selected, skills = [] }: { data: Status; selected: string[]; skills?: string[] }) {
+  const clashes = repoClashes(data, skills);
+  const names = [...new Set(clashes.map(c => c.skill))].join(", "), projects = [...new Set(clashes.map(c => c.project))].join(", ");
   return <AssignmentChecks title="Use in" name="project" choices={[
-    { id: "*", label: "Every session", detail: "All repositories, on every machine", selected: selected.includes("*") },
+    { id: "*", label: "Every session", selected: selected.includes("*"), detail: clashes.length
+      ? `All repositories, on every machine. ${projects} has its own ${names}; Claude Code would run this one instead there.`
+      : "All repositories, on every machine" },
     ...data.projects.filter(p => p.id !== "*").map(p => ({ id: p.id, selected: selected.includes(p.id) })),
   ]} />;
 }

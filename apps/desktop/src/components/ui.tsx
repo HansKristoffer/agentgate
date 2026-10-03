@@ -23,6 +23,7 @@ import {
   ProgressBar,
   Select,
   Switch,
+  Table,
   TextArea,
   TextField,
 } from "@heroui/react";
@@ -233,12 +234,12 @@ export function Toggle({
     </Switch>
   );
 }
-/** A checkbox that submits `name=value` (default `on`), like the native one it replaces. */
+/** A checkbox that submits `name=value` (default `on`), like the native one it replaces. Without children, give it an aria-label. */
 export function Check({
   children,
   value = "on",
   ...props
-}: ComponentProps<typeof Checkbox> & { children: ReactNode }) {
+}: ComponentProps<typeof Checkbox> & { children?: ReactNode }) {
   return (
     <Checkbox value={value} {...props}>
       <Checkbox.Content className="check">
@@ -270,5 +271,31 @@ export function RowMenu({ label, items }: { label: string; items: (MenuAction | 
         </Dropdown.Menu>
       </Dropdown.Popover>
     </Dropdown>
+  );
+}
+
+/** A before-and-after table for reviewing changes before they are saved. */
+export function Changes({ rows }: { rows: [label: string, before: ReactNode, after: ReactNode][] }) {
+  return (
+    <Table className="changes">
+      <Table.ScrollContainer>
+        <Table.Content aria-label="Changes">
+          <Table.Header>
+            <Table.Column isRowHeader>Setting</Table.Column>
+            <Table.Column>Before</Table.Column>
+            <Table.Column>After</Table.Column>
+          </Table.Header>
+          <Table.Body>
+            {rows.map(([label, before, after]) => (
+              <Table.Row key={label} id={label}>
+                <Table.Cell>{label}</Table.Cell>
+                <Table.Cell>{before}</Table.Cell>
+                <Table.Cell>{after}</Table.Cell>
+              </Table.Row>
+            ))}
+          </Table.Body>
+        </Table.Content>
+      </Table.ScrollContainer>
+    </Table>
   );
 }
