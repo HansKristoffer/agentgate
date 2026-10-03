@@ -4,11 +4,14 @@ import { join } from "node:path";
 import { jwtClaims, tokenRequest, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
 import type { Store } from "../store.ts";
-import type { Provider, Window } from "./pool.ts";
+import type { Observation, Provider, Window } from "./provider.ts";
+import { fetchHeaders, readBody } from "../runtime.ts";
 
 // Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
 export const CODEX = {
   api: "https://chatgpt.com",
+  usagePath: "/backend-api/wham/usage",
+  modelsPath: "/backend-api/codex/models?client_version=0.149.1",
   tokenUrl: "https://auth.openai.com/oauth/token",
   authorizeUrl: "https://auth.openai.com/oauth/authorize",
   redirectUri: "http://localhost:1455/auth/callback",
@@ -25,13 +28,28 @@ function toTokens(t: { access_token: string; refresh_token?: string }, previousR
 
 /** Windows are named by their length, never by the primary/secondary slot they arrive in. */
 function windowName(minutes: number, family: string): string {
-  const base = minutes <= 6 * 60 ? "5h" : minutes >= 6 * 24 * 60 ? "7d" : `${minutes}m`;
+  const base = minutes === 300 ? "5h" : minutes === 10080 ? "7d" : `${minutes}m`;
   const extra = family.replace(/^codex-?/, "");
   return extra ? `${base}:${extra}` : base;
 }
 
 export const codex: Provider = {
   name: "codex",
+  modelList: path => /^\/backend-api\/codex\/models(?:\?|$)/.test(path) ? { collection: "models", id: "slug" } : undefined,
+  fetchQuota: async (credential, signal) => parseQuota(await readCodex(CODEX.usagePath, credential, signal)),
+  discoverModels: async (credential, signal) => {
+    const payload = await readCodex(CODEX.modelsPath, credential, signal);
+    const models = payload.models ?? payload.data;
+    if (!Array.isArray(models)) throw new Error("Unrecognized model response");
+    return models.flatMap((m: { slug?: unknown; id?: unknown }) => typeof (m.slug ?? m.id) === "string" ? [String(m.slug ?? m.id)] : []);
+  },
+  session: headers => {
+    const id = headers.get("session_id") ?? headers.get("x-codex-session-id");
+    return id && id.length <= 128 ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
+  },
+  stateful: body => typeof body?.previous_response_id === "string" && !!body.previous_response_id,
+  classifyFailure: (status, _headers, body) => (status === 404 || status === 400) && /model_not_found|model_not_supported/.test(body) ? "model" : status >= 500 ? "transient" : "request",
+  probe: { path: "/backend-api/codex/responses", body: model => ({ model, instructions: "Reply OK", input: [{ role: "user", content: [{ type: "input_text", text: "Reply OK" }] }], stream: true, store: false }) },
 
   prepare(path, headers, body, cred) {
     headers.set("authorization", `Bearer ${cred.accessToken}`);
@@ -72,6 +90,33 @@ export const codex: Provider = {
     return toTokens(t, refreshToken);
   },
 };
+
+async function readCodex(path: string, credential: import("../store.ts").Credential, signal: AbortSignal) {
+  const headers = new Headers({ authorization: `Bearer ${credential.accessToken}`, accept: "application/json" });
+  if (credential.chatgptAccountId) headers.set(CODEX.accountHeader, credential.chatgptAccountId);
+  const result = await fetchHeaders(CODEX.api + path, { headers, signal, redirect: "manual" }, 10000);
+  if (!result.ok) { await result.body?.cancel(); throw new Error("Codex read-only check failed"); }
+  return JSON.parse(new TextDecoder().decode(await readBody(result.body, 256 * 1024, signal)));
+}
+export function parseQuota(payload: unknown): Observation | undefined {
+  const object = payload as { rate_limit?: { primary_window?: unknown; secondary_window?: unknown }; additional_rate_limits?: { limit_name?: string; rate_limit?: { primary_window?: unknown; secondary_window?: unknown } }[] } | null;
+  if (!object || typeof object !== "object") return undefined;
+  const windows: Window[] = [];
+  const add = (raw: unknown, family = "") => {
+    const w = raw as { used_percent?: unknown; limit_window_seconds?: unknown; reset_at?: unknown; reset_after_seconds?: unknown } | null;
+    if (!w || typeof w.used_percent !== "number" || !Number.isFinite(w.used_percent) || w.used_percent < 0 || typeof w.limit_window_seconds !== "number" || !Number.isFinite(w.limit_window_seconds) || w.limit_window_seconds <= 0) return;
+    const duration = w.limit_window_seconds * 1000;
+    const reset = typeof w.reset_at === "number" && Number.isFinite(w.reset_at) && w.reset_at > 0 ? w.reset_at * 1000 : typeof w.reset_after_seconds === "number" && Number.isFinite(w.reset_after_seconds) && w.reset_after_seconds > 0 ? Date.now() + w.reset_after_seconds * 1000 : undefined;
+    windows.push({ name: windowName(w.limit_window_seconds / 60, family), durationMs: duration, scope: family ? { kind: "model", model: family } : { kind: "account" }, usedPct: Math.min(100, w.used_percent), resetsAt: reset });
+  };
+  add(object.rate_limit?.primary_window); add(object.rate_limit?.secondary_window);
+  for (const entry of Array.isArray(object.additional_rate_limits) ? object.additional_rate_limits : []) {
+    if (typeof entry.limit_name !== "string" || !/^[\w.-]{1,128}$/.test(entry.limit_name)) continue;
+    add(entry.rate_limit?.primary_window, entry.limit_name); add(entry.rate_limit?.secondary_window, entry.limit_name);
+  }
+  if (!windows.length) return undefined;
+  return { windows, status: windows.some(w => w.usedPct >= 100) ? "exhausted" : "ok" };
+}
 
 /** `email` pre-selects that account on the login page (OAuth login_hint). */
 export function authorizeUrl(challenge: string, state: string, email?: string) {

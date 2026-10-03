@@ -4,15 +4,13 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
-  Choice,
   Modal,
-  NumberInput,
   Panel,
   Toggle,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { backupFile, localAction, request, restoreFile } from "../api.ts";
-import { field } from "./utils.ts";
+import { backupFile, localAction, restoreFile } from "../api.ts";
+import { PoolSettings } from "../features/proxy/PoolSettings.tsx";
 
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
@@ -24,75 +22,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
     );
   return (
     <>
-      <form
-        key={JSON.stringify(data.settings)}
-        onSubmit={(e) => {
-          e.preventDefault();
-          const f = new FormData(e.currentTarget);
-          void perform(
-            () =>
-              request(connection, "/settings", "PUT", {
-                threshold: Number(f.get("threshold")),
-                whenExhausted: field(f, "whenExhausted"),
-                retryLimit: Number(f.get("retryLimit")),
-                logRetention: Number(f.get("logRetention")),
-              }),
-            "Settings saved",
-          );
-        }}
-      >
-        <Panel
-          title="Pool behavior"
-          detail="These settings sync to every paired machine."
-        >
-          <NumberInput
-            className="item"
-            label="Switch account at quota"
-            description="Percent used before the next account takes over."
-            name="threshold"
-            minValue={1}
-            maxValue={100}
-            isRequired
-            defaultValue={data.settings.threshold}
-          />
-          <Choice
-            className="item"
-            label="When every account is exhausted"
-            description="What a session gets once the whole pool is used up."
-            name="whenExhausted"
-            defaultValue={data.settings.whenExhausted}
-            options={[
-              { id: "fail", label: "Return a limit response" },
-              { id: "wait", label: "Wait for the next reset" },
-            ]}
-          />
-          <NumberInput
-            className="item"
-            label="Maximum retries"
-            description="Times a rate-limited request waits and tries again."
-            name="retryLimit"
-            minValue={0}
-            maxValue={10}
-            isRequired
-            defaultValue={data.settings.retryLimit}
-          />
-          <NumberInput
-            className="item"
-            label="Activity log retention"
-            description="Requests kept in the activity log."
-            name="logRetention"
-            minValue={100}
-            maxValue={100000}
-            isRequired
-            defaultValue={data.settings.logRetention}
-          />
-          <div className="item item-actions">
-            <Button type="submit" size="sm">
-              Save settings
-            </Button>
-          </div>
-        </Panel>
-      </form>
+      <PoolSettings data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
       {local && (
         <>
           <Panel

@@ -204,3 +204,19 @@ pre {
 .choice:hover { border-color: var(--accent); }
 .choice strong { font-size: 13px; font-weight: 600; }
 .choice span { font-size: 12px; color: var(--muted); }
+/* Proxy controls use the same rows, fields, and panels as the existing screens. */
+.proxy-actions { flex-wrap: wrap; gap: 12px; }
+.proxy-actions > .field { min-width: 180px; flex: 1; margin: 0; }
+.quota-details { min-width: 0; display: grid; gap: 6px; flex: 1; }
+.quota-details > small { overflow-wrap: anywhere; }
+.policy-preview { padding: 16px 0; display: grid; gap: 12px; }
+.compare { width: 100%; border-collapse: collapse; font-size: 13px; }
+.compare th, .compare td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; max-width: 240px; }
+.activity-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+.activity-request { width: 100%; text-align: left; background: transparent; cursor: pointer; }
+.activity-request:hover { background: var(--tau-side-row-hover); }
+@media (max-width: 640px) { .activity-filters { grid-template-columns: 1fr; } }
+
+.alias-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.alias-row > button { margin-bottom: 14px; }
+@media (max-width: 800px) { .alias-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

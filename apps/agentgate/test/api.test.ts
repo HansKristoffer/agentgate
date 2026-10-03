@@ -1,3 +1,4 @@
+import { revision } from "../src/configuration.ts";
 import { afterEach, expect, test } from "bun:test";
 import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
@@ -6,6 +7,7 @@ import { choose } from "../src/llm/pool.ts";
 import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
+import { Telemetry } from "../src/llm/telemetry.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -44,6 +46,52 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
     );
   return { s, call, handler, ctx };
 }
+
+test("proxy management returns validated capabilities, revision-safe patches, and filtered diagnostics", async () => {
+  const { s, call } = fixture();
+  s.put("account", "a", { id: "a", provider: "claude", label: "a", priority: 4 });
+  s.put("credential", "a", { accountId: "a", accessToken: "private-token", refreshToken: "private-refresh", holder: "test", expiresAt: s.now() + 3600000 });
+  const initial = await (await call("/api/status")).json() as Status;
+  expect(statusSchema.safeParse(initial).success).toBe(true);
+  expect(initial.daemon?.providers.claude).toMatchObject({ quota: true, models: true, probe: true });
+  const savedResponse = await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { strategy: "priority", retryLimit: 0 } });
+  expect(savedResponse.status).toBe(200);
+  const saved = await savedResponse.json() as { strategy: string; retryLimit: number; revision: string };
+  expect(saved).toMatchObject({ strategy: "priority", retryLimit: 0, revision: revision(s, "setting", "settings") });
+  expect(s.get("setting", "settings")).not.toHaveProperty("revision");
+  expect((await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { threshold: 50 } })).status).toBe(409);
+  expect((await call("/api/accounts/a", "PATCH", { label: "changed" })).status).toBe(409);
+  const accountRevision = revision(s, "account", "a");
+  expect((await call("/api/accounts/a", "PATCH", { revision: accountRevision, policy: { retryLimit: 0, excludeModels: ["opus"] } })).status).toBe(200);
+  expect(s.get("account", "a")).toMatchObject({ label: "a", priority: 4, enabled: true });
+  expect((await call("/api/accounts/a", "PATCH", { revision: accountRevision, label: "stale" })).status).toBe(409);
+  expect((await call("/api/proxy/route?provider=claude&model=opus")).status).toBe(200);
+  const t = new Telemetry(s, "claude"); t.models("sonnet", "sonnet"); t.attempt("a", "priority"); t.headers(200); t.finish("success");
+  const page = await (await call("/api/requests?provider=claude&outcome=success&search=sonnet&limit=1")).json() as any;
+  expect(page.requests.map((r: any) => r.id)).toEqual([t.request.id]);
+  const detail = await (await call(`/api/requests/${t.request.id}`)).json(); expect(JSON.stringify(detail)).not.toContain("private-token");
+  expect((await call("/api/requests?limit=1000")).status).toBe(400); expect((await call("/api/requests/missing")).status).toBe(404);
+  expect((await call("/api/accounts/a/verify", "POST", { probe: true })).status).toBe(400);
+  const batch = await (await call("/api/accounts/batch", "POST", { ids: ["a", "missing"], action: "disable" })).json() as any[];
+  expect(batch.map(r => r.ok)).toEqual([true, false]);
+});
+
+test("proxy management retains authentication and browser-origin guards", async () => {
+  const { call } = fixture();
+  for (const path of ["/api/requests", "/api/proxy/metrics", "/api/proxy/route?provider=claude"]) {
+    expect((await call(path, "GET", undefined, "tailnet")).status).toBe(401);
+    expect((await call(path, "GET", undefined, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(200);
+    expect((await call(path, "GET", undefined, "loopback", { origin: "https://example.com" })).status).toBe(403);
+  }
+  expect((await call("/api/accounts/batch", "POST", { ids: ["a"], action: "disable" }, "loopback", { origin: "https://example.com" })).status).toBe(403);
+});
+
+test("cancelled native OAuth attempts cannot finish later", async () => {
+  const { call } = fixture();
+  const login = await (await call("/api/accounts/login", "POST", { provider: "claude" })).json() as { state: string };
+  expect((await call(`/api/accounts/login/${login.state}`, "DELETE")).status).toBe(200);
+  expect((await call("/api/accounts/login/finish", "POST", { state: login.state, code: "unused" })).status).toBe(400);
+});
 
 test("subscription selection switches each provider independently and keeps quota fallback", async () => {
   const { s, call } = fixture();
@@ -204,7 +252,7 @@ test("native operations validate JSON and update accounts, projects and server r
     (await call("/api/accounts/a", "PATCH", { pinned: true })).status,
   ).toBe(200);
   expect(
-    (await call("/api/accounts/b", "PATCH", { pinned: true, priority: 10 }))
+    (await call("/api/accounts/b", "PATCH", { pinned: true, priority: 10, revision: revision(s, "account", "b") }))
       .status,
   ).toBe(200);
   expect(s.get("account", "a")?.pinned).toBe(false);

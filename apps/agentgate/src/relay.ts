@@ -4,7 +4,7 @@ import {
 } from "@agentgate/protocol/relay";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, type Rec, type Store } from "./store.ts";
-import { lastSeen, peers, pullAll } from "./sync.ts";
+import { lastSeen, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
 
 /**
  * Sync through a relay that only stores ciphertext (docs/relay-plan.md). Each node upserts its
@@ -239,7 +239,9 @@ async function decode(s: Store, c: Conn, generation: string, page: ChangesRespon
   let skipped = 0;
   for (const e of page.entries) {
     try {
-      const rec = parseRecord(JSON.parse(await open(c.keys, { groupId: c.keys.groupId, generation, node: e.node, key: e.key, pusherSeq: e.pusherSeq }, e.blob)));
+      const payload = JSON.parse(await open(c.keys, { groupId: c.keys.groupId, generation, node: e.node, key: e.key, pusherSeq: e.pusherSeq }, e.blob));
+      if (payload.protocol !== SYNC_PROTOCOL || !payload.record) throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
+      const rec = parseRecord(payload.record);
       if (await entryKey(c.keys, rec.kind, rec.id) !== e.key) throw new Error("entry key mismatch");
       decoded.push({ node: e.node, key: e.key, pusherSeq: e.pusherSeq, rec });
     } catch { skipped++; }
@@ -321,7 +323,7 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
         const key = await entryKey(c.keys, r.kind, r.id);
         const pusherSeq = counter(s, grp, generation, s.nodeId, key) + 1;
         const { seq: _, ...plain } = r;
-        const blob = await seal(c.keys, { groupId: grp, generation, node: s.nodeId, key, pusherSeq }, JSON.stringify(plain));
+        const blob = await seal(c.keys, { groupId: grp, generation, node: s.nodeId, key, pusherSeq }, JSON.stringify({ protocol: SYNC_PROTOCOL, record: plain }));
         if (Math.floor(blob.length * 3 / 4) > RELAY_LIMITS.blobBytes) {
           if (entries.length) break; // send what fits; the next chunk starts with this record and stops there
           throw new RelayError(`${r.kind} ${r.id} is larger than the relay's 1 MiB record limit; uploads are blocked until it shrinks`, 0, "oversize");

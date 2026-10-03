@@ -2,9 +2,9 @@ import { expect, test } from "bun:test";
 import { retryAfterMs } from "../src/llm/pool.ts";
 import { BodyTooLarge, fetchHeaders, readBody, serialTask, streamBody } from "../src/runtime.ts";
 
-test("Retry-After is finite, nonnegative, and bounded", () => {
+test("Retry-After remains finite and is not shortened below the upstream minimum", () => {
   for (const value of ["NaN", "-5", "garbage", "Infinity"]) expect(retryAfterMs(new Headers({ "retry-after": value }))).toBeGreaterThanOrEqual(0);
-  expect(retryAfterMs(new Headers({ "retry-after": "99999999999" }))).toBe(600000);
+  expect(retryAfterMs(new Headers({ "retry-after": "99999999999" }))).toBe(99999999999000);
   expect(retryAfterMs(new Headers({ "retry-after": "0" }))).toBe(0);
 });
 

@@ -40,30 +40,32 @@ export async function fetchHeaders(url: string | URL | Request, init: RequestIni
 }
 
 /** Backpressure and a per-chunk deadline, with cancellation propagated to the upstream. */
-export function streamBody(body: ReadableStream<Uint8Array> | null, signal: AbortSignal, idle = 5 * 60_000): ReadableStream<Uint8Array> | null {
-  if (!body) return null;
+export interface StreamHooks { chunk?: (bytes: Uint8Array) => void; end?: (reason: "eof" | "idle-timeout" | "upstream-error" | "cancelled") => void; }
+export function streamBody(body: ReadableStream<Uint8Array> | null, signal: AbortSignal, idle = 5 * 60_000, hooks: StreamHooks = {}): ReadableStream<Uint8Array> | null {
+  const notify = (reason: Parameters<NonNullable<StreamHooks["end"]>>[0]) => { try { hooks.end?.(reason); } catch {} };
+  if (!body) { notify("eof"); return null; }
   const reader = body.getReader();
   let finished = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let target: ReadableStreamDefaultController<Uint8Array>;
   const clean = () => { finished = true; clearTimeout(timer); signal.removeEventListener("abort", abort); };
-  const fail = (reason: unknown) => {
+  const fail = (reason: unknown, outcome: "idle-timeout" | "upstream-error" | "cancelled" = "upstream-error") => {
     if (finished) return;
-    clean(); void reader.cancel(reason).catch(() => { }); target.error(reason);
+    clean(); notify(outcome); void reader.cancel(reason).catch(() => { }).finally(() => { try { reader.releaseLock(); } catch {} }); target.error(reason);
   };
-  const abort = () => fail(signal.reason);
+  const abort = () => fail(signal.reason, "cancelled");
   return new ReadableStream({
     start(controller) { target = controller; signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort(); },
     async pull(controller) {
       if (finished) return;
-      timer = setTimeout(() => fail(new Unavailable("upstream stream idle timeout")), idle);
+      timer = setTimeout(() => fail(new Unavailable("upstream stream idle timeout"), "idle-timeout"), idle);
       try {
         const { done, value } = await reader.read(); clearTimeout(timer);
         if (finished) return;
-        if (done) { clean(); controller.close(); } else controller.enqueue(value);
+        if (done) { clean(); reader.releaseLock(); notify("eof"); controller.close(); } else { try { hooks.chunk?.(value); } catch {} controller.enqueue(value); }
       } catch (e) { fail(e); }
     },
-    async cancel(reason) { clean(); await reader.cancel(reason).catch(() => { }); },
+    async cancel(reason) { if (finished) return; clean(); notify("cancelled"); await reader.cancel(reason).catch(() => { }); reader.releaseLock(); },
   });
 }
 

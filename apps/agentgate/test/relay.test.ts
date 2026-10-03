@@ -11,6 +11,7 @@ import {
 } from "../src/relay.ts";
 import { Store } from "../src/store.ts";
 import { join, peerRoutes, peers, pullPeer } from "../src/sync.ts";
+import { SYNC_PROTOCOL } from "../src/sync.ts";
 
 const dir = mkdtempSync(path(tmpdir(), "agentgate-relay-"));
 const stores: Store[] = [];
@@ -121,6 +122,19 @@ test("records, credentials and tombstones converge; the relay stores only cipher
   for (const secret of ["sk-ant-secret-token", "rt-secret-refresh", "mcp-secret-header", "\"acc\"", "credential", "account", "posthog"]) expect(dump).not.toContain(secret);
   expect(via(a, "b")).toEqual(["relay"]);
   expect(Number(a.local("seen:b"))).toBeGreaterThan(0);
+});
+
+test("relay policy payloads are versioned and incompatible encrypted records never merge", async () => {
+  const r = relay(), a = node("a"), b = node("b");
+  seed(a); a.put("account", "acc", { ...a.get("account", "acc")!, policy: { retryLimit: 0, excludeModels: ["opus"] } });
+  const invite = await createRelay(a, r.url), keys = await deriveKeys(parseInvite(invite).secret);
+  const db = r.groups.get(keys.groupId)!.sql.db;
+  const entry = db.query("select key,blob,pusher_seq from entries where node='a' and key=?").get(await entryKey(keys, "account", "acc")) as { key: string; blob: string; pusher_seq: number };
+  const aad = { groupId: keys.groupId, generation: relayStatus(a)!.generation!, node: "a", key: entry.key, pusherSeq: entry.pusher_seq };
+  const payload = JSON.parse(await open(keys, aad, entry.blob)); expect(payload.protocol).toBe(SYNC_PROTOCOL); expect(JSON.parse(payload.record.data).policy.retryLimit).toBe(0);
+  db.run("update entries set blob=? where key=?", [await seal(keys, aad, JSON.stringify(payload.record)), entry.key]);
+  await joinRelay(b, invite); expect(b.get("account", "acc")).toBeUndefined(); expect(relayStatus(b)?.skipped).toBe(1);
+  db.run("update entries set blob=? where key=?", [entry.blob, entry.key]); await reconcileRelay(b); expect(b.get("account", "acc")?.policy?.retryLimit).toBe(0);
 });
 
 test("echo terminates", async () => {

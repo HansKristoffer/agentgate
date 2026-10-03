@@ -67,6 +67,25 @@ try {
     }
   }
   if (!ready) throw new Error("compiled daemon did not become ready");
+  const proxyPatch = join(home, "proxy-settings.json");
+  await Bun.write(proxyPatch, JSON.stringify({ strategy: "round-robin", sessionAffinity: true, retryLimit: 0 }));
+  for (const args of [
+    ["proxy", "capabilities"],
+    ["proxy", "route", "claude", "--model", "claude-sonnet-4-5"],
+    ["requests", "--outcome", "failed"],
+    ["requests", "export"],
+    ["settings", "set", "--file", proxyPatch],
+    ["settings", "show"],
+  ]) {
+    const child = Bun.spawnSync([binary, ...args], {
+      env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
+      stdout: "pipe", stderr: "pipe",
+    });
+    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
+  }
+  const configured = await (await fetch("http://127.0.0.1:19878/api/status")).json() as { settings: { strategy: string; sessionAffinity: boolean; retryLimit: number; threshold: number } };
+  if (configured.settings.strategy !== "round-robin" || !configured.settings.sessionAffinity || configured.settings.retryLimit !== 0 || configured.settings.threshold !== 98)
+    throw new Error("compiled proxy configuration patch changed omitted settings");
   if ((await fetch("http://127.0.0.1:19878/")).status !== 404)
     throw new Error("web UI is still present");
   if (
