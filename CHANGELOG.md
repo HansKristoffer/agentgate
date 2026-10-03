@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/HansKristoffer/agentgate/compare/v0.5.0...v0.6.0) (2026-10-03)
+
+
+### Features
+
+* **cli:** add per-repo skills with synced checkout links ([#15](https://github.com/HansKristoffer/agentgate/issues/15)) ([a51ab8b](https://github.com/HansKristoffer/agentgate/commit/a51ab8b7caac9e55a6f018bb2f5f845a810d7e29))
+* **relay:** sync machines over an end-to-end encrypted relay ([#18](https://github.com/HansKristoffer/agentgate/issues/18)) ([41b9f37](https://github.com/HansKristoffer/agentgate/commit/41b9f37153a38dac5ebfee3166c92582acc2fd71))
+* use your subscriptions in Claude Desktop ([#17](https://github.com/HansKristoffer/agentgate/issues/17)) ([457a6d2](https://github.com/HansKristoffer/agentgate/commit/457a6d2611fae00efef720d52b8adedf5c37150f))
+
 ## [0.5.0](https://github.com/HansKristoffer/agentgate/compare/v0.4.0...v0.5.0) (2026-10-01)
 
 
