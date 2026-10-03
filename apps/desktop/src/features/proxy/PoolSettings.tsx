@@ -6,16 +6,20 @@ import {
   type Settings,
   type RouteExplanation,
   type SettingsUpdateResult,
+  type Provider,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
 import {
+  Badge,
+  Changes,
   Choice,
   Field,
   NumberInput,
   Panel,
   Toggle,
 } from "../../components/ui.tsx";
+import { providerName } from "../../views/utils.ts";
 import { ModelAliases } from "./ModelAliases.tsx";
 import { useGeneration } from "./useGeneration.ts";
 
@@ -94,6 +98,8 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
       if (current()) setExplanation(result);
     });
   };
+  const label = (id?: string) =>
+    data.accounts.find((a) => a.account.id === id)?.account.label ?? id;
   return (
     <>
       <Panel
@@ -105,17 +111,21 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
         }
       >
         {data.daemon &&
-          Object.entries(data.daemon.providers).map(([provider, features]) => (
+          (Object.keys(data.daemon.providers) as Provider[]).map((provider) => (
             <div className="item" key={provider}>
-              <strong className="grow">{provider}</strong>
-              <small>
-                {Object.entries(features)
-                  .map(
-                    ([name, supported]) =>
-                      `${name}: ${supported ? "available" : "unsupported"}`,
-                  )
-                  .join(" · ")}
-              </small>
+              <div className={`provider-icon ${provider}`}>
+                {provider === "claude" ? "✳" : "◎"}
+              </div>
+              <strong className="grow">{providerName(provider)}</strong>
+              <div className="row wrap">
+                {Object.entries(data.daemon!.providers[provider]).map(
+                  ([name, supported]) => (
+                    <Badge key={name} good={supported}>
+                      {supported ? name : `${name} unsupported`}
+                    </Badge>
+                  ),
+                )}
+              </div>
             </div>
           ))}
       </Panel>
@@ -124,13 +134,21 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
         detail="Policy syncs to paired machines. Activity and backoff remain local to each daemon."
       >
         {base.revision !== data.settingsRevision && (
-          <p role="status" className="note">
-            Settings changed since you opened this editor. Your draft is
-            preserved; reload to review the latest settings.
-          </p>
+          <div className="item" role="status">
+            <span className="grow">
+              <strong>Settings changed elsewhere</strong>
+              <small>
+                Your draft is preserved. Reload to review the latest settings.
+              </small>
+            </span>
+            <Button variant="tertiary" size="sm" onPress={reload}>
+              Reload
+            </Button>
+          </div>
         )}
         <form onSubmit={previewChanges}>
           <Choice
+            className="item"
             label="Selection strategy"
             value={draft.strategy}
             onChange={(v) =>
@@ -146,6 +164,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             ]}
           />
           <Choice
+            className="item"
             label="When capacity is exhausted"
             value={draft.whenExhausted}
             onChange={(v) =>
@@ -159,6 +178,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
           {numbers.map(([key, label, min, max]) => (
             <NumberInput
               key={key}
+              className="item"
               label={label}
               minValue={min}
               maxValue={max}
@@ -182,47 +202,42 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             aliases={draft.aliases}
             change={(rows) => change("aliases", rows)}
           />
-          {error && <p role="alert">{error}</p>}
-          <div className="row">
+          {error && (
+            <div className="item danger" role="alert">
+              {error}
+            </div>
+          )}
+          <div className="item item-actions">
+            <Button variant="ghost" size="sm" onPress={reload}>
+              Discard changes
+            </Button>
             <Button type="submit" size="sm">
               Preview changes
-            </Button>
-            <Button variant="ghost" size="sm" onPress={reload}>
-              Reload current settings
             </Button>
           </div>
         </form>
         {preview && (
-          <div className="policy-preview">
-            <h3>Review changes</h3>
+          <div className="item stack">
+            <strong>Review changes</strong>
             {Object.keys(preview).length ? (
               <>
-                <table className="compare">
-                  <thead>
-                    <tr>
-                      <th>Setting</th>
-                      <th>Before</th>
-                      <th>After</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(preview).map(([key, value]) => (
-                      <tr key={key}>
-                        <td>{key}</td>
-                        <td>
-                          {JSON.stringify(base.settings[key as keyof Settings])}
-                        </td>
-                        <td>{JSON.stringify(value)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <Button size="sm" onPress={() => void saveChanges()}>
+                <Changes
+                  rows={Object.entries(preview).map(([key, value]) => [
+                    key,
+                    JSON.stringify(base.settings[key as keyof Settings]),
+                    JSON.stringify(value),
+                  ])}
+                />
+                <Button
+                  size="sm"
+                  className="self-end"
+                  onPress={() => void saveChanges()}
+                >
                   Save reviewed changes
                 </Button>
               </>
             ) : (
-              <p>No changes.</p>
+              <small>No changes.</small>
             )}
           </div>
         )}
@@ -233,6 +248,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
       >
         <form onSubmit={explainRouting}>
           <Choice
+            className="item"
             label="Provider"
             name="provider"
             defaultValue="claude"
@@ -242,34 +258,47 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             ]}
           />
           <Field
+            className="item"
             label="Model"
+            description="Optional. Leave empty for any model."
             name="model"
-            placeholder="Optional exact model identifier"
+            placeholder="Exact model identifier"
           />
-          <Button type="submit" size="sm">
-            Explain selection
-          </Button>
+          <div className="item item-actions">
+            <Button type="submit" size="sm">
+              Explain selection
+            </Button>
+          </div>
         </form>
         {explanation && (
-          <div className="policy-preview">
-            <p>
-              {explanation.routedModel || "Any model"} · {explanation.reason} ·{" "}
-              {data.accounts.find((a) => a.account.id === explanation.account)
-                ?.account.label ?? "No account selected"}
-            </p>
-            {explanation.candidates.map((c) => (
-              <div className="item" key={c.id}>
-                <strong className="grow">
-                  {data.accounts.find((a) => a.account.id === c.id)?.account
-                    .label ?? c.id}
+          <>
+            <div className="item">
+              <span className="grow">
+                <strong>
+                  {explanation.account
+                    ? `Routes to ${label(explanation.account)}`
+                    : "No account selected"}
                 </strong>
                 <small>
-                  {c.eligible ? "Eligible" : c.reasons.join(", ")} ·{" "}
-                  {c.inFlight} in flight
+                  {explanation.routedModel || "Any model"} ·{" "}
+                  {explanation.reason}
                 </small>
+              </span>
+            </div>
+            {explanation.candidates.map((c) => (
+              <div className="item" key={c.id}>
+                <span className="grow">
+                  <strong>{label(c.id)}</strong>
+                  <small>
+                    {[...(c.eligible ? [] : c.reasons), `${c.inFlight} in flight`].join(" · ")}
+                  </small>
+                </span>
+                <Badge good={c.eligible}>
+                  {c.eligible ? "Eligible" : "Skipped"}
+                </Badge>
               </div>
             ))}
-          </div>
+          </>
         )}
       </Panel>
     </>

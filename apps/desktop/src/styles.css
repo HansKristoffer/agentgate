@@ -59,12 +59,12 @@ pre {
 
 /* One row of a group. HeroUI fields and switches take this class to sit on one line. */
 .item { display: flex; flex-direction: row; align-items: center; gap: 12px; margin: 0; padding: 10px 14px; min-height: 52px; }
-.item + .item, .rows > * + .item { border-top: 1px solid var(--border); }
+.item ~ .item, .rows > * + .item { border-top: 1px solid var(--border); }
 .item strong { font-size: 13px; font-weight: 500; }
 .item .grow small { overflow: hidden; text-overflow: ellipsis; }
 .item.stack { flex-direction: column; align-items: stretch; gap: 10px; }
 .item .labelled { flex: 1; min-width: 0; }
-.item > .number-field__group { width: 150px; flex: 0 0 150px; }
+.item > .number-field__group { width: 190px; flex: 0 0 190px; }
 .item > .select__trigger { width: auto; min-width: 200px; max-width: 55%; }
 .item > .check { flex: 1; }
 .item-actions { justify-content: flex-end; min-height: 48px; }
@@ -117,20 +117,11 @@ pre {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--field-placeholder); display: inline-block; }
 .dot.online { background: var(--success); }
 
-.mini-quotas { width: 150px; flex: 0 0 150px; display: flex; flex-direction: column; gap: 3px; }
+.mini-quotas { width: 170px; flex: 0 0 170px; display: flex; flex-direction: column; gap: 3px; }
 .mini-quotas > div { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
-.mini-quotas > div > span { width: 44px; flex: 0 0 44px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini-quotas > div > span { width: 56px; flex: 0 0 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-quotas > div > .progress-bar { flex: 1; }
 .mini-quotas > div > small { width: 30px; text-align: right; font-size: 11px; }
-
-/* One line per account: each limit window as name, bar, percent and reset. */
-.usage { display: flex; flex-wrap: wrap; gap: 6px 28px; padding-left: 42px; font-size: 12px; }
-.usage > div { display: flex; align-items: center; gap: 8px; }
-/* Fixed widths so the same window lines up across accounts. */
-.usage > div > span { color: var(--muted); width: 52px; }
-.usage > div > .progress-bar { width: 96px; }
-.usage > div > strong { width: 34px; text-align: right; }
-.usage > div > small { color: var(--muted); font-size: 11px; width: 78px; }
 
 .activity-time { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
@@ -204,19 +195,42 @@ pre {
 .choice:hover { border-color: var(--accent); }
 .choice strong { font-size: 13px; font-weight: 600; }
 .choice span { font-size: 12px; color: var(--muted); }
-/* Proxy controls use the same rows, fields, and panels as the existing screens. */
-.proxy-actions { flex-wrap: wrap; gap: 12px; }
-.proxy-actions > .field { min-width: 180px; flex: 1; margin: 0; }
-.quota-details { min-width: 0; display: grid; gap: 6px; flex: 1; }
+/* ---------- proxy ---------- */
+h3 { font-size: 13px; font-weight: 600; }
+.item > .input { width: 260px; flex: 0 0 260px; }
+.item > .textfield .input { width: 100%; }
+.danger.item { font-size: 13px; overflow-wrap: anywhere; }
+
+.quota-details { display: flex; flex-direction: column; gap: 8px; padding-left: 42px; min-width: 0; }
+.account .quota-details { padding-left: 70px; }
 .quota-details > small { overflow-wrap: anywhere; }
-.policy-preview { padding: 16px 0; display: grid; gap: 12px; }
-.compare { width: 100%; border-collapse: collapse; font-size: 13px; }
-.compare th, .compare td { text-align: left; padding: 8px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; max-width: 240px; }
-.activity-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
-.activity-request { width: 100%; text-align: left; background: transparent; cursor: pointer; }
-.activity-request:hover { background: var(--tau-side-row-hover); }
+/* Each limit window: name, bar and percent, with its reset underneath. Fixed columns line up across accounts. */
+.usage { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 28px; font-size: 12px; }
+.usage > div { display: grid; grid-template-columns: 64px minmax(60px, 1fr) 36px; align-items: center; column-gap: 10px; row-gap: 2px; }
+.usage > div > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage > div > strong { text-align: right; font-weight: 500; }
+.usage > div > small { grid-column: 2 / -1; font-size: 11px; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
+.metrics > div { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; }
+.metrics > div + div { border-left: 1px solid var(--border); }
+.metrics strong { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+.metrics span { font-size: 12px; color: var(--muted); }
+
+.activity-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+.activity-filters > .field { margin: 0; }
+.activity-request { width: 100%; text-align: left; font: inherit; color: inherit; background: transparent; border: 0; cursor: pointer; }
+.activity-request:hover { background: var(--default); }
 @media (max-width: 640px) { .activity-filters { grid-template-columns: 1fr; } }
 
+.facts { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px 12px; font-size: 13px; margin: 0 0 16px; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
+
+.changes { font-size: 13px; }
+.policy-preview { padding-top: 16px; display: flex; flex-direction: column; gap: 12px; }
+.policy-preview > .button { align-self: flex-end; }
+
 .alias-row { display: grid; grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1fr) auto; align-items: end; gap: 12px; }
-.alias-row > button { margin-bottom: 14px; }
+.alias-row > .field { margin: 0; }
 @media (max-width: 800px) { .alias-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

@@ -6,6 +6,7 @@ import type { AccountStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
 import {
   Badge,
+  Check,
   Choice,
   Empty,
   Field,
@@ -176,20 +177,29 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               ? "Claude subscriptions, shared across your sessions."
               : "ChatGPT subscriptions for your Codex sessions."
           }
-          action={<Button size="sm" variant="ghost" isDisabled={!data.accounts.some(a => a.account.provider === provider)} onPress={() => { setSelected(new Set(data.accounts.filter(a => a.account.provider === provider).slice(0, 100).map(a => a.account.id))); }}>Select provider</Button>}
+          action={<Button size="sm" variant="ghost" isDisabled={!data.accounts.some(a => a.account.provider === provider)} onPress={() => { setSelected(new Set(data.accounts.filter(a => a.account.provider === provider).slice(0, 100).map(a => a.account.id))); }}>Select all</Button>}
           foot={
             data.unknownQuota[provider] &&
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
-          <Field label="Quota for model" placeholder="All measured windows, or enter an exact model" value={models[provider]} onChange={value => setModels(old => ({ ...old, [provider]: value }))} />
           {data.accounts.some((a) => a.account.provider === provider) && (
-            <SubscriptionSelector
-              data={data}
-              connection={connection}
-              perform={perform}
-              provider={provider}
-            />
+            <>
+              <SubscriptionSelector
+                data={data}
+                connection={connection}
+                perform={perform}
+                provider={provider}
+              />
+              <Field
+                className="item"
+                label="Usage for model"
+                description="Show only the limits that apply to one model."
+                placeholder="All models"
+                value={models[provider]}
+                onChange={(value) => setModels((old) => ({ ...old, [provider]: value }))}
+              />
+            </>
           )}
           {!data.accounts.some((a) => a.account.provider === provider) &&
           !(provider === "claude" && desktopOnly.length) ? (
@@ -198,9 +208,20 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             data.accounts
               .filter((a) => a.account.provider === provider)
               .map((a) => (
-                <div className="item stack" key={a.account.id}>
+                <div className="item stack account" key={a.account.id}>
                   <div className="row">
-                    <input type="checkbox" aria-label={`Select ${a.account.label}`} checked={selected.has(a.account.id)} onChange={e => setSelected(old => { const next = new Set(old); if (e.target.checked && next.size < 100) next.add(a.account.id); else next.delete(a.account.id); return next; })} />
+                    <Check
+                      aria-label={`Select ${a.account.label}`}
+                      isSelected={selected.has(a.account.id)}
+                      onChange={(on) =>
+                        setSelected((old) => {
+                          const next = new Set(old);
+                          if (on && next.size < 100) next.add(a.account.id);
+                          else next.delete(a.account.id);
+                          return next;
+                        })
+                      }
+                    />
                     <div className={`provider-icon ${provider}`}>
                       {provider === "claude" ? "✳" : "◎"}
                     </div>

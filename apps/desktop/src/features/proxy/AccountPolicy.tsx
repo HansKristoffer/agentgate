@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@heroui/react";
 import {
   accountPatchSchema,
@@ -7,7 +7,7 @@ import {
 } from "@agentgate/protocol";
 import type { Perform } from "../../types.ts";
 import { request } from "../../api.ts";
-import { Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
+import { Changes, Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
 import { useGeneration } from "./useGeneration.ts";
 const list = (value: FormDataEntryValue | null) =>
   String(value ?? "")
@@ -63,7 +63,7 @@ export function AccountPolicy({
       );
       if (isCurrent()) close();
     }, "Account policy saved");
-  const changes = patch && [
+  const changes: [string, ReactNode, ReactNode][] | undefined = patch && [
     ["Label", current.label, patch.label],
     ["Priority", current.priority, patch.priority],
     [
@@ -145,24 +145,7 @@ export function AccountPolicy({
       {patch && (
         <div className="policy-preview">
           <h3>Review changes</h3>
-          <table className="compare">
-            <thead>
-              <tr>
-                <th>Setting</th>
-                <th>Before</th>
-                <th>After</th>
-              </tr>
-            </thead>
-            <tbody>
-              {changes?.map(([label, before, after]) => (
-                <tr key={label}>
-                  <td>{label}</td>
-                  <td>{before}</td>
-                  <td>{after}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <Changes rows={changes!} />
           <Button onPress={() => void saveChanges()}>
             Save reviewed changes
           </Button>

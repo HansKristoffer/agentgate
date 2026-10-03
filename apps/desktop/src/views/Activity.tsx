@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Button } from "@heroui/react";
+import { Button, Card, DateField, Label } from "@heroui/react";
+import { ChevronRight, Copy, Pause, Play, RefreshCw } from "lucide-react";
 import type {
   RequestDetail,
   RequestPage,
@@ -76,7 +77,9 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
     const next = new URLSearchParams();
     for (const [key, value] of new FormData(event.currentTarget)) {
       const text = String(value).trim();
-      if (text) next.set(key, text);
+      // Date fields submit local ISO time; the daemon filters on Unix milliseconds.
+      if (text)
+        next.set(key, key === "since" || key === "until" ? String(new Date(text).getTime()) : text);
     }
     setQuery(next.toString());
   };
@@ -107,162 +110,229 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
           rows.map((row) => JSON.stringify(row)).join("\n"),
         );
     }, "Loaded diagnostics copied as NDJSON");
+  const options = (all: string, ids: string[]) => [
+    { id: "", label: all },
+    ...ids.map((id) => ({ id, label: id[0]!.toUpperCase() + id.slice(1) })),
+  ];
+  const time = (name: string, label: string) => (
+    <DateField className="field" name={name} granularity="minute">
+      <Label>{label}</Label>
+      <DateField.Group>
+        <DateField.Input>
+          {(segment) => <DateField.Segment segment={segment} />}
+        </DateField.Input>
+      </DateField.Group>
+    </DateField>
+  );
   return (
-    <Panel
-      title={`Request activity · ${data.node}`}
-      detail="Local sanitized diagnostics. Prompts, responses, credentials, and session IDs are omitted."
-    >
-      <form className="activity-filters" onSubmit={applyFilters}>
-        <Choice
-          label="Provider"
-          name="provider"
-          defaultValue=""
-          options={[
-            { id: "", label: "All providers" },
-            { id: "claude", label: "Claude" },
-            { id: "codex", label: "Codex" },
-          ]}
-        />
-        <Choice
-          label="Account"
-          name="account"
-          defaultValue=""
-          options={[
-            { id: "", label: "All accounts" },
-            ...data.accounts.map((a) => ({
-              id: a.account.id,
-              label: a.account.label,
-            })),
-          ]}
-        />
-        <Choice
-          label="Outcome"
-          name="outcome"
-          defaultValue=""
-          options={[
-            { id: "", label: "All outcomes" },
-            ...["pending", "success", "failed", "interrupted", "cancelled"].map(
-              (id) => ({ id, label: id }),
-            ),
-          ]}
-        />
-        <Choice
-          label="Failure"
-          name="failure"
-          defaultValue=""
-          options={[
-            { id: "", label: "All reasons" },
-            ...[
-              "quota",
-              "rate",
-              "login",
-              "model",
-              "transient",
-              "request",
-              "cancelled",
-              "budget",
-              "stateful",
-            ].map((id) => ({ id, label: id })),
-          ]}
-        />
-        <Field label="Model" name="model" placeholder="Exact routed model" />
-        <Field
-          label="Search"
-          name="search"
-          placeholder="Request ID, model, or account ID"
-        />
-        <Field label="From (Unix milliseconds)" name="since" type="number" />
-        <Field label="Until (Unix milliseconds)" name="until" type="number" />
-        <Button type="submit" size="sm">
-          Apply filters
-        </Button>
-      </form>
-      <div className="item proxy-actions">
-        <Button size="sm" variant="tertiary" onPress={() => setFollow(!follow)}>
-          {follow ? "Pause" : "Follow latest"}
-        </Button>
-        <Button size="sm" variant="ghost" onPress={() => void load()}>
-          Refresh
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          isDisabled={!page?.requests.length}
-          onPress={() => void copyDiagnostics()}
-        >
-          Copy loaded diagnostics
-        </Button>
-      </div>
-      {error && <p role="alert">{error}</p>}
-      {page?.cursorReset && (
-        <p className="note">
-          Older activity was removed by retention. Showing the available
-          results.
-        </p>
-      )}
-      {!page?.requests.length ? (
-        <Empty>No matching requests.</Empty>
-      ) : (
-        page.requests.map((r) => (
-          <button
-            className="item activity-request"
-            key={r.id}
-            onClick={() => void showDetail(r.id)}
-          >
-            <span className="grow">
-              <strong>
-                {r.routedModel || r.provider} · {label(r) || "No account"}
-              </strong>
-              <small>
-                {new Date(r.at).toLocaleString()} · {r.selection} · {r.attempts}{" "}
-                attempts · {r.headersMs ?? "—"} ms to headers
-              </small>
-            </span>
-            <Badge good={r.outcome === "success"}>
-              {r.outcome}
-              {r.failure ? ` · ${r.failure}` : ""}
-            </Badge>
-          </button>
-        ))
-      )}
-      {page?.nextCursor && (
-        <Button
-          size="sm"
-          variant="tertiary"
-          isDisabled={follow}
-          onPress={() => void load(page.nextCursor)}
-        >
-          Load older requests (pause first)
-        </Button>
-      )}
+    <>
+      <Panel
+        title="Filters"
+        detail="Local sanitized diagnostics. Prompts, responses, credentials, and session IDs are omitted."
+      >
+        <form onSubmit={applyFilters} onReset={() => setQuery("")}>
+          <div className="item stack">
+            <div className="activity-filters">
+              <Choice
+                label="Provider"
+                name="provider"
+                defaultValue=""
+                options={[
+                  { id: "", label: "All providers" },
+                  { id: "claude", label: "Claude" },
+                  { id: "codex", label: "Codex" },
+                ]}
+              />
+              <Choice
+                label="Account"
+                name="account"
+                defaultValue=""
+                options={[
+                  { id: "", label: "All accounts" },
+                  ...data.accounts.map((a) => ({
+                    id: a.account.id,
+                    label: a.account.label,
+                  })),
+                ]}
+              />
+              <Choice
+                label="Outcome"
+                name="outcome"
+                defaultValue=""
+                options={options("All outcomes", [
+                  "pending",
+                  "success",
+                  "failed",
+                  "interrupted",
+                  "cancelled",
+                ])}
+              />
+              <Choice
+                label="Failure"
+                name="failure"
+                defaultValue=""
+                options={options("All reasons", [
+                  "quota",
+                  "rate",
+                  "login",
+                  "model",
+                  "transient",
+                  "request",
+                  "cancelled",
+                  "budget",
+                  "stateful",
+                ])}
+              />
+              <Field label="Model" name="model" placeholder="Exact routed model" />
+              <Field
+                label="Search"
+                name="search"
+                placeholder="Request ID, model, or account ID"
+              />
+              {time("since", "From")}
+              {time("until", "Until")}
+            </div>
+          </div>
+          <div className="item item-actions">
+            <Button type="reset" size="sm" variant="ghost">
+              Clear
+            </Button>
+            <Button type="submit" size="sm">
+              Apply filters
+            </Button>
+          </div>
+        </form>
+      </Panel>
+      <Panel
+        title={`Requests on ${data.node}`}
+        detail={follow ? "Updates every 5 seconds." : "Paused. Refresh to update."}
+        action={
+          <div className="row">
+            <Button
+              size="sm"
+              variant="ghost"
+              isDisabled={!page?.requests.length}
+              onPress={() => void copyDiagnostics()}
+            >
+              <Copy size={14} />
+              Copy diagnostics
+            </Button>
+            <Button size="sm" variant="ghost" onPress={() => void load()}>
+              <RefreshCw size={14} />
+              Refresh
+            </Button>
+            <Button
+              size="sm"
+              variant="tertiary"
+              onPress={() => setFollow(!follow)}
+            >
+              {follow ? <Pause size={14} /> : <Play size={14} />}
+              {follow ? "Pause" : "Follow"}
+            </Button>
+          </div>
+        }
+      >
+        {error && (
+          <div className="item danger" role="alert">
+            {error}
+          </div>
+        )}
+        {page?.cursorReset && (
+          <div className="item">
+            <small>
+              Older activity was removed by retention. Showing the available
+              results.
+            </small>
+          </div>
+        )}
+        {!page?.requests.length ? (
+          <Empty>No matching requests.</Empty>
+        ) : (
+          page.requests.map((r) => (
+            <button
+              type="button"
+              className="item activity-request"
+              key={r.id}
+              onClick={() => void showDetail(r.id)}
+            >
+              <span className="grow">
+                <strong>
+                  {r.routedModel || r.provider} · {label(r) || "No account"}
+                </strong>
+                <small>
+                  {new Date(r.at).toLocaleString()} · {r.selection} ·{" "}
+                  {r.attempts} {r.attempts === 1 ? "attempt" : "attempts"} ·{" "}
+                  {r.headersMs ?? "—"} ms to headers
+                </small>
+              </span>
+              <Badge good={r.outcome === "success"}>
+                {r.outcome}
+                {r.failure ? ` · ${r.failure}` : ""}
+              </Badge>
+              <ChevronRight size={14} className="muted" />
+            </button>
+          ))
+        )}
+        {page?.nextCursor && (
+          <div className="item item-actions">
+            {follow && <small className="grow">Pause to load older requests.</small>}
+            <Button
+              size="sm"
+              variant="tertiary"
+              isDisabled={follow}
+              onPress={() => void load(page.nextCursor)}
+            >
+              Load older requests
+            </Button>
+          </div>
+        )}
+      </Panel>
       {detail && (
         <Modal title="Request details" close={() => setDetail(undefined)}>
-          <p>{detail.request.id}</p>
-          <p>
-            {detail.request.requestedModel} → {detail.request.routedModel} ·{" "}
-            {detail.request.outcome} · HTTP {detail.request.status}
-          </p>
-          <p>
-            Headers: {detail.request.headersMs ?? "—"} ms · First byte:{" "}
-            {detail.request.firstByteMs ?? "—"} ms · Total:{" "}
-            {detail.request.durationMs ?? "—"} ms · Stream:{" "}
-            {detail.request.stream ?? "—"}
-          </p>
-          {detail.attempts.map((a) => (
-            <div className="item stack" key={a.id}>
-              <strong>
-                Attempt {a.number} ·{" "}
-                {data.accounts.find((x) => x.account.id === a.account)?.account
-                  .label ?? a.account}
-              </strong>
-              <small>
-                {a.selection} · HTTP {a.status} · {a.headersMs} ms
-                {a.failure ? ` · ${a.failure}` : ""}
-              </small>
-            </div>
-          ))}
+          <dl className="facts">
+            <dt>Request</dt>
+            <dd>
+              <code>{detail.request.id}</code>
+            </dd>
+            <dt>Model</dt>
+            <dd>
+              {detail.request.requestedModel} → {detail.request.routedModel}
+            </dd>
+            <dt>Outcome</dt>
+            <dd>
+              {detail.request.outcome} · HTTP {detail.request.status}
+            </dd>
+            <dt>Timing</dt>
+            <dd>
+              {detail.request.headersMs ?? "—"} ms to headers ·{" "}
+              {detail.request.firstByteMs ?? "—"} ms to first byte ·{" "}
+              {detail.request.durationMs ?? "—"} ms total
+            </dd>
+            <dt>Stream</dt>
+            <dd>{detail.request.stream ?? "—"}</dd>
+          </dl>
+          <Card className="rows">
+            {detail.attempts.map((a) => (
+              <div className="item" key={a.id}>
+                <span className="grow">
+                  <strong>
+                    Attempt {a.number} ·{" "}
+                    {data.accounts.find((x) => x.account.id === a.account)
+                      ?.account.label ?? a.account}
+                  </strong>
+                  <small>
+                    {a.selection} · {a.headersMs} ms
+                    {a.failure ? ` · ${a.failure}` : ""}
+                  </small>
+                </span>
+                <Badge good={a.status < 400}>
+                  HTTP {a.status}
+                </Badge>
+              </div>
+            ))}
+          </Card>
         </Modal>
       )}
-    </Panel>
+    </>
   );
 }

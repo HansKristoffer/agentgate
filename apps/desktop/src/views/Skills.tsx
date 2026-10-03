@@ -17,6 +17,7 @@ import {
   HeaderActions,
 } from "../components/ui.tsx";
 import { ProjectChecks } from "../components/SkillAssignments.tsx";
+import { repoClashes } from "../skill-assignment.ts";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, confirmDelete } from "./utils.ts";
@@ -50,6 +51,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
   }>();
   const [editor, setEditor] = useState<{ id?: string; skillMd: string; revision?: string | null }>();
   const [assign, setAssign] = useState<string>();
+  const hidden = repoClashes(data, data.projects.find((p) => p.id === "*")?.skills ?? []);
   const load = (source: string, skill?: string) =>
     perform(async () => {
       const fetched = await request<SkillPreviewResponse>(
@@ -167,6 +169,24 @@ export function Skills({ data, connection, perform }: ViewProps) {
           {data.skillHealth.errors.map((error, index) => <div className="item" key={`${error.path}:${index}`}>
             <span className="grow"><strong>{error.path}</strong><small className="danger">{error.message}</small></span>
           </div>)}
+        </Panel>
+      )}
+      {hidden.length > 0 && (
+        <Panel
+          title="Repository skills hidden by every-session skills"
+          detail="These repositories have their own skill with the same name as one used in every session. Claude Code runs the every-session skill there; Codex lists both. To let a repository's own skill win, use the skill in specific projects instead."
+        >
+          {hidden.map((c) => (
+            <div className="item" key={`${c.skill}:${c.path}`}>
+              <span className="grow">
+                <strong>{c.skill}</strong>
+                <small>{c.project} · {c.path}</small>
+              </span>
+              <Button size="sm" variant="tertiary" onPress={() => setAssign(c.skill)}>
+                Change where it's used
+              </Button>
+            </div>
+          ))}
         </Panel>
       )}
       {data.skillConflicts.length > 0 && (
@@ -307,7 +327,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 ))}
               </div>
             </fieldset>
-            <ProjectChecks data={data} selected={[]} />
+            <ProjectChecks data={data} selected={[]} skills={preview.skills.map((k) => k.id)} />
             <Button type="submit" size="sm">
               <Plus size={15} />
               Install
@@ -329,6 +349,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
           >
             <ProjectChecks
               data={data}
+              skills={[assign]}
               selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
             />
             <p className="note">
