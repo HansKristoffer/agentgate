@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/HansKristoffer/agentgate/compare/v0.7.0...v0.8.0) (2026-10-03)
+
+
+### Features
+
+* **desktop:** polish account and activity workflows ([#21](https://github.com/HansKristoffer/agentgate/issues/21)) ([fccec76](https://github.com/HansKristoffer/agentgate/commit/fccec76f7fc8fa78c0957bccea9bb6c08e442bdd))
+
 ## [0.7.0](https://github.com/HansKristoffer/agentgate/compare/v0.6.0...v0.7.0) (2026-10-03)
 
 
