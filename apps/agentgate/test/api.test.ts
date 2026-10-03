@@ -264,3 +264,18 @@ test("malformed JSON and form submissions get clear errors without changing sett
   }
   expect(s.get("setting", "settings")).toBeUndefined();
 });
+
+test("Claude Desktop endpoints are local only", async () => {
+  const { host } = await import("../src/desktop.ts");
+  const installed = host.installed;
+  host.installed = () => false; // never read this Mac's real Claude Desktop
+  cleanup.push(async () => { host.installed = installed; });
+  const { call } = fixture();
+  const remote = { authorization: "Bearer admin-secret" };
+  for (const [path, method, body] of [["/api/desktop", "GET"], ["/api/desktop/use", "POST", { accountUuid: "x" }], ["/api/desktop/gateway", "POST", { on: true }], ["/api/desktop/add", "POST", {}]] as const)
+    expect((await call(path, method, body, "tailnet", remote)).status).toBe(403);
+  const local = await call("/api/desktop");
+  expect(local.status).toBe(200);
+  expect(await local.json()).toHaveProperty("mode");
+  expect((await call("/api/desktop/use", "POST", { accountUuid: "nobody" })).status).toBe(400);
+});

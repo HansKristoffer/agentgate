@@ -2,12 +2,13 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { Credentials, drainRefresh } from "./credentials.ts";
-import { claude } from "./llm/claude.ts";
+import { claude, pollUsage } from "./llm/claude.ts";
 import { codex } from "./llm/codex.ts";
 import { proxy, type Provider } from "./llm/pool.ts";
 import { Gateway, aliasesFor } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
+import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { PORT, type Store } from "./store.ts";
 import { PULL_INTERVAL, drainPulls, peerRoutes, poke, pullAll, tailscale } from "./sync.ts";
@@ -128,7 +129,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
   }, 1000);
   schedule(() => pullAll(s), PULL_INTERVAL);
-  schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
+  schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); await pollUsage(s, (id) => ctx.creds.token(id), ctx.abort.signal); }, 60000);
+  schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   let stopping: Promise<void> | undefined;
   return {

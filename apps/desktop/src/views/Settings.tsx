@@ -14,7 +14,7 @@ import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, request, restoreFile } from "../api.ts";
 import { field } from "./utils.ts";
 
-export function Settings({ data, connection, perform, local }: ViewProps) {
+export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
   const [secrets, setSecrets] = useState(false);
   const action = (name: string) =>
@@ -120,7 +120,9 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
               <span className="labelled">
                 Route existing CLI logins
                 <small>
-                  Updates your existing CLI settings to use the pool.
+                  Updates your existing Claude Code and Codex settings to use
+                  the pool. Claude Desktop isn't affected; see Claude Desktop
+                  in the sidebar.
                 </small>
               </span>
               <Button
@@ -138,6 +140,23 @@ export function Settings({ data, connection, perform, local }: ViewProps) {
                 Route
               </Button>
             </div>
+            {desktop && (
+              <Toggle
+                label="Agentgate's MCP servers in Claude Code"
+                description={
+                  desktop.mcp
+                    ? "On for Claude Code in the terminal and Claude Desktop's Code tab."
+                    : "Off. Turn on to use your MCP servers without routing the subscriptions."
+                }
+                isSelected={desktop.mcp}
+                onChange={(on) =>
+                  void perform(
+                    () => localAction(on ? "mcp-on" : "mcp-off", connection),
+                    on ? "MCP servers added" : "MCP servers removed",
+                  )
+                }
+              />
+            )}
           </Panel>
           <Panel
             title="Background service"

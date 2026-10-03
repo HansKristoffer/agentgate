@@ -6,7 +6,7 @@ import { tokenRequest, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
 import { fetchHeaders } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import type { Provider, Window } from "./pool.ts";
+import { recordUsage, type Provider, type Window } from "./pool.ts";
 
 // Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
 export const CLAUDE = {
@@ -83,6 +83,51 @@ export const claude: Provider = {
     return toTokens(t, refreshToken);
   },
 };
+
+/** Claude Code's `/usage` endpoint: the same windows as the quota headers, without spending quota. */
+const USAGE_WINDOWS: Record<string, string> = { five_hour: "5h", seven_day: "7d", seven_day_opus: "7d:opus", seven_day_sonnet: "7d:sonnet" };
+
+export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exhausted" } | undefined {
+  const windows: Window[] = [];
+  for (const [key, name] of Object.entries(USAGE_WINDOWS)) {
+    const w = body?.[key];
+    if (typeof w?.utilization !== "number") continue;
+    const reset = Date.parse(w.resets_at ?? "");
+    // A locked window counts as full, so the pool skips the account (for that window's models) until it resets.
+    windows.push({ name, usedPct: w.locked_reason ? 100 : Math.min(100, Math.max(0, w.utilization)), resetsAt: Number.isFinite(reset) ? reset : undefined });
+  }
+  if (!windows.length) return undefined;
+  return { windows, status: windows.some((w) => w.usedPct >= 100) ? "exhausted" : "ok" };
+}
+
+export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(10_000);
+  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, 10_000);
+  if (!res.ok) throw new Error(`usage request failed (${res.status})`);
+  return parseUsage(await res.json());
+}
+
+const USAGE_STALE = 10 * 60_000;
+
+/** Accounts nobody sends requests through (e.g. Claude Desktop users) still need quota for the UI and for switching. */
+export async function pollUsage(s: Store, token: (accountId: string) => Promise<{ accessToken: string }>, signal?: AbortSignal) {
+  const now = s.now();
+  for (const a of s.list("account")) {
+    if (signal?.aborted) return;
+    if (a.provider !== "claude" || !a.enabled) continue;
+    const c = s.get("credential", a.id);
+    if (!c || c.needsLogin) continue;
+    if (now - (s.get("usage", a.id)?.observedAt ?? 0) < USAGE_STALE) continue;
+    if (now - Number(s.local(`usagePolled:${a.id}`) ?? 0) < USAGE_STALE) continue;
+    s.setLocal(`usagePolled:${a.id}`, String(now));
+    const seen = s.get("usage", a.id)?.observedAt;
+    try {
+      const usage = await fetchUsage((await token(a.id)).accessToken, signal);
+      // Live traffic may have recorded newer usage while this request was out; that one wins.
+      if (usage && !signal?.aborted && s.get("usage", a.id)?.observedAt === seen) recordUsage(s, a.id, usage);
+    } catch { } // a later request or poll fills it in
+  }
+}
 
 export function authorizeUrl(challenge: string, state: string) {
   const q = new URLSearchParams({

@@ -103,14 +103,32 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
 }
 
-export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
-  const file = join(dir, "settings.json"), undo = `${file}.agentgate-undo`;
-  // Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
-  const claudeJson = dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+// Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
+const claudeJsonIn = (dir: string) => dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+
+/** Just the agentgate MCP server in Claude Code's user config. Claude Desktop's Code tab loads the same file. */
+export async function mcp(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
+  const claudeJson = claudeJsonIn(dir);
   const cfg = json(claudeJson), [command, ...args] = [...selfCommand(), "mcp"];
   if (on) cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   else if (cfg.mcpServers?.agentgate) delete cfg.mcpServers.agentgate;
-  if (on || existsSync(claudeJson)) { backup(claudeJson); atomicWrite(claudeJson, JSON.stringify(cfg, null, 2)); }
+  else return `No agentgate MCP server in ${claudeJson}.`;
+  backup(claudeJson); atomicWrite(claudeJson, JSON.stringify(cfg, null, 2));
+  return on ? `New Claude Code sessions, including Claude Desktop's Code tab, get agentgate's MCP servers. Undo: agentgate setup --mcp off.` : `Removed the agentgate MCP server from ${claudeJson}.`;
+}
+
+/** What `setup --primary` / `--mcp` left in the user's own Claude Code config; edits by hand or by older versions show up here. */
+export function claudeStatus(dir = PRIMARY_CLAUDE_DIR): { routing: boolean; mcp: boolean } {
+  const read = (file: string) => { try { return json(file); } catch { return {}; } };
+  return {
+    routing: read(join(dir, "settings.json")).env?.ANTHROPIC_BASE_URL === `${LOCAL_URL}/anthropic`,
+    mcp: !!read(claudeJsonIn(dir)).mcpServers?.agentgate,
+  };
+}
+
+export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
+  const file = join(dir, "settings.json"), undo = `${file}.agentgate-undo`;
+  await mcp(on, dir);
   const settings = json(file); const env = { ...settings.env }; const url = `${LOCAL_URL}/anthropic`;
   if (on) {
     if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }));

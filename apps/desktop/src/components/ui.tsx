@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { Ellipsis } from "lucide-react";
 import {
   createContext,
   useContext,
@@ -6,8 +7,10 @@ import {
   type ReactNode,
 } from "react";
 import {
+  buttonVariants,
   Card,
   Checkbox,
+  Dropdown,
   Chip,
   Description,
   EmptyState,
@@ -245,5 +248,27 @@ export function Check({
         {children}
       </Checkbox.Content>
     </Checkbox>
+  );
+}
+
+type MenuAction = { label: string; onAction: () => void; danger?: boolean };
+/** A row's secondary actions behind "⋯"; falsy entries are skipped. */
+export function RowMenu({ label, items }: { label: string; items: (MenuAction | false | undefined)[] }) {
+  const list = items.filter((i): i is MenuAction => !!i);
+  return (
+    <Dropdown>
+      <Dropdown.Trigger aria-label={label} className={buttonVariants({ variant: "ghost", size: "sm", isIconOnly: true })}>
+        <Ellipsis size={16} />
+      </Dropdown.Trigger>
+      <Dropdown.Popover placement="bottom end">
+        <Dropdown.Menu onAction={(key) => list[Number(key)]?.onAction()}>
+          {list.map((i, n) => (
+            <Dropdown.Item key={n} id={String(n)} textValue={i.label} variant={i.danger ? "danger" : "default"}>
+              {i.label}
+            </Dropdown.Item>
+          ))}
+        </Dropdown.Menu>
+      </Dropdown.Popover>
+    </Dropdown>
   );
 }

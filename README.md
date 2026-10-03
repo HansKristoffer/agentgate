@@ -8,6 +8,15 @@ One daemon per machine that:
 
 T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [operations and distribution checks](docs/operations.md).
 
+## Using the Claude Desktop app
+
+Agentgate works with Claude Desktop without any terminal: open the Agentgate app, choose **Set up this machine**, then **Accounts**, which has a **Claude Desktop** panel. Choose one of two ways:
+
+- **Switch accounts**: Claude Desktop stays signed in to your full Claude account (Chat, Cowork, Code). Agentgate keeps a saved login per account on this Mac and switches with one click, from the app or the menu bar. Desktop restarts when you switch.
+- **Share automatically**: Claude Desktop's Code tab uses whichever subscription has room and moves on by itself. Desktop runs a separate local profile without Chat.
+
+Agentgate's MCP servers also work in Desktop's Code tab. See [Using Agentgate with Claude Desktop](docs/claude-desktop.md).
+
 ## Install
 
 Requirements: Linux or macOS, [Tailscale](https://tailscale.com) on every machine, `claude` and/or `codex` CLIs for logging in, and Node (`npx`) or uv (`uvx`) for any stdio MCP servers you add.
@@ -64,7 +73,7 @@ One instance per provider covers every account; the daemon switches accounts, so
 
 ### Or: your normal Claude login
 
-`agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
+`agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
 
 ## MCP servers per repo
 

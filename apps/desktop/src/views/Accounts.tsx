@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Check, ExternalLink, Plus, Trash2 } from "lucide-react";
+import { CircleHelp, ExternalLink, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
-import type { LoginStart, Provider } from "@agentgate/protocol";
+import type { AccountStatus, Provider } from "@agentgate/protocol";
+import { useAccountLogin } from "../components/Login.tsx";
 import {
   Badge,
   Choice,
@@ -13,38 +14,51 @@ import {
   Panel,
   Quota,
   HeaderActions,
+  RowMenu,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { openExternal, request } from "../api.ts";
+import { DesktopAlerts, DesktopButton, DesktopHelp, DesktopPanel, desktopActions, desktopNote, forgetLogin, nameOf } from "./ClaudeDesktop.tsx";
+import { request } from "../api.ts";
 import {
   field,
   idPath,
   providerName,
-  relative,
   confirmDelete,
+  ago,
+  planName,
+  resetIn,
+  windowName,
 } from "./utils.ts";
 
-export function Accounts({ data, connection, perform, local }: ViewProps) {
-  const [login, setLogin] = useState<LoginStart>();
+export function Accounts({ data, connection, perform, local, desktop }: ViewProps) {
   const [add, setAdd] = useState(false);
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<string>();
-  const start = (provider: Provider, label: string) =>
-    perform(async () => {
-      const result = await request<LoginStart>(
-        connection,
-        "/accounts/login",
-        "POST",
-        { provider, label: label || undefined },
-      );
-      setLogin(result);
-      setAdd(false);
-      await openExternal(result.url);
-    });
+  const [help, setHelp] = useState(false);
+  const { start: begin, dialog: login } = useAccountLogin(connection, perform);
+  // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
+  const app = desktop?.available ? desktop : undefined;
+  const act = desktopActions(connection, perform);
+  const loginFor = (id: string) => app?.logins.find((l) => l.accountId === id);
+  const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
+  // Windows that have already reset say nothing; hide them.
+  const shown = (a: AccountStatus) => a.windows.filter((w) => !w.resetsAt || w.resetsAt > Date.now());
+  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
+  const problem = (a: AccountStatus) =>
+    a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
+  const start = (provider: Provider, label: string) => {
+    setAdd(false);
+    return begin(provider, label);
+  };
   return (
     <>
       <HeaderActions>
+        {app && (
+          <Button size="sm" variant="ghost" onPress={() => setHelp(true)}>
+            <CircleHelp size={15} /> Claude Desktop help
+          </Button>
+        )}
         <Button
           size="sm"
           onPress={() => {
@@ -56,6 +70,12 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
           Add account
         </Button>
       </HeaderActions>
+      {app && (
+        <>
+          <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
+          <DesktopPanel data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
+        </>
+      )}
       {(["claude", "codex"] as const).map((provider) => (
         <Panel
           key={provider}
@@ -70,7 +90,8 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
-          {!data.accounts.some((a) => a.account.provider === provider) ? (
+          {!data.accounts.some((a) => a.account.provider === provider) &&
+          !(provider === "claude" && desktopOnly.length) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
           ) : (
             data.accounts
@@ -83,137 +104,93 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
                     </div>
                     <div className="grow">
                       <strong>{a.account.label}</strong>
-                      <small>{a.account.email ?? a.account.id}</small>
+                      <small>
+                        {[
+                          a.account.email && a.account.email !== a.account.label && a.account.email,
+                          a.account.plan && planName(a.account.plan),
+                          a.active && a.account.enabled && "Used by your sessions now",
+                          a.account.pinned && "Pinned",
+                          app && desktopNote(app, loginFor(a.account.id)),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </small>
                     </div>
-                    {a.account.plan && (
-                      <Badge>{a.account.plan.replace(/^claude_/, "")}</Badge>
+                    {problem(a) && <Badge>{problem(a)}</Badge>}
+                    {(a.needsLogin || a.expired) && (
+                      <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label)}>
+                        Sign in again
+                      </Button>
                     )}
-                    <Badge
-                      good={
-                        a.active &&
-                        !a.needsLogin &&
-                        !a.expired &&
-                        !a.refreshError
-                      }
-                    >
-                      {a.needsLogin
-                        ? "Needs login"
-                        : a.expired
-                          ? "Token expired"
-                          : a.refreshError
-                            ? "Refresh failed"
-                            : !a.account.enabled
-                              ? "Disabled"
-                              : a.exhausted
-                                ? "Exhausted"
-                                : a.active
-                                  ? "Active"
-                                  : "Standby"}
-                    </Badge>
+                    {app?.mode === "signed-in" && app.current?.accountId === a.account.id ? (
+                      <Badge good>In Claude Desktop</Badge>
+                    ) : (
+                      app &&
+                      provider === "claude" && (
+                        <DesktopButton desktop={app} act={act} login={loginFor(a.account.id)} email={a.account.email} />
+                      )
+                    )}
+                    <RowMenu
+                      label={`More for ${a.account.label}`}
+                      items={[
+                        { label: "Edit", onAction: () => setEdit(a.account.id) },
+                        { label: a.account.pinned ? "Unpin" : "Pin", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: !a.account.pinned })) },
+                        { label: a.account.enabled ? "Disable" : "Enable", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { enabled: !a.account.enabled })) },
+                        !!app && !!loginFor(a.account.id) && !(app.mode === "signed-in" && app.current?.accountId === a.account.id) &&
+                          { label: "Forget Claude Desktop login", onAction: () => void forgetLogin(connection, perform, loginFor(a.account.id)!)() },
+                        {
+                          label: "Delete",
+                          danger: true,
+                          onAction: async () => {
+                            if (await confirmDelete(a.account.label))
+                              void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "DELETE"), "Account deleted");
+                          },
+                        },
+                      ]}
+                    />
                   </div>
-                  <div className="quota-grid">
-                    {a.windows.length ? (
-                      a.windows.map((w) => (
-                        <div className="quota" key={w.name}>
-                          <div>
-                            <span>{w.name}</span>
-                            <strong>{Math.round(w.usedPct)}%</strong>
-                          </div>
+                  <div className="usage" title={a.observedAt ? `Usage checked ${ago(a.observedAt)}` : undefined}>
+                    {shown(a).length ? (
+                      shown(a).map((w) => (
+                        <div key={w.name}>
+                          <span>{windowName(w.name)}</span>
                           <Quota value={w.usedPct} />
-                          <small>Resets {relative(w.resetsAt)}</small>
+                          <strong>{Math.round(w.usedPct)}%</strong>
+                          <small>{resetIn(w.resetsAt) && `resets ${resetIn(w.resetsAt)}`}</small>
                         </div>
                       ))
                     ) : (
-                      <p className="muted">
-                        Quota appears after the first provider request.
-                      </p>
+                      <small className="muted">
+                        {provider === "claude" ? "Usage appears within a few minutes." : "Usage appears after the first request."}
+                      </small>
                     )}
-                  </div>
-                  <div className="account-footer">
-                    <span>
-                      {a.needsLogin
-                        ? "Sign in again to use this account."
-                        : a.expired
-                          ? "Token expired"
-                          : (a.refreshError ??
-                            `Refreshed by ${a.holder ?? "—"}`)}{" "}
-                      · Priority {a.account.priority}
-                    </span>
-                    <div className="row wrap">
-                      {(a.needsLogin || a.expired) && (
-                        <Button
-                          size="sm"
-                          variant="tertiary"
-                          onPress={() => void start(provider, a.account.label)}
-                        >
-                          Sign in again
-                        </Button>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onPress={() => setEdit(a.account.id)}
-                      >
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onPress={() =>
-                          void perform(() =>
-                            request(
-                              connection,
-                              `/accounts/${idPath(a.account.id)}`,
-                              "PATCH",
-                              { pinned: !a.account.pinned },
-                            ),
-                          )
-                        }
-                      >
-                        {a.account.pinned ? "Unpin" : "Pin"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onPress={() =>
-                          void perform(() =>
-                            request(
-                              connection,
-                              `/accounts/${idPath(a.account.id)}`,
-                              "PATCH",
-                              { enabled: !a.account.enabled },
-                            ),
-                          )
-                        }
-                      >
-                        {a.account.enabled ? "Disable" : "Enable"}
-                      </Button>
-                      <Button
-                        isIconOnly
-                        size="sm"
-                        variant="ghost"
-                        className="delete"
-                        aria-label={`Delete ${a.account.label}`}
-                        onPress={async () => {
-                          if (await confirmDelete(a.account.label))
-                            void perform(
-                              () =>
-                                request(
-                                  connection,
-                                  `/accounts/${idPath(a.account.id)}`,
-                                  "DELETE",
-                                ),
-                              "Account deleted",
-                            );
-                        }}
-                      >
-                        <Trash2 size={15} />
-                      </Button>
-                    </div>
                   </div>
                 </div>
               ))
           )}
+          {provider === "claude" &&
+            app &&
+            desktopOnly.map((l) => (
+              <div className="item" key={l.accountUuid}>
+                <div className="provider-icon claude">✳</div>
+                <div className="grow">
+                  <strong>{nameOf(l)}</strong>
+                  <small>
+                    Saved in Claude Desktop only, so no usage
+                    {desktopNote(app, l) ? ` · ${desktopNote(app, l)}` : ""}
+                  </small>
+                </div>
+                {app.mode === "signed-in" && app.current?.accountUuid === l.accountUuid && <Badge good>In Claude Desktop</Badge>}
+                <DesktopButton desktop={app} act={act} login={l} email={l.email} />
+                <RowMenu
+                  label={`More for ${nameOf(l)}`}
+                  items={[
+                    { label: "Add to subscriptions", onAction: () => void start("claude", nameOf(l)) },
+                    { label: "Forget login", danger: true, onAction: () => void forgetLogin(connection, perform, l)() },
+                  ]}
+                />
+              </div>
+            ))}
         </Panel>
       ))}
       {add && (
@@ -306,61 +283,8 @@ export function Accounts({ data, connection, perform, local }: ViewProps) {
           </form>
         </Modal>
       )}
-      {login && (
-        <Modal
-          title={`Sign in to ${providerName(login.provider)}`}
-          close={() => setLogin(undefined)}
-        >
-          <p>Your browser has opened the provider's login page.</p>
-          <Button
-            size="sm"
-            variant="tertiary"
-            onPress={() => void perform(() => openExternal(login.url))}
-          >
-            Open login page again
-            <ExternalLink size={14} />
-          </Button>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              void perform(async () => {
-                await request(connection, "/accounts/login/finish", "POST", {
-                  state: login.state,
-                  code: field(f, "code"),
-                });
-                setLogin(undefined);
-              }, "Account added");
-            }}
-          >
-            <Field
-              multiline
-              label={
-                login.provider === "claude"
-                  ? "Paste the code shown after signing in"
-                  : "Paste the full localhost:1455 callback address"
-              }
-              name="code"
-              isRequired
-              autoFocus
-              placeholder={
-                login.provider === "claude"
-                  ? "code#state"
-                  : "http://localhost:1455/auth/callback?code=…"
-              }
-            />
-            <p className="note">
-              {login.provider === "codex"
-                ? "The browser may show a page that cannot load. Copy its full address from the address bar."
-                : "This login belongs to Agentgate and leaves your current CLI login untouched."}
-            </p>
-            <Button type="submit" size="sm">
-              Finish sign in
-              <Check size={15} />
-            </Button>
-          </form>
-        </Modal>
-      )}
+      {login}
+      {help && <DesktopHelp close={() => setHelp(false)} />}
       {edit && (
         <Modal title="Edit account" close={() => setEdit(undefined)}>
           <form

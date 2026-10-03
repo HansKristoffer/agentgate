@@ -174,3 +174,74 @@ test("an exhausted quota window without a reset cannot permanently disable an ac
   s.now = () => now + 61000;
   const { choose } = await import("../src/llm/pool.ts"); expect(choose(s, "claude", "sonnet")?.id).toBe("a");
 });
+
+test("usage endpoint maps onto the quota windows and is polled only for idle accounts", async () => {
+  const { parseUsage, pollUsage } = await import("../src/llm/claude.ts");
+  expect(parseUsage({ five_hour: { utilization: 18, resets_at: "2026-10-02T12:30:00Z" }, seven_day: { utilization: 100, resets_at: null }, seven_day_cowork: { utilization: 50 }, seven_day_opus: null })).toEqual({
+    windows: [{ name: "5h", usedPct: 18, resetsAt: Date.parse("2026-10-02T12:30:00Z") }, { name: "7d", usedPct: 100, resetsAt: undefined }],
+    status: "exhausted",
+  });
+  expect(parseUsage({ five_hour: { utilization: 1, locked_reason: "x" } })).toMatchObject({ status: "exhausted", windows: [{ name: "5h", usedPct: 100 }] });
+  expect(parseUsage({})).toBeUndefined();
+
+  // A locked account is skipped by the pool; a lock on the Opus window only affects Opus.
+  const { Store: S } = await import("../src/store.ts");
+  const { choose, recordUsage } = await import("../src/llm/pool.ts");
+  const p = new S(":memory:"); p.setLocal("node", "n");
+  for (const id of ["claude-a", "claude-b"]) {
+    p.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: id === "claude-a" ? 1 : 0 });
+    p.put("credential", id, { accountId: id, accessToken: "t", refreshToken: "r", expiresAt: Date.now() + 3600_000, holder: "n" });
+  }
+  const later = new Date(Date.now() + 3600_000).toISOString();
+  recordUsage(p, "claude-a", parseUsage({ five_hour: { utilization: 1, locked_reason: "x", resets_at: later } })!);
+  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
+  recordUsage(p, "claude-b", parseUsage({ five_hour: { utilization: 1 }, seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: later } })!);
+  expect(choose(p, "claude", "claude-opus-5")).toBeUndefined();
+  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
+  p.close();
+
+  const { Store } = await import("../src/store.ts");
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  for (const id of ["claude-idle", "claude-busy"]) {
+    s.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: 0 });
+    s.put("credential", id, { accountId: id, accessToken: "t", refreshToken: "r", expiresAt: Date.now() + 3600_000, holder: "n" });
+  }
+  s.put("usage", "claude-busy", { accountId: "claude-busy", observedAt: Date.now(), observedBy: "n", windows: [], status: "ok" });
+  const asked: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response(JSON.stringify({ five_hour: { utilization: 42, resets_at: null } }))) as unknown as typeof fetch;
+  try {
+    await pollUsage(s, async (id) => { asked.push(id); return { accessToken: "t" }; });
+    await pollUsage(s, async (id) => { asked.push(id); return { accessToken: "t" }; }); // not again within 10 minutes
+  } finally { globalThis.fetch = realFetch; }
+  expect(asked).toEqual(["claude-idle"]);
+  expect(s.get("usage", "claude-idle")?.windows[0]?.usedPct).toBe(42);
+
+  // Live traffic records newer usage while a poll is out: the poll's older answer is dropped.
+  s.setLocal("usagePolled:claude-idle", undefined);
+  s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
+  let answer!: () => void;
+  globalThis.fetch = (() => new Promise<Response>((r) => { answer = () => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } }))); })) as unknown as typeof fetch;
+  try {
+    const poll = pollUsage(s, async () => ({ accessToken: "t" }));
+    await Bun.sleep(5);
+    const { recordUsage } = await import("../src/llm/pool.ts");
+    recordUsage(s, "claude-idle", { windows: [{ name: "5h", usedPct: 98 }], status: "ok" });
+    answer(); await poll;
+  } finally { globalThis.fetch = realFetch; }
+  expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
+
+  // Stopping the daemon aborts the request and records nothing.
+  s.setLocal("usagePolled:claude-idle", undefined);
+  s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
+  const stop = new AbortController();
+  let sawAbort = false;
+  globalThis.fetch = ((_: unknown, init: RequestInit) => new Promise<Response>((_r, reject) => init.signal!.addEventListener("abort", () => { sawAbort = true; reject(new Error("aborted")); }))) as unknown as typeof fetch;
+  try {
+    const poll = pollUsage(s, async () => ({ accessToken: "t" }), stop.signal);
+    await Bun.sleep(5); stop.abort(); await poll;
+  } finally { globalThis.fetch = realFetch; }
+  expect(sawAbort).toBe(true);
+  expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
+  s.close();
+});

@@ -20,8 +20,9 @@ import {
   ShieldCheck,
   Users,
 } from "lucide-react";
-import type { Connection, Status } from "@agentgate/protocol";
+import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
 import {
+  desktopStatus,
   loadConnection,
   localAction,
   localConnection,
@@ -37,6 +38,8 @@ import {
   Servers,
   Settings,
 } from "./views/index.ts";
+import { desktopActions } from "./views/ClaudeDesktop.tsx";
+import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 
 import type { Perform } from "./types.ts";
 import {
@@ -58,7 +61,7 @@ const navigation = [
 type View = (typeof navigation)[number]["id"];
 const descriptions: Record<View, string> = {
   overview: "Your agents, connected.",
-  accounts: "One pool for every Claude and Codex session.",
+  accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
   servers: "Connect tools once. Use them across your projects.",
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
@@ -74,6 +77,8 @@ export function App() {
   const [ready, setReady] = useState(false);
   const version = useAppVersion();
   const [data, setData] = useState<Status>();
+  const [desktop, setDesktop] = useState<DesktopStatus>();
+  const [welcome, setWelcome] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   // Checked on launch and every four hours, since the app is left open for days.
@@ -83,10 +88,12 @@ export function App() {
   const [help, setHelp] = useState(false);
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
   const current = useRef(connection);
+  const isLocal = useRef(false);
   const actionLock = useRef(false);
   const local =
     connection.url.replace("localhost", "127.0.0.1").replace(/\/$/, "") ===
     localUrl;
+  isLocal.current = local;
   const selected = navigation.find((n) => n.id === view)!;
 
   useEffect(() => {
@@ -119,8 +126,13 @@ export function App() {
     const c = current.current;
     try {
       const next = await status(c);
+      // Claude Desktop is per Mac: only the local daemon reports it.
+      const desk = isLocal.current
+        ? await desktopStatus(c).catch(() => undefined)
+        : undefined;
       if (current.current === c) {
         setData(next);
+        setDesktop(desk);
         setError("");
       }
     } catch (e) {
@@ -158,6 +170,11 @@ export function App() {
     return () => toast.close(id);
   }, [updater.update, updater.install, updater.dismiss]);
   useAppShortcuts({ ",": () => setView("settings") });
+  // First run on this Mac: ask where Claude is used, so Claude Desktop users land on their screen.
+  useEffect(() => {
+    if (local && data && !data.accounts.length && !localStorage.getItem("onboarding"))
+      setWelcome(true);
+  }, [local, data]);
   const perform: Perform = async (task, message) => {
     if (actionLock.current) return;
     actionLock.current = true;
@@ -174,7 +191,10 @@ export function App() {
       setBusy(false);
     }
   };
-  const props = data && { data, connection, perform, local };
+  const desktopAct = desktopActions(connection, perform);
+  useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
+  useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
+  const props = data && { data, connection, perform, local, desktop };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
@@ -199,7 +219,11 @@ export function App() {
             <>
               <div className="tau-drag-strip" />
               <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                {navigation.slice(0, 5).map((n) => (
+                {navigation
+                  .filter(
+                    (n) => n.id !== "settings",
+                  )
+                  .map((n) => (
                   <button
                     key={n.id}
                     aria-current={view === n.id ? "page" : undefined}
@@ -438,6 +462,61 @@ export function App() {
             </form>
           </Modal>
         )}
+        {welcome && (
+          <Modal
+            title="Where do you use Claude?"
+            close={() => {
+              localStorage.setItem("onboarding", "skipped");
+              setWelcome(false);
+            }}
+          >
+            <p>
+              Agentgate shows you the right setup. Everything stays available
+              later.
+            </p>
+            <div className="choice-list">
+              {[
+                ...(desktop?.available
+                  ? [
+                      {
+                        id: "desktop",
+                        title: "The Claude Desktop app",
+                        body: "Chat, Cowork or the Code tab in Claude Desktop.",
+                      },
+                    ]
+                  : []),
+                {
+                  id: "terminal",
+                  title: "Terminal, T3 Code or Codex",
+                  body: "Claude Code or Codex sessions on this or other machines.",
+                },
+                ...(desktop?.available
+                  ? [
+                      {
+                        id: "both",
+                        title: "Both",
+                        body: "Start with Claude Desktop; the terminal setup is in Settings.",
+                      },
+                    ]
+                  : []),
+              ].map((o) => (
+                <button
+                  key={o.id}
+                  className="choice"
+                  onClick={() => {
+                    localStorage.setItem("onboarding", o.id);
+                    setWelcome(false);
+                    if (o.id === "terminal") setHelp(true);
+                    else setView("accounts");
+                  }}
+                >
+                  <strong>{o.title}</strong>
+                  <span>{o.body}</span>
+                </button>
+              ))}
+            </div>
+          </Modal>
+        )}
         {help && (
           <Modal title="Getting started" close={() => setHelp(false)}>
             <p>
@@ -464,6 +543,14 @@ export function App() {
                 <p>
                   Open Settings → Configure coding tools. Add the generated
                   Claude and Codex paths to T3 Code.
+                </p>
+              </li>
+              <li>
+                <strong>Using the Claude Desktop app?</strong>
+                <p>
+                  Open Accounts. Its Claude Desktop panel lets you switch
+                  accounts in Desktop, or share your subscriptions in its Code
+                  tab.
                 </p>
               </li>
               <li>

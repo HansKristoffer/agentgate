@@ -13,8 +13,12 @@ export const DAEMON_DOWN = "agentgate daemon is not running on this machine (run
 /** AGENTGATE_PROJECT, else the git origin as owner/repo, else only the `*` defaults apply. */
 export function detectProject(cwd: string, env = process.env): string {
   if (env.AGENTGATE_PROJECT) return env.AGENTGATE_PROJECT;
-  const r = Bun.spawnSync(["git", "remote", "get-url", "origin"], { cwd, stderr: "ignore" });
-  return (r.exitCode === 0 && parseRemote(r.stdout.toString())) || "*";
+  // Claude Desktop starts MCP servers with a reduced PATH.
+  const git = Bun.which("git", { PATH: env.PATH ?? "" }) ?? (process.platform === "darwin" ? "/usr/bin/git" : "git");
+  try {
+    const r = Bun.spawnSync([git, "remote", "get-url", "origin"], { cwd, stderr: "ignore" });
+    return (r.exitCode === 0 && parseRemote(r.stdout.toString())) || "*";
+  } catch { return "*"; }
 }
 
 /** The shim: an MCP client toward the local daemon, an MCP server toward Claude Code or Codex. */

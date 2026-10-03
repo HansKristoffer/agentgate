@@ -281,6 +281,7 @@ export function accountStatus(s: Store, a: Account) {
     windows: (u?.windows ?? []).map((w) => (w.resetsAt && w.resetsAt <= now ? { ...w, usedPct: 0 } : w)),
     exhausted: exhausted(u, undefined, now),
     exhaustedUntil: u?.exhaustedUntil && u.exhaustedUntil > now ? u.exhaustedUntil : undefined,
+    observedAt: u?.observedAt,
     observedBy: u?.observedBy,
     active: s.local(`active:${a.provider}`) === a.id,
     needsLogin: !c || !!c.needsLogin,
