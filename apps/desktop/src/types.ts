@@ -1,4 +1,4 @@
-import type { Connection, Status } from "@agentgate/protocol";
+import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
 
 export type Perform = (
   task: () => Promise<unknown>,
@@ -9,4 +9,6 @@ export type ViewProps = {
   connection: Connection;
   perform: Perform;
   local: boolean;
+  /** Claude Desktop on this Mac; undefined for remote connections. */
+  desktop?: DesktopStatus;
 };

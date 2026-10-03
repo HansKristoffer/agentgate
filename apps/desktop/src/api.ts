@@ -1,4 +1,4 @@
-import { API_VERSION, statusSchema, type Connection } from "@agentgate/protocol";
+import { API_VERSION, statusSchema, type Connection, type DesktopStatus } from "@agentgate/protocol";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -39,3 +39,5 @@ export const backupFile = (
 ) => invoke<void>("export_backup", { connection, path, secrets });
 export const restoreFile = (connection: Connection, path: string) =>
   invoke<{ restored: number }>("import_backup", { connection, path });
+export const desktopStatus = (connection: Connection) =>
+  request<DesktopStatus>(connection, "/desktop");

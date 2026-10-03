@@ -94,3 +94,18 @@ test("primary Codex sends its own login through agentgate and undoes cleanly", a
   expect(off.model_provider).toBe("openai"); expect(off.model_providers).toBeUndefined(); expect(off.mcp_servers.mine.command).toBe("mine");
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("setup --mcp adds only the MCP server; claudeStatus reports routing and MCP separately", async () => {
+  const { mcp, claudeStatus } = await import("../src/setup.ts");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-mcp-"));
+  writeFileSync(join(dir, ".claude.json"), '{"mcpServers":{"other":{"command":"x"}},"keep":1}');
+  expect(claudeStatus(dir)).toEqual({ routing: false, mcp: false });
+  await mcp(true, dir);
+  const cfg = JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8"));
+  expect(Object.keys(cfg.mcpServers)).toEqual(["other", "agentgate"]); expect(cfg.keep).toBe(1);
+  expect(claudeStatus(dir)).toEqual({ routing: false, mcp: true });
+  await primary(true, dir); expect(claudeStatus(dir)).toEqual({ routing: true, mcp: true });
+  await mcp(false, dir); expect(claudeStatus(dir)).toEqual({ routing: true, mcp: false });
+  expect(await mcp(false, dir)).toContain("No agentgate MCP server");
+  rmSync(dir, { recursive: true });
+});

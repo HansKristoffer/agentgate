@@ -46,6 +46,7 @@ export interface AccountStatus {
   needsLogin: boolean;
   expired: boolean;
   exhaustedUntil?: number;
+  observedAt?: number;
   observedBy?: string;
   holder?: string;
   expiresAt?: number;
@@ -172,6 +173,41 @@ export interface Connection {
   token?: string;
 }
 
+/** A Claude Desktop login saved on this Mac (never synced). */
+export interface DesktopLogin {
+  accountUuid: string;
+  /** The pool account with the same Claude account, when there is one. */
+  accountId?: string;
+  label?: string;
+  email?: string;
+  capturedAt: number;
+  sessionExpiresAt?: number;
+  expired: boolean;
+  /** Set when this login cannot be used, e.g. after a Desktop update changed its storage. */
+  problem?: string;
+}
+/** How Claude Desktop uses Claude: its own sign-in, agentgate's pool (gateway mode), or another gateway. */
+export type DesktopMode = "signed-in" | "pool" | "other-gateway";
+export interface DesktopStatus {
+  /** macOS with Claude.app installed. */
+  available: boolean;
+  version?: string;
+  running: boolean;
+  mode: DesktopMode;
+  /** The account Desktop is signed in to now (signed-in mode). */
+  current?: { accountUuid: string; accountId?: string; label?: string; email?: string; saved: boolean };
+  /** Desktop was signed in through agentgate and is now signed out, e.g. after Log out in Desktop. */
+  signedOut: boolean;
+  logins: DesktopLogin[];
+  /** An "add account" is waiting for the user to sign in in Desktop. */
+  pendingAdd?: { since: number; expected?: string };
+  /** The last "add account" asked for `expected` but Desktop was signed in to another account (which was saved anyway). */
+  addMismatch?: { expected: string; accountUuid: string; accountId?: string; label?: string; email?: string };
+  /** Claude Code's ~/.claude/settings.json uses the pool (setup --primary). */
+  routing: boolean;
+  /** ~/.claude.json has the agentgate MCP server (setup --mcp or --primary). */
+  mcp: boolean;
+}
 /** Validate native status before views access required fields from a remote daemon. */
 export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION), node: z.string(),
@@ -179,7 +215,7 @@ export const statusSchema = z.object({
     account: accountSchema,
     windows: z.array(z.object({ name: z.string(), usedPct: z.number(), resetsAt: z.number().optional() })),
     active: z.boolean(), exhausted: z.boolean(), needsLogin: z.boolean(), expired: z.boolean(),
-    exhaustedUntil: z.number().optional(), observedBy: z.string().optional(), holder: z.string().optional(), expiresAt: z.number().optional(), refreshError: z.string().optional(),
+    exhaustedUntil: z.number().optional(), observedAt: z.number().optional(), observedBy: z.string().optional(), holder: z.string().optional(), expiresAt: z.number().optional(), refreshError: z.string().optional(),
   })),
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
   servers: z.array(z.object({ id: z.string(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), refreshError: z.string().optional() })),

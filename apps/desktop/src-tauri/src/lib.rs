@@ -285,6 +285,8 @@ async fn local_action(action: String, connection: Connection) -> Result<String, 
         "setup" => &["setup"],
         "primary-on" => &["setup", "--primary"],
         "primary-off" => &["setup", "--primary", "off"],
+        "mcp-on" => &["setup", "--mcp"],
+        "mcp-off" => &["setup", "--mcp", "off"],
         "admin-token" => &["admin-token"],
         _ => return Err("Unknown local action".into()),
     };
@@ -323,6 +325,7 @@ async fn refresh_daemon() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .shared_plugins()
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             api_request,
             load_connection,

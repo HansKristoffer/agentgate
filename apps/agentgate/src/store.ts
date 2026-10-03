@@ -170,6 +170,11 @@ export class Store {
     return (this.db.query("select value from local where key = ?").get(key) as { value: string } | null)?.value;
   }
 
+  localPrefixed(prefix: string): [string, string][] {
+    const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
+    return (this.db.query("select key, value from local where key like ? escape '\\' order by key").all(like) as { key: string; value: string }[]).map((r) => [r.key, r.value]);
+  }
+
   setLocal(key: string, value: string | undefined) {
     if (value === undefined) this.db.run("delete from local where key = ?", [key]);
     else this.db.run("insert or replace into local values (?, ?)", [key, value]);

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import * as claudeLogin from "./llm/claude.ts";
 import * as codexLogin from "./llm/codex.ts";
-import { accountStatus } from "./llm/pool.ts";
+import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
@@ -40,6 +40,10 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
+  setup --mcp [off]                           only add agentgate's MCP servers to Claude Code (and Claude Desktop's Code tab)
+  desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
+  desktop add [email] | use <account> | capture | forget <account>
+  desktop gateway on|off                      Desktop's Code tab uses the pool (no Chat, separate profile)
   service install|start|stop|logs
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for native app control over the tailnet`;
@@ -63,6 +67,7 @@ const { values: opts, positionals: pos } = parseArgs({
     "per-session": { type: "boolean" },
     "no-secrets": { type: "boolean" },
     primary: { type: "boolean" },
+    mcp: { type: "boolean" },
     skill: { type: "string" },
     project: { type: "string", multiple: true },
     file: { type: "string" },
@@ -419,9 +424,54 @@ async function main() {
       }
     }
 
+    case "desktop": {
+      initialized(s);
+      const desktop = await import("./desktop.ts");
+      const st = desktop.status(s);
+      if (!st.available) die("Claude Desktop is not installed on this Mac.");
+      const name = (l: { label?: string; email?: string; accountUuid: string }) => l.label ?? l.email ?? l.accountUuid.slice(0, 8);
+      const find = (arg?: string) => {
+        const q = arg ?? die(`desktop ${sub} <account>`);
+        const l = st.logins.find((l) => [l.accountId, l.label, l.email, l.accountUuid].includes(q) || l.accountUuid.startsWith(q));
+        return l?.accountUuid ?? die(`No saved Claude Desktop login matches ${q}. Saved: ${st.logins.map(name).join(", ") || "none"}`);
+      };
+      if (!sub) {
+        console.log(`Claude Desktop ${st.version ?? ""}${st.running ? "" : " (not running)"}`);
+        console.log(st.mode === "pool" ? "mode: Code tab uses the pool (gateway mode)" : st.mode === "other-gateway" ? "mode: another company gateway" : `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`);
+        for (const l of st.logins) {
+          const pct = l.accountId ? Math.max(0, ...relevant(s.get("usage", l.accountId), undefined, Date.now()).map((w) => w.usedPct)) : undefined; // windows that have reset count as 0
+          console.log(`  ${st.current?.accountUuid === l.accountUuid ? "*" : " "} ${name(l).padEnd(28)} ${pct === undefined ? "not in the pool" : `${Math.round(pct)}% used`}${l.expired ? "  LOGIN EXPIRED" : l.sessionExpiresAt ? `  login valid ${Math.round((l.sessionExpiresAt - Date.now()) / 86_400_000)} days` : ""}${l.problem ? `  ${l.problem}` : ""}`);
+        }
+        if (st.pendingAdd) console.log("Waiting for you to sign in to Claude Desktop…");
+        console.log(`MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`);
+        return;
+      }
+      if (sub === "capture") return console.log(`saved ${desktop.capture(s)}`);
+      if (sub === "use") { await desktop.use(s, find(rest[0])); return console.log("switched; Claude Desktop is restarting"); }
+      if (sub === "forget") { desktop.forget(s, find(rest[0])); return console.log("ok"); }
+      if (sub === "gateway") { await desktop.gateway(s, rest[0] !== "off"); return console.log(rest[0] === "off" ? "Claude Desktop uses its own sign-in again" : "Claude Desktop's Code tab now uses the pool; keep the agentgate service running"); }
+      if (sub === "add") {
+        const started = Date.now();
+        await desktop.add(s, rest[0]);
+        console.log(`Claude Desktop restarted signed out. Sign in${rest[0] ? ` with ${rest[0]}` : " with the next account"}; this waits up to 10 minutes. Don't use Log out in Desktop: it ends saved logins.`);
+        for (;;) {
+          await Bun.sleep(2000);
+          // The agentgate service may save it first; then this loop only reports it.
+          const uuid = (await desktop.pollDesktopLogin(s)) ?? desktop.addedSince(s, started);
+          if (uuid) {
+            const wrong = desktop.status(s).addMismatch;
+            return console.log(wrong ? `saved ${name(wrong)}, but you asked for ${wrong.expected}. Run agentgate desktop add ${wrong.expected} to connect it.` : `saved ${uuid}`);
+          }
+          if (!s.local("desktop:pendingAdd")) die(`Timed out waiting for the sign-in. Try again with: agentgate desktop add${rest[0] ? ` ${rest[0]}` : ""}`);
+        }
+      }
+      return die(HELP);
+    }
+
     case "setup": {
       const setupMod = await import("./setup.ts");
       if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}`);
+      if (opts.mcp) return console.log(await setupMod.mcp(sub !== "off"));
       return console.log(await setupMod.setup());
     }
     case "service":
