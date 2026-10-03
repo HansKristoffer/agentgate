@@ -48,6 +48,8 @@ On every daemon start, on `join`, after a group reset and on `agentgate relay re
 
 ### Deploying and self-hosting
 
+`agentgate pair --relay` uses the hosted relay at `https://agentgate-relay.hanskristoffer.dk` unless `--relay-url` or `AGENTGATE_RELAY_URL` names another one. The invite carries the relay URL, so joining machines need no setting. To run your own:
+
 ```sh
 bun run --filter @agentgate/relay deploy   # wrangler; needs a Cloudflare account
 agentgate pair --relay --relay-url https://agentgate-relay.<account>.workers.dev

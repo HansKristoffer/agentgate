@@ -11,8 +11,8 @@ import { lastSeen, peers, pullAll } from "./sync.ts";
  * sealed change feed into a group mailbox and pulls everyone else's entries since a cursor.
  */
 
-/** The hosted relay. Empty until it is deployed and checked (docs/relay-plan.md, order of work step 6). */
-export const DEFAULT_RELAY_URL: string = "";
+/** The hosted relay, used when neither --relay-url nor AGENTGATE_RELAY_URL is given. */
+export const DEFAULT_RELAY_URL: string = "https://agentgate-relay.hanskristoffer.dk";
 export function relayUrlDefault() {
   const url = process.env.AGENTGATE_RELAY_URL || DEFAULT_RELAY_URL;
   if (!url) throw new RelayError("No hosted relay is configured yet. Pass --relay-url <url> or set AGENTGATE_RELAY_URL to your own relay.");
