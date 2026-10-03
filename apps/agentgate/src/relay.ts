@@ -111,7 +111,7 @@ const FIELDS: Field[] = ["invite", "generation", "pushed", "cursor", "phase", "r
 interface Cleanup { invite: string; serviceKey?: string; attempts: number; nextAt: number }
 const cleanups = (s: Store): Cleanup[] => JSON.parse(s.local("relay:cleanup") ?? "[]");
 const setCleanups = (s: Store, list: Cleanup[]) => s.setLocal("relay:cleanup", list.length ? JSON.stringify(list.slice(-20)) : undefined);
-const serviceKey = (s: Store) => process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey") || undefined;
+export const serviceKey = (s: Store) => process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey") || undefined;
 
 function tables(s: Store) {
   s.db.run("create table if not exists relay_counters (grp text not null, generation text not null, node text not null, key text not null, counter integer not null, primary key (grp, generation, node, key))");

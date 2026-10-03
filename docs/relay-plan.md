@@ -58,6 +58,8 @@ The user holds one value, an invite string: `agr1.<base64url(relayUrl)>.<base64u
 
 ## Threat model
 
+> Remote MCP endpoints for virtual projects are an opt-in exception: the relay reads their traffic in the clear. See [remote-mcp-plan.md](remote-mcp-plan.md) and the operations guide.
+
 Even someone with full access to the relay can't read tokens. That covers the Worker's owner, Cloudflare, anyone who can read the Worker's logs, and anyone who dumps the Durable Object's storage. The relay only ever receives `authToken`, which is HKDF-derived and one-way, so it doesn't reveal `encKey`. A brute-force attack on a 32-byte secret is infeasible.
 
 What the relay **can** do:

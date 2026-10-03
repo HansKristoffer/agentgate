@@ -1,5 +1,5 @@
 import type { SkillHealth } from "@agentgate/protocol";
-import { SKILL_MARKER as MARKER, projectIdSchema } from "@agentgate/protocol";
+import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
@@ -117,7 +117,7 @@ export class SkillLinks {
     const common = git("rev-parse", "--path-format=absolute", "--git-common-dir");
     if (!common || basename(common) !== ".git") return; // a bare repo has no main checkout
     project ??= parseRemote(git("remote", "get-url", "origin") ?? "");
-    if (!project || project === "*") return;
+    if (!project || project === "*" || isVirtual(project)) return;
     project = canonicalProject(this.s, projectIdSchema.parse(project));
     const main = realpathSync(dirname(common)), all = this.checkouts();
     if (all[main] !== project) { all[main] = project; this.s.setLocal("checkouts", JSON.stringify(all)); }

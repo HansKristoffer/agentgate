@@ -335,6 +335,7 @@ export function exportBackup(s: Store, secrets = true) {
     .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest"].includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
+      if (!secrets && r.kind === "project") delete data.remote; // endpoint keys are credentials
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
