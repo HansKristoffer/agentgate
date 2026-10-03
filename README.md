@@ -4,13 +4,13 @@ One daemon per machine that:
 
 - pools several **Claude** and **Codex** subscriptions and moves to the next account when one hits its limit;
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
-- **shares** all of it between your machines over Tailscale, and keeps working when the other machines are offline.
+- **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
 
 T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [operations and distribution checks](docs/operations.md).
 
 ## Install
 
-Requirements: Linux or macOS, [Tailscale](https://tailscale.com) on every machine, `claude` and/or `codex` CLIs for logging in, and Node (`npx`) or uv (`uvx`) for any stdio MCP servers you add.
+Requirements: Linux or macOS, [Tailscale](https://tailscale.com) or a relay (see below) to connect machines, `claude` and/or `codex` CLIs for logging in, and Node (`npx`) or uv (`uvx`) for any stdio MCP servers you add.
 
 ```sh
 npm install -g @hanskristoffer/agentpool   # installs the `agentgate` command (and an `agentpool` alias)
@@ -40,16 +40,26 @@ The app has Accounts, MCP servers, Skills, Projects, Machines, and Settings scre
 
 ## A second machine (e.g. an always-on server)
 
-On the first machine: `agentgate pair`. It prints a command, valid for 10 minutes. On the server:
+There are two ways to connect machines, and a machine can use both:
+
+- **Same network (Tailscale):** both machines are on your tailnet. Pairing uses a code that expires after 10 minutes.
+- **Relay:** works across any network, without Tailscale. Every record is encrypted before it leaves the machine; the relay stores only ciphertext and can't read your credentials.
+
+On the first machine, run `agentgate pair`. In a terminal it asks which method to use; `--tailnet` and `--relay` skip the question. It prints one command to run on the server:
 
 ```sh
 agentgate init --name srv --always-on
-agentgate join http://mac.<tailnet>.ts.net:7878 <code>
+agentgate join http://mac.<tailnet>.ts.net:7878 <code>   # Tailscale
+agentgate join agr1.…                                     # relay
 agentgate setup
 agentgate service install           # also runs `loginctl enable-linger` so it survives logout/reboot
 ```
 
-The server now has every account, MCP instance and repo mapping, and takes over token refreshes. To control the server from the native app, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale.
+The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
+
+**The relay invite never expires and is a master key.** Anyone who has it can read every account and MCP login, so share it privately. If it leaks, run `agentgate relay rotate` and have every relay machine join again with the new command. Removing a relay machine (`agentgate unpair <node>` or **Remove** in the app) rotates the same way. A rotation can't revoke Tailscale links, so also unpair the removed machine on every machine you keep. No hosted relay is configured in this version: deploy `apps/relay` to your own Cloudflare account (see [operations](docs/operations.md#relay)) and pass `--relay-url`, or set `AGENTGATE_RELAY_URL`. `agentgate relay status` shows sync state and errors.
+
+To control the server from the native app over Tailscale, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale. The relay carries sync only, not remote management.
 
 ## T3 Code
 
@@ -115,12 +125,12 @@ Repository-owned skills are mirrored only when you opt in under Projects → **R
 
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `unpair <node>`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 
 - **Once imported, a login belongs to agentgate.** Don't keep using the original `~/.claude` or `~/.codex` login: its CLI would refresh the token and log agentgate out. `agentgate login` avoids this by using a throwaway directory.
-- **Secrets are stored in plain text** in `~/.config/agentgate/agentgate.db` (mode 0600) and copied to every paired node. Pair only machines you control.
+- **Secrets are stored in plain text** in `~/.config/agentgate/agentgate.db` (mode 0600) and copied to every paired node. Pair only machines you control. The relay only ever sees them encrypted.
 - **Terms of service.** Pool only your own accounts and keep a person driving the sessions; follow the providers’ applicable terms.
 
 ## Development
@@ -142,6 +152,7 @@ AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun run cli -- init   # a throwaway n
 | `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
 | `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
 | `apps/site` (`@agentgate/site`) | Static Astro landing page for Cloudflare Pages |
+| `apps/relay` (`@agentgate/relay`) | Cloudflare Worker and Durable Objects for the encrypted sync relay |
 | `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
 
 The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.

@@ -6,7 +6,13 @@ import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
 export const PULL_INTERVAL = 15_000;
 // 4: byte-bounded pages with explicit continuation, plus validated skill bundles.
 export const SYNC_PROTOCOL = 4;
-const peerUrl = z.string().url().refine(v => { try { return ["http:", "https:"].includes(new URL(v).protocol); } catch { return false; } }, "peer URL must use HTTP or HTTPS");
+// An origin only: a path or query would let a caller aim `${url}/peer/…` at any route, e.g. this daemon's own API.
+const peerUrl = z.string().refine(v => {
+  try {
+    const u = new URL(v);
+    return ["http:", "https:"].includes(u.protocol) && !u.username && !u.password && !u.search && !u.hash && u.pathname === "/";
+  } catch { return false; }
+}, "peer URL must be an HTTP or HTTPS origin, without a path or query");
 const joinInput = z.object({ code: z.string().min(1), node: z.string().min(1).max(512), url: peerUrl, protocol: z.literal(SYNC_PROTOCOL) });
 const batchSchema = z.object({ protocol: z.literal(SYNC_PROTOCOL), records: z.array(z.unknown()).max(100000), seq: z.number().int().nonnegative(), more: z.boolean().default(false), seen: z.record(z.string().max(512), z.number().int().nonnegative()).refine(seen => Object.keys(seen).length <= 1000).default({}) });
 const pulls = new WeakMap<Store, Map<string, Promise<number>>>();

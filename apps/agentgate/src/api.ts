@@ -52,6 +52,22 @@ import {
 } from "./skills.ts";
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import {
+  RelayBusy,
+  RelayError,
+  cleanupRelay,
+  createRelay,
+  joinRelay,
+  leaveRelay,
+  parseJoin,
+  reconcileRelay,
+  relayInvite,
+  relayNodes,
+  relayStatus,
+  rotateRelay,
+  setServiceKey,
+  via,
+} from "./relay.ts";
 
 const required = (value: unknown, name: string) => {
   if (!value) throw new HTTPException(404, { message: `No such ${name}` });
@@ -89,6 +105,22 @@ export function management(ctx: Ctx) {
         message: "This operation requires a local connection",
       });
   };
+  // Relay messages are sanitized summaries, safe for a signed-in administrator.
+  const relayed = async <T>(fn: () => Promise<T>): Promise<T> => {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof RelayBusy)
+        throw new HTTPException(409, { message: error.message });
+      if (error instanceof RelayError)
+        throw new HTTPException(error.status ? 502 : 400, {
+          message: error.message,
+        });
+      throw error;
+    }
+  };
+  const optionalJson = async (req: Request) =>
+    req.headers.get("content-type") ? json(req) : {};
   const tools = async (id: string) => {
     const inst = s.get("mcp", id);
     required(inst, "server");
@@ -144,7 +176,9 @@ export function management(ctx: Ctx) {
         lastSeen: lastSeen(s, n.id),
         online: n.id === s.nodeId || s.now() - lastSeen(s, n.id) < 60_000,
         syncError: s.local(`syncError:${n.id}`) ? "Sync failed" : undefined,
+        via: n.id === s.nodeId ? [] : via(s, n.id),
       })),
+      relay: relayStatus(s),
       peers: peers(s).map((p) => ({
         node: p.node,
         url: p.url,
@@ -410,6 +444,19 @@ export function management(ctx: Ctx) {
     return c.json(result);
   });
   app.post("/nodes/pair", async (c) => {
+    const f = z
+      .object({
+        method: z.enum(["tailnet", "relay"]).default("tailnet"),
+        relayUrl: z.string().max(2000).optional(),
+      })
+      .strict()
+      .parse(await optionalJson(c.req.raw));
+    if (f.method === "relay") {
+      // The invite is a master key: only a local caller may see it.
+      local(c.env.listener);
+      const invite = await relayed(() => createRelay(s, f.relayUrl));
+      return c.json({ command: `agentgate join ${invite}`, method: "relay" });
+    }
     const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url;
     if (!url)
       throw new HTTPException(409, {
@@ -417,19 +464,60 @@ export function management(ctx: Ctx) {
       });
     return c.json({
       command: `agentgate join ${url} ${pairCode(s)}`,
+      method: "tailnet",
       expiresIn: 600,
     });
   });
   app.post("/nodes/join", async (c) => {
     const f = z
-      .object({ url: z.url(), code: z.string().min(1) })
+      .union([
+        z.object({ command: z.string().min(1).max(4096) }).strict(),
+        z.object({ url: z.url(), code: z.string().min(1) }).strict(),
+      ])
       .parse(await json(c.req.raw));
+    const target =
+      "command" in f ? await relayed(async () => parseJoin(f.command)) : f;
+    if ("invite" in target)
+      return c.json(
+        await relayed(() => joinRelay(s, target.invite, target.force)),
+      );
     const self = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url;
     if (!self)
       throw new HTTPException(409, {
         message: "Start Tailscale before pairing",
       });
-    return c.json({ node: await join(s, f.url, f.code, self) });
+    return c.json({ node: await join(s, target.url, target.code, self) });
+  });
+  app.post("/relay/reconcile", async (c) => {
+    await relayed(() => reconcileRelay(s));
+    return c.json({ ok: true });
+  });
+  app.post("/relay/rotate", async (c) => {
+    local(c.env.listener);
+    return c.json(await relayed(() => rotateRelay(s)));
+  });
+  app.post("/relay/leave", async (c) => {
+    const f = z
+      .object({ wipe: z.boolean().default(false) })
+      .strict()
+      .parse(await optionalJson(c.req.raw));
+    return c.json(await relayed(() => leaveRelay(s, f.wipe)));
+  });
+  app.post("/relay/cleanup", async (c) => {
+    const f = z
+      .object({ abandon: z.boolean().default(false) })
+      .strict()
+      .parse(await optionalJson(c.req.raw));
+    return c.json(await relayed(() => cleanupRelay(s, f.abandon)));
+  });
+  app.put("/relay/service-key", async (c) => {
+    local(c.env.listener);
+    const f = z
+      .object({ key: z.string().min(1).max(512).nullable() })
+      .strict()
+      .parse(await json(c.req.raw));
+    setServiceKey(s, f.key ?? undefined);
+    return c.json({ ok: true });
   });
   app.patch("/nodes/:id", async (c) => {
     const f = z
@@ -440,8 +528,16 @@ export function management(ctx: Ctx) {
     required(n, "node");
     return c.json(s.put("node", n!.id, { ...n!, ...f }));
   });
-  app.delete("/nodes/:id", (c) => {
-    input(() => unpair(s, c.req.param("id")));
+  app.delete("/nodes/:id", async (c) => {
+    const id = c.req.param("id");
+    if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
+      // A relay member can only be removed by moving everyone else to a new secret.
+      local(c.env.listener);
+      if (peers(s).some((p) => p.node === id)) unpair(s, id);
+      const rotated = await relayed(() => rotateRelay(s));
+      return c.json({ ok: true, rotated: true, ...rotated });
+    }
+    input(() => unpair(s, id));
     return c.json({ ok: true });
   });
   app.put("/settings", async (c) =>
