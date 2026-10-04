@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
-import { CONFIG_DIR, LOCAL_URL, PORT } from "./store.ts";
+import { CONFIG_DIR, liveOnly, LOCAL_URL, PORT } from "./store.ts";
 
 export const CLAUDE_DIR = join(CONFIG_DIR, "claude");
 export const CODEX_DIR = join(CONFIG_DIR, "codex");
@@ -117,6 +117,7 @@ const claudeJsonIn = (dir: string) => dir === join(homedir(), ".claude") ? join(
 
 /** Just the agentgate MCP server in Claude Code's user config. Claude Desktop's Code tab loads the same file. */
 export async function mcp(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
+  if (dir === PRIMARY_CLAUDE_DIR) liveOnly("Changing your own Claude Code config");
   const claudeJson = claudeJsonIn(dir);
   const cfg = json(claudeJson), [command, ...args] = [...selfCommand(), "mcp"];
   if (on) cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
@@ -155,6 +156,7 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
 
 /** The Codex half of `setup --primary`: point the user's own ~/.codex at the daemon, keeping its login as last resort. */
 export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promise<string> {
+  if (dir === PRIMARY_CODEX_DIR) liveOnly("Changing your own Codex config");
   const file = join(dir, "config.toml"), undo = `${file}.agentgate-undo`;
   if (!existsSync(dir)) return `No Codex home at ${dir}; skipped Codex.`;
   const existing = existsSync(file) ? readFileSync(file, "utf8") : "";

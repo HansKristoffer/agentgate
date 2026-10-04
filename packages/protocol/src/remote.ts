@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Remote MCP endpoints: frames between the relay's endpoint object and the serving node. See docs/remote-mcp-plan.md. */
+/** Remote MCP endpoints: frames between the relay's endpoint object and the serving node. See docs/internals/remote-mcp.md. */
 export const REMOTE_LIMITS = {
   requestBytes: 256 * 1024,
   responseBytes: 4 * 1024 * 1024,

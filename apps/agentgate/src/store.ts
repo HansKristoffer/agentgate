@@ -2,13 +2,25 @@ import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, 
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
-export const CONFIG_DIR = process.env.AGENTGATE_HOME ?? join(homedir(), ".config", "agentgate");
-export const PORT = Number(process.env.AGENTGATE_PORT ?? 7878);
+/** Running from a git checkout keeps state in its gitignored `.agentgate` on a port derived from its path,
+ * so dev daemons, tests and agents never touch the live install. Compiled binaries have no checkout.
+ * Explicit AGENTGATE_HOME / AGENTGATE_PORT still win. */
+const CHECKOUT = resolve(import.meta.dir, "../../..");
+const SANDBOX = existsSync(join(CHECKOUT, ".git")) ? join(CHECKOUT, ".agentgate") : undefined;
+export const devPort = (checkout: string) => 17000 + (Bun.hash.crc32(checkout) % 1000);
+export const CONFIG_DIR = process.env.AGENTGATE_HOME ?? SANDBOX ?? join(homedir(), ".config", "agentgate");
+export const PORT = Number(process.env.AGENTGATE_PORT ?? (SANDBOX ? devPort(CHECKOUT) : 7878));
+/** Checkout state, including the compiled sidecar that `bun run dev` points at it with AGENTGATE_DEV=1. */
+export const DEV = (SANDBOX !== undefined && CONFIG_DIR === SANDBOX) || process.env.AGENTGATE_DEV === "1";
+/** Guard for changes to this machine's real setup: the user service, ~/.claude, ~/.codex, Claude Desktop. */
+export function liveOnly(what: string) {
+  if (DEV) throw new Error(`${what} would change this machine's real setup, which a checkout's dev daemon must not do. Set AGENTGATE_HOME and AGENTGATE_PORT to target an install on purpose.`);
+}
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
 export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
 

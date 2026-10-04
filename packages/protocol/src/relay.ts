@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-/** Wire protocol shared by the relay Worker and the daemon. See docs/relay-plan.md. */
+/** Wire protocol shared by the relay Worker and the daemon. See docs/internals/relay.md. */
 export const RELAY_PROTOCOL = 1;
 export const MiB = 1024 * 1024;
 export const RELAY_LIMITS = {

@@ -12,7 +12,7 @@
     "typescript": "^5"
   },
   "scripts": {
-    "dev": "bun run --filter @agentgate/desktop dev",
+    "dev": "bun scripts/dev.ts",
     "start": "bun run --filter @agentgate/daemon start",
     "cli": "bun apps/agentgate/src/cli.ts",
     "test": "bun test",
@@ -21,7 +21,8 @@
     "build:desktop": "bun run --filter @agentgate/desktop bundle",
     "build:frontend": "bun run --filter @agentgate/desktop build",
     "build:site": "bun run --filter @agentgate/site build",
-    "check:native": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings"
+    "check:native": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+    "seed-dev-store": "bun scripts/seed-dev-store.ts"
   },
   "packageManager": "bun@1.4.2"
 }

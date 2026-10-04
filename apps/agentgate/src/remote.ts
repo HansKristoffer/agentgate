@@ -6,7 +6,7 @@ import { fetchHeaders } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
 /**
- * Remote MCP endpoints (docs/remote-mcp-plan.md): a virtual project's tools at a public relay URL for clients
+ * Remote MCP endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients
  * like Grok. The serving node keeps a WebSocket open to the relay and answers each request from its gateway.
  */
 

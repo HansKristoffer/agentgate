@@ -6,7 +6,7 @@ One daemon per machine that:
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
 
-T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [operations and distribution checks](docs/operations.md).
+T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [running agentgate](docs/operations/running.md).
 
 ## Using the Claude Desktop app
 
@@ -15,7 +15,7 @@ Agentgate works with Claude Desktop without any terminal: open the Agentgate app
 - **Switch accounts**: Claude Desktop stays signed in to your full Claude account (Chat, Cowork, Code). Agentgate keeps a saved login per account on this Mac and switches with one click, from the app or the menu bar. Desktop restarts when you switch.
 - **Share automatically**: Claude Desktop's Code tab uses whichever subscription has room and moves on by itself. Desktop runs a separate local profile without Chat.
 
-Agentgate's MCP servers also work in Desktop's Code tab. See [Using Agentgate with Claude Desktop](docs/claude-desktop.md).
+Agentgate's MCP servers also work in Desktop's Code tab. See [Using Agentgate with Claude Desktop](docs/user/claude-desktop.md).
 
 ## Install
 
@@ -66,7 +66,7 @@ agentgate service install           # also runs `loginctl enable-linger` so it s
 
 The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
 
-**The relay invite never expires and is a master key.** Anyone who has it can read every account and MCP login, so share it privately. If it leaks, run `agentgate relay rotate` and have every relay machine join again with the new command. Removing a relay machine (`agentgate unpair <node>` or **Remove** in the app) rotates the same way. A rotation can't revoke Tailscale links, so also unpair the removed machine on every machine you keep. By default it uses the hosted relay at `https://agentgate-relay.hanskristoffer.dk`. To use your own instead, deploy `apps/relay` to your Cloudflare account (see [operations](docs/operations.md#relay)) and pass `--relay-url`, or set `AGENTGATE_RELAY_URL`. `agentgate relay status` shows sync state and errors.
+**The relay invite never expires and is a master key.** Anyone who has it can read every account and MCP login, so share it privately. If it leaks, run `agentgate relay rotate` and have every relay machine join again with the new command. Removing a relay machine (`agentgate unpair <node>` or **Remove** in the app) rotates the same way. A rotation can't revoke Tailscale links, so also unpair the removed machine on every machine you keep. By default it uses the hosted relay at `https://agentgate-relay.hanskristoffer.dk`. To use your own instead, deploy `apps/relay` to your Cloudflare account (see [the relay](docs/operations/relay.md#deploying-and-self-hosting)) and pass `--relay-url`, or set `AGENTGATE_RELAY_URL`. `agentgate relay status` shows sync state and errors.
 
 To control the server from the native app over Tailscale, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale. The relay carries sync only, not remote management.
 
@@ -83,9 +83,9 @@ One instance per provider covers every account; the daemon switches eligible acc
 
 ### Or: your normal Claude login
 
-`agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
+`agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/user/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
 
-The proxy now provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [proxy operations](docs/proxy-operations.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
+The proxy now provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [the proxy guide](docs/user/proxy.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
 
 ## MCP servers per repo
 
@@ -145,7 +145,7 @@ agentgate remote enable @grok        # prints the URL and Authorization header
 agentgate remote secret @grok        # new secret, same URL
 ```
 
-Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [operations](docs/operations.md#remote-mcp-endpoints).
+Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
 
 ## Commands
 
@@ -161,13 +161,15 @@ Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id
 
 ```sh
 bun install
-bun run cli -- init                   # initialize the daemon
+bun run seed-dev-store               # optional: realistic data from your install, without its logins
+bun run cli -- init                  # or an empty node
 bun start                            # foreground daemon, no app required
-bun dev                              # Tauri app with Vite hot reload (Rust + Xcode tools required)
+bun run dev                          # daemon plus the Tauri app with Vite hot reload (Rust + Xcode tools required)
 bun test
 bun run typecheck
-AGENTGATE_HOME=/tmp/ag AGENTGATE_PORT=7979 bun run cli -- init   # a throwaway node
 ```
+
+Running from a git checkout keeps its state in the checkout's gitignored `.agentgate` on a port derived from the checkout path, so it never touches your installed agentgate. It also refuses to install the service or change `~/.claude`, `~/.codex` and Claude Desktop. Set `AGENTGATE_HOME` and `AGENTGATE_PORT` to choose a state folder and port yourself. Contributors and coding agents should read [AGENTS.md](AGENTS.md).
 
 ## Monorepo
 
@@ -189,7 +191,7 @@ The app uses Tauri commands to send HTTP requests from Rust. It has no browser H
 
 ## Reliability
 
-See [operations](docs/operations.md) for backup, upgrade, and live distribution checks. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
+See [running agentgate](docs/operations/running.md) for backup, upgrade, and live distribution checks. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
 
 Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 3** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
@@ -237,4 +239,4 @@ The release also carries a signed app archive and `latest.json`. Installed apps 
 
 The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The standalone CLI binaries are not signed.
 
-See [release and recovery instructions](docs/releasing.md).
+See [release and recovery instructions](docs/operations/releasing.md).

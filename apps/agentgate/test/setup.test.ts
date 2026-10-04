@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plist, rotateLogs, unit, waitForService } from "../src/service.ts";
-import { agentEnvironment, codexConfig, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
+import { plist, rotateLogs, service, unit, waitForService } from "../src/service.ts";
+import { agentEnvironment, codexConfig, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
+import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-")); const paths = { claude: join(dir, "claude"), codex: join(dir, "codex") };
@@ -108,4 +109,14 @@ test("setup --mcp adds only the MCP server; claudeStatus reports routing and MCP
   await mcp(false, dir); expect(claudeStatus(dir)).toEqual({ routing: true, mcp: false });
   expect(await mcp(false, dir)).toContain("No agentgate MCP server");
   rmSync(dir, { recursive: true });
+});
+
+test.skipIf(!!process.env.AGENTGATE_HOME)("a checkout keeps its own state and refuses to change the machine's real setup", async () => {
+  expect(DEV).toBe(true);
+  expect(CONFIG_DIR).toBe(join(import.meta.dir, "../../../.agentgate"));
+  expect(PORT).toBe(devPort(join(import.meta.dir, "../../..")));
+  expect(PORT).toBeGreaterThanOrEqual(17000); expect(PORT).toBeLessThan(18000);
+  await expect(service("install")).rejects.toThrow("real setup");
+  await expect(mcp(true)).rejects.toThrow("real setup");
+  await expect(primaryCodex(true)).rejects.toThrow("real setup");
 });

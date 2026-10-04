@@ -5,14 +5,15 @@ import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
 import { claudeStatus } from "./setup.ts";
-import { CONFIG_DIR, LOCAL_URL, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, LOCAL_URL, type Store } from "./store.ts";
 
-/** Claude Desktop's undocumented storage, kept in one place (docs/claude-desktop-plan.md). Mutable so tests can use fixtures.
+/** Claude Desktop's undocumented storage, kept in one place (docs/internals/claude-desktop.md). Mutable so tests can use fixtures.
  * Cookie and token values are encrypted with this Mac's Keychain key; they are copied as they are, never decrypted. */
+const REAL_DATA = join(homedir(), "Library/Application Support/Claude");
 export const DESKTOP = {
   app: "/Applications/Claude.app",
   /** The signed-in profile. */
-  data: join(homedir(), "Library/Application Support/Claude"),
+  data: REAL_DATA,
   /** The third-party ("gateway") profile Desktop switches to with deploymentMode 3p. */
   data3p: join(homedir(), "Library/Application Support/Claude-3p"),
   backups: join(CONFIG_DIR, "desktop-backup"),
@@ -209,6 +210,7 @@ function switchLogin(s: Store, target: string | null) {
 
 /** Run `fn` with Desktop quit, then reopen it. One switch at a time, across the CLI and the daemon. */
 async function withDesktopClosed<T>(s: Store, fn: () => T | Promise<T>): Promise<T> {
+  if (DESKTOP.data === REAL_DATA) liveOnly("Changing Claude Desktop");
   if (!host.installed()) throw new Error("Claude Desktop is not installed on this Mac");
   const owner = crypto.randomUUID();
   const lock = () => s.acquireLease(LEASE, owner, 2 * MIN);
