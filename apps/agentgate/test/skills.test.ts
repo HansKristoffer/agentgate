@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, writeFileSync, rmSync, renameSync, unlinkSync, symlinkSync, utimesSync, watch, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { deleteSkill, description, installSkills, readSkill, setSkillProjects, SkillLinks, updateSkill, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
+import { connectSkillRepo, deleteSkill, description, installSkills, readSkill, repoUrl, setSkillProjects, setSkillRepoProjects, SkillLinks, skillRepoSummaries, syncSkillRepo, updateSkill, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
+import { readRepoSkills, type RepoFetch, type RepoFetcher } from "../src/skill-import.ts";
 import { MAX_SKILL, SkillConflict } from "@agentgate/protocol";
 import { parseData, parseRecord, importBackup, Store } from "../src/store.ts";
 
@@ -321,4 +322,77 @@ test("watch setup failures and emitted errors are recoverable and close allocate
     links.sync(); expect(allocated).toHaveLength(3); expect(links.health().errors).toEqual([]);
   } finally { links.close(); }
   expect(closes).toBe(3);
+});
+
+test("a repository's skills are read from .claude/skills and .agents/skills, skipping mirrors and unreadable ones", () => {
+  const { dir } = setup();
+  const repo = join(dir, "gh");
+  for (const [folder, name] of [[".claude", "alpha"], [".agents", "beta"], [".agents", "broken"]] as const) {
+    mkdirSync(join(repo, folder, "skills", name), { recursive: true });
+    writeFileSync(join(repo, folder, "skills", name, "SKILL.md"), md(name));
+  }
+  symlinkSync("../../.claude/skills/alpha", join(repo, ".agents", "skills", "alpha"));
+  symlinkSync("SKILL.md", join(repo, ".agents", "skills", "broken", "link.md"));
+  mkdirSync(join(repo, ".claude", "skills", "notes"));
+  const { skills, skipped } = readRepoSkills(repo);
+  expect(skills.map(k => [k.id, k.description])).toEqual([["alpha", "alpha helps."], ["beta", "beta helps."]]);
+  expect(skipped).toEqual([expect.stringMatching(/^broken: .*symlinks/)]);
+  mkdirSync(join(dir, "empty")); expect(() => readRepoSkills(join(dir, "empty"))).toThrow(/no skills/);
+  for (const ok of ["owner/Repo", "github.com/owner/repo", "https://github.com/owner/repo.git", "https://www.github.com/owner/repo/"]) expect(repoUrl(ok)).toBe("https://github.com/owner/repo");
+  for (const bad of ["https://user:token@github.com/o/r", "https://gitlab.com/o/r", "o/r/tree/main", "o/..", "-x"]) expect(() => repoUrl(bad)).toThrow(/public GitHub/);
+});
+
+test("a connected repository installs, links, updates and removes its skills, and disconnecting cleans up", async () => {
+  const { s } = setup();
+  const url = "https://github.com/owner/pack";
+  let next: RepoFetch | null = null, since: (string | undefined)[] = [];
+  const fetch: RepoFetcher = async (_, known) => { since.push(known); return next; };
+  await expect(connectSkillRepo(s, url, ["*"], async () => { throw new Error("owner/pack was not found or is not public"); })).rejects.toThrow(/not public/);
+  expect(skillRepoSummaries(s)).toEqual([]);
+
+  writeSkillMd(s, "gamma", md("gamma"));
+  next = { commit: "c1", skills: [fetched("alpha"), fetched("beta"), fetched("gamma")], skipped: [] };
+  await connectSkillRepo(s, "owner/pack", ["*"], fetch);
+  expect(s.get("project", "*")!.skills.sort()).toEqual(["alpha", "beta"]);
+  expect(s.get("skill", "alpha")!.source).toBe(url);
+  expect(skillRepoSummaries(s)).toEqual([expect.objectContaining({ url, projects: ["*"], skills: ["alpha", "beta"], commit: "c1", skipped: ["gamma: a skill with this name already exists"] })]);
+  expect(() => deleteSkill(s, "alpha")).toThrow(SkillConflict);
+
+  // Unchanged HEAD: the fetcher is asked with the known commit and writes nothing.
+  next = null; since = [];
+  expect(await syncSkillRepo(s, url, fetch)).toBe(false);
+  expect(since).toEqual(["c1"]);
+
+  // The user unlinks alpha; a new commit edits alpha, adds delta and drops beta.
+  setSkillProjects(s, "alpha", []);
+  next = { commit: "c2", skills: [fetched("alpha", "Changed."), fetched("delta")], skipped: [] };
+  expect(await syncSkillRepo(s, url, fetch)).toBe(true);
+  expect(s.get("project", "*")!.skills).toEqual(["delta"]);
+  expect(Buffer.from(s.get("skill", "alpha")!.files.find(f => f.path === "SKILL.md")!.data, "base64").toString()).toContain("Changed.");
+  expect(s.get("skill", "beta")).toBeUndefined();
+
+  // A skill that went missing locally forces a full fetch even at the same commit.
+  setSkillRepoProjects(s, url, ["owner/repo"]);
+  expect(s.get("project", "*")!.skills).toEqual([]);
+  expect(s.get("project", "owner/repo")!.skills.sort()).toEqual(["alpha", "delta"]);
+  s.del("skill", "delta"); since = [];
+  next = { commit: "c2", skills: [fetched("alpha", "Changed."), fetched("delta")], skipped: [] };
+  await syncSkillRepo(s, url, fetch);
+  expect(since).toEqual([undefined]);
+  expect(s.get("skill", "delta")).toBeDefined();
+
+  setSkillRepoProjects(s, url, []);
+  expect(skillRepoSummaries(s)).toEqual([]);
+  expect(skillSummaries(s).map(k => k.id)).toEqual(["gamma"]);
+  expect(s.get("project", "owner/repo")!.skills).toEqual([]);
+  await expect(syncSkillRepo(s, url, fetch)).rejects.toThrow(/not connected/);
+});
+
+test("a repository's skills folder that links outside the repository is ignored", () => {
+  const { dir } = setup();
+  const repo = join(dir, "gh"), outside = join(dir, "outside", "secret");
+  mkdirSync(outside, { recursive: true }); writeFileSync(join(outside, "SKILL.md"), md("secret"));
+  mkdirSync(join(repo, ".agents", "skills", "beta"), { recursive: true }); writeFileSync(join(repo, ".agents", "skills", "beta", "SKILL.md"), md("beta"));
+  mkdirSync(join(repo, ".claude"), { recursive: true }); symlinkSync(join(dir, "outside"), join(repo, ".claude", "skills"));
+  expect(readRepoSkills(repo).skills.map(k => k.id)).toEqual(["beta"]);
 });

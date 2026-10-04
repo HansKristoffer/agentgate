@@ -4,7 +4,7 @@ import { projectSkillChoices, repoClashes } from "../../desktop/src/skill-assign
 test("derived availability preserves explicit assignments across global and checkout changes", () => {
   const data = {
     skills: [{ id: "x", description: "x", updatedAt: 1, size: 1 }],
-    projects: [{ id: "*", mcp: {}, skills: ["x"], inheritDefaults: true }],
+    projects: [{ id: "*", mcp: {}, skills: ["x"], skillRepos: [], inheritDefaults: true }],
     checkouts: [{ path: "/repo", project: "Owner/Repo", skills: ["x"], mirror: false }],
   };
   const choices = projectSkillChoices(data, "owner/repo", ["x"]);
@@ -18,7 +18,7 @@ test("derived availability preserves explicit assignments across global and chec
 test("every-session skills report repositories that carry a skill with the same name", () => {
   const data = {
     skills: [{ id: "x", description: "x", updatedAt: 1, size: 1 }, { id: "y", description: "y", updatedAt: 1, size: 1 }],
-    projects: [{ id: "*", mcp: {}, skills: ["x"], inheritDefaults: true }],
+    projects: [{ id: "*", mcp: {}, skills: ["x"], skillRepos: [], inheritDefaults: true }],
     checkouts: [{ path: "/repo", project: "owner/repo", skills: ["x"], mirror: false }, { path: "/other", project: "owner/other", skills: ["z"], mirror: false }],
   };
   expect(repoClashes(data, ["x", "y"])).toEqual([{ skill: "x", path: "/repo", project: "owner/repo" }]);

@@ -18,7 +18,7 @@ import { request } from "../api.ts";
 import { field, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
 
-type Editing = Omit<PublicProject, "remote"> & { virtual?: boolean };
+type Editing = Omit<PublicProject, "remote" | "skillRepos"> & { virtual?: boolean };
 const isVirtual = (id: string) => id.startsWith("@");
 const aliasOf = (p: Editing, server: string) =>
   Object.entries(p.mcp).find(([, id]) => id === server)?.[0];

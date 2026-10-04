@@ -1,12 +1,12 @@
-import { SkillConflict, projectIdSchema, skillSchema, type SkillSummary } from "@agentgate/protocol";
+import { SkillConflict, projectIdSchema, skillSchema, type SkillRepoSummary, type SkillSummary } from "@agentgate/protocol";
 import type { z } from "zod";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { description, fetchSkills, validateFetched, type FetchedSkill, type SkillFetcher } from "./skill-import.ts";
+import { description, fetchRepo, fetchSkills, repoUrl, validateFetched, type FetchedSkill, type RepoFetcher, type SkillFetcher } from "./skill-import.ts";
 import type { Skill, Store } from "./store.ts";
 
 export { MAX_SKILL } from "@agentgate/protocol";
 export { SkillLinks, SKILLS_DIR, globalSkillDirs } from "./skill-links.ts";
-export { description, readSkill, skillId, fetchSkills, searchSkills, type FetchedSkill } from "./skill-import.ts";
+export { description, readSkill, skillId, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
 
 export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
@@ -77,10 +77,17 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
   });
 }
 
+function removeSkill(s: Store, id: string) {
+  s.del("skill", id);
+  for (const p of s.list("project")) if (p.skills.includes(id)) assign(s, p.id, id, false);
+}
+
 export function deleteSkill(s: Store, id: string) {
   s.transaction(() => {
-    s.del("skill", id);
-    for (const p of s.list("project")) if (p.skills.includes(id)) assign(s, p.id, id, false);
+    const source = s.get("skill", id)?.source;
+    // The next sync would bring it back.
+    if (source && repoProjects(s, source).length) throw new SkillConflict(`${id} comes from ${source}. Unlink it from its projects, or disconnect the repository.`);
+    removeSkill(s, id);
   });
 }
 
@@ -103,6 +110,7 @@ export function updateSkill(s: Store, id: string, fetch: SkillFetcher = fetchSki
     const { skill, revision } = s.transaction(() => ({ skill: s.get("skill", id), revision: skillRevision(s, id) }));
     if (!skill) throw new Error(`no skill ${id}`);
     if (!skill.source) throw new Error(`${id} was written by hand; edit it instead`);
+    if (repoProjects(s, skill.source).length) return syncSkillRepo(s, skill.source, fetchRepo, signal);
     const fresh = validateFetched(await fetch(skill.source, skill.selector ?? "*", signal)).find(f => f.id === id);
     if (!fresh) throw new Error(`${skill.source} no longer has ${id}`);
     signal?.throwIfAborted();
@@ -115,4 +123,101 @@ export function updateSkill(s: Store, id: string, fetch: SkillFetcher = fetchSki
   })().finally(() => flights!.delete(id));
   flights.set(id, work);
   return work;
+}
+
+// Connected GitHub repositories. A project's `skillRepos` lists the repositories feeding it; every node syncs them
+// on its own, and identical content writes nothing, so nodes converge without coordinating.
+const repoProjects = (s: Store, url: string) => s.list("project").filter(p => p.skillRepos.includes(url)).map(p => p.id);
+const repoSkills = (s: Store, url: string) => skillSummaries(s).filter(k => k.source === url).map(k => k.id);
+interface RepoState { commit?: string; syncedAt?: number; error?: string; skills?: string[]; skipped?: string[] }
+const repoState = (s: Store, url: string): RepoState => { try { return JSON.parse(s.local(`skillRepo:${url}`) ?? "{}"); } catch { return {}; } };
+
+export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
+  const urls = [...new Set(s.list("project").flatMap(p => p.skillRepos))].sort();
+  return urls.map(url => {
+    const { commit, syncedAt, error, skipped = [] } = repoState(s, url);
+    return { url, projects: repoProjects(s, url), skills: repoSkills(s, url), commit, syncedAt, error, skipped };
+  });
+}
+
+/** Where a repository's skills are linked: added projects get them, removed ones lose them, none disconnects it and deletes them. */
+export function setSkillRepoProjects(s: Store, input: string, projects: string[]) {
+  const url = repoUrl(input);
+  s.transaction(() => {
+    const targets = projectsFor(s, projects), ids = repoSkills(s, url);
+    if (!targets.length && !repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    for (const p of s.list("project")) if (p.skillRepos.includes(url) && !targets.includes(p.id)) {
+      s.put("project", p.id, { ...p, skillRepos: p.skillRepos.filter(r => r !== url) });
+      for (const id of ids) assign(s, p.id, id, false);
+    }
+    for (const target of targets) {
+      const p = s.get("project", target) ?? s.put("project", target, { id: target });
+      if (!p.skillRepos.includes(url)) s.put("project", target, { ...p, skillRepos: [...p.skillRepos, url] });
+      for (const id of ids) assign(s, target, id, true);
+    }
+    if (!targets.length) { for (const id of ids) removeSkill(s, id); s.setLocal(`skillRepo:${url}`, undefined); }
+  });
+}
+
+/** Fetch first, so a missing or empty repository is never connected. */
+export async function connectSkillRepo(s: Store, input: string, projects: string[], fetch: RepoFetcher = fetchRepo, signal?: AbortSignal) {
+  const url = repoUrl(input);
+  if (!projects.length) throw new Error("Choose every session or at least one project");
+  const fetched = (await fetch(url, undefined, signal))!;
+  signal?.throwIfAborted();
+  s.transaction(() => { setSkillRepoProjects(s, url, projects); applyRepo(s, url, fetched); });
+  return url;
+}
+
+/** New skills are linked where the repository is connected; skills it dropped are deleted. Names taken by another source are skipped. */
+function applyRepo(s: Store, url: string, fetched: { commit: string; skills: FetchedSkill[]; skipped: string[] }) {
+  return s.transaction(() => {
+    const targets = repoProjects(s, url);
+    if (!targets.length) return false; // disconnected while fetching
+    const before = s.seq(), skipped = [...fetched.skipped], applied: string[] = [];
+    for (const f of fetched.skills) {
+      const prev = s.get("skill", f.id);
+      if (prev && prev.source !== url) { skipped.push(`${f.id}: a skill with this name already exists${prev.source ? ` from ${prev.source}` : ""}`); continue; }
+      putSkill(s, { id: f.id, description: f.description, files: f.files, source: url });
+      if (!prev) for (const p of targets) assign(s, p, f.id, true);
+      applied.push(f.id);
+    }
+    for (const id of repoSkills(s, url)) if (!applied.includes(id)) removeSkill(s, id);
+    s.setLocal(`skillRepo:${url}`, JSON.stringify({ commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped } satisfies RepoState));
+    return s.seq() !== before;
+  });
+}
+
+const repoFlights = new WeakMap<Store, Map<string, Promise<boolean>>>();
+/** Refetches only when HEAD moved or a skill it installed went missing. Resolves whether anything changed. */
+export function syncSkillRepo(s: Store, input: string, fetch: RepoFetcher = fetchRepo, signal?: AbortSignal): Promise<boolean> {
+  const url = repoUrl(input);
+  let flights = repoFlights.get(s);
+  if (!flights) repoFlights.set(s, flights = new Map());
+  const hit = flights.get(url);
+  if (hit) return hit;
+  const work = (async () => {
+    if (!repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    const state = repoState(s, url), present = repoSkills(s, url);
+    const since = state.skills?.every(id => present.includes(id)) ? state.commit : undefined;
+    try {
+      const fetched = await fetch(url, since, signal);
+      signal?.throwIfAborted();
+      if (fetched) return applyRepo(s, url, fetched);
+      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, syncedAt: s.now(), error: undefined }));
+      return false;
+    } catch (error) {
+      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: error instanceof Error ? error.message : String(error) }));
+      throw error;
+    }
+  })().finally(() => flights!.delete(url));
+  flights.set(url, work);
+  return work;
+}
+
+export async function syncSkillRepos(s: Store, fetch: RepoFetcher = fetchRepo, signal?: AbortSignal) {
+  for (const { url } of skillRepoSummaries(s)) {
+    if (signal?.aborted) return;
+    await syncSkillRepo(s, url, fetch, signal).catch(error => console.error(`skills: ${url}: ${error instanceof Error ? error.message : error}`));
+  }
 }

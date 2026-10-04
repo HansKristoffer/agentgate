@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ArrowRight, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, FolderGit2, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import type {
   SkillPreview,
   SkillPreviewResponse,
@@ -20,7 +21,7 @@ import { ProjectChecks } from "../components/SkillAssignments.tsx";
 import { repoClashes } from "../skill-assignment.ts";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
-import { field, idPath, confirmDelete } from "./utils.ts";
+import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 const TEMPLATE = `---
 name: my-skill
@@ -33,11 +34,11 @@ const short = (text: string, max = 180) =>
   text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const size = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
-const where = (data: Status, id: string) => {
-  const ids = data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id);
-  if (ids.includes("*")) return "Every session";
-  return ids.length ? ids.join(", ") : "Not linked to any project yet";
-};
+const places = (ids: string[]) =>
+  ids.includes("*") ? "Every session" : ids.length ? ids.join(", ") : "Not linked to any project yet";
+const where = (data: Status, id: string) =>
+  places(data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id));
+const repoName = (url: string) => url.replace("https://github.com/", "");
 
 export function Skills({ data, connection, perform }: ViewProps) {
   const [browse, setBrowse] = useState(false);
@@ -51,6 +52,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
   }>();
   const [editor, setEditor] = useState<{ id?: string; skillMd: string; revision?: string | null }>();
   const [assign, setAssign] = useState<string>();
+  const [connect, setConnect] = useState(false);
+  const [repoAssign, setRepoAssign] = useState<string>();
+  const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
   const hidden = repoClashes(data, data.projects.find((p) => p.id === "*")?.skills ?? []);
   const load = (source: string, skill?: string) =>
     perform(async () => {
@@ -72,6 +76,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Button>
         <Button size="sm" variant="tertiary" onPress={() => setAddSource(true)}>
           Add from source
+        </Button>
+        <Button size="sm" variant="tertiary" onPress={() => setConnect(true)}>
+          Connect GitHub repo
         </Button>
         <Button size="sm" onPress={() => setBrowse(true)}>
           <Search size={15} />
@@ -100,7 +107,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               <div className="row">
                 <strong>{skill.id}</strong>
                 <Badge good={!!skill.source}>
-                  {skill.source ? "Installed" : "Hand-written"}
+                  {fromRepo(skill.source) ? "From GitHub" : skill.source ? "Installed" : "Hand-written"}
                 </Badge>
               </div>
               {skill.description && <small>{short(skill.description)}</small>}
@@ -145,7 +152,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 Update
               </Button>
             )}
-            <Button
+            {!fromRepo(skill.source) && <Button
               isIconOnly
               size="sm"
               variant="ghost"
@@ -160,10 +167,69 @@ export function Skills({ data, connection, perform }: ViewProps) {
               }}
             >
               <Trash2 size={15} />
-            </Button>
+            </Button>}
           </div>
         ))}
       </Panel>
+      {data.skillRepos.length > 0 && (
+        <Panel
+          title="GitHub repositories"
+          detail="Every machine checks these for new commits every 10 minutes. New skills are used where the repository is connected, and skills removed from the repository are removed here."
+        >
+          {data.skillRepos.map((repo) => (
+            <div className="item" key={repo.url}>
+              <div className="machine-icon">
+                <FolderGit2 size={16} />
+              </div>
+              <div className="grow">
+                <div className="row">
+                  <strong>{repoName(repo.url)}</strong>
+                  {repo.error && <Badge>Sync failed</Badge>}
+                </div>
+                <small>
+                  {places(repo.projects)} · {repo.skills.length} {repo.skills.length === 1 ? "skill" : "skills"} ·{" "}
+                  {repo.syncedAt ? `checked ${ago(repo.syncedAt)}` : "not checked on this machine yet"}
+                </small>
+                {repo.error && <small className="danger">{repo.error}</small>}
+                {repo.skipped.map((reason) => (
+                  <small key={reason} className="danger">Skipped {reason}</small>
+                ))}
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                onPress={() =>
+                  void perform(async () => {
+                    const { updated } = await request<{ updated: boolean }>(connection, "/skill-repos/sync", "POST", { url: repo.url });
+                    toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
+                  })
+                }
+              >
+                Sync
+              </Button>
+              <Button size="sm" variant="ghost" onPress={() => setRepoAssign(repo.url)}>
+                Projects
+              </Button>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                className="delete"
+                aria-label={`Disconnect ${repoName(repo.url)}`}
+                onPress={async () => {
+                  if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { destructive: true, okLabel: "Disconnect" }))
+                    void perform(
+                      () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
+                      "Repository disconnected",
+                    );
+                }}
+              >
+                <Trash2 size={15} />
+              </Button>
+            </div>
+          ))}
+        </Panel>
+      )}
       {data.skillHealth.errors.length > 0 && (
         <Panel title="Skills need attention" detail="Some changes are saved but could not be applied on this machine. Agentgate retries automatically.">
           {data.skillHealth.errors.map((error, index) => <div className="item" key={`${error.path}:${index}`}>
@@ -267,6 +333,68 @@ export function Skills({ data, connection, perform }: ViewProps) {
             <Button type="submit" size="sm">
               Find skills
               <ArrowRight size={15} />
+            </Button>
+          </form>
+        </Modal>
+      )}
+      {connect && (
+        <Modal title="Connect a GitHub repository" close={() => setConnect(false)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              const projects = f.getAll("project") as string[];
+              void perform(async () => {
+                if (!projects.length) throw new Error("Choose every session or at least one project");
+                await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
+                setConnect(false);
+              }, "Repository connected");
+            }}
+          >
+            <Field
+              label="Repository"
+              name="url"
+              isRequired
+              description="A public repository. Agentgate installs every skill in its .claude/skills and .agents/skills folders and keeps them in sync."
+              placeholder="https://github.com/owner/repo"
+            />
+            <p className="note">
+              Skills can run scripts in your sessions and are copied to every
+              paired machine. New commits are installed automatically, so
+              connect only repositories you trust.
+            </p>
+            <ProjectChecks data={data} selected={[]} />
+            <Button type="submit" size="sm">
+              <Plus size={15} />
+              Connect
+            </Button>
+          </form>
+        </Modal>
+      )}
+      {repoAssign && (
+        <Modal title={`Where ${repoName(repoAssign)} is used`} close={() => setRepoAssign(undefined)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const projects = new FormData(e.currentTarget).getAll("project") as string[];
+              void perform(async () => {
+                if (!projects.length) throw new Error("Choose at least one project, or disconnect the repository");
+                await request(connection, "/skill-repos", "PUT", { url: repoAssign, projects });
+                setRepoAssign(undefined);
+              }, "Saved. New sessions pick it up.");
+            }}
+          >
+            <ProjectChecks
+              data={data}
+              skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
+              selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
+            />
+            <p className="note">
+              All of the repository's skills are linked to the projects you add
+              and unlinked from the ones you remove.
+            </p>
+            <Button type="submit" size="sm">
+              Save
             </Button>
           </form>
         </Modal>

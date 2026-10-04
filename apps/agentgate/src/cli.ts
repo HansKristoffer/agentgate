@@ -42,6 +42,8 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   skills new|edit <name> --file SKILL.md      write a skill by hand
   skills [ls] | show <name> | update [name] | rm <name>
   skills projects <name> [<owner/repo|*> ...] where the skill is linked (* = every session)
+  skills repo add <github-url> --project <owner/repo|*> ...  keep a public repo's .claude/skills and .agents/skills in sync
+  skills repo ls | sync [url] | projects <url> <owner/repo|*> ... | rm <url>
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
@@ -338,9 +340,34 @@ async function main() {
         if (!projects.length) console.log("Link it with: agentgate skills projects <name> <owner/repo|*>");
         return;
       }
+      if (sub === "repo") {
+        const [action, url] = rest;
+        if (action === "ls" || !action) {
+          for (const r of sk.skillRepoSummaries(s))
+            console.log(`${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`);
+          return;
+        }
+        if (action === "add") {
+          const connected = await sk.connectSkillRepo(s, url ?? die("skills repo add <github-url> --project <owner/repo|*>"), (opts.project as string[] | undefined) ?? die("Choose where its skills go: --project '*' for every session, or --project owner/repo"));
+          const r = sk.skillRepoSummaries(s).find((r) => r.url === connected)!;
+          console.log(`connected ${connected}: ${r.skills.join(", ") || "no skills installed"}${r.skipped.length ? `\nskipped: ${r.skipped.join("\nskipped: ")}` : ""}`);
+          return;
+        }
+        if (action === "sync") {
+          for (const r of sk.skillRepoSummaries(s).filter((r) => !url || r.url === sk.repoUrl(url)))
+            console.log(`${r.url}: ${await sk.syncSkillRepo(s, r.url).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
+          return;
+        }
+        if (action === "projects") { sk.setSkillRepoProjects(s, url ?? die("skills repo projects <url> <owner/repo|*> ..."), rest.slice(2)); return console.log("ok"); }
+        if (action === "rm") { sk.setSkillRepoProjects(s, url ?? die("skills repo rm <url>"), []); return console.log("disconnected; its skills were removed"); }
+        return die(HELP);
+      }
       if (sub === "update" && !rest[0]) {
-        for (const k of sk.skillSummaries(s).filter((k) => k.source))
+        const repos = sk.skillRepoSummaries(s);
+        for (const k of sk.skillSummaries(s).filter((k) => k.source && !repos.some((r) => r.url === k.source)))
           console.log(`${k.id}: ${await sk.updateSkill(s, k.id).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
+        for (const r of repos)
+          console.log(`${r.url}: ${await sk.syncSkillRepo(s, r.url).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
         return;
       }
       const id = rest[0] ?? die(`skills ${sub} <name>`);

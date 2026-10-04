@@ -9,6 +9,9 @@ export const MAX_SKILL_FILES = 5000;
 export const MAX_RECORD = 4 * 1024 * 1024;
 export const SKILL_MARKER = ".agentgate-rev";
 export const skillIdSchema = z.string().regex(SKILL_ID);
+/** A connected skill repository, normalized to its lowercase https URL. */
+export const SKILL_REPO = /^https:\/\/github\.com\/[a-z0-9-]+\/[a-z0-9._-]+$/;
+export const skillRepoSchema = z.string().max(256).regex(SKILL_REPO);
 export const projectIdSchema = z.string().max(512).regex(PROJECT_ID);
 export const decodedSize = (data: string) => data.length / 4 * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 export const safePath = (path: string) => !path.startsWith("/") && !/[\\\x00-\x1f]/.test(path)
