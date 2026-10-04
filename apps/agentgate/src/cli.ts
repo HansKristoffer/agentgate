@@ -15,6 +15,7 @@ import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, saveProject, setAccount } from "./operations.ts";
+import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
@@ -44,6 +45,8 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
+  remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
+  remote show|secret|regenerate|disable @name | remote ls
   pair [--tailnet | --relay [--relay-url <url>]]   print the command for connecting another machine
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
@@ -71,6 +74,7 @@ const { values: opts, positionals: pos } = parseArgs({
     name: { type: "string" },
     model: { type: "string" }, provider: { type: "string" }, account: { type: "string" }, outcome: { type: "string" }, failure: { type: "string" }, search: { type: "string" }, since: { type: "string" }, until: { type: "string" }, limit: { type: "string" }, cursor: { type: "string" }, probe: { type: "boolean" },
     "always-on": { type: "boolean" },
+    node: { type: "string" },
     label: { type: "string" },
     from: { type: "string" },
     header: { type: "string", multiple: true },
@@ -134,7 +138,7 @@ async function main() {
       if (!s.local("adminToken")) s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
       const ts = await tailscale();
       const prev = s.get("node", name);
-      s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn });
+      s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn, protocol: NODE_PROTOCOL });
       console.log(`node ${name}${opts["always-on"] ? " (always on)" : ""}, store ${s.db.filename}`);
       console.log(ts ? `tailnet: ${ts.url}` : "Tailscale not found; the daemon will keep looking for it. Without Tailscale, connect machines with `agentgate pair --relay`.");
       return;
@@ -387,7 +391,26 @@ async function main() {
         return console.log("ok");
       }
       if (sub === "defaults") return void saveProject(s, id, { inheritDefaults: rest[1] !== "off" });
-      if (sub === "rm") return s.del("project", id);
+      if (sub === "rm") return deleteProject(s, id);
+      return die(HELP);
+    }
+
+    case "remote": {
+      initialized(s);
+      const printEndpoint = (r: { url: string; secret: string }) =>
+        console.log(`URL:            ${r.url}\nAuthorization:  Bearer ${r.secret}\n\nThe relay can read requests and results for this endpoint; your logins stay on your machines.`);
+      if (sub === "ls" || sub === undefined) {
+        for (const p of s.list("project")) if (p.remote) console.log(`${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}`);
+        return;
+      }
+      const id = rest[0] ?? die(`remote ${sub} @name`);
+      try {
+        if (sub === "enable") return printEndpoint(enableRemote(s, id, str("node")));
+        if (sub === "show") return printEndpoint(showRemote(s, id));
+        if (sub === "secret") return printEndpoint(rotateSecret(s, id));
+        if (sub === "regenerate") return printEndpoint(regenerate(s, id));
+        if (sub === "disable") { disableRemote(s, id); return console.log("ok"); }
+      } catch (e) { return die(String((e as Error).message)); }
       return die(HELP);
     }
 
@@ -434,6 +457,8 @@ async function main() {
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");
+      // The removed machine knows every endpoint's credentials: give each one a new URL it has never seen.
+      for (const e of regenerateAfterUnpair(s, node)) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
       if (!via(s, node).includes("relay")) { unpair(s, node); return console.log("ok"); }
       if (peers(s).some((p) => p.node === node)) unpair(s, node);
       const rotated = await rotateRelay(s);

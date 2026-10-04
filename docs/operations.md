@@ -77,6 +77,25 @@ Settings are `[vars]` in `apps/relay/wrangler.toml`:
 
 `bun run --filter @agentgate/relay test:workers` runs the relay against real Durable Objects in workerd. The Bun tests cover the same logic on bun:sqlite.
 
+### Remote MCP endpoints
+
+Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for assistants that only take a server URL and an `Authorization` header, like Grok. One `RemoteEndpoint` Durable Object per endpoint holds the WebSocket its serving machine keeps open, and forwards each POST over it. The design is in [remote-mcp-plan.md](remote-mcp-plan.md).
+
+- **This traffic is not end-to-end encrypted.** It is encrypted in transit, but the relay reads requests, tool results and the bearer secret, so a malicious relay operator could impersonate the client or replay calls. Upstream logins and API keys stay on the serving machine.
+- **The URL and secret are a capability.** Anyone with both can call that project's tools. **New secret** keeps the URL; **New URL** replaces both and deletes the old endpoint.
+- **Unpairing a machine** gives every endpoint a new URL and secret (the removed machine knows the current ones), and endpoints it served move to this machine. Update the URLs in Grok afterwards. `relay rotate` does not change endpoints.
+- **Every machine must run a version that understands endpoints** before one can be enabled; older daemons would drop the endpoint when they edit the project.
+- One machine serves each endpoint (always-on machines by default). Its MCP servers must work on that machine; servers that start per worktree are not offered.
+- Limits: 256 KiB per request, 4 MiB per response, 4 requests in flight, 10 minutes per request, no JSON-RPC batches. An endpoint is deleted after `RELAY_RETENTION_DAYS` with neither a request nor a connected machine.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RELAY_MAX_ENDPOINTS` | 5000 | Live endpoints in total |
+| `RELAY_ENDPOINTS_PER_IP_PER_DAY` | 20 | New endpoints per source address per day |
+| `RELAY_ENDPOINT_REQUESTS_PER_MINUTE` | 600 | Public requests per endpoint |
+
+The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
+
 ### Crypto test vectors
 
 Secret bytes `00 01 … 1f`, HKDF-SHA256, salt `agentgate-relay-v1`, info `agentgate-relay-v1/<label>`:

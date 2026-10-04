@@ -1,10 +1,16 @@
 import { RELAY_LIMITS, relayGroupId } from "@agentgate/protocol/relay";
+import { remoteKey } from "@agentgate/protocol/remote";
+
+/** What the Worker asks a RemoteEndpoint object to do; workers-only code lives in remote.ts. */
+export type EndpointOp = "mcp" | "connect" | "update" | "delete";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { sameHash, type GroupOp, type GroupRequest, type Reply } from "./group.ts";
 
 export interface RelayDeps {
   group(groupId: string): { handle(req: GroupRequest): Promise<Reply> };
+  /** Remote MCP endpoints; absent in the in-process test relay. */
+  endpoint?(key: string): { fetch(req: Request): Promise<Response> };
   /** Optional deployment-wide secret (self-hosting). */
   relayKey?: string;
   /** Optional aggregate per-address throttle, e.g. a Workers rate limiting binding. */
@@ -60,6 +66,28 @@ export function relayApp(deps: RelayDeps) {
     if (reply.retryAfter) headers["retry-after"] = String(reply.retryAfter);
     return c.json(reply.body as object, reply.status as 200, headers);
   };
+
+  // Remote MCP endpoints. The public route can't require x-relay-key: clients like Grok only send a bearer token.
+  const endpoint = (op: EndpointOp) => async (c: Context) => {
+    const key = c.req.param("key");
+    if (!deps.endpoint || !remoteKey.safeParse(key).success) return c.json({ error: "not found" }, 404);
+    if (op !== "mcp" && deps.relayKey && !sameHash(await sha256(c.req.header("x-relay-key") ?? ""), await sha256(deps.relayKey))) return c.json({ error: "relay key required", code: "relayKey" }, 401);
+    const ipHash = await sha256(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
+    if (deps.ipLimit && !(await deps.ipLimit(ipHash))) return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
+    // Only the headers the endpoint reads; x-agentgate-* comes from here, never from the caller.
+    const headers = new Headers({ "x-agentgate-op": op, "x-agentgate-key": key!, "x-agentgate-ip": ipHash });
+    for (const name of ["authorization", "content-type", "content-length", "mcp-protocol-version", "upgrade", "x-agentgate-node"]) {
+      const value = c.req.header(name);
+      if (value !== undefined && (name !== "x-agentgate-node" || op === "connect")) headers.set(name, value);
+    }
+    const raw = c.req.raw;
+    return deps.endpoint(key!).fetch(new Request(raw.url, { method: raw.method, headers, body: raw.body, signal: raw.signal }));
+  };
+  app.post("/mcp/:key", endpoint("mcp"));
+  app.all("/mcp/:key", (c) => c.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed" }, id: null }, 405, { allow: "POST" }));
+  app.put("/e/:key", endpoint("update"));
+  app.delete("/e/:key", endpoint("delete"));
+  app.get("/e/:key/connect", endpoint("connect"));
 
   app.post("/g/:group", route("create", true));
   app.post("/g/:group/push", route("push", true));

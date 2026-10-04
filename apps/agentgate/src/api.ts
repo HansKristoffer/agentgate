@@ -46,6 +46,7 @@ import {
   setAccount,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
+import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
 import {
   deleteSkill,
@@ -181,7 +182,7 @@ export function management(ctx: Ctx) {
           ? "Token refresh failed"
           : undefined,
       })),
-      projects: s.list("project"),
+      projects: s.list("project").map(p => publicProject(p, ctx.remote)),
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
       skillHealth: ctx.skills.health(),
@@ -436,11 +437,41 @@ export function management(ctx: Ctx) {
       // Optional, so a client that does not know skills cannot clear them.
       .extend({ skills: z.array(skillIdSchema).max(5000).optional() })
       .parse(await json(c.req.raw));
-    return c.json(input(() => saveProject(s, f.id, f)));
+    const saved = input(() => saveProject(s, f.id, f));
+    ctx.remote.reconcile();
+    return c.json(publicProject(saved, ctx.remote));
+  });
+  // Virtual projects' endpoints. Every route that returns or changes a secret is loopback-only.
+  const remoteId = (c: { req: { query(name: string): string | undefined } }) => z.string().min(1).max(80).parse(c.req.query("id"));
+  const remoteBody = async (req: Request) => z.object({ id: z.string().min(1).max(80), servedBy: z.string().min(1).max(512).optional() }).strict().parse(await json(req));
+  const remoteChanged = <T>(fn: () => T): T => { const out = input(fn); ctx.remote.reconcile(); return out; };
+  app.post("/projects/remote", async (c) => {
+    local(c.env.listener);
+    const f = await remoteBody(c.req.raw);
+    return c.json(remoteChanged(() => enableRemote(s, f.id, f.servedBy)));
+  });
+  app.get("/projects/remote", (c) => {
+    local(c.env.listener);
+    return c.json(input(() => showRemote(s, remoteId(c))));
+  });
+  app.post("/projects/remote/secret", async (c) => {
+    local(c.env.listener);
+    const f = await remoteBody(c.req.raw);
+    return c.json(remoteChanged(() => rotateSecret(s, f.id)));
+  });
+  app.post("/projects/remote/regenerate", async (c) => {
+    local(c.env.listener);
+    const f = await remoteBody(c.req.raw);
+    return c.json(remoteChanged(() => regenerate(s, f.id, f.servedBy)));
+  });
+  app.delete("/projects/remote", (c) => {
+    remoteChanged(() => disableRemote(s, remoteId(c)));
+    return c.json({ ok: true });
   });
   app.delete("/projects", (c) => {
     const id = z.string().min(1).parse(c.req.query("id"));
-    s.del("project", id);
+    deleteProject(s, id);
+    ctx.remote.reconcile();
     return c.json({ ok: true });
   });
   app.post("/projects/scan", async (c) => {
@@ -574,15 +605,18 @@ export function management(ctx: Ctx) {
   });
   app.delete("/nodes/:id", async (c) => {
     const id = c.req.param("id");
+    // The removed machine knows every endpoint's credentials, so each gets a new URL (shown again locally).
+    const endpoints = s.list("project").some(p => p.remote) ? (local(c.env.listener), regenerateAfterUnpair(s, id)) : [];
+    if (endpoints.length) ctx.remote.reconcile();
     if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
       // A relay member can only be removed by moving everyone else to a new secret.
       local(c.env.listener);
       if (peers(s).some((p) => p.node === id)) unpair(s, id);
       const rotated = await relayed(() => rotateRelay(s));
-      return c.json({ ok: true, rotated: true, ...rotated });
+      return c.json({ ok: true, rotated: true, ...rotated, endpoints });
     }
     input(() => unpair(s, id));
-    return c.json({ ok: true });
+    return c.json({ ok: true, endpoints });
   });
   app.patch("/settings", async (c) => {
     const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));

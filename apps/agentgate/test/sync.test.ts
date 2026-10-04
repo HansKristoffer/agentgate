@@ -123,7 +123,7 @@ test("byte-bounded pages let initial pairing and offline catch-up exceed 16 MiB"
     expect(b.get("account", "acc")!.label).toBe("after offline edit");
     expect(peers(b)[0]!.cursor).toBe(a.seq());
   } finally { a.close(); b.close(); }
-});
+}, 30_000); // moves ~24 MiB; takes 1–4 s on CI runners, near the 5 s default
 
 test("an interrupted paginated pull resumes after the last committed page", async () => {
   const s = node("receiver");

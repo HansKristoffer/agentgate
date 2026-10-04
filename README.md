@@ -134,6 +134,19 @@ Bundles must contain a nonempty root `SKILL.md`, with unique portable paths and 
 
 Repository-owned skills are mirrored only when you opt in under Projects → **Repository skill mirroring**. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
 
+## Your MCP servers and skills in Grok
+
+Assistants such as Grok only accept an MCP server URL and an `Authorization` header. A **virtual project** gives them one: in Projects, choose **New virtual project**, pick its MCP servers and skills, then **Connect to Grok** and copy the URL and `Authorization` value into Grok. One of your machines (an always-on server by default) answers through the relay. Grok also gets `skills__list` and `skills__read` tools, so it can find a skill and follow its SKILL.md.
+
+```sh
+agentgate project set @grok linear=linear posthog=posthog-lullu
+agentgate skills projects release-notes @grok
+agentgate remote enable @grok        # prints the URL and Authorization header
+agentgate remote secret @grok        # new secret, same URL
+```
+
+Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [operations](docs/operations.md#remote-mcp-endpoints).
+
 ## Commands
 
 Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
