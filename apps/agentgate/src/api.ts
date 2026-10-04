@@ -49,8 +49,12 @@ import * as desktop from "./desktop.ts";
 import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
 import {
+  connectSkillRepo,
   deleteSkill,
   installSkills,
+  setSkillRepoProjects,
+  skillRepoSummaries,
+  syncSkillRepo,
   searchSkills,
   setSkillProjects,
   skillSummaries,
@@ -186,6 +190,7 @@ export function management(ctx: Ctx) {
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
       skillHealth: ctx.skills.health(),
+      skillRepos: skillRepoSummaries(s),
       checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({ path, project, skills: ctx.skills.repoSkills(path), mirror: ctx.skills.mirroring(path) })),
       settings: s.settings(),
       nodes: s.list("node").map((n) => ({
@@ -368,6 +373,21 @@ export function management(ctx: Ctx) {
       throw new HTTPException(502, { message: "skills.sh search is unavailable; add a skill by its source instead" });
     }
   });
+  // GitHub repositories the daemon keeps in sync. Not under /skills/, where a skill could be named "repos".
+  const repoInput = z.object({ url: z.string().trim().min(1).max(512), projects: z.array(projectIdSchema).max(5000) }).strict();
+  app.post("/skill-repos", async (c) => {
+    const f = repoInput.parse(await json(c.req.raw));
+    return c.json({ url: await inputAsync(() => connectSkillRepo(s, f.url, f.projects, undefined, signal(c.req.raw))) }, 201);
+  });
+  app.put("/skill-repos", async (c) => {
+    const f = repoInput.parse(await json(c.req.raw));
+    input(() => setSkillRepoProjects(s, f.url, f.projects));
+    return c.json({ ok: true });
+  });
+  app.post("/skill-repos/sync", async (c) => {
+    const f = repoInput.pick({ url: true }).parse(await json(c.req.raw));
+    return c.json({ updated: await inputAsync(() => syncSkillRepo(s, f.url, undefined, signal(c.req.raw))) });
+  });
   app.post("/skills/fetch", async (c) => {
     const f = sourceInput.strict().parse(await json(c.req.raw));
     try {
@@ -428,7 +448,7 @@ export function management(ctx: Ctx) {
   });
   app.delete("/skills/:id", (c) => {
     skillRequired(c.req.param("id"));
-    deleteSkill(s, c.req.param("id"));
+    input(() => deleteSkill(s, c.req.param("id")));
     return c.json({ ok: true });
   });
   app.put("/projects", async (c) => {

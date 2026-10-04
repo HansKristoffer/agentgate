@@ -121,7 +121,15 @@ agentgate skills update                     # refetch every installed skill from
 agentgate skills prepare .                  # wait for checkout links before launching an agent
 ```
 
-Fetching needs Node (`npx`) or Bun (`bunx`) on the daemon's machine; other machines get the files through sync. Each node writes skills to `~/.config/agentgate/skills/<name>` and only creates symlinks to them:
+**Connect GitHub repo** keeps a public repository's skills in sync instead of copying them once: agentgate installs every skill in its `.claude/skills` and `.agents/skills` folders, asks whether they are for every session or specific repos, and checks for new commits every 10 minutes. New skills in the repository are used where it is connected, and skills removed from it are removed. To stop using one of its skills, unlink it from its projects; disconnecting removes them all.
+
+```sh
+agentgate skills repo add https://github.com/owner/team-skills --project '*'
+agentgate skills repo projects owner/team-skills Lullu-ai/lullu   # where its skills are used
+agentgate skills repo ls | sync | rm owner/team-skills
+```
+
+Fetching needs Node (`npx`) or Bun (`bunx`) on the daemon's machine, and connected repositories need `git`; other machines get the files through sync. Each node writes skills to `~/.config/agentgate/skills/<name>` and only creates symlinks to them:
 
 - **Every session**: the Claude and Codex folders `agentgate setup` writes (`~/.config/agentgate/{claude,codex}/skills`), plus `~/.claude/skills` and `~/.codex/skills` while `setup --primary` is on.
 - **One repo**: `.claude/skills/<name>` in the main checkout (Claude Code falls back to it from worktrees) and `.agents/skills/<name>` in the main checkout and every worktree (Codex). The entries are added to `.git/info/exclude`.

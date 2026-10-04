@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { skillIdSchema } from "./skills.ts";
+import { skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema } from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
@@ -36,6 +36,8 @@ export const projectSchema = z.object({
   mcp: z.record(z.string(), z.string()).default({}),
   /** Skill ids linked into this repo's checkouts; on `*`, linked for every session. */
   skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => [...new Set(ids)]),
+  /** GitHub repositories whose skills the daemon keeps installed and linked here. Older daemons drop this field. */
+  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => [...new Set(urls)]),
   inheritDefaults: z.boolean().default(true),
   /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
   remote: remoteSchema.optional(),
@@ -153,6 +155,17 @@ export interface SkillPreview {
   conflict?: string;
 }
 export interface SkillPreviewResponse { token: string; skills: SkillPreview[]; }
+/** A connected GitHub repository; `projects` are where its skills are linked when they first appear. */
+export interface SkillRepoSummary {
+  url: string;
+  projects: string[];
+  skills: string[];
+  commit?: string;
+  syncedAt?: number;
+  error?: string;
+  /** Skills in the repository that could not be installed, with the reason. */
+  skipped: string[];
+}
 export interface SkillHealth {
   attemptedAt?: number;
   succeededAt?: number;
@@ -191,6 +204,7 @@ export interface Status {
   /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: string[];
   skillHealth: SkillHealth;
+  skillRepos: SkillRepoSummary[];
   /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
   checkouts: { path: string; project: string; skills: string[]; mirror: boolean }[];
   nodes: (z.infer<typeof nodeSchema> & {
@@ -288,6 +302,7 @@ export const statusSchema = z.object({
   projects: z.array(publicProjectSchema),
   skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
   skillConflicts: z.array(z.string()),
+  skillRepos: z.array(z.object({ url: z.string(), projects: z.array(z.string()), skills: z.array(z.string()), commit: z.string().optional(), syncedAt: z.number().optional(), error: z.string().optional(), skipped: z.array(z.string()) })).default([]),
   skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),
   checkouts: z.array(z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() })),
   nodes: z.array(nodeSchema.extend({ lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional() })),

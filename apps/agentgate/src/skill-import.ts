@@ -1,6 +1,6 @@
 import { MAX_SKILL, MAX_SKILL_FILES, SKILL_MARKER, SkillConflict, skillSchema, type SkillSearchResult } from "@agentgate/protocol";
 import { spawn } from "node:child_process";
-import { lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { z } from "zod";
@@ -91,7 +91,7 @@ export function parseSkillOutput(out: string) {
 export function runSkillCommand(argv: string[], cwd: string, signal: AbortSignal, outputLimit = 1024 * 1024): Promise<{ out: string; err: string; code: number | null }> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0]!, argv.slice(1), { cwd, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DISABLE_TELEMETRY: "1" } });
+    const child = spawn(argv[0]!, argv.slice(1), { cwd, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, DISABLE_TELEMETRY: "1", GIT_TERMINAL_PROMPT: "0" } });
     const out: Buffer[] = [], err: Buffer[] = [];
     let outBytes = 0, errBytes = 0, stopped = false, reason: unknown;
     let escalation: ReturnType<typeof setTimeout> | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
@@ -140,6 +140,58 @@ export async function fetchSkills(source: string, selector = "*", signal?: Abort
     }));
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
+
+/** `owner/repo`, `github.com/owner/repo` or its URL, as one lowercase https URL. No other hosts, no credentials. */
+export function repoUrl(input: string): string {
+  const m = input.trim().match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([a-z0-9-]+)\/([a-z0-9._-]+?)(?:\.git)?\/?$/i);
+  if (!m || /^\.+$/.test(m[2]!)) throw new Error("Enter a public GitHub repository, like https://github.com/owner/repo");
+  return `https://github.com/${m[1]}/${m[2]}`.toLowerCase();
+}
+
+/** Skill folders in `.claude/skills` and `.agents/skills`; the first wins a name, and symlinked folders (one agent's
+ * mirror of the other's) are skipped. A skill that cannot be read is reported instead of failing the whole repository. */
+export function readRepoSkills(root: string): { skills: FetchedSkill[]; skipped: string[] } {
+  const skills: FetchedSkill[] = [], skipped: string[] = [], inside = realpathSync(root) + sep;
+  for (const dir of [join(root, ".claude", "skills"), join(root, ".agents", "skills")]) {
+    let entries: Dirent[] = [];
+    // `.claude/skills` is often a link to `.agents/skills`; one leaving the repository is ignored.
+    try { if (realpathSync(dir).startsWith(inside)) entries = readdirSync(dir, { withFileTypes: true }); } catch { }
+    for (const entry of entries) {
+      const id = skillId(entry.name);
+      if (!entry.isDirectory() || !existsSync(join(dir, entry.name, "SKILL.md")) || skills.some(k => k.id === id)) continue;
+      try { skills.push({ id, ...readSkill(join(dir, entry.name)) }); }
+      catch (error) { skipped.push(`${entry.name}: ${error instanceof Error ? error.message : error}`); }
+    }
+  }
+  if (!skills.length) throw new Error(skipped.length ? `no usable skills: ${skipped.join("; ")}` : "no skills in .claude/skills or .agents/skills");
+  return { skills: validateFetched(skills), skipped };
+}
+
+export interface RepoFetch { commit: string; skills: FetchedSkill[]; skipped: string[] }
+/** Resolves null when the repository's HEAD is still `since`. */
+export type RepoFetcher = (url: string, since?: string, signal?: AbortSignal) => Promise<RepoFetch | null>;
+
+/** A shallow, sparse clone of only the skill folders. Credential helpers are off, so only public repositories work. */
+export const fetchRepo: RepoFetcher = async (url, since, signal) => {
+  url = repoUrl(url);
+  const bin = Bun.which("git");
+  if (!bin) throw new Error("syncing skill repositories needs git on the daemon's machine");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-repo-"));
+  const bounded = AbortSignal.any([AbortSignal.timeout(120_000), ...(signal ? [signal] : [])]);
+  const git = async (cwd: string, ...args: string[]) => {
+    const { out, err, code } = await runSkillCommand([bin, "-c", "credential.helper=", ...args], cwd, bounded);
+    if (code !== 0) throw new Error(args[0] === "ls-remote" ? `${url} was not found or is not public${err.trim() ? ` (${plain(err)})` : ""}` : `git ${args[0]} failed: ${plain(err) || `exit ${code}`}`);
+    return out.trim();
+  };
+  try {
+    // Cheap, and the clearest failure for a missing or private repository.
+    if ((await git(dir, "ls-remote", "--", url, "HEAD")).split(/\s/)[0] === since) return null;
+    await git(dir, "clone", "--quiet", "--depth", "1", "--filter=blob:none", "--sparse", "--", url, "repo");
+    const repo = join(dir, "repo");
+    await git(repo, "sparse-checkout", "set", "--no-cone", "/.claude/skills/", "/.agents/skills/");
+    return { commit: await git(repo, "rev-parse", "HEAD"), ...readRepoSkills(repo) };
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+};
 
 export async function searchSkills(query: string, signal?: AbortSignal): Promise<SkillSearchResult[]> {
   const bounded = AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]);
