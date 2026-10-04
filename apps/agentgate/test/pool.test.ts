@@ -168,7 +168,7 @@ test("malformed quota headers are ignored; body size is bounded", async () => {
 });
 
 test("an exhausted quota window without a reset cannot permanently disable an account", async () => {
-  const now = s.now();
+  const now = s.now(); s.now = () => now;
   recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 100 }], status: "exhausted" });
   expect(s.get("usage", "a")?.windows[0]?.resetsAt).toBe(now + 60000);
   s.now = () => now + 61000;
