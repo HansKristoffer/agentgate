@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
 import { agentEnvironment, selfCommand } from "./setup.ts";
-import { CONFIG_DIR, LOCAL_URL } from "./store.ts";
+import { CONFIG_DIR, liveOnly, LOCAL_URL } from "./store.ts";
 
 const LABEL = "dev.agentgate";
 const LOGS = join(CONFIG_DIR, "logs");
@@ -78,6 +78,7 @@ async function bootstrap() {
 }
 
 export async function service(action: string) {
+  if (action !== "logs") liveOnly(`agentgate service ${action}`);
   mkdirSync(LOGS, { recursive: true });
   // Whatever launchctl/systemctl said, only a reachable daemon counts: until then Claude/Codex get ECONNREFUSED.
   const ready = async (_code: number) => {

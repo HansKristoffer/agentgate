@@ -1,32 +1,8 @@
-# Agentgate operations
+# The relay
 
-The daemon owns the local SQLite store, subscription pool, MCP gateway and peer sync. Tauri is an optional client of the JSON control API. Every paired machine can continue independently; Tailscale or the encrypted relay carries peer traffic.
+The relay (`apps/relay`) is a Cloudflare Worker with one SQLite-backed Durable Object per group. It is a mailbox: each machine uploads the latest encrypted version of each record it holds, and downloads everyone else's entries since a cursor. The sync design and its constraints are in [internals/relay.md](../internals/relay.md).
 
-Account and MCP OAuth refreshes use holder coordination and a local cross-process lease. During a network partition, separate machines can still compete for a rotating provider token. Reconnect peers and sync the newer credential first; sign in again if the provider invalidated it. This is not a consensus protocol.
-
-Back up before upgrading and upgrade paired nodes together. Management API 3 and sync protocol 5 reject incompatible app/daemon and peer versions. New backups use format 4; current Agentgate can also restore formats 1–3. Relay records use a versioned encrypted payload; upgrade every node, then reconcile if incompatible entries were skipped. Re-run setup and reinstall the user service after changing the home, port or binary location. The service executable is kept outside the desktop bundle so closing or updating the app does not remove the daemon.
-
-A backup exported without secrets is a configuration inventory, not a working credential backup. Restore transports and logins separately; use a private full backup to restore working credentials. Deleted-record history is kept for safe offline peer catch-up.
-
-Skill sync uses byte-bounded pages so initial pairing and offline catch-up can exceed 16 MiB. Each page commits independently; an interrupted pull resumes at the last committed cursor. Skill records and project assignments remain subject to the store's existing last-writer-wins replica policy.
-
-Local skill reconciliation runs independently every 30 seconds, with event-driven retries for worktree creation. Publication failures restore the previous disk copy; interrupted swaps are recovered on restart. The two-rename directory swap has a brief availability gap during successful updates. Skills → **Skills need attention** reports filesystem/watch errors and case-variant project IDs that require consolidation. Managed skill links are kept out of Git status, and mirroring repository-owned skills is an explicit local opt-in.
-
-The app/API restore limit is 16 MiB of serialized JSON. For larger inventories, restore on the daemon's machine with `agentgate import /absolute/path/backup.json`; the CLI validates the full backup before committing it. Exported backups can exceed the app restore limit. Protect skill sources and script contents as part of the backup.
-
-Only pool accounts you own and use them within the provider's applicable terms. Automated fixture checks do not establish provider permission or support for every live CLI version.
-
-Proxy routing, account policies, verification, request diagnostics, and upgrade behavior are described in [proxy-operations.md](proxy-operations.md).
-
-## Distribution checks
-
-CI covers fake provider traffic, OAuth state validation, replica/store invariants, MCP reconnects, frontend builds and standalone binary smoke tests on macOS/Linux, plus native Rust checks and app packaging on macOS. Before relying on a new provider or service-install change, also check real provider login/traffic, T3 sessions, two physical machines over Tailscale, and installed launchd/systemd behavior after logout/reboot.
-
-## Relay
-
-The relay (`apps/relay`) is a Cloudflare Worker with one SQLite-backed Durable Object per group. It is a mailbox: each machine uploads the latest encrypted version of each record it holds, and downloads everyone else's entries since a cursor. The design is in [relay-plan.md](relay-plan.md).
-
-### Trust model
+## Trust model
 
 - **The invite string is the master key.** Every key is derived from it with HKDF-SHA256: the group id, the bearer token, the AES-GCM key and the HMAC key for entry names. Anyone who has the invite can read and write every account and MCP login, the same as a paired machine. It never expires.
 - **What the relay sees:** node names, entry counts and sizes, and timing. It does not see credentials, record kinds or ids, or the encryption key.
@@ -34,7 +10,7 @@ The relay (`apps/relay`) is a Cloudflare Worker with one SQLite-backed Durable O
 - **No forward secrecy.** The relay can keep old ciphertext. After a suspected leak, run `agentgate relay rotate` and also log in to the affected accounts again.
 - **Removing a machine** means rotating the secret (`agentgate unpair <node>` does this for relay machines), rejoining every machine you keep with the new command, and removing the removed machine's Tailscale pairing on each of them. A rotation cannot revoke those links, and it doesn't erase credentials already copied to the removed machine.
 
-### Reconciliation and restores
+## Reconciliation and restores
 
 On every daemon start, on `join`, after a group reset and on `agentgate relay reconcile`, a machine re-reads the whole group, its own entries included, and then uploads its complete store. This is how a database restored from a backup recovers newer records and its own upload counters: a restore also restores the checkpoints stored inside the database, so it can't be detected by comparing them.
 
@@ -42,13 +18,13 @@ On every daemon start, on `join`, after a group reset and on `agentgate relay re
 - If an entry can't be decrypted or validated, it is skipped and counted under "skipped" in `agentgate relay status` and the app. A full reconcile retries those entries.
 - "Relay counter conflict" means the relay holds a newer upload from this machine than this machine knows about. Reconciliation recovers it automatically unless the relay's copy was also lost or tampered with. In that case, rotate.
 
-### Limits and errors
+## Limits and errors
 
 - One record can be at most 1 MiB once encrypted. That is stricter than the local store's 4 MiB, so a larger record blocks uploads and is named in the upload error until it shrinks. Downloads keep working.
 - Each group holds at most 64 machines and 50 MiB. A full group returns "out of storage"; downloads keep working while uploads are rejected.
 - Upload and download errors are reported separately. Uploads are retried with exponential backoff (and `Retry-After`), and every unacknowledged chunk is resent byte for byte.
 
-### Deploying and self-hosting
+## Deploying and self-hosting
 
 `agentgate pair --relay` uses the hosted relay at `https://agentgate-relay.hanskristoffer.dk` unless `--relay-url` or `AGENTGATE_RELAY_URL` names another one. The invite carries the relay URL, so joining machines need no setting. To run your own:
 
@@ -77,9 +53,9 @@ Settings are `[vars]` in `apps/relay/wrangler.toml`:
 
 `bun run --filter @agentgate/relay test:workers` runs the relay against real Durable Objects in workerd. The Bun tests cover the same logic on bun:sqlite.
 
-### Remote MCP endpoints
+## Remote MCP endpoints
 
-Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for assistants that only take a server URL and an `Authorization` header, like Grok. One `RemoteEndpoint` Durable Object per endpoint holds the WebSocket its serving machine keeps open, and forwards each POST over it. The design is in [remote-mcp-plan.md](remote-mcp-plan.md).
+Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for assistants that only take a server URL and an `Authorization` header, like Grok. One `RemoteEndpoint` Durable Object per endpoint holds the WebSocket its serving machine keeps open, and forwards each POST over it. The design is in [internals/remote-mcp.md](../internals/remote-mcp.md).
 
 - **This traffic is not end-to-end encrypted.** It is encrypted in transit, but the relay reads requests, tool results and the bearer secret, so a malicious relay operator could impersonate the client or replay calls. Upstream logins and API keys stay on the serving machine.
 - **The URL and secret are a capability.** Anyone with both can call that project's tools. **New secret** keeps the URL; **New URL** replaces both and deletes the old endpoint.
@@ -96,7 +72,7 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 
 The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
 
-### Crypto test vectors
+## Crypto test vectors
 
 Secret bytes `00 01 … 1f`, HKDF-SHA256, salt `agentgate-relay-v1`, info `agentgate-relay-v1/<label>`:
 

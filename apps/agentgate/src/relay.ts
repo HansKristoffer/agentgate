@@ -7,7 +7,7 @@ import { parseRecord, type Rec, type Store } from "./store.ts";
 import { lastSeen, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
 
 /**
- * Sync through a relay that only stores ciphertext (docs/relay-plan.md). Each node upserts its
+ * Sync through a relay that only stores ciphertext (docs/internals/relay.md). Each node upserts its
  * sealed change feed into a group mailbox and pulls everyone else's entries since a cursor.
  */
 

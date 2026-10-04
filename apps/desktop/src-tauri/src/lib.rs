@@ -125,9 +125,15 @@ async fn api_request(
 }
 
 fn connection_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    // `bun run dev` shares the installed app's config dir; keep its saved connection separate.
+    let name = if std::env::var("AGENTGATE_DEV").as_deref() == Ok("1") {
+        "connection.dev.json"
+    } else {
+        "connection.json"
+    };
     app.path()
         .app_config_dir()
-        .map(|p| p.join("connection.json"))
+        .map(|p| p.join(name))
         .map_err(|e| e.to_string())
 }
 
