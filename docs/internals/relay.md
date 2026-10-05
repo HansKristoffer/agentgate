@@ -47,6 +47,24 @@ the relay group. Do not remove it without tagging where records came from.
   `relay:rot:*` keys into `relay:*` in one transaction. Deleting the old group is cleanup, not
   revocation: old members could recreate it.
 
+## Node channel
+
+Thread handoff needs request and response between two machines, which the mailbox cannot give: entries persist,
+count against the group quota and reach every member. So a separate `RelayChannel` object per group
+([`channel.ts`](../../apps/relay/src/channel.ts)) forwards a call over the WebSocket the target keeps open
+([`channel.ts`](../../apps/agentgate/src/channel.ts) in the daemon) and keeps nothing. The daemon tunnels the same
+`/peer/handoff/*` requests it sends over Tailscale, so handoff code does not know the transport.
+
+- The channel object does not know the group's token; it asks the group object once (any authenticated read)
+  and remembers the hash in memory. A group id never changes its token: rotation makes a new group.
+- The relay's call id is only for matching replies. The sealed envelope carries its own id and time, bound in the
+  AAD `[2, req|res, groupId, from, to, id, ts]`, so the relay cannot redirect a call, swap answers or replay one;
+  receivers keep seen ids in the store for twice the five-minute skew window, so a restart does not reopen it.
+- A refused call (unreadable, stale, replayed) gets an empty answer rather than an error, so the relay learns
+  nothing from probing. The caller then reports that the other machine refused the call.
+- Every member keeps its socket, also before T3 Code is connected there, because connecting it can be done from
+  another machine through the channel (`/peer/t3/connect`). An idle hibernated socket costs the relay nothing.
+
 ## Worker traps
 
 - Durable Object input gates do not stop interleaving across `await`s such as

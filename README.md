@@ -45,7 +45,7 @@ agentgate service install           # launchd (macOS) or systemd --user (Linux)
 
 You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, and starts a launchd service. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
 
-The app has Accounts, Activity, MCP servers, Skills, Projects, Machines, and Settings screens. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine.
+The app has Accounts, Activity, MCP servers, Skills, Projects, Machines, T3 Code, and Settings screens. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine.
 
 ## A second machine (e.g. an always-on server)
 
@@ -84,6 +84,32 @@ One instance per provider covers every account; the daemon switches eligible acc
 ### Or: your normal Claude login
 
 `agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/user/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
+
+### Hand threads between machines
+
+Start a thread on your laptop, hand it to an always-on server while you are away, and hand it back to test and push. A handed-off thread moves with its Claude session and its code: unpushed commits and uncommitted and untracked files (respecting `.gitignore`). Code travels directly between the two machines over Tailscale, or end-to-end encrypted through the relay; nothing is pushed to `origin`.
+
+Connect agentgate to the T3 Code on each machine once. In T3 Code open **Settings → Connections**, turn on **Network access** (T3 Code only offers pairing links while it is on), then under **Authorized clients** choose **Create link** with **Standard** permissions. Run `agentgate t3 connect <link>` within five minutes, then turn Network access off again if you like; agentgate connects over this machine only (on a headless server, `t3 pair` prints a token: `agentgate t3 connect --url http://127.0.0.1:3773 --token <token>`). The T3 Code page in the app has the same form under **Machines**. You can set up another machine from the one you are on: create the link in that machine's T3 Code, then paste it into its row under **Machines**, or run `agentgate t3 connect <link> --node srv`. The link travels to it over your paired connection, and that machine redeems it with its own T3 Code. Both machines need T3's Claude provider set to agentgate's `CLAUDE_CONFIG_DIR` (above), and must be paired over Tailscale or in the same relay group.
+
+```sh
+agentgate threads                    # active threads on every machine
+agentgate handoff <thread>           # to the first available always-on machine
+agentgate handoff <thread> --to here # bring a thread to the machine you are on
+agentgate handoffs                   # recent handoffs, with step timings
+```
+
+In the app, the **T3 Code** page shows every machine's threads with **To server** or **To here**. An agent can hand itself off with the `agentgate__handoff_thread` tool, which appears in sessions once T3 Code is connected.
+
+What to expect:
+
+- A working thread is stopped, moved, and continued on the other machine. On the source it is archived, and the uncommitted changes that were sent are kept in a `git stash` so the worktree is clean for the return trip. That stash is dropped when the thread comes back, because its changes come back with it.
+- The other machine reuses a worktree already on the thread's branch, or creates one and runs the project's setup script. Later trips reuse it, so setup runs once per branch and machine.
+- If the other machine's checkout has its own changes or commits, it keeps them and the handoff reports a warning. Your uncommitted changes then stay where they were.
+- The first time a thread arrives on a machine, T3 Code fails the first message you send it there. Send it again; the second one resumes the session. Threads that were working get this retry automatically, and later trips to the same machine reuse the thread without the failure.
+- The first time a thread arrives on a machine, T3 Code's import also picks up other recent Claude sessions run in that project's main checkout, so threads that ran there can show up twice. Threads in worktrees are not affected, and later trips skip the import.
+- Through the relay, a handoff can move up to 512 MiB of code and session; the relay sees only encrypted data, its size and timing. Pair over Tailscale for larger repositories.
+- Claude Code threads only. Attachments, earlier turns' diffs and queued messages stay behind.
+- agentgate's T3 Code token lasts 30 days. `agentgate t3` and the app show when to pair again.
 
 The proxy now provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [the proxy guide](docs/user/proxy.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
 

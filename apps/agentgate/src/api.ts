@@ -66,6 +66,8 @@ import {
   skillRevision,
 } from "./skills.ts";
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
+import { connectInput, t3State } from "./handoff/t3.ts";
+import { allNodes, connectNode, disconnectNode, handoffJob, requestHandoff } from "./handoff/threads.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import {
   RelayBusy,
@@ -213,6 +215,7 @@ export function management(ctx: Ctx) {
         via: n.id === s.nodeId ? [] : via(s, n.id),
       })),
       relay: relayStatus(s),
+      t3: t3State(s),
       peers: peers(s).map((p) => ({
         node: p.node,
         url: p.url,
@@ -671,6 +674,29 @@ export function management(ctx: Ctx) {
     }
     input(() => unpair(s, id));
     return c.json({ ok: true, endpoints });
+  });
+  // Thread handoff. Connecting receives a T3 pairing token, a credential: local callers only.
+  app.get("/t3", (c) => c.json(t3State(s)));
+  app.post("/t3/connect", async (c) => {
+    local(c.env.listener);
+    const node = c.req.query("node");
+    const input = connectInput.parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => connectNode(ctx.handoffs, node, input)));
+  });
+  app.delete("/t3", async (c) => {
+    await inputAsync(() => disconnectNode(ctx.handoffs, c.req.query("node")));
+    return c.json({ ok: true });
+  });
+  app.get("/threads", async (c) => c.json(await allNodes(ctx.handoffs)));
+  app.get("/handoffs", (c) => c.json(ctx.handoffs.list().map((job) => ctx.handoffs.view(job))));
+  app.post("/handoffs", async (c) => {
+    const f = z.object({ threadId: z.string().min(1).max(512), node: z.string().min(1).max(512).optional(), to: z.string().min(1).max(512).optional() }).strict().parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => requestHandoff(ctx.handoffs, f)), 201);
+  });
+  app.get("/handoffs/:id", async (c) => {
+    const job = await inputAsync(() => handoffJob(ctx.handoffs, c.req.param("id"), c.req.query("node")));
+    required(job, "handoff");
+    return c.json(job);
   });
   app.patch("/settings", async (c) => {
     const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));

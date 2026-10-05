@@ -1,7 +1,7 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
 import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
-import { canonicalProject } from "./mcp/gateway.ts";
+import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
 
@@ -115,6 +115,7 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {
     if (!validId(alias)) throw new Error(`invalid tool prefix ${alias}`);
     if (virtual && alias === "skills") throw new Error("the prefix skills is reserved for the built-in skill tools");
+    if (!virtual && alias === BUILTIN_ALIAS) throw new Error(`the prefix ${BUILTIN_ALIAS} is reserved for agentgate's own tools`);
     if (!s.get("mcp", target)) throw new Error(`no MCP instance ${target}`);
   }
   for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);

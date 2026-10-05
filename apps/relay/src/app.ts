@@ -3,6 +3,8 @@ import { remoteKey } from "@agentgate/protocol/remote";
 
 /** What the Worker asks a RemoteEndpoint object to do; workers-only code lives in remote.ts. */
 export type EndpointOp = "mcp" | "connect" | "update" | "delete";
+/** What the Worker asks a group's RelayChannel object to do. */
+export type ChannelOp = "call" | "connect";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { sameHash, type GroupOp, type GroupRequest, type Reply } from "./group.ts";
@@ -11,6 +13,8 @@ export interface RelayDeps {
   group(groupId: string): { handle(req: GroupRequest): Promise<Reply> };
   /** Remote MCP endpoints; absent in the in-process test relay. */
   endpoint?(key: string): { fetch(req: Request): Promise<Response> };
+  /** Node channels, one per group. */
+  channel?(groupId: string): { fetch(req: Request): Promise<Response> };
   /** Optional deployment-wide secret (self-hosting). */
   relayKey?: string;
   /** Optional aggregate per-address throttle, e.g. a Workers rate limiting binding. */
@@ -88,6 +92,24 @@ export function relayApp(deps: RelayDeps) {
   app.put("/e/:key", endpoint("update"));
   app.delete("/e/:key", endpoint("delete"));
   app.get("/e/:key/connect", endpoint("connect"));
+
+  // Node channel: group members call each other (thread handoff). Same token and deployment key as sync.
+  const channel = (op: ChannelOp) => async (c: Context) => {
+    if (deps.relayKey && !sameHash(await sha256(c.req.header("x-relay-key") ?? ""), await sha256(deps.relayKey))) return c.json({ error: "relay key required", code: "relayKey" }, 401);
+    const groupId = c.req.param("group");
+    if (!deps.channel) return c.json({ error: "not found" }, 404);
+    if (!relayGroupId.safeParse(groupId).success) return c.json({ error: "invalid group", code: "shape" }, 400);
+    const token = c.req.header("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+    if (!token) return c.json({ error: "unauthorized" }, 401);
+    const ipHash = await sha256(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
+    if (deps.ipLimit && !(await deps.ipLimit(ipHash))) return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
+    const headers = new Headers({ "x-agentgate-op": op, "x-agentgate-group": groupId!, "x-agentgate-auth": await sha256(token), "x-agentgate-ip": ipHash, "x-agentgate-node": c.req.param("node")! });
+    for (const name of ["content-length", "upgrade"]) { const value = c.req.header(name); if (value !== undefined) headers.set(name, value); }
+    const raw = c.req.raw;
+    return deps.channel(groupId!).fetch(new Request(raw.url, { method: raw.method, headers, body: raw.body, signal: raw.signal }));
+  };
+  app.post("/g/:group/n/:node/call", channel("call"));
+  app.get("/g/:group/n/:node/connect", channel("connect"));
 
   app.post("/g/:group", route("create", true));
   app.post("/g/:group/push", route("push", true));

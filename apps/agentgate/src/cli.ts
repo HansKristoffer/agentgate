@@ -55,6 +55,11 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
+  t3 connect <pairing link> | --url <url> --token <token> [--node <node>]   connect a machine's agentgate to its T3 Code
+  t3 [status] | disconnect [--node <node>] | dirs [--worktrees <dir>] [--clones <dir>]
+  threads [--node <node>]                     active T3 Code threads on every machine
+  handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
+  handoffs                                    recent handoffs and their state
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
   setup --mcp [off]                           only add agentgate's MCP servers to Claude Code (and Claude Desktop's Code tab)
@@ -97,6 +102,7 @@ const { values: opts, positionals: pos } = parseArgs({
     wipe: { type: "boolean" },
     abandon: { type: "boolean" },
     clear: { type: "boolean" },
+    to: { type: "string" }, url: { type: "string" }, token: { type: "string" }, "no-wait": { type: "boolean" }, worktrees: { type: "string" }, clones: { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -177,6 +183,8 @@ async function main() {
       }
       const relay = relayStatus(s);
       if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
+      const t3 = (await import("./handoff/t3.ts")).t3State(s);
+      console.log(`\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`);
       const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
@@ -597,6 +605,73 @@ async function main() {
         }
       }
       return die(HELP);
+    }
+
+    case "t3": {
+      initialized(s);
+      const t3 = await import("./handoff/t3.ts");
+      // Another machine (--node) is set up through this machine's daemon, which forwards the link to it.
+      const node = str("node") && str("node") !== s.nodeId ? str("node") : undefined;
+      const query = node ? `?node=${encodeURIComponent(node)}` : "";
+      if (sub === "connect") {
+        const usage = "t3 connect <pairing link> | --url <url> --token <token> [--node <node>]";
+        const input = rest[0] ? { pairingUrl: rest[0] } : { url: str("url") ?? die(usage), token: str("token") ?? die("--token is required") };
+        const state = node
+          ? await management<import("@agentgate/protocol").T3NodeState>(`/t3/connect${query}`, "POST", input)
+          : await t3.connectT3(s, t3.pairing(input));
+        const label = state.label ? ` (${state.label})` : "";
+        const expires = new Date(state.expiresAt!).toISOString().slice(0, 10);
+        return console.log(`connected ${node ?? "this machine"} to T3 Code${label}; the token expires ${expires}`);
+      }
+      if (sub === "disconnect") {
+        if (node) await management(`/t3${query}`, "DELETE");
+        else t3.disconnectT3(s);
+        return console.log("disconnected");
+      }
+      if (sub === "dirs") {
+        for (const [key, value] of [["worktreesDir", str("worktrees")], ["cloneDir", str("clones")]] as const) if (value) s.setLocal(`handoff:${key}`, resolve(value.replace(/^~(?=\/|$)/, homedir())));
+        const { handoffOptions } = await import("./daemon.ts");
+        const o = handoffOptions(s);
+        return console.log(`worktrees  ${o.worktreesDir}\nclones     ${o.cloneDir}`);
+      }
+      if (sub && sub !== "status") die(HELP);
+      const st = t3.t3State(s);
+      if (!st.url) return console.log("T3 Code is not connected. In T3 Code open Settings → Connections, turn on Network access, create a pairing link under Authorized clients and run: agentgate t3 connect <link>");
+      return console.log(`T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect <link>" : ""}`);
+    }
+    case "threads": {
+      initialized(s);
+      const nodes = await management<import("@agentgate/protocol").NodeThreads[]>("/threads");
+      for (const n of nodes.filter((n) => !str("node") || n.node === str("node"))) {
+        console.log(`\n${n.node}${n.server ? " (server)" : ""}${n.error ? `  ${n.error}` : !n.t3?.connected ? "  T3 Code not connected" : ""}`);
+        for (const th of n.threads) console.log(`  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}`);
+      }
+      return;
+    }
+    case "handoff": {
+      initialized(s);
+      const threadId = sub ?? die("handoff <thread> [--to server|here|<node>] [--no-wait]");
+      const started = await management<{ handoffId: string; node: string; to: string }>("/handoffs", "POST", { threadId, to: str("to") ?? "server" });
+      if (opts["no-wait"]) return console.log(started.handoffId);
+      console.log(`handing ${threadId} from ${started.node} to ${started.to} (${started.handoffId})`);
+      let last = "";
+      for (; ;) {
+        const job = await management<import("@agentgate/protocol").HandoffJob>(`/handoffs/${started.handoffId}?node=${encodeURIComponent(started.node)}`);
+        if (job.step !== last) { console.log(`  ${job.step}`); last = job.step; }
+        if (job.status === "failed") die(`handoff failed: ${job.error}`);
+        if (job.status === "imported" || job.status === "done") {
+          for (const w of job.warnings) console.warn(`warning: ${w}`);
+          console.log(job.timings.map((x) => `${x.step}${x.node === started.node ? "" : ` on ${x.node}`} ${(x.ms / 1000).toFixed(1)} s`).join(" · "));
+          return console.log(`now on ${started.to} as thread ${job.destThreadId}`);
+        }
+        await Bun.sleep(1000);
+      }
+    }
+    case "handoffs": {
+      initialized(s);
+      for (const j of await management<import("@agentgate/protocol").HandoffJob[]>("/handoffs"))
+        console.log(`${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`);
+      return;
     }
 
     case "setup": {

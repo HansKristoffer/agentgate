@@ -72,6 +72,20 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 
 The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
 
+## Node channel
+
+Thread handoff between machines that share only a relay group goes through the node channel: one `RelayChannel` Durable Object per group holds a WebSocket from each machine in the group, and forwards a call from one member to another. It stores nothing. The design is in [internals/relay.md](../internals/relay.md#node-channel).
+
+- **End-to-end encrypted.** Calls and answers are sealed with the group key, like sync records. The relay sees node names, sizes and timing, and gates the channel with the group token.
+- **No replay.** A call carries its sender, target, id and time inside the sealed data; machines refuse calls older than five minutes or already seen. The relay never resends a call after a timeout or a dropped socket.
+- Limits: 2 MiB per call or answer (uploads go in 1 MiB chunks), 8 calls in flight per machine, 2 minutes per call, 512 MiB per handoff (enforced by the sending machine).
+- An older relay answers 404, and machines report "the relay does not support handoffs yet; update it". Tailscale handoffs keep working.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `RELAY_CHANNEL_REQUESTS_PER_MINUTE` | 1200 | Calls per group |
+| `RELAY_CHANNEL_MIB_PER_MINUTE` | 256 | Data forwarded per group, both directions |
+
 ## Crypto test vectors
 
 Secret bytes `00 01 … 1f`, HKDF-SHA256, salt `agentgate-relay-v1`, info `agentgate-relay-v1/<label>`:
