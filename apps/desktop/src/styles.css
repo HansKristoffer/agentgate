@@ -120,7 +120,10 @@ pre {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--field-placeholder); display: inline-block; }
 .dot.online { background: var(--success); }
 
-.mini-quotas { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
+.mini-quotas { position: relative; width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
+.mini-quotas.stale { margin-left: 12px; } /* room for the icon beside the bars, taken from the name column */
+.mini-quotas > .stale-usage { position: absolute; left: -22px; top: 50%; translate: 0 -50%; display: flex; padding: 2px; border: 0; background: none; color: var(--warning); }
+.mini-quotas > button.stale-usage { cursor: pointer; }
 .mini-quotas > div { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .mini-quotas > div > span { width: 56px; flex: 0 0 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-quotas > div > .progress-bar { flex: 1; }

@@ -115,6 +115,11 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<AccountStatus>();
+  const refreshUsage = (id: string) =>
+    void perform(async () => {
+      const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", { ids: [id], action: "quota" });
+      if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
+    }, "Usage refreshed");
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
@@ -240,7 +245,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         Sign in again
                       </Button>
                     )}
-                    <AccountQuota account={a} />
+                    <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
@@ -248,11 +253,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
                           label: "Refresh usage",
-                          onAction: () =>
-                            void perform(async () => {
-                              const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", { ids: [a.account.id], action: "quota" });
-                              if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
-                            }, "Usage refreshed"),
+                          onAction: () => refreshUsage(a.account.id),
                         },
                         !!app && provider === "claude" && !usable(loginFor(a.account.id)) && {
                           label: loginFor(a.account.id) ? "Connect Claude Desktop again" : "Connect to Claude Desktop",
