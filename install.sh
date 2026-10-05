@@ -38,7 +38,7 @@ echo "installed $dest/agentgate"
 case ":$PATH:" in *":$dest:"*) ;; *) echo "add $dest to your PATH" ;; esac
 
 [ "${1:-}" = join ] || exit 0
-"$dest/agentgate" init
+if [ -n "${AGENTGATE_NAME:-}" ]; then "$dest/agentgate" init --name "$AGENTGATE_NAME"; else "$dest/agentgate" init; fi
 "$dest/agentgate" "$@"
 "$dest/agentgate" service install
 "$dest/agentgate" setup --primary

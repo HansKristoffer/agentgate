@@ -21,6 +21,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [choosing, setChoosing] = useState(false);
   const [shown, setShown] = useState<Shown>();
   const [joinOpen, setJoinOpen] = useState(false);
+  const [name, setName] = useState("");
   const relay = data.relay;
   const pair = (method: Method) =>
     void perform(async () => {
@@ -28,9 +29,10 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
         connection,
         "/nodes/pair",
         "POST",
-        { method },
+        { method, ...(name.trim() ? { name: name.trim() } : {}) },
       );
       setChoosing(false);
+      setName("");
       setShown({ command: result.command, method });
     });
   const relayState = relay && [
@@ -203,6 +205,13 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       )}
       {choosing && (
         <Modal title="Pair another machine" close={() => setChoosing(false)}>
+          <Field
+            label="Name of the other machine"
+            description="Leave empty to use its hostname."
+            value={name}
+            onChange={setName}
+            placeholder="mac-mini"
+          />
           <p>How will the other machine connect?</p>
           <div className="rows">
             <div className="item">

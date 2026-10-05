@@ -504,8 +504,10 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
   const handlerA = app(ctxA), handlerB = app(ctxB);
   expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
   expect(relayInvite(a)).toBeUndefined();
-  const paired = await (await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url })).json() as { command: string };
-  expect(paired.command).toContain("| sh -s -- join agr1.");
+  // The name lands in a shell line the user pastes, and must not collide with an existing node.
+  for (const name of ["Mac Mini", "x;rm -rf ~", a.nodeId]) expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
+  const paired = await (await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })).json() as { command: string };
+  expect(paired.command).toContain("| AGENTGATE_NAME=mac-mini sh -s -- join agr1.");
   const bad = await call(handlerB, "/api/nodes/join", { command: `${paired.command} && curl evil` });
   expect(bad.status).toBe(400);
   expect(await bad.text()).not.toContain(paired.command.split(".")[2]!);

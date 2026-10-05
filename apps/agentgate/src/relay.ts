@@ -660,9 +660,16 @@ export function via(s: Store, node: string): ("tailnet" | "relay")[] {
 export const relayNodes = (s: Store) =>
   (s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
 
-/** One line for a fresh machine: install.sh installs agentgate, then runs init, `join <args>`, the service and `setup --primary`. */
-export const installAndJoin = (args: string) =>
-  `curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh -s -- join ${args}`;
+/** The name a pairing command gives the other machine: shell-safe, and not an existing node's (two machines would share records). */
+export function newNodeName(s: Store, name: string) {
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) throw new RelayError("Use lowercase letters, digits and dashes for the machine name");
+  if (s.get("node", name)) throw new RelayError(`A machine named ${name} already exists`);
+  return name;
+}
+
+/** One line for a fresh machine: install.sh installs agentgate, then runs init (named `name`, else the hostname), `join <args>`, the service and `setup --primary`. */
+export const installAndJoin = (args: string, name?: string) =>
+  `curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | ${name ? `AGENTGATE_NAME=${name} ` : ""}sh -s -- join ${args}`;
 
 /**
  * Parse a pasted `agentgate join …` or `installAndJoin` line into either pairing method. Tokens are
