@@ -12,7 +12,7 @@ import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
-import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
+import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
@@ -50,7 +50,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
-  pair [--tailnet | --relay [--relay-url <url>]]   print the command for connecting another machine
+  pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
@@ -451,13 +451,16 @@ async function main() {
 
     case "pair": {
       initialized(s);
-      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate, join and start the service:\n\n  ${installAndJoin(args)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
       let method = opts.tailnet ? "tailnet" : opts.relay || str("relay-url") ? "relay" : undefined;
       if (!method && process.stdin.isTTY && process.stdout.isTTY) {
         const answer = prompt("How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:")?.trim();
         method = answer === "2" ? "relay" : answer === "1" ? "tailnet" : die("Choose 1 or 2.");
       }
       method ??= (await tailscale()) ? "tailnet" : "relay";
+      const asked = str("name") ?? (process.stdin.isTTY && process.stdout.isTTY ? prompt("Name for the other machine (Enter for its hostname):") : undefined);
+      let name: string | undefined;
+      try { name = asked?.trim() ? newNodeName(s, asked.trim()) : undefined; } catch (e) { die((e as Error).message); }
+      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate${name ? ` as ${name}` : ""}, join, start the service and route its Claude Code and Codex through agentgate:\n\n  ${installAndJoin(args, name)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
       if (method === "relay") {
         const invite = await createRelay(s, str("relay-url"));
         printJoin(invite);

@@ -12,15 +12,18 @@ test("installer verifies checksums and preserves the installed binary after corr
   finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("installer with join arguments initializes, joins, configures and starts the service", () => {
+test("installer with join arguments initializes, joins, starts the service, then routes the own tools", () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-installer-")), commands = join(dir, "commands"), dest = join(dir, "bin"), log = join(dir, "calls"); mkdirSync(commands); mkdirSync(dest);
   const binary = `#!/bin/sh\necho "$*" >> ${log}\n`, asset = `agentgate-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}`;
   writeFileSync(join(dir, "binary"), binary); writeFileSync(join(dir, "sums"), `${new Bun.CryptoHasher("sha256").update(binary).digest("hex")}  ${asset}\n`);
   const curl = join(commands, "curl");
   writeFileSync(curl, `#!${process.execPath}\nconst args=Bun.argv.slice(2);const url=args.at(-1);if(url.endsWith('/latest'))process.stdout.write('https://github.com/test/agentgate/releases/tag/v-test');else await Bun.write(args[args.indexOf('-o')+1],Bun.file(${JSON.stringify(dir)}+(url.endsWith('/SHA256SUMS')?'/sums':'/binary')));\n`); chmodSync(curl, 0o700);
   try {
-    const result = Bun.spawnSync(["sh", join(import.meta.dir, "..", "..", "..", "install.sh"), "join", "agr1.invite"], { env: { ...process.env, PATH: `${commands}:${process.env.PATH}`, AGENTGATE_BIN_DIR: dest }, stdout: "pipe", stderr: "pipe" });
-    expect(result.exitCode).toBe(0);
-    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nsetup\nservice install\n");
+    const install = (name?: string) => Bun.spawnSync(["sh", join(import.meta.dir, "..", "..", "..", "install.sh"), "join", "agr1.invite"], { env: { ...process.env, PATH: `${commands}:${process.env.PATH}`, AGENTGATE_BIN_DIR: dest, AGENTGATE_NAME: name ?? "" }, stdout: "pipe", stderr: "pipe" }).exitCode;
+    expect(install()).toBe(0);
+    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nservice install\nsetup --primary\n");
+    rmSync(log);
+    expect(install("mac-mini")).toBe(0);
+    expect(readFileSync(log, "utf8")).toStartWith("init --name mac-mini\njoin agr1.invite\n");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

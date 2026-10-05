@@ -74,6 +74,7 @@ import {
   installAndJoin,
   joinRelay,
   leaveRelay,
+  newNodeName,
   parseJoin,
   reconcileRelay,
   relayInvite,
@@ -558,14 +559,18 @@ export function management(ctx: Ctx) {
       .object({
         method: z.enum(["tailnet", "relay"]).default("tailnet"),
         relayUrl: z.string().max(2000).optional(),
+        name: z.string().max(63).optional(),
       })
       .strict()
       .parse(await optionalJson(c.req.raw));
+    const name = f.name?.trim()
+      ? await relayed(async () => newNodeName(s, f.name!.trim()))
+      : undefined;
     if (f.method === "relay") {
       // The invite is a master key: only a local caller may see it.
       local(c.env.listener);
       const invite = await relayed(() => createRelay(s, f.relayUrl));
-      return c.json({ command: installAndJoin(invite), method: "relay" });
+      return c.json({ command: installAndJoin(invite, name), method: "relay" });
     }
     const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url;
     if (!url)
@@ -573,7 +578,7 @@ export function management(ctx: Ctx) {
         message: "Start Tailscale before pairing",
       });
     return c.json({
-      command: installAndJoin(`${url} ${pairCode(s)}`),
+      command: installAndJoin(`${url} ${pairCode(s)}`, name),
       method: "tailnet",
       expiresIn: 600,
     });
