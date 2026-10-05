@@ -141,6 +141,7 @@ pre {
 }
 .provider-icon.claude { background: rgba(217, 119, 87, 0.14); color: #c96442; }
 .provider-icon.codex { background: color-mix(in srgb, var(--success) 13%, transparent); color: var(--success); }
+.provider-icon.cursor { background: var(--default); color: var(--foreground); }
 .machine-icon {
   width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px;
   display: grid; place-items: center; background: var(--default); color: var(--muted);

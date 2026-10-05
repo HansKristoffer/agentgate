@@ -19,7 +19,7 @@ import {
   Panel,
   Toggle,
 } from "../../components/ui.tsx";
-import { providerName } from "../../views/utils.ts";
+import { providerIcon, providerName } from "../../views/utils.ts";
 import { ModelAliases } from "./ModelAliases.tsx";
 import { useGeneration } from "./useGeneration.ts";
 
@@ -114,7 +114,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
           (Object.keys(data.daemon.providers) as Provider[]).map((provider) => (
             <div className="item" key={provider}>
               <div className={`provider-icon ${provider}`}>
-                {provider === "claude" ? "✳" : "◎"}
+                {providerIcon(provider)}
               </div>
               <strong className="grow">{providerName(provider)}</strong>
               <div className="row wrap">

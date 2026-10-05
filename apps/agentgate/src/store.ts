@@ -154,6 +154,8 @@ export class Store {
     this.db.run("create table if not exists request_log (at integer, provider text, account text, model text, status integer, ms integer, note text)");
     // Hourly token totals per model, node-local and never trimmed: a year is a few thousand rows.
     this.db.run("create table if not exists token_usage (hour integer not null, provider text not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (hour, provider, model))");
+    // Cursor's own usage history per account, replaced window by window when it is read again (llm/cursor.ts).
+    this.db.run("create table if not exists cursor_tokens (account text not null, hour integer not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (account, hour, model))");
     // Node-local settings that are never synced (node name, admin token, pairing code, active account).
     this.db.run("create table if not exists local (key text primary key, value text)");
     this.migrate();

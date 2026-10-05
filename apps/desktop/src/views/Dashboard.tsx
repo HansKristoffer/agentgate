@@ -4,7 +4,7 @@ import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
-import { providerName } from "./utils.ts";
+import { providerIcon, providerName } from "./utils.ts";
 
 export function Dashboard({
   data,
@@ -89,7 +89,7 @@ export function Dashboard({
           data.accounts.map((a) => (
             <div className="item" key={a.account.id}>
               <div className={`provider-icon ${a.account.provider}`}>
-                {a.account.provider === "claude" ? "✳" : "◎"}
+                {providerIcon(a.account.provider)}
               </div>
               <div className="grow">
                 <strong>{a.account.label}</strong>

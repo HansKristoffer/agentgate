@@ -20,6 +20,7 @@ import { pkce } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
 import * as claude from "./llm/claude.ts";
 import * as codex from "./llm/codex.ts";
+import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenUsage } from "./llm/telemetry.ts";
@@ -88,7 +89,8 @@ import {
 const required = (value: unknown, name: string) => {
   if (!value) throw new HTTPException(404, { message: `No such ${name}` });
 };
-const moduleFor = (provider: "claude" | "codex") => providerLogins[provider];
+const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
+const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
 const readableEndpoint = (url?: string) => {
   if (!url) return "Local command";
   try {
@@ -106,7 +108,7 @@ export function management(ctx: Ctx) {
   const pending = new Map<
     string,
     {
-      provider: "claude" | "codex";
+      provider: z.infer<typeof providerSchema>;
       verifier: string;
       label?: string;
       at: number;
@@ -173,10 +175,10 @@ export function management(ctx: Ctx) {
       metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
-      detected: (["claude", "codex"] as const).flatMap((provider) => {
+      detected: providerSchema.options.flatMap((provider) => {
         const found = moduleFor(provider).detect();
         const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
-        return found && !pooled ? [{ provider, ...found, source: provider === "claude" ? "~/.claude" : "~/.codex" }] : [];
+        return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
       }),
       servers: s.list("mcp").map((i) => {
         const health = serverHealth(s, i.id);
@@ -253,7 +255,7 @@ export function management(ctx: Ctx) {
   app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict().parse(c.req.query()).since)));
   app.get("/proxy/route", (c) => {
-    const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
+    const f = z.object({ provider: z.enum(["claude", "codex"]), model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));
   });
   app.post("/accounts/batch", async (c) => {
@@ -296,7 +298,9 @@ export function management(ctx: Ctx) {
       if (s.now() - p.at > 30 * 60_000) pending.delete(state);
     if (pending.size >= 128)
       throw new HTTPException(429, { message: "Too many pending logins" });
-    const { verifier, challenge, state } = await pkce();
+    const { verifier, challenge, state: oauthState } = await pkce();
+    // Cursor names the attempt with a UUID that it polls on, rather than an OAuth state.
+    const state = f.provider === "cursor" ? crypto.randomUUID() : oauthState;
     pending.set(state, { provider: f.provider, label: f.label, verifier, at: s.now() });
     return c.json({
       state,
@@ -310,14 +314,23 @@ export function management(ctx: Ctx) {
   });
   app.post("/accounts/login/finish", async (c) => {
     const f = z
-      .object({ state: z.string().min(1), code: z.string().min(1) })
+      .object({ state: z.string().min(1), code: z.string().min(1).optional() })
       .parse(await json(c.req.raw));
     const p = pending.get(f.state);
-    pending.delete(f.state);
-    if (!p || s.now() - p.at > 30 * 60_000)
+    if (!p || s.now() - p.at > 30 * 60_000) {
+      pending.delete(f.state);
       throw new HTTPException(400, {
         message: "That login expired; start again",
       });
+    }
+    // Cursor has no code to paste: wait for the browser sign-in, and answer `pending` before the client's request times out.
+    if (p.provider === "cursor") {
+      const id = await cursor.finish(s, f.state, p.verifier, p.label, signal(c.req.raw));
+      if (id) pending.delete(f.state);
+      return c.json(id ? { id } : { pending: true });
+    }
+    pending.delete(f.state);
+    if (!f.code) throw new HTTPException(400, { message: "Paste the code shown after signing in" });
     return c.json({
       id: await moduleFor(p.provider).exchange(
         s,
