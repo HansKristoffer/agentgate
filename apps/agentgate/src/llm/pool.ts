@@ -50,7 +50,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     const stream = streamBody(res.body, req.signal, limits.streamIdle, {
       chunk: bytes => { telemetry.firstByte(); if (res.headers.get("content-type")?.includes("text/event-stream")) observer.chunk(bytes); },
       end: outcome => {
-        release();
+        release(); telemetry.tokens(observer.tokens);
         const streamOutcome = outcome === "eof" ? observer.terminal ?? "eof" : outcome;
         telemetry.finish(outcome === "cancelled" ? "cancelled" : outcome !== "eof" ? "interrupted" : !res.ok || observer.terminal === "provider-error" ? "failed" : "success", outcome === "cancelled" ? "cancelled" : !res.ok ? classify(provider, res.status, res.headers, "") : observer.terminal === "provider-error" || outcome !== "eof" ? "transient" : undefined, streamOutcome);
       },

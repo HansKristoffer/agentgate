@@ -33,6 +33,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   proxy capabilities                         daemon version and provider features
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
+  tokens [today|7d|30d|all]                  tokens used per model on this machine (default: today)
   mcp                                         (the stdio shim, started by Claude Code / Codex)
   mcp add <name> <url|preset> [--header "Name: value" ...]   any name; its slug is the id and tool prefix
   mcp add <name> --command "npx -y …" [--per-session]
@@ -238,6 +239,13 @@ async function main() {
       if (sub !== "route" || !["claude", "codex"].includes(rest[0] ?? "")) die("proxy route claude|codex [--model <id>]");
       const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
+    }
+    case "tokens": {
+      initialized(s);
+      const days = ({ today: 0, "7d": 7, "30d": 30 } as Record<string, number>)[sub ?? "today"];
+      if (days === undefined && sub !== "all") die("tokens [today|7d|30d|all]");
+      const since = sub === "all" ? 0 : days ? Date.now() - days * 86400000 : new Date().setHours(0, 0, 0, 0);
+      return console.log(JSON.stringify(await management(`/proxy/tokens?since=${since}`), null, 2));
     }
     case "requests": {
       initialized(s);

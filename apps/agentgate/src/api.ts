@@ -22,7 +22,7 @@ import * as claude from "./llm/claude.ts";
 import * as codex from "./llm/codex.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
-import { requests, requestDetail, metrics } from "./llm/telemetry.ts";
+import { requests, requestDetail, metrics, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
@@ -251,6 +251,7 @@ export function management(ctx: Ctx) {
   });
   app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
   app.get("/proxy/metrics", (c) => c.json(metrics(s)));
+  app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict().parse(c.req.query()).since)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));

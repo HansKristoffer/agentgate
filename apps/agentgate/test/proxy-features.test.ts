@@ -10,7 +10,7 @@ import { Store, exportBackup, importBackup } from "../src/store.ts";
 import { cool, cooldowns, resetCooldown, retryAfterMs } from "../src/llm/policy.ts";
 import { Quotas, exhausted, matchesWindow, recordUsage } from "../src/llm/quota.ts";
 import { beginRoute, continuationAccount, earliestReset, filterModelList, rememberContinuation, resolveModel, route } from "../src/llm/routing.ts";
-import { Telemetry, metrics, requestDetail, requests, streamObserver } from "../src/llm/telemetry.ts";
+import { Telemetry, metrics, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
 import { proxy } from "../src/llm/pool.ts";
 import { ProxyOperations } from "../src/llm/operations.ts";
 import { parseQuota } from "../src/llm/codex.ts";
@@ -232,6 +232,32 @@ test("SSE observer handles split frames, ignores oversized events, and preserves
   observer.chunk(bytes('data: {"type":"error"}\n\n')); observer.chunk(bytes('event: message_stop\ndata: {}\n\n')); expect(observer.terminal).toBe("provider-error");
   const oversized = streamObserver(); oversized.chunk(bytes(`data: ${JSON.stringify({ type: "error", message: "x".repeat(200000) })}\n\n`)); expect(oversized.terminal).toBeUndefined();
   oversized.chunk(bytes('data: {"type":"message_stop"}\n\n')); expect(oversized.terminal).toBe("completed");
+});
+
+test("token usage is read from Claude and Codex streams, including oversized completions", () => {
+  const bytes = (v: string) => new TextEncoder().encode(v);
+  const claude = streamObserver();
+  claude.chunk(bytes('event: message_start\ndata: {"type":"message_start","message":{"model":"claude-sonnet-4-5","usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":300,"output_tokens":1}}}\n\n'));
+  claude.chunk(bytes('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"\\"usage\\":{\\"output_tokens\\":999}"}}\n\n'));
+  claude.chunk(bytes('event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":42}}\n\n'));
+  expect(claude.tokens).toEqual({ input: 10, output: 42, cacheRead: 300, cacheWrite: 20 });
+  const codex = streamObserver(), output = "x".repeat(200000);
+  codex.chunk(bytes('data: {"type":"response.created","response":{"usage":null}}\n\n'));
+  codex.chunk(bytes(`data: {"type":"response.completed","response":{"output":[{"text":"${output}"}],"usage":{"input_tokens":100,"input_tokens_details":{"cached_tokens":80},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":3}},"metadata":{}}}\n\n`));
+  expect(codex.tokens).toEqual({ input: 20, output: 7, cacheRead: 80, cacheWrite: 0 });
+});
+
+test("token usage sums per model per hour and filters by time", () => {
+  const s = new Store(":memory:"); cleanup.push(() => s.close());
+  let now = Date.UTC(2026, 0, 1, 10, 30); s.now = () => now;
+  const use = (model: string, input: number) => { const t = new Telemetry(s, "claude"); t.models(model, model); t.tokens({ input, output: 1, cacheRead: 0, cacheWrite: 0 }); };
+  use("sonnet", 10); use("sonnet", 5); use("opus", 1);
+  now += 86400000; use("sonnet", 100);
+  expect(tokenUsage(s)).toEqual([
+    { provider: "claude", model: "sonnet", input: 115, output: 3, cacheRead: 0, cacheWrite: 0 },
+    { provider: "claude", model: "opus", input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+  ]);
+  expect(tokenUsage(s, now - 60000)).toEqual([{ provider: "claude", model: "sonnet", input: 100, output: 1, cacheRead: 0, cacheWrite: 0 }]);
 });
 
 test("quota fallback is one request with two attempts; aliases reach the upstream", async () => {

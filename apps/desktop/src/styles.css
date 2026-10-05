@@ -108,6 +108,32 @@ pre {
 .stat strong { font-size: 26px; font-weight: 600; letter-spacing: -0.5px; margin-top: 6px; }
 .stat > span { font-size: 13px; color: var(--muted); }
 
+/* Token usage pie. Series colours are the validated categorical slots, stepped for each appearance. */
+.tokens {
+  display: flex; align-items: center; gap: 24px; padding: 16px 14px;
+  --slice-1: #2a78d6; --slice-2: #eb6834; --slice-3: #1baf7a; --slice-4: #eda100;
+  --slice-5: #e87ba4; --slice-6: #008300; --slice-other: #a3a29c;
+}
+.dark .tokens {
+  --slice-1: #3987e5; --slice-2: #d95926; --slice-3: #199e70; --slice-4: #c98500;
+  --slice-5: #d55181; --slice-6: #008300; --slice-other: #6f6e69;
+}
+.token-range { flex-shrink: 0; }
+.token-range [role="tab"] { white-space: nowrap; }
+.tokens svg { width: 140px; height: 140px; flex-shrink: 0; }
+.tokens path { stroke: var(--surface); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.token-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 13px; }
+.token-row + .token-row:last-child { border-top: 1px solid var(--border); margin-top: 4px; padding-top: 8px; }
+.token-row > i { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+.tokens .slice-1 { fill: var(--slice-1); background: var(--slice-1); }
+.tokens .slice-2 { fill: var(--slice-2); background: var(--slice-2); }
+.tokens .slice-3 { fill: var(--slice-3); background: var(--slice-3); }
+.tokens .slice-4 { fill: var(--slice-4); background: var(--slice-4); }
+.tokens .slice-5 { fill: var(--slice-5); background: var(--slice-5); }
+.tokens .slice-6 { fill: var(--slice-6); background: var(--slice-6); }
+.tokens .slice-other { fill: var(--slice-other); background: var(--slice-other); }
+.token-row > span { font-variant-numeric: tabular-nums; text-align: right; min-width: 48px; }
+
 
 .provider-icon {
   width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px;

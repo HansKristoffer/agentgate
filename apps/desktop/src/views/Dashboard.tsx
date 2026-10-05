@@ -2,11 +2,13 @@ import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
 import { Button } from "@heroui/react";
 import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
+import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
 import { providerName } from "./utils.ts";
 
 export function Dashboard({
   data,
+  connection,
   navigate,
 }: ViewProps & { navigate: (view: "accounts" | "servers" | "nodes") => void }) {
   return (
@@ -116,6 +118,7 @@ export function Dashboard({
           ))
         )}
       </Panel>
+      {data.accounts.length > 0 && <TokenUsage connection={connection} />}
     </>
   );
 }
