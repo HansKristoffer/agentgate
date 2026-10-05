@@ -10,7 +10,7 @@ import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
-import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
+import { CONFIG_DIR, exportBackup, importBackup, liveOnly, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
@@ -66,7 +66,8 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
   desktop add [email] | use <account> | capture | forget <account>
   desktop gateway on|off                      Desktop's Code tab uses the pool (no Chat, separate profile)
-  service install|start|stop|logs
+  service install|start|restart|stop|logs
+  update                                      install the latest release and restart the service
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for native app control over the tailnet`;
 
@@ -682,6 +683,20 @@ async function main() {
     }
     case "service":
       return process.exit(await (await import("./service.ts")).service(sub ?? ""));
+    case "update": {
+      liveOnly("agentgate update");
+      if (!Bun.main.startsWith("/$bunfs/")) return die("agentgate runs from source here; update it with git pull");
+      const target = (await import("./setup.ts")).selfCommand()[0]!;
+      // The app reinstalls its bundled copy whenever it differs, which would undo this update.
+      if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate")) return die("This copy belongs to the Agentgate app, which keeps it up to date. Update the app instead.");
+      if (target.includes("/node_modules/")) return die("agentgate was installed with npm; update it with npm install -g @hanskristoffer/agentpool@latest, then agentgate service restart");
+      const version = await (await import("./update.ts")).installLatest(target);
+      if (!version) return console.log("agentgate is up to date");
+      console.log(`installed agentgate ${version} at ${target}`);
+      const { service, serviceRuns } = await import("./service.ts");
+      if (serviceRuns(target)) return process.exit(await service("restart"));
+      return console.log("restart agentgate to use it");
+    }
 
     case "export":
       return console.log(JSON.stringify(exportBackup(s, !opts["no-secrets"]), null, 2));

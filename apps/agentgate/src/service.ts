@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, renameSync, statSync, truncateSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, truncateSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
@@ -105,13 +105,21 @@ export async function service(action: string) {
       return ready(run(["systemctl", "--user", "restart", "agentgate"]));
     case "start":
       return ready(mac ? await bootstrap() : run(["systemctl", "--user", "start", "agentgate"]));
+    case "restart":
+      return ready(mac ? run(["launchctl", "kickstart", "-k", `gui/${uid}/${LABEL}`]) : run(["systemctl", "--user", "restart", "agentgate"]));
     case "stop":
       return mac ? run(["launchctl", "bootout", `gui/${uid}/${LABEL}`]) : run(["systemctl", "--user", "stop", "agentgate"]);
     case "logs":
       return mac ? run(["tail", "-n", "200", "-f", join(LOGS, "agentgate.log")]) : run(["journalctl", "--user", "-u", "agentgate", "-f"]);
     default:
-      throw new Error("service install|start|stop|logs");
+      throw new Error("service install|start|restart|stop|logs");
   }
+}
+
+/** Whether the installed service runs the binary at `path`. */
+export function serviceRuns(path: string) {
+  const file = mac ? PLIST : UNIT;
+  return existsSync(file) && readFileSync(file, "utf8").includes(mac ? xml(path) : path);
 }
 
 /** Keep launchd's open log descriptor while bounding disk usage. Linux uses journald. */
