@@ -28,7 +28,7 @@ npm install -g @hanskristoffer/agentpool   # installs the `agentgate` command (a
 Without npm:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_REPO=HansKristoffer/agentgate sh
+curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
@@ -54,15 +54,13 @@ There are two ways to connect machines, and a machine can use both:
 - **Same network (Tailscale):** both machines are on your tailnet. Pairing uses a code that expires after 10 minutes.
 - **Relay:** works across any network, without Tailscale. Every record is encrypted before it leaves the machine; the relay stores only ciphertext and can't read your credentials.
 
-On the first machine, run `agentgate pair`. In a terminal it asks which method to use; `--tailnet` and `--relay` skip the question. It prints one command to run on the server:
+On the first machine, run `agentgate pair` or use **Pair a machine** in the app. In a terminal it asks which method to use; `--tailnet` and `--relay` skip the question. It prints one command to run on the server, which installs agentgate, joins, runs `agentgate setup` and installs the service (on Linux this also runs `loginctl enable-linger` so it survives logout/reboot):
 
 ```sh
-agentgate init --name srv --always-on
-agentgate join http://mac.<tailnet>.ts.net:7878 <code>   # Tailscale
-agentgate join agr1.…                                     # relay
-agentgate setup
-agentgate service install           # also runs `loginctl enable-linger` so it survives logout/reboot
+curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh -s -- join agr1.…
 ```
+
+If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or the **Always on** switch.
 
 The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
 

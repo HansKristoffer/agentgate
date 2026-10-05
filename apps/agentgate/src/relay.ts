@@ -660,15 +660,18 @@ export function via(s: Store, node: string): ("tailnet" | "relay")[] {
 export const relayNodes = (s: Store) =>
   (s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
 
+/** One line for a fresh machine: install.sh installs agentgate, then runs init, `join <args>`, setup and the service. */
+export const installAndJoin = (args: string) =>
+  `curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh -s -- join ${args}`;
+
 /**
- * Parse a pasted `agentgate join …` line into either pairing method. Tokens are matched directly,
- * never run through a shell, and errors never echo the input (it may hold an invite).
+ * Parse a pasted `agentgate join …` or `installAndJoin` line into either pairing method. Tokens are
+ * matched directly, never run through a shell, and errors never echo the input (it may hold an invite).
  */
 export function parseJoin(text: string): { invite: string; force: boolean } | { url: string; code: string } {
   if (text.length > 4096) throw new RelayError("That pairing command is too long");
-  const tokens = text.trim().split(/\s+/).filter(Boolean);
-  if (/^(agentgate|agentpool)$/.test(tokens[0] ?? "")) tokens.shift();
-  if (tokens[0] === "join") tokens.shift();
+  const all = text.trim().split(/\s+/).filter(Boolean), at = all.indexOf("join");
+  const tokens = at < 0 ? all : all.slice(at + 1);
   const force = tokens.includes("--force");
   const rest = tokens.filter((t) => t !== "--force");
   if (rest.length === 1 && rest[0]!.startsWith("agr1.")) return { invite: parseInvite(rest[0]!).text, force };

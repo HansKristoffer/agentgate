@@ -12,7 +12,7 @@ import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
-import { cleanupRelay, createRelay, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
+import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
@@ -449,6 +449,7 @@ async function main() {
 
     case "pair": {
       initialized(s);
+      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate, join and start the service:\n\n  ${installAndJoin(args)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
       let method = opts.tailnet ? "tailnet" : opts.relay || str("relay-url") ? "relay" : undefined;
       if (!method && process.stdin.isTTY && process.stdout.isTTY) {
         const answer = prompt("How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:")?.trim();
@@ -457,7 +458,7 @@ async function main() {
       method ??= (await tailscale()) ? "tailnet" : "relay";
       if (method === "relay") {
         const invite = await createRelay(s, str("relay-url"));
-        console.log(`On the other machine run:\n\n  agentgate join ${invite}\n`);
+        printJoin(invite);
         console.log("This invite does not expire. Anyone who has it can read every account and MCP login, so share it privately.\nIf it leaks, run `agentgate relay rotate` and have every relay machine join again.");
         if (process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey")) console.log("This relay needs a service key: set AGENTGATE_RELAY_KEY on the other machine before joining.");
         const status = relayStatus(s);
@@ -465,7 +466,8 @@ async function main() {
         return;
       }
       const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL; is Tailscale running? Use `agentgate pair --relay` to connect over the relay instead.");
-      console.log(`On the other machine run (valid 10 minutes):\n\n  agentgate join ${url} ${pairCode(s)}\n`);
+      console.log("Start Tailscale on the other machine. The code is valid for 10 minutes.\n");
+      printJoin(`${url} ${pairCode(s)}`);
       return;
     }
     case "join": {

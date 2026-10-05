@@ -1,8 +1,9 @@
 #!/bin/sh
 # Installs the agentgate binary for this machine into ~/.local/bin.
+# `sh -s -- join <invite>` (from `agentgate pair`) then also joins and starts the service.
 set -eu
 
-REPO="${AGENTGATE_REPO:?set AGENTGATE_REPO=<owner>/agentgate}"
+REPO="${AGENTGATE_REPO:-HansKristoffer/agentgate}"
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$(uname -m)" in
   x86_64|amd64) arch=x64 ;;
@@ -34,3 +35,9 @@ chmod +x "$temp/$asset"
 mv "$temp/$asset" "$dest/agentgate"
 echo "installed $dest/agentgate"
 case ":$PATH:" in *":$dest:"*) ;; *) echo "add $dest to your PATH" ;; esac
+
+[ "${1:-}" = join ] || exit 0
+"$dest/agentgate" init
+"$dest/agentgate" "$@"
+"$dest/agentgate" setup
+"$dest/agentgate" service install
