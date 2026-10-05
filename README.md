@@ -31,6 +31,8 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
 ## First machine
@@ -227,7 +229,7 @@ The app uses Tauri commands to send HTTP requests from Rust. It has no browser H
 
 See [running agentgate](docs/operations/running.md) for backup, upgrade, and live distribution checks. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
 
-Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 3** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
+Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 4** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
 `export --no-secrets` / **Without secrets** produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
 
