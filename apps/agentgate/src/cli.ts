@@ -22,8 +22,8 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   init [--always-on] [--name srv]             create the store, name this node
   serve                                       run the daemon in the foreground
   status                                      quota bars, active accounts, nodes
-  login claude|codex [--label work]           log in in a temporary dir and import it
-  import claude|codex --from <dir> [--label]  take over an existing login
+  login claude|codex|cursor [--label work]    log in in a temporary dir and import it (cursor: browser sign-in)
+  import claude|codex|cursor --from <dir>     take over an existing login [--label]
   accounts [enable|disable|pin|unpin|rm|exhaust] <id> [minutes]
   accounts quota|verify|models|refresh|reset-cooldown <id> [...] (daemon operations)
   accounts verify <id> --probe --model <model>  quota-consuming inference check
@@ -33,6 +33,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   proxy capabilities                         daemon version and provider features
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
+  tokens [today|7d|30d|all]                  tokens used per model on this machine (default: today)
   mcp                                         (the stdio shim, started by Claude Code / Codex)
   mcp add <name> <url|preset> [--header "Name: value" ...]   any name; its slug is the id and tool prefix
   mcp add <name> --command "npx -y …" [--per-session]
@@ -162,7 +163,7 @@ async function main() {
 
     case "status": {
       initialized(s);
-      for (const p of ["claude", "codex"] as const) {
+      for (const p of ["claude", "codex", "cursor"] as const) {
         console.log(`\n${p}`);
         const accounts = s.list("account").filter((a) => a.provider === p);
         if (!accounts.length) console.log("  (no accounts)");
@@ -192,7 +193,7 @@ async function main() {
     case "login":
     case "import": {
       initialized(s);
-      const mod = sub === "claude" || sub === "codex" ? providerLogins[sub] : die(`${cmd} claude|codex`);
+      const mod = sub === "claude" || sub === "codex" || sub === "cursor" ? providerLogins[sub] : die(`${cmd} claude|codex|cursor`);
       if (cmd === "login") return console.log(`added ${await mod.login(s, str("label"))}`);
       const dir = (str("from") ?? die("--from <dir> is required")).replace(/^~/, process.env.HOME ?? "~");
       const id = await mod.importFrom(s, dir, str("label"));
@@ -204,7 +205,7 @@ async function main() {
     case "accounts": {
       initialized(s);
       if (!sub) {
-        for (const a of s.list("account")) console.log(`${a.id.padEnd(24)} ${a.provider.padEnd(6)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`);
+        for (const a of s.list("account")) console.log(`${a.id.padEnd(24)} ${a.provider.padEnd(7)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`);
         return;
       }
       const id = rest[0] ?? die(`accounts ${sub} <id>`);
@@ -246,6 +247,13 @@ async function main() {
       if (sub !== "route" || !["claude", "codex"].includes(rest[0] ?? "")) die("proxy route claude|codex [--model <id>]");
       const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
+    }
+    case "tokens": {
+      initialized(s);
+      const days = ({ today: 0, "7d": 7, "30d": 30 } as Record<string, number>)[sub ?? "today"];
+      if (days === undefined && sub !== "all") die("tokens [today|7d|30d|all]");
+      const since = sub === "all" ? 0 : days ? Date.now() - days * 86400000 : new Date().setHours(0, 0, 0, 0);
+      return console.log(JSON.stringify(await management(`/proxy/tokens?since=${since}`), null, 2));
     }
     case "requests": {
       initialized(s);

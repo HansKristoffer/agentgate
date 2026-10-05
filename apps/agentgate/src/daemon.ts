@@ -4,6 +4,7 @@ import { ZodError } from "zod";
 import { Credentials, drainRefresh } from "./credentials.ts";
 import { proxy } from "./llm/pool.ts";
 import { providers } from "./llm/providers.ts";
+import { pollTokens } from "./llm/cursor.ts";
 import { Quotas } from "./llm/quota.ts";
 import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor } from "./mcp/gateway.ts";
@@ -194,6 +195,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
+  schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);
   schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   schedule(async () => { ctx.handoffs.tick(); }, 5000);

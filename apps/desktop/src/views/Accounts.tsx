@@ -22,6 +22,7 @@ import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
 import {
   field,
   idPath,
+  providerIcon,
   providerName,
   confirmDelete,
   planName,
@@ -118,7 +119,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           {data.detected.map((d) => (
             <div className="item" key={d.provider}>
               <div className={`provider-icon ${d.provider}`}>
-                {d.provider === "claude" ? "✳" : "◎"}
+                {providerIcon(d.provider)}
               </div>
               <div className="grow">
                 <strong>{d.email}</strong>
@@ -135,12 +136,14 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           ))}
         </Panel>
       )}
-      {(["claude", "codex"] as const).map((provider) => (
+      {(["claude", "codex", "cursor"] as const).map((provider) => (
         <Panel
           key={provider}
           title={providerName(provider)}
           detail={
-            data.accounts.some((a) => a.account.provider === provider)
+            provider === "cursor"
+              ? "Cursor subscriptions and their monthly usage. Agentgate doesn't route Cursor's own traffic."
+              : data.accounts.some((a) => a.account.provider === provider)
               ? poolSummary(data.accounts.filter((a) => a.account.provider === provider), provider, provider === "claude" ? app : undefined)
               : provider === "claude"
                 ? "Claude subscriptions, shared across your sessions."
@@ -169,7 +172,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                 <div className="item stack account" key={a.account.id}>
                   <div className="row">
                     <div className={`provider-icon ${provider}`}>
-                      {provider === "claude" ? "✳" : "◎"}
+                      {providerIcon(provider)}
                     </div>
                     <div className="grow">
                       <strong>{a.account.label}</strong>
@@ -198,7 +201,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         Sign in again
                       </Button>
                     )}
-                    <button
+                    {provider !== "cursor" && <button
                       type="button"
                       className={a.account.pinned ? "pin-account pinned" : "pin-account"}
                       title={pinTitle(a)}
@@ -208,15 +211,15 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       onClick={() => void setPin(a, !a.account.pinned)}
                     >
                       <Pin size={14} fill={a.account.pinned ? "currentColor" : "none"} />
-                    </button>
+                    </button>}
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        (a.account.pinned || pinnable(a)) && {
+                        provider !== "cursor" && (a.account.pinned || pinnable(a)) && {
                           label: a.account.pinned ? "Unpin (back to automatic)" : "Pin this account",
                           onAction: () => void setPin(a, !a.account.pinned),
                         },
-                        { label: "Edit policy", onAction: () => setEdit(a) },
+                        provider !== "cursor" && { label: "Edit policy", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
                           label: "Refresh usage",
@@ -336,6 +339,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               options={[
                 { id: "claude", label: "Claude" },
                 { id: "codex", label: "Codex" },
+                { id: "cursor", label: "Cursor" },
               ]}
             />
             <Field
@@ -351,7 +355,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     isRequired
                     value={folder}
                     onChange={setFolder}
-                    placeholder="~/.claude or ~/.codex"
+                    placeholder="~/.claude, ~/.codex or ~/.config/cursor"
                   />
                   <Button
                     size="sm"

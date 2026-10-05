@@ -5,7 +5,9 @@ export const field = (form: FormData, name: string) =>
   String(form.get(name) ?? "").trim();
 export const idPath = (id: string) => encodeURIComponent(id);
 export const providerName = (p: Provider) =>
-  p === "claude" ? "Claude" : "Codex";
+  ({ claude: "Claude", codex: "Codex", cursor: "Cursor" })[p];
+export const providerIcon = (p: Provider) =>
+  ({ claude: "✳", codex: "◎", cursor: "◆" })[p];
 export const relative = (at?: number) =>
   !at
     ? "Not yet"

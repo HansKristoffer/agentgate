@@ -1,14 +1,12 @@
 import { z } from "zod";
 import { skillIdSchema, skillRepoSchema } from "./skills.ts";
-import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema } from "./proxy.ts";
+import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
 import { t3NodeStateSchema, type T3NodeState } from "./handoff.ts";
 
-export const API_VERSION = 3;
-export const providerSchema = z.enum(["claude", "codex"]);
-export type Provider = z.infer<typeof providerSchema>;
+export const API_VERSION = 4;
 export const accountSchema = z.object({
   id: z.string(),
   provider: providerSchema,
@@ -320,7 +318,7 @@ export const statusSchema = z.object({
   unknownQuota: z.record(z.string(), z.string().optional()), settings: settingsSchema,
   activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
   settingsRevision: z.string().optional(),
-  daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema }) }).optional(),
+  daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }) }).optional(),
   t3: t3NodeStateSchema.optional(),
   metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });

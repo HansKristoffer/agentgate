@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const providerSchema = z.enum(["claude", "codex", "cursor"]);
+export type Provider = z.infer<typeof providerSchema>;
+
 export const modelIdSchema = z
   .string()
   .trim()
@@ -142,7 +145,7 @@ export const requestOutcomeSchema = z.enum([
 export const proxyRequestSchema = z.object({
   id: z.string(),
   at: z.number(),
-  provider: z.enum(["claude", "codex"]),
+  provider: providerSchema,
   requestedModel: z.string(),
   routedModel: z.string(),
   account: z.string(),
@@ -199,8 +202,17 @@ export interface ProxyMetrics {
   averageHeadersMs?: number;
   averageFirstByteMs?: number;
 }
+/** Tokens one model used on this node, summed over every account. */
+export interface ModelTokens {
+  provider: Provider;
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
 export interface RouteExplanation {
-  provider: "claude" | "codex";
+  provider: Provider;
   requestedModel?: string;
   routedModel?: string;
   strategy: "automatic" | "priority" | "round-robin";
