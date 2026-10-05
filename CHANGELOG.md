@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/HansKristoffer/agentgate/compare/v0.9.0...v0.10.0) (2026-10-05)
+
+
+### Features
+
+* **app:** simpler pages, free-form names and self-updating skills ([#27](https://github.com/HansKristoffer/agentgate/issues/27)) ([bab3b5b](https://github.com/HansKristoffer/agentgate/commit/bab3b5bded3f6d5c70406682551cc63903e506c4))
+
 ## [0.9.0](https://github.com/HansKristoffer/agentgate/compare/v0.8.0...v0.9.0) (2026-10-04)
 
 
