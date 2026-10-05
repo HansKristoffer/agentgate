@@ -18,6 +18,7 @@ import {
   Settings as Gear,
   ShieldCheck,
   Sparkles,
+  SquareTerminal,
   Users,
 } from "lucide-react";
 import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
@@ -38,6 +39,7 @@ import {
   Servers,
   Settings,
   Skills,
+  T3Code,
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
@@ -58,6 +60,7 @@ const navigation = [
   { id: "skills", title: "Skills", icon: Sparkles },
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
+  { id: "t3", title: "T3 Code", icon: SquareTerminal },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
 type View = (typeof navigation)[number]["id"];
@@ -68,6 +71,7 @@ const descriptions: Record<View, string> = {
   skills: "Install skills once. Choose which projects use them.",
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
+  t3: "Hand a thread to another machine and back, with its session and code.",
   settings: "Make Agentgate work the way you do.",
 };
 
@@ -206,6 +210,7 @@ export function App() {
     skills: <Skills {...props} />,
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
+    t3: <T3Code {...props} />,
     settings: <Settings {...props} />,
   };
   const counts: Partial<Record<View, number>> = data

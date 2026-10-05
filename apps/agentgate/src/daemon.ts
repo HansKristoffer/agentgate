@@ -11,7 +11,7 @@ import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
-import { PORT, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, PORT, type Store } from "./store.ts";
 import { PULL_INTERVAL, drainPulls, peerRoutes, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
@@ -21,6 +21,13 @@ import { jsonInput } from "./http.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { CLAUDE_DIR } from "./setup.ts";
+import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
+import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
+import { handoffSource } from "./handoff/tools.ts";
+import { NodeChannel } from "./channel.ts";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -36,15 +43,32 @@ export interface Ctx {
   quotas: Quotas;
   proxyOperations: ProxyOperations;
   remote: RemoteEndpoints;
+  handoffs: Handoffs;
+  /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
+  channel: NodeChannel;
+}
+
+/** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
+export function handoffOptions(s: Store): HandoffOptions {
+  const home = DEV ? CONFIG_DIR : homedir();
+  return {
+    claudeDir: CLAUDE_DIR,
+    get worktreesDir() { return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees"); },
+    get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
+    tempDir: join(CONFIG_DIR, "handoffs"),
+  };
 }
 
 export { providers } from "./llm/providers.ts";
 
-export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports } = {}): Ctx {
+export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
   const gateway = new Gateway(s);
-  return { s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set() };
+  const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
+  gateway.builtin = () => handoffSource(handoffs);
+  const channel = new NodeChannel(s, relayedRoutes(handoffs));
+  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs };
 }
 
 export function app(ctx: Ctx) {
@@ -104,7 +128,8 @@ export function app(ctx: Ctx) {
     return c.json({ checkout, errors: ctx.skills.health().errors });
   });
 
-  app.route("/peer", peerRoutes(s));
+  // Handoff routes sit behind the peer token check that peerRoutes registers first.
+  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)));
 
   app.get("/oauth/callback", oauthCallback(ctx));
   app.route("/api", management(ctx));
@@ -171,14 +196,17 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
+  schedule(async () => { ctx.handoffs.tick(); }, 5000);
+  schedule(() => ctx.channel.reconcile(), 30_000);
   let stopping: Promise<void> | undefined;
   return {
     ctx, loopback, stop: () => stopping ??= (async () => {
       stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
-      ctx.remote.close();
+      ctx.remote.close(); ctx.channel.close();
       await ctx.gateway.close();
+      await ctx.handoffs.close();
       await stopRelay(s);
       await Promise.allSettled([...jobs, ...ctx.pending]); await ctx.imports.drain(); await drainRefresh(s); await drainPulls(s);
     })()

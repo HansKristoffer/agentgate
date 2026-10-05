@@ -75,3 +75,24 @@ export function checkPage(page: ChangesResponse, since: number): string | undefi
   if (!page.more && page.nextCursor !== page.headSeq) return "final page does not reach the head";
   return undefined;
 }
+
+/**
+ * Node channel: one group member calls another through the relay (thread handoff). The relay forwards each call
+ * over the WebSocket the target keeps open and stores nothing. Bodies are sealed by the daemons with the group key;
+ * the relay sees sizes, timing and node names only.
+ */
+export const CHANNEL_LIMITS = {
+  /** A sealed call or reply as sent: base64url of a ~1 MiB chunk plus envelope. */
+  bodyBytes: 2 * MiB,
+  /** Calls in flight per target node. */
+  inFlight: 8,
+  timeoutMs: 120_000,
+} as const;
+const channelId = z.string().uuid();
+const sealedText = z.string().max(CHANNEL_LIMITS.bodyBytes);
+/** relay → target */
+export const channelRequestFrame = z.object({ t: z.literal("req"), id: channelId, body: sealedText }).strict();
+export const channelCancelFrame = z.object({ t: z.literal("cancel"), id: channelId }).strict();
+export const channelRelayFrame = z.discriminatedUnion("t", [channelRequestFrame, channelCancelFrame]);
+/** target → relay */
+export const channelResponseFrame = z.object({ t: z.literal("res"), id: channelId, body: sealedText }).strict();

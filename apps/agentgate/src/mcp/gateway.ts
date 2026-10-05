@@ -16,6 +16,8 @@ import { resolve } from "./templates.ts";
 export { renameInstance } from "../operations.ts";
 
 export const VERSION = "0.1.0";
+/** The tool prefix of agentgate's own tools in local sessions (thread handoff); reserved in project mappings. */
+export const BUILTIN_ALIAS = "agentgate";
 const IDLE_CLOSE = 10 * 60_000;
 const MAX_TOOL_NAME = 64; // Codex's limit
 
@@ -197,6 +199,9 @@ export class Gateway {
   private timer = setInterval(() => { void this.closeIdle(); }, 60_000);
   private closed = false;
   private retired = new Set<Upstream>();
+  /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
+  builtin?: () => Promise<Source>;
+  private builtinSource?: Promise<Source>;
 
   constructor(private s: Store) { this.timer.unref(); }
 
@@ -269,6 +274,16 @@ export class Gateway {
     return out.filter((source): source is Source => !!source);
   }
 
+  private builtinTools(): Promise<Source | undefined> {
+    if (!this.builtin || this.closed) return Promise.resolve(undefined);
+    return this.builtinSource ??= this.builtin().catch((e) => { this.builtinSource = undefined; throw e; });
+  }
+  private async localSources(project: string): Promise<Source[]> {
+    const builtin = await this.builtinTools().catch(() => undefined);
+    const out = await this.sources(project);
+    return builtin ? [...out.filter((src) => src.alias !== BUILTIN_ALIAS), builtin] : out;
+  }
+
   /** Streamable HTTP endpoint for shims: `/mcp?project=owner/repo`. */
   async handle(req: Request): Promise<Response> {
     const sid = req.headers.get("mcp-session-id");
@@ -285,9 +300,9 @@ export class Gateway {
     if (this.sessions.size >= 256) return new Response("too many MCP sessions", { status: 503 });
     const project = new URL(req.url).searchParams.get("project") || "*";
     this.seen(project);
-    const instructions = mergeInstructions(await this.sources(project));
+    const instructions = mergeInstructions(await this.localSources(project));
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(instructions, () => this.sources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`), alias => this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
+    const server = mergedServer(instructions, () => this.localSources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`), async alias => alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => void this.sessions.set(id, { transport, server, project, get lastUsed() { return usage.lastUsed; }, set lastUsed(value) { usage.lastUsed = value; }, get calls() { return usage.calls; }, set calls(value) { usage.calls = value; } }),
@@ -377,6 +392,7 @@ export class Gateway {
     const tasks: Promise<unknown>[] = [];
     for (const u of new Set([...this.upstreams.values(), ...this.retired])) { u.retired = true; if (u.client) tasks.push(u.client.close()); if (u.connecting) tasks.push(u.connecting.catch(() => { })); }
     for (const { server } of this.sessions.values()) tasks.push(server.close());
+    if (this.builtinSource) tasks.push(this.builtinSource.then((src) => src.client.close()));
     await Promise.allSettled(tasks); this.upstreams.clear(); this.retired.clear(); this.sessions.clear();
   }
 

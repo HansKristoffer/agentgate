@@ -154,6 +154,8 @@ export class Store {
     this.db.run("create table if not exists request_log (at integer, provider text, account text, model text, status integer, ms integer, note text)");
     // Node-local settings that are never synced (node name, admin token, pairing code, active account).
     this.db.run("create table if not exists local (key text primary key, value text)");
+    // Thread handoff jobs this node drives or receives (handoff/jobs.ts). Node-local, never synced.
+    this.db.run("create table if not exists handoffs (id text not null, role text not null, thread text not null, target text not null, step text not null, state text not null, error text, created_at integer not null, updated_at integer not null, primary key (role, id))");
     this.migrate();
   }
 

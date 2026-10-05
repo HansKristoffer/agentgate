@@ -15,6 +15,10 @@ class_name = "RelayAdmission"
 name = "ENDPOINTS"
 class_name = "RemoteEndpoint"
 
+[[durable_objects.bindings]]
+name = "CHANNELS"
+class_name = "RelayChannel"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["RelayGroup", "RelayAdmission"]
@@ -22,6 +26,10 @@ new_sqlite_classes = ["RelayGroup", "RelayAdmission"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["RemoteEndpoint"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["RelayChannel"]
 
 # Aggregate per-address throttle (requests per 60 s). Remove to disable.
 [[ratelimits]]
@@ -40,6 +48,9 @@ RELAY_FAILED_AUTH_PER_MINUTE = "20"
 RELAY_MAX_ENDPOINTS = "5000"
 RELAY_ENDPOINTS_PER_IP_PER_DAY = "20"
 RELAY_ENDPOINT_REQUESTS_PER_MINUTE = "600"
+# Node channel (thread handoff between group members): calls and MiB forwarded per group per minute.
+RELAY_CHANNEL_REQUESTS_PER_MINUTE = "1200"
+RELAY_CHANNEL_MIB_PER_MINUTE = "256"
 # Operator switch: "1" stops new groups; existing groups keep working.
 RELAY_DISABLE_NEW_GROUPS = "0"
 # Self-hosting: `wrangler secret put RELAY_KEY` to require x-relay-key on every request.

@@ -18,6 +18,10 @@ Only pool accounts you own and use them within the provider's applicable terms. 
 
 Proxy routing, account policies, verification, request diagnostics, and upgrade behavior are described in [the proxy guide](../user/proxy.md).
 
+## Thread handoff
+
+Each daemon talks only to the T3 Code server on its own machine, over loopback, and daemons move threads between each other over Tailscale, or through the relay's node channel when they share only a relay group (see [the relay](relay.md#node-channel)). agentgate pins T3's orchestration protocol (`T3_PROTOCOL` in `apps/agentgate/src/handoff/t3.ts`); a T3 Code release that changes it makes handoffs fail with "uses a newer protocol; update agentgate" until agentgate is updated. The T3 bearer token lives 30 days with no refresh token and sits in the node-local `local` table (never synced or exported); re-pair with `agentgate t3 connect` when `agentgate t3` says so. Jobs live in the node-local `handoffs` table and resume after a restart. Their files sit in `~/.config/agentgate/handoffs/<id>` and are deleted when the job ends; an abandoned prepare is cleaned up after 10 minutes, and a worktree it created is kept for reuse. A real check needs two machines with T3 Code: hand a thread over, ask it for something said before, and hand it back.
+
 ## Distribution checks
 
 CI covers fake provider traffic, OAuth state validation, replica/store invariants, MCP reconnects, frontend builds and standalone binary smoke tests on macOS/Linux, plus native Rust checks and app packaging on macOS. Before relying on a new provider or service-install change, also check real provider login/traffic, T3 sessions, two physical machines over Tailscale, and installed launchd/systemd behavior after logout/reboot.

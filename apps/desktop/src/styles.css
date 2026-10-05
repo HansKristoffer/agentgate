@@ -64,6 +64,13 @@ pre {
 .item strong { font-size: 13px; font-weight: 500; }
 .item .grow small { overflow: hidden; text-overflow: ellipsis; }
 .item.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+/* A T3 Code thread, laid out like T3's sidebar row so the same thread is easy to find in both apps. */
+.thread { display: flex; flex-direction: column; gap: 3px; }
+.thread-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; line-height: 16px; color: var(--muted); }
+.thread-line > span { display: inline-flex; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+.thread-line > span > span { overflow: hidden; text-overflow: ellipsis; }
+.thread-line svg { flex: none; }
+.thread-line .working { color: var(--accent); }
 /* A virtual project row with its endpoint rows underneath. */
 .item.stack.virtual-project { padding: 0; gap: 0; }
 .virtual-project > .item + .item { border-top: 1px dashed var(--border); }

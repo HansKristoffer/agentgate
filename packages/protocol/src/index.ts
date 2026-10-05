@@ -3,6 +3,8 @@ import { skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema } from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
+export * from "./handoff.ts";
+import { t3NodeStateSchema, type T3NodeState } from "./handoff.ts";
 
 export const API_VERSION = 3;
 export const providerSchema = z.enum(["claude", "codex"]);
@@ -234,6 +236,8 @@ export interface Status {
   settingsRevision?: string;
   daemon?: { version: string; build: string; providers: Record<Provider, import("./proxy.ts").ProviderCapabilities> };
   metrics?: import("./proxy.ts").ProxyMetrics;
+  /** This node's connection to its T3 Code server, for thread handoffs. */
+  t3?: T3NodeState;
 }
 export interface RelayStatus {
   url: string;
@@ -317,5 +321,6 @@ export const statusSchema = z.object({
   activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
   settingsRevision: z.string().optional(),
   daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema }) }).optional(),
+  t3: t3NodeStateSchema.optional(),
   metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });

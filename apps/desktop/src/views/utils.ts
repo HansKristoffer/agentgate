@@ -24,6 +24,18 @@ export const ago = (at: number) => {
   const m = Math.round((Date.now() - at) / 60_000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
 };
+/** T3 Code's compact sidebar time: "now", "21m", "4h", "3d". */
+export const since = (iso: string) => {
+  const m = Math.floor((Date.now() - Date.parse(iso)) / 60_000);
+  if (m < 1) return "now";
+  if (m < 60) return `${m}m`;
+  return m < 1440 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`;
+};
+/** How long a thread has been working, as T3 Code shows it: "3m", "1h 53m". */
+export const elapsed = (iso: string) => {
+  const m = Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60_000));
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+};
 /** "5h" → "5-hour", "7d:opus" → "Weekly Opus". */
 export const windowName = (name: string) => {
   const [w, model] = name.split(":");
