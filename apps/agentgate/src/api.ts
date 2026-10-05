@@ -32,6 +32,7 @@ import {
   connect,
   listAllTools,
   needsLogin,
+  serverHealth,
   renameInstance,
   scanRepos,
   toolName,
@@ -176,7 +177,9 @@ export function management(ctx: Ctx) {
         const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
         return found && !pooled ? [{ provider, ...found, source: provider === "claude" ? "~/.claude" : "~/.codex" }] : [];
       }),
-      servers: s.list("mcp").map((i) => ({
+      servers: s.list("mcp").map((i) => {
+        const health = serverHealth(s, i.id);
+        return {
         id: i.id,
         label: i.label,
         template: i.template,
@@ -184,11 +187,14 @@ export function management(ctx: Ctx) {
         mode: i.mode,
         endpoint: readableEndpoint(i.url),
         loggedIn: !!s.get("mcpCredential", i.id)?.tokens,
-        needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin,
+        needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin || !!health?.needsLogin,
+        available: health?.ok,
+        checkedAt: health?.at,
         refreshError: s.local(`refreshError:mcpCredential:${i.id}`)
           ? "Token refresh failed"
           : undefined,
-      })),
+        };
+      }),
       projects: s.list("project").map(p => publicProject(p, ctx.remote)),
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),

@@ -7,7 +7,7 @@ import { patchSettings, revision, checkRevision } from "./configuration.ts";
 import { modelPolicySchema } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus, relevant } from "./llm/pool.ts";
-import { aliasesFor, connect, listAllTools, needsLogin, renameInstance } from "./mcp/gateway.ts";
+import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
@@ -262,8 +262,10 @@ async function main() {
         return;
       }
       if (sub === "ls") {
-        for (const i of s.list("mcp"))
-          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}`);
+        for (const i of s.list("mcp")) {
+          const h = serverHealth(s, i.id), state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
+          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
+        }
         return;
       }
       if (sub === "add") {

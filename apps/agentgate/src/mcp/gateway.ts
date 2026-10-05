@@ -51,7 +51,26 @@ export function parseRemote(url: string): string | undefined {
 }
 
 /** Pass the store to use the instance's OAuth login (refreshing it when needed). */
+/** Whether this node last reached the server, from Test or a gateway connection. Node-local: a local command or a
+ * network path can work on one machine and not another. Holds no error text, so it can never carry a secret. */
+export function serverHealth(s: Store, id: string): { ok: boolean; needsLogin?: boolean; at: number } | undefined {
+  const raw = s.local(`mcpHealth:${id}`);
+  return raw ? JSON.parse(raw) : undefined;
+}
+
+/** Connect to an instance; with a store, record the outcome as its health. */
 export async function connect(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
+  try {
+    const client = await open(inst, cwd, s);
+    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: true, at: s.now() }));
+    return client;
+  } catch (e) {
+    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: false, needsLogin: needsLogin(e), at: s.now() }));
+    throw e;
+  }
+}
+
+async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
   const r = resolve(inst);
   const client = new Client({ name: "agentgate", version: VERSION });
   let transport: StdioClientTransport | StreamableHTTPClientTransport;

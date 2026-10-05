@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { connect, needsLogin } from "../src/mcp/gateway.ts";
+import { connect, needsLogin, serverHealth } from "../src/mcp/gateway.ts";
 import { finishLogin, startLogin } from "../src/mcp/oauth.ts";
 import { newInstance, parseHeaders } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
@@ -81,7 +81,8 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
 
   // Without a login the connect fails with something the UI treats as "needs login".
-  expect(connect(s.get("mcp", "fake")!, undefined, s).then(() => "ok", (e) => needsLogin(e))).resolves.toBe(true);
+  expect(await connect(s.get("mcp", "fake")!, undefined, s).then(() => "ok", (e) => needsLogin(e))).toBe(true);
+  expect(serverHealth(s, "fake")).toMatchObject({ ok: false, needsLogin: true });
 
   const authUrl = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback");
   expect(authUrl!.pathname).toBe("/authorize");
@@ -92,8 +93,10 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   const back = new URL(res.headers.get("location")!);
   expect(back.pathname).toBe("/oauth/callback");
   expect(await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!)).toBe("fake");
+  expect(serverHealth(s, "fake")).toBeUndefined();
   const first = s.get("mcpCredential", "fake")!.tokens!.access_token;
   expect(await call(s, "fake")).toBe(`token ${first}`);
+  expect(serverHealth(s, "fake")).toMatchObject({ ok: true });
 
   // The access token dies; the next connect refreshes with the stored refresh token and saves the new pair.
   access.clear();
