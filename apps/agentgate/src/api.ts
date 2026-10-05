@@ -70,6 +70,7 @@ import {
   RelayError,
   cleanupRelay,
   createRelay,
+  installAndJoin,
   joinRelay,
   leaveRelay,
   parseJoin,
@@ -558,7 +559,7 @@ export function management(ctx: Ctx) {
       // The invite is a master key: only a local caller may see it.
       local(c.env.listener);
       const invite = await relayed(() => createRelay(s, f.relayUrl));
-      return c.json({ command: `agentgate join ${invite}`, method: "relay" });
+      return c.json({ command: installAndJoin(invite), method: "relay" });
     }
     const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url;
     if (!url)
@@ -566,7 +567,7 @@ export function management(ctx: Ctx) {
         message: "Start Tailscale before pairing",
       });
     return c.json({
-      command: `agentgate join ${url} ${pairCode(s)}`,
+      command: installAndJoin(`${url} ${pairCode(s)}`),
       method: "tailnet",
       expiresIn: 600,
     });

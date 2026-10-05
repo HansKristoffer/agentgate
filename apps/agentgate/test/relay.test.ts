@@ -6,7 +6,7 @@ import { Hono } from "hono";
 import { memoryRelay } from "../../relay/test/memory.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import {
-  RelayBusy, cleanupRelay, createRelay, deriveKeys, entryKey, joinRelay, leaveRelay, open, parseInvite, parseJoin,
+  RelayBusy, cleanupRelay, createRelay, deriveKeys, entryKey, installAndJoin, joinRelay, leaveRelay, open, parseInvite, parseJoin,
   reconcileRelay, relayInvite, relayStatus, relaySync, rotateRelay, seal, setServiceKey, stopRelay, syncAll, via, withRelay,
 } from "../src/relay.ts";
 import { Store } from "../src/store.ts";
@@ -90,6 +90,8 @@ test("invites and pairing commands are validated without echoing secrets", () =>
   expect(parseJoin(`agentgate join ${invite}`)).toEqual({ invite, force: false });
   expect(parseJoin(`agentpool join ${invite} --force`)).toEqual({ invite, force: true });
   expect(parseJoin("agentgate join http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch")).toEqual({ url: "http://mac.tail.ts.net:7878", code: "amber-anchor-apple-arrow-basil-beacon-birch" });
+  expect(parseJoin(installAndJoin(invite))).toEqual({ invite, force: false });
+  expect(parseJoin(installAndJoin("http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch"))).toEqual({ url: "http://mac.tail.ts.net:7878", code: "amber-anchor-apple-arrow-basil-beacon-birch" });
   for (const bad of [`${invite}; rm -rf /`, `agentgate join ${invite} extra`, "agentgate join", "join ftp://x a-b-c-d-e-f-g", `${invite.slice(0, -1)}!`]) {
     const error = (() => { try { parseJoin(bad); } catch (e) { return String(e); } })();
     expect(error).toBeDefined();
@@ -503,7 +505,7 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
   expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
   expect(relayInvite(a)).toBeUndefined();
   const paired = await (await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url })).json() as { command: string };
-  expect(paired.command).toStartWith("agentgate join agr1.");
+  expect(paired.command).toContain("| sh -s -- join agr1.");
   const bad = await call(handlerB, "/api/nodes/join", { command: `${paired.command} && curl evil` });
   expect(bad.status).toBe(400);
   expect(await bad.text()).not.toContain(paired.command.split(".")[2]!);

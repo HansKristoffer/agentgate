@@ -252,8 +252,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             {shown.rotated
               ? "Run this on every relay machine you keep. The old secret no longer reaches this machine."
               : shown.method === "relay"
-                ? "On the other machine, initialize Agentgate, then run this command."
-                : "On the other machine, initialize Agentgate, start Tailscale, then run this command. The code expires in 10 minutes."}
+                ? "Run this on the other machine. It installs Agentgate, joins this machine and starts the service."
+                : "Start Tailscale on the other machine, then run this there. It installs Agentgate, joins this machine and starts the service. The code expires in 10 minutes."}
           </p>
           <pre>{shown.command}</pre>
           <Button
@@ -295,7 +295,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               name="command"
               isRequired
               multiline
-              placeholder="agentgate join …, from Pair a machine on the other machine"
+              placeholder="The command from Pair a machine on the other machine"
             />
             <Button type="submit" size="sm">
               Join machine
