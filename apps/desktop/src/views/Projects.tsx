@@ -350,6 +350,14 @@ export function Projects(props: ViewProps) {
               <fieldset className="checklist">
                 <legend>MCP servers</legend>
                 <div className="rows">
+                  {edit.id !== "*" && !edit.virtual && !isVirtual(edit.id) && (
+                    <Check className="item" name="inherit" defaultSelected={edit.inheritDefaults}>
+                      <span className="grow">
+                        <strong>Global MCP servers</strong>
+                        <small>The servers in Global defaults</small>
+                      </span>
+                    </Check>
+                  )}
                   {data.servers.length ? (
                     // Per-session servers start inside a worktree, which a remote client doesn't have.
                     data.servers.filter((s) => !(edit.virtual || isVirtual(edit.id)) || s.mode === "shared").map((s) => {
@@ -377,11 +385,6 @@ export function Projects(props: ViewProps) {
                 </div>
               </fieldset>
               <ProjectSkillChecks data={data} project={edit.id} selected={edit.skills} />
-              {edit.id !== "*" && !edit.virtual && !isVirtual(edit.id) && (
-                <Check name="inherit" defaultSelected={edit.inheritDefaults}>
-                  Include global MCP servers
-                </Check>
-              )}
               <Button type="submit" size="sm">
                 Save project
               </Button>
