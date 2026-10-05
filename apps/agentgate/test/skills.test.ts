@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, writeFileSync, rmSync, renameSync, unlinkSync, symlinkSync, utimesSync, watch, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connectSkillRepo, deleteSkill, description, installSkills, readSkill, repoUrl, setSkillProjects, setSkillRepoProjects, SkillLinks, skillRepoSummaries, syncSkillRepo, updateSkill, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
+import { connectSkillRepo, deleteSkill, description, installSkills, readSkill, repoUrl, setSkillProjects, setSkillRepoProjects, SkillLinks, skillRepoSummaries, syncSkillRepo, updateSkill, updateSkills, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
 import { readRepoSkills, type RepoFetch, type RepoFetcher } from "../src/skill-import.ts";
 import { MAX_SKILL, SkillConflict } from "@agentgate/protocol";
 import { parseData, parseRecord, importBackup, Store } from "../src/store.ts";
@@ -75,7 +75,7 @@ test("links follow project assignments, never touch foreign entries, and reach w
     git(repo, "worktree", "add", "-q", join(dir, "wt2"));
     expect(await until(() => link(join(dir, "wt2", ".agents", "skills", "alpha")) === join(root, "alpha"))).toBe(true);
 
-    writeSkillMd(s, "alpha", md("alpha", "Changed."));
+    installSkills(s, "owner/pack", [fetched("alpha", "Changed.")]);
     links.sync();
     expect(readFileSync(join(root, "alpha", "SKILL.md"), "utf8")).toContain("Changed.");
     expect(existsSync(join(root, "alpha", "scripts", "run.sh"))).toBe(true);
@@ -182,15 +182,15 @@ test("reading a source reports symlinks and oversized files rather than incomple
   expect(() => readSkill(src)).toThrow(/encoded/);
 });
 
-test("late updates cannot resurrect deletions, replace edits, or overwrite peer changes", async () => {
+test("late updates cannot resurrect deletions, replace a recreated skill, or overwrite peer changes", async () => {
   const { s } = setup();
-  for (const action of ["delete", "edit", "recreate", "peer"] as const) {
+  for (const action of ["delete", "recreate", "peer"] as const) {
     const id = `race-${action}`;
     installSkills(s, "owner/pack", [fetched(id)]);
     const gate = Promise.withResolvers<FetchedSkill[]>();
     const updating = updateSkill(s, id, () => gate.promise);
     if (action === "delete" || action === "recreate") deleteSkill(s, id);
-    if (action === "edit" || action === "recreate") writeSkillMd(s, id, md(id, "new local edit"));
+    if (action === "recreate") writeSkillMd(s, id, md(id, "new local edit"));
     if (action === "peer") {
       const record = s.record("skill", id)!;
       const data = { ...s.get("skill", id)!, files: fetched(id, "peer edit").files };
@@ -225,10 +225,19 @@ test("normalized unchanged installs and updates create no revisions and sizes co
   expect(await updateSkill(s, "x", async () => [{ ...skill, files: [...skill.files].reverse() }])).toBe(false);
   expect(s.seq()).toBe(before);
   expect(await updateSkill(s, "x", async () => [{ ...skill, files: skill.files.map(f => ({ ...f, executable: false })) }])).toBe(true);
-  writeSkillMd(s, "x", md("x", "edit"));
-  expect(s.get("skill", "x")!.hash).toBeUndefined();
+  // A skill with a source follows it, so it can't be edited locally.
+  expect(() => writeSkillMd(s, "x", md("x", "edit"))).toThrow(SkillConflict);
   writeSkillMd(s, "five", "hello");
   expect(skillSummaries(s).find(k => k.id === "five")!.size).toBe(5);
+});
+
+test("installed skills follow their source and report failures without stopping", async () => {
+  const { s } = setup();
+  installSkills(s, "owner/pack", [fetched("a"), fetched("gone")]);
+  writeSkillMd(s, "mine", md("mine"));
+  const results = await updateSkills(s, async () => [fetched("a", "upstream")]);
+  expect(results).toEqual([{ id: "a", outcome: "updated" }, { id: "gone", outcome: "failed: owner/pack no longer has gone" }]);
+  expect(Buffer.from(s.get("skill", "a")!.files[0]!.data, "base64").toString()).toContain("upstream");
 });
 
 test("a failed publication restores the old copy and continues to healthy skills", () => {

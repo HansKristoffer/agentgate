@@ -258,7 +258,8 @@ export function RowMenu({ label, items }: { label: string; items: (MenuAction | 
   const list = items.filter((i): i is MenuAction => !!i);
   return (
     <Dropdown>
-      <Dropdown.Trigger aria-label={label} className={buttonVariants({ variant: "ghost", size: "sm", isIconOnly: true })}>
+      {/* The trigger's own display: inline-block would undo the button's centering. */}
+      <Dropdown.Trigger aria-label={label} className={`${buttonVariants({ variant: "ghost", size: "sm", isIconOnly: true })} inline-flex!`}>
         <Ellipsis size={16} />
       </Dropdown.Trigger>
       <Dropdown.Popover placement="bottom end">

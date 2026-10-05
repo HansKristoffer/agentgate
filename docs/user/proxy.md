@@ -4,9 +4,9 @@ The daemon serves Claude and Codex traffic on loopback. Management operations ru
 
 ## Accounts and quota
 
-Accounts and Overview share measured quota windows, observation age/source/node, reset countdowns, and local cooldowns. Enter a model on Accounts to show its relevant account, family, and exact-model restrictions. A reset that has passed enables routing reevaluation while retaining the last measured percentage; it does not create a fresh zero observation. The account can become eligible only after all relevant blockers expire.
+Accounts and Overview share measured quota windows, reset countdowns, and local cooldowns. A reset that has passed enables routing reevaluation while retaining the last measured percentage; it does not create a fresh zero observation. The account can become eligible only after all relevant blockers expire.
 
-Use **Refresh usage**, **Discover models**, or **Verify (read-only)** on a row. Select accounts or a provider for batch operations; up to 100 accounts run with four concurrent workers and per-account results. Verification checks coordinated credentials, read-only quota, and model discovery. **Inference probe** sends a small request through the proxy using the selected account and consumes quota. It requires an explicit model and never silently switches to another account.
+The app offers **Refresh usage** in an account's ⋯ menu. The other checks run from the CLI below, on one account or a batch: up to 100 accounts run with four concurrent workers and per-account results. Verification checks coordinated credentials, read-only quota, and model discovery. `--probe` sends a small request through the proxy using the selected account and consumes quota. It requires an explicit model and never silently switches to another account.
 
 Claude background usage checks prefer the credential holder. Codex background polling defaults off: `/backend-api/wham/usage` and `/backend-api/codex/models?client_version=0.149.1` are isolated candidate integrations covered by fixtures, awaiting live-client validation. Manual checks are available. Failed polls retain previous observations and expose sanitized health. Live observations received during a poll take precedence; relogin and deletion invalidate old results.
 

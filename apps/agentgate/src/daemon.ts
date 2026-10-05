@@ -14,7 +14,7 @@ import { rotateLogs } from "./service.ts";
 import { PORT, type Store } from "./store.ts";
 import { PULL_INTERVAL, drainPulls, peerRoutes, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
-import { SkillLinks, syncSkillRepos } from "./skills.ts";
+import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
 import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
@@ -161,6 +161,11 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);
+  // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
+  schedule(async () => {
+    for (const { id, outcome } of await updateSkills(s, undefined, ctx.abort.signal))
+      if (outcome.startsWith("failed")) console.error(`skills: ${id}: ${outcome}`);
+  }, 3600000);
   schedule(() => Promise.all([pullAll(s), relaySync(s)]), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);

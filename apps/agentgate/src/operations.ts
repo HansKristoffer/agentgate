@@ -1,6 +1,6 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
-import { isVirtual, projectIdSchema } from "@agentgate/protocol";
+import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
 import { canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
@@ -55,15 +55,28 @@ export function deleteAccount(s: Store, id: string) {
   });
 }
 
-export function createInstance(s: Store, input: { id: string; target?: string; command?: string; perSession?: boolean; headers?: string | string[] }): McpInstance {
-  if (s.get("mcp", input.id)) throw new Error(`${input.id} already exists`);
+/** `name` is whatever the user typed; its slug becomes the id and tool prefix, and the name itself is kept for display. */
+export function createInstance(s: Store, input: { name: string; target?: string; command?: string; perSession?: boolean; headers?: string | string[] }): McpInstance {
+  const name = input.name.trim(), id = slugify(name);
+  if (!id) throw new Error("name: use at least one letter or digit");
+  if (name.length > 100) throw new Error("name: 100 characters at most");
+  if (s.get("mcp", id)) throw new Error(`${id} already exists; choose another name`);
   const p = input.target ? preset(input.target) : undefined;
   const command = input.command ? parseCommand(input.command) : undefined;
-  const inst = p ? fromPreset(p, input.id) : command
-    ? newInstance({ id: input.id, command: command[0], args: command.slice(1), mode: input.perSession ? "perSession" : "shared" })
-    : newInstance({ id: input.id, url: input.target });
+  const inst = p ? fromPreset(p, id) : command
+    ? newInstance({ id, command: command[0], args: command.slice(1), mode: input.perSession ? "perSession" : "shared" })
+    : newInstance({ id, url: input.target });
   inst.headers = { ...inst.headers, ...parseHeaders(input.headers) };
-  return s.put("mcp", input.id, inst);
+  if (name !== id) inst.label = name;
+  return s.put("mcp", id, inst);
+}
+/** Changes only the name shown in the app; the id and tool prefix stay, so project mappings keep working. */
+export function labelInstance(s: Store, id: string, label: string) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  const name = label.trim();
+  if (!name || name.length > 100) throw new Error("name: 1 to 100 characters");
+  s.put("mcp", id, { ...inst, label: name === id ? undefined : name });
 }
 export function deleteInstance(s: Store, id: string) {
   s.transaction(() => {

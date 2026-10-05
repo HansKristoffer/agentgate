@@ -1,13 +1,14 @@
 import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
 import { Button } from "@heroui/react";
-import { Badge, Empty, Panel, Quota } from "../components/ui.tsx";
+import { Badge, Empty, Panel } from "../components/ui.tsx";
+import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import type { ViewProps } from "../types.ts";
-import { providerName, windowName } from "./utils.ts";
+import { providerName } from "./utils.ts";
 
 export function Dashboard({
   data,
   navigate,
-}: ViewProps & { navigate: (view: "accounts" | "activity" | "servers" | "nodes") => void }) {
+}: ViewProps & { navigate: (view: "accounts" | "servers" | "nodes") => void }) {
   return (
     <>
       <div className="stats">
@@ -45,35 +46,6 @@ export function Dashboard({
           </button>
         ))}
       </div>
-      {data.metrics && (
-        <Panel
-          title="Proxy health"
-          detail="Completed requests retained on this daemon in the last 24 hours."
-          action={
-            <Button size="sm" variant="ghost" onPress={() => navigate("activity")}>
-              Activity
-              <ArrowRight size={14} />
-            </Button>
-          }
-        >
-          <div className="metrics">
-            {[
-              [data.metrics.total, "Requests"],
-              [`${data.metrics.total ? Math.round((100 * data.metrics.succeeded) / data.metrics.total) : 0}%`, "Succeeded"],
-              [data.metrics.failed, "Failed"],
-              [data.metrics.cancelled, "Cancelled"],
-              [data.metrics.interrupted, "Interrupted"],
-              [data.metrics.fallback, "Fallbacks"],
-              [data.metrics.averageHeadersMs === undefined ? "—" : `${data.metrics.averageHeadersMs} ms`, "To headers"],
-            ].map(([value, label]) => (
-              <div key={label}>
-                <strong>{value}</strong>
-                <span>{label}</span>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
       <Panel
         title="Subscription pool"
         detail="Your sessions use the next available account automatically."
@@ -139,84 +111,11 @@ export function Dashboard({
                             ? "Ready"
                             : "Disabled"}
               </Badge>
-              <div className="mini-quotas">
-                {a.windows.length ? (
-                  a.windows.map((w) => (
-                    <div key={w.name} title={w.resetsAt ? `Resets ${new Date(w.resetsAt).toLocaleString()}` : undefined}>
-                      <span>{windowName(w.name)}</span>
-                      <Quota value={w.usedPct} />
-                      <small>{Math.round(w.usedPct)}%</small>
-                    </div>
-                  ))
-                ) : (
-                  <small>No usage data yet</small>
-                )}
-              </div>
+              <AccountQuota account={a} />
             </div>
           ))
         )}
       </Panel>
-      <div className="columns">
-        <Panel
-          title="Machines"
-          detail="Paired over your Tailscale network."
-          action={
-            <Button size="sm" variant="ghost" onPress={() => navigate("nodes")}>
-              Manage
-            </Button>
-          }
-        >
-          {data.nodes.map((n) => (
-            <div className="item" key={n.id}>
-              <span className={`dot ${n.online ? "online" : ""}`} />
-              <div className="grow">
-                <strong>{n.id}</strong>
-                <small>
-                  {n.id === data.node
-                    ? "This node"
-                    : n.online
-                      ? "Connected"
-                      : "Offline"}
-                  {n.alwaysOn ? " · Always on" : ""}
-                </small>
-              </div>
-              {n.syncError && <Badge>Sync failed</Badge>}
-            </div>
-          ))}
-        </Panel>
-        <Panel
-          title="Recent activity"
-          detail="Account switches, requests, and refreshes."
-        >
-          {data.activity.length ? (
-            <>
-              {data.activity.slice(0, 8).map((a, i) => (
-                <div className="item" key={`${a.at}-${i}`}>
-                  <span
-                    className={`dot ${a.status > 0 && a.status < 400 ? "online" : ""}`}
-                  />
-                  <div className="grow">
-                    <strong>
-                      {a.note || `${a.provider} request · ${a.status}`}
-                    </strong>
-                    <small>{a.account || a.provider}</small>
-                  </div>
-                  <time className="activity-time">
-                    {new Date(a.at).toLocaleTimeString(undefined, {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </time>
-                </div>
-              ))}
-            </>
-          ) : (
-            <Empty>
-              All quiet. Activity appears when your agents start working.
-            </Empty>
-          )}
-        </Panel>
-      </div>
     </>
   );
 }

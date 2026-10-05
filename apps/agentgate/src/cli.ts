@@ -14,7 +14,7 @@ import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } fro
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, joinRelay, leaveRelay, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, saveProject, setAccount } from "./operations.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale or a relay
@@ -34,8 +34,9 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
   mcp                                         (the stdio shim, started by Claude Code / Codex)
-  mcp add <name> <url|preset> [--header "Name: value" ...]
+  mcp add <name> <url|preset> [--header "Name: value" ...]   any name; its slug is the id and tool prefix
   mcp add <name> --command "npx -y …" [--per-session]
+  mcp label <id> <name>                                      change the name shown in the app
   mcp login <name> | rename <name> <new> | ls | presets | test <name> | rm <name>
   skills find <query>                         search skills.sh
   skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...]
@@ -262,13 +263,14 @@ async function main() {
       }
       if (sub === "ls") {
         for (const i of s.list("mcp"))
-          console.log(`${i.id.padEnd(20)} ${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}`);
+          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}`);
         return;
       }
       if (sub === "add") {
-        const [id, target] = rest;
-        if (!id || (!target && !str("command"))) die('mcp add <name> <url|preset> [--header "Name: value"] | mcp add <name> --command "npx …" [--per-session]');
-        const inst = createInstance(s, { id: id!, target, command: str("command"), perSession: !!opts["per-session"], headers: opts.header as string[] | undefined });
+        const [name, target] = rest;
+        if (!name || (!target && !str("command"))) die('mcp add <name> <url|preset> [--header "Name: value"] | mcp add <name> --command "npx …" [--per-session]');
+        const inst = createInstance(s, { name: name!, target, command: str("command"), perSession: !!opts["per-session"], headers: opts.header as string[] | undefined });
+        const id = inst.id;
         if (inst.url) {
           const ok = await connect(inst, process.cwd(), s).then((c) => c.close().then(() => true), (e) => (needsLogin(e) ? false : die(`${id}: ${e}`)));
           if (!ok) console.log(`${id} needs a login: agentgate mcp login ${id}`);
@@ -291,6 +293,12 @@ async function main() {
         console.log(`${inst.id}: ${tools.length} tools`);
         for (const t of tools) console.log(`  ${t.name}`);
         return;
+      }
+      if (sub === "label") {
+        const [id, label] = rest;
+        if (!id || !label) die("mcp label <id> <name>");
+        labelInstance(s, id!, label!);
+        return console.log(`${id} is shown as ${label}`);
       }
       if (sub === "rename") {
         const [from, to] = rest;
@@ -363,10 +371,8 @@ async function main() {
         return die(HELP);
       }
       if (sub === "update" && !rest[0]) {
-        const repos = sk.skillRepoSummaries(s);
-        for (const k of sk.skillSummaries(s).filter((k) => k.source && !repos.some((r) => r.url === k.source)))
-          console.log(`${k.id}: ${await sk.updateSkill(s, k.id).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
-        for (const r of repos)
+        for (const { id, outcome } of await sk.updateSkills(s)) console.log(`${id}: ${outcome}`);
+        for (const r of sk.skillRepoSummaries(s))
           console.log(`${r.url}: ${await sk.syncSkillRepo(s, r.url).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
         return;
       }

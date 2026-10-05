@@ -40,6 +40,7 @@ import { finishLogin, startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
 import {
   createInstance,
+  labelInstance,
   deleteAccount,
   deleteInstance,
   saveProject,
@@ -176,6 +177,7 @@ export function management(ctx: Ctx) {
       }),
       servers: s.list("mcp").map((i) => ({
         id: i.id,
+        label: i.label,
         template: i.template,
         transport: i.transport,
         mode: i.mode,
@@ -329,8 +331,14 @@ export function management(ctx: Ctx) {
       })
       .strict()
       .parse(await json(c.req.raw));
-    const inst = input(() => createInstance(s, f));
+    const { id: name, ...rest } = f;
+    const inst = input(() => createInstance(s, { name, ...rest }));
     return c.json({ id: inst.id }, 201);
+  });
+  app.patch("/servers/:id", async (c) => {
+    const f = z.object({ label: z.string() }).strict().parse(await json(c.req.raw));
+    input(() => labelInstance(s, c.req.param("id"), f.label));
+    return c.json({ ok: true });
   });
   app.post("/servers/:id/rename", async (c) => {
     const f = z.object({ id: z.string().min(1) }).parse(await json(c.req.raw));

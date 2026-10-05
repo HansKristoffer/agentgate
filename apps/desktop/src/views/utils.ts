@@ -30,11 +30,16 @@ export const windowName = (name: string) => {
   const base = w === "5h" ? "5-hour" : w === "7d" ? "Weekly" : w!;
   return model ? `${base} ${model[0]!.toUpperCase()}${model.slice(1)}` : base;
 };
-/** "in 4 h"; undefined when the window has no reset yet. */
-export const resetIn = (at?: number) => {
-  if (!at) return undefined;
-  const m = Math.max(1, Math.round((at - Date.now()) / 60_000));
-  return m < 60 ? `in ${m} min` : m < 1440 ? `in ${Math.round(m / 60)} h` : `in ${Math.round(m / 1440)} d`;
+/** "in 3 h 47 min"; empty when the window has no reset yet. */
+export const resetIn = (at: number | undefined, now = Date.now()) => {
+  if (!at) return "";
+  if (at <= now) return "reset passed";
+
+  const minutes = Math.max(1, Math.ceil((at - now) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  if (minutes < 60) return `in ${minutes} min`;
+  if (minutes < 1440) return `in ${hours} h ${minutes % 60} min`;
+  return `in ${Math.floor(hours / 24)} d ${hours % 24} h`;
 };
 export const planName = (plan: string) => {
   const p = plan.replace(/^claude_/, "");

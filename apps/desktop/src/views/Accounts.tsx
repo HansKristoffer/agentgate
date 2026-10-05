@@ -2,11 +2,10 @@ import { useState } from "react";
 import { CircleHelp, ExternalLink, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
-import type { AccountStatus, Provider } from "@agentgate/protocol";
+import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
 import {
   Badge,
-  Check,
   Choice,
   Empty,
   Field,
@@ -16,11 +15,10 @@ import {
   RowMenu,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { DesktopAlerts, DesktopButton, DesktopHelp, DesktopPanel, desktopActions, desktopNote, forgetLogin, nameOf } from "./ClaudeDesktop.tsx";
+import { DesktopAlerts, DesktopHelp, desktopActions, desktopNote, forgetLogin, nameOf, usable } from "./ClaudeDesktop.tsx";
 import { request } from "../api.ts";
-import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
+import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
-import { useAccountActions } from "../features/proxy/AccountActions.tsx";
 import {
   field,
   idPath,
@@ -29,49 +27,66 @@ import {
   planName,
 } from "./utils.ts";
 
+/** Which account a provider's sessions use. For Claude with Claude Desktop on this Mac, one choice drives both:
+ * picking an account moves Desktop to it too, and Automatic leaves Desktop where it is, since every switch restarts it. */
 function SubscriptionSelector({
   data,
   connection,
   perform,
   provider,
-}: Pick<ViewProps, "data" | "connection" | "perform"> & { provider: Provider }) {
+  desktop,
+}: Pick<ViewProps, "data" | "connection" | "perform"> & {
+  provider: Provider;
+  desktop?: { app: DesktopStatus; act: ReturnType<typeof desktopActions> };
+}) {
   const accounts = data.accounts.filter((a) => a.account.provider === provider);
   const selected = accounts.find((a) => a.account.pinned);
+  const app = desktop?.app;
+  const current = app?.mode === "signed-in" ? app.current : undefined;
+  const loginFor = (id: string) => app?.logins.find((l) => l.accountId === id);
+  const desktopNow =
+    app?.mode === "pool"
+      ? "Claude Desktop shares your subscriptions in its Code tab."
+      : app?.mode === "other-gateway"
+        ? "Claude Desktop uses another gateway."
+        : current
+          ? `Claude Desktop stays on ${nameOf(current)}.`
+          : "Claude Desktop isn't signed in.";
+  let description = "Automatic picks the account with the most room left.";
+  if (app && selected)
+    description = usable(loginFor(selected.account.id))
+      ? "Claude Code and Claude Desktop use this account. Switching restarts Claude Desktop."
+      : "Claude Code uses this account. Connect it to Claude Desktop from its ⋯ menu to use it there too.";
+  else if (app) description = `Claude Code picks the account with the most room left. ${desktopNow}`;
   return (
     <Choice
       className="item"
-      label={`Active ${providerName(provider)} subscription`}
-      description="Applies to the next request in all routed sessions. Falls back if unavailable."
+      label={app ? "Claude uses" : `${provider === "claude" ? "Claude Code" : "Codex"} uses`}
+      description={description}
       value={selected ? `account:${selected.account.id}` : "automatic"}
       disabledKeys={accounts
         .filter((a) => !a.account.enabled || a.needsLogin)
         .map((a) => `account:${a.account.id}`)}
-      onChange={(key) => {
+      onChange={async (key) => {
         if (!key) return;
         const value = String(key);
-        void perform(
+        const id = value.slice("account:".length);
+        await perform(
           async () => {
             if (value === "automatic") {
               for (const a of accounts.filter((a) => a.account.pinned))
-                await request(
-                  connection,
-                  `/accounts/${idPath(a.account.id)}`,
-                  "PATCH",
-                  { pinned: false },
-                );
+                await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: false });
             } else {
-              await request(
-                connection,
-                `/accounts/${idPath(value.slice("account:".length))}`,
-                "PATCH",
-                { pinned: true },
-              );
+              await request(connection, `/accounts/${idPath(id)}`, "PATCH", { pinned: true });
             }
           },
           value === "automatic"
             ? `${providerName(provider)} uses automatic selection`
             : `${providerName(provider)} subscription selected`,
         );
+        // Desktop follows after the pin is saved; its own confirmation covers the restart.
+        const login = value !== "automatic" ? loginFor(id) : undefined;
+        if (desktop && usable(login) && !(current?.accountUuid === login!.accountUuid)) await desktop.act.use(login!);
       }}
       options={[
         { id: "automatic", label: "Automatic" },
@@ -85,7 +100,7 @@ function SubscriptionSelector({
                 : undefined;
           return {
             id: `account:${a.account.id}`,
-            label: [a.account.label, a.account.email, unavailable]
+            label: [a.account.label, a.account.email !== a.account.label && a.account.email, unavailable]
               .filter(Boolean)
               .join(" · "),
           };
@@ -100,9 +115,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<AccountStatus>();
-  const [selected, setSelected] = useState(new Set<string>());
-  const [models, setModels] = useState({ claude: "", codex: "" });
-  const actions = useAccountActions({ data, connection, perform, local, desktop }, selected, setSelected);
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
@@ -110,6 +122,8 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const act = desktopActions(connection, perform);
   const loginFor = (id: string) => app?.logins.find((l) => l.accountId === id);
   const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
+  // A login Desktop runs that Agentgate hasn't saved yet: it shows on its account's row, or as its own row.
+  const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
   const problem = (a: AccountStatus) =>
     a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
@@ -120,11 +134,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   return (
     <>
       <HeaderActions>
-        {app && (
-          <Button size="sm" variant="ghost" onPress={() => setHelp(true)}>
-            <CircleHelp size={15} /> Claude Desktop help
-          </Button>
-        )}
         <Button
           size="sm"
           onPress={() => {
@@ -136,13 +145,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           Add account
         </Button>
       </HeaderActions>
-      {actions.controls}
-      {app && (
-        <>
-          <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
-          <DesktopPanel data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
-        </>
-      )}
+      {app && <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />}
       {data.detected.length > 0 && (
         <Panel
           title={local ? "Signed in on this Mac" : `Signed in on ${data.node}`}
@@ -177,32 +180,30 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               ? "Claude subscriptions, shared across your sessions."
               : "ChatGPT subscriptions for your Codex sessions."
           }
-          action={<Button size="sm" variant="ghost" isDisabled={!data.accounts.some(a => a.account.provider === provider)} onPress={() => { setSelected(new Set(data.accounts.filter(a => a.account.provider === provider).slice(0, 100).map(a => a.account.id))); }}>Select all</Button>}
+          action={
+            provider === "claude" &&
+            app && (
+              <Button size="sm" variant="ghost" onPress={() => setHelp(true)}>
+                <CircleHelp size={15} /> Claude Desktop help
+              </Button>
+            )
+          }
           foot={
             data.unknownQuota[provider] &&
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
           {data.accounts.some((a) => a.account.provider === provider) && (
-            <>
-              <SubscriptionSelector
-                data={data}
-                connection={connection}
-                perform={perform}
-                provider={provider}
-              />
-              <Field
-                className="item"
-                label="Usage for model"
-                description="Show only the limits that apply to one model."
-                placeholder="All models"
-                value={models[provider]}
-                onChange={(value) => setModels((old) => ({ ...old, [provider]: value }))}
-              />
-            </>
+            <SubscriptionSelector
+              data={data}
+              connection={connection}
+              perform={perform}
+              provider={provider}
+              desktop={provider === "claude" && app ? { app, act } : undefined}
+            />
           )}
           {!data.accounts.some((a) => a.account.provider === provider) &&
-          !(provider === "claude" && desktopOnly.length) ? (
+          !(provider === "claude" && (desktopOnly.length || unsaved)) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
           ) : (
             data.accounts
@@ -210,18 +211,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               .map((a) => (
                 <div className="item stack account" key={a.account.id}>
                   <div className="row">
-                    <Check
-                      aria-label={`Select ${a.account.label}`}
-                      isSelected={selected.has(a.account.id)}
-                      onChange={(on) =>
-                        setSelected((old) => {
-                          const next = new Set(old);
-                          if (on && next.size < 100) next.add(a.account.id);
-                          else next.delete(a.account.id);
-                          return next;
-                        })
-                      }
-                    />
                     <div className={`provider-icon ${provider}`}>
                       {provider === "claude" ? "✳" : "◎"}
                     </div>
@@ -231,45 +220,43 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         {[
                           a.account.email && a.account.email !== a.account.label && a.account.email,
                           a.account.plan && planName(a.account.plan),
-                          a.active && a.account.enabled && "Used by your sessions now",
-                          a.account.pinned && "Selected",
                           app && desktopNote(app, loginFor(a.account.id)),
+                          unsaved?.accountId === a.account.id && "Claude Desktop login not saved",
                         ]
                           .filter(Boolean)
                           .join(" · ")}
                       </small>
                     </div>
+                    {a.active && a.account.enabled && <Badge good>In {provider === "claude" ? "Claude Code" : "Codex"}</Badge>}
+                    {app?.mode === "signed-in" && app.current?.accountId === a.account.id && <Badge good>In Claude Desktop</Badge>}
                     {problem(a) && <Badge>{problem(a)}</Badge>}
+                    {unsaved?.accountId === a.account.id && (
+                      <Button size="sm" variant="tertiary" onPress={() => void act.save()}>
+                        Save login
+                      </Button>
+                    )}
                     {(a.needsLogin || a.expired) && (
                       <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
                         Sign in again
                       </Button>
                     )}
-                    {app?.mode === "signed-in" && app.current?.accountId === a.account.id ? (
-                      <Badge good>In Claude Desktop</Badge>
-                    ) : (
-                      app &&
-                      provider === "claude" && (
-                        <DesktopButton desktop={app} act={act} login={loginFor(a.account.id)} email={a.account.email} />
-                      )
-                    )}
+                    <AccountQuota account={a} />
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
                         { label: "Edit policy", onAction: () => setEdit(a) },
-                        actions.supported(a, "quota") && { label: "Refresh usage", onAction: () => void actions.run(a.account.id, "quota") },
-                        { label: "Verify (read-only)", onAction: () => void actions.run(a.account.id, "verify") },
-                        actions.supported(a, "models") && { label: "Discover models", onAction: () => void actions.run(a.account.id, "models") },
-                        { label: "Refresh login", onAction: () => void actions.run(a.account.id, "refresh") },
-                        { label: "Reset local backoff", onAction: () => void actions.run(a.account.id, "reset-cooldown") },
-                        actions.supported(a, "probe") && { label: "Inference probe…", onAction: () => actions.probe(a) },
-                        (a.account.pinned || (a.account.enabled && !a.needsLogin)) && {
-                          label: a.account.pinned ? "Use automatic" : "Use this subscription",
+                        // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
+                        !!data.daemon?.providers[provider].quota && {
+                          label: "Refresh usage",
                           onAction: () =>
-                            void perform(
-                              () => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: !a.account.pinned }),
-                              a.account.pinned ? `${providerName(provider)} uses automatic selection` : `${providerName(provider)} subscription selected`,
-                            ),
+                            void perform(async () => {
+                              const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", { ids: [a.account.id], action: "quota" });
+                              if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
+                            }, "Usage refreshed"),
+                        },
+                        !!app && provider === "claude" && !usable(loginFor(a.account.id)) && {
+                          label: loginFor(a.account.id) ? "Connect Claude Desktop again" : "Connect to Claude Desktop",
+                          onAction: () => void act.connect(a.account.email),
                         },
                         { label: a.account.enabled ? "Disable" : "Enable", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { enabled: !a.account.enabled })) },
                         !!app && !!loginFor(a.account.id) && !(app.mode === "signed-in" && app.current?.accountId === a.account.id) &&
@@ -285,7 +272,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       ]}
                     />
                   </div>
-                  <AccountQuota account={a} model={models[provider].trim() || undefined} />
+                  <QuotaNotes account={a} />
                 </div>
               ))
           )}
@@ -302,16 +289,37 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                   </small>
                 </div>
                 {app.mode === "signed-in" && app.current?.accountUuid === l.accountUuid && <Badge good>In Claude Desktop</Badge>}
-                <DesktopButton desktop={app} act={act} login={l} email={l.email} />
                 <RowMenu
                   label={`More for ${nameOf(l)}`}
                   items={[
                     { label: "Add to subscriptions", onAction: () => void start("claude", nameOf(l)) },
+                    !usable(l) && { label: "Connect Claude Desktop again", onAction: () => void act.connect(l.email) },
                     { label: "Forget login", danger: true, onAction: () => void forgetLogin(connection, perform, l)() },
                   ]}
                 />
               </div>
             ))}
+          {provider === "claude" && unsaved && !unsaved.accountId && (
+            <div className="item">
+              <div className="provider-icon claude">✳</div>
+              <div className="grow">
+                <strong>{nameOf(unsaved)}</strong>
+                <small>Not in Agentgate yet. Add it to switch back to it later and use it in Claude Code.</small>
+              </div>
+              <Badge good>In Claude Desktop</Badge>
+              {/* One step: keep Desktop's login for switching, then sign in so Claude Code can use it too. */}
+              <Button
+                size="sm"
+                variant="tertiary"
+                onPress={async () => {
+                  await act.save();
+                  await start("claude", nameOf(unsaved), unsaved.email);
+                }}
+              >
+                Add
+              </Button>
+            </div>
+          )}
         </Panel>
       ))}
       {add && (

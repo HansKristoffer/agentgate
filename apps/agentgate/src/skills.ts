@@ -70,6 +70,8 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
   return s.transaction(() => {
     if (expectedRevision !== undefined && skillRevision(s, id) !== expectedRevision) throw new SkillConflict();
     const prev = s.get("skill", id);
+    // It follows its source, which would overwrite any edit on the next update.
+    if (prev?.source) throw new SkillConflict(`${id} comes from ${prev.source} and updates from it, so it can't be edited`);
     if (!text.trim()) throw new Error("SKILL.md is empty");
     description(text, id);
     const files = [...(prev?.files.filter(f => f.path !== "SKILL.md") ?? []), { path: "SKILL.md", data: Buffer.from(text).toString("base64") }];
@@ -123,6 +125,21 @@ export function updateSkill(s: Store, id: string, fetch: SkillFetcher = fetchSki
   })().finally(() => flights!.delete(id));
   flights.set(id, work);
   return work;
+}
+
+/** Updates every skill installed once from a source; connected repositories sync on their own. Never throws. */
+export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, signal?: AbortSignal) {
+  const repos = new Set(skillRepoSummaries(s).map((r) => r.url));
+  const results: { id: string; outcome: string }[] = [];
+  for (const k of skillSummaries(s).filter((k) => k.source && !repos.has(k.source))) {
+    if (signal?.aborted) break;
+    const outcome = await updateSkill(s, k.id, fetch, signal).then(
+      (changed) => (changed ? "updated" : "up to date"),
+      (error) => `failed: ${error instanceof Error ? error.message : error}`,
+    );
+    results.push({ id: k.id, outcome });
+  }
+  return results;
 }
 
 // Connected GitHub repositories. A project's `skillRepos` lists the repositories feeding it; every node syncs them

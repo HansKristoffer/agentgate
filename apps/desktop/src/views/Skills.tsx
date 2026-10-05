@@ -1,13 +1,14 @@
 import { useState } from "react";
-import { ArrowRight, FolderGit2, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import type {
-  SkillPreview,
-  SkillPreviewResponse,
-  SkillSearchResult,
-  Status,
+import {
+  slugify,
+  type SkillPreview,
+  type SkillPreviewResponse,
+  type SkillSearchResult,
+  type Status,
 } from "@agentgate/protocol";
-import { Button, Input, TextField, toast } from "@heroui/react";
+import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
 import {
   Badge,
   Check,
@@ -16,9 +17,9 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  RowMenu,
 } from "../components/ui.tsx";
 import { ProjectChecks } from "../components/SkillAssignments.tsx";
-import { repoClashes } from "../skill-assignment.ts";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -38,24 +39,30 @@ const places = (ids: string[]) =>
   ids.includes("*") ? "Every session" : ids.length ? ids.join(", ") : "Not linked to any project yet";
 const where = (data: Status, id: string) =>
   places(data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id));
+type Editor = { id?: string; skillMd: string; revision?: string | null };
 const repoName = (url: string) => url.replace("https://github.com/", "");
+/** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
+const sourceLabel = (source?: string) => {
+  if (!source) return "Hand-written";
+  if (/^[\w.-]+\/[\w.-]+(@.+)?$/.test(source)) return "skills.sh";
+  if (/^[/~.]/.test(source)) return "Local folder";
+  return repoName(source).replace(/\.git$/, "");
+};
 
 export function Skills({ data, connection, perform }: ViewProps) {
-  const [browse, setBrowse] = useState(false);
+  const [add, setAdd] = useState<"browse" | "source" | "repo" | "write">();
   const [results, setResults] = useState<SkillSearchResult[]>();
-  const [addSource, setAddSource] = useState(false);
   const [preview, setPreview] = useState<{
     source: string;
     skill?: string;
     token: string;
     skills: SkillPreview[];
   }>();
-  const [editor, setEditor] = useState<{ id?: string; skillMd: string; revision?: string | null }>();
+  const [editor, setEditor] = useState<Editor>();
+  const [skillName, setSkillName] = useState("");
   const [assign, setAssign] = useState<string>();
-  const [connect, setConnect] = useState(false);
   const [repoAssign, setRepoAssign] = useState<string>();
   const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
-  const hidden = repoClashes(data, data.projects.find((p) => p.id === "*")?.skills ?? []);
   const load = (source: string, skill?: string) =>
     perform(async () => {
       const fetched = await request<SkillPreviewResponse>(
@@ -64,25 +71,67 @@ export function Skills({ data, connection, perform }: ViewProps) {
         "POST",
         { source, skill },
       );
-      setBrowse(false);
-      setAddSource(false);
+      setAdd(undefined);
       setPreview({ source, skill, ...fetched });
     });
+  const editorForm = (draft: Editor) => (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        const f = new FormData(e.currentTarget);
+        const id = draft.id ?? slugify(skillName);
+        let skillMd = String(f.get("skillMd") ?? "");
+        // Agents read the name from the frontmatter, so a new skill's must match the slug it is saved under.
+        if (!draft.id && skillMd.startsWith("---")) skillMd = skillMd.replace(/^name:.*$/m, `name: ${id}`);
+        void perform(async () => {
+          if (!id) throw new Error("Use at least one letter or digit in the name");
+          if (!draft.id && data.skills.some((k) => k.id === id))
+            throw new Error(`${id} already exists`);
+          await request(connection, `/skills/${idPath(id)}`, "PUT", {
+            skillMd,
+            revision: draft.revision ?? null,
+          });
+          setEditor(undefined);
+          setAdd(undefined);
+          if (!draft.id) setAssign(id);
+        }, "Skill saved");
+      }}
+    >
+      {!draft.id && (
+        <Field
+          label="Name"
+          isRequired
+          value={skillName}
+          onChange={setSkillName}
+          placeholder="e.g. Release checklist"
+          description={slugify(skillName) ? `Agents see it as ${slugify(skillName)}.` : "Any name. Agents see a short version of it."}
+        />
+      )}
+      <Field
+        multiline
+        className="field skill-md"
+        label="SKILL.md"
+        name="skillMd"
+        isRequired
+        defaultValue={draft.skillMd}
+      />
+      <Button type="submit" size="sm">
+        Save skill
+      </Button>
+    </form>
+  );
   return (
     <>
       <HeaderActions>
-        <Button size="sm" variant="tertiary" onPress={() => setEditor({ skillMd: TEMPLATE })}>
-          New skill
-        </Button>
-        <Button size="sm" variant="tertiary" onPress={() => setAddSource(true)}>
-          Add from source
-        </Button>
-        <Button size="sm" variant="tertiary" onPress={() => setConnect(true)}>
-          Connect GitHub repo
-        </Button>
-        <Button size="sm" onPress={() => setBrowse(true)}>
-          <Search size={15} />
-          Browse skills.sh
+        <Button
+          size="sm"
+          onPress={() => {
+            setSkillName("");
+            setAdd("browse");
+          }}
+        >
+          <Plus size={15} />
+          Add skills
         </Button>
       </HeaderActions>
       <Panel
@@ -104,70 +153,70 @@ export function Skills({ data, connection, perform }: ViewProps) {
               <Sparkles size={16} />
             </div>
             <div className="grow">
-              <div className="row">
-                <strong>{skill.id}</strong>
-                <Badge good={!!skill.source}>
-                  {fromRepo(skill.source) ? "From GitHub" : skill.source ? "Installed" : "Hand-written"}
-                </Badge>
+              <div className="row group">
+                {/* The copy button floats over the badge on hover, so it takes no room in the row. */}
+                <span className="relative">
+                  <strong>{skill.id}</strong>
+                  <Button
+                    isIconOnly
+                    size="sm"
+                    variant="tertiary"
+                    aria-label={`Copy ${skill.id}`}
+                    className="absolute top-1/2 left-full z-10 ml-1.5 size-6 min-w-0 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+                    onPress={() => void navigator.clipboard.writeText(skill.id).then(() => toast(`Copied ${skill.id}`))}
+                  >
+                    <Copy size={13} />
+                  </Button>
+                </span>
+                <Badge good={!!skill.source}>{sourceLabel(skill.source)}</Badge>
               </div>
               {skill.description && <small>{short(skill.description)}</small>}
               <small>
                 {where(data, skill.id)}
-                {skill.source && ` · ${skill.source}`} · {size(skill.size)}
+                {sourceLabel(skill.source) === "skills.sh" && ` · ${skill.source}`} · {size(skill.size)}
               </small>
             </div>
-            <Button size="sm" variant="ghost" onPress={() => setAssign(skill.id)}>
-              Projects
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onPress={() =>
-                void perform(async () => {
-                  const { skillMd, revision } = await request<{ skillMd: string; revision: string }>(
-                    connection,
-                    `/skills/${idPath(skill.id)}`,
-                  );
-                  setEditor({ id: skill.id, skillMd, revision });
-                })
-              }
-            >
-              Edit
-            </Button>
-            {skill.source && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() =>
-                  void perform(async () => {
-                    const { updated } = await request<{ updated: boolean }>(
-                      connection,
-                      `/skills/${idPath(skill.id)}/update`,
-                      "POST",
-                    );
-                    toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
-                  })
-                }
-              >
-                Update
-              </Button>
-            )}
-            {!fromRepo(skill.source) && <Button
-              isIconOnly
-              size="sm"
-              variant="ghost"
-              className="delete"
-              aria-label={`Delete ${skill.id}`}
-              onPress={async () => {
-                if (await confirmDelete(skill.id))
-                  void perform(
-                    () => request(connection, `/skills/${idPath(skill.id)}`, "DELETE"),
-                    "Skill deleted",
-                  );
-              }}
-            >
-              <Trash2 size={15} />
-            </Button>}
+            <RowMenu
+              label={`More for ${skill.id}`}
+              items={[
+                { label: "Choose projects", onAction: () => setAssign(skill.id) },
+                // A skill with a source follows it; only hand-written skills can be edited.
+                !skill.source && {
+                  label: "Edit",
+                  onAction: () =>
+                    void perform(async () => {
+                      const { skillMd, revision } = await request<{ skillMd: string; revision: string }>(
+                        connection,
+                        `/skills/${idPath(skill.id)}`,
+                      );
+                      setEditor({ id: skill.id, skillMd, revision });
+                    }),
+                },
+                !!skill.source && {
+                  label: "Update from source",
+                  onAction: () =>
+                    void perform(async () => {
+                      const { updated } = await request<{ updated: boolean }>(
+                        connection,
+                        `/skills/${idPath(skill.id)}/update`,
+                        "POST",
+                      );
+                      toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
+                    }),
+                },
+                !fromRepo(skill.source) && {
+                  label: "Delete",
+                  danger: true,
+                  onAction: async () => {
+                    if (await confirmDelete(skill.id))
+                      void perform(
+                        () => request(connection, `/skills/${idPath(skill.id)}`, "DELETE"),
+                        "Skill deleted",
+                      );
+                  },
+                },
+              ]}
+            />
           </div>
         ))}
       </Panel>
@@ -195,180 +244,168 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   <small key={reason} className="danger">Skipped {reason}</small>
                 ))}
               </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() =>
-                  void perform(async () => {
-                    const { updated } = await request<{ updated: boolean }>(connection, "/skill-repos/sync", "POST", { url: repo.url });
-                    toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
-                  })
-                }
-              >
-                Sync
-              </Button>
-              <Button size="sm" variant="ghost" onPress={() => setRepoAssign(repo.url)}>
-                Projects
-              </Button>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="ghost"
-                className="delete"
-                aria-label={`Disconnect ${repoName(repo.url)}`}
-                onPress={async () => {
-                  if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { destructive: true, okLabel: "Disconnect" }))
-                    void perform(
-                      () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
-                      "Repository disconnected",
-                    );
-                }}
-              >
-                <Trash2 size={15} />
-              </Button>
+              <RowMenu
+                label={`More for ${repoName(repo.url)}`}
+                items={[
+                  {
+                    label: "Sync now",
+                    onAction: () =>
+                      void perform(async () => {
+                        const { updated } = await request<{ updated: boolean }>(connection, "/skill-repos/sync", "POST", { url: repo.url });
+                        toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
+                      }),
+                  },
+                  { label: "Choose projects", onAction: () => setRepoAssign(repo.url) },
+                  {
+                    label: "Disconnect",
+                    danger: true,
+                    onAction: async () => {
+                      if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { destructive: true, okLabel: "Disconnect" }))
+                        void perform(
+                          () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
+                          "Repository disconnected",
+                        );
+                    },
+                  },
+                ]}
+              />
             </div>
           ))}
         </Panel>
       )}
-      {data.skillHealth.errors.length > 0 && (
-        <Panel title="Skills need attention" detail="Some changes are saved but could not be applied on this machine. Agentgate retries automatically.">
+      {(data.skillHealth.errors.length > 0 || data.skillConflicts.length > 0) && (
+        <Panel title="Skills need attention" detail="Agentgate retries these automatically.">
           {data.skillHealth.errors.map((error, index) => <div className="item" key={`${error.path}:${index}`}>
             <span className="grow"><strong>{error.path}</strong><small className="danger">{error.message}</small></span>
           </div>)}
+          {/* A folder we didn't create already holds a skill by this name, so we never overwrite it. */}
+          {data.skillConflicts.map((path) => <div className="item" key={path}>
+            <span className="grow"><strong>{path}</strong><small className="danger">Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one of them.</small></span>
+          </div>)}
         </Panel>
       )}
-      {hidden.length > 0 && (
-        <Panel
-          title="Repository skills hidden by every-session skills"
-          detail="These repositories have their own skill with the same name as one used in every session. Claude Code runs the every-session skill there; Codex lists both. To let a repository's own skill win, use the skill in specific projects instead."
-        >
-          {hidden.map((c) => (
-            <div className="item" key={`${c.skill}:${c.path}`}>
-              <span className="grow">
-                <strong>{c.skill}</strong>
-                <small>{c.project} · {c.path}</small>
-              </span>
-              <Button size="sm" variant="tertiary" onPress={() => setAssign(c.skill)}>
-                Change where it's used
-              </Button>
-            </div>
-          ))}
-        </Panel>
-      )}
-      {data.skillConflicts.length > 0 && (
-        <Panel
-          title="Skipped links"
-          detail="These folders already hold a skill with the same name that Agentgate did not create, so it left them alone. Rename or remove one of them."
-        >
-          {data.skillConflicts.map((path) => (
-            <div className="item" key={path}>
-              <small className="grow danger">{path}</small>
-            </div>
-          ))}
-        </Panel>
-      )}
-      {browse && (
-        <Modal title="Browse skills.sh" close={() => setBrowse(false)}>
-          <form
-            className="inline-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const q = field(new FormData(e.currentTarget), "q");
-              void perform(async () =>
-                setResults(
-                  await request<SkillSearchResult[]>(
-                    connection,
-                    `/skills/search?q=${encodeURIComponent(q)}`,
-                  ),
-                ),
-              );
-            }}
-          >
-            <TextField name="q" isRequired minLength={2} aria-label="Search skills" className="grow">
-              <Input placeholder="react, testing, postgres…" />
-            </TextField>
-            <Button type="submit" size="sm" variant="tertiary">
-              Search
-            </Button>
-          </form>
-          {results && (
-            <div className="tool-list">
-              {results.length ? (
-                results.map((r) => (
-                  <div key={`${r.source}@${r.skill}`} className="row">
-                    <span className="grow">
-                      <code>{r.skill}</code>
-                      <p>
-                        {r.source} · {r.installs.toLocaleString()} installs
-                        {data.skills.some((k) => k.id === r.skill) && " · installed"}
-                      </p>
-                    </span>
-                    <Button size="sm" variant="ghost" onPress={() => void load(r.source, r.skill)}>
-                      Preview
-                    </Button>
-                  </div>
-                ))
-              ) : (
-                <Empty>No skills found.</Empty>
+      {add && (
+        <Modal title="Add skills" close={() => setAdd(undefined)}>
+          <Tabs className="segmented" selectedKey={add} onSelectionChange={(key) => setAdd(key as typeof add)}>
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="Where the skills come from">
+                {(
+                  [
+                    ["browse", "skills.sh"],
+                    ["source", "Source"],
+                    ["repo", "Synced repo"],
+                    ["write", "Write"],
+                  ] as const
+                ).map(([id, label]) => (
+                  <Tabs.Tab key={id} id={id}>
+                    {label}
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                ))}
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
+          {add === "browse" && (
+            <>
+              <form
+                className="inline-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const q = field(new FormData(e.currentTarget), "q");
+                  void perform(async () =>
+                    setResults(
+                      await request<SkillSearchResult[]>(
+                        connection,
+                        `/skills/search?q=${encodeURIComponent(q)}`,
+                      ),
+                    ),
+                  );
+                }}
+              >
+                <TextField name="q" isRequired minLength={2} aria-label="Search skills" className="grow">
+                  <Input placeholder="react, testing, postgres…" />
+                </TextField>
+                <Button type="submit" size="sm" variant="tertiary">
+                  Search
+                </Button>
+              </form>
+              {results && (
+                <div className="tool-list">
+                  {results.length ? (
+                    results.map((r) => (
+                      <div key={`${r.source}@${r.skill}`} className="row">
+                        <span className="grow">
+                          <code>{r.skill}</code>
+                          <p>
+                            {r.source} · {r.installs.toLocaleString()} installs
+                            {data.skills.some((k) => k.id === r.skill) && " · installed"}
+                          </p>
+                        </span>
+                        <Button size="sm" variant="ghost" onPress={() => void load(r.source, r.skill)}>
+                          Preview
+                        </Button>
+                      </div>
+                    ))
+                  ) : (
+                    <Empty>No skills found.</Empty>
+                  )}
+                </div>
               )}
-            </div>
+            </>
           )}
-        </Modal>
-      )}
-      {addSource && (
-        <Modal title="Add skills from a source" close={() => setAddSource(false)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void load(field(new FormData(e.currentTarget), "source"));
-            }}
-          >
-            <Field
-              label="Source"
-              name="source"
-              isRequired
-              description="A GitHub owner/repo (optionally @skill), a Git or GitHub URL, or a folder on the daemon's machine. Fetched with npx skills."
-              placeholder="vercel-labs/agent-skills"
-            />
-            <Button type="submit" size="sm">
-              Find skills
-              <ArrowRight size={15} />
-            </Button>
-          </form>
-        </Modal>
-      )}
-      {connect && (
-        <Modal title="Connect a GitHub repository" close={() => setConnect(false)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              const projects = f.getAll("project") as string[];
-              void perform(async () => {
-                if (!projects.length) throw new Error("Choose every session or at least one project");
-                await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
-                setConnect(false);
-              }, "Repository connected");
-            }}
-          >
-            <Field
-              label="Repository"
-              name="url"
-              isRequired
-              description="A public repository. Agentgate installs every skill in its .claude/skills and .agents/skills folders and keeps them in sync."
-              placeholder="https://github.com/owner/repo"
-            />
-            <p className="note">
-              Skills can run scripts in your sessions and are copied to every
-              paired machine. New commits are installed automatically, so
-              connect only repositories you trust.
-            </p>
-            <ProjectChecks data={data} selected={[]} />
-            <Button type="submit" size="sm">
-              <Plus size={15} />
-              Connect
-            </Button>
-          </form>
+          {add === "source" && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void load(field(new FormData(e.currentTarget), "source"));
+              }}
+            >
+              <Field
+                label="Source"
+                name="source"
+                isRequired
+                description="A GitHub owner/repo (optionally @skill), a Git or GitHub URL, or a folder on the daemon's machine. Fetched with npx skills."
+                placeholder="vercel-labs/agent-skills"
+              />
+              <Button type="submit" size="sm">
+                Find skills
+                <ArrowRight size={15} />
+              </Button>
+            </form>
+          )}
+          {add === "repo" && (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const f = new FormData(e.currentTarget);
+                const projects = f.getAll("project") as string[];
+                void perform(async () => {
+                  if (!projects.length) throw new Error("Choose every session or at least one project");
+                  await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
+                  setAdd(undefined);
+                }, "Repository connected");
+              }}
+            >
+              <Field
+                label="Repository"
+                name="url"
+                isRequired
+                description="A public repository. Agentgate installs every skill in its .claude/skills and .agents/skills folders and keeps them in sync."
+                placeholder="https://github.com/owner/repo"
+              />
+              <p className="note">
+                Skills can run scripts in your sessions and are copied to every
+                paired machine. New commits are installed automatically, so
+                connect only repositories you trust.
+              </p>
+              <ProjectChecks data={data} selected={[]} />
+              <Button type="submit" size="sm">
+                <Plus size={15} />
+                Connect
+              </Button>
+            </form>
+          )}
+          {add === "write" && editorForm({ skillMd: TEMPLATE })}
         </Modal>
       )}
       {repoAssign && (
@@ -491,51 +528,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {editor && (
-        <Modal title={editor.id ? `Edit ${editor.id}` : "New skill"} close={() => setEditor(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              const id = editor.id ?? field(f, "id");
-              void perform(async () => {
-                if (!editor.id && data.skills.some((k) => k.id === id))
-                  throw new Error(`${id} already exists`);
-                await request(connection, `/skills/${idPath(id)}`, "PUT", {
-                  skillMd: String(f.get("skillMd") ?? ""),
-                  revision: editor.revision ?? null,
-                });
-                setEditor(undefined);
-                if (!editor.id) setAssign(id);
-              }, "Skill saved");
-            }}
-          >
-            {!editor.id && (
-              <Field
-                label="Name"
-                name="id"
-                isRequired
-                pattern="[a-z0-9][a-z0-9._\-]*"
-                placeholder="my-skill"
-                description="Lowercase letters, digits, dots, dashes and underscores. Use the same name in the frontmatter."
-              />
-            )}
-            <Field
-              multiline
-              className="field skill-md"
-              label="SKILL.md"
-              name="skillMd"
-              isRequired
-              defaultValue={editor.skillMd}
-            />
-            {editor.id && data.skills.find((k) => k.id === editor.id)?.source && (
-              <p className="note">
-                Updating from the source replaces your edits.
-              </p>
-            )}
-            <Button type="submit" size="sm">
-              Save skill
-            </Button>
-          </form>
+        <Modal title={`Edit ${editor.id}`} close={() => setEditor(undefined)}>
+          {editorForm(editor)}
         </Modal>
       )}
     </>

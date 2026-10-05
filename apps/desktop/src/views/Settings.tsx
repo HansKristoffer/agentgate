@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Copy, Terminal } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Button } from "@heroui/react";
+import { Button, Tabs } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Modal,
@@ -11,17 +11,43 @@ import {
 import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, restoreFile } from "../api.ts";
 import { PoolSettings } from "../features/proxy/PoolSettings.tsx";
+import { ActivityView } from "./Activity.tsx";
 
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
   const [secrets, setSecrets] = useState(false);
+  const [tab, setTab] = useState<"general" | "activity">("general");
   const action = (name: string) =>
     perform(
       async () => setOutput(await localAction(name, connection)),
       "Command completed",
     );
+  const tabs = (
+    <Tabs className="segmented" selectedKey={tab} onSelectionChange={(key) => setTab(key as typeof tab)}>
+      <Tabs.ListContainer>
+        <Tabs.List aria-label="Settings sections">
+          <Tabs.Tab id="general">
+            General
+            <Tabs.Indicator />
+          </Tabs.Tab>
+          <Tabs.Tab id="activity">
+            Activity
+            <Tabs.Indicator />
+          </Tabs.Tab>
+        </Tabs.List>
+      </Tabs.ListContainer>
+    </Tabs>
+  );
+  if (tab === "activity")
+    return (
+      <>
+        {tabs}
+        <ActivityView data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
+      </>
+    );
   return (
     <>
+      {tabs}
       <PoolSettings data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
       {local && (
         <>

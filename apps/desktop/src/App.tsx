@@ -15,7 +15,6 @@ import {
   FolderGit2,
   LayoutDashboard,
   Monitor,
-  RefreshCw,
   Settings as Gear,
   ShieldCheck,
   Sparkles,
@@ -40,7 +39,6 @@ import {
   Settings,
   Skills,
 } from "./views/index.ts";
-import { ActivityView } from "./views/Activity.tsx";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 
@@ -56,7 +54,6 @@ import {
 const navigation = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
   { id: "accounts", title: "Accounts", icon: Users },
-  { id: "activity", title: "Activity", icon: Activity },
   { id: "servers", title: "MCP servers", icon: Boxes },
   { id: "skills", title: "Skills", icon: Sparkles },
   { id: "projects", title: "Projects", icon: FolderGit2 },
@@ -67,7 +64,6 @@ type View = (typeof navigation)[number]["id"];
 const descriptions: Record<View, string> = {
   overview: "Your agents, connected.",
   accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
-  activity: "Inspect requests, retries, and stream outcomes on this daemon.",
   servers: "Connect tools once. Use them across your projects.",
   skills: "Install skills once. Choose which projects use them.",
   projects: "Give each repository the tools it needs.",
@@ -146,6 +142,7 @@ export function App() {
       if (current.current === c) setError(String(e));
     }
   }, []);
+  // Polls, and refreshes on focus and on every page change, so a view never opens on stale data.
   useEffect(() => {
     if (!ready || !native) return;
     void refresh();
@@ -160,7 +157,7 @@ export function App() {
       clearInterval(timer);
       window.removeEventListener("focus", focus);
     };
-  }, [ready, connection, refresh]);
+  }, [ready, connection, refresh, view]);
   useEffect(() => {
     if (!updater.update) return;
     const id = toast(`Agentgate ${updater.update.version} is available.`, {
@@ -205,7 +202,6 @@ export function App() {
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
-    activity: <ActivityView {...props} />,
     servers: <Servers {...props} />,
     skills: <Skills {...props} />,
     projects: <Projects {...props} />,
@@ -229,7 +225,7 @@ export function App() {
             <>
               <div className="tau-drag-strip" />
               <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                {navigation.filter(n => n.id !== "settings").map((n) => (
+                {navigation.filter((n) => n.id !== "settings").map((n) => (
                   <button
                     key={n.id}
                     aria-current={view === n.id ? "page" : undefined}
@@ -300,16 +296,6 @@ export function App() {
                 className="header-actions"
                 inert={busy || !!error}
               />
-              <Button
-                isIconOnly
-                size="sm"
-                variant="ghost"
-                aria-label="Refresh"
-                isDisabled={busy || !native}
-                onPress={() => void refresh()}
-              >
-                <RefreshCw size={15} className={busy ? "spin" : ""} />
-              </Button>
             </div>
             <p className="card-sub">{descriptions[view]}</p>
           </header>
@@ -554,9 +540,9 @@ export function App() {
               <li>
                 <strong>Using the Claude Desktop app?</strong>
                 <p>
-                  Open Accounts. Its Claude Desktop panel lets you switch
-                  accounts in Desktop, or share your subscriptions in its Code
-                  tab.
+                  Open Accounts. Claude uses picks the account for Claude Code
+                  and Claude Desktop together. The menu bar shares your
+                  subscriptions in Desktop's Code tab instead.
                 </p>
               </li>
               <li>
