@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.13.0](https://github.com/HansKristoffer/agentgate/compare/v0.12.0...v0.13.0) (2026-10-05)
+
+
+### Features
+
+* **accounts:** add Cursor accounts with sign-in, plan usage and token usage ([#36](https://github.com/HansKristoffer/agentgate/issues/36)) ([fb3239b](https://github.com/HansKristoffer/agentgate/commit/fb3239bbf52b866fc718330a2397d0d9315bdcb7))
+* **app:** token usage by model on the overview ([#35](https://github.com/HansKristoffer/agentgate/issues/35)) ([5850fd9](https://github.com/HansKristoffer/agentgate/commit/5850fd96c4d73d40b937ae78f5ca7d0fba48309d))
+* **handoff:** hand T3 Code threads between machines ([#38](https://github.com/HansKristoffer/agentgate/issues/38)) ([df4ea06](https://github.com/HansKristoffer/agentgate/commit/df4ea06d7cb011417d65c7beec00489ff0f70fbc))
+
 ## [0.12.0](https://github.com/HansKristoffer/agentgate/compare/v0.11.0...v0.12.0) (2026-10-05)
 
 
