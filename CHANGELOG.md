@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/HansKristoffer/agentgate/compare/v0.13.0...v0.14.0) (2026-10-05)
+
+
+### Features
+
+* **cli:** agentgate update installs the latest release and restarts the service ([#39](https://github.com/HansKristoffer/agentgate/issues/39)) ([781f0f8](https://github.com/HansKristoffer/agentgate/commit/781f0f87b26f15146907833cc4a3c5f9abfd2727))
+
+
+### Bug Fixes
+
+* **handoff:** find the session in the Claude home T3 Code's provider uses ([#41](https://github.com/HansKristoffer/agentgate/issues/41)) ([7b8978c](https://github.com/HansKristoffer/agentgate/commit/7b8978caea1b11b8dc59448c1cbb3d05ca696a54))
+
 ## [0.13.0](https://github.com/HansKristoffer/agentgate/compare/v0.12.0...v0.13.0) (2026-10-05)
 
 
