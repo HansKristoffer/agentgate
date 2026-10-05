@@ -8,7 +8,8 @@ import { field, providerName } from "../views/utils.ts";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { Field, Modal } from "./ui.tsx";
 
-/** The browser sign-in for a Claude or Codex account: `start` opens the login page, `dialog` takes the pasted code. */
+/** The browser sign-in for an account: `start` opens the login page, `dialog` takes the pasted code,
+ * or for Cursor waits until the browser sign-in finishes. */
 export function useAccountLogin(connection: Connection, perform: Perform, done?: () => void) {
   const [login, setLogin] = useState<LoginStart>();
   const capture = useGeneration(connection);
@@ -16,6 +17,25 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
   const pending = useRef<{ connection: Connection; state: string } | undefined>(undefined);
   const cancel = async () => { const previous = pending.current; pending.current = undefined; if (previous) await request(previous.connection, `/accounts/login/${encodeURIComponent(previous.state)}`, "DELETE").catch(() => {}); };
   useEffect(() => () => { attempt.current++; void cancel(); }, []);
+  // Cursor has no code to paste: the daemon waits on its sign-in and answers `pending` until it is done.
+  // This runs outside `perform`, which would hold the app's action lock for the whole sign-in.
+  useEffect(() => {
+    if (login?.provider !== "cursor") return;
+    const current = capture(), generation = attempt.current, live = () => current() && generation === attempt.current;
+    void (async () => {
+      try {
+        let id: string | undefined;
+        while (!id && live()) ({ id } = await request<{ id?: string }>(connection, "/accounts/login/finish", "POST", { state: login.state }));
+        if (!id || !live()) return;
+        pending.current = undefined;
+        setLogin(undefined);
+        done?.();
+        await perform(async () => {}, "Account added");
+      } catch (e) {
+        if (live()) { setLogin(undefined); await perform(() => Promise.reject(e)); }
+      }
+    })();
+  }, [login]);
   /** `email` pre-selects that account on the provider's login page. */
   const start = (provider: Provider, label: string, email?: string) =>
     perform(async () => {
@@ -37,7 +57,7 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
       title={`Sign in to ${providerName(login.provider)}`}
       close={() => { attempt.current++; setLogin(undefined); void cancel(); }}
     >
-      <p>Your browser has opened the provider's login page.</p>
+      <p>{login.provider === "cursor" ? "Finish signing in to Cursor in your browser. This window closes when you're done." : "Your browser has opened the provider's login page."}</p>
       <Button
         size="sm"
         variant="tertiary"
@@ -46,7 +66,7 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
         Open login page again
         <ExternalLink size={14} />
       </Button>
-      <form
+      {login.provider !== "cursor" && <form
         onSubmit={(e) => {
           e.preventDefault();
           const f = new FormData(e.currentTarget);
@@ -88,7 +108,7 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
           Finish sign in
           <Check size={15} />
         </Button>
-      </form>
+      </form>}
     </Modal>
   );
   return { start, dialog };

@@ -22,8 +22,8 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   init [--always-on] [--name srv]             create the store, name this node
   serve                                       run the daemon in the foreground
   status                                      quota bars, active accounts, nodes
-  login claude|codex [--label work]           log in in a temporary dir and import it
-  import claude|codex --from <dir> [--label]  take over an existing login
+  login claude|codex|cursor [--label work]    log in in a temporary dir and import it (cursor: browser sign-in)
+  import claude|codex|cursor --from <dir>     take over an existing login [--label]
   accounts [enable|disable|pin|unpin|rm|exhaust] <id> [minutes]
   accounts quota|verify|models|refresh|reset-cooldown <id> [...] (daemon operations)
   accounts verify <id> --probe --model <model>  quota-consuming inference check
@@ -157,7 +157,7 @@ async function main() {
 
     case "status": {
       initialized(s);
-      for (const p of ["claude", "codex"] as const) {
+      for (const p of ["claude", "codex", "cursor"] as const) {
         console.log(`\n${p}`);
         const accounts = s.list("account").filter((a) => a.provider === p);
         if (!accounts.length) console.log("  (no accounts)");
@@ -185,7 +185,7 @@ async function main() {
     case "login":
     case "import": {
       initialized(s);
-      const mod = sub === "claude" || sub === "codex" ? providerLogins[sub] : die(`${cmd} claude|codex`);
+      const mod = sub === "claude" || sub === "codex" || sub === "cursor" ? providerLogins[sub] : die(`${cmd} claude|codex|cursor`);
       if (cmd === "login") return console.log(`added ${await mod.login(s, str("label"))}`);
       const dir = (str("from") ?? die("--from <dir> is required")).replace(/^~/, process.env.HOME ?? "~");
       const id = await mod.importFrom(s, dir, str("label"));
@@ -197,7 +197,7 @@ async function main() {
     case "accounts": {
       initialized(s);
       if (!sub) {
-        for (const a of s.list("account")) console.log(`${a.id.padEnd(24)} ${a.provider.padEnd(6)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`);
+        for (const a of s.list("account")) console.log(`${a.id.padEnd(24)} ${a.provider.padEnd(7)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`);
         return;
       }
       const id = rest[0] ?? die(`accounts ${sub} <id>`);

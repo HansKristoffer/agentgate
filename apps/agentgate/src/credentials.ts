@@ -102,7 +102,7 @@ export function refreshOwned<K extends OwnedKind>(s: Store, kind: K, id: string,
 
 export async function drainRefresh(s: Store) { await Promise.allSettled(flights.get(s)?.values() ?? []); }
 
-type Refresh = (provider: "claude" | "codex", refreshToken: string) => Promise<Tokens>;
+type Refresh = (provider: import("./llm/provider.ts").ProviderName, refreshToken: string) => Promise<Tokens>;
 export class Credentials {
   constructor(private s: Store, private refreshFn: Refresh, private pull: () => Promise<unknown>) { }
 

@@ -1,7 +1,7 @@
 import type { Failure, ProviderCapabilities, QuotaWindow } from "@agentgate/protocol";
 import type { Tokens } from "../credentials.ts";
 import type { Credential, Usage } from "../store.ts";
-export type ProviderName = "claude" | "codex";
+export type ProviderName = "claude" | "codex" | "cursor";
 export type Window = QuotaWindow;
 export type Observation = { windows: Window[]; status: Usage["status"] };
 export interface Provider {

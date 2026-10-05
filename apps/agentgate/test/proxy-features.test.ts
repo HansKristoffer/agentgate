@@ -324,7 +324,7 @@ test("verification reports capabilities, partial failures, and errors inside an 
   const { s, creds } = fixture(); const url = upstream(() => new Response('data: {"type":"error"}\n\n', { headers: { "content-type": "text/event-stream" } }));
   const provider = { ...adapter, probe: { path: url, body: (model: string) => ({ model }) } };
   expect(capabilities(provider)).toEqual({ quota: false, models: false, session: false, probe: true });
-  const ops = new ProxyOperations(s, creds, new Quotas(s, creds, { claude: provider }), { claude: provider, codex: provider });
+  const ops = new ProxyOperations(s, creds, new Quotas(s, creds, { claude: provider }), { claude: provider, codex: provider, cursor: provider });
   const result = await ops.verify("a", new AbortController().signal, { probe: true, model: "sonnet" });
   expect(result).toMatchObject({ node: "n", checks: { credential: { status: "ok" }, quota: { status: "unsupported" }, models: { status: "unsupported" }, probe: { status: "failed" } } });
   const batch = await ops.batch(["a", "missing", "a"], "enable", new AbortController().signal); expect(batch.map(r => r.ok)).toEqual([true, false]);
