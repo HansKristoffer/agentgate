@@ -27,7 +27,7 @@ export interface Job<S> {
 }
 
 export interface HandoffOptions {
-  /** agentgate's CLAUDE_CONFIG_DIR, where T3's Claude provider keeps sessions. */
+  /** Claude's default home (~/.claude): sessions of a T3 Claude provider without a home of its own live here. */
   claudeDir: string;
   /** Where new worktrees go (T3's convention: `~/.t3/worktrees/<repo>/…`). */
   worktreesDir: string;

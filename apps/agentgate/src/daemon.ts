@@ -24,7 +24,7 @@ import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CLAUDE_DIR } from "./setup.ts";
+import { PRIMARY_CLAUDE_DIR } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
@@ -53,7 +53,7 @@ export interface Ctx {
 export function handoffOptions(s: Store): HandoffOptions {
   const home = DEV ? CONFIG_DIR : homedir();
   return {
-    claudeDir: CLAUDE_DIR,
+    claudeDir: PRIMARY_CLAUDE_DIR,
     get worktreesDir() { return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees"); },
     get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
     tempDir: join(CONFIG_DIR, "handoffs"),

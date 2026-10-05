@@ -21,7 +21,7 @@ async function cached<T>(h: Handoffs, key: string, fn: () => Promise<T>): Promis
 
 async function localThreads(h: Handoffs): Promise<T3Thread[]> {
   const t3 = t3Client(h.s);
-  const claudeIds = () => t3.rpc(async (call) => (await claudeHomes(call)).map(([id]) => id));
+  const claudeIds = () => t3.rpc(async (call) => (await claudeHomes(call, h.options.claudeDir)).map(([id]) => id));
   const [shell, claude] = await Promise.all([t3.shell(), cached(h, "claude", claudeIds)]);
 
   // What T3's sidebar lists outside Settled: top-level threads. Subagents move with their parent.

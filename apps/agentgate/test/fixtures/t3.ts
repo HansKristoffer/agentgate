@@ -34,7 +34,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; t.updatedAt = now(); }, ms);
 
   const rpc: Record<string, (p: Record<string, unknown>) => unknown> = {
-    "server.getConfig": () => ({ settings: { providerInstances: {}, providers: { claudeAgent: { homePath: options.claudeDir } } } }),
+    "server.getConfig": () => ({ settings: { providerInstances: {}, providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} } } }),
     "orchestration.getThreadProjection": (p) => {
       const t = threads.get(String(p.threadId));
       if (!t) throw { _tag: "OrchestrationV2ThreadNotFoundError", message: "thread not found" };
@@ -129,8 +129,10 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     },
   });
   const url = `http://127.0.0.1:${server.port}`;
-  return {
+  const api = {
     url, threads, projects, commands, server,
+    /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
+    homePath: options.claudeDir as string | undefined,
     /** A single-use pairing token, as `t3 pair` prints. */
     pairingToken() { const token = crypto.randomUUID(); pairing.add(token); return token; },
     addProject(workspaceRoot: string, scripts: Project["scripts"] = []) {
@@ -145,4 +147,5 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     },
     stop: () => server.stop(true),
   };
+  return api;
 }

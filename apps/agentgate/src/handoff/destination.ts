@@ -54,6 +54,9 @@ export interface DestState {
   /** Whether the checkout moved onto the source's code; the source parks its sent changes only then. */
   codeTaken?: boolean;
   threadId?: string;
+  /** The Claude provider instance the thread runs with here, and its home. */
+  instanceId?: string;
+  claudeHome?: string;
   /** No thread here held the session, so T3 imported it from a copy under the main checkout. */
   imported?: boolean;
   continued?: boolean;
@@ -314,6 +317,17 @@ async function knownThread(h: Handoffs, call: Call, instanceId: string, sessionI
   return undefined;
 }
 
+/** The same provider instance as on the source when this T3 Code has one by that id, else its default instance. */
+async function instance(h: Handoffs, call: Call, st: DestState) {
+  if (!st.instanceId || !st.claudeHome) {
+    const id = st.manifest!.modelSelection.instanceId;
+    const found = await claudeInstance(call, typeof id === "string" ? id : undefined, h.options.claudeDir);
+    st.instanceId = found.instanceId;
+    st.claudeHome = found.home;
+  }
+  return st.instanceId;
+}
+
 async function place(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
   const m = st.manifest!;
@@ -321,12 +335,10 @@ async function place(h: Handoffs, job: Job<DestState>) {
     const provider = sessionProviders[m.driver];
     if (!provider) throw new T3Error(`${m.driver} sessions cannot be placed here`);
 
-    if (!st.threadId) {
-      st.threadId = await t3Client(h.s).rpc(async (call) => {
-        const instanceId = await claudeInstance(call, h.options.claudeDir, h.s.nodeId);
-        return knownThread(h, call, instanceId, m.sessionId);
-      });
-    }
+    await t3Client(h.s).rpc(async (call) => {
+      const instanceId = await instance(h, call, st);
+      st.threadId ??= await knownThread(h, call, instanceId, m.sessionId);
+    });
     st.imported = !st.threadId;
     h.save(job);
 
@@ -334,7 +346,7 @@ async function place(h: Handoffs, job: Job<DestState>) {
     const files = m.files.filter((f) => f.path.startsWith("session/")).map((f) => f.path.slice(8));
     // Claude resumes from the key of the checkout the thread runs in; T3 imports only from a main checkout's key.
     const places = st.imported ? [st.main!, st.cwd!] : [st.cwd!];
-    for (const cwd of new Set(places)) provider.place(h.options.claudeDir, m.sessionId, from, files, cwd, m.oldPaths);
+    for (const cwd of new Set(places)) provider.place(st.claudeHome!, m.sessionId, from, files, cwd, m.oldPaths);
   });
   h.advance(job, "import");
 }
@@ -343,7 +355,7 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
   const m = st.manifest!;
   await timed(h.s, st.timings, "import", () => t3Client(h.s).rpc(async (call) => {
-    const instanceId = await claudeInstance(call, h.options.claudeDir, h.s.nodeId);
+    const instanceId = await instance(h, call, st);
     if (st.imported) {
       await call("agentSessions.scan", {});
       await call("agentSessions.import", { projectId: st.projectId });
@@ -363,7 +375,7 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
 
   // The main checkout's copy was only for the import; Claude resumes from the worktree's. Left behind, a later import
   // there could pick up the stale transcript.
-  if (st.imported && st.cwd !== st.main) sessionProviders[m.driver]!.remove(h.options.claudeDir, m.sessionId, st.main!);
+  if (st.imported && st.cwd !== st.main) sessionProviders[m.driver]!.remove(st.claudeHome!, m.sessionId, st.main!);
   h.advance(job, "continue");
 }
 

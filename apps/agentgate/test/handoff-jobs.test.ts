@@ -79,6 +79,8 @@ test("a working thread moves to the server with its session and code, continues 
   const setupLog = join(r.root, "setup.log");
   const a = await node("a", r.a), b = await node("b", r.b, { server: true, setup: `echo ran >> ${setupLog}` });
   pair(a, b);
+  // A's T3 Code leaves its Claude provider on Claude's default home; B's names one.
+  a.t3.homePath = undefined;
 
   // A thread in its own worktree, working, with an unpushed commit and uncommitted files.
   const wtA = join(r.root, "wt-a");
@@ -183,14 +185,14 @@ test("a failure on the destination before import aborts and leaves the source as
   writeFileSync(join(r.a, "notes.txt"), "uncommitted\n");
   session(a, r.a, ["hello"]);
   const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
-  // B's T3 Code uses another Claude home, so it could never find the session.
+  // B's T3 Code settings name a Claude home its import does not read, so the import finds nothing.
   b.t3.threads.clear();
-  (b.h.options as { claudeDir: string }).claudeDir = tmp();
+  b.t3.homePath = tmp();
 
   const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
   const job = await done(a, handoffId);
   expect(job.step).toBe("failed");
-  expect(job.error).toContain("place on b: T3 Code's Claude provider on b does not use");
+  expect(job.error).toContain("import on b: T3 Code on b did not import the Claude session");
   expect(a.t3.threads.get(thread.id)!.archivedAt).toBeNull();
   expect(readFileSync(join(r.a, "notes.txt"), "utf8")).toBe("uncommitted\n");
   expect(existsSync(a.h.dir(handoffId))).toBe(false);
