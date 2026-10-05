@@ -38,16 +38,17 @@ export function TokenUsage({ connection }: { connection: Connection }) {
     return () => clearInterval(timer);
   }, [range, connection]);
 
-  const top = (rows ?? []).slice(0, SLICES).map((r) => ({ label: r.model, value: total(r), detail: r }));
+  // Rows are per provider and model, so the same model name can appear for Cursor and for its own provider.
+  const top = (rows ?? []).slice(0, SLICES).map((r) => ({ key: `${r.provider}:${r.model}`, label: r.provider === "cursor" ? `${r.model} (Cursor)` : r.model, value: total(r), detail: r }));
   const rest = (rows ?? []).slice(SLICES).reduce((sum, r) => sum + total(r), 0);
-  const slices = rest ? [...top, { label: "Other", value: rest, detail: undefined }] : top;
+  const slices = rest ? [...top, { key: "other", label: "Other", value: rest, detail: undefined }] : top;
   const sum = slices.reduce((s, x) => s + x.value, 0);
   let angle = 0;
 
   return (
     <Panel
       title="Token usage"
-      detail="Every account on this machine, by model."
+      detail="Every account on this machine, by model. Cursor's come from its own usage history."
       action={
         <Tabs className="token-range" selectedKey={range} onSelectionChange={(key) => setRange(key as Range)}>
           <Tabs.ListContainer>
@@ -78,7 +79,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
               const point = (a: number) => `${Math.sin(a)} ${-Math.cos(a)}`;
               return (
                 <path
-                  key={s.label}
+                  key={s.key}
                   className={`slice-${s.detail ? i + 1 : "other"}`}
                   d={slices.length === 1 ? "M0 -1 A1 1 0 1 1 0 1 A1 1 0 1 1 0 -1Z" : `M0 0 L${point(start)} A1 1 0 ${angle - start > Math.PI ? 1 : 0} 1 ${point(angle)}Z`}
                 >
@@ -89,7 +90,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
           </svg>
           <div className="grow">
             {slices.map((s, i) => (
-              <div className="token-row" key={s.label}>
+              <div className="token-row" key={s.key}>
                 <i className={`slice-${s.detail ? i + 1 : "other"}`} />
                 <div className="grow">
                   <strong>{s.label}</strong>

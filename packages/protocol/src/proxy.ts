@@ -204,7 +204,7 @@ export interface ProxyMetrics {
 }
 /** Tokens one model used on this node, summed over every account. */
 export interface ModelTokens {
-  provider: "claude" | "codex";
+  provider: Provider;
   model: string;
   input: number;
   output: number;

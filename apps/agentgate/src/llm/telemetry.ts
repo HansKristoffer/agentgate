@@ -260,7 +260,7 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
 export function tokenUsage(s: Store, since = 0): ModelTokens[] {
   return s.db
     .query(
-      "select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite from token_usage where hour > ? group by provider, model order by sum(input + output + cache_read + cache_write) desc",
+      "select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite from (select hour, provider, model, input, output, cache_read, cache_write from token_usage union all select hour, 'cursor', model, input, output, cache_read, cache_write from cursor_tokens) where hour > ? group by provider, model order by sum(input + output + cache_read + cache_write) desc",
     )
     .all(since - 3600000) as ModelTokens[];
 }

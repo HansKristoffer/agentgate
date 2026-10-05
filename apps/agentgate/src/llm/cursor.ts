@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { InvalidGrant, jwtClaims, pkce, type Tokens } from "../credentials.ts";
+import { type Credentials, InvalidGrant, jwtClaims, pkce, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
 import { fetchHeaders, readBody, sleep } from "../runtime.ts";
 import type { Store } from "../store.ts";
@@ -14,6 +14,8 @@ export const CURSOR = {
   website: "https://cursor.com",
   clientId: "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB",
   pollMs: 2000,
+  usageEvents: "https://cursor.com/api/dashboard/get-filtered-usage-events",
+  usagePage: 1000,
 };
 
 function toTokens(accessToken: string, refreshToken: string): Tokens {
@@ -128,4 +130,71 @@ export async function login(s: Store, label?: string) {
   const id = await finish(s, uuid, verifier, label, AbortSignal.timeout(310_000), 300_000);
   if (!id) throw new Error("Cursor sign-in timed out; start again");
   return id;
+}
+
+const HOUR = 3600_000, TOKENS_EVERY = 15 * 60_000, LATE = 7 * 86400_000;
+type Hourly = Map<string, { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number }>;
+const count = (value: unknown) => {
+  if (value === undefined || value === null) return 0;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new Error("Invalid Cursor token count");
+  return value;
+};
+
+/** Hourly token totals per model between `since` and `until`, from the usage history Cursor's dashboard shows.
+ * That endpoint takes the session cookie the website sets, built from the same access token. */
+export async function usageHistory(accessToken: string, since: number, until: number, signal: AbortSignal): Promise<Hourly> {
+  const userId = String(jwtClaims(accessToken).sub ?? "").split("|").at(-1);
+  if (!userId || !/^[\w-]+$/.test(userId)) throw new Error("Cursor login did not identify the account");
+  const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`;
+  const hours: Hourly = new Map();
+  for (let page = 1; page <= 1000; page++) {
+    const res = await fetchHeaders(CURSOR.usageEvents, {
+      method: "POST", redirect: "error", signal,
+      headers: { "content-type": "application/json", origin: "https://cursor.com", cookie },
+      body: JSON.stringify({ startDate: String(since), endDate: String(until), page, pageSize: CURSOR.usagePage }),
+    }, 30_000);
+    if (!res.ok) { await res.body?.cancel(); throw new Error(`Cursor usage history returned ${res.status}`); }
+    const body = JSON.parse(new TextDecoder().decode(await readBody(res.body, 16 * 1024 * 1024, signal))) as { usageEventsDisplay?: unknown; totalUsageEventsCount?: unknown };
+    const rows = body.usageEventsDisplay ?? [], total = count(body.totalUsageEventsCount);
+    // A short page would silently drop usage, so the window is not saved at all.
+    if (!Array.isArray(rows) || rows.length > CURSOR.usagePage || rows.length < Math.min(CURSOR.usagePage, total - (page - 1) * CURSOR.usagePage)) throw new Error("Incomplete Cursor usage history");
+    for (const row of rows as { timestamp?: unknown; model?: unknown; tokenUsage?: Record<string, unknown> | null }[]) {
+      // Request-based plans have no token breakdown; nothing to count.
+      if (!row?.tokenUsage) continue;
+      const at = Number(row.timestamp);
+      if (!Number.isSafeInteger(at) || typeof row.model !== "string" || !row.model) throw new Error("Invalid Cursor usage event");
+      if (at < since || at > until) continue;
+      const hour = at - (at % HOUR), key = `${hour}:${row.model}`;
+      const sum = hours.get(key) ?? { hour, model: row.model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      sum.input += count(row.tokenUsage.inputTokens); sum.output += count(row.tokenUsage.outputTokens);
+      sum.cacheRead += count(row.tokenUsage.cacheReadTokens); sum.cacheWrite += count(row.tokenUsage.cacheWriteTokens);
+      hours.set(key, sum);
+    }
+    if (page * CURSOR.usagePage >= total) return hours;
+  }
+  throw new Error("Cursor usage history is too long to read");
+}
+
+/** Cursor's traffic never passes the proxy, so its token usage is read from Cursor for every account this node holds.
+ * The first read takes all history; later reads go back a week for usage Cursor publishes late, and replace those hours. */
+export async function pollTokens(s: Store, creds: Pick<Credentials, "token">, signal: AbortSignal) {
+  for (const account of s.list("account")) {
+    if (signal.aborted) return;
+    const c = s.get("credential", account.id);
+    if (account.provider !== "cursor" || !account.enabled || !c || c.needsLogin || c.holder !== s.nodeId) continue;
+    const key = `cursorTokens:${account.id}`, state = JSON.parse(s.local(key) ?? "{}") as { readAt?: number; triedAt?: number };
+    if (s.now() - (state.triedAt ?? 0) < TOKENS_EVERY) continue;
+    s.setLocal(key, JSON.stringify({ ...state, triedAt: s.now() }));
+    const until = s.now(), from = state.readAt ? Math.max(0, state.readAt - LATE) : 0, since = from - (from % HOUR);
+    try {
+      const token = await creds.token(account.id);
+      const hours = await usageHistory(token.accessToken, since, until, AbortSignal.any([signal, AbortSignal.timeout(120_000)]));
+      s.transaction(() => {
+        if (!s.get("account", account.id)) return;
+        s.db.run("delete from cursor_tokens where account = ? and hour >= ?", [account.id, since]);
+        for (const h of hours.values()) s.db.run("insert into cursor_tokens values (?,?,?,?,?,?,?)", [account.id, h.hour, h.model, h.input, h.output, h.cacheRead, h.cacheWrite]);
+        s.setLocal(key, JSON.stringify({ readAt: until, triedAt: s.now() }));
+      });
+    } catch { if (!signal.aborted) s.log("cursor", account.id, "", 0, 0, "usage history read failed"); }
+  }
 }
