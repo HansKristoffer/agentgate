@@ -81,6 +81,9 @@ pre {
 
 .field { margin: 0 0 14px; }
 .row > .field { flex: 1; }
+/* A field with a button beside it: the row carries the field's spacing so both bottoms line up. */
+.field-with-button { margin-bottom: 14px; }
+.field-with-button > .field { margin: 0; }
 .check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
 .toggle { display: flex; align-items: center; gap: 12px; width: 100%; }
 .checklist { border: none; padding: 0; margin: 0 0 14px; min-width: 0; }
@@ -122,7 +125,14 @@ pre {
 .dot.offline { background: var(--danger); }
 .dot-button { display: flex; padding: 2px; border: 0; background: none; cursor: pointer; }
 
-.mini-quotas { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
+.mini-quotas { position: relative; width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
+.pin-account { display: flex; margin-right: -8px; padding: 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.pin-account:hover:not(:disabled) { background: var(--default); color: var(--foreground); }
+.pin-account.pinned { color: var(--accent); }
+.pin-account:disabled { opacity: 0.35; cursor: default; }
+.mini-quotas.stale { margin-left: 12px; } /* room for the icon beside the bars, taken from the name column */
+.mini-quotas > .stale-usage { position: absolute; left: -22px; top: 50%; translate: 0 -50%; display: flex; padding: 2px; border: 0; background: none; color: var(--warning); }
+.mini-quotas > button.stale-usage { cursor: pointer; }
 .mini-quotas > div { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .mini-quotas > div > span { width: 56px; flex: 0 0 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-quotas > div > .progress-bar { flex: 1; }

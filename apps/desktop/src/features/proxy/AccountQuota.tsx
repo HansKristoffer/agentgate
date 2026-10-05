@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { TriangleAlert } from "lucide-react";
 import type { AccountStatus } from "@agentgate/protocol";
 import { Badge, Quota } from "../../components/ui.tsx";
 import { ago, resetIn, windowName } from "../../views/utils.ts";
@@ -20,12 +21,24 @@ const subscribe = (listener: () => void) => {
   };
 };
 const snapshot = () => Math.floor(Date.now() / 1000);
-/** The account's limits as small bars with their resets, on Overview and Accounts. */
-export function AccountQuota({ account }: { account: AccountStatus }) {
+/** The account's limits as small bars with their resets, on Overview and Accounts. Stale usage gets a warning icon; `onRefresh` makes it a refresh button. */
+export function AccountQuota({ account, onRefresh }: { account: AccountStatus; onRefresh?: () => void }) {
   const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
   const updated = account.observedAt ? `Updated ${ago(account.observedAt)}` : "Usage unknown";
+  const stale = account.quotaState === "stale" && account.windows.length > 0;
+  const staleNote = `Usage is out of date. ${updated}.${onRefresh ? " Click to refresh." : ""}`;
   return (
-    <div className="mini-quotas" title={account.quotaState === "stale" ? `${updated} · out of date` : updated}>
+    <div className={stale ? "mini-quotas stale" : "mini-quotas"} title={updated}>
+      {stale &&
+        (onRefresh ? (
+          <button type="button" className="stale-usage" title={staleNote} aria-label={staleNote} onClick={onRefresh}>
+            <TriangleAlert size={13} />
+          </button>
+        ) : (
+          <span className="stale-usage" title={staleNote}>
+            <TriangleAlert size={13} />
+          </span>
+        ))}
       {account.windows.length ? (
         account.windows.map((w) => {
           const model = w.scope?.kind === "model" ? ` · ${w.scope.model}` : "";
@@ -50,25 +63,15 @@ export function AccountQuota({ account }: { account: AccountStatus }) {
   );
 }
 
-/** Problems the bars can't show: stale or failed usage, backoffs, and when a blocked account frees up. Nothing when all is well. */
+/** Problems the bars can't show: failed usage and backoffs. Nothing when all is well. */
 export function QuotaNotes({ account }: { account: AccountStatus }) {
   const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
   const cooldowns = (account.cooldowns ?? []).filter((c) => c.retryAt > now);
-  const blockers = account.windows
-    .filter((w) => w.usedPct >= 100 && w.resetsAt && w.resetsAt > now)
-    .map((w) => w.resetsAt!);
-  if (account.exhaustedUntil && account.exhaustedUntil > now)
-    blockers.push(account.exhaustedUntil);
-  blockers.push(...cooldowns.map((c) => c.retryAt));
-  const availableAt = blockers.length ? Math.max(...blockers) : undefined;
-  const stale = account.quotaState === "stale" && account.windows.length > 0;
-  if (!stale && !account.quotaHealth?.error && !account.modelError && !availableAt && !cooldowns.length) return null;
+  if (!account.quotaHealth?.error && !account.modelError && !cooldowns.length) return null;
   return (
     <div className="quota-details">
-      {stale && <small className="muted">Usage is out of date. Refresh it from the ⋯ menu.</small>}
       {account.quotaHealth?.error && <small>{account.quotaHealth.error}</small>}
       {account.modelError && <small>{account.modelError}</small>}
-      {availableAt && <small>Available again {new Date(availableAt).toLocaleString()}</small>}
       {cooldowns.map((c) => (
         <div className="row" key={`${c.scope}:${c.model ?? ""}`}>
           <Badge>
