@@ -1,6 +1,7 @@
 import {
   modelIdSchema,
   type Failure,
+  type ModelTokens,
   type ProxyAttempt,
   type ProxyMetrics,
   type ProxyRequest,
@@ -111,6 +112,16 @@ export class Telemetry {
     });
     this.save();
     if (!this.s.closed) trimTelemetry(this.s);
+  }
+  /** Adds a response's token counts to this hour's total for its model. */
+  tokens(t: Tokens) {
+    if (this.s.closed || !(t.input + t.output + t.cacheRead + t.cacheWrite)) return;
+    const now = this.s.now(),
+      model = this.request.routedModel || this.request.requestedModel || "unknown";
+    this.s.db.run(
+      "insert into token_usage values (?,?,?,?,?,?,?) on conflict(hour, provider, model) do update set input=input+excluded.input, output=output+excluded.output, cache_read=cache_read+excluded.cache_read, cache_write=cache_write+excluded.cache_write",
+      [now - (now % 3600000), this.request.provider, model, t.input, t.output, t.cacheRead, t.cacheWrite],
+    );
   }
   private save() {
     if (this.s.closed) return;
@@ -245,6 +256,15 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
   };
 }
 
+/** Token totals per model since a time (an hour bucket counts if any of it is after `since`). */
+export function tokenUsage(s: Store, since = 0): ModelTokens[] {
+  return s.db
+    .query(
+      "select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite from token_usage where hour > ? group by provider, model order by sum(input + output + cache_read + cache_write) desc",
+    )
+    .all(since - 3600000) as ModelTokens[];
+}
+
 export function trimTelemetry(s: Store) {
   const settings = s.settings();
   s.transaction(() => {
@@ -277,16 +297,34 @@ export function trimTelemetry(s: Store) {
     }
   });
 }
+export type Tokens = Omit<ModelTokens, "provider" | "model">;
 /** Bounded SSE observation only; the original bytes continue to the client unchanged. */
 export function streamObserver(onResponse?: (id: string) => void) {
   const decoder = new TextDecoder();
   let buffer = "",
     discarding = false;
   let terminal: "completed" | "provider-error" | undefined;
+  const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  /** Claude reports usage in message_start and cumulatively in message_delta, Codex once in
+   * response.completed, so the largest value per field is the total. Read from text rather than JSON
+   * because Codex's response.completed carries the whole output and is often too large to parse;
+   * its usage sits at the end, inside the tail kept below. */
+  const readUsage = (event: string) => {
+    const at = event.lastIndexOf('"usage":');
+    if (at < 0) return;
+    const usage = event.slice(at),
+      field = (name: string) => Number(new RegExp(`"${name}":\\s*(\\d+)`).exec(usage)?.[1] ?? 0);
+    const cached = field("cached_tokens"); // Codex counts cached tokens inside input_tokens
+    tokens.input = Math.max(tokens.input, field("input_tokens") - cached);
+    tokens.output = Math.max(tokens.output, field("output_tokens"));
+    tokens.cacheRead = Math.max(tokens.cacheRead, field("cache_read_input_tokens") + cached);
+    tokens.cacheWrite = Math.max(tokens.cacheWrite, field("cache_creation_input_tokens"));
+  };
   return {
     get terminal() {
       return terminal;
     },
+    tokens,
     chunk(bytes: Uint8Array) {
       for (let offset = 0; offset < bytes.length; offset += 16384) {
         buffer += decoder.decode(bytes.subarray(offset, offset + 16384), {
@@ -297,6 +335,7 @@ export function streamObserver(onResponse?: (id: string) => void) {
           if (!match) break;
           const event = buffer.slice(0, match.index);
           buffer = buffer.slice(match.index + match[0].length);
+          readUsage(event);
           if (discarding || event.length > 65536) {
             discarding = false;
             continue;
@@ -329,7 +368,7 @@ export function streamObserver(onResponse?: (id: string) => void) {
             terminal = "completed";
         }
         if (buffer.length > 65536) {
-          buffer = buffer.slice(-3);
+          buffer = buffer.slice(-8192);
           discarding = true;
         }
       }

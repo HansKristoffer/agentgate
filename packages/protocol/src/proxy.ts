@@ -199,6 +199,15 @@ export interface ProxyMetrics {
   averageHeadersMs?: number;
   averageFirstByteMs?: number;
 }
+/** Tokens one model used on this node, summed over every account. */
+export interface ModelTokens {
+  provider: "claude" | "codex";
+  model: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
 export interface RouteExplanation {
   provider: "claude" | "codex";
   requestedModel?: string;
