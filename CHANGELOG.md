@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/HansKristoffer/agentgate/compare/v0.10.0...v0.11.0) (2026-10-05)
+
+
+### Features
+
+* **pair:** pairing command installs agentgate on the other machine ([#29](https://github.com/HansKristoffer/agentgate/issues/29)) ([301bbca](https://github.com/HansKristoffer/agentgate/commit/301bbca7ccc3e23fbb4112203b449c64398392c2))
+
 ## [0.10.0](https://github.com/HansKristoffer/agentgate/compare/v0.9.0...v0.10.0) (2026-10-05)
 
 
