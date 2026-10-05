@@ -105,11 +105,11 @@ agentgate project set Lullu-ai/lullu posthog=posthog-lullu
 agentgate mcp test posthog-lullu
 ```
 
-The name is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Mapping changes reach running sessions without a restart.
+A server can have any name, such as "PostHog Lullu"; its slug (`posthog-lullu`) becomes its id and the default tool prefix, and `agentgate mcp label <id> <name>` changes only the name shown in the app. The alias is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Mapping changes reach running sessions without a restart.
 
 ## Skills per repo
 
-Skills are installed once and synced to every machine like MCP servers; you choose which repos use each one. In the native app (Skills), **Browse skills.sh** searches the [skills.sh](https://skills.sh) directory, **Add from source** uses the pinned `skills@1.7.0` CLI and accepts (`owner/repo`, `owner/repo@skill`, a Git or GitHub URL, a folder), and **New skill** writes a SKILL.md by hand. Then pick **Every session** or specific repos.
+Skills are installed once and synced to every machine like MCP servers; you choose which repos use each one. In the native app, **Skills → Add skills** offers each source as a tab: **skills.sh** searches the [skills.sh](https://skills.sh) directory, **Source** uses the pinned `skills@1.7.0` CLI and accepts (`owner/repo`, `owner/repo@skill`, a Git or GitHub URL, a folder), and **Write** writes a SKILL.md by hand. Then pick **Every session** or specific repos.
 
 ```sh
 agentgate skills find postgres
@@ -117,11 +117,11 @@ agentgate skills add vercel-labs/agent-skills --skill web-design-guidelines --pr
 agentgate skills add ./my-skill --project '*'
 agentgate skills new release-notes --file SKILL.md
 agentgate skills projects web-design-guidelines Lullu-ai/lullu other/repo
-agentgate skills update                     # refetch every installed skill from its source
+agentgate skills update                     # refetch every installed skill now (the daemon does it hourly)
 agentgate skills prepare .                  # wait for checkout links before launching an agent
 ```
 
-**Connect GitHub repo** keeps a public repository's skills in sync instead of copying them once: agentgate installs every skill in its `.claude/skills` and `.agents/skills` folders, asks whether they are for every session or specific repos, and checks for new commits every 10 minutes. New skills in the repository are used where it is connected, and skills removed from it are removed. To stop using one of its skills, unlink it from its projects; disconnecting removes them all.
+**Synced repo** keeps a public repository's skills in sync instead of copying them once: agentgate installs every skill in its `.claude/skills` and `.agents/skills` folders, asks whether they are for every session or specific repos, and checks for new commits every 10 minutes. New skills in the repository are used where it is connected, and skills removed from it are removed. To stop using one of its skills, unlink it from its projects; disconnecting removes them all.
 
 ```sh
 agentgate skills repo add https://github.com/owner/team-skills --project '*'
@@ -134,13 +134,13 @@ Fetching needs Node (`npx`) or Bun (`bunx`) on the daemon's machine, and connect
 - **Every session**: the Claude and Codex folders `agentgate setup` writes (`~/.config/agentgate/{claude,codex}/skills`), plus `~/.claude/skills` and `~/.codex/skills` while `setup --primary` is on.
 - **One repo**: `.claude/skills/<name>` in the main checkout (Claude Code falls back to it from worktrees) and `.agents/skills/<name>` in the main checkout and every worktree (Codex). The entries are added to `.git/info/exclude`.
 
-Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine after its first agentgate session there, or after **Scan folder** in Projects; from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create: a name clash is listed under Skills → Skipped links. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app shows the skills.sh audit before installing.
+Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine after its first agentgate session there, or after a scan under Projects → **Add project** → **Find on this machine**; from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create: a name clash is listed under Skills → Skills need attention. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app shows the skills.sh audit before installing.
 
-The app installs the exact files shown in a preview. Previews expire after ten minutes or cache eviction; preview again to continue. Editing checks the saved revision and reports a conflict if another client or peer changed the skill. Skills → **Skills need attention** shows failed local materialization/link work, which the daemon retries automatically.
+The app installs the exact files shown in a preview. Previews expire after ten minutes or cache eviction; preview again to continue. Skills installed from skills.sh, a source or a connected repository follow it and can't be edited; only hand-written skills can. Editing checks the saved revision and reports a conflict if another client or peer changed the skill. Skills → **Skills need attention** shows failed local materialization/link work, which the daemon retries automatically.
 
 Bundles must contain a nonempty root `SKILL.md`, with unique portable paths and regular files. Symlinks and special files cannot be synced. Each bundle is limited to 3 MiB of base64 data (about 2.25 MiB of files) and 5,000 files; imports are limited to 100 skills and 24 MiB per pack. Large sources can be imported with `--skill` one skill at a time.
 
-Repository-owned skills are mirrored only when you opt in under Projects → **Repository skill mirroring**. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
+Repository-owned skills are mirrored only when you opt in with **Share repo skills between Claude and Codex** in a project's ⋯ menu in Projects. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
 
 ## Your MCP servers and skills in Grok
 

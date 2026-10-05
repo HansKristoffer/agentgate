@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ArrowRight, Boxes, Plus, Trash2 } from "lucide-react";
-import type { Preset, ToolPreview } from "@agentgate/protocol";
+import { ArrowRight, Boxes, Plus } from "lucide-react";
+import { slugify, type Preset, type ServerSummary, type ToolPreview } from "@agentgate/protocol";
 import { Button } from "@heroui/react";
 import {
   Badge,
@@ -11,6 +11,7 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  RowMenu,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
@@ -25,7 +26,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
   const [preset, setPreset] = useState("");
   const [mode, setMode] = useState("http");
   const [tools, setTools] = useState<{ id: string; tools: ToolPreview[] }>();
-  const [rename, setRename] = useState<string>();
+  const [rename, setRename] = useState<ServerSummary>();
+  const [name, setName] = useState("");
   useEffect(() => {
     let cancelled = false;
     void request<Preset[]>(connection, "/presets")
@@ -49,7 +51,13 @@ export function Servers({ data, connection, perform }: ViewProps) {
   return (
     <>
       <HeaderActions>
-        <Button size="sm" onPress={() => setAdd(true)}>
+        <Button
+          size="sm"
+          onPress={() => {
+            setName("");
+            setAdd(true);
+          }}
+        >
           <Plus size={15} />
           Connect server
         </Button>
@@ -73,7 +81,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
               </div>
               <div className="grow">
                 <div className="row">
-                  <strong>{server.id}</strong>
+                  <strong>{server.label ?? server.id}</strong>
                   <Badge good={server.loggedIn}>
                     {server.needsLogin
                       ? "Needs login"
@@ -86,65 +94,40 @@ export function Servers({ data, connection, perform }: ViewProps) {
                             : "Local"}
                   </Badge>
                 </div>
-                <small>{server.endpoint}</small>
+                <small>{server.label ? `Tool prefix ${server.id} · ${server.endpoint}` : server.endpoint}</small>
                 <small className={server.refreshError ? "danger" : ""}>
                   {server.refreshError ??
                     `${mappings} ${mappings === 1 ? "project" : "projects"}`}
                 </small>
               </div>
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() =>
-                  void perform(async () => {
-                    const result = await request<{ tools: ToolPreview[] }>(
-                      connection,
-                      `/servers/${idPath(server.id)}/test`,
-                      "POST",
-                    );
-                    setTools({ id: server.id, tools: result.tools });
-                  })
-                }
-              >
-                Test
-              </Button>
-              {server.transport === "http" && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onPress={() => void signIn(server.id)}
-                >
+              {server.needsLogin && server.transport === "http" && (
+                <Button size="sm" variant="tertiary" onPress={() => void signIn(server.id)}>
                   Sign in
                 </Button>
               )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() => setRename(server.id)}
-              >
-                Rename
-              </Button>
-              <Button
-                isIconOnly
-                size="sm"
-                variant="ghost"
-                className="delete"
-                aria-label={`Delete ${server.id}`}
-                onPress={async () => {
-                  if (await confirmDelete(server.id))
-                    void perform(
-                      () =>
-                        request(
-                          connection,
-                          `/servers/${idPath(server.id)}`,
-                          "DELETE",
-                        ),
-                      "Server deleted",
-                    );
-                }}
-              >
-                <Trash2 size={15} />
-              </Button>
+              <RowMenu
+                label={`More for ${server.id}`}
+                items={[
+                  {
+                    label: "Test",
+                    onAction: () =>
+                      void perform(async () => {
+                        const result = await request<{ tools: ToolPreview[] }>(connection, `/servers/${idPath(server.id)}/test`, "POST");
+                        setTools({ id: server.id, tools: result.tools });
+                      }),
+                  },
+                  server.transport === "http" && !server.needsLogin && { label: "Sign in", onAction: () => void signIn(server.id) },
+                  { label: "Rename", onAction: () => setRename(server) },
+                  {
+                    label: "Delete",
+                    danger: true,
+                    onAction: async () => {
+                      if (await confirmDelete(server.id))
+                        void perform(() => request(connection, `/servers/${idPath(server.id)}`, "DELETE"), "Server deleted");
+                    },
+                  },
+                ]}
+              />
             </div>
           );
         })}
@@ -156,9 +139,9 @@ export function Servers({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
-                const id = field(f, "id");
+                // The daemon turns the name into the id and tool prefix.
                 await request(connection, "/servers", "POST", {
-                  id,
+                  id: name,
                   target:
                     preset || (mode === "http" ? field(f, "url") : undefined),
                   command:
@@ -173,11 +156,12 @@ export function Servers({ data, connection, perform }: ViewProps) {
             }}
           >
             <Field
-              label="Server name"
-              name="id"
+              label="Name"
               isRequired
-              pattern="[A-Za-z0-9_-]+"
-              placeholder="e.g. posthog-work"
+              value={name}
+              onChange={setName}
+              placeholder="e.g. PostHog Work"
+              description={slugify(name) ? `Agents see its tools as ${slugify(name)}__…` : "Any name. Agents see a short tool prefix made from it."}
             />
             <Choice
               label="Preset"
@@ -185,7 +169,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
               onChange={(key) => setPreset(key === custom ? "" : String(key))}
               options={[
                 { id: custom, label: "Custom server" },
-                ...presets.map((p) => ({ id: p.id, label: p.id })),
+                ...presets.map((p) => ({ id: p.id, label: p.label })),
               ]}
             />
             {preset ? (
@@ -263,22 +247,17 @@ export function Servers({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
-                await request(
-                  connection,
-                  `/servers/${idPath(rename)}/rename`,
-                  "POST",
-                  { id: field(f, "id") },
-                );
+                await request(connection, `/servers/${idPath(rename.id)}`, "PATCH", { label: field(f, "label") });
                 setRename(undefined);
-              }, "Server renamed; project mappings updated");
+              }, "Server renamed");
             }}
           >
             <Field
-              label="Server name"
-              name="id"
+              label="Name"
+              name="label"
               isRequired
-              pattern="[A-Za-z0-9_-]+"
-              defaultValue={rename}
+              defaultValue={rename.label ?? rename.id}
+              description={`Only the name changes. Agents keep seeing its tools as ${rename.id}__…`}
             />
             <Button type="submit" size="sm">
               Save name

@@ -58,6 +58,8 @@ export const schemas = {
   }),
   mcp: z.object({
     id: z.string(),
+    /** The name the user typed, shown in the app; `id` is its slug and the tool prefix. */
+    label: z.string().max(100).optional(),
     template: z.string(),
     transport: z.enum(["http", "stdio"]),
     url: z.string().optional(),
@@ -336,7 +338,7 @@ export const store = () => (shared ??= new Store());
 /** A public inventory deliberately omits all arbitrary strings that may carry credentials. */
 function publicMcp(inst: McpInstance) {
   return {
-    id: inst.id, template: inst.template, transport: inst.transport, mode: inst.mode, secrets: {}, fields: {},
+    id: inst.id, label: inst.label, template: inst.template, transport: inst.transport, mode: inst.mode, secrets: {}, fields: {},
     ...(inst.transport === "http" ? { url: "https://configure.invalid/mcp", headers: {} } : { command: "configure-command", args: [], env: {} })
   };
 }

@@ -44,7 +44,7 @@ pre {
 .callout .alert__description { color: inherit; font-size: 13px; }
 .callout .row { flex: 0 0 auto; }
 
-/* A view's own actions, between the title and the refresh button. */
+/* A view's own actions, at the right of the title. */
 .header-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .header-actions[inert] { opacity: 0.65; }
 
@@ -59,7 +59,8 @@ pre {
 
 /* One row of a group. HeroUI fields and switches take this class to sit on one line. */
 .item { display: flex; flex-direction: row; align-items: center; gap: 12px; margin: 0; padding: 10px 14px; min-height: 52px; }
-.item ~ .item, .rows > * + .item { border-top: 1px solid var(--border); }
+/* React Aria selects leave an invisible <template> ahead of themselves; it must not count as a row above. */
+.item ~ .item, .rows > :not(template) + .item { border-top: 1px solid var(--border); }
 .item strong { font-size: 13px; font-weight: 500; }
 .item .grow small { overflow: hidden; text-overflow: ellipsis; }
 .item.stack { flex-direction: column; align-items: stretch; gap: 10px; }
@@ -104,8 +105,6 @@ pre {
 .stat strong { font-size: 26px; font-weight: 600; letter-spacing: -0.5px; margin-top: 6px; }
 .stat > span { font-size: 13px; color: var(--muted); }
 
-.columns { display: grid; grid-template-columns: 1fr 1.25fr; gap: 16px; }
-.columns .section { min-width: 0; }
 
 .provider-icon {
   width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px;
@@ -121,13 +120,13 @@ pre {
 .dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 8px; background: var(--field-placeholder); display: inline-block; }
 .dot.online { background: var(--success); }
 
-.mini-quotas { width: 170px; flex: 0 0 170px; display: flex; flex-direction: column; gap: 3px; }
+.mini-quotas { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
 .mini-quotas > div { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .mini-quotas > div > span { width: 56px; flex: 0 0 56px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-quotas > div > .progress-bar { flex: 1; }
 .mini-quotas > div > small { width: 30px; text-align: right; font-size: 11px; }
+.mini-quotas > div > small + small { width: 92px; text-align: left; white-space: nowrap; }
 
-.activity-time { font-size: 12px; color: var(--muted); white-space: nowrap; }
 
 .empty {
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
@@ -145,8 +144,12 @@ pre {
 
 /* ---------- dialog ---------- */
 .dialog .workspace, .dialog form { display: flex; flex-direction: column; }
+.dialog form.inline-form { flex-direction: row; margin-bottom: 10px; }
 .dialog .workspace > p { font-size: 13px; color: var(--muted); line-height: 1.5; margin: 0 0 14px; }
 .dialog .workspace > .button, .dialog form > .button:last-child { align-self: flex-end; margin-top: 4px; }
+/* A search or scan row: its buttons line up with, and match the height of, the input beside them. */
+.inline-form > .button, .dialog form.inline-form > .button:last-child { align-self: auto; margin-top: 0; height: 36px; }
+.inline-form .input { height: 36px; }
 .dialog p.muted { font-size: 13px; line-height: 1.5; margin: 0 0 14px; }
 
 .tool-list { max-height: 420px; overflow: auto; margin: 0 -4px; }
@@ -178,17 +181,6 @@ pre {
 
 .version-line { margin: 4px 4px 0; font-size: 12px; color: var(--muted); }
 
-.spin { animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) {
-  .spin { animation: none; }
-}
-
-@media (max-width: 960px) {
-  .columns { grid-template-columns: 1fr; gap: 0; }
-  .mini-quotas { display: none; }
-}
-
 /* Claude Desktop help and first-run question */
 .compare { width: 100%; border-collapse: collapse; font-size: 12px; margin: 0 0 14px; }
 .compare th, .compare td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -206,20 +198,9 @@ h3 { font-size: 13px; font-weight: 600; }
 .danger.item { font-size: 13px; overflow-wrap: anywhere; }
 
 .quota-details { display: flex; flex-direction: column; gap: 8px; padding-left: 42px; min-width: 0; }
-.account .quota-details { padding-left: 70px; }
 .quota-details > small { overflow-wrap: anywhere; }
 /* Each limit window: name, bar and percent, with its reset underneath. Fixed columns line up across accounts. */
-.usage { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px 28px; font-size: 12px; }
-.usage > div { display: grid; grid-template-columns: 64px minmax(60px, 1fr) 36px; align-items: center; column-gap: 10px; row-gap: 2px; }
-.usage > div > span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.usage > div > strong { text-align: right; font-weight: 500; }
-.usage > div > small { grid-column: 2 / -1; font-size: 11px; }
 
-.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); }
-.metrics > div { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; }
-.metrics > div + div { border-left: 1px solid var(--border); }
-.metrics strong { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
-.metrics span { font-size: 12px; color: var(--muted); }
 
 .activity-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
 .activity-filters > .field { margin: 0; }

@@ -8,6 +8,7 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  RowMenu,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
@@ -96,45 +97,43 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   </Switch.Control>
                 </Switch.Content>
               </Switch>
-              {n.id !== data.node && (
-                <Button
-                  size="sm"
-                  variant="danger-soft"
-                  isDisabled={viaRelay && !local}
-                  aria-label={
-                    viaRelay && !local
-                      ? "Removing a relay machine changes the relay secret; do it on that daemon's own machine"
-                      : undefined
-                  }
-                  onPress={async () => {
-                    const endpoints = data.projects.some((p) => p.remote)
-                      ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
-                      : "";
-                    const message = (viaRelay
-                      ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
-                      : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
-                    if (
-                      await confirmDialog(message, {
-                        destructive: true,
-                        okLabel: viaRelay ? "Remove and rotate" : "Unpair",
-                      })
-                    )
-                      void perform(async () => {
-                        const result = await request<{
-                          rotated?: boolean;
-                          command?: string;
-                        }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
-                        if (result.rotated && result.command)
-                          setShown({
-                            command: result.command,
-                            method: "relay",
-                            rotated: true,
-                          });
-                      }, viaRelay ? undefined : "Machine unpaired");
-                  }}
-                >
-                  {viaRelay ? "Remove" : "Unpair"}
-                </Button>
+              {n.id !== data.node && !(viaRelay && !local) && (
+                // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
+                <RowMenu
+                  label={`More for ${n.id}`}
+                  items={[
+                    {
+                      label: viaRelay ? "Remove" : "Unpair",
+                      danger: true,
+                      onAction: async () => {
+                        const endpoints = data.projects.some((p) => p.remote)
+                          ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
+                          : "";
+                        const message = (viaRelay
+                          ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
+                          : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
+                        if (
+                          await confirmDialog(message, {
+                            destructive: true,
+                            okLabel: viaRelay ? "Remove and rotate" : "Unpair",
+                          })
+                        )
+                          void perform(async () => {
+                            const result = await request<{
+                              rotated?: boolean;
+                              command?: string;
+                            }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
+                            if (result.rotated && result.command)
+                              setShown({
+                                command: result.command,
+                                method: "relay",
+                                rotated: true,
+                              });
+                          }, viaRelay ? undefined : "Machine unpaired");
+                      },
+                    },
+                  ]}
+                />
               )}
             </div>
           );

@@ -124,6 +124,8 @@ export const accountStatusSchema = z.object({
 export type AccountStatus = z.infer<typeof accountStatusSchema>;
 export interface ServerSummary {
   id: string;
+  /** The name the user gave it; `id` is its slug and tool prefix. */
+  label?: string;
   template: string;
   transport: "http" | "stdio";
   mode: "shared" | "perSession";
@@ -178,6 +180,7 @@ export interface SkillSearchResult {
 }
 export interface Preset {
   id: string;
+  label: string;
   url?: string;
   command?: string;
   args?: string[];
@@ -298,7 +301,7 @@ export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION), node: z.string(),
   accounts: z.array(accountStatusSchema),
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
-  servers: z.array(z.object({ id: z.string(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), refreshError: z.string().optional() })),
+  servers: z.array(z.object({ id: z.string(), label: z.string().optional(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), refreshError: z.string().optional() })),
   projects: z.array(publicProjectSchema),
   skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
   skillConflicts: z.array(z.string()),

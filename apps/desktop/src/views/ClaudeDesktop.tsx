@@ -1,8 +1,8 @@
 import { Alert, Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import type { AccountStatus, Connection, DesktopLogin, DesktopStatus, Status } from "@agentgate/protocol";
-import { localAction, request } from "../api.ts";
-import { Modal, Panel, Toggle } from "../components/ui.tsx";
+import { request } from "../api.ts";
+import { Modal } from "../components/ui.tsx";
 import type { Perform, ViewProps } from "../types.ts";
 
 const DAY = 86_400_000;
@@ -33,6 +33,8 @@ export function desktopActions(connection: Connection, perform: Perform) {
     use: (l: DesktopLogin) => run("/desktop/use", { accountUuid: l.accountUuid }, `Claude Desktop is restarting with ${nameOf(l)}`),
     connect: (email?: string) =>
       run("/desktop/add", { expected: email }, `Claude Desktop restarted. Sign in${email ? ` with ${email}` : ""} there; Agentgate saves it automatically.`),
+    /** Keep the login Desktop runs now, so switching back to it later needs no sign-in. */
+    save: () => perform(() => request(connection, "/desktop/capture", "POST"), "Login saved; you can switch back to it any time"),
     pool: (on: boolean) =>
       run("/desktop/gateway", { on }, on ? "Claude Desktop is restarting; its Code tab now shares your subscriptions" : "Claude Desktop is restarting with its own sign-in"),
   };
@@ -53,7 +55,7 @@ export function suggestion(data: Status, desktop: DesktopStatus) {
 }
 
 type Actions = ReturnType<typeof desktopActions>;
-const usable = (l?: DesktopLogin) => !!l && !l.expired && !l.problem;
+export const usable = (l?: DesktopLogin) => !!l && !l.expired && !l.problem;
 const isCurrent = (desktop: DesktopStatus, l?: DesktopLogin) =>
   !!l && desktop.mode === "signed-in" && desktop.current?.accountUuid === l.accountUuid;
 
@@ -64,16 +66,6 @@ export function desktopNote(desktop: DesktopStatus, l?: DesktopLogin) {
   if (l.problem) return l.problem;
   const days = l.sessionExpiresAt && Math.ceil((l.sessionExpiresAt - Date.now()) / DAY);
   if (days && days > 0 && days <= 5 && !isCurrent(desktop, l)) return `Open it in Claude Desktop within ${days} day${days === 1 ? "" : "s"} to stay connected`;
-}
-
-/** The one Claude Desktop action an account row offers. */
-export function DesktopButton({ desktop, act, login, email }: { desktop: DesktopStatus; act: Actions; login?: DesktopLogin; email?: string }) {
-  if (isCurrent(desktop, login)) return null;
-  return usable(login) ? (
-    <Button size="sm" variant="tertiary" onPress={() => void act.use(login!)}>Use in Desktop</Button>
-  ) : (
-    <Button size="sm" variant="tertiary" onPress={() => void act.connect(email)}>{login ? "Connect Desktop again" : "Connect to Desktop"}</Button>
-  );
 }
 
 export function forgetLogin(connection: Connection, perform: Perform, l: DesktopLogin) {
@@ -126,57 +118,6 @@ export function DesktopAlerts({ data, connection, perform, desktop, act }: ViewP
         </Alert>
       )}
     </>
-  );
-}
-
-/** What Claude Desktop uses now, how it uses your subscriptions, and its tools. */
-export function DesktopPanel({ data, connection, perform, desktop, act }: ViewProps & { desktop: DesktopStatus; act: Actions }) {
-  const current = desktop.mode === "signed-in" ? desktop.current : undefined;
-  const pool = desktop.mode === "pool";
-  const active = data.accounts.find((a) => a.account.provider === "claude" && a.active)?.account.label;
-  const [title, body] = pool
-    ? ["Its Code tab shares your subscriptions", `Now using ${active ?? "the next available subscription"}. Chat isn't available in this mode, and your claude.ai chats aren't shown.`]
-    : desktop.mode === "other-gateway"
-      ? ["It uses another gateway", "Set up by you or your company. Agentgate leaves it alone unless you pick a mode."]
-      : current
-        ? [`Signed in as ${nameOf(current)}`, current.accountId ? "Chat, Cowork and Code use this account. Switch with Use in Desktop below." : "Not in your subscriptions, so Agentgate can't show its usage."]
-        : ["Not signed in", "Connect one of your accounts below, or sign in in Claude Desktop and press Save this account."];
-  return (
-    <Panel title="Claude Desktop" foot={!desktop.running && "Claude Desktop is closed. Changes apply when it opens."}>
-      <div className="item">
-        <span className="labelled grow">
-          {title}
-          <small>{body}</small>
-        </span>
-        {current && !current.saved && (
-          <Button size="sm" variant="tertiary" onPress={() => void perform(() => request(connection, "/desktop/capture", "POST"), "Saved; you can switch back to this account any time")}>
-            Save this account
-          </Button>
-        )}
-      </div>
-      <div className="item stack">
-        <div className="row wrap">
-          {(["signed-in", "pool"] as const).map((m) => (
-            <Button key={m} size="sm" variant={desktop.mode === m ? "primary" : "tertiary"} aria-pressed={desktop.mode === m} onPress={() => desktop.mode !== m && void act.pool(m === "pool")}>
-              {m === "pool" ? "Share automatically" : "Switch accounts"}
-            </Button>
-          ))}
-        </div>
-        <small className="muted">
-          {desktop.mode === "other-gateway"
-            ? "Pick one to replace the other gateway. Your settings for it are kept."
-            : pool
-            ? "The Code tab moves to whichever subscription has room by itself. Agentgate must keep running."
-            : "Your full account in Desktop: Chat, Cowork, Code and your history. Switching restarts Desktop."}
-        </small>
-      </div>
-      <Toggle
-        label="Use Agentgate's MCP servers in the Code tab"
-        description="Also applies to Claude Code in the terminal. Chat and Cowork don't load them."
-        isSelected={desktop.mcp}
-        onChange={(on) => void perform(() => localAction(on ? "mcp-on" : "mcp-off", connection), on ? "MCP servers added" : "MCP servers removed")}
-      />
-    </Panel>
   );
 }
 

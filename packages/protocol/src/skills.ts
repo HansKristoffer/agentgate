@@ -1,6 +1,15 @@
 import { z } from "zod";
 
 export const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+/** Any name a person types as an id: "PostHog Work" → "posthog-work", "Café" → "cafe". Empty when nothing usable is left. */
+export const slugify = (name: string) =>
+  name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "") // the accents NFKD split off: é becomes e
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 64)
+    .replace(/^-+|-+$/g, "");
 /** `*`, a GitHub `owner/repo`, or a virtual project `@name` (GitHub owners can't start with `@`). */
 export const PROJECT_ID = /^(\*|[^/\s@][^/\s]*\/[^/\s]+|@[a-z0-9][a-z0-9-]{0,63})$/;
 export const isVirtual = (project: string) => project.startsWith("@");

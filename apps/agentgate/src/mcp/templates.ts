@@ -24,6 +24,8 @@ export const presets: Preset[] = [
   { id: "neon", label: "Neon", url: "https://mcp.neon.tech/mcp" },
   { id: "railway", label: "Railway", url: "https://mcp.railway.com" },
   { id: "context7", label: "Context7", url: "https://mcp.context7.com/mcp" },
+  // Shopify's documented server is local: its docs and Admin/Storefront API schemas, no login.
+  { id: "shopify", label: "Shopify", command: "npx", args: ["-y", "@shopify/dev-mcp@latest"], note: "Shopify docs and API schemas" },
   { id: "filesystem", label: "Filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."], mode: "perSession", note: "runs in each session's worktree" },
 ];
 

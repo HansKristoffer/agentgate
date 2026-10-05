@@ -1,16 +1,16 @@
 import { useState } from "react";
-import { Bot, FolderGit2, FolderOpen, Plus, Search as SearchIcon, Trash2 } from "lucide-react";
+import { Bot, FolderGit2, FolderOpen, Pencil, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PublicProject, ToolPreview } from "@agentgate/protocol";
-import { Button, Input, TextField } from "@heroui/react";
+import { Button, Input, Tabs, TextField } from "@heroui/react";
 import {
-  Badge,
   Check,
   Empty,
   Field,
   Modal,
   Panel,
   HeaderActions,
+  RowMenu,
 } from "../components/ui.tsx";
 import { ProjectSkillChecks } from "../components/SkillAssignments.tsx";
 import type { ViewProps } from "../types.ts";
@@ -29,6 +29,9 @@ export function Projects(props: ViewProps) {
   const [repos, setRepos] = useState<{ repo: string; path: string }[]>();
   const [dir, setDir] = useState("~/Documents/GitHub");
   const [query, setQuery] = useState("");
+  // Adding a repository project: type owner/repo, or find it among this machine's checkouts.
+  const [find, setFind] = useState(false);
+  const [picked, setPicked] = useState("");
   const needle = query.trim().toLowerCase();
   const shown = (repos ?? []).filter((r) =>
     `${r.repo} ${r.path}`.toLowerCase().includes(needle),
@@ -46,6 +49,21 @@ export function Projects(props: ViewProps) {
     });
   const [tools, setTools] = useState<ToolPreview[]>();
   const defaults = data.projects.find((p) => p.id === "*");
+  /** Links a repository's own skills between .claude/skills and .agents/skills, so Claude and Codex both see them.
+   * Local only: it writes into this machine's checkouts of the repository. */
+  const mirrorItem = (id: string) => {
+    const mine = data.checkouts.filter((c) => c.project.toLowerCase() === id.toLowerCase());
+    if (!local || !mine.length) return false;
+
+    const on = mine.some((c) => c.mirror);
+    return {
+      label: on ? "Stop sharing repo skills between Claude and Codex" : "Share repo skills between Claude and Codex",
+      onAction: () =>
+        void perform(async () => {
+          for (const c of mine) await request(connection, "/checkouts/mirroring", "PUT", { path: c.path, enabled: !on });
+        }, on ? "Repository skills no longer shared" : "Repository skills shared between Claude and Codex"),
+    };
+  };
   return (
     <>
       <HeaderActions>
@@ -68,7 +86,11 @@ export function Projects(props: ViewProps) {
         </Button>
         <Button
           size="sm"
-          onPress={() => setEdit({ id: "", mcp: {}, skills: [], inheritDefaults: true })}
+          onPress={() => {
+            setFind(false);
+            setPicked("");
+            setEdit({ id: "", mcp: {}, skills: [], inheritDefaults: true });
+          }}
         >
           <Plus size={15} />
           Add project
@@ -100,46 +122,30 @@ export function Projects(props: ViewProps) {
                       : "Project tools only"}
                   </small>
                 </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onPress={() =>
-                    void perform(async () =>
-                      setTools(
-                        await request<ToolPreview[]>(
-                          connection,
-                          `/projects/tools?id=${idPath(p.id)}`,
+                <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
+                  <Pencil size={15} />
+                </Button>
+                <RowMenu
+                  label={`More for ${p.id}`}
+                  items={[
+                    {
+                      label: "Preview tools",
+                      onAction: () =>
+                        void perform(async () =>
+                          setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
                         ),
-                      ),
-                    )
-                  }
-                >
-                  Preview
-                </Button>
-                <Button size="sm" variant="ghost" onPress={() => setEdit(p)}>
-                  Edit
-                </Button>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="ghost"
-                  className="delete"
-                  aria-label={`Delete ${p.id}`}
-                  onPress={async () => {
-                    if (await confirmDelete(p.id))
-                      void perform(
-                        () =>
-                          request(
-                            connection,
-                            `/projects?id=${idPath(p.id)}`,
-                            "DELETE",
-                          ),
-                        "Project removed",
-                      );
-                  }}
-                >
-                  <Trash2 size={15} />
-                </Button>
+                    },
+                    mirrorItem(p.id),
+                    {
+                      label: "Delete",
+                      danger: true,
+                      onAction: async () => {
+                        if (await confirmDelete(p.id))
+                          void perform(() => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"), "Project removed");
+                      },
+                    },
+                  ]}
+                />
               </div>
             ))
         ) : (
@@ -171,22 +177,22 @@ export function Projects(props: ViewProps) {
                   <small>{Object.keys(p.mcp).join(" · ") || "No MCP servers"}</small>
                   {p.skills.length > 0 && <small>Skills: {p.skills.join(", ")}</small>}
                 </div>
-                <Button size="sm" variant="ghost" onPress={() => setEdit(p)}>
-                  Edit
+                <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
+                  <Pencil size={15} />
                 </Button>
-                <Button
-                  isIconOnly
-                  size="sm"
-                  variant="ghost"
-                  className="delete"
-                  aria-label={`Delete ${p.id}`}
-                  onPress={async () => {
-                    if (await confirmDelete(p.id))
-                      void perform(() => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"), "Virtual project removed");
-                  }}
-                >
-                  <Trash2 size={15} />
-                </Button>
+                <RowMenu
+                  label={`More for ${p.id}`}
+                  items={[
+                    {
+                      label: "Delete",
+                      danger: true,
+                      onAction: async () => {
+                        if (await confirmDelete(p.id))
+                          void perform(() => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"), "Virtual project removed");
+                      },
+                    },
+                  ]}
+                />
               </div>
               <EndpointDetails {...props} project={p} />
               </div>
@@ -199,106 +205,6 @@ export function Projects(props: ViewProps) {
           </Empty>
         )}
       </Panel>
-      {local && data.checkouts.length > 0 && <Panel title="Repository skill mirroring" detail="Opt in to share repository-owned skills between Claude and Codex. This creates relative links you can review and commit.">
-        {data.checkouts.map(checkout => <div className="item" key={checkout.path}>
-          <span className="grow"><strong>{checkout.project}</strong><small>{checkout.path}</small></span>
-          <Button size="sm" variant="ghost" onPress={() => void perform(() => request(connection, "/checkouts/mirroring", "PUT", { path: checkout.path, enabled: !checkout.mirror }), "Repository mirroring saved")}>
-            {checkout.mirror ? "Stop mirroring" : "Mirror repository skills"}
-          </Button>
-        </div>)}
-      </Panel>}
-      {local && (
-        <Panel
-          title="Discover repositories"
-          detail="Choose a folder, or type its path, to find the Git repositories in it."
-        >
-          <form
-            className="item inline-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void scan(dir);
-            }}
-          >
-            <TextField
-              name="dir"
-              isRequired
-              aria-label="Repository folder"
-              value={dir}
-              onChange={setDir}
-              className="grow"
-            >
-              <Input />
-            </TextField>
-            <Button
-              size="sm"
-              variant="tertiary"
-              onPress={() =>
-                void (async () => {
-                  const path = await open({ directory: true, title: "Choose a folder of repositories" });
-                  if (typeof path === "string") {
-                    setDir(path);
-                    await scan(path);
-                  }
-                })()
-              }
-            >
-              <FolderOpen size={15} />
-              Choose folder…
-            </Button>
-            <Button type="submit" size="sm" variant="tertiary">
-              Scan
-            </Button>
-          </form>
-          {repos && repos.length > 0 && (
-            <div className="item">
-              <SearchIcon size={15} className="muted" />
-              <TextField
-                aria-label="Search repositories"
-                value={query}
-                onChange={setQuery}
-                className="grow"
-              >
-                <Input type="search" placeholder={`Search ${repos.length} repositories`} />
-              </TextField>
-            </div>
-          )}
-          {repos &&
-            (shown.length ? (
-              shown.map((repo) => {
-                const added = data.projects.some((p) => p.id === repo.repo);
-                return (
-                  <div className="item" key={repo.path}>
-                    <div className="grow">
-                      <strong>{repo.repo}</strong>
-                      <small>{repo.path}</small>
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      isDisabled={added}
-                      onPress={() =>
-                        setEdit({
-                          id: repo.repo,
-                          mcp: {},
-                          skills: [],
-                          inheritDefaults: true,
-                        })
-                      }
-                    >
-                      {added ? "Added" : "Add"}
-                    </Button>
-                  </div>
-                );
-              })
-            ) : (
-              <Empty>
-                {repos.length
-                  ? `No repositories match "${query}".`
-                  : "No repositories found in this folder."}
-              </Empty>
-            ))}
-        </Panel>
-      )}
       {edit && (
         <Modal
           title={
@@ -312,87 +218,175 @@ export function Projects(props: ViewProps) {
           }
           close={() => setEdit(undefined)}
         >
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              void perform(async () => {
-                // Keep an existing custom alias; new picks use the server id.
-                const mcp: Record<string, string> = {};
-                for (const id of f.getAll("server") as string[])
-                  mcp[aliasOf(edit, id) ?? id] = id;
-                const virtual = edit.virtual || isVirtual(edit.id);
-                await request(connection, "/projects", "PUT", {
-                  id: virtual && !edit.id ? `@${field(f, "id")}` : field(f, "id"),
-                  mcp,
-                  skills: f.getAll("skill") as string[],
-                  inheritDefaults: !virtual && (edit.id === "*" || f.get("inherit") === "on"),
-                });
-                setEdit(undefined);
-              }, "Project saved");
-            }}
-          >
-            {edit.virtual || isVirtual(edit.id) ? (
-              <Field
-                label="Name"
-                description="Lowercase letters, digits and dashes."
-                name="id"
-                isRequired
-                isReadOnly={!!edit.id}
-                defaultValue={edit.id}
-                pattern={edit.id ? undefined : "[a-z0-9][a-z0-9\\-]{0,63}"}
-                placeholder="grok"
-              />
-            ) : (
-              <Field
-                label="Repository"
-                name="id"
-                isRequired
-                isReadOnly={!!edit.id}
-                defaultValue={edit.id}
-                pattern={edit.id === "*" ? undefined : "[^\\/\\s@][^\\/\\s]*\\/[^\\/\\s]+"}
-                placeholder="owner/repo"
-              />
-            )}
-            <fieldset className="checklist">
-              <legend>MCP servers</legend>
-              <div className="rows">
-                {data.servers.length ? (
-                  // Per-session servers start inside a worktree, which a remote client doesn't have.
-                  data.servers.filter((s) => !(edit.virtual || isVirtual(edit.id)) || s.mode === "shared").map((s) => {
-                    const alias = aliasOf(edit, s.id);
-                    return (
-                      <Check
-                        className="item"
-                        key={s.id}
-                        name="server"
-                        value={s.id}
-                        defaultSelected={!!alias}
-                      >
-                        <span className="grow">
-                          <strong>{s.id}</strong>
-                          {alias && alias !== s.id && (
-                            <small>Tool prefix: {alias}</small>
-                          )}
-                        </span>
-                      </Check>
-                    );
-                  })
-                ) : (
-                  <Empty>Connect a server first.</Empty>
-                )}
-              </div>
-            </fieldset>
-            <ProjectSkillChecks data={data} project={edit.id} selected={edit.skills} />
-            {edit.id !== "*" && !edit.virtual && !isVirtual(edit.id) && (
-              <Check name="inherit" defaultSelected={edit.inheritDefaults}>
-                Include global MCP servers
-              </Check>
-            )}
-            <Button type="submit" size="sm">
-              Save project
-            </Button>
-          </form>
+          {local && !edit.id && !edit.virtual && (
+            <Tabs className="segmented" selectedKey={find ? "find" : "type"} onSelectionChange={(key) => setFind(key === "find")}>
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="How to choose the repository">
+                  <Tabs.Tab id="type">
+                    Repository
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="find">
+                    Find on this machine
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
+          )}
+          {find && !edit.id ? (
+            <>
+              <form
+                className="inline-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void scan(dir);
+                }}
+              >
+                <TextField name="dir" isRequired aria-label="Folder of repositories" value={dir} onChange={setDir} className="grow">
+                  <Input />
+                </TextField>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="tertiary"
+                  aria-label="Choose folder"
+                  onPress={() =>
+                    void (async () => {
+                      const path = await open({ directory: true, title: "Choose a folder of repositories" });
+                      if (typeof path === "string") {
+                        setDir(path);
+                        await scan(path);
+                      }
+                    })()
+                  }
+                >
+                  <FolderOpen size={15} />
+                </Button>
+                <Button type="submit" size="sm" variant="tertiary">
+                  Scan
+                </Button>
+              </form>
+              {repos && repos.length > 0 && (
+                <TextField aria-label="Search repositories" value={query} onChange={setQuery} className="field">
+                  <Input type="search" placeholder={`Search ${repos.length} repositories`} />
+                </TextField>
+              )}
+              {repos && (
+                <div className="tool-list">
+                  {shown.length ? (
+                    shown.map((repo) => {
+                      const added = data.projects.some((p) => p.id === repo.repo);
+                      return (
+                        <div className="row" key={repo.path}>
+                          <span className="grow">
+                            <code>{repo.repo}</code>
+                            <p>{repo.path}</p>
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            isDisabled={added}
+                            onPress={() => {
+                              setPicked(repo.repo);
+                              setFind(false);
+                            }}
+                          >
+                            {added ? "Added" : "Choose"}
+                          </Button>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <Empty>{repos.length ? `No repositories match "${query}".` : "No repositories found in this folder."}</Empty>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const f = new FormData(e.currentTarget);
+                void perform(async () => {
+                  // Keep an existing custom alias; new picks use the server id.
+                  const mcp: Record<string, string> = {};
+                  for (const id of f.getAll("server") as string[])
+                    mcp[aliasOf(edit, id) ?? id] = id;
+                  const virtual = edit.virtual || isVirtual(edit.id);
+                  await request(connection, "/projects", "PUT", {
+                    id: virtual && !edit.id ? `@${field(f, "id")}` : field(f, "id"),
+                    mcp,
+                    skills: f.getAll("skill") as string[],
+                    inheritDefaults: !virtual && (edit.id === "*" || f.get("inherit") === "on"),
+                  });
+                  setEdit(undefined);
+                }, "Project saved");
+              }}
+            >
+              {edit.virtual || isVirtual(edit.id) ? (
+                <Field
+                  label="Name"
+                  description="Lowercase letters, digits and dashes."
+                  name="id"
+                  isRequired
+                  isReadOnly={!!edit.id}
+                  defaultValue={edit.id}
+                  pattern={edit.id ? undefined : "[a-z0-9][a-z0-9\\-]{0,63}"}
+                  placeholder="grok"
+                />
+              ) : (
+                <Field
+                  label="Repository"
+                  name="id"
+                  isRequired
+                  isReadOnly={!!edit.id}
+                  key={picked}
+                  defaultValue={edit.id || picked}
+                  pattern={edit.id === "*" ? undefined : "[^\\/\\s@][^\\/\\s]*\\/[^\\/\\s]+"}
+                  placeholder="owner/repo"
+                />
+              )}
+              <fieldset className="checklist">
+                <legend>MCP servers</legend>
+                <div className="rows">
+                  {data.servers.length ? (
+                    // Per-session servers start inside a worktree, which a remote client doesn't have.
+                    data.servers.filter((s) => !(edit.virtual || isVirtual(edit.id)) || s.mode === "shared").map((s) => {
+                      const alias = aliasOf(edit, s.id);
+                      return (
+                        <Check
+                          className="item"
+                          key={s.id}
+                          name="server"
+                          value={s.id}
+                          defaultSelected={!!alias}
+                        >
+                          <span className="grow">
+                            <strong>{s.label ?? s.id}</strong>
+                            {alias && alias !== s.id && (
+                              <small>Tool prefix: {alias}</small>
+                            )}
+                          </span>
+                        </Check>
+                      );
+                    })
+                  ) : (
+                    <Empty>Connect a server first.</Empty>
+                  )}
+                </div>
+              </fieldset>
+              <ProjectSkillChecks data={data} project={edit.id} selected={edit.skills} />
+              {edit.id !== "*" && !edit.virtual && !isVirtual(edit.id) && (
+                <Check name="inherit" defaultSelected={edit.inheritDefaults}>
+                  Include global MCP servers
+                </Check>
+              )}
+              <Button type="submit" size="sm">
+                Save project
+              </Button>
+            </form>
+          )}
         </Modal>
       )}
       {tools && (
