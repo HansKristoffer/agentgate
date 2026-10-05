@@ -121,6 +121,10 @@ pre {
 .dot.online { background: var(--success); }
 
 .mini-quotas { position: relative; width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 3px; }
+.pin-account { display: flex; margin-right: -8px; padding: 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+.pin-account:hover:not(:disabled) { background: var(--default); color: var(--foreground); }
+.pin-account.pinned { color: var(--accent); }
+.pin-account:disabled { opacity: 0.35; cursor: default; }
 .mini-quotas.stale { margin-left: 12px; } /* room for the icon beside the bars, taken from the name column */
 .mini-quotas > .stale-usage { position: absolute; left: -22px; top: 50%; translate: 0 -50%; display: flex; padding: 2px; border: 0; background: none; color: var(--warning); }
 .mini-quotas > button.stale-usage { cursor: pointer; }

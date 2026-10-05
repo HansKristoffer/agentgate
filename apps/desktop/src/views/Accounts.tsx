@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CircleHelp, ExternalLink, Plus } from "lucide-react";
+import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
@@ -27,87 +27,26 @@ import {
   planName,
 } from "./utils.ts";
 
-/** Which account a provider's sessions use. For Claude with Claude Desktop on this Mac, one choice drives both:
- * picking an account moves Desktop to it too, and Automatic leaves Desktop where it is, since every switch restarts it. */
-function SubscriptionSelector({
-  data,
-  connection,
-  perform,
-  provider,
-  desktop,
-}: Pick<ViewProps, "data" | "connection" | "perform"> & {
-  provider: Provider;
-  desktop?: { app: DesktopStatus; act: ReturnType<typeof desktopActions> };
-}) {
-  const accounts = data.accounts.filter((a) => a.account.provider === provider);
-  const selected = accounts.find((a) => a.account.pinned);
-  const app = desktop?.app;
+/** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
+ * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
+function poolSummary(accounts: AccountStatus[], provider: Provider, app?: DesktopStatus) {
+  const tool = provider === "claude" ? "Claude Code" : "Codex";
+  const pinned = accounts.find((a) => a.account.pinned);
+  if (pinned) {
+    const desktop = app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
+    return `Pinned: ${tool} uses ${pinned.account.label} while it has room.${desktop} Unpin it to go back to automatic.`;
+  }
   const current = app?.mode === "signed-in" ? app.current : undefined;
-  const loginFor = (id: string) => app?.logins.find((l) => l.accountId === id);
-  const desktopNow =
-    app?.mode === "pool"
-      ? "Claude Desktop shares your subscriptions in its Code tab."
-      : app?.mode === "other-gateway"
-        ? "Claude Desktop uses another gateway."
+  const desktop = !app
+    ? ""
+    : app.mode === "pool"
+      ? " Claude Desktop shares your subscriptions in its Code tab."
+      : app.mode === "other-gateway"
+        ? " Claude Desktop uses another gateway."
         : current
-          ? `Claude Desktop stays on ${nameOf(current)}.`
-          : "Claude Desktop isn't signed in.";
-  let description = "Automatic picks the account with the most room left.";
-  if (app && selected)
-    description = usable(loginFor(selected.account.id))
-      ? "Claude Code and Claude Desktop use this account. Switching restarts Claude Desktop."
-      : "Claude Code uses this account. Connect it to Claude Desktop from its ⋯ menu to use it there too.";
-  else if (app) description = `Claude Code picks the account with the most room left. ${desktopNow}`;
-  return (
-    <Choice
-      className="item"
-      label={app ? "Claude uses" : `${provider === "claude" ? "Claude Code" : "Codex"} uses`}
-      description={description}
-      value={selected ? `account:${selected.account.id}` : "automatic"}
-      disabledKeys={accounts
-        .filter((a) => !a.account.enabled || a.needsLogin)
-        .map((a) => `account:${a.account.id}`)}
-      onChange={async (key) => {
-        if (!key) return;
-        const value = String(key);
-        const id = value.slice("account:".length);
-        await perform(
-          async () => {
-            if (value === "automatic") {
-              for (const a of accounts.filter((a) => a.account.pinned))
-                await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned: false });
-            } else {
-              await request(connection, `/accounts/${idPath(id)}`, "PATCH", { pinned: true });
-            }
-          },
-          value === "automatic"
-            ? `${providerName(provider)} uses automatic selection`
-            : `${providerName(provider)} subscription selected`,
-        );
-        // Desktop follows after the pin is saved; its own confirmation covers the restart.
-        const login = value !== "automatic" ? loginFor(id) : undefined;
-        if (desktop && usable(login) && !(current?.accountUuid === login!.accountUuid)) await desktop.act.use(login!);
-      }}
-      options={[
-        { id: "automatic", label: "Automatic" },
-        ...accounts.map((a) => {
-          const unavailable = !a.account.enabled
-            ? "Disabled"
-            : a.needsLogin
-              ? "Needs login"
-              : a.exhausted
-                ? "Exhausted"
-                : undefined;
-          return {
-            id: `account:${a.account.id}`,
-            label: [a.account.label, a.account.email !== a.account.label && a.account.email, unavailable]
-              .filter(Boolean)
-              .join(" · "),
-          };
-        }),
-      ]}
-    />
-  );
+          ? ` Claude Desktop stays on ${nameOf(current)}.`
+          : " Claude Desktop isn't signed in.";
+  return `Automatic: ${tool} uses the account with the most room left. Pin an account to prefer it.${desktop}`;
 }
 
 export function Accounts({ data, connection, perform, local, desktop }: ViewProps) {
@@ -132,6 +71,26 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
   const problem = (a: AccountStatus) =>
     a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
+  const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
+  const pinTitle = (a: AccountStatus) =>
+    a.account.pinned
+      ? "Pinned. Click to go back to automatic."
+      : !a.account.enabled
+        ? "Enable this account to pin it"
+        : a.needsLogin
+          ? "Sign in again to pin this account"
+          : `Pin: ${a.account.provider === "claude" ? "Claude Code" : "Codex"} prefers this account while it has room`;
+  const setPin = async (a: AccountStatus, pinned: boolean) => {
+    let saved = false;
+    await perform(async () => {
+      await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned });
+      saved = true;
+    }, pinned ? `${a.account.label} pinned` : `${providerName(a.account.provider)} is back on automatic`);
+    // Desktop follows once the pin is saved; its own confirmation covers the restart.
+    const login = saved && pinned ? loginFor(a.account.id) : undefined;
+    const current = app?.mode === "signed-in" ? app.current : undefined;
+    if (usable(login) && current?.accountUuid !== login!.accountUuid) await act.use(login!);
+  };
   const start = (provider: Provider, label: string, email?: string) => {
     setAdd(false);
     return begin(provider, label, email);
@@ -181,9 +140,11 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           key={provider}
           title={providerName(provider)}
           detail={
-            provider === "claude"
-              ? "Claude subscriptions, shared across your sessions."
-              : "ChatGPT subscriptions for your Codex sessions."
+            data.accounts.some((a) => a.account.provider === provider)
+              ? poolSummary(data.accounts.filter((a) => a.account.provider === provider), provider, provider === "claude" ? app : undefined)
+              : provider === "claude"
+                ? "Claude subscriptions, shared across your sessions."
+                : "ChatGPT subscriptions for your Codex sessions."
           }
           action={
             provider === "claude" &&
@@ -198,15 +159,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             `Quota headers were not recognized for ${providerName(provider)}. Routing still uses provider limit responses.`
           }
         >
-          {data.accounts.some((a) => a.account.provider === provider) && (
-            <SubscriptionSelector
-              data={data}
-              connection={connection}
-              perform={perform}
-              provider={provider}
-              desktop={provider === "claude" && app ? { app, act } : undefined}
-            />
-          )}
           {!data.accounts.some((a) => a.account.provider === provider) &&
           !(provider === "claude" && (desktopOnly.length || unsaved)) ? (
             <Empty>No {providerName(provider)} accounts yet.</Empty>
@@ -240,15 +192,30 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         Save login
                       </Button>
                     )}
+                    <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
                     {(a.needsLogin || a.expired) && (
                       <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
                         Sign in again
                       </Button>
                     )}
-                    <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
+                    <button
+                      type="button"
+                      className={a.account.pinned ? "pin-account pinned" : "pin-account"}
+                      title={pinTitle(a)}
+                      aria-label={pinTitle(a)}
+                      aria-pressed={a.account.pinned}
+                      disabled={!a.account.pinned && !pinnable(a)}
+                      onClick={() => void setPin(a, !a.account.pinned)}
+                    >
+                      <Pin size={14} fill={a.account.pinned ? "currentColor" : "none"} />
+                    </button>
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
+                        (a.account.pinned || pinnable(a)) && {
+                          label: a.account.pinned ? "Unpin (back to automatic)" : "Pin this account",
+                          onAction: () => void setPin(a, !a.account.pinned),
+                        },
                         { label: "Edit policy", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
