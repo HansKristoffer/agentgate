@@ -81,6 +81,9 @@ pre {
 
 .field { margin: 0 0 14px; }
 .row > .field { flex: 1; }
+/* A field with a button beside it: the row carries the field's spacing so both bottoms line up. */
+.field-with-button { margin-bottom: 14px; }
+.field-with-button > .field { margin: 0; }
 .check { display: flex; flex-direction: row; align-items: center; gap: 8px; font-size: 13px; }
 .toggle { display: flex; align-items: center; gap: 12px; width: 100%; }
 .checklist { border: none; padding: 0; margin: 0 0 14px; min-width: 0; }

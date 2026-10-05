@@ -345,7 +345,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             />
             {mode === "import" && (
               <>
-                <div className="row items-end">
+                <div className="row items-end field-with-button">
                   <Field
                     label="Login folder"
                     isRequired
@@ -356,7 +356,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                   <Button
                     size="sm"
                     variant="tertiary"
-                    className="mb-3.5"
                     onPress={() =>
                       void perform(async () => {
                         const path = await open({ directory: true });
