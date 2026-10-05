@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.9.0](https://github.com/HansKristoffer/agentgate/compare/v0.8.0...v0.9.0) (2026-10-04)
+
+
+### Features
+
+* **dev:** isolate checkout state from live agentgate installs ([#25](https://github.com/HansKristoffer/agentgate/issues/25)) ([179dd88](https://github.com/HansKristoffer/agentgate/commit/179dd880202f30c74f1dce645f9b5bc6ea3dd7f0))
+* **remote:** expose virtual projects as shared MCP endpoints ([#23](https://github.com/HansKristoffer/agentgate/issues/23)) ([90e6ee1](https://github.com/HansKristoffer/agentgate/commit/90e6ee118221078e85362af47a968858ef06a07b))
+* **skills:** sync skills from connected GitHub repositories ([#26](https://github.com/HansKristoffer/agentgate/issues/26)) ([b8359bd](https://github.com/HansKristoffer/agentgate/commit/b8359bd0e979201979d043f44fb264614c333883))
+
 ## [0.8.0](https://github.com/HansKristoffer/agentgate/compare/v0.7.0...v0.8.0) (2026-10-03)
 
 
