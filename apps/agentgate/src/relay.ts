@@ -660,7 +660,7 @@ export function via(s: Store, node: string): ("tailnet" | "relay")[] {
 export const relayNodes = (s: Store) =>
   (s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
 
-/** One line for a fresh machine: install.sh installs agentgate, then runs init, `join <args>`, setup and the service. */
+/** One line for a fresh machine: install.sh installs agentgate, then runs init, `join <args>`, the service and `setup --primary`. */
 export const installAndJoin = (args: string) =>
   `curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh -s -- join ${args}`;
 

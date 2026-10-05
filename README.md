@@ -54,7 +54,7 @@ There are two ways to connect machines, and a machine can use both:
 - **Same network (Tailscale):** both machines are on your tailnet. Pairing uses a code that expires after 10 minutes.
 - **Relay:** works across any network, without Tailscale. Every record is encrypted before it leaves the machine; the relay stores only ciphertext and can't read your credentials.
 
-On the first machine, run `agentgate pair` or use **Pair a machine** in the app. In a terminal it asks which method to use; `--tailnet` and `--relay` skip the question. It prints one command to run on the server, which installs agentgate, joins, runs `agentgate setup` and installs the service (on Linux this also runs `loginctl enable-linger` so it survives logout/reboot):
+On the first machine, run `agentgate pair` or use **Pair a machine** in the app. In a terminal it asks which method to use; `--tailnet` and `--relay` skip the question. It prints one command to run on the server, which installs agentgate, joins, installs the service (on Linux this also runs `loginctl enable-linger` so it survives logout/reboot), and runs `agentgate setup --primary` so that machine's own Claude Code and Codex go through agentgate with no further setup (undo with `agentgate setup --primary off`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh -s -- join agr1.…

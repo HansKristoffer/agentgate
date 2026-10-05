@@ -12,7 +12,7 @@ test("installer verifies checksums and preserves the installed binary after corr
   finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("installer with join arguments initializes, joins, configures and starts the service", () => {
+test("installer with join arguments initializes, joins, starts the service, then routes the own tools", () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-installer-")), commands = join(dir, "commands"), dest = join(dir, "bin"), log = join(dir, "calls"); mkdirSync(commands); mkdirSync(dest);
   const binary = `#!/bin/sh\necho "$*" >> ${log}\n`, asset = `agentgate-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}`;
   writeFileSync(join(dir, "binary"), binary); writeFileSync(join(dir, "sums"), `${new Bun.CryptoHasher("sha256").update(binary).digest("hex")}  ${asset}\n`);
@@ -21,6 +21,6 @@ test("installer with join arguments initializes, joins, configures and starts th
   try {
     const result = Bun.spawnSync(["sh", join(import.meta.dir, "..", "..", "..", "install.sh"), "join", "agr1.invite"], { env: { ...process.env, PATH: `${commands}:${process.env.PATH}`, AGENTGATE_BIN_DIR: dest }, stdout: "pipe", stderr: "pipe" });
     expect(result.exitCode).toBe(0);
-    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nsetup\nservice install\n");
+    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nservice install\nsetup --primary\n");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

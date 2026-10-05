@@ -449,7 +449,7 @@ async function main() {
 
     case "pair": {
       initialized(s);
-      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate, join and start the service:\n\n  ${installAndJoin(args)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
+      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate, join, start the service and route its Claude Code and Codex through agentgate:\n\n  ${installAndJoin(args)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
       let method = opts.tailnet ? "tailnet" : opts.relay || str("relay-url") ? "relay" : undefined;
       if (!method && process.stdin.isTTY && process.stdout.isTTY) {
         const answer = prompt("How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:")?.trim();

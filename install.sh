@@ -1,6 +1,7 @@
 #!/bin/sh
 # Installs the agentgate binary for this machine into ~/.local/bin.
-# `sh -s -- join <invite>` (from `agentgate pair`) then also joins and starts the service.
+# `sh -s -- join <invite>` (from `agentgate pair`) then also joins, starts the service and routes
+# this machine's own Claude Code and Codex through it (undo: agentgate setup --primary off).
 set -eu
 
 REPO="${AGENTGATE_REPO:-HansKristoffer/agentgate}"
@@ -39,5 +40,5 @@ case ":$PATH:" in *":$dest:"*) ;; *) echo "add $dest to your PATH" ;; esac
 [ "${1:-}" = join ] || exit 0
 "$dest/agentgate" init
 "$dest/agentgate" "$@"
-"$dest/agentgate" setup
 "$dest/agentgate" service install
+"$dest/agentgate" setup --primary

@@ -91,7 +91,8 @@ export async function service(action: string) {
       if (mac) {
         mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
         atomicWrite(PLIST, plist());
-        run(["launchctl", "bootout", `gui/${uid}/${LABEL}`]);
+        // Fails harmlessly ("No such process") on a first install.
+        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${LABEL}`], { stdio: ["ignore", "ignore", "ignore"] });
         return ready(await bootstrap());
       }
       mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
