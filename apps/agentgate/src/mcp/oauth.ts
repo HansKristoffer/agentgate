@@ -49,6 +49,8 @@ export class InstanceAuth implements OAuthClientProvider {
   tokens() { return this.credential().tokens as OAuthTokens | undefined; }
   saveTokens(tokens: OAuthTokens) {
     this.update({ tokens, expiresAt: tokens.expires_in ? this.s.now() + tokens.expires_in * 1000 : undefined, needsLogin: false });
+    // A recorded "needs login" (serverHealth in gateway.ts) was about the old tokens.
+    this.s.setLocal(`mcpHealth:${this.id}`, undefined);
   }
   redirectToAuthorization(url: URL) {
     if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);

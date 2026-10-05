@@ -15,7 +15,7 @@ import {
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
-import { field, idPath, confirmDelete } from "./utils.ts";
+import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 // The preset select's "no preset" entry; a list item cannot have an empty id.
 const custom = "__custom";
@@ -74,6 +74,11 @@ export function Servers({ data, connection, perform }: ViewProps) {
           const mappings = data.projects.filter((p) =>
             Object.values(p.mcp).includes(server.id),
           ).length;
+          const checked = server.checkedAt ? ` · checked ${ago(server.checkedAt)}` : "";
+          const health =
+            server.available === undefined
+              ? "Not checked yet. Click to test."
+              : `${server.available ? "Available" : server.needsLogin ? "Needs a login" : "Couldn't connect"}${checked}. Click to test again.`;
           return (
             <div className="item" key={server.id}>
               <div className="machine-icon">
@@ -81,11 +86,19 @@ export function Servers({ data, connection, perform }: ViewProps) {
               </div>
               <div className="grow">
                 <div className="row">
+                  <button
+                    type="button"
+                    className="dot-button"
+                    title={health}
+                    aria-label={health}
+                    // The test records the result whether or not it connects; the next status poll recolors the dot.
+                    onClick={() => void perform(() => request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(() => {}, () => {}))}
+                  >
+                    <span className={`dot ${server.available === true ? "online" : server.available === false ? "offline" : ""}`} />
+                  </button>
                   <strong>{server.label ?? server.id}</strong>
                   <Badge good={server.loggedIn}>
-                    {server.needsLogin
-                      ? "Needs login"
-                      : server.mode === "perSession"
+                    {server.mode === "perSession"
                         ? "Per session"
                         : server.loggedIn
                           ? "Signed in"
