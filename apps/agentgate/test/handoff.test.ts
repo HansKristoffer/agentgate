@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
@@ -149,8 +149,10 @@ test("the T3 client pairs, reads over HTTP, calls RPC methods and decodes failur
   await client.rpc(async (call) => {
     expect((await projection(call, thread.id)).thread.title).toBe("Fix the bug");
     await expect(projection(call, "missing")).rejects.toThrow("thread not found");
-    expect(await claudeInstance(call, claudeDir, "a")).toBe("claudeAgent");
-    await expect(claudeInstance(call, tmp(), "a")).rejects.toThrow("does not use");
+    expect(await claudeInstance(call, "claudeAgent", "/unused")).toEqual({ instanceId: "claudeAgent", home: realpathSync(claudeDir) });
+    // Another machine's instance id falls back to the default instance; without a home it uses Claude's default.
+    t3.homePath = undefined;
+    expect(await claudeInstance(call, "claude-work", claudeDir)).toEqual({ instanceId: "claudeAgent", home: realpathSync(claudeDir) });
   });
 
   // The token never shows in state, and an expired one asks for a new pairing.

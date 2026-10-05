@@ -6,7 +6,7 @@ import { createBundle, describe, snapshot, stashIfUnchanged, type Snapshot } fro
 import { PeerError, peerCall, sessionNote, timed, transport, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { CHANNEL_CHUNK } from "../channel.ts";
 import { realPath, sessionProviders } from "./session.ts";
-import { ACTIVE, T3Error, dispatch, projection, t3Client } from "./t3.ts";
+import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
 import type { Manifest } from "./destination.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
@@ -14,7 +14,7 @@ import type { Manifest } from "./destination.ts";
  * here changed but the interrupted run; afterwards it never aborts, or the conversation would split in two. */
 
 export interface SourceState {
-  title?: string; sessionId?: string; driver?: string; projectTitle?: string;
+  title?: string; sessionId?: string; driver?: string; claudeHome?: string; projectTitle?: string;
   modelSelection?: Record<string, unknown>; runtimeMode?: string; interactionMode?: string;
   workspaceRoot?: string; worktreePath?: string | null; cwd?: string;
   remoteUrl?: string; branch?: string | null; baseSha?: string | null;
@@ -53,6 +53,7 @@ async function resolve(h: Handoffs, job: Job<SourceState>) {
   await timed(h.s, st.timings, "resolve", async () => {
     const [p, shell] = await Promise.all([t3.rpc((call) => projection(call, job.thread)), t3.shell()]);
     const t = p.thread;
+    const { home } = await t3.rpc((call) => claudeInstance(call, t.providerInstanceId, h.options.claudeDir));
     if (t.archivedAt) throw new T3Error("the thread is archived");
 
     const native = p.providerThreads.find((pt) => pt.id === t.activeProviderThreadId);
@@ -66,7 +67,7 @@ async function resolve(h: Handoffs, job: Job<SourceState>) {
     const code = await describe(cwd);
 
     Object.assign(st, {
-      title: t.title, sessionId: native.nativeThreadRef!.nativeId, driver: native.driver, projectTitle: project.title,
+      title: t.title, sessionId: native.nativeThreadRef!.nativeId, driver: native.driver, claudeHome: home, projectTitle: project.title,
       modelSelection: t.modelSelection, runtimeMode: t.runtimeMode, interactionMode: t.interactionMode,
       workspaceRoot: project.workspaceRoot, worktreePath: t.worktreePath, cwd,
       remoteUrl: code.remoteUrl, branch: code.branch, baseSha: code.baseSha,
@@ -145,8 +146,8 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     mkdirSync(out, { recursive: true, mode: 0o700 });
     st.bundle = await createBundle(st.cwd!, job.id, st.snapshot.sha, join(out, "bundle"));
 
-    const located = sessionProviders[st.driver!]!.locate(h.options.claudeDir, st.sessionId!, st.cwd!);
-    if (!located) throw new T3Error(`the Claude session is not under ${h.options.claudeDir}; T3 Code's Claude provider must use agentgate's CLAUDE_CONFIG_DIR`);
+    const located = sessionProviders[st.driver!]!.locate(st.claudeHome!, st.sessionId!, st.cwd!);
+    if (!located) throw new T3Error(`the Claude session is not in ${st.claudeHome}, the Claude home of the thread's provider in T3 Code`);
     // Copied now, while the agent is stopped, so a retried send resends the same bytes.
     for (const file of located.files) {
       mkdirSync(dirname(join(out, "session", file)), { recursive: true });

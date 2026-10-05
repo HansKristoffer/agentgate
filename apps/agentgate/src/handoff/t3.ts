@@ -262,8 +262,9 @@ function real(path: string) {
 }
 
 /** Claude provider instances and their homes, from T3's settings: `providerInstances` entries plus the legacy
- * default instance `claudeAgent`. The home is `homePath` or a CLAUDE_CONFIG_DIR environment variable. */
-export async function claudeHomes(call: Call): Promise<[string, string | undefined][]> {
+ * default instance `claudeAgent`. The home is `homePath`, a CLAUDE_CONFIG_DIR environment variable, or else Claude's
+ * default home (`defaultHome`, normally ~/.claude). */
+export async function claudeHomes(call: Call, defaultHome: string): Promise<[string, string][]> {
   const instance = z.object({
     driver: z.string(),
     config: z.object({ homePath: z.string().optional() }).passthrough().optional(),
@@ -279,16 +280,13 @@ export async function claudeHomes(call: Call): Promise<[string, string | undefin
     .filter(([, i]) => i.driver === "claudeAgent")
     .map(([id, i]) => [id, i.config?.homePath || i.environment?.find((v) => v.name === "CLAUDE_CONFIG_DIR")?.value]);
   if (!homes.some(([id]) => id === "claudeAgent")) homes.push(["claudeAgent", config.settings.providers?.claudeAgent?.homePath]);
-  return homes;
+  return homes.map(([id, home]) => [id, real(home || defaultHome)]);
 }
 
-/** The instance whose Claude home is agentgate's: imported threads are named after it, and only it finds session
- * files placed there. */
-export async function claudeInstance(call: Call, claudeDir: string, node: string): Promise<string> {
-  const want = real(claudeDir);
-  const match = (await claudeHomes(call)).find(([, home]) => home && real(home) === want);
-  if (!match) {
-    throw new T3Error(`T3 Code's Claude provider on ${node} does not use ${claudeDir}; set CLAUDE_CONFIG_DIR to it in T3 Code → Settings → Providers`);
-  }
-  return match[0];
+/** The Claude provider instance a thread runs with here, and the home its sessions live in: `instanceId` when this
+ * T3 Code has it, else the default instance. Imported threads are named after the instance. */
+export async function claudeInstance(call: Call, instanceId: string | undefined, defaultHome: string) {
+  const homes = await claudeHomes(call, defaultHome);
+  const [id, home] = homes.find(([i]) => i === instanceId) ?? homes.find(([i]) => i === "claudeAgent")!;
+  return { instanceId: id, home };
 }
