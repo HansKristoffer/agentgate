@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.12.0](https://github.com/HansKristoffer/agentgate/compare/v0.11.0...v0.12.0) (2026-10-05)
+
+
+### Features
+
+* **app:** pin accounts on their rows, stale usage icon and tidier project MCP list ([#33](https://github.com/HansKristoffer/agentgate/issues/33)) ([075c0ca](https://github.com/HansKristoffer/agentgate/commit/075c0ca12c65b258801f2dbbd1766340a55c24d2))
+* **mcp:** show whether each MCP server is reachable, and Sign in when it needs one ([#32](https://github.com/HansKristoffer/agentgate/issues/32)) ([f77d85c](https://github.com/HansKristoffer/agentgate/commit/f77d85c808b3ee55adfd76c7199b9f1b9ba21034))
+* **pair:** pairing names the new machine and routes its own Claude Code and Codex ([#31](https://github.com/HansKristoffer/agentgate/issues/31)) ([805e48c](https://github.com/HansKristoffer/agentgate/commit/805e48c852ca76e405dd634f2812f7e80588d0b9))
+
 ## [0.11.0](https://github.com/HansKristoffer/agentgate/compare/v0.10.0...v0.11.0) (2026-10-05)
 
 
