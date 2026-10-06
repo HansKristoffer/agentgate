@@ -48,7 +48,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
   return (
     <Panel
       title="Token usage"
-      detail="Every account on this machine, by model. Cursor's come from its own usage history."
+      detail="Every machine and account, by model. Cursor's come from its own usage history."
       action={
         <Tabs className="token-range" selectedKey={range} onSelectionChange={(key) => setRange(key as Range)}>
           <Tabs.ListContainer>

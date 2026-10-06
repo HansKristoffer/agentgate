@@ -1,4 +1,4 @@
-import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, MAX_RECORD } from "@agentgate/protocol";
+import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, providerSchema, MAX_RECORD } from "@agentgate/protocol";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
@@ -77,6 +77,15 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
+  /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
+  tokens: z.object({
+    id,
+    node: id,
+    rows: z.array(z.object({
+      hour: timestamp, provider: providerSchema, model: z.string().max(512), account: z.string().max(512).optional(),
+      input: timestamp, output: timestamp, cacheRead: timestamp, cacheWrite: timestamp,
+    })).max(20000),
+  }),
 };
 
 export type Kind = keyof typeof schemas;
@@ -115,6 +124,7 @@ export function parseData<K extends Kind>(kind: K, key: string, input: unknown):
   if (payloadId !== undefined && payloadId !== key) throw new Error(`${kind}: record ID does not match its data`);
   if (kind === "setting" && key !== "settings") throw new Error("invalid settings ID");
   if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`) throw new Error("invalid refresh request ID");
+  if (kind === "tokens" && !key.startsWith(`${value.node}:`)) throw new Error("invalid token usage ID");
   return parsed;
 }
 

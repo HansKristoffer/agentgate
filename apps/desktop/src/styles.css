@@ -141,6 +141,33 @@ pre {
 .tokens .slice-other { fill: var(--slice-other); background: var(--slice-other); }
 .token-row > span { font-variant-numeric: tabular-nums; text-align: right; min-width: 48px; }
 
+/* Token activity calendar: GitHub's contribution greens, stepped for each appearance. */
+.token-calendar {
+  position: relative; padding: 14px;
+  --level-0: var(--default); --level-1: #9be9a8; --level-2: #40c463; --level-3: #30a14e; --level-4: #216e39;
+}
+.dark .token-calendar { --level-1: #0e4429; --level-2: #006d32; --level-3: #26a641; --level-4: #39d353; }
+.token-calendar svg { display: block; width: 100%; height: auto; }
+.token-calendar rect:hover { stroke: var(--foreground); stroke-opacity: 0.5; stroke-width: 1px; }
+.token-tip {
+  position: absolute; pointer-events: none; white-space: nowrap; z-index: 1;
+  padding: 4px 8px; border-radius: 6px; font-size: 12px;
+  background: var(--foreground); color: var(--surface);
+  transform: translate(-50%, calc(-100% - 6px));
+}
+.token-tip.start { transform: translate(-8px, calc(-100% - 6px)); }
+.token-tip.end { transform: translate(calc(-100% + 8px), calc(-100% - 6px)); }
+.token-calendar text { fill: var(--muted); font-size: 9px; }
+.token-calendar .level-0 { fill: var(--level-0); background: var(--level-0); }
+.token-calendar .level-1 { fill: var(--level-1); background: var(--level-1); }
+.token-calendar .level-2 { fill: var(--level-2); background: var(--level-2); }
+.token-calendar .level-3 { fill: var(--level-3); background: var(--level-3); }
+.token-calendar .level-4 { fill: var(--level-4); background: var(--level-4); }
+.token-legend { display: flex; justify-content: flex-end; align-items: center; gap: 3px; margin-top: 8px; font-size: 12px; color: var(--muted); }
+.token-legend i { width: 10px; height: 10px; border-radius: 2px; }
+.token-legend i:first-of-type { margin-left: 4px; }
+.token-legend i:last-of-type { margin-right: 4px; }
+
 
 .provider-icon {
   width: 30px; height: 30px; flex: 0 0 30px; border-radius: 8px;

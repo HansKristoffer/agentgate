@@ -202,7 +202,7 @@ export interface ProxyMetrics {
   averageHeadersMs?: number;
   averageFirstByteMs?: number;
 }
-/** Tokens one model used on this node, summed over every account. */
+/** Tokens one model used, summed over every account and machine. */
 export interface ModelTokens {
   provider: Provider;
   model: string;
@@ -211,6 +211,8 @@ export interface ModelTokens {
   cacheRead: number;
   cacheWrite: number;
 }
+/** One hour's tokens, all models and machines together: [hour start in ms, tokens]. */
+export type TokenHour = [hour: number, tokens: number];
 export interface RouteExplanation {
   provider: Provider;
   requestedModel?: string;

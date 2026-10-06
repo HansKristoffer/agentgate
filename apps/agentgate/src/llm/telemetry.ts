@@ -2,6 +2,7 @@ import {
   modelIdSchema,
   type Failure,
   type ModelTokens,
+  type TokenHour,
   type ProxyAttempt,
   type ProxyMetrics,
   type ProxyRequest,
@@ -256,13 +257,46 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
   };
 }
 
-/** Token totals per model since a time (an hour bucket counts if any of it is after `since`). */
+/** Every hourly token count this node knows after `?1`: its own, the `tokens` records other nodes publish, and Cursor's
+ * account-wide history, which may come from more than one node, once per account and hour. */
+const TOKEN_ROWS = `with remote as (
+    select json_extract(r.value, '$.hour') as hour, json_extract(r.value, '$.provider') as provider, json_extract(r.value, '$.model') as model,
+      json_extract(r.value, '$.account') as account, json_extract(r.value, '$.input') as input, json_extract(r.value, '$.output') as output,
+      json_extract(r.value, '$.cacheRead') as cache_read, json_extract(r.value, '$.cacheWrite') as cache_write
+    from records, json_each(records.data, '$.rows') as r
+    where records.kind = 'tokens' and records.deleted = 0 and json_extract(records.data, '$.node') != ?2
+      and substr(records.id, -10) >= ?3
+  ), cursor as (
+    select hour, model, max(input) as input, max(output) as output, max(cache_read) as cache_read, max(cache_write) as cache_write from (
+      select account, hour, model, input, output, cache_read, cache_write from cursor_tokens
+      union all select account, hour, model, input, output, cache_read, cache_write from remote where provider = 'cursor'
+    ) group by account, hour, model
+  ), rows as (
+    select * from (
+      select hour, provider, model, input, output, cache_read, cache_write from token_usage
+      union all select hour, provider, model, input, output, cache_read, cache_write from remote where provider != 'cursor'
+      union all select hour, 'cursor', model, input, output, cache_read, cache_write from cursor
+    ) where hour > ?1
+  )`;
+/** An hour bucket counts if any of it is after `since`. */
+const tokenArgs = (s: Store, since: number) => {
+  const after = since - 3600000;
+  return [after, s.nodeId, new Date(Math.max(0, after)).toISOString().slice(0, 10)] as const;
+};
+
+/** Token totals per model since a time, over every machine. */
 export function tokenUsage(s: Store, since = 0): ModelTokens[] {
   return s.db
-    .query(
-      "select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite from (select hour, provider, model, input, output, cache_read, cache_write from token_usage union all select hour, 'cursor', model, input, output, cache_read, cache_write from cursor_tokens) where hour > ? group by provider, model order by sum(input + output + cache_read + cache_write) desc",
-    )
-    .all(since - 3600000) as ModelTokens[];
+    .query(`${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
+      from rows group by provider, model order by sum(input + output + cache_read + cache_write) desc`)
+    .all(...tokenArgs(s, since)) as ModelTokens[];
+}
+
+/** Total tokens per hour since a time, over every machine; the app groups them into its own local days. */
+export function tokenHours(s: Store, since = 0): TokenHour[] {
+  return s.db
+    .query(`${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`)
+    .values(...tokenArgs(s, since)) as TokenHour[];
 }
 
 export function trimTelemetry(s: Store) {
