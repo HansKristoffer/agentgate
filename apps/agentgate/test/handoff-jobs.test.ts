@@ -195,6 +195,38 @@ test("an idle thread's background work is stopped on the source and named on the
   expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([READY, READY, restartTasks(["monitor: CI checks on PR #72"])]);
 });
 
+test("queued messages move with the thread and queue again behind the continued turn", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["build it"]);
+  const thread = a.t3.addThread({
+    projectId: a.project.id, sessionId: SID, branch: "main",
+    runs: [
+      { id: "run-1", status: "running", ordinal: 1 },
+      { id: "q-later", status: "queued", userMessageId: "m-later", ordinal: 2, queuePosition: 3 },
+      { id: "q-result", status: "queued", userMessageId: "m-result", ordinal: 3, queuePosition: 1 },
+      { id: "q-first", status: "queued", userMessageId: "m-first", ordinal: 4, queuePosition: 2 },
+    ],
+    conversation: [
+      { id: "m-later", text: "then add tests", attachments: [] },
+      { id: "m-result", text: "a child task finished", attachments: [], delegatedCompletion: { parentRunId: "run-1" } },
+      { id: "m-first", text: "use the new API", attachments: [{ type: "image" }] },
+    ],
+  });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  const source = await done(a, handoffId);
+  expect((await done(b, handoffId, "destination")).step).toBe("done");
+
+  // Cancelled on A, queued on B in the user's order behind "Continue"; a child task's result stays with A's thread.
+  expect(a.t3.threads.get(thread.id)!.runs.filter((run) => run.id.startsWith("q-")).map((run) => run.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([READY, READY, CONTINUE, "use the new API", "then add tests"]);
+  const queued = b.t3.commands.filter((c) => c.type === "message.dispatch" && (c.dispatchMode as { type: string }).type === "queue_after_active");
+  expect(queued.map((c) => c.text)).toEqual(["use the new API", "then add tests"]);
+  expect(source.state.warnings).toContain("1 attachment on queued messages stayed on a");
+});
+
 test("a failure on the destination before import aborts and leaves the source as it was", async () => {
   const r = repos("a", "b");
   const a = await node("a", r.a), b = await node("b", r.b, { server: true });

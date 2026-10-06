@@ -7,7 +7,7 @@ import { PeerError, peerCall, sessionNote, timed, transport, type Handoffs, type
 import { CHANNEL_CHUNK } from "../channel.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
-import type { Manifest } from "./destination.ts";
+import { QUEUED_MAX, type Manifest } from "./destination.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
  * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort and nothing
@@ -18,7 +18,7 @@ export interface SourceState {
   modelSelection?: Record<string, unknown>; runtimeMode?: string; interactionMode?: string;
   workspaceRoot?: string; worktreePath?: string | null; cwd?: string;
   remoteUrl?: string; branch?: string | null; baseSha?: string | null;
-  wasWorking?: boolean; background?: string[]; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
+  wasWorking?: boolean; background?: string[]; queued?: string[]; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
   files?: { path: string; size: number }[];
   destThreadId?: string; codeTaken?: boolean; lostSince?: number; finishAt?: number;
   warnings: string[]; timings: Timing[]; remoteTimings?: Timing[];
@@ -121,6 +121,15 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
       st.background = tasks.slice(0, 20).map((t) => `${t.kind ?? "task"}: ${t.description ?? "unnamed"}`.slice(0, 2000));
       h.save(job);
     }
+    // Read before cancelling: the destination queues them again behind the continued turn.
+    if (!st.queued) {
+      const { texts, attachments, overflow } = queuedMessages(p);
+      st.queued = texts;
+      const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
+      if (attachments) st.warnings.push(`${plural(attachments, "attachment")} on queued messages stayed on ${h.s.nodeId}`);
+      if (overflow) st.warnings.push(`${plural(overflow, "queued message")} did not fit in the handoff and stayed on ${h.s.nodeId}`);
+      h.save(job);
+    }
     for (const r of p.runs.filter((r) => r.status === "queued")) {
       await dispatch(call, { type: "queued-run.cancel", threadId: job.thread, runId: r.id });
     }
@@ -146,6 +155,28 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
       .catch(() => st.warnings.push(`Background tasks may still be running on ${h.s.nodeId}; stop them in T3 Code there.`));
   }));
   h.advance(job, "package");
+}
+
+/** The user's queued messages in T3's delivery order, as text. Server-made ones (a child task's result, a notification)
+ * belong to this machine's thread. Attachments do not move, nor messages past the cap. */
+function queuedMessages(p: Awaited<ReturnType<typeof projection>>) {
+  const texts: string[] = [];
+  let attachments = 0, overflow = 0, chars = 0;
+  const order = (r: (typeof p.runs)[number]) => r.queuePosition ?? r.ordinal ?? 0;
+  const runs = p.runs.filter((r) => r.status === "queued").sort((x, y) => order(x) - order(y) || (x.ordinal ?? 0) - (y.ordinal ?? 0));
+  for (const r of runs) {
+    const m = p.messages.find((m) => m.id === r.userMessageId);
+    if (!m || m.notification !== undefined || m.delegatedCompletion !== undefined) continue;
+    attachments += m.attachments.length;
+    if (!m.text.trim()) continue;
+    // Past the first that does not fit, none move, so the ones that do keep their order.
+    if (overflow || texts.length === QUEUED_MAX.count || chars + m.text.length > QUEUED_MAX.chars) overflow++;
+    else {
+      texts.push(m.text);
+      chars += m.text.length;
+    }
+  }
+  return { texts, attachments, overflow };
 }
 
 async function pack(h: Handoffs, job: Job<SourceState>) {
@@ -205,6 +236,7 @@ async function send(h: Handoffs, job: Job<SourceState>) {
       headSha: st.headSha!, snapshot: st.snapshot!, bundle: !!st.bundle, worktree: !!st.worktreePath, wasWorking: !!st.wasWorking,
       // Sent only when there is some, so a destination on the previous version still accepts ordinary handoffs.
       ...(st.background?.length ? { background: st.background } : {}),
+      ...(st.queued?.length ? { queued: st.queued } : {}),
       oldPaths: [...new Set([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)]))], files: st.files!,
     };
     await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest });

@@ -17,7 +17,10 @@ const REPAIR_AHEAD = 3 * 86_400_000;
 
 export class T3Error extends Error { }
 
-const run = z.object({ id: z.string(), status: z.string(), userMessageId: z.string().optional() }).passthrough();
+const run = z.object({
+  id: z.string(), status: z.string(), userMessageId: z.string().optional(),
+  ordinal: z.number().optional(), queuePosition: z.number().nullable().optional(),
+}).passthrough();
 const threadShell = z.object({
   id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
   branch: z.string().nullable(), worktreePath: z.string().nullable(), status: z.string(),
@@ -49,6 +52,11 @@ const projectionSchema = z.object({
     settledOverride: z.enum(["settled", "active"]).nullable().optional(),
   }).passthrough(),
   runs: z.array(run),
+  /** Server-made messages (notifications, delegated results) carry `notification` or `delegatedCompletion`. */
+  messages: z.array(z.object({
+    id: z.string(), text: z.string(), attachments: z.array(z.unknown()).default([]),
+    notification: z.unknown().optional(), delegatedCompletion: z.unknown().optional(),
+  }).passthrough()).default([]),
   providerThreads: z.array(z.object({
     id: z.string(), driver: z.string(),
     nativeThreadRef: z.object({ nativeId: z.string().nullable(), strength: z.string() }).nullable(),
