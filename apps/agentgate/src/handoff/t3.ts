@@ -52,6 +52,8 @@ const projectionSchema = z.object({
   providerThreads: z.array(z.object({
     id: z.string(), driver: z.string(),
     nativeThreadRef: z.object({ nativeId: z.string().nullable(), strength: z.string() }).nullable(),
+    /** Claude's background commands, monitors and agents, which outlive the turn that started them. */
+    pendingBackgroundTasks: z.array(z.object({ kind: z.string().optional(), description: z.string().optional() }).passthrough()).optional(),
   }).passthrough()),
 }).passthrough();
 export type Call = <T = unknown>(method: string, payload: unknown) => Promise<T>;

@@ -35,6 +35,8 @@ export const manifestSchema = prepareSchema.extend({
   snapshot: z.object({ sha, uncommitted: z.boolean() }),
   bundle: z.boolean(),
   wasWorking: z.boolean(),
+  /** Background tasks that were running on the source and stopped with the move. */
+  background: z.array(z.string().min(1).max(2000)).max(20).optional(),
   oldPaths: z.array(z.string().min(1).max(4096)).max(16),
   files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
 }).strict();
@@ -68,6 +70,8 @@ export interface DestState {
 
 export const READY = 'This thread just moved here from another machine. Reply with only "Ready".';
 export const CONTINUE = "Continue where you left off.";
+export const restartTasks = (tasks: string[]) =>
+  `These background tasks were running on the other machine and stopped when the thread moved here:\n${tasks.map((t) => `- ${t}`).join("\n")}\nStart again the ones that are still needed.`;
 /** A turn still running after this is working, not failing on its first message (T3's import bug fails fast). */
 const FIRST_TURN = 2 * 60_000;
 /** What A sees of each step. */
@@ -404,11 +408,13 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       if (await turn(h, call, st.threadId!, READY) === "failed") await turn(h, call, st.threadId!, READY);
     }));
   }
-  if (st.manifest!.wasWorking && !st.continued) {
+  const m = st.manifest!;
+  const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""].filter(Boolean).join("\n\n");
+  if (next && !st.continued) {
     await timed(h.s, st.timings, "continue", () => t3Client(h.s).rpc(async (call) => {
       st.continued = true;
       h.save(job);
-      if (await turn(h, call, st.threadId!, CONTINUE) === "failed") await turn(h, call, st.threadId!, CONTINUE);
+      if (await turn(h, call, st.threadId!, next) === "failed") await turn(h, call, st.threadId!, next);
     }));
   }
 

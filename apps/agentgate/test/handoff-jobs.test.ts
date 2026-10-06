@@ -6,7 +6,7 @@ import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
-import { CONTINUE, READY } from "../src/handoff/destination.ts";
+import { CONTINUE, READY, restartTasks } from "../src/handoff/destination.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
 import { connectNode, disconnectNode, localView, requestHandoff, resolveTarget, sidebarOrder } from "../src/handoff/threads.ts";
@@ -88,7 +88,7 @@ test("a working thread moves to the server with its session and code, continues 
   writeFileSync(join(wtA, "feature.txt"), "committed\n"); sh(wtA, "add", "-A"); sh(wtA, "commit", "-m", "unpushed");
   writeFileSync(join(wtA, "notes.txt"), "uncommitted\n");
   session(a, wtA, ["code word: falcon"]);
-  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }] });
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }], background: [{ kind: "command", description: "gh pr checks 72 --watch" }] });
 
   // Started through the agent's own MCP tool, which returns before the job ends.
   const tools = await handoffSource(a.h);
@@ -119,8 +119,10 @@ test("a working thread moves to the server with its session and code, continues 
   expect(JSON.parse(readFileSync(join(resumed, `${SID}.jsonl`), "utf8").split("\n")[0]!)).toEqual({ type: "user", cwd: wtB, message: "code word: falcon" });
   expect(existsSync(join(resumed, SID, "subagents", "agent-1.jsonl"))).toBe(true);
   expect(existsSync(join(b.claudeDir, "projects", claudeProjectKey(r.b), `${SID}.jsonl`))).toBe(false);
-  // B took T3's first-turn failure with the ready message, then continued the working agent.
-  expect(imported.messages).toEqual([READY, READY, CONTINUE]);
+  // B took T3's first-turn failure with the ready message, then continued the working agent and named the background
+  // work that A stopped.
+  expect(imported.messages).toEqual([READY, READY, `${CONTINUE}\n\n${restartTasks(["command: gh pr checks 72 --watch"])}`]);
+  expect(a.t3.threads.get(thread.id)!.background).toEqual([]);
   expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
 
   // A: archived, its worktree clean (the sent changes parked in a stash), and timings for every step on both sides.
@@ -177,6 +179,20 @@ test("when the destination keeps its own code, the source keeps its uncommitted 
   expect(readFileSync(join(wtA, "mine.txt"), "utf8")).toBe("only on a\n");
   expect(sh(wtA, "stash", "list")).toBe("");
   expect(existsSync(join(wtB, "mine.txt"))).toBe(false);
+});
+
+test("an idle thread's background work is stopped on the source and named on the destination", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["watch the PR"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main", runs: [{ id: "run-1", status: "completed" }], background: [{ kind: "monitor", description: "CI checks on PR #72" }] });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect((await done(b, handoffId, "destination")).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.background).toEqual([]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([READY, READY, restartTasks(["monitor: CI checks on PR #72"])]);
 });
 
 test("a failure on the destination before import aborts and leaves the source as it was", async () => {

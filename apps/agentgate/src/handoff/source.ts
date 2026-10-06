@@ -18,7 +18,7 @@ export interface SourceState {
   modelSelection?: Record<string, unknown>; runtimeMode?: string; interactionMode?: string;
   workspaceRoot?: string; worktreePath?: string | null; cwd?: string;
   remoteUrl?: string; branch?: string | null; baseSha?: string | null;
-  wasWorking?: boolean; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
+  wasWorking?: boolean; background?: string[]; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
   files?: { path: string; size: number }[];
   destThreadId?: string; codeTaken?: boolean; lostSince?: number; finishAt?: number;
   warnings: string[]; timings: Timing[]; remoteTimings?: Timing[];
@@ -111,9 +111,14 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
   const st = job.state;
   await timed(h.s, st.timings, "stop", () => t3Client(h.s).rpc(async (call) => {
     let p = await projection(call, job.thread);
-    // Remember before interrupting: after a restart the run is already stopped.
+    // Remember before interrupting: after a restart the run is already stopped, and the background work with it.
     if (p.runs.some((r) => ACTIVE.has(r.status)) && !st.wasWorking) {
       st.wasWorking = true;
+      h.save(job);
+    }
+    const tasks = p.providerThreads.find((pt) => pt.id === p.thread.activeProviderThreadId)?.pendingBackgroundTasks ?? [];
+    if (tasks.length > 0 && !st.background) {
+      st.background = tasks.slice(0, 20).map((t) => `${t.kind ?? "task"}: ${t.description ?? "unnamed"}`.slice(0, 2000));
       h.save(job);
     }
     for (const r of p.runs.filter((r) => r.status === "queued")) {
@@ -129,6 +134,16 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
       await sleep(250);
       p = await projection(call, job.thread);
     }
+
+    // Background work outlives its turn. Stop it the way T3's Stop button does: interrupting the latest run closes the
+    // Claude process that runs it. The other machine is told what it was.
+    if (!st.background) return;
+    p = await projection(call, job.thread);
+    const latest = p.runs.at(-1);
+    const left = p.providerThreads.find((pt) => pt.id === p.thread.activeProviderThreadId)?.pendingBackgroundTasks ?? [];
+    if (left.length === 0 || !latest) return;
+    await dispatch(call, { type: "run.interrupt", threadId: job.thread, runId: latest.id, reason: `Handed off to ${job.target}` })
+      .catch(() => st.warnings.push(`Background tasks may still be running on ${h.s.nodeId}; stop them in T3 Code there.`));
   }));
   h.advance(job, "package");
 }
@@ -188,6 +203,8 @@ async function send(h: Handoffs, job: Job<SourceState>) {
       modelSelection: st.modelSelection!, runtimeMode: st.runtimeMode!, interactionMode: st.interactionMode!,
       remoteUrl: st.remoteUrl!, projectTitle: st.projectTitle!, branch: st.branch ?? null, baseSha: st.baseSha ?? null,
       headSha: st.headSha!, snapshot: st.snapshot!, bundle: !!st.bundle, worktree: !!st.worktreePath, wasWorking: !!st.wasWorking,
+      // Sent only when there is some, so a destination on the previous version still accepts ordinary handoffs.
+      ...(st.background?.length ? { background: st.background } : {}),
       oldPaths: [...new Set([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)]))], files: st.files!,
     };
     await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest });
