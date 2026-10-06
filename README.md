@@ -113,6 +113,10 @@ What to expect:
 - Claude Code threads only. Attachments, earlier turns' diffs and queued messages stay behind.
 - agentgate's T3 Code token lasts 30 days. `agentgate t3` and the app show when to pair again.
 
+### Keep projects in sync
+
+Turn on **Keep projects in sync** on the T3 Code page, or run `agentgate t3 sync on`, and a GitHub project you add in T3 Code on one machine shows up in T3 Code on your other machines. Machines check every 30 seconds, and opening the T3 Code page checks right away. Each machine needs T3 Code connected as above. A machine that already has a checkout of the repository gets a project for that checkout. Otherwise T3 Code clones it into the clone folder (`agentgate t3 dirs`) with that machine's own GitHub login, so `gh` must be signed in there. Removing a project only removes it on that machine, and agentgate never adds it back there.
+
 The proxy now provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [the proxy guide](docs/user/proxy.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
 
 ## MCP servers per repo

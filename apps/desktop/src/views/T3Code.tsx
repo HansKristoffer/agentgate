@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { Button } from "@heroui/react";
 import { ArrowLeftRight, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
 import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3Thread } from "@agentgate/protocol";
-import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu } from "../components/ui.tsx";
+import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, elapsed, field, since } from "./utils.ts";
@@ -209,6 +209,10 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       if (live.current) setError(String(e));
     }
   };
+  // Opening the page catches T3 Code up with projects added on other machines.
+  useEffect(() => {
+    if (data.settings.t3ProjectSync) void request(conn, "/t3/projects/sync", "POST").catch(() => { });
+  }, [conn]);
   useEffect(() => {
     live.current = true;
     void load();
@@ -306,6 +310,17 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
         ) : views.filter((v) => v.threads.length).map((v) => v.threads.map((t) => (
           <ThreadRow key={`${v.node}:${t.id}`} thread={t} machine={v} here={here} action={action(t)} />
         )))}
+      </Panel>
+      <Panel title="Projects">
+        <Toggle
+          label="Keep projects in sync"
+          description="Every machine with T3 Code connected adds the GitHub projects your other machines have, cloning them into its clone folder. Removing a project stays on that machine."
+          isSelected={data.settings.t3ProjectSync}
+          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }))}
+        />
+        {views.filter((v) => v.t3?.projectSyncError).map((v) => (
+          <div className="item" key={v.node}><small>{v.node}: {v.t3!.projectSyncError}</small></div>
+        ))}
       </Panel>
     </>
   );

@@ -22,6 +22,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const tokens = new Set<string>();
   const tickets = new Set<string>();
   const commands: Record<string, unknown>[] = [];
+  const clones: Record<string, unknown>[] = [];
   const protocol = String(options.protocol ?? 2);
   const now = () => new Date().toISOString();
   const status = (t: FakeThread) => t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
@@ -44,6 +45,12 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       const project = { id: String(p.projectId), title: String(p.title), workspaceRoot: String(p.workspaceRoot), scripts: [] };
       projects.push(project);
       return project;
+    },
+    // Like upstream: the project is registered at once and the clone runs in the background (not simulated here).
+    "projectClone.start": (p) => {
+      clones.push(p);
+      projects.push({ id: String(p.projectId), title: String(p.title), workspaceRoot: String(p.destinationPath), scripts: [] });
+      return { projectId: p.projectId, cwd: p.destinationPath, remoteUrl: `https://github.com/${p.repository}.git`, repository: null };
     },
     "agentSessions.scan": () => ({ candidates: [] }),
     "agentSessions.import": (p) => {
@@ -132,7 +139,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   });
   const url = `http://127.0.0.1:${server.port}`;
   const api = {
-    url, threads, projects, commands, server,
+    url, threads, projects, commands, clones, server,
     /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
     homePath: options.claudeDir as string | undefined,
     /** A single-use pairing token, as `t3 pair` prints. */

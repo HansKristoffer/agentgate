@@ -695,6 +695,11 @@ export function management(ctx: Ctx) {
     await inputAsync(() => disconnectNode(ctx.handoffs, c.req.query("node")));
     return c.json({ ok: true });
   });
+  // The app's T3 Code page asks for a T3 project sync when it opens; it runs in the background.
+  app.post("/t3/projects/sync", (c) => {
+    void ctx.handoffs.syncProjects().catch(() => { });
+    return c.json({ ok: true }, 202);
+  });
   app.get("/threads", async (c) => c.json(await allNodes(ctx.handoffs)));
   app.get("/handoffs", (c) => c.json(ctx.handoffs.list().map((job) => ctx.handoffs.view(job))));
   app.post("/handoffs", async (c) => {
