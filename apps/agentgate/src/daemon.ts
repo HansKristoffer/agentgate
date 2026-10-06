@@ -13,7 +13,7 @@ import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { CONFIG_DIR, DEV, PORT, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, poke, pullAll, tailscale } from "./sync.ts";
+import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
@@ -197,7 +197,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     for (const { id, outcome } of await updateSkills(s, undefined, ctx.abort.signal))
       if (outcome.startsWith("failed")) console.error(`skills: ${id}: ${outcome}`);
   }, 3600000);
-  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => noteSyncRound(s)), PULL_INTERVAL);
+  // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
+  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);

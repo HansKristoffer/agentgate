@@ -4,7 +4,7 @@ import {
 } from "@agentgate/protocol/relay";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, type Rec, type Store } from "./store.ts";
-import { lastSeen, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
+import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
 
 /**
  * Sync through a relay that only stores ciphertext (docs/internals/relay.md). Each node upserts its
@@ -288,6 +288,7 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
     put(s, t, full ? "readCursor" : "cursor", page.data.nextCursor);
     noteSkipped(s, t, skipped);
     noteSeen(s, page.data.seen);
+    noteSyncRound(s);
     put(s, t, "pullError", undefined);
   });
   return page.data.more;

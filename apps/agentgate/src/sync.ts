@@ -58,9 +58,10 @@ export async function join(s: Store, url: string, code: string, selfUrl: string)
   return node;
 }
 
-/** A node that slept or lost the network for a while holds no fresh news of the others: a holder it has not heard from
- * may well be alive, with tokens newer than its own. Sync rounds run every PULL_INTERVAL while the daemon is awake, so
- * a gap between rounds means it was not listening. */
+/** A node that slept or could not sync for a while holds no fresh news of the others: a holder it has not heard from
+ * may well be alive, with tokens newer than its own. Every pull that gets an answer marks a round, and pulls run every
+ * PULL_INTERVAL, so a gap between rounds means it was not listening. A failed pull is no round: an awake node whose
+ * relay or peers do not answer hears no more than a sleeping one. */
 const ROUND_GAP = 60_000;
 export function noteSyncRound(s: Store) {
   const last = Number(s.local("sync:round") ?? 0);
@@ -118,6 +119,7 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
       for (const [node, at] of Object.entries(body.seen ?? {}))
         if (node !== s.nodeId && at > lastSeen(s, node)) s.setLocal(`seen:${node}`, String(Math.min(at, s.now())));
       s.setLocal(`syncError:${p.node}`, undefined);
+      noteSyncRound(s);
       return taken;
     });
     if (!validPeer || !body.more || body.seq < p.cursor) return total;
