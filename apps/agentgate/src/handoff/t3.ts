@@ -244,7 +244,8 @@ export function t3State(s: Store): T3NodeState {
   const url = s.local("t3:url");
   if (!url || !s.local("t3:token")) return { connected: false };
   const expiresAt = Number(s.local("t3:expiresAt") ?? 0);
-  return { connected: s.now() < expiresAt, url, label: s.local("t3:label"), expiresAt, repair: s.now() > expiresAt - REPAIR_AHEAD };
+  const projectSyncError = s.local("t3:projectSyncError");
+  return { connected: s.now() < expiresAt, url, label: s.local("t3:label"), expiresAt, repair: s.now() > expiresAt - REPAIR_AHEAD, ...(projectSyncError && { projectSyncError }) };
 }
 
 /** This node's T3 client, or an error that says how to connect. */

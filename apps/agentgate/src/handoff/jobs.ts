@@ -8,6 +8,7 @@ import { relayInvite, via } from "../relay.ts";
 import { relayCall } from "../channel.ts";
 import { destinationView, manifestFile, runDestination, type DestState } from "./destination.ts";
 import { runSource, type SourceState } from "./source.ts";
+import { syncT3Projects } from "./projects.ts";
 
 /** Handoff jobs: one row per job and role in the node-local `handoffs` table, resumed after a restart from the
  * step they reached. Steps are idempotent. The source drives; the destination answers peer requests. */
@@ -102,6 +103,8 @@ export class Handoffs {
   /** Short-lived listing cache: T3's Claude provider instances. */
   cache = new Map<string, { at: number; value: unknown }>();
   closed = false;
+  /** One T3 project sync at a time: the timer, record changes and the app's T3 Code page all ask for it. */
+  syncProjects = serialTask(() => syncT3Projects(this));
 
   constructor(readonly s: Store, readonly options: HandoffOptions) { }
 

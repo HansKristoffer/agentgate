@@ -186,6 +186,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
     if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
     if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
+    // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
+    if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
   }, 1000);
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
@@ -202,6 +204,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
   schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
   schedule(async () => { ctx.handoffs.tick(); }, 5000);
+  schedule(() => ctx.handoffs.syncProjects(), 30_000);
   schedule(() => ctx.channel.reconcile(), 30_000);
   let stopping: Promise<void> | undefined;
   return {

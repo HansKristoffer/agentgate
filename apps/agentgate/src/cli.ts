@@ -57,6 +57,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
   t3 connect <pairing link> | --url <url> --token <token> [--node <node>]   connect a machine's agentgate to its T3 Code
   t3 [status] | disconnect [--node <node>] | dirs [--worktrees <dir>] [--clones <dir>]
+  t3 sync [on|off]                            add the GitHub projects one machine's T3 Code has to every other machine's
   threads [--node <node>]                     active T3 Code threads on every machine
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
@@ -635,6 +636,13 @@ async function main() {
         const { handoffOptions } = await import("./daemon.ts");
         const o = handoffOptions(s);
         return console.log(`worktrees  ${o.worktreesDir}\nclones     ${o.cloneDir}`);
+      }
+      if (sub === "sync") {
+        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3ProjectSync: rest[0] === "on" }, revision(s, "setting", "settings"));
+        else if (rest[0]) die("t3 sync [on|off]");
+        await management("/t3/projects/sync", "POST").catch(() => { }); // a stopped daemon syncs when it starts
+        const error = t3.t3State(s).projectSyncError;
+        return console.log(`T3 project sync is ${s.settings().t3ProjectSync ? "on" : "off"} on every machine${error ? `; here: ${error}` : ""}`);
       }
       if (sub && sub !== "status") die(HELP);
       const st = t3.t3State(s);

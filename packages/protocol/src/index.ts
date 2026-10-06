@@ -43,6 +43,9 @@ export const projectSchema = z.object({
   remote: remoteSchema.optional(),
   seenAt: z.number().int().nonnegative().optional(),
   seenOn: z.string().optional(),
+  /** A T3 Code project for this repo exists on some node, under this title; set once by T3 project sync. Older daemons
+   * drop this field when they save the project; the node that has it in T3 sets it again. */
+  t3Title: z.string().max(500).optional(),
 });
 /** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
 export const remoteSummarySchema = z.object({
@@ -90,6 +93,8 @@ export const settingsSchema = z.object({
   bootstrapTimeoutMs: z.number().int().min(1000).max(900000).default(660000),
   aliases: aliasesSchema.default([]),
   codexQuotaPolling: z.boolean().default(false),
+  /** Every node with T3 Code connected adds the GitHub projects the others' T3 Code has. */
+  t3ProjectSync: z.boolean().default(false),
 });
 /** Remove defaults before making patches optional: omission must never reset a field. */
 export const accountPatchSchema = z.object({
@@ -103,6 +108,7 @@ export const settingsPatchSchema = z.object({
   sessionAffinity: settingsSchema.shape.sessionAffinity.removeDefault().optional(), affinityTtlMs: settingsSchema.shape.affinityTtlMs.removeDefault().optional(),
   maxAccounts: settingsSchema.shape.maxAccounts.removeDefault().optional(), bootstrapTimeoutMs: settingsSchema.shape.bootstrapTimeoutMs.removeDefault().optional(),
   aliases: settingsSchema.shape.aliases.removeDefault().optional(), codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
+  t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
 }).strict();
 export type Account = z.infer<typeof accountSchema>;
 export type Project = z.infer<typeof projectSchema>;

@@ -11,6 +11,8 @@ export const t3NodeStateSchema = z.object({
   /** The bearer token expired or is about to; pair T3 Code again on that node. */
   repair: z.boolean().optional(),
   error: z.string().optional(),
+  /** Why the last T3 project sync on this node could not add a project. */
+  projectSyncError: z.string().optional(),
 });
 export type T3NodeState = z.infer<typeof t3NodeStateSchema>;
 
