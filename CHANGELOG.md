@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/HansKristoffer/agentgate/compare/v0.16.0...v0.16.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **t3:** synced projects clone over HTTPS unless the machine uses SSH, and a failed clone can be retried ([#48](https://github.com/HansKristoffer/agentgate/issues/48)) ([8c7e2c9](https://github.com/HansKristoffer/agentgate/commit/8c7e2c9029b0bb580247d2d2a9232456bd1ef35d))
+
 ## [0.16.0](https://github.com/HansKristoffer/agentgate/compare/v0.15.0...v0.16.0) (2026-10-06)
 
 
