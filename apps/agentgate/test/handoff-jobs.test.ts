@@ -6,7 +6,7 @@ import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
-import { CONTINUE } from "../src/handoff/destination.ts";
+import { CONTINUE, READY } from "../src/handoff/destination.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
 import { connectNode, disconnectNode, localView, requestHandoff, resolveTarget, sidebarOrder } from "../src/handoff/threads.ts";
@@ -119,8 +119,8 @@ test("a working thread moves to the server with its session and code, continues 
   expect(JSON.parse(readFileSync(join(resumed, `${SID}.jsonl`), "utf8").split("\n")[0]!)).toEqual({ type: "user", cwd: wtB, message: "code word: falcon" });
   expect(existsSync(join(resumed, SID, "subagents", "agent-1.jsonl"))).toBe(true);
   expect(existsSync(join(b.claudeDir, "projects", claudeProjectKey(r.b), `${SID}.jsonl`))).toBe(false);
-  // It was working: B continued it, and sent the message again after T3's first-turn failure.
-  expect(imported.messages).toEqual([CONTINUE, CONTINUE]);
+  // B took T3's first-turn failure with the ready message, then continued the working agent.
+  expect(imported.messages).toEqual([READY, READY, CONTINUE]);
   expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
 
   // A: archived, its worktree clean (the sent changes parked in a stash), and timings for every step on both sides.
