@@ -10,8 +10,10 @@ import type { Store } from "./store.ts";
  * like Grok. The serving node keeps a WebSocket open to the relay and answers each request from its gateway.
  */
 
-/** Sync features this daemon understands; enabling an endpoint waits until every node reports it. */
-export const NODE_PROTOCOL = 2;
+/** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts).
+ * A feature waits until every node reports its protocol. */
+export const NODE_PROTOCOL = 3;
+const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
 const random = (bytes: number) => b64url(crypto.getRandomValues(new Uint8Array(bytes)));
@@ -27,13 +29,13 @@ function virtualProject(s: Store, id: string): Project {
 
 /** Every node record must come from a daemon that keeps `remote` intact; older ones drop it when they edit a project. */
 function versionGate(s: Store) {
-  const old = s.list("node").filter(n => (n.protocol ?? 0) < NODE_PROTOCOL).map(n => n.id);
+  const old = s.list("node").filter(n => (n.protocol ?? 0) < REMOTE_PROTOCOL).map(n => n.id);
   if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't keep remote endpoints in sync`);
 }
 
 /** An always-on node is the natural host; otherwise this one. */
 function defaultServer(s: Store): string {
-  return s.list("node").find(n => n.alwaysOn && (n.protocol ?? 0) >= NODE_PROTOCOL)?.id ?? s.nodeId;
+  return s.list("node").find(n => n.alwaysOn && (n.protocol ?? 0) >= REMOTE_PROTOCOL)?.id ?? s.nodeId;
 }
 
 export function enableRemote(s: Store, id: string, servedBy?: string): { url: string; secret: string } {

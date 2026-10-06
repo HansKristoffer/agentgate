@@ -28,7 +28,8 @@ Records sync, including secrets, to every paired node. The `local` table and the
 `request_log`, `proxy_*` and `relay_*` tables never sync and are not in backups. Keep a value local
 when it describes this machine or this daemon's runtime: the node name, admin token, peer tokens,
 registered checkouts, Claude Desktop logins, cooldowns, session affinity, Codex continuation owners,
-model snapshots and telemetry. Account policies and quota observations are replicated.
+model snapshots and telemetry. Account policies and quota observations are replicated, and so are token
+totals: each node publishes its own as `tokens` records ([`token-history.ts`](../../apps/agentgate/src/llm/token-history.ts)).
 
 ## Versions and old nodes
 

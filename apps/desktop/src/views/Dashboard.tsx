@@ -2,6 +2,7 @@ import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
 import { Button } from "@heroui/react";
 import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
+import { TokenCalendar } from "../features/proxy/TokenCalendar.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
 import { outdatedNodes } from "@agentgate/protocol";
@@ -145,6 +146,7 @@ export function Dashboard({
           ))
         )}
       </Panel>
+      {data.accounts.length > 0 && <TokenCalendar connection={connection} />}
       {data.accounts.length > 0 && <TokenUsage connection={connection} />}
     </>
   );

@@ -19,7 +19,7 @@ test("loopback rejects foreign hosts and malformed settings return actionable 40
 });
 
 test("daemon lifecycle closes listeners and drains work before returning", async () => {
-  const s = new Store(":memory:"); s.setLocal("node", "n"); const daemon = await serve(s, { port: 0, discover: async () => undefined });
+  const s = new Store(":memory:"); s.setLocal("node", "n"); const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
   const url = `http://127.0.0.1:${daemon.loopback.port}`; expect((await fetch(`${url}/api/status`)).status).toBe(200);
   await daemon.stop(); await daemon.stop(); await expect(fetch(url)).rejects.toThrow(); s.close();
 });
@@ -39,7 +39,7 @@ test("shutdown waits for an already-issued refresh to persist before the store c
   const { Credentials } = await import("../src/credentials.ts"); const { CLAUDE } = await import("../src/llm/claude.ts");
   const originalApi = CLAUDE.api, s = new Store(":memory:"); s.setLocal("node", "n"); s.put("account", "a", { id: "a", provider: "claude", label: "a" }); s.put("credential", "a", { accountId: "a", accessToken: "old", refreshToken: "old", expiresAt: Date.now() + 3600000, holder: "n" });
   const upstream = Bun.serve({ port: 0, fetch: () => new Response("unauthorized", { status: 401 }) }); CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
-  const daemon = await serve(s, { port: 0, discover: async () => undefined }); let release!: () => void, entered!: () => void;
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } }); let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(r => release = r), start = new Promise<void>(r => entered = r);
   daemon.ctx.creds = new Credentials(s, async () => { entered(); await gate; return { accessToken: "persisted", refreshToken: "rotated", expiresAt: Date.now() + 3600000 }; }, async () => {});
   try {
