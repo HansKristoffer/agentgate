@@ -72,7 +72,7 @@ export const nodeSchema = z.object({
 });
 /** Nodes running an older agentgate than the newest one among them. A node that reports no version predates
  * version reporting, so it is older too once any node reports one. */
-export function outdatedNodes<T extends { version?: string }>(nodes: T[]): T[] {
+export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {
   const compare = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
   const newest = nodes.map((n) => n.version).filter((v): v is string => !!v).sort(compare).at(-1);
   return newest ? nodes.filter((n) => !n.version || compare(n.version, newest) < 0) : [];

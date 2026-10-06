@@ -48,7 +48,7 @@ test("update replaces the binary with the latest release when its checksum match
 test("nodes behind the newest reported release are outdated, including ones too old to report one", () => {
   const nodes = [{ id: "a", version: "0.13.0" }, { id: "b", version: "0.9.1" }, { id: "c" }, { id: "d", version: "0.13.0" }];
   expect(outdatedNodes(nodes).map((n) => n.id)).toEqual(["b", "c"]);
-  expect(outdatedNodes([{ id: "a" }, { id: "b" }])).toEqual([]);
+  expect(outdatedNodes(nodes.map(({ id }) => ({ id })))).toEqual([]);
 });
 
 test("updating a paired node asks it over the peer channel and explains a node too old to answer", async () => {
