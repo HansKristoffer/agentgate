@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/HansKristoffer/agentgate/compare/v0.17.0...v0.17.1) (2026-10-06)
+
+
+### Bug Fixes
+
+* **release:** macOS servers no longer ask for folder access after every update ([#53](https://github.com/HansKristoffer/agentgate/issues/53)) ([ed39a2d](https://github.com/HansKristoffer/agentgate/commit/ed39a2d35b737fc15295bfb23006e5f2fa51793a))
+
 ## [0.17.0](https://github.com/HansKristoffer/agentgate/compare/v0.16.1...v0.17.0) (2026-10-06)
 
 
