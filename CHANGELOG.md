@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.17.0](https://github.com/HansKristoffer/agentgate/compare/v0.16.1...v0.17.0) (2026-10-06)
+
+
+### Features
+
+* **tokens:** token usage covers your history and every machine, with a daily calendar ([#52](https://github.com/HansKristoffer/agentgate/issues/52)) ([4f5a383](https://github.com/HansKristoffer/agentgate/commit/4f5a3833e6ff99d38dc1c81664b214f26d94fe59))
+
+
+### Bug Fixes
+
+* **credentials:** a machine whose sync is failing no longer takes over token refreshes with an outdated token ([#50](https://github.com/HansKristoffer/agentgate/issues/50)) ([461bfe3](https://github.com/HansKristoffer/agentgate/commit/461bfe3a4e736dd38baa8077d57c479bca339714))
+
 ## [0.16.1](https://github.com/HansKristoffer/agentgate/compare/v0.16.0...v0.16.1) (2026-10-06)
 
 
