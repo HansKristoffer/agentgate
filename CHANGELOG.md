@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.0](https://github.com/HansKristoffer/agentgate/compare/v0.14.0...v0.15.0) (2026-10-06)
+
+
+### Features
+
+* **handoff:** handed-over threads arrive active, ready for the next message, with their background tasks named ([#44](https://github.com/HansKristoffer/agentgate/issues/44)) ([f50a06b](https://github.com/HansKristoffer/agentgate/commit/f50a06bbc35597ef1a04cbc6e36cbc35abf0a3bb))
+* **nodes:** update an outdated machine from the app or CLI ([#42](https://github.com/HansKristoffer/agentgate/issues/42)) ([e1f2266](https://github.com/HansKristoffer/agentgate/commit/e1f2266bb4c3554dccf12b3860c2d564e7b70c27))
+
 ## [0.14.0](https://github.com/HansKristoffer/agentgate/compare/v0.13.0...v0.14.0) (2026-10-05)
 
 
