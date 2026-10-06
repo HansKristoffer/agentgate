@@ -7,11 +7,12 @@ import { claudeProjectKey } from "../../src/handoff/session.ts";
  * `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
  * recognised), and a first turn that fails once. */
 
-type Run = { id: string; status: string; userMessageId?: string };
+type Run = { id: string; status: string; userMessageId?: string; ordinal?: number; queuePosition?: number | null };
+type Message = { id: string; text: string; attachments: unknown[]; delegatedCompletion?: unknown };
 export type FakeThread = {
   id: string; projectId: string; title: string; providerInstanceId: string; modelSelection: Record<string, unknown>;
   runtimeMode: string; interactionMode: string; branch: string | null; worktreePath: string | null;
-  archivedAt: string | null; updatedAt: string; runs: Run[]; settledOverride?: "settled" | "active" | null; subagent?: boolean; createdAt: string; pinnedAt?: string | null; pinOrderKey?: string | null; activeOrderKey?: string | null; sessionId: string; failNextTurn?: boolean; messages: string[]; background?: { kind: string; description: string }[];
+  archivedAt: string | null; updatedAt: string; runs: Run[]; settledOverride?: "settled" | "active" | null; subagent?: boolean; createdAt: string; pinnedAt?: string | null; pinOrderKey?: string | null; activeOrderKey?: string | null; sessionId: string; failNextTurn?: boolean; messages: string[]; conversation?: Message[]; background?: { kind: string; description: string }[];
 };
 type Project = { id: string; title: string; workspaceRoot: string; scripts: { id: string; name: string; command: string; icon: string; runOnWorktreeCreate: boolean }[] };
 
@@ -30,6 +31,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const projection = (t: FakeThread) => ({
     thread: { id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, modelSelection: t.modelSelection, runtimeMode: t.runtimeMode, interactionMode: t.interactionMode, branch: t.branch, worktreePath: t.worktreePath, activeProviderThreadId: `pt-${t.id}`, archivedAt: t.archivedAt, settledOverride: t.settledOverride ?? null },
     runs: t.runs,
+    messages: t.conversation ?? [],
     providerThreads: [{ id: `pt-${t.id}`, driver: "claudeAgent", nativeThreadRef: { nativeId: t.sessionId, strength: "strong" }, pendingBackgroundTasks: t.background ?? [] }],
   });
   const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; t.updatedAt = now(); }, ms);

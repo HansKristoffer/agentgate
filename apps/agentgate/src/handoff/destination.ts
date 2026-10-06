@@ -15,6 +15,8 @@ import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, type
  * report `imported` → wait for setup and continue the agent. */
 
 const sha = z.string().regex(/^[0-9a-f]{40,64}$/);
+/** Queued messages a manifest carries; it must fit one relay call. */
+export const QUEUED_MAX = { count: 20, chars: 256_000 };
 export const prepareSchema = z.object({
   remoteUrl: z.string().min(1).max(2048),
   projectTitle: z.string().min(1).max(512),
@@ -37,6 +39,9 @@ export const manifestSchema = prepareSchema.extend({
   wasWorking: z.boolean(),
   /** Background tasks that were running on the source and stopped with the move. */
   background: z.array(z.string().min(1).max(2000)).max(20).optional(),
+  /** The user's queued messages, in order, queued again here behind the continued turn. */
+  queued: z.array(z.string().min(1)).max(QUEUED_MAX.count)
+    .refine((q) => q.reduce((n, t) => n + t.length, 0) <= QUEUED_MAX.chars).optional(),
   oldPaths: z.array(z.string().min(1).max(4096)).max(16),
   files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
 }).strict();
@@ -64,6 +69,8 @@ export interface DestState {
   /** Recorded before sending, so a restart never sends a message twice. */
   readied?: boolean;
   continued?: boolean;
+  /** How many queued messages were sent, counted before each. */
+  requeued?: number;
   warnings: string[];
   timings: Timing[];
 }
@@ -418,16 +425,33 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
     }));
   }
 
+  // Behind whatever runs now, in order, as the user queued them. T3 starts the first at once if the thread is idle.
+  const queued = m.queued ?? [];
+  if ((st.requeued ?? 0) < queued.length) {
+    await timed(h.s, st.timings, "queue", () => t3Client(h.s).rpc(async (call) => {
+      for (let i = st.requeued ?? 0; i < queued.length; i++) {
+        st.requeued = i + 1;
+        h.save(job);
+        await send(call, st.threadId!, queued[i]!, "queue_after_active");
+      }
+    }));
+  }
+
   rmSync(h.dir(job.id), { recursive: true, force: true });
   h.advance(job, "done");
 }
 
-async function turn(h: Handoffs, call: Call, threadId: string, text: string): Promise<string> {
+async function send(call: Call, threadId: string, text: string, mode: "start_immediately" | "queue_after_active") {
   const messageId = crypto.randomUUID();
   await dispatch(call, {
     type: "message.dispatch", threadId, messageId, text, attachments: [],
-    dispatchMode: { type: "start_immediately" }, createdBy: "user", creationSource: "web",
+    dispatchMode: { type: mode }, createdBy: "user", creationSource: "web",
   });
+  return messageId;
+}
+
+async function turn(h: Handoffs, call: Call, threadId: string, text: string): Promise<string> {
+  const messageId = await send(call, threadId, text, "start_immediately");
   const deadline = h.s.now() + FIRST_TURN;
   for (; ;) {
     const r = (await projection(call, threadId)).runs.find((run) => run.userMessageId === messageId);
