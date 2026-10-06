@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { type Rec, Store } from "../src/store.ts";
-import { pairCode, peerRoutes, peers, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
+import { listeningFor, pairCode, peerRoutes, peers, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
 
 function node(name: string) {
   const s = new Store(":memory:");
@@ -154,4 +154,20 @@ test("a continuation page cannot skip records by advertising a higher sequence",
     await expect(pullPeer(s, peers(s)[0]!)).rejects.toThrow(/sequence/);
     expect(s.seq()).toBe(0); expect(peers(s)[0]!.cursor).toBe(0);
   } finally { server.stop(true); s.close(); }
+});
+
+test("only a pull that gets an answer counts as listening", async () => {
+  // An awake node whose sync fails hears nothing: it must not think the holder of a credential has gone quiet.
+  const a = node("a");
+  const b = node("b");
+  let T = Date.now();
+  b.now = () => T;
+  b.db.run("insert into peers values ('a', 'http://127.0.0.1:9', 'tok', 0, null)");
+  for (let i = 0; i < 12; i++) { T += 15_000; await pullPeer(b, peers(b)[0]!).catch(() => { }); }
+  expect(listeningFor(b)).toBe(0);
+
+  a.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
+  b.db.run("update peers set url = ? where node = 'a'", [listen(a)]);
+  for (let i = 0; i < 12; i++) { T += 15_000; await pullPeer(b, peers(b)[0]!); }
+  expect(listeningFor(b)).toBeGreaterThanOrEqual(2 * 60_000);
 });

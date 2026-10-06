@@ -44,7 +44,7 @@ const pull = (into: Store, from: Store) => {
   for (const r of from.changes(0).records) into.merge(r);
   into.db.run("insert or replace into peers values (?, 'http://x', 't', 0, ?)", [from.nodeId, T]);
 };
-/** Let time pass while `s` keeps syncing every 15 s, as an awake daemon does, without hearing from anyone. */
+/** Let time pass while `s` keeps syncing every 15 s, as an awake daemon with a working network does, without hearing from the holder. */
 const syncFor = (s: Store, ms: number) => { for (const end = T + ms; T < end;) { T += 15_000; noteSyncRound(s); } };
 const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (p, rt) => claude.refresh(rt), async () => pull(s, peer()));
 
