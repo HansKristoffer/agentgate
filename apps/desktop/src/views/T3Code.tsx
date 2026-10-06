@@ -16,7 +16,7 @@ const STEPS: Record<string, string> = {
 };
 const TIMINGS: Record<string, string> = {
   resolve: "Resolve", stop: "Stop", package: "Pack", send: "Send",
-  prepare: "Prepare", apply: "Apply code", place: "Place session", import: "Import", setup: "Setup", continue: "Continue",
+  prepare: "Prepare", apply: "Apply code", place: "Place session", import: "Import", setup: "Setup", ready: "Ready", continue: "Continue",
 };
 const SHOW_FINISHED = 60_000;
 

@@ -11,7 +11,7 @@ type Run = { id: string; status: string; userMessageId?: string };
 export type FakeThread = {
   id: string; projectId: string; title: string; providerInstanceId: string; modelSelection: Record<string, unknown>;
   runtimeMode: string; interactionMode: string; branch: string | null; worktreePath: string | null;
-  archivedAt: string | null; updatedAt: string; runs: Run[]; settledOverride?: "settled" | "active" | null; subagent?: boolean; createdAt: string; pinnedAt?: string | null; pinOrderKey?: string | null; activeOrderKey?: string | null; sessionId: string; failNextTurn?: boolean; messages: string[];
+  archivedAt: string | null; updatedAt: string; runs: Run[]; settledOverride?: "settled" | "active" | null; subagent?: boolean; createdAt: string; pinnedAt?: string | null; pinOrderKey?: string | null; activeOrderKey?: string | null; sessionId: string; failNextTurn?: boolean; messages: string[]; background?: { kind: string; description: string }[];
 };
 type Project = { id: string; title: string; workspaceRoot: string; scripts: { id: string; name: string; command: string; icon: string; runOnWorktreeCreate: boolean }[] };
 
@@ -27,9 +27,9 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const status = (t: FakeThread) => t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
   const shellThread = (t: FakeThread) => ({ id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, branch: t.branch, worktreePath: t.worktreePath, status: status(t), archivedAt: t.archivedAt, updatedAt: t.updatedAt, createdAt: t.createdAt, pinnedAt: t.pinnedAt ?? null, pinOrderKey: t.pinOrderKey ?? null, activeOrderKey: t.activeOrderKey ?? null, settledOverride: t.settledOverride ?? null, lineage: { relationshipToParent: t.subagent ? "subagent" : null } });
   const projection = (t: FakeThread) => ({
-    thread: { id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, modelSelection: t.modelSelection, runtimeMode: t.runtimeMode, interactionMode: t.interactionMode, branch: t.branch, worktreePath: t.worktreePath, activeProviderThreadId: `pt-${t.id}`, archivedAt: t.archivedAt },
+    thread: { id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, modelSelection: t.modelSelection, runtimeMode: t.runtimeMode, interactionMode: t.interactionMode, branch: t.branch, worktreePath: t.worktreePath, activeProviderThreadId: `pt-${t.id}`, archivedAt: t.archivedAt, settledOverride: t.settledOverride ?? null },
     runs: t.runs,
-    providerThreads: [{ id: `pt-${t.id}`, driver: "claudeAgent", nativeThreadRef: { nativeId: t.sessionId, strength: "strong" } }],
+    providerThreads: [{ id: `pt-${t.id}`, driver: "claudeAgent", nativeThreadRef: { nativeId: t.sessionId, strength: "strong" }, pendingBackgroundTasks: t.background ?? [] }],
   });
   const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; t.updatedAt = now(); }, ms);
 
@@ -55,7 +55,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
         // Like upstream: only its own earlier imports count, not a native thread that holds the same session.
         const id = `import:claudeAgent:${sessionId}`;
         if (threads.has(id)) continue;
-        threads.set(id, { id, projectId: project.id, title: "Imported", providerInstanceId: "claudeAgent", modelSelection: { instanceId: "claudeAgent", model: "default" }, runtimeMode: "approval-required", interactionMode: "default", branch: null, worktreePath: null, archivedAt: null, updatedAt: now(), createdAt: now(), runs: [], sessionId, failNextTurn: true, messages: [] });
+        threads.set(id, { id, projectId: project.id, title: "Imported", providerInstanceId: "claudeAgent", modelSelection: { instanceId: "claudeAgent", model: "default" }, runtimeMode: "approval-required", interactionMode: "default", branch: null, worktreePath: null, archivedAt: null, settledOverride: "settled", updatedAt: now(), createdAt: now(), runs: [], sessionId, failNextTurn: true, messages: [] });
         importedCount++;
       }
       return { importedCount, skippedCount: 0 };
@@ -65,10 +65,12 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       const t = threads.get(String(c.threadId))!;
       t.updatedAt = now();
       switch (c.type) {
-        case "run.interrupt": settle(t, t.runs.find((r) => r.id === c.runId)!, "interrupted"); break;
+        // Like T3's Stop: interrupting the latest run also ends the background work.
+        case "run.interrupt": settle(t, t.runs.find((r) => r.id === c.runId)!, "interrupted"); t.background = []; break;
         case "queued-run.cancel": t.runs.find((r) => r.id === c.runId)!.status = "cancelled"; break;
         case "thread.archive": t.archivedAt = now(); break;
         case "thread.unarchive": t.archivedAt = null; break;
+        case "thread.unsettle": t.settledOverride = "active"; break;
         case "thread.metadata.update": Object.assign(t, { worktreePath: c.worktreePath, branch: c.branch, ...(c.title ? { title: c.title } : {}) }); break;
         case "thread.runtime-mode.set": t.runtimeMode = String(c.runtimeMode); break;
         case "thread.interaction-mode.set": t.interactionMode = String(c.interactionMode); break;

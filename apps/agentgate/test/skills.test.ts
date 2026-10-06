@@ -11,7 +11,7 @@ const md = (name: string, text = "Do it.") => `---\nname: ${name}\ndescription: 
 const fetched = (id: string, text?: string): FetchedSkill => ({ id, description: `${id} helps.`, files: [{ path: "SKILL.md", data: Buffer.from(md(id, text)).toString("base64") }, { path: "scripts/run.sh", data: Buffer.from("echo hi").toString("base64"), executable: true }] });
 const git = (cwd: string, ...args: string[]) => { const r = Bun.spawnSync(["git", ...args], { cwd, stderr: "pipe" }); if (r.exitCode) throw new Error(r.stderr.toString()); };
 const link = (path: string) => lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink() ? readlinkSync(path) : undefined;
-const until = async (check: () => boolean) => { for (let i = 0; i < 60 && !check(); i++) await Bun.sleep(50); return check(); };
+const until = async (check: () => boolean, ms = 3000) => { for (let i = 0; i < ms / 50 && !check(); i++) await Bun.sleep(50); return check(); };
 
 const fixtures: { dir: string; s: Store; links: SkillLinks }[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) { f.links.close(); f.s.close(); rmSync(f.dir, { recursive: true, force: true }); } });
@@ -308,8 +308,10 @@ test("worktree registrations delayed beyond 600 ms converge through bounded retr
   mkdirSync(tree); mkdirSync(metadata);
   await Bun.sleep(800);
   writeFileSync(join(metadata, "gitdir"), join(tree, ".git"));
-  expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"))).toBe(true);
-});
+  // Retries run up to 10 s after the event; on a busy macOS runner the event itself can arrive late, so wait through the
+  // 5 s one rather than relying on the 2 s one.
+  expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"), 6000)).toBe(true);
+}, 10_000);
 
 test("watch setup failures and emitted errors are recoverable and close allocated watchers", () => {
   const { s, root, repo, links: initial } = setup(); initial.close();

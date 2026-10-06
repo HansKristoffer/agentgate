@@ -35,6 +35,8 @@ export const manifestSchema = prepareSchema.extend({
   snapshot: z.object({ sha, uncommitted: z.boolean() }),
   bundle: z.boolean(),
   wasWorking: z.boolean(),
+  /** Background tasks that were running on the source and stopped with the move. */
+  background: z.array(z.string().min(1).max(2000)).max(20).optional(),
   oldPaths: z.array(z.string().min(1).max(4096)).max(16),
   files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
 }).strict();
@@ -59,12 +61,17 @@ export interface DestState {
   claudeHome?: string;
   /** No thread here held the session, so T3 imported it from a copy under the main checkout. */
   imported?: boolean;
+  /** Recorded before sending, so a restart never sends a message twice. */
+  readied?: boolean;
   continued?: boolean;
   warnings: string[];
   timings: Timing[];
 }
 
+export const READY = 'This thread just moved here from another machine. Reply with only "Ready".';
 export const CONTINUE = "Continue where you left off.";
+export const restartTasks = (tasks: string[]) =>
+  `These background tasks were running on the other machine and stopped when the thread moved here:\n${tasks.map((t) => `- ${t}`).join("\n")}\nStart again the ones that are still needed.`;
 /** A turn still running after this is working, not failing on its first message (T3's import bug fails fast). */
 const FIRST_TURN = 2 * 60_000;
 /** What A sees of each step. */
@@ -367,6 +374,8 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
 
     const p = await projection(call, threadId);
     if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
+    // T3 files every imported session under Settled, out of the sidebar's active list.
+    if (p.thread.settledOverride === "settled") await dispatch(call, { type: "thread.unsettle", threadId, reason: "user" });
     await dispatch(call, { type: "thread.metadata.update", threadId, worktreePath: st.cwd !== st.main ? st.cwd : null, branch: m.branch, title: m.title });
     await dispatch(call, { type: "thread.runtime-mode.set", threadId, runtimeMode: m.runtimeMode });
     await dispatch(call, { type: "thread.interaction-mode.set", threadId, interactionMode: m.interactionMode });
@@ -379,8 +388,9 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
   h.advance(job, "continue");
 }
 
-/** After reporting `imported`: wait for setup, then let a working agent go on. T3 fails the first message of a freshly
- * imported thread (an upstream bug), so a failed first turn is sent once more. */
+/** After reporting `imported`: wait for setup, then get the thread ready and let a working agent go on.
+ * T3 opens the first turn of an imported thread as a new Claude session under the existing id, which fails (an upstream
+ * bug); the next turn resumes. A short message takes that failure so the user's first message does not. */
 async function carryOn(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
   const setup = await h.setups.get(job.id);
@@ -391,12 +401,20 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
     h.save(job);
   }
 
-  if (st.manifest!.wasWorking && !st.continued) {
+  if (st.imported && !st.readied) {
+    await timed(h.s, st.timings, "ready", () => t3Client(h.s).rpc(async (call) => {
+      st.readied = true;
+      h.save(job);
+      if (await turn(h, call, st.threadId!, READY) === "failed") await turn(h, call, st.threadId!, READY);
+    }));
+  }
+  const m = st.manifest!;
+  const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""].filter(Boolean).join("\n\n");
+  if (next && !st.continued) {
     await timed(h.s, st.timings, "continue", () => t3Client(h.s).rpc(async (call) => {
-      // Recorded before sending, so a restart never sends it twice.
       st.continued = true;
       h.save(job);
-      if (await turn(h, call, st.threadId!) === "failed") await turn(h, call, st.threadId!);
+      if (await turn(h, call, st.threadId!, next) === "failed") await turn(h, call, st.threadId!, next);
     }));
   }
 
@@ -404,10 +422,10 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
   h.advance(job, "done");
 }
 
-async function turn(h: Handoffs, call: Call, threadId: string): Promise<string> {
+async function turn(h: Handoffs, call: Call, threadId: string, text: string): Promise<string> {
   const messageId = crypto.randomUUID();
   await dispatch(call, {
-    type: "message.dispatch", threadId, messageId, text: CONTINUE, attachments: [],
+    type: "message.dispatch", threadId, messageId, text, attachments: [],
     dispatchMode: { type: "start_immediately" }, createdBy: "user", creationSource: "web",
   });
   const deadline = h.s.now() + FIRST_TURN;
