@@ -32,7 +32,8 @@ jobs:
   publish:
     needs: release-please
     if: always() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch')
-    runs-on: ubuntu-latest
+    # macOS, to sign the macOS binaries with codesign. CI covers the Linux binaries.
+    runs-on: macos-latest
     timeout-minutes: 20
     permissions:
       contents: write
@@ -59,8 +60,29 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
+      # Into a temporary keychain that scripts/build.ts signs from. Fail rather than publish unsigned binaries.
+      - name: Import the signing certificate
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ] || { echo "::error::Missing Apple signing secrets"; exit 1; }
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
       - run: bun run build
-      - run: bun scripts/smoke.ts dist/agentgate-linux-x64
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      - run: codesign --verify --strict dist/agentgate-darwin-arm64 dist/agentgate-darwin-x64
+      - run: bun scripts/smoke.ts dist/agentgate-darwin-arm64
       - uses: actions/setup-node@v5
         with:
           node-version: '24'

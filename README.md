@@ -277,6 +277,6 @@ Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [re
 
 The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 
-The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The standalone CLI binaries are not signed.
+The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The release job signs the standalone macOS CLI binaries with the same certificate, without the hardened runtime. macOS ties privacy grants such as access to `~/Documents` to that signature, so they survive `agentgate update`; an ad-hoc signed binary would ask again after every update.
 
 See [release and recovery instructions](docs/operations/releasing.md).
