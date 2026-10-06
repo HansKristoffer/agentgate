@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.16.0](https://github.com/HansKristoffer/agentgate/compare/v0.15.0...v0.16.0) (2026-10-06)
+
+
+### Features
+
+* **t3:** projects added in T3 Code on one machine show up on your other machines ([#47](https://github.com/HansKristoffer/agentgate/issues/47)) ([779f755](https://github.com/HansKristoffer/agentgate/commit/779f755f1d846d61962c2ebb4c81409f99cdd02e))
+
+
+### Bug Fixes
+
+* **credentials:** a machine back from sleep no longer takes over token refreshes with an outdated token ([#45](https://github.com/HansKristoffer/agentgate/issues/45)) ([545880b](https://github.com/HansKristoffer/agentgate/commit/545880b03a7510e11c27ef16fded95700653bbec))
+
 ## [0.15.0](https://github.com/HansKristoffer/agentgate/compare/v0.14.0...v0.15.0) (2026-10-06)
 
 
