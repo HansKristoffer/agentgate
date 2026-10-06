@@ -31,7 +31,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
-Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. `agentgate update <node>` does the same on a paired machine, and the app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 

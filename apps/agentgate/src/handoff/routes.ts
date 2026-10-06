@@ -13,6 +13,7 @@ import { safeRelative } from "./session.ts";
 import { startHandoff } from "./source.ts";
 import { T3Error, connectInput, connectT3, disconnectT3, pairing } from "./t3.ts";
 import { localView, resolveTarget } from "./threads.ts";
+import { updateHere } from "../update.ts";
 
 /** `/peer/handoff/*` and `/peer/threads`, mounted behind the peer token check (sync.ts). Every step is keyed by the
  * handoff id, so a retried request is safe. Unknown ids answer 404. */
@@ -36,6 +37,15 @@ export function handoffRoutes(h: Handoffs) {
   const missing = { error: "no such handoff" };
 
   app.get("/threads", async (c) => c.json(await localView(h)));
+
+  // Not a handoff, but these are the routes every paired node reaches, over Tailscale and the relay.
+  app.post("/update", async (c) => {
+    try {
+      return c.json(await updateHere(h.s));
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 409);
+    }
+  });
 
   // Set up from another machine: it forwards the pairing link created in this machine's T3 Code.
   app.post("/t3/connect", async (c) => c.json(await connectT3(h.s, pairing(connectInput.parse(await jsonInput(c.req.raw))))));

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Copy, Globe, Monitor, Network, Plus } from "lucide-react";
-import { Button, Switch } from "@heroui/react";
+import { Button, Switch, toast } from "@heroui/react";
+import { outdatedNodes } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Badge,
@@ -23,6 +24,22 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [joinOpen, setJoinOpen] = useState(false);
   const [name, setName] = useState("");
   const relay = data.relay;
+  const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
+  const update = (node: string) =>
+    void perform(async () => {
+      const result = await request<{ version?: string; restarting: boolean }>(
+        connection,
+        `/nodes/${idPath(node)}/update`,
+        "POST",
+      );
+      toast(
+        !result.version
+          ? `${node} already runs the latest release`
+          : result.restarting
+            ? `${node} installed Agentgate ${result.version} and is restarting`
+            : `${node} installed Agentgate ${result.version}; restart Agentgate there to use it`,
+      );
+    });
   const pair = (method: Method) =>
     void perform(async () => {
       const result = await request<{ command: string }>(
@@ -80,8 +97,14 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     (n.id === data.node
                       ? "Local daemon"
                       : `Last seen ${relative(n.lastSeen)}`)}
+                  {n.version && ` · Agentgate ${n.version}`}
                 </small>
               </div>
+              {outdated.has(n.id) && (
+                <Button size="sm" variant="tertiary" onPress={() => update(n.id)}>
+                  Update
+                </Button>
+              )}
               <Switch
                 isSelected={!!n.alwaysOn}
                 onChange={() =>

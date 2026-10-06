@@ -29,6 +29,7 @@ import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
+import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -152,9 +153,11 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   const listen = (hostname: string, listener: Listener, port: number) =>
     Bun.serve({ hostname, port, idleTimeout: 0, maxRequestBodySize: MAX_BODY, fetch: req => a.fetch(req, { listener }) });
   const loopback = listen("127.0.0.1", "loopback", options.port ?? PORT);
-  // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate).
+  // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate), and which
+  // release it runs, so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);
-  if (me && (me.protocol ?? 0) < NODE_PROTOCOL) s.put("node", s.nodeId, { ...me, protocol: NODE_PROTOCOL });
+  if (me && ((me.protocol ?? 0) < NODE_PROTOCOL || me.version !== packageInfo.version))
+    s.put("node", s.nodeId, { ...me, protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL), version: packageInfo.version });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
