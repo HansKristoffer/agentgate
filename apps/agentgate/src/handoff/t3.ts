@@ -46,6 +46,7 @@ const projectionSchema = z.object({
     id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
     modelSelection: z.record(z.string(), z.unknown()), runtimeMode: z.string(), interactionMode: z.string(),
     branch: z.string().nullable(), worktreePath: z.string().nullable(), activeProviderThreadId: z.string().nullable(), archivedAt: z.string().nullable(),
+    settledOverride: z.enum(["settled", "active"]).nullable().optional(),
   }).passthrough(),
   runs: z.array(run),
   providerThreads: z.array(z.object({

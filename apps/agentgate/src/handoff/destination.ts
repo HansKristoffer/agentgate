@@ -367,6 +367,8 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
 
     const p = await projection(call, threadId);
     if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
+    // T3 files every imported session under Settled, out of the sidebar's active list.
+    if (p.thread.settledOverride === "settled") await dispatch(call, { type: "thread.unsettle", threadId, reason: "user" });
     await dispatch(call, { type: "thread.metadata.update", threadId, worktreePath: st.cwd !== st.main ? st.cwd : null, branch: m.branch, title: m.title });
     await dispatch(call, { type: "thread.runtime-mode.set", threadId, runtimeMode: m.runtimeMode });
     await dispatch(call, { type: "thread.interaction-mode.set", threadId, interactionMode: m.interactionMode });

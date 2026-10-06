@@ -109,7 +109,8 @@ test("a working thread moves to the server with its session and code, continues 
   const imported = b.t3.threads.get(`import:claudeAgent:${SID}`)!;
   const wtB = imported.worktreePath!;
   expect(wtB.startsWith(join(b.h.options.worktreesDir, "b"))).toBe(true);
-  expect(imported).toMatchObject({ archivedAt: null, branch: "feature", title: "Fix the bug", runtimeMode: "full-access", modelSelection: { instanceId: "claudeAgent", model: "opus" } });
+  // T3 imports into Settled; the handed-over thread is back in the active list.
+  expect(imported).toMatchObject({ archivedAt: null, settledOverride: "active", branch: "feature", title: "Fix the bug", runtimeMode: "full-access", modelSelection: { instanceId: "claudeAgent", model: "opus" } });
   expect(readFileSync(join(wtB, "feature.txt"), "utf8")).toBe("committed\n");
   expect(readFileSync(join(wtB, "notes.txt"), "utf8")).toBe("uncommitted\n");
   // The session sits under the worktree's key with cwd rewritten, where Claude resumes it. The main checkout's copy
