@@ -4,13 +4,13 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
-import { modelPolicySchema } from "@agentgate/protocol";
+import { modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets } from "./mcp/templates.ts";
-import { CONFIG_DIR, exportBackup, importBackup, liveOnly, LOCAL_URL, schemas, store, type Store } from "./store.ts";
+import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
@@ -67,7 +67,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   desktop add [email] | use <account> | capture | forget <account>
   desktop gateway on|off                      Desktop's Code tab uses the pool (no Chat, separate profile)
   service install|start|restart|stop|logs
-  update                                      install the latest release and restart the service
+  update [node]                               install the latest release and restart the service, here or on a paired node
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for native app control over the tailnet`;
 
@@ -510,6 +510,7 @@ async function main() {
       initialized(s);
       for (const p of peers(s)) console.log(`${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
       for (const n of relayNodes(s)) console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
+      for (const n of outdatedNodes(s.list("node"))) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
       return;
     case "unpair": {
       initialized(s);
@@ -684,17 +685,15 @@ async function main() {
     case "service":
       return process.exit(await (await import("./service.ts")).service(sub ?? ""));
     case "update": {
-      liveOnly("agentgate update");
-      if (!Bun.main.startsWith("/$bunfs/")) return die("agentgate runs from source here; update it with git pull");
-      const target = (await import("./setup.ts")).selfCommand()[0]!;
-      // The app reinstalls its bundled copy whenever it differs, which would undo this update.
-      if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate")) return die("This copy belongs to the Agentgate app, which keeps it up to date. Update the app instead.");
-      if (target.includes("/node_modules/")) return die("agentgate was installed with npm; update it with npm install -g @hanskristoffer/agentpool@latest, then agentgate service restart");
-      const version = await (await import("./update.ts")).installLatest(target);
+      if (sub) {
+        initialized(s);
+        const r = await management<{ version?: string; restarting: boolean }>(`/nodes/${encodeURIComponent(sub)}/update`, "POST");
+        return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}${r.restarting ? " and is restarting" : "; restart agentgate there to use it"}`);
+      }
+      const { target, version, restart } = await (await import("./update.ts")).updateSelf().catch((e: Error) => die(e.message));
       if (!version) return console.log("agentgate is up to date");
       console.log(`installed agentgate ${version} at ${target}`);
-      const { service, serviceRuns } = await import("./service.ts");
-      if (serviceRuns(target)) return process.exit(await service("restart"));
+      if (restart) return process.exit(await (await import("./service.ts")).service("restart"));
       return console.log("restart agentgate to use it");
     }
 
