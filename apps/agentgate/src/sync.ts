@@ -58,6 +58,21 @@ export async function join(s: Store, url: string, code: string, selfUrl: string)
   return node;
 }
 
+/** A node that slept or lost the network for a while holds no fresh news of the others: a holder it has not heard from
+ * may well be alive, with tokens newer than its own. Sync rounds run every PULL_INTERVAL while the daemon is awake, so
+ * a gap between rounds means it was not listening. */
+const ROUND_GAP = 60_000;
+export function noteSyncRound(s: Store) {
+  const last = Number(s.local("sync:round") ?? 0);
+  if (s.now() - last > ROUND_GAP) s.setLocal("sync:listeningSince", String(s.now()));
+  s.setLocal("sync:round", String(s.now()));
+}
+/** How long this node has been syncing without a gap; 0 when it is not syncing now. */
+export function listeningFor(s: Store): number {
+  if (s.now() - Number(s.local("sync:round") ?? 0) > ROUND_GAP) return 0;
+  return s.now() - Number(s.local("sync:listeningSince") ?? s.now());
+}
+
 export function lastSeen(s: Store, node: string): number {
   if (node === s.nodeId) return s.now();
   const direct = peers(s).find((p) => p.node === node)?.last_seen ?? 0;

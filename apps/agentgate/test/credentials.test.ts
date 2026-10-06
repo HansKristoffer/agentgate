@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Credentials, NeedsLogin } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { Store } from "../src/store.ts";
+import { noteSyncRound } from "../src/sync.ts";
 
 // Fake OAuth endpoint that rotates refresh tokens: each one works exactly once.
 let valid = new Set<string>();
@@ -43,6 +44,8 @@ const pull = (into: Store, from: Store) => {
   for (const r of from.changes(0).records) into.merge(r);
   into.db.run("insert or replace into peers values (?, 'http://x', 't', 0, ?)", [from.nodeId, T]);
 };
+/** Let time pass while `s` keeps syncing every 15 s, as an awake daemon does, without hearing from anyone. */
+const syncFor = (s: Store, ms: number) => { for (const end = T + ms; T < end;) { T += 15_000; noteSyncRound(s); } };
 const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (p, rt) => claude.refresh(rt), async () => pull(s, peer()));
 
 beforeEach(() => {
@@ -68,11 +71,27 @@ test("only the holder refreshes", async () => {
 });
 
 test("a non-holder takes over when the holder is silent and the token is about to expire", async () => {
-  T += 12 * MIN; // 8 min left, holder last seen 12 min ago
+  syncFor(srv, 12 * MIN); // 8 min left, holder last seen 12 min ago
   const c = await credsFor(srv, () => mac).token("a");
   expect(refreshes).toBe(1);
   expect(c.holder).toBe("srv");
   expect(srv.get("credential", "a")!.holder).toBe("srv");
+});
+
+test("a node back from sleep does not take over until it has synced for two minutes", async () => {
+  // The holder went quiet only because this node slept: on waking its view is hours old, and its refresh token may be
+  // one the holder already rotated.
+  syncFor(srv, 5 * MIN);
+  T += 3 * 60 * MIN;
+  const creds = credsFor(srv, () => mac);
+  await expect(creds.token("a")).rejects.toThrow("expired");
+  syncFor(srv, 90_000);
+  await expect(creds.token("a")).rejects.toThrow("expired");
+  expect(refreshes).toBe(0);
+  // Two minutes of syncing without a word from the holder: it really is gone.
+  syncFor(srv, 45_000);
+  expect((await creds.token("a")).holder).toBe("srv");
+  expect(refreshes).toBe(1);
 });
 
 test("no takeover while the holder is still seen", async () => {
@@ -142,7 +161,7 @@ test("a transient proactive refresh failure retains a valid token and reports he
 });
 
 test("offline takeover survives two complete token cycles and the returning node catches up", async () => {
-  T += 21 * MIN; const remote = new Credentials(srv, async (_, rt) => ({ ...await claude.refresh(rt), expiresAt: T + 8 * 60 * MIN }), async () => pull(srv, mac));
+  syncFor(srv, 21 * MIN); const remote = new Credentials(srv, async (_, rt) => ({ ...await claude.refresh(rt), expiresAt: T + 8 * 60 * MIN }), async () => pull(srv, mac));
   const first = await remote.token("a"); expect(first.holder).toBe("srv"); expect(refreshes).toBe(1);
   T += 8 * 60 * MIN; const second = await remote.token("a"); expect(second.accessToken).not.toBe(first.accessToken); expect(refreshes).toBe(2);
   pull(mac, srv); expect((await credsFor(mac, () => srv).token("a")).accessToken).toBe(second.accessToken); expect(refreshes).toBe(2); expect(mac.get("credential", "a")?.needsLogin).toBeFalsy();

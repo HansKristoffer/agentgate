@@ -52,7 +52,9 @@ Nodes upgrade independently, so a new field or kind must not break a node on the
 Some providers rotate refresh tokens, so two nodes refreshing the same credential log each other out.
 Each credential has a holder node that refreshes it (`credentials.ts` `canRefresh`). Other nodes ask
 through a synced refresh request, and take over only when the holder has been unseen for more than two
-minutes and the token is close to expiry. A local lease stops the CLI and daemon on one machine from
+minutes and the token is close to expiry, and only after syncing for two minutes themselves: a laptop
+waking briefly from sleep (macOS dark wakes) otherwise sees the holder as long gone and refreshes with a token
+the holder already rotated, which gets the login revoked everywhere. A local lease stops the CLI and daemon on one machine from
 refreshing at once. During a network partition two nodes can still race; that is accepted, not solved.
 
 ## Proxy

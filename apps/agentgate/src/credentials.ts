@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
 import type { Credential, Data, Store } from "./store.ts";
-import { lastSeen } from "./sync.ts";
+import { lastSeen, listeningFor } from "./sync.ts";
 
 export interface Tokens { accessToken: string; refreshToken: string; expiresAt: number; }
 export class InvalidGrant extends Error { }
@@ -16,7 +16,11 @@ const identity = (c: Owned) => JSON.stringify([accessToken(c), "refreshToken" in
 
 export function canRefresh(s: Store, c: { holder: string; expiresAt?: number }, force = false): boolean {
   if (c.holder === s.nodeId) return force || (c.expiresAt ?? Infinity) - s.now() < 30 * MIN;
-  return (force || (c.expiresAt ?? Infinity) - s.now() < 10 * MIN) && s.now() - lastSeen(s, c.holder) > 2 * MIN;
+  // Take over only after syncing for a while without hearing from the holder. A node just back from sleep sees the
+  // holder as long gone, and holds a refresh token the holder may already have rotated; using it gets the login
+  // revoked for every machine.
+  const expiring = force || (c.expiresAt ?? Infinity) - s.now() < 10 * MIN;
+  return expiring && s.now() - lastSeen(s, c.holder) > 2 * MIN && listeningFor(s) >= 2 * MIN;
 }
 
 export function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
