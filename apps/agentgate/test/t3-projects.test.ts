@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import { repos, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { syncT3Projects } from "../src/handoff/projects.ts";
@@ -36,14 +36,49 @@ test("a project added in one machine's T3 Code is cloned into the other's, once"
   carry(a.s, b.s);
 
   await syncT3Projects(b.h);
-  expect(b.t3.clones).toEqual([expect.objectContaining({ provider: "github", repository: repo, title: "My repo", destinationPath: join(b.root, "clones", repo.split("/")[1]!) })]);
+  const dest = join(b.root, "clones", repo.split("/")[1]!);
+  // HTTPS: b has no checkouts that say otherwise. T3 itself would pick SSH.
+  expect(b.t3.clones).toEqual([expect.objectContaining({ provider: "github", repository: repo, title: "My repo", destinationPath: dest, protocol: "https" })]);
 
-  // Removing it on b stays removed.
+  // While it clones, nothing starts a second one.
+  await syncT3Projects(b.h);
+  expect(b.t3.clones).toHaveLength(1);
+
+  // Once it has arrived, removing it on b stays removed.
+  sh(join(b.root, "clones"), "clone", r.url, dest);
+  await syncT3Projects(b.h);
   b.t3.projects.length = 0;
   await syncT3Projects(b.h);
   expect(b.t3.clones).toHaveLength(1);
-  expect(b.t3.projects).toHaveLength(0);
   expect(t3State(b.s).projectSyncError).toBeUndefined();
+});
+
+test("a failed clone removed in T3 Code is tried again", async () => {
+  const r = repos("a");
+  const a = await node("a"), b = await node("b");
+  a.t3.addProject(r.a);
+  await syncT3Projects(a.h);
+  carry(a.s, b.s);
+
+  await syncT3Projects(b.h); // the clone fails: T3 keeps the project, with no checkout
+  b.t3.projects.length = 0;
+  await syncT3Projects(b.h);
+  expect(b.t3.clones).toHaveLength(2);
+});
+
+test("a machine whose checkouts use SSH clones over SSH", async () => {
+  const r = repos("a", "b");
+  const a = await node("a"), b = await node("b");
+  a.t3.addProject(r.a);
+  await syncT3Projects(a.h);
+  carry(a.s, b.s);
+  const other = join(b.root, "other");
+  sh(b.root, "init", other);
+  sh(other, "remote", "add", "origin", "git@github.com:test/other.git");
+  b.t3.addProject(other);
+
+  await syncT3Projects(b.h);
+  expect(b.t3.clones).toEqual([expect.objectContaining({ protocol: "ssh" })]);
 });
 
 test("a machine that already has a checkout of the repository gets a project for it instead of a clone", async () => {
