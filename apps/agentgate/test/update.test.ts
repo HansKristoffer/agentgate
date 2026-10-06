@@ -2,7 +2,9 @@ import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installLatest } from "../src/update.ts";
+import { outdatedNodes } from "@agentgate/protocol";
+import { Store } from "../src/store.ts";
+import { installLatest, updateNode } from "../src/update.ts";
 
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -41,4 +43,26 @@ test("update replaces the binary with the latest release when its checksum match
   expect(readFileSync(target, "utf8")).toBe("new-binary");
   expect(statSync(target).mode & 0o111).not.toBe(0);
   expect(readdirSync(dir)).toEqual(["agentgate"]);
+});
+
+test("nodes behind the newest reported release are outdated, including ones too old to report one", () => {
+  const nodes = [{ id: "a", version: "0.13.0" }, { id: "b", version: "0.9.1" }, { id: "c" }, { id: "d", version: "0.13.0" }];
+  expect(outdatedNodes(nodes).map((n) => n.id)).toEqual(["b", "c"]);
+  expect(outdatedNodes([{ id: "a" }, { id: "b" }])).toEqual([]);
+});
+
+test("updating a paired node asks it over the peer channel and explains a node too old to answer", async () => {
+  let answer = Response.json({ node: "server", version: "9.9.9", restarting: true });
+  const peer = Bun.serve({ port: 0, fetch: (req) => (new URL(req.url).pathname === "/peer/update" && req.headers.get("authorization") === "Bearer t" ? answer : new Response("no", { status: 401 })) });
+  try {
+    const s = new Store(":memory:");
+    s.setLocal("node", "laptop");
+    s.db.run("insert or replace into peers values ('server', ?, 't', 0, null)", [peer.url.origin]);
+    expect(await updateNode(s, "server")).toEqual({ node: "server", version: "9.9.9", restarting: true });
+    answer = Response.json({ error: "not found" }, { status: 404 });
+    await expect(updateNode(s, "server")).rejects.toThrow("too old to update from here");
+    await expect(updateNode(s, "elsewhere")).rejects.toThrow("not paired");
+  } finally {
+    peer.stop(true);
+  }
 });

@@ -28,6 +28,7 @@ import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
+import { updateNode } from "./update.ts";
 import {
   aliasesFor,
   connect,
@@ -659,6 +660,13 @@ export function management(ctx: Ctx) {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
     return c.json(s.put("node", n!.id, { ...n!, ...f }));
+  });
+  // Not local-only: updating an always-on server from wherever you are is the point. The node runs the release
+  // checks itself and refuses copies another tool owns.
+  app.post("/nodes/:id/update", async (c) => {
+    const n = s.get("node", c.req.param("id"));
+    required(n, "node");
+    return c.json(await inputAsync(() => updateNode(s, n!.id)));
   });
   app.delete("/nodes/:id", async (c) => {
     const id = c.req.param("id");

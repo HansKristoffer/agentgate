@@ -67,7 +67,16 @@ export const nodeSchema = z.object({
   alwaysOn: z.boolean().default(false),
   /** Sync features this node's daemon understands; 2 = remote MCP endpoints. Absent on older daemons. */
   protocol: z.number().int().optional(),
+  /** The agentgate release this node's daemon last started as. Absent on older daemons. */
+  version: z.string().max(64).optional(),
 });
+/** Nodes running an older agentgate than the newest one among them. A node that reports no version predates
+ * version reporting, so it is older too once any node reports one. */
+export function outdatedNodes<T extends { version?: string }>(nodes: T[]): T[] {
+  const compare = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
+  const newest = nodes.map((n) => n.version).filter((v): v is string => !!v).sort(compare).at(-1);
+  return newest ? nodes.filter((n) => !n.version || compare(n.version, newest) < 0) : [];
+}
 export const settingsSchema = z.object({
   threshold: z.number().min(1).max(100).default(98),
   whenExhausted: z.enum(["fail", "wait"]).default("fail"),

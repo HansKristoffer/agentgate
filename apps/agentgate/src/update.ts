@@ -1,6 +1,10 @@
 import { chmodSync, renameSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import packageInfo from "../../../package.json";
+import { PeerError, peerCall } from "./handoff/jobs.ts";
+import { serviceRuns } from "./service.ts";
+import { selfCommand } from "./setup.ts";
+import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
 
 const REPO = process.env.AGENTGATE_REPO ?? "HansKristoffer/agentgate";
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
@@ -35,4 +39,40 @@ export async function installLatest(target: string, current = packageInfo.versio
     rmSync(temp, { force: true });
   }
   return tag.replace(/^v/, "");
+}
+
+/** Update this machine's binary unless another tool owns it. `restart` says whether the installed service runs this
+ * binary, so restarting it picks up the new version. */
+export async function updateSelf() {
+  liveOnly("agentgate update");
+  if (!Bun.main.startsWith("/$bunfs/")) throw new Error("agentgate runs from source here; update it with git pull");
+  const target = selfCommand()[0]!;
+  // The app reinstalls its bundled copy whenever it differs, which would undo this update.
+  if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate")) throw new Error("This copy belongs to the Agentgate app, which keeps it up to date. Update the app instead.");
+  if (target.includes("/node_modules/")) throw new Error("agentgate was installed with npm; update it with npm install -g @hanskristoffer/agentpool@latest, then agentgate service restart");
+  const version = await installLatest(target);
+  return { target, version, restart: !!version && serviceRuns(target) };
+}
+
+/** Exits the daemon after the reply is out; launchd (KeepAlive) and systemd (Restart=always) start the new binary.
+ * A seam so tests do not stop the test runner. */
+export const restart = { soon: () => void setTimeout(() => process.kill(process.pid, "SIGTERM"), 1000) };
+
+/** Update the node this daemon runs on, from the API or a paired node. `version` is absent when it was current. */
+export async function updateHere(s: Store) {
+  const { version, restart: restarting } = await updateSelf();
+  if (restarting) restart.soon();
+  return { node: s.nodeId, version, restarting };
+}
+
+/** Update any node: this one, or a paired one over the peer channel.
+ * ponytail: the download runs inside the call, so a link slower than ~1 MB/s times out; make it a job if that bites. */
+export async function updateNode(s: Store, node: string): Promise<Awaited<ReturnType<typeof updateHere>>> {
+  if (node === s.nodeId) return updateHere(s);
+  try {
+    return await peerCall(s, node, "/update", { method: "POST", timeout: 90_000 });
+  } catch (e) {
+    if (e instanceof PeerError && e.status === 404) throw new Error(`${node} runs an agentgate too old to update from here; run agentgate update on ${node}`);
+    throw e;
+  }
 }

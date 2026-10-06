@@ -4,6 +4,7 @@ import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
+import { outdatedNodes } from "@agentgate/protocol";
 import { providerIcon, providerName } from "./utils.ts";
 
 export function Dashboard({
@@ -11,6 +12,7 @@ export function Dashboard({
   connection,
   navigate,
 }: ViewProps & { navigate: (view: "accounts" | "servers" | "nodes") => void }) {
+  const outdated = outdatedNodes(data.nodes);
   return (
     <>
       <div className="stats">
@@ -48,6 +50,31 @@ export function Dashboard({
           </button>
         ))}
       </div>
+      {outdated.length > 0 && (
+        <Panel
+          title="Machines on an older version"
+          detail="Paired machines work best on the same release."
+          action={
+            <Button size="sm" variant="tertiary" onPress={() => navigate("nodes")}>
+              Update on Machines
+              <ArrowRight size={14} />
+            </Button>
+          }
+        >
+          {outdated.map((n) => (
+            <div className="item" key={n.id}>
+              <div className="machine-icon">
+                <Monitor size={16} />
+              </div>
+              <div className="grow">
+                <strong>{n.id}</strong>
+                <small>{n.version ? `Agentgate ${n.version}` : "An older Agentgate release"}</small>
+              </div>
+              {!n.online && <Badge>Offline</Badge>}
+            </div>
+          ))}
+        </Panel>
+      )}
       <Panel
         title="Subscription pool"
         detail="Your sessions use the next available account automatically."
