@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/HansKristoffer/agentgate/compare/v0.17.1...v0.18.0) (2026-10-08)
+
+
+### Features
+
+* **handoff:** queued messages move with the thread to the other machine ([#55](https://github.com/HansKristoffer/agentgate/issues/55)) ([1af5e26](https://github.com/HansKristoffer/agentgate/commit/1af5e26db69168e955db68bbf53184500ef39e2e))
+
+
+### Bug Fixes
+
+* **handoff:** moved threads no longer greet with "Not logged in" ([#57](https://github.com/HansKristoffer/agentgate/issues/57)) ([059be77](https://github.com/HansKristoffer/agentgate/commit/059be778f3f4eff7f0b03c4d06efbac921a2e082))
+
 ## [0.17.1](https://github.com/HansKristoffer/agentgate/compare/v0.17.0...v0.17.1) (2026-10-06)
 
 
