@@ -7,7 +7,7 @@ import { claudeProjectKey } from "../../src/handoff/session.ts";
  * `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
  * recognised), and a first turn that fails once. */
 
-type Run = { id: string; status: string; userMessageId?: string; ordinal?: number; queuePosition?: number | null };
+type Run = { id: string; status: string; userMessageId?: string; ordinal?: number; queuePosition?: number | null; dispatchedAt?: number; settledAt?: number };
 type Message = { id: string; text: string; attachments: unknown[]; delegatedCompletion?: unknown };
 export type FakeThread = {
   id: string; projectId: string; title: string; providerInstanceId: string; modelSelection: Record<string, unknown>;
@@ -34,7 +34,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     messages: t.conversation ?? [],
     providerThreads: [{ id: `pt-${t.id}`, driver: "claudeAgent", nativeThreadRef: { nativeId: t.sessionId, strength: "strong" }, pendingBackgroundTasks: t.background ?? [] }],
   });
-  const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; t.updatedAt = now(); }, ms);
+  const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; run.settledAt = Date.now(); t.updatedAt = now(); }, ms);
 
   const rpc: Record<string, (p: Record<string, unknown>) => unknown> = {
     "server.getConfig": () => ({ settings: { providerInstances: {}, providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} } } }),
@@ -85,7 +85,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
         case "thread.interaction-mode.set": t.interactionMode = String(c.interactionMode); break;
         case "thread.model-selection.set": t.modelSelection = c.modelSelection as Record<string, unknown>; break;
         case "message.dispatch": {
-          const run = { id: crypto.randomUUID(), status: "running", userMessageId: String(c.messageId) };
+          const run: Run = { id: crypto.randomUUID(), status: "running", userMessageId: String(c.messageId), dispatchedAt: Date.now() };
           t.runs.push(run); t.messages.push(String(c.text));
           settle(t, run, t.failNextTurn ? "failed" : "completed");
           t.failNextTurn = false;

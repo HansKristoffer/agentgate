@@ -38,6 +38,7 @@ export interface HandoffOptions {
   tempDir: string;
   pollMs?: number;
   setupTimeoutMs?: number;
+  retryPauseMs?: number;
 }
 
 const TERMINAL_STEPS = new Set(["done", "failed"]);
