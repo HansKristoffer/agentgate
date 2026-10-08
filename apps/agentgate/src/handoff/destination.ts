@@ -81,6 +81,9 @@ export const restartTasks = (tasks: string[]) =>
   `These background tasks were running on the other machine and stopped when the thread moved here:\n${tasks.map((t) => `- ${t}`).join("\n")}\nStart again the ones that are still needed.`;
 /** A turn still running after this is working, not failing on its first message (T3's import bug fails fast). */
 const FIRST_TURN = 2 * 60_000;
+/** T3 reports the failed first turn while its Claude process is still going down; a Claude process started within a
+ * second of that finds no login and answers "Not logged in". The retry waits this long. */
+const RETRY_PAUSE = 10_000;
 /** What A sees of each step. */
 const STATUS: Record<string, "preparing" | "running" | "imported" | "failed"> = {
   prepare: "preparing", prepared: "preparing",
@@ -412,7 +415,7 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
     await timed(h.s, st.timings, "ready", () => t3Client(h.s).rpc(async (call) => {
       st.readied = true;
       h.save(job);
-      if (await turn(h, call, st.threadId!, READY) === "failed") await turn(h, call, st.threadId!, READY);
+      await turnOrRetry(h, call, st.threadId!, READY);
     }));
   }
   const m = st.manifest!;
@@ -421,7 +424,7 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
     await timed(h.s, st.timings, "continue", () => t3Client(h.s).rpc(async (call) => {
       st.continued = true;
       h.save(job);
-      if (await turn(h, call, st.threadId!, next) === "failed") await turn(h, call, st.threadId!, next);
+      await turnOrRetry(h, call, st.threadId!, next);
     }));
   }
 
@@ -448,6 +451,12 @@ async function send(call: Call, threadId: string, text: string, mode: "start_imm
     dispatchMode: { type: mode }, createdBy: "user", creationSource: "web",
   });
   return messageId;
+}
+
+async function turnOrRetry(h: Handoffs, call: Call, threadId: string, text: string) {
+  if (await turn(h, call, threadId, text) !== "failed") return;
+  await sleep(h.options.retryPauseMs ?? RETRY_PAUSE);
+  await turn(h, call, threadId, text);
 }
 
 async function turn(h: Handoffs, call: Call, threadId: string, text: string): Promise<string> {

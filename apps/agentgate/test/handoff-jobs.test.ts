@@ -48,7 +48,7 @@ async function node(name: string, main: string, options: { server?: boolean; set
   const t3 = fakeT3({ claudeDir });
   const project = t3.addProject(main, options.setup ? [{ id: "setup", name: "Setup", command: options.setup, icon: "configure", runOnWorktreeCreate: true }] : []);
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), pollMs: 20 });
+  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), pollMs: 20, retryPauseMs: 100 });
   const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(s, () => { }).route("/", handoffRoutes(h))).fetch });
   cleanup.push(async () => { await h.close(); server.stop(true); t3.stop(); s.close(); });
   return { name, s, t3, project, claudeDir, h, url: `http://127.0.0.1:${server.port}`, server: !!options.server };
@@ -122,6 +122,8 @@ test("a working thread moves to the server with its session and code, continues 
   // B took T3's first-turn failure with the ready message, then continued the working agent and named the background
   // work that A stopped.
   expect(imported.messages).toEqual([READY, READY, `${CONTINUE}\n\n${restartTasks(["command: gh pr checks 72 --watch"])}`]);
+  // The retry waited for the failed turn's Claude process to go down; one started right after it finds no login.
+  expect(imported.runs[1]!.dispatchedAt! - imported.runs[0]!.settledAt!).toBeGreaterThanOrEqual(100);
   expect(a.t3.threads.get(thread.id)!.background).toEqual([]);
   expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
 
