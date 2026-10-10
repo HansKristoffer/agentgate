@@ -1,0 +1,190 @@
+/* A macOS look for HeroUI v3, written onto HeroUI's theme variables
+   (@heroui/styles 3.2). Import it after @heroui/styles. HeroUI declares its theme in @layer base, so these unlayered
+   rules win wherever they are imported.
+
+   Light is :root; dark follows HeroUI's own switch, the `dark` class or
+   data-theme="dark", which main.tsx keeps in step with the system. */
+:root {
+  --background: #f2f2f7;
+  --foreground: #1d1d1f;
+  --surface: #ffffff;
+  --surface-foreground: var(--foreground);
+  --surface-secondary: #f5f5f7;
+  --surface-tertiary: #ececef;
+  --overlay: #ffffff;
+  --overlay-foreground: var(--foreground);
+  --muted: #6e6e73;
+  --default: #f1f1f3;
+  --default-foreground: #3a3a3f;
+
+  --accent: #2f6fed;
+  --accent-foreground: #ffffff;
+  --success: #30a46c;
+  --success-foreground: #ffffff;
+  --warning: #f5a524;
+  --warning-foreground: #1d1d1f;
+  --danger: #e5484d;
+  --danger-foreground: #ffffff;
+
+  /* Fields keep a hairline border instead of HeroUI's shadow, as in both apps. */
+  --field-background: #ffffff;
+  --field-foreground: var(--foreground);
+  --field-placeholder: #a1a1a6;
+  --field-border: #e3e3e7;
+  --field-border-width: 1px;
+  --field-shadow: 0 0 0 0 transparent;
+
+  --border: #ececef;
+  --separator: #ececef;
+  --segment: #ffffff;
+  --focus: var(--accent);
+  --backdrop: rgba(0, 0, 0, 0.18);
+
+  --radius: 7px;
+  --field-radius: 7px;
+  --overlay-shadow: 0 8px 24px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.dark,
+[data-theme="dark"] {
+  --background: #000000;
+  --foreground: #f5f5f7;
+  --surface: #1c1c1e;
+  --surface-secondary: #2c2c2e;
+  --surface-tertiary: #38383a;
+  /* Menus and popovers a step lighter than the window, as macOS draws them. */
+  --overlay: #2c2c2e;
+  --muted: #98989d;
+  --default: #2c2c2e;
+  --default-foreground: #e5e5ea;
+
+  --accent: #0a84ff;
+  --success: #30d158;
+  --success-foreground: #1c1c1e;
+  --warning: #ffb340;
+  --danger: #ff453a;
+
+  --field-background: #1c1c1e;
+  --field-placeholder: #636366;
+  --field-border: #3a3a3c;
+
+  --border: #38383a;
+  --separator: #38383a;
+  --segment: #58585c;
+  --backdrop: rgba(0, 0, 0, 0.4);
+  /* HeroUI drops card shadows in dark mode; a card inside the app's card would
+     then vanish into it, so it keeps a hairline. */
+  --surface-shadow: 0 0 0 1px var(--border);
+  --overlay-shadow: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* The app around HeroUI: a transparent window for macOS vibrancy, a frosted
+   sidebar and one inset card. Colours come from the theme above (HeroUI's
+   variables); the --shell-* tokens are the shell's own, and the dimensions are
+   the knobs an app overrides on :root. */
+:root {
+  --shell-sidebar-width: 240px;
+  /* 0 holds the width; 1 lets the sidebar give ground before the card does. */
+  --shell-sidebar-shrink: 0;
+  --shell-sidebar-min-width: 0px;
+  --shell-card-margin: 12px;
+  --shell-card-min-width: 0px;
+  --shell-card-radius: 14px;
+  --shell-titlebar-height: 56px;
+  --shell-ease: cubic-bezier(0.22, 0.61, 0.25, 1);
+
+  /* Text and fills on the sidebar's vibrancy. */
+  --shell-side-fg: #1d1d1f;
+  --shell-side-fg-2: #5f5f66;
+  --shell-side-row: rgba(255, 255, 255, 0.55);
+  --shell-side-row-hover: rgba(255, 255, 255, 0.3);
+  --shell-side-chip: rgba(0, 0, 0, 0.06);
+  --shell-side-field: rgba(255, 255, 255, 0.45);
+  --shell-side-field-hover: rgba(255, 255, 255, 0.65);
+  --shell-side-field-ring: rgba(0, 0, 0, 0.07);
+  --shell-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+
+.dark,
+[data-theme="dark"] {
+  --shell-side-fg: #f5f5f7;
+  --shell-side-fg-2: rgba(235, 235, 245, 0.6);
+  --shell-side-row: rgba(255, 255, 255, 0.14);
+  --shell-side-row-hover: rgba(255, 255, 255, 0.07);
+  --shell-side-chip: rgba(255, 255, 255, 0.1);
+  --shell-side-field: rgba(255, 255, 255, 0.08);
+  --shell-side-field-hover: rgba(255, 255, 255, 0.12);
+  --shell-side-field-ring: rgba(255, 255, 255, 0.08);
+  /* A shadow alone is lost on a dark background, so the card gets a hairline. */
+  --shell-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3),
+    0 0 0 0.5px rgba(255, 255, 255, 0.08);
+}
+
+/* ---------- window ---------- */
+html, body, #root { height: 100%; margin: 0; }
+body {
+  font-size: 14px;
+  color: var(--foreground);
+  /* The window is transparent; macOS vibrancy paints behind it. */
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------- shell ---------- */
+/* Window dragging is driven by data-tiny-drag (AppShell), not CSS:
+   -webkit-app-region is a Chromium property and does nothing in WebKit. */
+.shell-app { display: flex; height: 100dvh; position: relative; }
+
+.shell-sidebar {
+  width: var(--shell-sidebar-width);
+  flex: 0 var(--shell-sidebar-shrink) var(--shell-sidebar-width);
+  min-width: var(--shell-sidebar-min-width);
+  display: flex; flex-direction: column; overflow: hidden;
+  color: var(--shell-side-fg); user-select: none;
+  /* min-width animates with the width, or opening jumps to it in one step. */
+  transition:
+    width 200ms var(--shell-ease),
+    flex-basis 200ms var(--shell-ease),
+    min-width 200ms var(--shell-ease);
+
+  /* HeroUI inside the sidebar turns frosted: its components read these. */
+  --foreground: var(--shell-side-fg);
+  --muted: var(--shell-side-fg-2);
+  --default: var(--shell-side-chip);
+  --default-foreground: var(--shell-side-fg);
+  --default-hover: var(--shell-side-row-hover);
+  --field-background: var(--shell-side-field);
+  --field-hover: var(--shell-side-field-hover);
+  --field-focus: var(--shell-side-field-hover);
+  --field-foreground: var(--shell-side-fg);
+  --field-placeholder: var(--shell-side-fg-2);
+  --field-border: var(--shell-side-field-ring);
+  /* HeroUI derives these at :root, so they are restated here, not inherited. */
+  --field-border-hover: var(--shell-side-field-ring);
+  --field-border-focus: var(--shell-side-field-ring);
+}
+
+.shell-main {
+  flex: 1;
+  /* A real floor gives a shrinking sidebar something to yield to. */
+  min-width: var(--shell-card-min-width);
+  margin: var(--shell-card-margin) var(--shell-card-margin) var(--shell-card-margin) 0;
+  background: var(--surface);
+  color: var(--surface-foreground);
+  border-radius: var(--shell-card-radius);
+  box-shadow: var(--shell-card-shadow);
+  display: flex; flex-direction: column; overflow: hidden; position: relative;
+  transition:
+    margin-top 200ms var(--shell-ease),
+    margin-left 200ms var(--shell-ease);
+}
+
+/* The strip along the top that the window drags by. In the card it is only
+   breathing room above the title. */
+.shell-drag-strip { height: var(--shell-titlebar-height); flex: 0 0 var(--shell-titlebar-height); }
+.shell-main > .shell-drag-strip { height: 20px; flex-basis: 20px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .shell-sidebar, .shell-main { transition: none; }
+}

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog } from "../api.ts";
 import {
   slugify,
   type SkillPreview,
@@ -260,7 +260,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                     label: "Disconnect",
                     danger: true,
                     onAction: async () => {
-                      if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { destructive: true, okLabel: "Disconnect" }))
+                      if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { okLabel: "Disconnect" }))
                         void perform(
                           () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
                           "Repository disconnected",

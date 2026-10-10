@@ -1,15 +1,13 @@
 import { useState } from "react";
 import { Copy, Terminal } from "lucide-react";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Modal,
   Panel,
   Toggle,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { backupFile, localAction, restoreFile } from "../api.ts";
+import { backupFile, confirmDialog, localAction, restoreFile } from "../api.ts";
 import { PoolSettings } from "../features/proxy/PoolSettings.tsx";
 import { ActivityView } from "./Activity.tsx";
 
@@ -136,7 +134,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                   if (
                     await confirmDialog(
                       "Stop Agentgate? Your agents cannot reach its providers or MCP servers until it starts again.",
-                      { destructive: true, okLabel: "Stop" },
+                      { okLabel: "Stop" },
                     )
                   )
                     void action("stop");
@@ -195,15 +193,12 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 variant="tertiary"
                 onPress={() =>
                   void perform(async () => {
-                    const path = await open({
-                      multiple: false,
-                      filters: [{ name: "JSON backup", extensions: ["json"] }],
-                    });
+                    const path = await tiny.dialog.openFile({ types: ["json"] });
                     if (
                       typeof path === "string" &&
                       (await confirmDialog(
                         "Import this backup into your current setup? Restored records will sync to paired machines.",
-                        { destructive: true, okLabel: "Import" },
+                        { okLabel: "Import" },
                       ))
                     ) {
                       const result = await restoreFile(connection, path);
@@ -219,10 +214,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 variant="tertiary"
                 onPress={() =>
                   void perform(async () => {
-                    const path = await save({
-                      defaultPath: `agentgate-${secrets ? "backup" : "inventory"}.json`,
-                      filters: [{ name: "JSON backup", extensions: ["json"] }],
-                    });
+                    const path = await tiny.dialog.saveFile({ types: ["json"] });
                     if (path) {
                       await backupFile(connection, path, secrets);
                       setOutput(`Backup saved to ${path}`);

@@ -1,6 +1,6 @@
 # Running agentgate
 
-The daemon owns the local SQLite store, subscription pool, MCP gateway and peer sync. Tauri is an optional client of the JSON control API. Every paired machine can continue independently; Tailscale or the encrypted relay carries peer traffic.
+The daemon owns the local SQLite store, subscription pool, MCP gateway and peer sync. The desktop app is an optional client of the JSON control API. Every paired machine can continue independently; Tailscale or the encrypted relay carries peer traffic.
 
 Account and MCP OAuth refreshes use holder coordination and a local cross-process lease. During a network partition, separate machines can still compete for a rotating provider token. Reconnect peers and sync the newer credential first; sign in again if the provider invalidated it. This is not a consensus protocol.
 
@@ -24,4 +24,4 @@ Each daemon talks only to the T3 Code server on its own machine, over loopback, 
 
 ## Distribution checks
 
-CI covers fake provider traffic, OAuth state validation, replica/store invariants, MCP reconnects, frontend builds and standalone binary smoke tests on macOS/Linux, plus native Rust checks and app packaging on macOS. Before relying on a new provider or service-install change, also check real provider login/traffic, T3 sessions, two physical machines over Tailscale, and installed launchd/systemd behavior after logout/reboot.
+CI covers fake provider traffic, OAuth state validation, replica/store invariants, MCP reconnects, frontend builds and standalone binary smoke tests on macOS/Linux, plus app packaging on macOS. Before relying on a new provider or service-install change, also check real provider login/traffic, T3 sessions, two physical machines over Tailscale, and installed launchd/systemd behavior after logout/reboot.

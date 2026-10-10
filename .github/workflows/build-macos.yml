@@ -29,63 +29,102 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
+      - name: Install tinyjs
+        run: |
+          curl -fsSL https://tinyjs.app/install | TINYJS_VERSION=v0.50.1 sh
+          echo "$HOME/.tinyjs" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
 
-      # Without these tauri-action quietly builds an unsigned DMG, which macOS
-      # refuses to open, or one installed copies cannot update from. Fail
-      # instead of publishing that.
+      # An unsigned app is refused by macOS and cannot update installed copies.
+      # Fail instead of publishing that.
       - name: Check the signing secrets
         run: |
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_TEAM_ID APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_CONTENT TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_ISSUER APPLE_API_KEY_CONTENT TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
             [ -n "${!name}" ] || { echo "::error::Missing secret $name"; exit 1; }
           done
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
 
-      # An App Store Connect key rather than an Apple ID: no 2FA in CI.
-      - name: Write the notarization key
-        run: echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+      # Into a temporary keychain that codesign signs from.
+      - name: Import the signing certificate
         env:
-          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
-
-      # Imports the certificate into a temporary keychain, signs with the
-      # hardened runtime, notarizes and staples, then uploads the DMG to the
-      # release release-please already created for this tag, with the signed
-      # app archive and latest.json the in-app updater reads.
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          password=$(uuidgen)
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$password" "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/certificate.p12"
+
+      # Hardened runtime and a secure timestamp on the launcher, the runtime and the bundled daemon.
+      - run: bun run build:desktop --universal
+        env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      # An App Store Connect key rather than an Apple ID: no 2FA in CI.
+      - name: Notarize and staple
+        working-directory: apps/desktop/dist
+        env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          APPLE_API_KEY_PATH: ${{ runner.temp }}/AuthKey.p8
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+          ditto -c -k --keepParent Agentgate.app "$RUNNER_TEMP/notarize.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --key "$RUNNER_TEMP/AuthKey.p8" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" --wait
+          xcrun stapler staple Agentgate.app
+          rm "$RUNNER_TEMP/AuthKey.p8"
+
+      # The DMG people download, and the archive plus manifest installed copies update from
+      # (tinyjs.json "update"). An update installs only with this sha256 and the same Apple team.
+      - name: Package
+        working-directory: apps/desktop/dist
+        env:
+          TAG: ${{ inputs.tag_name }}
+        run: |
+          version=$(jq -r .version ../tinyjs.json)
+          mkdir dmg && cp -R Agentgate.app dmg/ && ln -s /Applications dmg/Applications
+          hdiutil create -volname Agentgate -srcfolder dmg -ov -format UDZO "Agentgate_${version}_universal.dmg"
+          ditto -c -k --keepParent Agentgate.app "Agentgate-${version}.zip"
+          jq -n --arg version "$version" --arg sha256 "$(shasum -a 256 "Agentgate-${version}.zip" | cut -d' ' -f1)" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Agentgate-${version}.zip" \
+            '{version: $version, url: $url, sha256: $sha256}' > desktop-update.json
+
+      # Copies installed before the move to tinyjs update through Tauri's updater, which reads
+      # latest.json and accepts only archives signed with the old updater key. This hands them
+      # the tinyjs app once; it then updates through desktop-update.json. Remove this step, and
+      # the TAURI_SIGNING_* secrets, once those copies have moved.
+      - name: Sign the move from the Tauri app
+        working-directory: apps/desktop/dist
+        env:
+          TAG: ${{ inputs.tag_name }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        with:
-          projectPath: apps/desktop
-          tauriScript: bun run tauri
-          tagName: ${{ inputs.tag_name }}
-          releaseName: ${{ inputs.tag_name }}
-          includeUpdaterJson: true
-          # Updater artifacts only here: they need the private key, which local
-          # and CI builds do not have.
-          args: >-
-            --target universal-apple-darwin --bundles app,dmg
-            --config '{"bundle":{"createUpdaterArtifacts":true}}'
+        run: |
+          version=$(jq -r .version ../tinyjs.json)
+          tar -czf Agentgate.app.tar.gz Agentgate.app
+          bunx @tauri-apps/cli@2 signer sign Agentgate.app.tar.gz
+          url="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/Agentgate.app.tar.gz"
+          jq -n --arg version "$version" --arg url "$url" --arg signature "$(cat Agentgate.app.tar.gz.sig)" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, pub_date: $date, platforms: {"darwin-aarch64": {url: $url, signature: $signature}, "darwin-x86_64": {url: $url, signature: $signature}}}' > latest.json
+
+      - name: Upload to the release
+        working-directory: apps/desktop/dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag_name }}
+        run: gh release upload "$TAG" Agentgate_*_universal.dmg Agentgate-*.zip desktop-update.json Agentgate.app.tar.gz latest.json --clobber

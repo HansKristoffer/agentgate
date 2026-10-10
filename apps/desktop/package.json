@@ -3,33 +3,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
+    "dev": "tinyjs dev",
     "build": "tsc --noEmit && vite build",
-    "bundle": "tauri build",
-    "typecheck": "tsc --noEmit",
-    "tauri": "tauri"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@agentgate/protocol": "workspace:*",
-    "@hanskristoffer/taurio": "^0.1.0",
     "@heroui/react": "3.2.6",
     "@heroui/styles": "3.2.6",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-notification": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-process": "^2",
-    "@tauri-apps/plugin-updater": "^2",
     "lucide-react": "^0.468.0",
     "react": "^19",
     "react-dom": "^19"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",
-    "@tauri-apps/cli": "^2",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^5",
+    "esbuild": "^0.28.2",
     "tailwindcss": "^4.3.3",
     "vite": "^7"
   }

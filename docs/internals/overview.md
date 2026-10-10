@@ -1,7 +1,7 @@
 # Architecture
 
 Each machine runs one daemon that owns a SQLite store, the provider proxies, the MCP gateway and peer
-sync. The CLI and the Tauri app are clients of its control API (`apps/agentgate/src/api.ts`); the CLI
+sync. The CLI and the desktop app are clients of its control API (`apps/agentgate/src/api.ts`); the CLI
 also opens the same store directly, so anything that must be exclusive across processes takes a lease.
 Terms are defined in the [glossary](glossary.md).
 

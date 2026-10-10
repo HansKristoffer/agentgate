@@ -1,9 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { DesktopLogin, DesktopStatus, Status } from "@agentgate/protocol";
-import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
-import { TrayIcon } from "@tauri-apps/api/tray";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { native } from "./api.ts";
 import { tightest } from "./views/ClaudeDesktop.tsx";
 
 const name = (l: { label?: string; email?: string; accountUuid: string }) => l.label ?? l.email ?? l.accountUuid.slice(0, 8);
@@ -12,63 +9,66 @@ const pct = (data: Status, accountId?: string) => {
   return w ? `${Math.round(w.usedPct)}%` : "";
 };
 
-async function showApp() {
-  const w = getCurrentWindow();
-  await w.unminimize(); await w.show(); await w.setFocus();
-}
+// Menu clicks arrive by item id. tiny.tray.on has no way to unsubscribe, so one listener is
+// registered for the app's lifetime and reads the menu the latest render built.
+let clicks: Record<string, () => void> = {};
+let listening = false;
 
 /** A menu bar item for people who mostly live in Claude Desktop: which account it uses, and switching without opening Agentgate. */
 export function useDesktopTray(data: Status | undefined, desktop: DesktopStatus | undefined, use: (l: DesktopLogin) => void, pool: (on: boolean) => void) {
-  const tray = useRef<Promise<TrayIcon> | undefined>(undefined);
-  const shown = useRef("");
+  const shown = useRef(false);
+  const key = useRef("");
   const handlers = useRef({ use, pool });
   handlers.current = { use, pool };
-  const wanted = !!data && !!desktop?.available && (desktop.logins.length > 0 || desktop.mode === "pool");
+  const wanted = native && !!data && !!desktop?.available && (desktop.logins.length > 0 || desktop.mode === "pool");
 
   useEffect(() => {
     if (!wanted) {
-      if (tray.current) void tray.current.then((t) => t.close()).catch(() => { });
-      tray.current = undefined; shown.current = "";
+      if (shown.current) void tiny.tray.remove().catch(() => { });
+      shown.current = false; key.current = "";
       return;
     }
     const current = desktop!.mode === "signed-in" ? desktop!.current : undefined;
     const title = desktop!.mode === "pool" ? "✳ Shared" : current ? `✳ ${name(current)} ${pct(data!, current.accountId)}`.trim() : "✳";
     const usable = desktop!.logins.filter((l) => !l.expired && !l.problem);
-    const key = JSON.stringify([title, desktop!.mode, current?.accountUuid, usable.map((l) => [l.accountUuid, name(l), pct(data!, l.accountId)])]);
-    if (key === shown.current) return;
-    shown.current = key;
-    void (async () => {
-      const items = [
-        await MenuItem.new({ text: desktop!.mode === "pool" ? "Claude Desktop shares your subscriptions" : "Claude Desktop account", enabled: false }),
-        ...(await Promise.all(usable.map((l) => CheckMenuItem.new({
-          text: `${name(l)}${pct(data!, l.accountId) ? `  ${pct(data!, l.accountId)}` : ""}`,
+    const next = JSON.stringify([title, desktop!.mode, current?.accountUuid, usable.map((l) => [l.accountUuid, name(l), pct(data!, l.accountId)])]);
+    if (next === key.current) return;
+    key.current = next;
+    clicks = {
+      pool: () => handlers.current.pool(desktop!.mode !== "pool"),
+      open: () => void tiny.win.restore().then(() => tiny.win.show()),
+      ...Object.fromEntries(usable.map((l) => [`use:${l.accountUuid}`, () => handlers.current.use(l)])),
+    };
+    if (!listening) {
+      listening = true;
+      tiny.tray.on((id) => clicks[id]?.());
+    }
+    shown.current = true;
+    void tiny.tray.set({
+      title,
+      tooltip: "Agentgate: Claude Desktop",
+      menu: [
+        { label: desktop!.mode === "pool" ? "Claude Desktop shares your subscriptions" : "Claude Desktop account", enabled: false },
+        ...usable.map((l) => ({
+          id: `use:${l.accountUuid}`,
+          label: `${name(l)}${pct(data!, l.accountId) ? `  ${pct(data!, l.accountId)}` : ""}`,
           checked: desktop!.mode === "signed-in" && current?.accountUuid === l.accountUuid,
-          action: () => handlers.current.use(l),
-        })))),
-        await PredefinedMenuItem.new({ item: "Separator" }),
-        await MenuItem.new({
-          text: desktop!.mode === "pool" ? "Use my own sign-in in Claude Desktop" : "Share subscriptions automatically (Code tab)",
-          action: () => handlers.current.pool(desktop!.mode !== "pool"),
-        }),
-        await MenuItem.new({ text: "Open Agentgate", action: () => void showApp() }),
-      ];
-      const menu = await Menu.new({ items });
-      tray.current ??= TrayIcon.new({ id: "agentgate-desktop", tooltip: "Agentgate: Claude Desktop", menuOnLeftClick: true });
-      const t = await tray.current;
-      await t.setTitle(title);
-      await t.setMenu(menu);
-    })().catch(() => { shown.current = ""; });
+        })),
+        { separator: true },
+        { id: "pool", label: desktop!.mode === "pool" ? "Use my own sign-in in Claude Desktop" : "Share subscriptions automatically (Code tab)" },
+        { id: "open", label: "Open Agentgate" },
+      ],
+    }).catch(() => { key.current = ""; });
   }, [wanted, data, desktop]);
 
-  useEffect(() => () => { void tray.current?.then((t) => t.close()).catch(() => { }); }, []);
+  useEffect(() => () => { if (shown.current) void tiny.tray.remove().catch(() => { }); }, []);
 }
 
 const sent = () => new Set<string>(JSON.parse(localStorage.getItem("desktopNotified") ?? "[]"));
 async function notify(key: string, title: string, body: string) {
   const seen = sent();
   if (seen.has(key)) return;
-  if (!(await isPermissionGranted()) && (await requestPermission()) !== "granted") return;
-  sendNotification({ title, body });
+  if (!native || !(await tiny.notify(title, body))) return;
   localStorage.setItem("desktopNotified", JSON.stringify([...seen, key].slice(-50)));
 }
 

@@ -1,12 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, ScrollShadow, Toast, toast } from "@heroui/react";
-import { messageOf } from "@hanskristoffer/taurio/runtime";
-import {
-  AppShell,
-  useAppShortcuts,
-  useAppUpdate,
-  useAppVersion,
-} from "@hanskristoffer/taurio/react";
 import {
   Activity,
   Boxes,
@@ -27,10 +20,14 @@ import {
   loadConnection,
   localAction,
   localConnection,
+  messageOf,
   native,
   saveConnection,
   status,
+  useAppUpdate,
+  useAppVersion,
 } from "./api.ts";
+import { AppShell, useAppShortcuts } from "./components/Shell.tsx";
 import {
   Accounts,
   Dashboard,
@@ -90,7 +87,7 @@ export function App() {
   const [busy, setBusy] = useState(false);
   // Checked on launch and every four hours, since the app is left open for days.
   // Nothing downloads until the user chooses to install; offline is not an error.
-  const updater = useAppUpdate({ enabled: native });
+  const updater = useAppUpdate();
   const [connectOpen, setConnectOpen] = useState(false);
   const [help, setHelp] = useState(false);
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
@@ -121,7 +118,7 @@ export function App() {
       })
       .catch((e) => {
         if (!cancelled) {
-          setError(String(e));
+          setError(messageOf(e));
           setReady(true);
         }
       });
@@ -143,7 +140,7 @@ export function App() {
         setError("");
       }
     } catch (e) {
-      if (current.current === c) setError(String(e));
+      if (current.current === c) setError(messageOf(e));
     }
   }, []);
   // Polls, and refreshes on focus and on every page change, so a view never opens on stale data.
@@ -228,22 +225,22 @@ export function App() {
         <AppShell
           sidebar={
             <>
-              <div className="tau-drag-strip" />
+              <div className="shell-drag-strip" />
               <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
                 {navigation.filter((n) => n.id !== "settings").map((n) => (
                   <button
                     key={n.id}
                     aria-current={view === n.id ? "page" : undefined}
-                    className="group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)"
+                    className="group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--shell-side-fg) hover:bg-(--shell-side-row-hover) aria-[current=page]:bg-(--shell-side-row)"
                     onClick={() => setView(n.id)}
                   >
                     <n.icon
                       size={16}
-                      className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
+                      className="shrink-0 text-(--shell-side-fg-2) group-aria-[current=page]:text-(--shell-side-fg)"
                     />
                     {n.title}
                     {counts[n.id] !== undefined && (
-                      <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">
+                      <span className="ml-auto text-xs font-normal text-(--shell-side-fg-2)">
                         {counts[n.id]}
                       </span>
                     )}
@@ -256,7 +253,7 @@ export function App() {
                   variant="tertiary"
                   aria-label="Settings"
                   aria-current={view === "settings" ? "page" : undefined}
-                  className="aria-[current=page]:bg-(--tau-side-row)"
+                  className="aria-[current=page]:bg-(--shell-side-row)"
                   onPress={() => setView("settings")}
                 >
                   <Gear size={16} />
@@ -285,13 +282,13 @@ export function App() {
                   >
                     {data && !error ? (data.node ?? "This machine") : "Offline"}
                   </span>
-                  <ChevronRight size={14} className="text-(--tau-side-fg-2)" />
+                  <ChevronRight size={14} className="text-(--shell-side-fg-2)" />
                 </Button>
               </div>
             </>
           }
         >
-          <header className="card-header" data-tauri-drag-region="deep">
+          <header className="card-header" data-tiny-drag>
             <div className="card-title-row">
               <h1>{selected.title}</h1>
               {!local && <Badge>Remote</Badge>}

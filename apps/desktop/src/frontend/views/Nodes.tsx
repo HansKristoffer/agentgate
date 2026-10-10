@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Copy, Globe, Monitor, Network, Plus } from "lucide-react";
 import { Button, Switch, toast } from "@heroui/react";
 import { outdatedNodes } from "@agentgate/protocol";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog } from "../api.ts";
 import {
   Badge,
   Field,
@@ -139,7 +139,6 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                           : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
                         if (
                           await confirmDialog(message, {
-                            destructive: true,
                             okLabel: viaRelay ? "Remove and rotate" : "Unpair",
                           })
                         )
@@ -211,7 +210,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   if (
                     await confirmDialog(
                       "Stop using the relay on this machine? Other machines keep their copies and can keep using the group.",
-                      { destructive: true, okLabel: "Leave relay" },
+                      { okLabel: "Leave relay" },
                     )
                   )
                     void perform(
