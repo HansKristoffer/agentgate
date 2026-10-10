@@ -1,9 +1,9 @@
 @import "tailwindcss";
 @import "@heroui/styles";
-@import "@hanskristoffer/taurio/styles.css"; /* macOS theme for HeroUI + the app shell */
+@import "./shell.css"; /* macOS theme for HeroUI + the app shell */
 
-/* Agentgate's own layout. Colours come from HeroUI's variables, which taurio's
-   theme sets for light and dark. */
+/* Agentgate's own layout. Colours come from HeroUI's variables, which shell.css
+   sets for light and dark. */
 :root {
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
   --group-radius: 10px;

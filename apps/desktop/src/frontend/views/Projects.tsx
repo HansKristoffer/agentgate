@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Bot, FolderGit2, FolderOpen, Pencil, Plus } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
 import type { PublicProject, ToolPreview } from "@agentgate/protocol";
 import { Button, Input, Tabs, TextField } from "@heroui/react";
 import {
@@ -253,7 +252,7 @@ export function Projects(props: ViewProps) {
                   aria-label="Choose folder"
                   onPress={() =>
                     void (async () => {
-                      const path = await open({ directory: true, title: "Choose a folder of repositories" });
+                      const path = await tiny.dialog.pickFolder();
                       if (typeof path === "string") {
                         setDir(path);
                         await scan(path);

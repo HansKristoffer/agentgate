@@ -44,7 +44,7 @@ The first log line prints the address (`http://127.0.0.1:<port>`). Read the port
 - **Proxy:** point a client at `http://127.0.0.1:<port>/anthropic` or `/codex/...` only with a working
   test login, and only when the developer agreed to spend real quota.
 - **Desktop app:** only when the developer asks. Stop your daemon first, then run `bun run dev`, which
-  starts the daemon and the Tauri app together against the same dev state. It needs Rust and Xcode tools.
+  starts the daemon and the desktop app together against the same dev state. It needs tinyjs and Xcode tools.
 
 Capture the output that proves the behavior, then report it with the commands you ran.
 

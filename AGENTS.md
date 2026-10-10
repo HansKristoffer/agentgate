@@ -6,7 +6,7 @@ Agentgate is one daemon per machine. It pools several Claude and Codex subscript
 
 ### 1. The daemon is the product
 
-The CLI and daemon must work on their own, including on a headless Linux server with no app. The Tauri desktop app is an optional client of the daemon's control API. Anything a user can do in the app must also be possible from the CLI, and the app must never hold state or logic the daemon does not.
+The CLI and daemon must work on their own, including on a headless Linux server with no app. The desktop app is an optional client of the daemon's control API. Anything a user can do in the app must also be possible from the CLI, and the app must never hold state or logic the daemon does not.
 
 ### 2. Every machine stands alone
 
@@ -61,7 +61,7 @@ The most common defect is a change that works on the path you tested and is miss
 ## Running it
 
 - `bun install` installs. T3 worktrees get this from the `t3.json` setup script.
-- `bun run dev` runs this checkout's daemon from source plus the desktop app (Tauri, needs Rust and Xcode tools) pointed at it. It prints the port and state folder. `bun start` runs only the daemon.
+- `bun run dev` runs this checkout's daemon from source plus the desktop app ([tinyjs](https://tinyjs.app/docs.html#install), needs Xcode tools) pointed at it. It prints the port and state folder. `bun start` runs only the daemon.
 - `bun run cli -- <command>` runs the CLI against the checkout's state.
 - Stop what you started, by the PID or terminal session you kept. See rule 3.
 
@@ -75,7 +75,6 @@ An empty store is a bad test. With your dev daemon stopped, run `bun run seed-de
 - **Do not run repo-wide checks** (`bun test` for everything, `bun run typecheck`, `bun run build`, `build:desktop`) unless asked. CI owns the full suite.
 - Daemon behavior changes ship with focused tests for that behavior. Test meaningful logic and observable behavior, not wiring or a mirror of the implementation.
 - Fake time through `store.now`, and stub processes and files through the seams modules already export (`host`, `files`). Prefer awaiting the event that marks a milestone over sleeping; a new test that needs a generous timeout to pass is usually wrong.
-- Rust changes: `cargo check` in `apps/desktop/src-tauri` (`bun run check:native` runs clippy). The build needs a sidecar file in `apps/desktop/src-tauri/binaries/`; an empty placeholder named for your target is enough for a check.
 - Live provider traffic, real logins, two physical machines and installed services are outside CI. Say when a change needs one of those checks rather than claiming it works.
 - Do not verify in the desktop app or a browser unless the developer asks for it.
 
@@ -112,7 +111,7 @@ Architecture and its constraints: [docs/internals/overview.md](docs/internals/ov
 ## Where code lives
 
 - `apps/agentgate` (`@agentgate/daemon`) is the daemon and CLI. `llm/` is the provider proxies and pool, `mcp/` the gateway and shims, `operations.ts` the shared operations the CLI and API both call.
-- `apps/desktop` is the Tauri app. React views in `src/views`, shared UI in `src/components/ui.tsx`, Rust commands in `src-tauri/src/lib.rs`. All HTTP goes through Rust.
+- `apps/desktop` is the tinyjs app. React views in `src/frontend/views`, shared UI in `src/frontend/components/ui.tsx`, the backend the page calls in `src/main.ts`. All daemon HTTP goes through that backend.
 - `apps/relay` is the Cloudflare Worker and Durable Object relay. It stores ciphertext and has no sync logic.
 - `apps/site` is the static Astro landing page.
 - `packages/protocol` holds the zod schemas and types shared by the daemon, app and relay. No runtime logic beyond small helpers.

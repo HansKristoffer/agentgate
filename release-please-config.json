@@ -9,18 +9,8 @@
       "extra-files": [
         {
           "type": "json",
-          "path": "apps/desktop/src-tauri/tauri.conf.json",
+          "path": "apps/desktop/tinyjs.json",
           "jsonpath": "$.version"
-        },
-        {
-          "type": "toml",
-          "path": "apps/desktop/src-tauri/Cargo.toml",
-          "jsonpath": "$.package.version"
-        },
-        {
-          "type": "toml",
-          "path": "apps/desktop/src-tauri/Cargo.lock",
-          "jsonpath": "$.package[?(@.name.value == \"agentgate-desktop\")].version"
         }
       ]
     }

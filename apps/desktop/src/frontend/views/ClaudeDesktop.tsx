@@ -1,5 +1,5 @@
 import { Alert, Button } from "@heroui/react";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog } from "../api.ts";
 import type { AccountStatus, Connection, DesktopLogin, DesktopStatus, Status } from "@agentgate/protocol";
 import { request } from "../api.ts";
 import { Modal } from "../components/ui.tsx";

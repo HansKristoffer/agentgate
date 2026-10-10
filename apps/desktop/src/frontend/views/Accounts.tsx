@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
-import { open } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
@@ -362,7 +361,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     variant="tertiary"
                     onPress={() =>
                       void perform(async () => {
-                        const path = await open({ directory: true });
+                        const path = await tiny.dialog.pickFolder();
                         if (typeof path === "string") setFolder(path);
                       })
                     }

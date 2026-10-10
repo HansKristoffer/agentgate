@@ -53,16 +53,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.2
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: apps/desktop/src-tauri
+      - name: Install tinyjs
+        run: |
+          curl -fsSL https://tinyjs.app/install | TINYJS_VERSION=v0.50.1 sh
+          echo "$HOME/.tinyjs" >> "$GITHUB_PATH"
       - run: bun install --frozen-lockfile
-      - run: bun scripts/desktop-prepare.ts
-      - run: bun run build:frontend
-      - run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
-      - run: bun run check:native
-      - run: cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - run: bun run --filter @agentgate/desktop tauri build --debug --bundles app
+      # Ad hoc signed: proves the app, its backend and the bundled daemon assemble and seal.
+      - run: bun run build:desktop

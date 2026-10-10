@@ -1,5 +1,5 @@
 import type { Provider } from "@agentgate/protocol";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog } from "../api.ts";
 
 export const field = (form: FormData, name: string) =>
   String(form.get(name) ?? "").trim();
@@ -19,7 +19,6 @@ export const relative = (at?: number) =>
       });
 export const confirmDelete = (name: string) =>
   confirmDialog(`Delete ${name}? This removes it from every paired machine.`, {
-    destructive: true,
     okLabel: "Delete",
   });
 export const ago = (at: number) => {

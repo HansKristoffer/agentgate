@@ -6,7 +6,7 @@ One daemon per machine that:
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
 
-T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [running agentgate](docs/operations/running.md).
+T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [running agentgate](docs/operations/running.md).
 
 ## Using the Claude Desktop app
 
@@ -204,7 +204,7 @@ bun install
 bun run seed-dev-store               # optional: realistic data from your install, without its logins
 bun run cli -- init                  # or an empty node
 bun start                            # foreground daemon, no app required
-bun run dev                          # daemon plus the Tauri app with Vite hot reload (Rust + Xcode tools required)
+bun run dev                          # daemon plus the desktop app with Vite hot reload (needs tinyjs)
 bun test
 bun run typecheck
 ```
@@ -216,14 +216,14 @@ Running from a git checkout keeps its state in the checkout's gitignored `.agent
 | Workspace | Role |
 |---|---|
 | `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
-| `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
+| `apps/desktop` (`@agentgate/desktop`) | [tinyjs](https://tinyjs.app) shell with React/Vite, system appearance, and a translucent sidebar |
 | `apps/site` (`@agentgate/site`) | Static Astro landing page for Cloudflare Pages |
 | `apps/relay` (`@agentgate/relay`) | Cloudflare Worker and Durable Objects for the encrypted sync relay |
 | `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
 
-The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
+The page reaches the daemon only through the app's tinyjs backend (`apps/desktop/src/main.ts`), which sends each request with `curl`. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
 
-`bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds a macOS `.app` and `.dmg` and bundles a compiled daemon for the requested Tauri target. Use `bun run --filter @agentgate/desktop tauri build --target universal-apple-darwin` for the universal build releases ship, after `rustup target add x86_64-apple-darwin aarch64-apple-darwin`. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
+`bun run build` builds the four standalone CLI binaries. `bun run build:desktop` builds `apps/desktop/dist/Agentgate.app` with a compiled daemon inside, for this Mac's CPU; `bun run build:desktop --universal` builds the universal app releases ship. It needs [tinyjs](https://tinyjs.app/docs.html#install), and the app needs macOS 15 or later. The service executable is copied outside the app bundle before installing it or generating coding-tool settings.
 
 ## Landing page
 
@@ -253,29 +253,25 @@ bun run typecheck
 bun test
 bun run build
 bun run build:frontend
-bun scripts/desktop-prepare.ts         # prepares the bundled daemon for Rust checks
-bun run check:native
-cargo test --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
 bun run build:desktop
 bun scripts/smoke.ts dist/agentgate-darwin-arm64 # use your host target
 bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, fake upstream
 ```
 
-Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; npm trusted publishing is configured for each generated package) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
+Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; npm trusted publishing is configured for each generated package) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
 
 | Secret | Value |
 |---|---|
 | `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12`, including the G2 intermediate |
 | `APPLE_CERTIFICATE_PASSWORD` | its password |
 | `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
-| `APPLE_TEAM_ID` | ten-character team id |
 | `APPLE_API_KEY` | App Store Connect API key id |
 | `APPLE_API_ISSUER` | its issuer id |
 | `APPLE_API_KEY_CONTENT` | contents of the `.p8` |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY` | the updater key of the earlier Tauri app, while copies of it still need to move (see below) |
 | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
 
-The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
+The release also carries the notarized app as a zip and `desktop-update.json` with its sha256. Installed apps check that on launch and every four hours and offer a restart to update; an update installs only when its checksum matches and it is signed by the same Apple team. Copies of the earlier Tauri app update through `latest.json` and a tarball signed with the old Tauri updater key, which moves them to the current app once; drop that step from `build-macos.yml` and the two `TAURI_SIGNING_*` secrets when they have all moved. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 
 The bundled daemon is signed with the app's `Entitlements.plist`. It holds only `allow-jit`: under the hardened runtime, a compiled Bun binary without it falls back to the JavaScript interpreter and runs about 50 times slower. The release job signs the standalone macOS CLI binaries with the same certificate, without the hardened runtime. macOS ties privacy grants such as access to `~/Documents` to that signature, so they survive `agentgate update`; an ad-hoc signed binary would ask again after every update.
 
