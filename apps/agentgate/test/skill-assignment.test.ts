@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { projectSkillChoices, repoClashes } from "../../desktop/src/skill-assignment.ts";
+import { projectSkillChoices, repoClashes } from "../../desktop/src/frontend/skill-assignment.ts";
 
 test("derived availability preserves explicit assignments across global and checkout changes", () => {
   const data = {
