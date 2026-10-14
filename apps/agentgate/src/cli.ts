@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
-import { modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
+import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
@@ -61,6 +61,9 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   threads [--node <node>]                     active T3 Code threads on every machine
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
+  logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
+  logins share [github|infisical]             share this machine's logins; every machine signs in with them
+  logins forget github|infisical              stop sharing (machines stay signed in)
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
   setup --mcp [off]                           only add agentgate's MCP servers to Claude Code (and Claude Desktop's Code tab)
@@ -566,6 +569,35 @@ async function main() {
       }
     }
 
+    case "logins": {
+      initialized(s);
+      const lg = await import("./logins.ts");
+      const id = rest[0] === undefined ? undefined : loginIdSchema.safeParse(rest[0]).data ?? die(`${rest[0]}: expected github or infisical`);
+      try {
+        if (sub === "share") {
+          for (const r of await lg.shareLogins(s, id)) {
+            const account = r.account ? ` (${r.account})` : "";
+            console.log(r.skipped ? `${r.id.padEnd(10)} not shared: ${r.skipped}` : `${r.id.padEnd(10)} shared${account}; every machine signs in with it`);
+          }
+          return;
+        }
+        if (sub === "forget") {
+          lg.forgetLogin(s, id ?? die("logins forget github|infisical"));
+          return console.log("ok; machines already signed in stay signed in");
+        }
+      } catch (e) {
+        return die((e as Error).message);
+      }
+      if (sub !== undefined && sub !== "ls") return die(HELP);
+
+      const list = lg.listLogins(s);
+      if (!list.length) return console.log("No shared logins. Share this machine's gh and Infisical logins with: agentgate logins share");
+      for (const l of list) {
+        const here = l.from === s.nodeId ? "shared from here" : l.signedIn ? "signed in here" : "not signed in here yet";
+        console.log(`${l.id.padEnd(10)} ${(l.account || "-").padEnd(28)} from ${l.from.padEnd(12)} ${here}${l.error ? `: ${l.error}` : ""}`);
+      }
+      return;
+    }
     case "desktop": {
       initialized(s);
       const desktop = await import("./desktop.ts");

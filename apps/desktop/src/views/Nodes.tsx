@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Copy, Globe, Monitor, Network, Plus } from "lucide-react";
+import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
 import { Button, Switch, toast } from "@heroui/react";
-import { outdatedNodes } from "@agentgate/protocol";
+import { outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Badge,
@@ -164,6 +164,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
           );
         })}
       </Panel>
+      <SharedLogins data={data} connection={connection} perform={perform} local={local} />
       {relay && (
         <Panel
           title="Relay"
@@ -336,5 +337,88 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
         </Modal>
       )}
     </>
+  );
+}
+
+const LOGINS = [
+  { id: "github", name: "GitHub", tool: "gh" },
+  { id: "infisical", name: "Infisical", tool: "the Infisical CLI" },
+] as const;
+
+/** The gh and Infisical CLI logins one machine shares; every other machine signs in with them. */
+function SharedLogins({ data, connection, perform, local }: ViewProps) {
+  const share = (id: SharedLogin["id"]) =>
+    void perform(async () => {
+      const { results } = await request<{ results: { account?: string; skipped?: string }[] }>(
+        connection,
+        "/logins/share",
+        "POST",
+        { id },
+      );
+      for (const r of results) {
+        const account = r.account ? ` ${r.account}` : "";
+        toast(r.skipped ? `Not shared: ${r.skipped}` : `Shared${account}; every machine signs in with it`);
+      }
+    });
+  return (
+    <Panel
+      title="Shared logins"
+      detail="Sign every machine in to GitHub and Infisical as you, including servers that join later."
+      foot={local ? undefined : "Sharing reads this machine's own logins, so it is only available on the daemon's own machine."}
+    >
+      {LOGINS.map(({ id, name, tool }) => {
+        const login = data.logins.find((l) => l.id === id);
+        const fromHere = login?.from === data.node;
+        return (
+          <div className="item" key={id}>
+            <div className="machine-icon">
+              <KeyRound size={16} />
+            </div>
+            <div className="grow">
+              <div className="row">
+                <strong>{name}</strong>
+                {login && fromHere && <Badge good={!login.error}>Shared from this machine</Badge>}
+                {login && !fromHere && (
+                  <Badge good={login.signedIn}>{login.signedIn ? "Signed in here" : "Not signed in here"}</Badge>
+                )}
+              </div>
+              <small>
+                {login
+                  ? `${login.account || "Signed in"} · shared from ${login.from}`
+                  : `Not shared. Share ${tool}'s login from the machine where you are signed in.`}
+              </small>
+              {login?.error && <small>{login.error}</small>}
+            </div>
+            {(!login || fromHere) && (
+              <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => share(id)}>
+                {login ? "Share again" : "Share"}
+              </Button>
+            )}
+            {login && (
+              <RowMenu
+                label={`More for ${name}`}
+                items={[
+                  {
+                    label: "Stop sharing",
+                    danger: true,
+                    onAction: async () => {
+                      const confirmed = await confirmDialog(
+                        `Stop sharing the ${name} login? Machines already signed in stay signed in.`,
+                        { destructive: true, okLabel: "Stop sharing" },
+                      );
+                      if (confirmed)
+                        void perform(
+                          () => request(connection, `/logins/${id}`, "DELETE"),
+                          `${name} login no longer shared`,
+                        );
+                    },
+                  },
+                ]}
+              />
+            )}
+          </div>
+        );
+      })}
+    </Panel>
   );
 }

@@ -251,7 +251,12 @@ export interface Status {
   metrics?: import("./proxy.ts").ProxyMetrics;
   /** This node's connection to its T3 Code server, for thread handoffs. */
   t3?: T3NodeState;
+  /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
+  logins: SharedLogin[];
 }
+export const loginIdSchema = z.enum(["github", "infisical"]);
+export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
+export type SharedLogin = z.infer<typeof sharedLoginSchema>;
 export interface RelayStatus {
   url: string;
   hosted: boolean;
@@ -335,5 +340,6 @@ export const statusSchema = z.object({
   settingsRevision: z.string().optional(),
   daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }) }).optional(),
   t3: t3NodeStateSchema.optional(),
+  logins: z.array(sharedLoginSchema).default([]),
   metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });

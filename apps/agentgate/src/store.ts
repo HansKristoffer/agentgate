@@ -77,6 +77,17 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
+  /** A GitHub CLI or Infisical CLI login one node shared with every node (logins.ts). */
+  login: z.discriminatedUnion("id", [
+    z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
+    z.object({
+      id: z.literal("infisical"), from: id,
+      // Names the keyring file the Infisical CLI keeps the session in, so it must stay a plain file name.
+      account: z.string().min(1).max(320).regex(/^[^/\\\0]+$/).refine((a) => a !== "." && a !== ".."),
+      config: z.string().max(64 * 1024).refine((c) => { try { return !!JSON.parse(c); } catch { return false; } }),
+      keyring: z.string().min(1).max(64 * 1024),
+    }),
+  ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
   tokens: z.object({
     id,
@@ -362,7 +373,7 @@ function publicMcp(inst: McpInstance) {
 export function exportBackup(s: Store, secrets = true) {
   const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as { kind: Kind; id: string; data: string }[];
   const records = rows
-    .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest"].includes(r.kind))
+    .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest", "login"].includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
       if (!secrets && r.kind === "project") delete data.remote; // endpoint keys are credentials
