@@ -98,13 +98,13 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
             </div>
             {desktop && (
               <Toggle
-                label="Agentgate's MCP servers in Claude Code"
+                label="Agentgate's MCP servers"
                 description={
-                  desktop.mcp
-                    ? "On for Claude Code in the terminal and Claude Desktop's Code tab."
-                    : "Off. Turn on to use your MCP servers without routing the subscriptions."
+                  desktop.mcp && desktop.cursorMcp
+                    ? "On for Claude Code, Claude Desktop's Code tab, and Cursor."
+                    : "Off. Turn on to use your MCP servers in Claude Code and Cursor without routing the subscriptions."
                 }
-                isSelected={desktop.mcp}
+                isSelected={!!desktop.mcp && !!desktop.cursorMcp}
                 onChange={(on) =>
                   void perform(
                     () => localAction(on ? "mcp-on" : "mcp-off", connection),

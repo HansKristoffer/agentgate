@@ -1,6 +1,6 @@
 # Proxy controls and diagnostics
 
-The daemon serves Claude and Codex traffic on loopback. Management operations run on the daemon selected in the native app; a remote account check describes that remote machine. Provider capabilities and daemon version/build are shown in Settings and `agentgate proxy capabilities`.
+The daemon serves Claude, Codex, and Cursor traffic on loopback. Management operations run on the daemon selected in the native app; a remote account check describes that remote machine. Provider capabilities and daemon version/build are shown in Settings and `agentgate proxy capabilities`.
 
 ## Accounts and quota
 
@@ -23,7 +23,9 @@ Resetting local backoff clears transport/model cooldowns, while provider quota a
 
 ## Routing and policy
 
-Settings provides Automatic, Priority, and Round robin strategies. Eligible pinned accounts take precedence. Automatic retains the active account below the threshold, then uses reset time and priority. Optional session affinity prefers an eligible account for recognized Claude/Codex session identifiers. Affinity has a TTL and a 2,000-entry bound on each node. In-flight counts are diagnostic; they impose no additional concurrency limit.
+Settings provides Automatic, Priority, and Round robin strategies. Eligible pinned accounts take precedence. Automatic retains the active account below the threshold, then uses reset time and priority. Optional session affinity prefers an eligible account for a recognized Claude or Codex session, or a Cursor conversation id. Affinity has a TTL and a 2,000-entry bound on each node. In-flight counts are diagnostic; they impose no additional concurrency limit.
+
+Cursor agent runs (`Run`, `RunSSE`, `RunPoll`) and the model-status probe are pooled the same way as Claude and Codex requests. Point the Cursor CLI at this daemon with `CURSOR_API_BASE_URL` set to `http://127.0.0.1:<port>/cursor`. Cursor quota is the billing-cycle read, not response headers. Other Cursor calls keep a caller's own login.
 
 Quota exhaustion switches accounts; a short rate-limit rejection can retry the same account. A 401 permits one coordinated refresh. `Retry-After` is a minimum: requests return a limit response when its wait exceeds the budget. Credential acquisition, header waits, backoff, authentication retry, and account changes share one startup deadline. The defaults allow three rate retries, 100 accounts, and 660 seconds for startup, retaining the existing exhaustion wait of at most ten minutes. The normal header timeout remains 30 seconds and stream idle timeout five minutes.
 

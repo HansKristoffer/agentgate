@@ -255,6 +255,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             options={[
               { id: "claude", label: "Claude" },
               { id: "codex", label: "Codex" },
+              { id: "cursor", label: "Cursor" },
             ]}
           />
           <Field

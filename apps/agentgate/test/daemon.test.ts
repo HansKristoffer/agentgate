@@ -5,7 +5,7 @@ import { Store } from "../src/store.ts";
 const request = (path: string, options?: RequestInit) => new Request(`http://127.0.0.1:7878${path}`, { ...options, headers: { host: "127.0.0.1:7878", ...options?.headers } });
 test("tailnet administration fails closed without a token and cannot reach local proxy/MCP routes", async () => {
   const s = new Store(":memory:"), ctx = makeCtx(s), handler = app(ctx);
-  try { expect((await handler.fetch(request("/api/status"), { listener: "tailnet" })).status).toBe(401); expect((await handler.fetch(request("/mcp"), { listener: "tailnet" })).status).toBe(404); expect((await handler.fetch(request("/anthropic/v1/messages"), { listener: "tailnet" })).status).toBe(404); s.setLocal("adminToken", "test-token"); expect((await handler.fetch(request("/api/status", { headers: { authorization: "Bearer test-token" } }), { listener: "tailnet" })).status).toBe(200); }
+  try { expect((await handler.fetch(request("/api/status"), { listener: "tailnet" })).status).toBe(401); expect((await handler.fetch(request("/mcp"), { listener: "tailnet" })).status).toBe(404); expect((await handler.fetch(request("/anthropic/v1/messages"), { listener: "tailnet" })).status).toBe(404); expect((await handler.fetch(request("/cursor/agent.v1.AgentService/Run"), { listener: "tailnet" })).status).toBe(404); s.setLocal("adminToken", "test-token"); expect((await handler.fetch(request("/api/status", { headers: { authorization: "Bearer test-token" } }), { listener: "tailnet" })).status).toBe(200); }
   finally { await ctx.gateway.close(); s.close(); }
 });
 

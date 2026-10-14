@@ -261,7 +261,7 @@ export function management(ctx: Ctx) {
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
   app.get("/proxy/route", (c) => {
-    const f = z.object({ provider: z.enum(["claude", "codex"]), model: modelIdSchema.optional() }).strict().parse(c.req.query());
+    const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));
   });
   app.post("/accounts/batch", async (c) => {

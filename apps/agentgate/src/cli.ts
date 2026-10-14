@@ -17,7 +17,7 @@ import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNo
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
-const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale or a relay
+const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
   init [--always-on] [--name srv]             create the store, name this node
   serve                                       run the daemon in the foreground
@@ -29,12 +29,12 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   accounts verify <id> --probe --model <model>  quota-consuming inference check
   accounts policy <id> --file policy.json    revision-safe account policy edit
   settings show | set --file patch.json      revision-safe partial settings edit
-  proxy route <claude|codex> [--model <id>]   explain selection without sending traffic
+  proxy route <claude|codex|cursor> [--model <id>]   explain selection without sending traffic
   proxy capabilities                         daemon version and provider features
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
   tokens [today|7d|30d|all]                  tokens used per model on this machine (default: today)
-  mcp                                         (the stdio shim, started by Claude Code / Codex)
+  mcp                                         (the stdio shim, started by Claude Code, Codex, or Cursor)
   mcp add <name> <url|preset> [--header "Name: value" ...]   any name; its slug is the id and tool prefix
   mcp add <name> --command "npx -y …" [--per-session]
   mcp label <id> <name>                                      change the name shown in the app
@@ -63,7 +63,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   handoffs                                    recent handoffs and their state
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
-  setup --mcp [off]                           only add agentgate's MCP servers to Claude Code (and Claude Desktop's Code tab)
+  setup --mcp [off]                           add agentgate's MCP servers to Claude Code, Claude Desktop's Code tab, and Cursor
   desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
   desktop add [email] | use <account> | capture | forget <account>
   desktop gateway on|off                      Desktop's Code tab uses the pool (no Chat, separate profile)
@@ -246,7 +246,7 @@ async function main() {
     case "proxy": {
       initialized(s);
       if (sub === "capabilities") { const st = await management<{ daemon: unknown }>("/status"); return console.log(JSON.stringify(st.daemon, null, 2)); }
-      if (sub !== "route" || !["claude", "codex"].includes(rest[0] ?? "")) die("proxy route claude|codex [--model <id>]");
+      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? "")) die("proxy route claude|codex|cursor [--model <id>]");
       const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
     }
@@ -586,6 +586,7 @@ async function main() {
         }
         if (st.pendingAdd) console.log("Waiting for you to sign in to Claude Desktop…");
         console.log(`MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`);
+        console.log(`MCP servers in Cursor: ${st.cursorMcp ? "on" : "off (agentgate setup --mcp)"}`);
         return;
       }
       if (sub === "capture") return console.log(`saved ${desktop.capture(s)}`);
@@ -686,8 +687,8 @@ async function main() {
 
     case "setup": {
       const setupMod = await import("./setup.ts");
-      if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}`);
-      if (opts.mcp) return console.log(await setupMod.mcp(sub !== "off"));
+      if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
+      if (opts.mcp) return console.log(`${await setupMod.mcp(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
       return console.log(await setupMod.setup());
     }
     case "service":

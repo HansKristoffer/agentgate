@@ -47,7 +47,7 @@ Terms whose meaning matters across agentgate. Constraints belong in the [overvie
 | Term | Meaning |
 |---|---|
 | MCP instance | A configured MCP server. `shared` runs once per daemon; `perSession` starts one per session worktree. |
-| Shim | The stdio `agentgate mcp` process Claude Code or Codex starts; it connects the session to the gateway. |
+| Shim | The stdio `agentgate mcp` process Claude Code, Codex, or Cursor starts; it connects the session to the gateway. |
 | Project | A GitHub repository (`owner/repo`) or `*`, mapping aliases to MCP instances and listing skills. |
 | Virtual project | A project with id `@slug`: no repository, no `*` defaults, and it can have a remote endpoint. |
 | Remote endpoint | A public relay URL `/mcp/<key>` for a virtual project, answered by its serving node. |

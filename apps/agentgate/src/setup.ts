@@ -8,6 +8,8 @@ export const CLAUDE_DIR = join(CONFIG_DIR, "claude");
 export const CODEX_DIR = join(CONFIG_DIR, "codex");
 export const PRIMARY_CLAUDE_DIR = join(homedir(), ".claude");
 export const PRIMARY_CODEX_DIR = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+/** Cursor, the Cursor CLI, and T3's Cursor all read MCP servers from this file. */
+export const CURSOR_MCP_FILE = join(homedir(), ".cursor", "mcp.json");
 export function selfCommand(): string[] {
   return Bun.main.startsWith("/$bunfs/") ? [stableBinary(process.execPath)] : [process.execPath, Bun.main];
 }
@@ -114,6 +116,36 @@ export function primaryState(claudeDir = PRIMARY_CLAUDE_DIR, codexDir = PRIMARY_
 
 // Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
 const claudeJsonIn = (dir: string) => dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+
+function mcpFile(file: string): { root: Record<string, unknown>; servers: Record<string, unknown> } {
+  if (!existsSync(file)) return { root: {}, servers: {} };
+  const root = json(file) as Record<string, unknown>;
+  if (root.mcpServers === undefined) return { root, servers: {} };
+  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers)) throw new Error(`${file}: mcpServers must be an object`);
+  return { root, servers: { ...root.mcpServers as Record<string, unknown> } };
+}
+
+/** The stdio server Cursor stores in `mcp.json`: command, args, and env, with no Claude-only `type`. */
+export function cursorServer(command = selfCommand(), env = agentEnvironment()) {
+  const [executable, ...args] = [...command, "mcp"];
+  return { command: executable, args, env };
+}
+
+/** The agentgate MCP shim in Cursor's user config. Other servers in the file stay put. */
+export async function cursorMcp(on: boolean, file = CURSOR_MCP_FILE): Promise<string> {
+  if (file === CURSOR_MCP_FILE) liveOnly("Changing your own Cursor config");
+  const { root, servers } = mcpFile(file);
+  if (on) servers.agentgate = cursorServer();
+  else if (servers.agentgate) delete servers.agentgate;
+  else return `No agentgate MCP server in ${file}.`;
+  if (existsSync(file)) backup(file);
+  atomicWrite(file, JSON.stringify({ ...root, mcpServers: servers }, null, 2) + "\n");
+  return on ? `New Cursor sessions get agentgate's MCP servers. Undo: agentgate setup --mcp off.` : `Removed the agentgate MCP server from ${file}.`;
+}
+
+export function cursorMcpEnabled(file = CURSOR_MCP_FILE): boolean {
+  try { return !!mcpFile(file).servers.agentgate; } catch { return false; }
+}
 
 /** Just the agentgate MCP server in Claude Code's user config. Claude Desktop's Code tab loads the same file. */
 export async function mcp(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {

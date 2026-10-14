@@ -315,6 +315,8 @@ export interface DesktopStatus {
   routing: boolean;
   /** ~/.claude.json has the agentgate MCP server (setup --mcp or --primary). */
   mcp: boolean;
+  /** ~/.cursor/mcp.json has the agentgate MCP server (setup --mcp or --primary). */
+  cursorMcp?: boolean;
 }
 /** Validate native status before views access required fields from a remote daemon. */
 export const statusSchema = z.object({

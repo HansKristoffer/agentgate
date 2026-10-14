@@ -4,7 +4,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
-import { claudeStatus } from "./setup.ts";
+import { claudeStatus, cursorMcpEnabled } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL, type Store } from "./store.ts";
 
 /** Claude Desktop's undocumented storage, kept in one place (docs/internals/claude-desktop.md). Mutable so tests can use fixtures.
@@ -393,7 +393,7 @@ export function mode(): DesktopMode {
 
 export function status(s: Store): DesktopStatus {
   const { routing, mcp } = claudeStatus();
-  const base = { routing, mcp, logins: [] as DesktopLogin[], signedOut: false };
+  const base = { routing, mcp, cursorMcp: cursorMcpEnabled(), logins: [] as DesktopLogin[], signedOut: false };
   if (!host.installed()) return { ...base, available: false, running: false, mode: "signed-in" };
   const now = Date.now();
   const version = host.version();

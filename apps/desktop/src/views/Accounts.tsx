@@ -31,7 +31,7 @@ import {
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
 function poolSummary(accounts: AccountStatus[], provider: Provider, app?: DesktopStatus) {
-  const tool = provider === "claude" ? "Claude Code" : "Codex";
+  const tool = provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor";
   const pinned = accounts.find((a) => a.account.pinned);
   if (pinned) {
     const desktop = app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
@@ -141,13 +141,13 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           key={provider}
           title={providerName(provider)}
           detail={
-            provider === "cursor"
-              ? "Cursor subscriptions and their monthly usage. Agentgate doesn't route Cursor's own traffic."
-              : data.accounts.some((a) => a.account.provider === provider)
+            data.accounts.some((a) => a.account.provider === provider)
               ? poolSummary(data.accounts.filter((a) => a.account.provider === provider), provider, provider === "claude" ? app : undefined)
               : provider === "claude"
                 ? "Claude subscriptions, shared across your sessions."
-                : "ChatGPT subscriptions for your Codex sessions."
+                : provider === "codex"
+                  ? "ChatGPT subscriptions for your Codex sessions."
+                  : "Cursor subscriptions, shared across sessions pointed at this daemon."
           }
           action={
             provider === "claude" &&
@@ -187,7 +187,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           .join(" · ")}
                       </small>
                     </div>
-                    {a.active && a.account.enabled && <Badge good>In {provider === "claude" ? "Claude Code" : "Codex"}</Badge>}
+                    {a.active && a.account.enabled && <Badge good>In {provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor"}</Badge>}
                     {app?.mode === "signed-in" && app.current?.accountId === a.account.id && <Badge good>In Claude Desktop</Badge>}
                     {problem(a) && <Badge>{problem(a)}</Badge>}
                     {unsaved?.accountId === a.account.id && (
@@ -201,7 +201,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         Sign in again
                       </Button>
                     )}
-                    {provider !== "cursor" && <button
+                    <button
                       type="button"
                       className={a.account.pinned ? "pin-account pinned" : "pin-account"}
                       title={pinTitle(a)}
@@ -211,15 +211,15 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       onClick={() => void setPin(a, !a.account.pinned)}
                     >
                       <Pin size={14} fill={a.account.pinned ? "currentColor" : "none"} />
-                    </button>}
+                    </button>
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        provider !== "cursor" && (a.account.pinned || pinnable(a)) && {
+                        (a.account.pinned || pinnable(a)) && {
                           label: a.account.pinned ? "Unpin (back to automatic)" : "Pin this account",
                           onAction: () => void setPin(a, !a.account.pinned),
                         },
-                        provider !== "cursor" && { label: "Edit policy", onAction: () => setEdit(a) },
+                        { label: "Edit policy", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
                           label: "Refresh usage",
