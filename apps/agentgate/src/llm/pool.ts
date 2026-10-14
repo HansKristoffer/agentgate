@@ -36,9 +36,9 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req.body, limits.maxBody, AbortSignal.any([budget.signal, AbortSignal.timeout(30000)]));
     if (body?.length) { try { const value = JSON.parse(new TextDecoder().decode(body)); if (value && typeof value === "object" && !Array.isArray(value)) json = value; } catch {} }
   } catch (e) { return error(e instanceof BodyTooLarge ? 413 : 408, e instanceof BodyTooLarge ? e.message : "request body cancelled or timed out", req.signal.aborted ? "cancelled" : "request"); }
-  const requestedModel = typeof json?.model === "string" ? json.model : undefined;
+  const requestedModel = provider.requestedModel?.(json) ?? (typeof json?.model === "string" ? json.model : undefined);
   const model = resolveModel(s, provider.name, requestedModel); telemetry.models(requestedModel, model);
-  if (json && model && model !== requestedModel) { json = { ...json, model }; body = new TextEncoder().encode(JSON.stringify(json)); }
+  if (json && model && model !== requestedModel) { json = provider.rewriteModel?.(json, model) ?? { ...json, model }; body = new TextEncoder().encode(JSON.stringify(json)); }
   const headers = new Headers(req.headers); for (const key of HOP_HEADERS) headers.delete(key);
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1], own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
   const session = provider.session?.(req.headers, json);
@@ -114,7 +114,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
       }
       attempt.status = res.status; attempt.headersMs = Math.round(performance.now() - started);
       const observed = provider.usage(res.headers);
-      if (res.ok && !observed && provider.pooled(path)) s.setLocal(`quotaUnknown:${provider.name}`, String(s.now())); else if (observed) s.setLocal(`quotaUnknown:${provider.name}`, undefined);
+      if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path)) s.setLocal(`quotaUnknown:${provider.name}`, String(s.now())); else if (observed) s.setLocal(`quotaUnknown:${provider.name}`, undefined);
       if (res.status === 429 || res.status === 401 || (res.status === 400 || res.status === 404)) {
         let text = "";
         try { text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.any([budget.signal, AbortSignal.timeout(10000)]))); }

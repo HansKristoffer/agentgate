@@ -53,7 +53,9 @@ test("proxy management returns validated capabilities, revision-safe patches, an
   s.put("credential", "a", { accountId: "a", accessToken: "private-token", refreshToken: "private-refresh", holder: "test", expiresAt: s.now() + 3600000 });
   const initial = await (await call("/api/status")).json() as Status;
   expect(statusSchema.safeParse(initial).success).toBe(true);
-  expect(initial.daemon?.providers.claude).toMatchObject({ quota: true, models: true, probe: true });
+  expect(initial.daemon?.providers.claude).toEqual({ quota: true, models: true, session: true, probe: true });
+  expect(initial.daemon?.providers.codex).toEqual(initial.daemon?.providers.claude);
+  expect(initial.daemon?.providers.cursor).toEqual(initial.daemon?.providers.claude);
   const savedResponse = await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { strategy: "priority", retryLimit: 0 } });
   expect(savedResponse.status).toBe(200);
   const saved = await savedResponse.json() as { strategy: string; retryLimit: number; revision: string };

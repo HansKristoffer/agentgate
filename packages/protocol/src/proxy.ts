@@ -22,7 +22,7 @@ export const modelPolicySchema = z
   .strict();
 export const aliasSchema = z
   .object({
-    provider: z.enum(["claude", "codex"]),
+    provider: providerSchema,
     alias: modelIdSchema,
     target: modelIdSchema,
   })

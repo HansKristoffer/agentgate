@@ -2,7 +2,7 @@
 
 One daemon per machine that:
 
-- pools several **Claude** and **Codex** subscriptions and moves to the next account when one hits its limit;
+- pools several **Claude**, **Codex**, and **Cursor** subscriptions and moves to the next account when one hits its limit;
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
 - **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
 
@@ -79,9 +79,9 @@ To control the server from the native app over Tailscale, open the connection se
 | Claude | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
 | Codex | `CODEX_HOME path` = `~/.config/agentgate/codex` |
 
-One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, choose an **Active subscription** separately for Claude and Codex, or click **Use subscription** on an account. Your choice applies to the next request in every routed session and syncs to paired machines; if it is unavailable, the pool falls back to another account. Choose **Automatic** to clear the preference. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
+One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, choose an **Active subscription** separately for Claude, Codex, and Cursor, or click **Use subscription** on an account. Your choice applies to the next request in every routed session and syncs to paired machines; if it is unavailable, the pool falls back to another account. Choose **Automatic** to clear the preference. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
 
-**Cursor** accounts can be added too (`agentgate login cursor`, or **Add account** in the app). Agentgate keeps their logins, shows each account's monthly plan usage, counts their tokens in the overview chart (read from Cursor's usage history every 15 minutes), and syncs the accounts to paired machines, but it does not route Cursor's own traffic. A machine on an older agentgate stops syncing once a Cursor account exists, until it is updated.
+**Cursor** accounts can be added too (`agentgate login cursor`, or **Add account** in the app). Agentgate keeps their logins, shows each account's monthly plan usage, counts their tokens in the overview chart (read from Cursor's usage history every 15 minutes), and syncs the accounts to paired machines. Agent runs are pooled like Claude and Codex: set `CURSOR_API_BASE_URL` to `http://127.0.0.1:<port>/cursor` (the address `agentgate status` prints, with `/cursor` on the end). Other Cursor calls keep the CLI's own login. A machine on an older agentgate stops syncing once a Cursor account exists, until it is updated.
 
 ### Or: your normal Claude login
 

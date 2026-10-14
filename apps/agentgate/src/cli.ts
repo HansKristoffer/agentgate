@@ -17,7 +17,7 @@ import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNo
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
-const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP servers, shared over Tailscale or a relay
+const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
   init [--always-on] [--name srv]             create the store, name this node
   serve                                       run the daemon in the foreground
@@ -29,7 +29,7 @@ const HELP = `agentgate — pooled Claude/Codex subscriptions and per-repo MCP s
   accounts verify <id> --probe --model <model>  quota-consuming inference check
   accounts policy <id> --file policy.json    revision-safe account policy edit
   settings show | set --file patch.json      revision-safe partial settings edit
-  proxy route <claude|codex> [--model <id>]   explain selection without sending traffic
+  proxy route <claude|codex|cursor> [--model <id>]   explain selection without sending traffic
   proxy capabilities                         daemon version and provider features
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
@@ -246,7 +246,7 @@ async function main() {
     case "proxy": {
       initialized(s);
       if (sub === "capabilities") { const st = await management<{ daemon: unknown }>("/status"); return console.log(JSON.stringify(st.daemon, null, 2)); }
-      if (sub !== "route" || !["claude", "codex"].includes(rest[0] ?? "")) die("proxy route claude|codex [--model <id>]");
+      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? "")) die("proxy route claude|codex|cursor [--model <id>]");
       const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
     }

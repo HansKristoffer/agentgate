@@ -1,14 +1,18 @@
 import { afterAll, expect, test } from "bun:test";
-import { InvalidGrant } from "../src/credentials.ts";
-import { CURSOR, cursor, finish, parseQuota, pollTokens } from "../src/llm/cursor.ts";
+import { Credentials, InvalidGrant } from "../src/credentials.ts";
+import { CURSOR, cursor, finish, parseModels, parseQuota, pollTokens, requestedModel, rewriteModel } from "../src/llm/cursor.ts";
+import { proxy } from "../src/llm/pool.ts";
+import { capabilities } from "../src/llm/provider.ts";
 import { tokenUsage } from "../src/llm/telemetry.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
 
 const jwt = (claims: Record<string, unknown>) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
 const access = jwt({ sub: "auth0|user_1", exp: 4_000_000_000 });
-let events: { timestamp: string; model: string; tokenUsage: Record<string, number> | null }[] = [], short = false, cookies: string[] = [];
+let events: { timestamp: string; model: string; kind?: string; tokenUsage: Record<string, number> | null }[] = [], short = false, cookies: string[] = [];
+let includedDaily: { day: string; category: string; totalTokens: string }[] = [], dailyCalls: unknown[] = [];
 let polls = 0, refresh: unknown = { access_token: jwt({ sub: "auth0|user_1", exp: 4_100_000_000 }) };
+let calls: { path: string; authorization: string; body: unknown; connect: string | null }[] = [];
 const server = Bun.serve({
   port: 0,
   async fetch(req) {
@@ -17,6 +21,15 @@ const server = Bun.serve({
     if (url.pathname.endsWith("/GetMe")) return Response.json({ authId: "auth0|user_1", email: "me@example.com" });
     if (url.pathname.endsWith("/GetPlanInfo")) return Response.json({ planInfo: { planName: "Pro" } });
     if (url.pathname === "/oauth/token") return Response.json(refresh);
+    if (url.pathname.endsWith("/GetUsableModels")) return Response.json({ models: [{ modelId: "gpt-5" }, { displayName: "skip" }, { modelId: "auto" }] });
+    if (url.pathname.endsWith("/TestModelStatus") || url.pathname.endsWith("/RunSSE")) {
+      calls.push({ path: url.pathname, authorization: req.headers.get("authorization") ?? "", body: await req.json(), connect: req.headers.get("connect-protocol-version") });
+      return Response.json({ text: "OK" });
+    }
+    if (url.pathname.endsWith("/GetDailySpendByCategory")) {
+      dailyCalls.push(await req.json());
+      return Response.json({ dailySpend: includedDaily });
+    }
     if (url.pathname === "/usage") {
       cookies.push(req.headers.get("cookie") ?? "");
       const { page, pageSize, startDate, endDate } = await req.json() as { page: number; pageSize: number; startDate: string; endDate: string };
@@ -85,6 +98,8 @@ test("Cursor token usage is read per hour and model, and a later read replaces i
     s.put("credential", id, { accountId: id, accessToken: access, refreshToken: access, expiresAt: now + 86400_000, holder: id === "mine" ? "n" : "other" });
   }
   const creds = { token: async (id: string) => s.get("credential", id)! }, signal = new AbortController().signal;
+  const span = CURSOR.historySpan;
+  CURSOR.historySpan = 6 * 3600_000;
   try {
     events = [at(0, "gpt-5", 5), at(60_000, "gpt-5", 7), at(3600_000, "gpt-5", 1), at(0, "auto", 3), { timestamp: String(hour), model: "old-plan", tokenUsage: null }];
     await pollTokens(s, creds, signal);
@@ -103,5 +118,85 @@ test("Cursor token usage is read per hour and model, and a later read replaces i
     now += 16 * 60_000; short = true; events.push(at(180_000, "gpt-5", 1000));
     await pollTokens(s, creds, signal);
     expect(tokenUsage(s)[0]?.input).toBe(113);
-  } finally { short = false; s.close(); }
+    // Included calls without a per-request breakdown come from the included spend series. A series that repeats tokens already counted is not added again.
+    events.pop(); short = false; now += 16 * 60_000;
+    const day = Date.UTC(2026, 9, 1);
+    events.push({ timestamp: String(hour), model: "composer", kind: "USAGE_EVENT_KIND_INCLUDED_IN_ULTRA", tokenUsage: null });
+    events.push({ ...at(0, "sonnet", 4), kind: "INCLUDED_IN_PRO" });
+    includedDaily = [
+      { day: String(day), category: "composer", totalTokens: "40" },
+      { day: String(day), category: "sonnet", totalTokens: "20" },
+    ];
+    await pollTokens(s, creds, signal);
+    expect(dailyCalls.at(-1)).toMatchObject({ groupBy: "SPEND_GROUP_BY_CATEGORY_MODEL", spendType: "SPEND_TYPE_INCLUDED", periodStartMs: expect.any(String), periodEndMs: expect.any(String) });
+    expect(tokenUsage(s)).toEqual([
+      { provider: "cursor", model: "gpt-5", input: 113, output: 4, cacheRead: 40, cacheWrite: 8 },
+      { provider: "cursor", model: "composer", input: 40, output: 0, cacheRead: 0, cacheWrite: 0 },
+      { provider: "cursor", model: "sonnet", input: 7, output: 1, cacheRead: 10, cacheWrite: 2 },
+      { provider: "cursor", model: "auto", input: 3, output: 1, cacheRead: 10, cacheWrite: 2 },
+    ]);
+  } finally { short = false; includedDaily = []; CURSOR.historySpan = span; s.close(); }
+});
+
+test("Cursor history walks back a week at a time", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  const now = Date.UTC(2026, 9, 14, 12); s.now = () => now;
+  s.put("account", "mine", { id: "mine", provider: "cursor", label: "mine" });
+  s.put("credential", "mine", { accountId: "mine", accessToken: access, refreshToken: access, expiresAt: now + 86400_000, holder: "n" });
+  const span = CURSOR.historySpan, chunk = CURSOR.historyChunk;
+  CURSOR.historySpan = 10 * 86400_000; CURSOR.historyChunk = 7 * 86400_000;
+  cookies = []; dailyCalls = []; includedDaily = []; short = false;
+  events = [
+    { timestamp: String(now - 3600_000), model: "gpt-5", tokenUsage: { inputTokens: 2, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+    { timestamp: String(now - 8 * 86400_000), model: "composer", tokenUsage: { inputTokens: 9, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+  ];
+  try {
+    await pollTokens(s, { token: async () => s.get("credential", "mine")! }, new AbortController().signal);
+    expect(tokenUsage(s)).toEqual([
+      { provider: "cursor", model: "composer", input: 9, output: 0, cacheRead: 0, cacheWrite: 0 },
+      { provider: "cursor", model: "gpt-5", input: 2, output: 0, cacheRead: 0, cacheWrite: 0 },
+    ]);
+    expect(dailyCalls.length).toBe(2);
+  } finally { CURSOR.historySpan = span; CURSOR.historyChunk = chunk; includedDaily = []; s.close(); }
+});
+
+test("Cursor has the same capabilities as the other providers", () => {
+  expect(capabilities(cursor)).toEqual({ quota: true, models: true, session: true, probe: true });
+  expect(parseModels({ models: [{ modelId: "gpt-5" }, { modelId: "" }, {}] })).toEqual(["gpt-5"]);
+  expect(() => parseModels({ models: "no" })).toThrow("Unrecognized model response");
+  const session = cursor.session!(new Headers(), { conversationId: "conv-1" });
+  expect(session).toHaveLength(64);
+  expect(cursor.session!(new Headers(), { conversationId: "conv-1" })).toBe(session);
+  expect(cursor.session!(new Headers(), {})).toBeUndefined();
+  expect(cursor.session!(new Headers(), { conversationId: "x".repeat(129) })).toBeUndefined();
+  expect(requestedModel({ modelName: "gpt-5", model: "other" })).toBe("gpt-5");
+  expect(requestedModel({ modelDetails: { modelId: "auto" } })).toBe("auto");
+  expect(requestedModel({ requestedModel: { modelId: "composer" } })).toBe("composer");
+  expect(rewriteModel({ modelName: "alias", conversationId: "c" }, "gpt-5")).toEqual({ modelName: "gpt-5", conversationId: "c" });
+  expect(rewriteModel({ modelDetails: { modelId: "alias", maxMode: true } }, "gpt-5")).toEqual({ modelDetails: { modelId: "gpt-5", maxMode: true } });
+  expect(cursor.probe?.body("gpt-5")).toEqual({ modelName: "gpt-5" });
+  expect(cursor.pooled("/agent.v1.AgentService/RunSSE")).toBe(true);
+  expect(cursor.pooled("/aiserver.v1.DashboardService/GetMe")).toBe(false);
+});
+
+test("Cursor model discovery and a pooled probe use the account login", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  s.put("account", "c", { id: "c", provider: "cursor", label: "c" });
+  s.put("credential", "c", { accountId: "c", accessToken: access, refreshToken: access, expiresAt: s.now() + 86400_000, holder: "n" });
+  const creds = new Credentials(s, async () => { const c = s.get("credential", "c")!; return { accessToken: c.accessToken, refreshToken: c.refreshToken, expiresAt: c.expiresAt }; }, async () => {});
+  calls = [];
+  try {
+    expect(await cursor.discoverModels!({ accessToken: "probe-token" } as import("../src/store.ts").Credential, AbortSignal.timeout(5000))).toEqual(["gpt-5", "auto"]);
+    const probe = await proxy(s, creds, cursor, new Request("http://127.0.0.1/probe", { method: "POST", headers: { authorization: "Bearer agentgate", "content-type": "application/json" }, body: JSON.stringify(cursor.probe!.body("gpt-5")) }), cursor.probe!.path);
+    expect(probe.status).toBe(200);
+    expect(calls.at(-1)).toMatchObject({ authorization: `Bearer ${access}`, body: { modelName: "gpt-5" }, connect: "1" });
+    expect(s.local("quotaUnknown:cursor")).toBeUndefined();
+    s.put("setting", "settings", { ...s.settings(), aliases: [{ provider: "cursor", alias: "alias", target: "gpt-5" }] });
+    const own = await proxy(s, creds, cursor, new Request("http://127.0.0.1/run", { method: "POST", headers: { authorization: "Bearer client-login", "content-type": "application/json" }, body: JSON.stringify({ conversationId: "conv-1", requestedModel: { modelId: "alias" } }) }), "/agent.v1.AgentService/RunSSE");
+    expect(own.status).toBe(200);
+    expect(calls.at(-1)?.authorization).toBe(`Bearer ${access}`);
+    expect(calls.at(-1)?.body).toEqual({ conversationId: "conv-1", requestedModel: { modelId: "gpt-5" } });
+    const passthrough = await proxy(s, creds, cursor, new Request("http://127.0.0.1/me", { method: "POST", headers: { authorization: "Bearer client-login", "content-type": "application/json" }, body: "{}" }), "/aiserver.v1.DashboardService/GetMe");
+    expect(passthrough.status).toBe(200);
+  } finally { s.close(); }
 });
