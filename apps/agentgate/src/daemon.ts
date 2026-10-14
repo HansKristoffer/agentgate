@@ -23,6 +23,7 @@ import { jsonInput } from "./http.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
+import { syncLogins } from "./logins.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { PRIMARY_CLAUDE_DIR } from "./setup.ts";
@@ -180,6 +181,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     const self = s.get("node", s.nodeId);
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
   }, 30000);
+  // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
+  const logins = DEV ? async () => { } : serialTask(() => syncLogins(s));
   let lastSeq = s.seq();
   schedule(async () => {
     const snapshot = s.changes(lastSeq);
@@ -190,7 +193,9 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
     if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
+    if (snapshot.records.some(r => r.kind === "login")) void logins().catch(() => { });
   }, 1000);
+  schedule(logins, 10 * 60_000);
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);

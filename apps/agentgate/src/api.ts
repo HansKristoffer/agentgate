@@ -8,6 +8,7 @@ import {
   decodedSize,
   projectIdSchema,
   skillIdSchema,
+  loginIdSchema,
   type SkillPreviewResponse,
   type Status,
   type ToolPreview,
@@ -22,6 +23,7 @@ import * as claude from "./llm/claude.ts";
 import * as codex from "./llm/codex.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
+import { forgetLogin, listLogins, shareLogins } from "./logins.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenHours, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
@@ -217,6 +219,7 @@ export function management(ctx: Ctx) {
       })),
       relay: relayStatus(s),
       t3: t3State(s),
+      logins: listLogins(s),
       peers: peers(s).map((p) => ({
         node: p.node,
         url: p.url,
@@ -730,6 +733,16 @@ export function management(ctx: Ctx) {
     local(c.env.listener);
     const backup = await json(c.req.raw);
     return c.json({ restored: input(() => importBackup(s, backup)) });
+  });
+  // Sharing reads this machine's own gh and Infisical logins, like coding-tool setup: loopback only.
+  app.post("/logins/share", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ id: loginIdSchema.optional() }).strict().parse(await json(c.req.raw));
+    return c.json({ results: await inputAsync(() => shareLogins(s, f.id)) });
+  });
+  app.delete("/logins/:id", (c) => {
+    input(() => forgetLogin(s, loginIdSchema.parse(c.req.param("id"))));
+    return c.json({ ok: true });
   });
   // Claude Desktop on this Mac. Loopback only: a remote connection must never drive another Mac's Desktop.
   app.get("/desktop", (c) => {

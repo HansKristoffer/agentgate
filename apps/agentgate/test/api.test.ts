@@ -465,3 +465,15 @@ test("thread handoff routes: T3 connection state, cross-node listing, and connec
   expect((await call("/api/handoffs/nope")).status).toBe(404);
   expect(await (await call("/api/handoffs")).json()).toEqual([]);
 });
+
+test("shared logins show in status without their secrets, share only locally and stop sharing from anywhere", async () => {
+  const { s, call } = fixture();
+  s.put("login", "github", { id: "github", from: "mac", account: "octocat", token: "gho_private" });
+  const res = await call("/api/status");
+  expect(await res.clone().text()).not.toContain("gho_private");
+  expect(((await res.json()) as Status).logins).toEqual([{ id: "github", account: "octocat", from: "mac", signedIn: false }]);
+  const auth = { authorization: "Bearer admin-secret" };
+  expect((await call("/api/logins/share", "POST", {}, "tailnet", auth)).status).toBe(403);
+  expect((await call("/api/logins/github", "DELETE", undefined, "tailnet", auth)).status).toBe(200);
+  expect(s.list("login")).toEqual([]);
+});

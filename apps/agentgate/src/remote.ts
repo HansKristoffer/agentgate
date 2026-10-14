@@ -10,9 +10,9 @@ import type { Store } from "./store.ts";
  * like Grok. The serving node keeps a WebSocket open to the relay and answers each request from its gateway.
  */
 
-/** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts).
- * A feature waits until every node reports its protocol. */
-export const NODE_PROTOCOL = 3;
+/** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
+ * 4 knows `login` records (logins.ts). A feature waits until every node reports its protocol. */
+export const NODE_PROTOCOL = 4;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
