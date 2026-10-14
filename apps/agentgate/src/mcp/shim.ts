@@ -21,7 +21,7 @@ export function detectProject(cwd: string, env = process.env): string {
   } catch { return "*"; }
 }
 
-/** The shim: an MCP client toward the local daemon, an MCP server toward Claude Code or Codex. */
+/** The shim: an MCP client toward the local daemon, an MCP server toward Claude Code, Codex, or Cursor. */
 export async function buildShim(cwd: string, daemonUrl = LOCAL_URL, env = process.env, options: { reconnectMs?: number } = {}) {
   const project = detectProject(cwd, env);
   const q = `project=${encodeURIComponent(project)}`;

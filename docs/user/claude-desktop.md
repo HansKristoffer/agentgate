@@ -50,5 +50,5 @@ agentgate desktop use <account>      # switch (label, email, pool id or uuid)
 agentgate desktop capture            # save the login Desktop has now
 agentgate desktop forget <account>
 agentgate desktop gateway on|off     # share automatically in the Code tab
-agentgate setup --mcp [off]          # MCP servers in Claude Code and Desktop's Code tab
+agentgate setup --mcp [off]          # MCP servers in Claude Code, Desktop's Code tab, and Cursor
 ```

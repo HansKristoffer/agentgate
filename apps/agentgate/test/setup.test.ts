@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { plist, rotateLogs, service, unit, waitForService } from "../src/service.ts";
-import { agentEnvironment, codexConfig, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
+import { agentEnvironment, codexConfig, cursorMcp, cursorMcpEnabled, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
 import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
@@ -118,5 +118,30 @@ test.skipIf(!!process.env.AGENTGATE_HOME)("a checkout keeps its own state and re
   expect(PORT).toBeGreaterThanOrEqual(17000); expect(PORT).toBeLessThan(18000);
   await expect(service("install")).rejects.toThrow("real setup");
   await expect(mcp(true)).rejects.toThrow("real setup");
+  await expect(cursorMcp(true)).rejects.toThrow("real setup");
   await expect(primaryCodex(true)).rejects.toThrow("real setup");
+});
+
+test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-cursor-mcp-")), file = join(dir, "mcp.json");
+  writeFileSync(file, '{"keep":true,"mcpServers":{"grafana":{"command":"grafana"}}}\n');
+  expect(cursorMcpEnabled(file)).toBe(false);
+  expect(await cursorMcp(true, file)).toContain("Cursor");
+  const on = JSON.parse(readFileSync(file, "utf8"));
+  expect(on.keep).toBe(true);
+  expect(on.mcpServers.grafana.command).toBe("grafana");
+  expect(on.mcpServers.agentgate.args.at(-1)).toBe("mcp");
+  expect(on.mcpServers.agentgate.env).toEqual(agentEnvironment());
+  expect(on.mcpServers.agentgate.type).toBeUndefined();
+  expect(cursorMcpEnabled(file)).toBe(true);
+  await cursorMcp(true, file);
+  expect(await cursorMcp(false, file)).toContain("Removed");
+  const off = JSON.parse(readFileSync(file, "utf8"));
+  expect(off.mcpServers.grafana.command).toBe("grafana");
+  expect(off.mcpServers.agentgate).toBeUndefined();
+  expect(await cursorMcp(false, file)).toContain("No agentgate MCP server");
+  expect(cursorMcpEnabled(join(dir, "missing.json"))).toBe(false);
+  writeFileSync(file, '{"mcpServers":[]}\n');
+  await expect(cursorMcp(true, file)).rejects.toThrow("mcpServers must be an object");
+  rmSync(dir, { recursive: true, force: true });
 });
