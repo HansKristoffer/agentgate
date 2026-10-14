@@ -60,6 +60,7 @@ export function handoffOptions(s: Store): HandoffOptions {
     get worktreesDir() { return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees"); },
     get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
     tempDir: join(CONFIG_DIR, "handoffs"),
+    t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),
   };
 }
 

@@ -8,7 +8,8 @@ import { sleep } from "../runtime.ts";
 import { addWorktree, dropRef, dropStash, ensureCommit, fetchBundle, git, manifestsChanged, moveToSource, run, worktrees } from "./code.ts";
 import { sessionNote, timed, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
-import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, type Call } from "./t3.ts";
+import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, t3State, type Call } from "./t3.ts";
+import { HistoryError, appendToThread, sessionMessages, t3Database } from "./history.ts";
 
 /** The steps on the receiving machine (B). `prepare` (find or clone the repository, make the worktree, start setup)
  * overlaps with A stopping and packing; after `start`: apply the code → place the session → import it into T3 →
@@ -381,6 +382,7 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
       if (!st.threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
     }
     const threadId = st.threadId!;
+    if (!st.imported) copyHistory(h, job, threadId);
 
     const p = await projection(call, threadId);
     if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
@@ -396,6 +398,25 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
   // there could pick up the stale transcript.
   if (st.imported && st.cwd !== st.main) sessionProviders[m.driver]!.remove(st.claudeHome!, m.sessionId, st.main!);
   h.advance(job, "continue");
+}
+
+/** A reused thread lacks what the session got on other machines since it left here: write those messages into its
+ * T3 Code history (see history.ts). Never fails the handoff; the agent has them in its session either way. */
+function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
+  const st = job.state;
+  const m = st.manifest!;
+  const from = Number(h.s.local(sessionNote.lines(m.sessionId)));
+  // Off, a dev daemon, or a thread that left here before agentgate counted its session's records.
+  if (!h.s.settings().t3HandoffHistory || !h.options.t3StateDir || !(from > 0)) return;
+  try {
+    const now = new Date(h.s.now()).toISOString();
+    const text = readFileSync(join(h.dir(job.id), "files", "session", `${m.sessionId}.jsonl`), "utf8");
+    const messages = sessionMessages(text, from, now);
+    if (!messages) throw new HistoryError("the session was rewritten there");
+    appendToThread(t3Database(h.options.t3StateDir, t3State(h.s).url), threadId, job.id, messages, now);
+  } catch (e) {
+    st.warnings.push(`The messages from ${st.source} are not in this thread's history in T3 Code (${(e as Error).message}); the agent still has them. agentgate t3 history off stops copying them.`);
+  }
 }
 
 /** After reporting `imported`: wait for setup, then get the thread ready and let a working agent go on.

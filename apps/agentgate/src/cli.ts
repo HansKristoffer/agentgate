@@ -58,6 +58,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   t3 connect <pairing link> | --url <url> --token <token> [--node <node>]   connect a machine's agentgate to its T3 Code
   t3 [status] | disconnect [--node <node>] | dirs [--worktrees <dir>] [--clones <dir>]
   t3 sync [on|off]                            add the GitHub projects one machine's T3 Code has to every other machine's
+  t3 history [on|off]                         show a returning thread's messages from other machines in T3 Code (writes T3's database)
   threads [--node <node>]                     active T3 Code threads on every machine
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
@@ -676,6 +677,11 @@ async function main() {
         await management("/t3/projects/sync", "POST").catch(() => { }); // a stopped daemon syncs when it starts
         const error = t3.t3State(s).projectSyncError;
         return console.log(`T3 project sync is ${s.settings().t3ProjectSync ? "on" : "off"} on every machine${error ? `; here: ${error}` : ""}`);
+      }
+      if (sub === "history") {
+        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3HandoffHistory: rest[0] === "on" }, revision(s, "setting", "settings"));
+        else if (rest[0]) die("t3 history [on|off]");
+        return console.log(`Copying a returning thread's messages into T3 Code is ${s.settings().t3HandoffHistory ? "on" : "off"} on every machine. It writes T3 Code's own database, which T3 Code does not support; turn it off if T3 Code misbehaves after a handoff.`);
       }
       if (sub && sub !== "status") die(HELP);
       const st = t3.t3State(s);
