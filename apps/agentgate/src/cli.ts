@@ -55,7 +55,8 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
-  t3 connect <pairing link> | --url <url> --token <token> [--node <node>]   connect a machine's agentgate to its T3 Code
+  t3 connect [<pairing link> | --url <url> --token <token>] [--node <node>]   connect a machine's agentgate to its T3 Code; with no link, its T3 Code creates one
+  t3 pair [--tailscale] [--node <node>]   create a pairing link to connect a T3 Code client to a machine's T3 Code
   t3 [status] | disconnect [--node <node>] | dirs [--worktrees <dir>] [--clones <dir>]
   t3 sync [on|off]                            add the GitHub projects one machine's T3 Code has to every other machine's
   threads [--node <node>]                     active T3 Code threads on every machine
@@ -64,6 +65,8 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
   logins share [github|infisical]             share this machine's logins; every machine signs in with them
   logins forget github|infisical              stop sharing (machines stay signed in)
+  logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
+  logins forget infisical-identity            remove it from every machine
   setup                                       write Claude/Codex config, print the T3 settings
   setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
   setup --mcp [off]                           add agentgate's MCP servers to Claude Code, Claude Desktop's Code tab, and Cursor
@@ -101,12 +104,14 @@ const { values: opts, positionals: pos } = parseArgs({
     project: { type: "string", multiple: true },
     file: { type: "string" },
     tailnet: { type: "boolean" },
+    tailscale: { type: "boolean" },
     relay: { type: "boolean" },
     "relay-url": { type: "string" },
     force: { type: "boolean" },
     wipe: { type: "boolean" },
     abandon: { type: "boolean" },
     clear: { type: "boolean" },
+    "client-id": { type: "string" }, site: { type: "string" },
     to: { type: "string" }, url: { type: "string" }, token: { type: "string" }, "no-wait": { type: "boolean" }, worktrees: { type: "string" }, clones: { type: "string" },
     help: { type: "boolean", short: "h" },
   },
@@ -572,8 +577,21 @@ async function main() {
     case "logins": {
       initialized(s);
       const lg = await import("./logins.ts");
-      const id = rest[0] === undefined ? undefined : loginIdSchema.safeParse(rest[0]).data ?? die(`${rest[0]}: expected github or infisical`);
+      const id = rest[0] === undefined || sub === "identity" ? undefined : loginIdSchema.safeParse(rest[0]).data ?? die(`${rest[0]}: expected github, infisical or infisical-identity`);
       try {
+        if (sub === "identity") {
+          const usage = "logins identity --client-id <id> [--site https://eu.infisical.com] (the client secret comes from stdin)";
+          const clientId = str("client-id") ?? die(usage);
+          // From stdin so it stays out of shell history and process lists.
+          const typed = () => {
+            Bun.spawnSync(["stty", "-echo"], { stdin: "inherit" });
+            try { return prompt("Client secret:") ?? ""; } finally { Bun.spawnSync(["stty", "echo"], { stdin: "inherit" }); console.log(); }
+          };
+          const clientSecret = (process.stdin.isTTY ? typed() : await Bun.stdin.text()).trim() || die(usage);
+          const siteUrl = str("site") ?? lg.infisicalSite();
+          await lg.setInfisicalIdentity(s, { clientId, clientSecret, siteUrl });
+          return console.log(`Infisical machine identity ${clientId} set; every machine keeps it in ~/.infisical/universal-auth.json`);
+        }
         if (sub === "share") {
           for (const r of await lg.shareLogins(s, id)) {
             const account = r.account ? ` (${r.account})` : "";
@@ -582,8 +600,8 @@ async function main() {
           return;
         }
         if (sub === "forget") {
-          lg.forgetLogin(s, id ?? die("logins forget github|infisical"));
-          return console.log("ok; machines already signed in stay signed in");
+          lg.forgetLogin(s, id ?? die("logins forget github|infisical|infisical-identity"));
+          return console.log(id === "infisical-identity" ? "ok; removed from every machine" : "ok; machines already signed in stay signed in");
         }
       } catch (e) {
         return die((e as Error).message);
@@ -650,14 +668,24 @@ async function main() {
       const node = str("node") && str("node") !== s.nodeId ? str("node") : undefined;
       const query = node ? `?node=${encodeURIComponent(node)}` : "";
       if (sub === "connect") {
-        const usage = "t3 connect <pairing link> | --url <url> --token <token> [--node <node>]";
-        const input = rest[0] ? { pairingUrl: rest[0] } : { url: str("url") ?? die(usage), token: str("token") ?? die("--token is required") };
+        // No link: that machine's T3 Code creates one with `t3 pair`.
+        const input = rest[0] ? { pairingUrl: rest[0] } : str("url") ? { url: str("url")!, token: str("token") ?? die("--token is required") } : { create: true as const };
         const state = node
           ? await management<import("@agentgate/protocol").T3NodeState>(`/t3/connect${query}`, "POST", input)
-          : await t3.connectT3(s, t3.pairing(input));
+          : await t3.connectWith(s, input);
         const label = state.label ? ` (${state.label})` : "";
         const expires = new Date(state.expiresAt!).toISOString().slice(0, 10);
         return console.log(`connected ${node ?? "this machine"} to T3 Code${label}; the token expires ${expires}`);
+      }
+      if (sub === "pair") {
+        const input = { ...opts.tailscale && { tailscale: true } };
+        const link = node
+          ? await management<import("@agentgate/protocol").T3PairingLink>(`/t3/pairing-link${query}`, "POST", input)
+          : await t3.createPairingLink(s, input);
+        console.log(link.url);
+        if (link.expiresAt) console.log(`single use, expires ${link.expiresAt}`);
+        for (const note of link.notes) console.log(note);
+        return;
       }
       if (sub === "disconnect") {
         if (node) await management(`/t3${query}`, "DELETE");
@@ -679,8 +707,8 @@ async function main() {
       }
       if (sub && sub !== "status") die(HELP);
       const st = t3.t3State(s);
-      if (!st.url) return console.log("T3 Code is not connected. In T3 Code open Settings → Connections, turn on Network access, create a pairing link under Authorized clients and run: agentgate t3 connect <link>");
-      return console.log(`T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect <link>" : ""}`);
+      if (!st.url) return console.log("T3 Code is not connected. With T3 Code running, run: agentgate t3 connect");
+      return console.log(`T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect" : ""}`);
     }
     case "threads": {
       initialized(s);

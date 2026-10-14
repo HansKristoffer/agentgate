@@ -23,7 +23,7 @@ import * as claude from "./llm/claude.ts";
 import * as codex from "./llm/codex.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
-import { forgetLogin, listLogins, shareLogins } from "./logins.ts";
+import { forgetLogin, infisicalSite, listLogins, setInfisicalIdentity, shareLogins } from "./logins.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenHours, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
@@ -69,8 +69,8 @@ import {
   skillRevision,
 } from "./skills.ts";
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
-import { connectInput, t3State } from "./handoff/t3.ts";
-import { allNodes, connectNode, disconnectNode, handoffJob, requestHandoff } from "./handoff/threads.ts";
+import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
+import { allNodes, connectNode, disconnectNode, handoffJob, pairingLinkNode, requestHandoff } from "./handoff/threads.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import {
   RelayBusy,
@@ -688,13 +688,18 @@ export function management(ctx: Ctx) {
     input(() => unpair(s, id));
     return c.json({ ok: true, endpoints });
   });
-  // Thread handoff. Connecting receives a T3 pairing token, a credential: local callers only.
+  // Thread handoff. Connecting receives a T3 pairing token and a pairing link is one, credentials: local callers only.
   app.get("/t3", (c) => c.json(t3State(s)));
   app.post("/t3/connect", async (c) => {
     local(c.env.listener);
     const node = c.req.query("node");
     const input = connectInput.parse(await json(c.req.raw));
     return c.json(await inputAsync(() => connectNode(ctx.handoffs, node, input)));
+  });
+  app.post("/t3/pairing-link", async (c) => {
+    local(c.env.listener);
+    const input = pairingLinkInput.parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => pairingLinkNode(ctx.handoffs, c.req.query("node"), input)));
   });
   app.delete("/t3", async (c) => {
     await inputAsync(() => disconnectNode(ctx.handoffs, c.req.query("node")));
@@ -739,6 +744,13 @@ export function management(ctx: Ctx) {
     local(c.env.listener);
     const f = z.object({ id: loginIdSchema.optional() }).strict().parse(await json(c.req.raw));
     return c.json({ results: await inputAsync(() => shareLogins(s, f.id)) });
+  });
+  // Receives a client secret: loopback only.
+  app.put("/logins/infisical-identity", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048).optional() }).strict().parse(await json(c.req.raw));
+    await inputAsync(() => setInfisicalIdentity(s, { ...f, siteUrl: f.siteUrl ?? infisicalSite() }));
+    return c.json({ ok: true });
   });
   app.delete("/logins/:id", (c) => {
     input(() => forgetLogin(s, loginIdSchema.parse(c.req.param("id"))));

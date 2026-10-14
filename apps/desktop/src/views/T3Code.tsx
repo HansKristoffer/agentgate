@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@heroui/react";
-import { ArrowLeftRight, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
-import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3Thread } from "@agentgate/protocol";
+import { ArrowLeftRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
+import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
 import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
@@ -44,25 +44,41 @@ function connection(v: NodeThreads) {
 
 const needsT3 = (v: NodeThreads) => !v.t3?.connected || !!v.t3.repair;
 
-/** Why a machine's T3 Code can't be connected from here. Connecting sends a pairing token, so only the app on this
- * machine offers it (the API refuses remote callers too), and only to a machine whose daemon answers. */
+/** Why a machine's T3 Code can't be connected or paired from here. Both move a pairing token, so only the app on this
+ * machine offers them (the API refuses remote callers too), and only for a machine whose daemon answers. */
 function cannotConnect(v: NodeThreads, local: boolean) {
-  if (!local) return "Connect T3 Code from the app on this machine; a remote connection can't send pairing links";
+  if (!local) return "Connect T3 Code from the app on this machine; a remote connection can't move pairing links";
   return v.error ? `${v.error}. Pair it with this machine first (Machines page).` : undefined;
 }
 
-/** Each machine's T3 Code connection, and connecting it, from here or for another machine. */
-function MachinesDialog({ views, here, local, conn, perform, initial, connected, close }: Pick<ViewProps, "local" | "perform"> & {
+/** Each machine's T3 Code connection, and connecting it, from here or for another machine. Each machine's T3 Code
+ * creates its own pairing links (`t3 pair`): agentgate redeems one to connect, or shows one to connect a T3 Code client. */
+function MachinesDialog({ views, here, local, conn, perform, connected, close }: Pick<ViewProps, "local" | "perform"> & {
   views: NodeThreads[];
   here: string;
   conn: ViewProps["connection"];
-  /** The machine whose connect form is open first. */
-  initial?: string;
   connected: () => Promise<void>;
   close: () => void;
 }) {
-  const [pairingNode, setPairingNode] = useState(initial);
+  // The machine whose paste form is open: the way to connect when its T3 Code can't create a link itself.
+  const [pairingNode, setPairingNode] = useState<string>();
+  const [link, setLink] = useState<T3PairingLink & { node: string }>();
   const elsewhere = pairingNode !== here;
+  const at = (node: string) => `?node=${encodeURIComponent(node)}`;
+
+  const connect = (node: string) => perform(async () => {
+    try {
+      await request(conn, `/t3/connect${at(node)}`, "POST", { create: true });
+    } catch (e) {
+      setPairingNode(node);
+      throw e;
+    }
+    setPairingNode(undefined);
+    await connected();
+  }, `T3 Code connected on ${node}`);
+  const createLink = (node: string, tailscale: boolean) => perform(async () => {
+    setLink({ node, ...await request<T3PairingLink>(conn, `/t3/pairing-link${at(node)}`, "POST", tailscale ? { tailscale } : {}) });
+  });
 
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -96,19 +112,41 @@ function MachinesDialog({ views, here, local, conn, perform, initial, connected,
             </div>
             {needsT3(v) ? (
               <span title={cannotConnect(v, local)}>
-                <Button size="sm" variant="tertiary" isDisabled={!!cannotConnect(v, local) || pairingNode === v.node} onPress={() => setPairingNode(v.node)}>
+                <Button size="sm" variant="tertiary" isDisabled={!!cannotConnect(v, local)} onPress={() => void connect(v.node)}>
                   Connect T3 Code
                 </Button>
               </span>
             ) : (
               <Badge good={!v.error}>{v.error ? "Unavailable" : "Connected"}</Badge>
             )}
-            {v.t3?.url && !v.error && (
-              <RowMenu label={`More for ${v.node}`} items={[{ label: "Disconnect T3 Code", danger: true, onAction: () => void disconnect(v.node) }]} />
+            {(!cannotConnect(v, local) || (v.t3?.url && !v.error)) && (
+              <RowMenu label={`More for ${v.node}`} items={[
+                !cannotConnect(v, local) && { label: "Create pairing link", onAction: () => void createLink(v.node, false) },
+                !cannotConnect(v, local) && { label: "Create pairing link over Tailscale", onAction: () => void createLink(v.node, true) },
+                !cannotConnect(v, local) && { label: "Connect with a pasted link", onAction: () => setPairingNode(v.node) },
+                !!v.t3?.url && !v.error && { label: "Disconnect T3 Code", danger: true, onAction: () => void disconnect(v.node) },
+              ]} />
             )}
           </div>
         ))}
       </Panel>
+      {link && (
+        <Panel title={`Pairing link for ${link.node}`}>
+          <div className="item">
+            <span className="grow">
+              <small><code>{link.url}</code></small>
+              <small>
+                Open it in T3 Code on the machine you connect from, under Settings → Connections. It works once
+                {link.expiresAt ? `, until ${new Date(link.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}.
+              </small>
+              {link.notes.map((n) => <small key={n}>{n}</small>)}
+            </span>
+            <Button isIconOnly size="sm" variant="ghost" aria-label="Copy pairing link" onPress={() => void perform(() => navigator.clipboard.writeText(link.url), "Pairing link copied")}>
+              <Copy size={15} />
+            </Button>
+          </div>
+        </Panel>
+      )}
       {pairingNode && (
         <>
           <ol className="steps">
@@ -275,7 +313,6 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       {machinesOpen && (
         <MachinesDialog
           views={views} here={here} local={local} conn={conn} perform={perform}
-          initial={canConnect ? here : undefined}
           connected={load}
           close={() => setMachinesOpen(false)}
         />

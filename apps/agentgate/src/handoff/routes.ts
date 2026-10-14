@@ -11,7 +11,7 @@ import { abort, manifestSchema, peerStatus, prepare, prepareSchema, start, type 
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
 import { startHandoff } from "./source.ts";
-import { T3Error, connectInput, connectT3, disconnectT3, pairing } from "./t3.ts";
+import { T3Error, connectInput, connectWith, createPairingLink, disconnectT3, pairingLinkInput } from "./t3.ts";
 import { localView, resolveTarget } from "./threads.ts";
 import { updateHere } from "../update.ts";
 
@@ -47,8 +47,9 @@ export function handoffRoutes(h: Handoffs) {
     }
   });
 
-  // Set up from another machine: it forwards the pairing link created in this machine's T3 Code.
-  app.post("/t3/connect", async (c) => c.json(await connectT3(h.s, pairing(connectInput.parse(await jsonInput(c.req.raw))))));
+  // Set up from another machine: it forwards the pairing link created in this machine's T3 Code, or asks for one.
+  app.post("/t3/connect", async (c) => c.json(await connectWith(h.s, connectInput.parse(await jsonInput(c.req.raw)))));
+  app.post("/t3/pairing-link", async (c) => c.json(await createPairingLink(h.s, pairingLinkInput.parse(await jsonInput(c.req.raw)))));
   app.post("/t3/disconnect", (c) => {
     disconnectT3(h.s);
     return c.json({ ok: true });

@@ -77,7 +77,7 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
-  /** A GitHub CLI or Infisical CLI login one node shared with every node (logins.ts). */
+  /** A GitHub CLI or Infisical CLI login, or an Infisical machine identity, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
     z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
     z.object({
@@ -86,6 +86,11 @@ export const schemas = {
       account: z.string().min(1).max(320).regex(/^[^/\\\0]+$/).refine((a) => a !== "." && a !== ".."),
       config: z.string().max(64 * 1024).refine((c) => { try { return !!JSON.parse(c); } catch { return false; } }),
       keyring: z.string().min(1).max(64 * 1024),
+    }),
+    /** An Infisical machine identity (Universal Auth) set in agentgate; `account` is its client id. */
+    z.object({
+      id: z.literal("infisical-identity"), from: id, account: z.string().max(512),
+      clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048),
     }),
   ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */

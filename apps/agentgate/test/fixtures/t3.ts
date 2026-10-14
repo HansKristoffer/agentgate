@@ -50,6 +50,8 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     },
     // Like upstream: the project is registered at once and the clone runs in the background (not simulated here).
     "projectClone.start": (p) => {
+      // Like upstream T3 Code since October 2026 for a token paired before cloning got its own permission.
+      if (api.denyClones) throw { _tag: "EnvironmentAuthorizationError", message: "The authenticated token is missing required scope: source-control:write.", requiredScope: "orchestration:operate", requiredPermission: "source-control:write" };
       clones.push(p);
       projects.push({ id: String(p.projectId), title: String(p.title), workspaceRoot: String(p.destinationPath), scripts: [] });
       return { projectId: p.projectId, cwd: p.destinationPath, remoteUrl: `https://github.com/${p.repository}.git`, repository: null };
@@ -144,6 +146,8 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     url, threads, projects, commands, clones, server,
     /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
     homePath: options.claudeDir as string | undefined,
+    /** Refuse clones for a missing permission. */
+    denyClones: false,
     /** A single-use pairing token, as `t3 pair` prints. */
     pairingToken() { const token = crypto.randomUUID(); pairing.add(token); return token; },
     addProject(workspaceRoot: string, scripts: Project["scripts"] = []) {

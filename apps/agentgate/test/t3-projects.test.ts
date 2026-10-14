@@ -66,6 +66,23 @@ test("a failed clone removed in T3 Code is tried again", async () => {
   expect(b.t3.clones).toHaveLength(2);
 });
 
+test("a clone T3 Code refuses for a permission is reported once, with how to fix it", async () => {
+  const a = await node("a"), b = await node("b");
+  a.t3.addProject(repos("a").a);
+  a.t3.addProject(repos("a").a);
+  await syncT3Projects(a.h);
+  carry(a.s, b.s);
+  b.t3.denyClones = true;
+
+  await syncT3Projects(b.h);
+  expect(t3State(b.s).projectSyncError).toBe("T3 Code on b has not given agentgate the source-control:write permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on b");
+
+  b.t3.denyClones = false; // paired again
+  await syncT3Projects(b.h);
+  expect(b.t3.clones).toHaveLength(2);
+  expect(t3State(b.s).projectSyncError).toBeUndefined();
+});
+
 test("a machine whose checkouts use SSH clones over SSH", async () => {
   const r = repos("a", "b");
   const a = await node("a"), b = await node("b");

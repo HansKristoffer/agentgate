@@ -1,9 +1,9 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportBackup, Store } from "../src/store.ts";
-import { forgetLogin, host, listLogins, shareLogins, syncLogins } from "../src/logins.ts";
+import { forgetLogin, host, listLogins, setInfisicalIdentity, shareLogins, syncLogins } from "../src/logins.ts";
 
 const temp = mkdtempSync(join(tmpdir(), "agentgate-logins-"));
 const original = { ...host };
@@ -103,4 +103,46 @@ test("sharing waits until every machine understands shared logins", async () => 
   a.put("node", "old", { id: "old", protocol: 3 });
   on(join(temp, "e")).token = "gho_x";
   await expect(shareLogins(a)).rejects.toThrow("Update agentgate on old first");
+});
+
+test("an Infisical machine identity is checked, written on every machine, and removed everywhere when forgotten", async () => {
+  const a = node("a"), b = node("b"), homeA = join(temp, "id-a"), homeB = join(temp, "id-b");
+  const file = (home: string) => join(home, ".infisical", "universal-auth.json");
+  const identity = { clientId: "client-1", clientSecret: "secret-1", siteUrl: "https://eu.infisical.com/api" };
+  const original = globalThis.fetch;
+  const logins: unknown[] = [];
+  globalThis.fetch = (async (url: string, init: RequestInit) => {
+    logins.push([url, JSON.parse(String(init.body))]);
+    return new Response("{}", { status: JSON.parse(String(init.body)).clientSecret === "secret-1" ? 200 : 401 });
+  }) as unknown as typeof fetch;
+  try {
+    on(homeA);
+    await expect(setInfisicalIdentity(a, identity)).rejects.toThrow("Update agentgate on a, b first");
+    for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 5 });
+    await expect(setInfisicalIdentity(a, { ...identity, clientSecret: "wrong" })).rejects.toThrow("did not accept");
+    expect(a.list("login")).toEqual([]);
+
+    await setInfisicalIdentity(a, identity);
+    expect(logins.at(-1)).toEqual(["https://eu.infisical.com/api/v1/auth/universal-auth/login", { clientId: "client-1", clientSecret: "secret-1" }]);
+    // The machine it was set on uses it too; the secret never shows in the listing.
+    const written = { clientId: "client-1", clientSecret: "secret-1", siteUrl: "https://eu.infisical.com" };
+    expect(JSON.parse(readFileSync(file(homeA), "utf8"))).toEqual(written);
+    expect(JSON.stringify(listLogins(a))).not.toContain("secret-1");
+
+    sync(a, b);
+    on(homeB);
+    await syncLogins(b);
+    expect(JSON.parse(readFileSync(file(homeB), "utf8"))).toEqual(written);
+    expect(listLogins(b)).toEqual([{ id: "infisical-identity", account: "client-1", from: "a", signedIn: true, error: undefined }]);
+
+    on(homeA);
+    forgetLogin(a, "infisical-identity");
+    expect(existsSync(file(homeA))).toBe(false);
+    sync(a, b);
+    on(homeB);
+    await syncLogins(b);
+    expect(existsSync(file(homeB))).toBe(false);
+  } finally {
+    globalThis.fetch = original;
+  }
 });
