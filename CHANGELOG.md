@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.0](https://github.com/HansKristoffer/agentgate/compare/v0.17.1...v0.18.0) (2026-10-14)
+
+
+### Features
+
+* **cursor:** pool Cursor with the other providers and count a year of its usage ([#59](https://github.com/HansKristoffer/agentgate/issues/59)) ([5908bdf](https://github.com/HansKristoffer/agentgate/commit/5908bdfadd12fda3d9b128fdc458fe04d67f53ad))
+* **handoff:** queued messages move with the thread to the other machine ([#55](https://github.com/HansKristoffer/agentgate/issues/55)) ([1af5e26](https://github.com/HansKristoffer/agentgate/commit/1af5e26db69168e955db68bbf53184500ef39e2e))
+* **logins:** new machines sign in to GitHub and Infisical with your logins ([#60](https://github.com/HansKristoffer/agentgate/issues/60)) ([6b14d95](https://github.com/HansKristoffer/agentgate/commit/6b14d95cc7e0f95c2b42fdc3e4a05e0d2baedb84))
+
+
+### Bug Fixes
+
+* **handoff:** moved threads no longer greet with "Not logged in" ([#57](https://github.com/HansKristoffer/agentgate/issues/57)) ([059be77](https://github.com/HansKristoffer/agentgate/commit/059be778f3f4eff7f0b03c4d06efbac921a2e082))
+
 ## [0.17.1](https://github.com/HansKristoffer/agentgate/compare/v0.17.0...v0.17.1) (2026-10-06)
 
 
