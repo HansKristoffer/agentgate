@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.0](https://github.com/HansKristoffer/agentgate/compare/v0.18.0...v0.19.0) (2026-10-15)
+
+
+### Features
+
+* **handoff:** a thread that comes back shows what was said on the other machine ([#65](https://github.com/HansKristoffer/agentgate/issues/65)) ([1cbdcc4](https://github.com/HansKristoffer/agentgate/commit/1cbdcc458f57205511ac1998070081a05dbc6913))
+* **handoff:** simplify T3 pairing and share Infisical identities ([#61](https://github.com/HansKristoffer/agentgate/issues/61)) ([41d3091](https://github.com/HansKristoffer/agentgate/commit/41d30913863decc15e975416cf89257d02e3d930))
+
+
+### Bug Fixes
+
+* **credentials:** a machine back from sleep no longer asks you to sign in to logins another machine refreshed ([#62](https://github.com/HansKristoffer/agentgate/issues/62)) ([cbfad34](https://github.com/HansKristoffer/agentgate/commit/cbfad347d73c6989106013a4db1a01d3ee7bd348))
+* **setup:** Claude Code on a new server no longer answers "Not logged in" ([#63](https://github.com/HansKristoffer/agentgate/issues/63)) ([110b5fd](https://github.com/HansKristoffer/agentgate/commit/110b5fdafb972c99b978727e9b75b59c94596b15))
+
 ## [0.18.0](https://github.com/HansKristoffer/agentgate/compare/v0.17.1...v0.18.0) (2026-10-14)
 
 
