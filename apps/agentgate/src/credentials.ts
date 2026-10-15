@@ -9,6 +9,7 @@ export class NeedsLogin extends Error { }
 export type OwnedKind = "credential" | "mcpCredential";
 type Owned = Data<OwnedKind>;
 const MIN = 60_000;
+const EXPIRED_PULL_WAIT = 3_000;
 const flights = new WeakMap<Store, Map<string, Promise<Owned>>>();
 export const accessToken = (c: Owned) => "accessToken" in c ? c.accessToken : c.tokens?.access_token ?? "";
 export const tokenHash = (c: Owned) => new Bun.CryptoHasher("sha256").update(accessToken(c)).digest("hex");
@@ -115,17 +116,19 @@ export class Credentials {
     if (!c || c.needsLogin) throw new NeedsLogin(accountId);
     const requested = this.s.get("refreshRequest", `credential:${accountId}`)?.tokenHash === tokenHash(c);
     if (this.shouldRefresh(c) || (requested && c.holder === this.s.nodeId)) return this.refresh(accountId, requested);
-    if (c.expiresAt <= this.s.now()) { requestRefresh(this.s, "credential", accountId, c); throw new Unavailable(`${accountId}: access token has expired`); }
+    // Another machine holds this login and has most likely refreshed it while this one slept: fetch its copy, waiting
+    // only briefly so a request that another account could serve is not held up by a slow peer.
+    if (c.expiresAt <= this.s.now()) return this.refresh(accountId, false, () => Promise.race([this.pull(), sleep(EXPIRED_PULL_WAIT)]));
     return c;
   }
   shouldRefresh(c: Credential) { return canRefresh(this.s, c); }
-  refresh(accountId: string, force = true): Promise<Credential> {
+  refresh(accountId: string, force = true, pull = this.pull): Promise<Credential> {
     return refreshOwned(this.s, "credential", accountId, async c => {
       const account = this.s.get("account", accountId);
       if (!account) throw new NeedsLogin(accountId);
       const t = await this.refreshFn(account.provider, c.refreshToken);
       return { ...c, ...t };
-    }, this.pull, force);
+    }, pull, force);
   }
   async tick(signal?: AbortSignal) {
     const self = this.s.get("node", this.s.nodeId);

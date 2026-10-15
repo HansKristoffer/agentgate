@@ -129,7 +129,9 @@ export function Dashboard({
               <Badge good={a.active && !a.needsLogin && !a.expired}>
                 {a.needsLogin
                   ? "Needs login"
-                  : a.expired
+                  : a.waitingFor
+                    ? `Waiting for ${a.waitingFor}`
+                    : a.expired
                     ? "Token expired"
                     : a.refreshError
                       ? "Refresh failed"

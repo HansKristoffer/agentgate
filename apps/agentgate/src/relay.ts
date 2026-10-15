@@ -128,11 +128,11 @@ const dropGroup = (s: Store, grp: string) => { s.db.run("delete from relay_pendi
 
 // ---------------------------------------------------------------- coordination
 
-interface Runtime { queue: Promise<unknown>; abort: AbortController; owner: string; started: Set<string>; backoff: Map<string, { until: number; failures: number }>; wanted?: { push: boolean; pull: boolean; force: boolean }; running?: Promise<void> }
+interface Runtime { queue: Promise<unknown>; abort: AbortController; owner: string; started: Set<string>; backoff: Map<string, { until: number; failures: number }>; lastTurn: number; wanted?: { push: boolean; pull: boolean; force: boolean }; running?: Promise<void> }
 const runtimes = new WeakMap<Store, Runtime>();
 function rt(s: Store): Runtime {
   let r = runtimes.get(s);
-  if (!r) { tables(s); runtimes.set(s, r = { queue: Promise.resolve(), abort: new AbortController(), owner: crypto.randomUUID(), started: new Set(), backoff: new Map() }); }
+  if (!r) { tables(s); runtimes.set(s, r = { queue: Promise.resolve(), abort: new AbortController(), owner: crypto.randomUUID(), started: new Set(), backoff: new Map(), lastTurn: 0 }); }
   return r;
 }
 
@@ -389,14 +389,14 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
   return true;
 }
 
-function backoff(r: Runtime, slot: string, e: unknown) {
+function backoff(s: Store, r: Runtime, slot: string, e: unknown) {
   const b = r.backoff.get(slot) ?? { until: 0, failures: 0 };
   b.failures++;
   const base = e instanceof RelayError && e.retryAfter ? e.retryAfter * 1000 : Math.min(15_000 * 2 ** (b.failures - 1), 10 * 60_000);
-  b.until = Date.now() + base * (0.75 + Math.random() * 0.5);
+  b.until = s.now() + base * (0.75 + Math.random() * 0.5);
   r.backoff.set(slot, b);
 }
-const ready = (r: Runtime, slot: string, force: boolean) => force || (r.backoff.get(slot)?.until ?? 0) <= Date.now();
+const ready = (s: Store, r: Runtime, slot: string, force: boolean) => force || (r.backoff.get(slot)?.until ?? 0) <= s.now();
 const succeeded = (r: Runtime, slot: string) => r.backoff.delete(slot);
 const message = (e: unknown) => e instanceof RelayError || e instanceof RelayBusy ? e.message : "Relay sync failed";
 
@@ -413,32 +413,32 @@ async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push
     r.started.add(`${t}|${invite}`);
   }
   const slot = (d: string) => `${t}|${d}`;
-  if (get(s, t, "phase") !== "done" && ready(r, slot("reconcile"), want.force)) {
+  if (get(s, t, "phase") !== "done" && ready(s, r, slot("reconcile"), want.force)) {
     try { if (await reconcile(s, t, c, signal)) succeeded(r, slot("reconcile")); }
     catch (e) {
       if (signal.aborted) throw e;
-      backoff(r, slot("reconcile"), e);
+      backoff(s, r, slot("reconcile"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
       put(s, t, get(s, t, "phase") === "upload" ? "pushError" : "pullError", message(e));
     }
   }
-  if (want.push && get(s, t, "phase") === "done" && ready(r, slot("push"), want.force)) {
+  if (want.push && get(s, t, "phase") === "done" && ready(s, r, slot("push"), want.force)) {
     try { await pushLoop(s, t, c, signal); put(s, t, "pushError", undefined); succeeded(r, slot("push")); }
     catch (e) {
       if (signal.aborted) throw e;
-      backoff(r, slot("push"), e);
+      backoff(s, r, slot("push"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
       put(s, t, "pushError", message(e));
     }
   }
   // Pulls continue while an upload is blocked, so newer credentials still arrive.
-  if (want.pull && get(s, t, "phase") !== "read" && get(s, t, "generation") && ready(r, slot("pull"), want.force)) {
+  if (want.pull && get(s, t, "phase") !== "read" && get(s, t, "generation") && ready(s, r, slot("pull"), want.force)) {
     try {
       for (let pages = 0, more = true; more && pages < 20; pages++) more = await pullPage(s, t, c, signal, false);
       succeeded(r, slot("pull"));
     } catch (e) {
       if (signal.aborted) throw e;
-      backoff(r, slot("pull"), e);
+      backoff(s, r, slot("pull"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
       put(s, t, "pullError", message(e));
     }
@@ -504,6 +504,10 @@ export function relaySync(s: Store, want: { push?: boolean; pull?: boolean; forc
   r.running = (async () => {
     while (r.wanted && !r.abort.signal.aborted) {
       const run = r.wanted; r.wanted = undefined;
+      // Turns come every PULL_INTERVAL; a longer gap means the machine slept. Failures from before, or from the brief
+      // dark wakes while it slept, say nothing about the network now, and would otherwise hold sync off for minutes.
+      if (s.now() - r.lastTurn > 60_000) r.backoff.clear();
+      r.lastTurn = s.now();
       if (!s.local("relay:invite") && !s.local("relay:cleanup") && !s.local("relay:rotation")) continue;
       await withRelay(s, async (signal) => {
         try { await rotationStep(s, signal, run.force); } catch (e) { if (signal.aborted) throw e; }

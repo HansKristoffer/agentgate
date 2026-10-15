@@ -465,6 +465,27 @@ test("syncAll delivers newer credentials over the relay; a rejected upload does 
   expect(relayStatus(b)).toMatchObject({ pushError: expect.stringContaining("storage"), pullError: undefined });
 });
 
+test("after a sleep, the relay is retried within seconds even if it failed for hours before", async () => {
+  const r = relay();
+  const a = node("a"), b = node("b");
+  let T = Date.now();
+  a.now = () => T;
+  const invite = await createRelay(a, r.url);
+  await joinRelay(b, invite);
+  // Awake while the relay is unreachable for half an hour: retries back off to their ten-minute cap.
+  r.ctl.mode = "down";
+  for (let i = 0; i < 120; i++) { T += 15_000; await relaySync(a); }
+  // Asleep overnight, and awake a moment before the network is: the first attempt fails too.
+  T += 8 * 3_600_000;
+  await relaySync(a);
+  r.ctl.mode = "ok";
+  b.put("account", "fresh", { id: "fresh", provider: "claude", label: "fresh" });
+  await sync(b);
+  T += 20_000;
+  await relaySync(a);
+  expect(a.get("account", "fresh")).toBeDefined();
+});
+
 test("an oversized record blocks the upload checkpoint and is reported", async () => {
   const r = relay();
   const a = node("a");
