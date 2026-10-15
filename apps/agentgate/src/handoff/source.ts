@@ -9,6 +9,8 @@ import { sessionLines } from "./history.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
 import { QUEUED_MAX, type Manifest } from "./destination.ts";
+import { FILES_PROTOCOL, localEdits } from "../checkout-files.ts";
+import { canonicalProject, parseRemote } from "../mcp/gateway.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
  * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort and nothing
@@ -200,7 +202,12 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
       mkdirSync(dirname(join(out, "session", file)), { recursive: true });
       copyFileSync(join(located.root, file), join(out, "session", file));
     }
-    const paths = [...(st.bundle ? ["bundle"] : []), ...located.files.map((f) => `session/${f}`)];
+    const edits = await carriedFiles(h, job);
+    for (const path of edits) {
+      mkdirSync(dirname(join(out, "checkout-files", path)), { recursive: true });
+      copyFileSync(join(st.cwd!, path), join(out, "checkout-files", path));
+    }
+    const paths = [...(st.bundle ? ["bundle"] : []), ...located.files.map((f) => `session/${f}`), ...edits.map((f) => `checkout-files/${f}`)];
     st.files = paths.map((path) => ({ path, size: statSync(join(out, path)).size }));
 
     // A later handoff back here finds the thread that held this session (round trips reuse threads), and the records
@@ -209,6 +216,27 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     h.s.setLocal(sessionNote.lines(st.sessionId!), String(sessionLines(readFileSync(join(located.root, located.files[0]!), "utf8"))));
   });
   h.advance(job, "send");
+}
+
+/** Gitignored files the checkout changed from its file store (checkout-files.ts): the thread's own `.env.local` edits.
+ * Never what fails a handoff; they stay here with a warning instead. */
+async function carriedFiles(h: Handoffs, job: Job<SourceState>): Promise<string[]> {
+  const st = job.state;
+  const root = h.options.filesRoot;
+  if (!root) return [];
+  try {
+    const repo = parseRemote(st.remoteUrl!);
+    const listed = repo ? h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? [] : [];
+    const paths = await localEdits(root, st.cwd!, listed);
+    if (paths.length && (h.s.get("node", job.target)?.protocol ?? 0) < FILES_PROTOCOL) {
+      st.warnings.push(`Your changes to ${paths.join(", ")} stayed on ${h.s.nodeId}: update agentgate on ${job.target} to carry them`);
+      return [];
+    }
+    return paths;
+  } catch (e) {
+    st.warnings.push(`Changes to gitignored files stayed on ${h.s.nodeId}: ${(e as Error).message}`);
+    return [];
+  }
 }
 
 async function send(h: Handoffs, job: Job<SourceState>) {

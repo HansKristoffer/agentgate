@@ -81,4 +81,5 @@ directly and never through a loopback listener, so it cannot borrow loopback tru
 - [Relay](relay.md): sync through an encrypted Cloudflare mailbox.
 - [Remote MCP endpoints](remote-mcp.md): virtual projects served at a public relay URL.
 - [Skills](skills.md): synced skill bundles and the links each node maintains.
+- [Checkout files](checkout-files.md): gitignored files between machines through buncargo's file store.
 - [Claude Desktop](claude-desktop.md): switching Desktop's login and gateway mode.

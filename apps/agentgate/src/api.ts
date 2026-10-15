@@ -54,6 +54,7 @@ import {
 import * as desktop from "./desktop.ts";
 import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
+import { addFileAt, filesErrors, removeFiles } from "./checkout-files.ts";
 import {
   connectSkillRepo,
   deleteSkill,
@@ -208,6 +209,7 @@ export function management(ctx: Ctx) {
       skillConflicts: ctx.skills.conflicts(),
       skillHealth: ctx.skills.health(),
       skillRepos: skillRepoSummaries(s),
+      fileErrors: filesErrors(s),
       checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({ path, project, skills: ctx.skills.repoSkills(path), mirror: ctx.skills.mirroring(path) })),
       settings: s.settings(),
       nodes: s.list("node").map((n) => ({
@@ -499,6 +501,17 @@ export function management(ctx: Ctx) {
     const saved = input(() => saveProject(s, f.id, f));
     ctx.remote.reconcile();
     return c.json(publicProject(saved, ctx.remote));
+  });
+  // A repository's env files (checkout-files.ts). Adding reads a file from this machine's checkout, so it is local only.
+  const filesRoot = () => { if (!ctx.files.root) throw new Error("Env files are off in this daemon"); return ctx.files.root; };
+  app.post("/projects/files", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(4096) }).strict().parse(await json(c.req.raw));
+    return c.json({ project: await inputAsync(() => addFileAt(s, filesRoot(), f.project, f.path)) });
+  });
+  app.delete("/projects/files", (c) => {
+    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    return c.json({ project: input(() => removeFiles(s, filesRoot(), id, [path])) });
   });
   // Virtual projects' endpoints. Every route that returns or changes a secret is loopback-only.
   const remoteId = (c: { req: { query(name: string): string | undefined } }) => z.string().min(1).max(80).parse(c.req.query("id"));

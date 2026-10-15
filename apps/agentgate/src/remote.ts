@@ -11,9 +11,9 @@ import type { Store } from "./store.ts";
  */
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
- * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts). A feature waits until every node reports
- * its protocol. */
-export const NODE_PROTOCOL = 5;
+ * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
+ * (checkout-files.ts). A feature waits until every node reports its protocol. */
+export const NODE_PROTOCOL = 6;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
@@ -302,7 +302,8 @@ export class RemoteEndpoints {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, ...rest } = p;
+  const { remote, files, ...rest } = p;
   const summary = endpoints.summary(p);
-  return summary ? { ...rest, remote: summary } : rest;
+  const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
+  return { ...rest, ...shown, ...(summary && { remote: summary }) };
 }

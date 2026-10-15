@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { homedir, hostname } from "node:os";
-import { resolve } from "node:path";
+import { relative as relativePath, resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
@@ -15,6 +16,7 @@ import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
+import { FILES_ROOT, addFiles, checkoutProject, listFiles, removeFiles } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
@@ -49,6 +51,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
+  project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
@@ -432,6 +435,26 @@ async function main() {
         for (const p of s.list("project"))
           console.log(`${p.id.padEnd(32)} ${Object.entries(p.mcp).map(([a, i]) => `${a}=${i}`).join(" ")}${p.skills.length ? `  skills: ${p.skills.join(",")}` : ""}${p.id !== "*" && !p.inheritDefaults ? "  (no * defaults)" : ""}`);
         return;
+      }
+      if (sub === "files") {
+        const git = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stderr: "ignore" });
+        const top = git.exitCode === 0 ? git.stdout.toString().trim() : die("Run project files in a checkout of the repository");
+        const [action, ...paths] = rest;
+        // Paths are relative to where you are, stored relative to the checkout.
+        const relative = paths.map((p) => relativePath(top, resolve(realpathSync(process.cwd()), p)));
+        if (action === "add" && paths.length) return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
+        if (action === "rm" && paths.length) {
+          const { project } = await checkoutProject(s, top);
+          return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
+        }
+        if (action === "ls" || action === undefined) {
+          const list = await listFiles(s, FILES_ROOT, top);
+          for (const f of list.files) console.log(`${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`);
+          if (!list.files.length) console.log(`no files for ${list.project}; add one with: agentgate project files add .env.local`);
+          if (list.error) console.log(`not syncing: ${list.error}`);
+          return;
+        }
+        return die("project files add|rm <path> [...] | ls");
       }
       const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
       if (sub === "show") {

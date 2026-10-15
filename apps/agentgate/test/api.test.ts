@@ -8,6 +8,10 @@ import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
+import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
+import { repos, tmp } from "./fixtures/git.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -476,4 +480,33 @@ test("shared logins show in status without their secrets, share only locally and
   expect((await call("/api/logins/share", "POST", {}, "tailnet", auth)).status).toBe(403);
   expect((await call("/api/logins/github", "DELETE", undefined, "tailnet", auth)).status).toBe(200);
   expect(s.list("login")).toEqual([]);
+});
+
+test("env files: the app adds one from a local checkout, sees paths only, and removes it everywhere", async () => {
+  const { call, ctx } = fixture();
+  const root = join(tmp(), ".buncargo", "files");
+  ctx.files = new CheckoutFiles(ctx.s, root);
+  cleanup.push(async () => ctx.files.close());
+  const r = repos("a"), other = repos("b");
+  writeFileSync(join(r.a, ".env.local"), "API_KEY=private-value\n");
+  writeFileSync(join(other.b, ".env"), "x\n");
+  const project = `test/${r.url.split("/").at(-1)!.replace(/\.git$/, "")}`;
+
+  const body = { project, path: join(r.a, ".env.local") };
+  expect((await call("/api/projects/files", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect((await call("/api/projects/files", "POST", body)).status).toBe(200);
+  const wrong = await call("/api/projects/files", "POST", { project, path: join(other.b, ".env") });
+  expect(wrong.status).toBe(400);
+  expect(((await wrong.json()) as { error: string }).error).toContain("not test/repo");
+
+  const status = await (await call("/api/status")).json() as Status;
+  expect(statusSchema.safeParse(status).success).toBe(true);
+  expect(status.projects.find((p) => p.id === project)!.files).toEqual([{ path: ".env.local", updatedAt: expect.any(String) }]);
+  expect(JSON.stringify(status)).not.toContain(btoa("API_KEY=private-value\n"));
+  expect(status.fileErrors).toEqual({});
+
+  expect((await call(`/api/projects/files?id=${encodeURIComponent(project)}&path=.env.local`, "DELETE")).status).toBe(200);
+  expect([...readStore(join(root, `github.com/${project}`)).files.keys()]).toEqual([]);
+  const after = await (await call("/api/status")).json() as Status;
+  expect(after.projects.find((p) => p.id === project)!.files).toEqual([]);
 });

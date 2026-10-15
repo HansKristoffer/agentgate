@@ -52,4 +52,5 @@ Terms whose meaning matters across agentgate. Constraints belong in the [overvie
 | Virtual project | A project with id `@slug`: no repository, no `*` defaults, and it can have a remote endpoint. |
 | Remote endpoint | A public relay URL `/mcp/<key>` for a virtual project, answered by its serving node. |
 | Checkout | A local repository path registered on this node and mapped to a project, used to link skills. |
+| File store | Buncargo's per-machine store of a repository's gitignored files (`~/.buncargo/files/<repo key>`), synced on its project record. |
 | Skill | A synced bundle with a root `SKILL.md`, written to disk on each node and linked where it is assigned. |

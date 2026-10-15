@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, FolderGit2, FolderOpen, Pencil, Plus } from "lucide-react";
+import { Bot, FileKey, FolderGit2, FolderOpen, Pencil, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { PublicProject, ToolPreview } from "@agentgate/protocol";
 import { Button, Input, Tabs, TextField } from "@heroui/react";
@@ -14,9 +14,11 @@ import {
 } from "../components/ui.tsx";
 import { ProjectSkillChecks } from "../components/SkillAssignments.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
-import { field, idPath, confirmDelete } from "./utils.ts";
+import { openExternal, request } from "../api.ts";
+import { ago, field, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
+
+const FILES_GUIDE = "https://github.com/HansKristoffer/agentgate#env-files-between-machines";
 
 type Editing = Omit<PublicProject, "remote" | "skillRepos"> & { virtual?: boolean };
 const isVirtual = (id: string) => id.startsWith("@");
@@ -48,6 +50,16 @@ export function Projects(props: ViewProps) {
       setQuery("");
     });
   const [tools, setTools] = useState<ToolPreview[]>();
+  /** The project whose env files are open. */
+  const [files, setFiles] = useState<string>();
+  const filesOf = (id: string) => data.projects.find((p) => p.id === id)?.files ?? [];
+  const addFile = (project: string) =>
+    void (async () => {
+      const checkout = data.checkouts.find((c) => c.project.toLowerCase() === project.toLowerCase())?.path;
+      const path = await open({ title: `Choose a gitignored file in a checkout of ${project}`, defaultPath: checkout });
+      if (typeof path === "string")
+        await perform(() => request(connection, "/projects/files", "POST", { project, path }), "File saved for every machine");
+    })();
   const defaults = data.projects.find((p) => p.id === "*");
   /** Links a repository's own skills between .claude/skills and .agents/skills, so Claude and Codex both see them.
    * Local only: it writes into this machine's checkouts of the repository. */
@@ -121,6 +133,8 @@ export function Projects(props: ViewProps) {
                       ? "Includes global MCP servers"
                       : "Project tools only"}
                   </small>
+                  {p.files?.length ? <small>Env files: {p.files.map((f) => f.path).join(" · ")}</small> : null}
+                  {data.fileErrors[p.id] && <small className="danger">Env files not syncing: {data.fileErrors[p.id]}</small>}
                 </div>
                 <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
                   <Pencil size={15} />
@@ -135,6 +149,7 @@ export function Projects(props: ViewProps) {
                           setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
                         ),
                     },
+                    { label: "Env files", onAction: () => setFiles(p.id) },
                     mirrorItem(p.id),
                     {
                       label: "Delete",
@@ -390,6 +405,60 @@ export function Projects(props: ViewProps) {
               </Button>
             </form>
           )}
+        </Modal>
+      )}
+      {files && (
+        <Modal title={`Env files for ${files}`} close={() => setFiles(undefined)}>
+          <p className="muted">
+            Gitignored files such as <code>.env.local</code> follow this repository to all your machines. A checkout
+            agentgate creates, through a handoff or a clone, gets each file it is missing; a file already in a checkout is
+            never replaced. Repositories that use buncargo get its <code>files pull</code> instead, which keeps your local
+            edits. A handoff also carries the thread's own changes to these files. Files buncargo keeps for one machine
+            stay there.
+          </p>
+          {local && <p className="muted">Env files are hidden in the file picker; press ⌘⇧. to show them.</p>}
+          {data.fileErrors[files] && <small className="danger">Not syncing: {data.fileErrors[files]}</small>}
+          <div className="tool-list">
+            {filesOf(files).length ? (
+              filesOf(files).map((f) => (
+                <div className="row" key={f.path}>
+                  <span className="grow">
+                    <code>{f.path}</code>
+                    <p>Saved {ago(Date.parse(f.updatedAt))}</p>
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onPress={() =>
+                      void perform(
+                        () => request(connection, `/projects/files?id=${idPath(files)}&path=${encodeURIComponent(f.path)}`, "DELETE"),
+                        "Removed from every machine",
+                      )
+                    }
+                  >
+                    Stop syncing
+                  </Button>
+                </div>
+              ))
+            ) : (
+              <Empty>
+                <FileKey size={22} />
+                <strong>No env files yet.</strong>
+                <p>Add one from a checkout on this machine, or save one with buncargo.</p>
+              </Empty>
+            )}
+          </div>
+          <div className="inline-form">
+            {local && (
+              <Button size="sm" onPress={() => addFile(files)}>
+                <Plus size={15} />
+                Add a file
+              </Button>
+            )}
+            <Button size="sm" variant="tertiary" onPress={() => void openExternal(FILES_GUIDE)}>
+              How it works
+            </Button>
+          </div>
         </Modal>
       )}
       {tools && (
