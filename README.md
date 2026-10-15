@@ -93,7 +93,7 @@ One instance per provider covers every account; the daemon switches eligible acc
 
 ### Hand threads between machines
 
-Start a thread on your laptop, hand it to an always-on server while you are away, and hand it back to test and push. A handed-off thread moves with its Claude session and its code: unpushed commits and uncommitted and untracked files (respecting `.gitignore`). Code travels directly between the two machines over Tailscale, or end-to-end encrypted through the relay; nothing is pushed to `origin`.
+Start a thread on your laptop, hand it to an always-on server while you are away, and hand it back to test and push. A handed-off thread moves with its Claude session and its code: unpushed commits and uncommitted and untracked files (respecting `.gitignore`), plus your changes to the repository's [env files](#env-files-between-machines). Code travels directly between the two machines over Tailscale, or end-to-end encrypted through the relay; nothing is pushed to `origin`.
 
 Connect agentgate to the T3 Code on each machine once: on the T3 Code page open **Machines** and choose **Connect T3 Code** in that machine's row, or run `agentgate t3 connect` there (`--node srv` sets up another machine from the one you are on). T3 Code must be running on that machine; its own `t3` command creates a pairing link that agentgate redeems right away, over that machine only. Pair again the same way when agentgate asks. If that machine has no `t3` command, create a link in T3 Code under **Settings → Connections** (turn on **Network access**, then **Create link** with **Standard** permissions) and paste it into **Connect with a pasted link**, or run `agentgate t3 connect <link>`. The machines must be paired over Tailscale or in the same relay group. A handoff moves the session between the Claude homes T3 Code's Claude provider uses on each machine, whether that is `~/.claude` or the agentgate home above.
 
@@ -180,6 +180,20 @@ The app installs the exact files shown in a preview. Previews expire after ten m
 Bundles must contain a nonempty root `SKILL.md`, with unique portable paths and regular files. Symlinks and special files cannot be synced. Each bundle is limited to 3 MiB of base64 data (about 2.25 MiB of files) and 5,000 files; imports are limited to 100 skills and 24 MiB per pack. Large sources can be imported with `--skill` one skill at a time.
 
 Repository-owned skills are mirrored only when you opt in with **Share repo skills between Claude and Codex** in a project's ⋯ menu in Projects. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
+
+## Env files between machines
+
+Gitignored files such as `.env.local` or `apps/expo-app/.env` follow a repository to your other machines. If the repository uses [buncargo](https://github.com/HansKristoffer/buncargo), its file store (`~/.buncargo/files`) syncs on its own: save a file there with buncargo and every machine's store gets it. Otherwise, in a checkout run:
+
+```sh
+agentgate project files add .env.local apps/expo-app/.env   # save them for every machine
+agentgate project files ls
+agentgate project files rm .env.local
+```
+
+Run `add` again to save a newer version; the newest save of each file wins. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+
+Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
 ## Your MCP servers and skills in Grok
 

@@ -31,6 +31,7 @@ import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
+import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -41,6 +42,7 @@ export interface Ctx {
   creds: Credentials;
   gateway: Gateway;
   skills: SkillLinks;
+  files: CheckoutFiles;
   imports: SkillImports;
   abort: AbortController;
   pending: Set<Promise<void>>;
@@ -61,19 +63,22 @@ export function handoffOptions(s: Store): HandoffOptions {
     get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
     tempDir: join(CONFIG_DIR, "handoffs"),
     t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),
+    filesRoot: FILES_ROOT,
   };
 }
 
 export { providers } from "./llm/providers.ts";
 
-export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
+export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
   const gateway = new Gateway(s);
+  const memory = s.db.filename === ":memory:";
+  const files = options.files ?? new CheckoutFiles(s, memory ? null : undefined);
   const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
   gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs };
+  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, memory ? null : undefined), files, imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs };
 }
 
 export function app(ctx: Ctx) {
@@ -192,6 +197,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
     if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
     if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
+    // A store arrived from another machine, or the last old node updated so stores may sync.
+    if (snapshot.records.some(r => r.kind === "project" || r.kind === "node")) ctx.files.soon();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
     if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
     if (snapshot.records.some(r => r.kind === "login")) void logins().catch(() => { });
@@ -199,6 +206,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(logins, 10 * 60_000);
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
+  schedule(async () => { ctx.files.sync(); }, 30000);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(async () => {
@@ -220,7 +228,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   let stopping: Promise<void> | undefined;
   return {
     ctx, loopback, stop: () => stopping ??= (async () => {
-      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.imports.close();
+      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.files.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
       ctx.remote.close(); ctx.channel.close();

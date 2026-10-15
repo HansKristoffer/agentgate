@@ -39,6 +39,8 @@ export interface HandoffOptions {
   /** T3 Code's state folder (`~/.t3/userdata`), where a returning thread's history is written. Unset in a checkout's
    * dev daemon, which must not write the real T3 Code's state, and then never written. */
   t3StateDir?: string;
+  /** The buncargo file store's root (checkout-files.ts). Unset leaves checkout files out of handoffs. */
+  filesRoot?: string;
   pollMs?: number;
   setupTimeoutMs?: number;
   retryPauseMs?: number;

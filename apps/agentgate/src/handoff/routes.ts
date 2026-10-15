@@ -7,7 +7,7 @@ import { CHANNEL_CHUNK } from "../channel.ts";
 import { jsonInput } from "../http.ts";
 import { MAX_BODY, readBody } from "../runtime.ts";
 import type { Peer } from "../sync.ts";
-import { abort, manifestSchema, peerStatus, prepare, prepareSchema, start, type DestState } from "./destination.ts";
+import { abort, checkoutFile, manifestSchema, peerStatus, prepare, prepareSchema, start, type DestState } from "./destination.ts";
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
 import { startHandoff } from "./source.ts";
@@ -77,7 +77,7 @@ export function handoffRoutes(h: Handoffs) {
 
     const path = c.req.query("path") ?? "";
     const offset = Number(c.req.query("offset"));
-    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/"))) return c.json({ error: "invalid path" }, 400);
+    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/") || checkoutFile(path))) return c.json({ error: "invalid path" }, 400);
     if (!Number.isInteger(offset) || offset < 0) return c.json({ error: "invalid offset" }, 400);
 
     const chunk = gunzipSync(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), { maxOutputLength: CHANNEL_CHUNK });

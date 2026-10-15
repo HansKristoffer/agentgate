@@ -24,6 +24,10 @@ import { memoryRelay, serveRelay } from "../../relay/test/memory.ts";
 import { createRelay, deriveKeys, joinRelay, parseInvite, syncAll } from "../src/relay.ts";
 import { NodeChannel } from "../src/channel.ts";
 import { relayedRoutes } from "../src/handoff/routes.ts";
+import { NODE_PROTOCOL } from "../src/remote.ts";
+import { checkoutFile } from "../src/handoff/destination.ts";
+import { parseRemote } from "../src/mcp/gateway.ts";
+import { keyForProject, writeStore } from "../src/checkout-files.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -49,7 +53,7 @@ async function node(name: string, main: string, options: { server?: boolean; set
   const t3 = fakeT3({ claudeDir });
   const project = t3.addProject(main, options.setup ? [{ id: "setup", name: "Setup", command: options.setup, icon: "configure", runOnWorktreeCreate: true }] : []);
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), pollMs: 20, retryPauseMs: 100 });
+  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), filesRoot: join(root, ".buncargo", "files"), pollMs: 20, retryPauseMs: 100 });
   const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(s, () => { }).route("/", handoffRoutes(h))).fetch });
   cleanup.push(async () => { await h.close(); server.stop(true); t3.stop(); s.close(); });
   return { name, s, t3, project, claudeDir, h, url: `http://127.0.0.1:${server.port}`, server: !!options.server };
@@ -58,7 +62,7 @@ type Node = Awaited<ReturnType<typeof node>>;
 
 function pair(...nodes: Node[]) {
   for (const n of nodes) for (const m of nodes) {
-    n.s.put("node", m.name, { id: m.name, alwaysOn: m.server });
+    n.s.put("node", m.name, { id: m.name, alwaysOn: m.server, protocol: NODE_PROTOCOL });
     if (n !== m) n.s.db.run("insert into peers values (?, ?, ?, 0, ?)", [m.name, m.url, [n.name, m.name].sort().join("-") + "-token-0123456789abcdef", Date.now()]);
   }
 }
@@ -191,6 +195,56 @@ test("when the destination keeps its own code, the source keeps its uncommitted 
   expect(readFileSync(join(wtA, "mine.txt"), "utf8")).toBe("only on a\n");
   expect(sh(wtA, "stash", "list")).toBe("");
   expect(existsSync(join(wtB, "mine.txt"))).toBe(false);
+});
+
+test("gitignored files the thread changed travel with it; the store's other files fill the new worktree", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  pair(a, b);
+  for (const main of [r.a, r.b]) appendFileSync(join(main, ".git", "info", "exclude"), ".env*\n");
+  const project = parseRemote(r.url)!, key = keyForProject(project)!;
+  // A repository without buncargo: .env.local is on the project's file list, and A's copy differs from the store.
+  a.s.put("project", project, { id: project, fileList: [".env.local"] });
+  writeStore(join(a.h.options.filesRoot!, key), [{ path: ".env.local", data: Buffer.from("API=old\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
+  writeStore(join(b.h.options.filesRoot!, key), [{ path: ".env.shared", data: Buffer.from("SHARED=1\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  writeFileSync(join(wtA, ".env.local"), "API=edited\n");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).error).toBeUndefined();
+  // B fills the worktree after it reports the import, once setup is done.
+  expect((await done(b, handoffId, "destination")).error).toBeUndefined();
+  const wtB = b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath!;
+  expect(readFileSync(join(wtB, ".env.local"), "utf8")).toBe("API=edited\n");
+  expect(readFileSync(join(wtB, ".env.shared"), "utf8")).toBe("SHARED=1\n");
+  // B made the worktree, so later store updates reach it.
+  expect(JSON.parse(b.s.local("checkoutFiles:checkouts")!)).toEqual({ [wtB]: key });
+});
+
+test("handed-off checkout files are plain paths inside the checkout", () => {
+  expect(checkoutFile("checkout-files/apps/expo-app/.env")).toBe(true);
+  for (const path of ["checkout-files/../x", "checkout-files//x", "checkout-files/.git/config", "checkout-files/"]) expect(checkoutFile(path)).toBe(false);
+});
+
+test("a repository the destination clones runs its setup script from t3.json", async () => {
+  const r = repos("a"), other = repos("b");
+  const setupLog = join(r.root, "setup.log");
+  writeFileSync(join(r.a, "t3.json"), JSON.stringify({ scripts: [{ name: "Setup", command: `echo ran >> ${setupLog}`, runOnWorktreeCreate: true }] }));
+  sh(r.a, "add", "-A"); sh(r.a, "commit", "-m", "t3.json"); sh(r.a, "push", "origin", "main");
+  // B's T3 Code has a project for another repository only, so it clones this one.
+  const a = await node("a", r.a), b = await node("b", other.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).error).toBeUndefined();
+  expect((await done(b, handoffId, "destination")).error).toBeUndefined();
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath).toBeNull();
+  expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
 });
 
 test("an idle thread's background work is stopped on the source and named on the destination", async () => {

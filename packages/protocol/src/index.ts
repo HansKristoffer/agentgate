@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { skillIdSchema, skillRepoSchema } from "./skills.ts";
+import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
@@ -31,6 +31,16 @@ export const remoteSchema = z.object({
   /** Relay base URL, fixed when the endpoint is created. */
   relay: z.string().url().max(2000),
 });
+/** A file a repository keeps out of Git, such as `.env.local`, as it travels between machines on the project record
+ * (docs/internals/checkout-files.md). A removed file stays as `deleted`, so an offline machine cannot bring it back. */
+export const checkoutFileSchema = z.object({
+  path: skillFileSchema.shape.path,
+  data: skillFileSchema.shape.data.optional(),
+  updatedAt: z.string().datetime(),
+  deleted: z.literal(true).optional(),
+});
+export type CheckoutFile = z.infer<typeof checkoutFileSchema>;
+const checkoutPath = z.string().max(512).refine(safePath, "unsafe checkout file path");
 export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
@@ -46,6 +56,11 @@ export const projectSchema = z.object({
   /** A T3 Code project for this repo exists on some node, under this title; set once by T3 project sync. Older daemons
    * drop this field when they save the project; the node that has it in T3 sets it again. */
   t3Title: z.string().max(500).optional(),
+  /** The repository's file store (gitignored files), synced to every machine. Written only once every node runs node
+   * protocol 6, since older daemons drop it when they save the project. */
+  files: z.array(checkoutFileSchema).max(1000).refine((fs) => new Set(fs.map((f) => f.path)).size === fs.length, "duplicate checkout file path").optional(),
+  /** Paths `agentgate project files add` keeps in the file store, for repositories without buncargo. */
+  fileList: z.array(checkoutPath).max(200).optional(),
 });
 /** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
 export const remoteSummarySchema = z.object({
@@ -62,7 +77,11 @@ export const remoteSummarySchema = z.object({
   lastCall: z.number().optional(),
 });
 export type RemoteSummary = z.infer<typeof remoteSummarySchema>;
-export const publicProjectSchema = projectSchema.extend({ remote: remoteSummarySchema.optional() });
+/** File contents are secrets: the API shows only which files there are. */
+export const publicProjectSchema = projectSchema.extend({
+  remote: remoteSummarySchema.optional(),
+  files: z.array(z.object({ path: z.string(), updatedAt: z.string() })).optional(),
+});
 export type PublicProject = z.infer<typeof publicProjectSchema>;
 export const nodeSchema = z.object({
   id: z.string(),
