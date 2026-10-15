@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/HansKristoffer/agentgate/compare/v0.19.0...v0.20.0) (2026-10-15)
+
+
+### Features
+
+* **files:** env files follow a repository to every machine and travel with handoffs ([#67](https://github.com/HansKristoffer/agentgate/issues/67)) ([c69ad98](https://github.com/HansKristoffer/agentgate/commit/c69ad98f33608275fc2252436df47f29cfe46617))
+
 ## [0.19.0](https://github.com/HansKristoffer/agentgate/compare/v0.18.0...v0.19.0) (2026-10-15)
 
 
