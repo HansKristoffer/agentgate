@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
+import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
 import { CONTINUE, READY, restartTasks } from "../src/handoff/destination.ts";
@@ -89,6 +90,8 @@ test("a working thread moves to the server with its session and code, continues 
   writeFileSync(join(wtA, "notes.txt"), "uncommitted\n");
   session(a, wtA, ["code word: falcon"]);
   const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }], background: [{ kind: "command", description: "gh pr checks 72 --watch" }] });
+  // A's T3 Code keeps its state where the history of a returning thread is written.
+  a.h.options.t3StateDir = t3StateDir(new URL(a.t3.url).port, [thread.id]);
 
   // Started through the agent's own MCP tool, which returns before the job ends.
   const tools = await handoffSource(a.h);
@@ -139,11 +142,18 @@ test("a working thread moves to the server with its session and code, continues 
 
   // Work on B, then hand it back: A reuses its original thread and its worktree takes B's code.
   writeFileSync(join(wtB, "from-b.txt"), "b's work\n"); sh(wtB, "add", "-A"); sh(wtB, "commit", "-m", "b's work");
+  appendFileSync(join(resumed, `${SID}.jsonl`), [
+    { type: "user", cwd: wtB, message: { content: "what's next?" } },
+    { type: "assistant", cwd: wtB, message: { content: [{ type: "text", text: "Tests." }] } },
+  ].map((r) => JSON.stringify(r) + "\n").join(""));
   const back = await requestHandoff(b.h, { threadId: imported.id, to: "a" });
   expect(back).toMatchObject({ node: "b", to: "a" });
   expect((await done(b, back.handoffId)).error).toBeUndefined();
   expect((await done(a, back.handoffId, "destination")).error).toBeUndefined();
   expect(a.t3.threads.get(thread.id)).toMatchObject({ archivedAt: null, worktreePath: wtA });
+  // A's thread shows what was said on B, after what it already had.
+  expect(timeline(a.h.options.t3StateDir!, thread.id).map((i) => i.text)).toEqual(["earlier", "what's next?", "Tests."]);
+  expect(a.h.view(a.h.load("destination", back.handoffId)!).warnings).toEqual([]);
   // A's own thread came back; T3's import, which would have duplicated it, was not asked.
   expect(a.t3.threads.has(`import:claudeAgent:${SID}`)).toBe(false);
   expect(readFileSync(join(wtA, "from-b.txt"), "utf8")).toBe("b's work\n");

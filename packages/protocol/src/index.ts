@@ -95,6 +95,8 @@ export const settingsSchema = z.object({
   codexQuotaPolling: z.boolean().default(false),
   /** Every node with T3 Code connected adds the GitHub projects the others' T3 Code has. */
   t3ProjectSync: z.boolean().default(false),
+  /** A thread that comes back to a machine gets the messages it had elsewhere written into T3 Code's own database. */
+  t3HandoffHistory: z.boolean().default(true),
 });
 /** Remove defaults before making patches optional: omission must never reset a field. */
 export const accountPatchSchema = z.object({
@@ -109,6 +111,7 @@ export const settingsPatchSchema = z.object({
   maxAccounts: settingsSchema.shape.maxAccounts.removeDefault().optional(), bootstrapTimeoutMs: settingsSchema.shape.bootstrapTimeoutMs.removeDefault().optional(),
   aliases: settingsSchema.shape.aliases.removeDefault().optional(), codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
   t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
+  t3HandoffHistory: settingsSchema.shape.t3HandoffHistory.removeDefault().optional(),
 }).strict();
 export type Account = z.infer<typeof accountSchema>;
 export type Project = z.infer<typeof projectSchema>;

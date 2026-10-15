@@ -36,6 +36,9 @@ export interface HandoffOptions {
   cloneDir: string;
   /** Per-handoff temp files, deleted when the job ends. */
   tempDir: string;
+  /** T3 Code's state folder (`~/.t3/userdata`), where a returning thread's history is written. Unset in a checkout's
+   * dev daemon, which must not write the real T3 Code's state, and then never written. */
+  t3StateDir?: string;
   pollMs?: number;
   setupTimeoutMs?: number;
   retryPauseMs?: number;
@@ -44,10 +47,12 @@ export interface HandoffOptions {
 const TERMINAL_STEPS = new Set(["done", "failed"]);
 
 /** Node-local notes about a Claude session that outlive one handoff: the thread that held it when it left this node
- * (so a round trip brings that thread back), and the stash of changes parked then (dropped when they come back). */
+ * (so a round trip brings that thread back), the stash of changes parked then (dropped when they come back), and how
+ * many records its session file had then (the ones after are the history that thread lacks when it comes back). */
 export const sessionNote = {
   thread: (sessionId: string) => `handoff:session:${sessionId}`,
   stash: (sessionId: string) => `handoff:stash:${sessionId}`,
+  lines: (sessionId: string) => `handoff:lines:${sessionId}`,
 };
 const ABANDONED = 10 * 60_000;
 

@@ -322,6 +322,14 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           <div className="item" key={v.node}><small>{v.node}: {v.t3!.projectSyncError}</small></div>
         ))}
       </Panel>
+      <Panel title="Handoffs">
+        <Toggle
+          label="Show messages from other machines"
+          description="A thread that comes back shows the messages it got on your other machines. agentgate writes them into T3 Code's own database, which T3 Code does not support; turn this off if T3 Code misbehaves after a handoff."
+          isSelected={data.settings.t3HandoffHistory}
+          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3HandoffHistory: on } }))}
+        />
+      </Panel>
     </>
   );
 }

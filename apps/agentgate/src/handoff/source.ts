@@ -1,10 +1,11 @@
-import { copyFileSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { sleep } from "../runtime.ts";
 import { createBundle, describe, snapshot, stashIfUnchanged, type Snapshot } from "./code.ts";
 import { PeerError, peerCall, sessionNote, timed, transport, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { CHANNEL_CHUNK } from "../channel.ts";
+import { sessionLines } from "./history.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
 import { QUEUED_MAX, type Manifest } from "./destination.ts";
@@ -202,8 +203,10 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     const paths = [...(st.bundle ? ["bundle"] : []), ...located.files.map((f) => `session/${f}`)];
     st.files = paths.map((path) => ({ path, size: statSync(join(out, path)).size }));
 
-    // A later handoff back here finds the thread that held this session (round trips reuse threads).
+    // A later handoff back here finds the thread that held this session (round trips reuse threads), and the records
+    // added elsewhere in the meantime.
     h.s.setLocal(sessionNote.thread(st.sessionId!), job.thread);
+    h.s.setLocal(sessionNote.lines(st.sessionId!), String(sessionLines(readFileSync(join(located.root, located.files[0]!), "utf8"))));
   });
   h.advance(job, "send");
 }
