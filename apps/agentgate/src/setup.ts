@@ -89,6 +89,9 @@ const json = (file: string) => {
 };
 const backup = (file: string) => { if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`); };
 
+/** The token Claude Code sends when it has no login of its own; the proxy replaces it with a pool account's. */
+const PLACEHOLDER_TOKEN = "agentgate";
+
 export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): Promise<string> {
   const codexFile = join(paths.codex, "config.toml");
   const claudeFile = join(paths.claude, ".claude.json");
@@ -99,7 +102,7 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   const [command, ...args] = [...selfCommand(), "mcp"];
   cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   cfg.hasCompletedOnboarding = true;
-  settings.env = { ...settings.env, ANTHROPIC_BASE_URL: `${LOCAL_URL}/anthropic`, ANTHROPIC_AUTH_TOKEN: "agentgate" };
+  settings.env = { ...settings.env, ANTHROPIC_BASE_URL: `${LOCAL_URL}/anthropic`, ANTHROPIC_AUTH_TOKEN: PLACEHOLDER_TOKEN };
   for (const file of [codexFile, claudeFile, settingsFile]) backup(file);
   atomicWrite(codexFile, toml); atomicWrite(claudeFile, JSON.stringify(cfg, null, 2)); atomicWrite(settingsFile, JSON.stringify(settings, null, 2));
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
@@ -168,6 +171,11 @@ export function claudeStatus(dir = PRIMARY_CLAUDE_DIR): { routing: boolean; mcp:
   };
 }
 
+/** Whether Claude Code is signed in itself: it saves the account in .claude.json, and the token in .credentials.json or the Keychain. */
+const ownClaudeLogin = (dir: string) => {
+  try { return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount; } catch { return false; }
+};
+
 export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
   const file = join(dir, "settings.json"), undo = `${file}.agentgate-undo`;
   await mcp(on, dir);
@@ -175,11 +183,15 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
   if (on) {
     if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }));
     backup(file); env.ANTHROPIC_BASE_URL = url;
+    // Claude Code will not start without a login, though the proxy never uses it. Keep the user's own where there is
+    // one; a server set up from scratch has none and would answer every turn with "Not logged in".
+    if (!ownClaudeLogin(dir) && !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY) env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
   } else {
     if (!existsSync(undo) && env.ANTHROPIC_BASE_URL !== url) return `No agentgate setup change to undo in ${file}.`;
     const original = existsSync(`${file}.before-agentgate`) ? json(`${file}.before-agentgate`).env ?? {} : {};
     const previous = existsSync(undo) ? json(undo) : { hadValue: Object.hasOwn(original, "ANTHROPIC_BASE_URL"), value: original.ANTHROPIC_BASE_URL };
     if (env.ANTHROPIC_BASE_URL === url) { if (previous.hadValue) env.ANTHROPIC_BASE_URL = previous.value; else delete env.ANTHROPIC_BASE_URL; }
+    if (env.ANTHROPIC_AUTH_TOKEN === PLACEHOLDER_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
   }
   settings.env = env; if (!Object.keys(env).length) delete settings.env;
   atomicWrite(file, JSON.stringify(settings, null, 2) + "\n"); if (!on && existsSync(undo)) unlinkSync(undo);
