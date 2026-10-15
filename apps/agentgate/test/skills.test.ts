@@ -302,15 +302,20 @@ test("a failing checkout does not block another and mirroring is opt-in with own
 });
 
 test("worktree registrations delayed beyond 600 ms converge through bounded retries", async () => {
-  const { s, dir, root, repo, links } = setup();
-  installSkills(s, "owner/pack", [fetched("x")]); setSkillProjects(s, "x", ["owner/repo"]); links.register(repo, "owner/repo");
-  const tree = join(dir, "slow-worktree"), metadata = join(repo, ".git", "worktrees", "slow");
-  mkdirSync(tree); mkdirSync(metadata);
-  await Bun.sleep(800);
-  writeFileSync(join(metadata, "gitdir"), join(tree, ".git"));
-  // Retries run up to 10 s after the event; on a busy macOS runner the event itself can arrive late, so wait through the
-  // 5 s one rather than relying on the 2 s one.
-  expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"), 6000)).toBe(true);
+  const { s, dir, root, repo, links: initial } = setup(); initial.close();
+  // Fire the watch event by hand: real FSEvents can arrive seconds late on a busy macOS runner, and this tests the retries.
+  const events: (() => void)[] = [];
+  const factory = ((path: string, callback: () => void) => { events.push(callback); return watch(path, () => {}); }) as typeof watch;
+  const links = new SkillLinks(s, root, () => [], { watch: factory });
+  try {
+    installSkills(s, "owner/pack", [fetched("x")]); setSkillProjects(s, "x", ["owner/repo"]); links.register(repo, "owner/repo");
+    const tree = join(dir, "slow-worktree"), metadata = join(repo, ".git", "worktrees", "slow");
+    mkdirSync(tree); mkdirSync(metadata);
+    for (const event of events) event();
+    await Bun.sleep(800);
+    writeFileSync(join(metadata, "gitdir"), join(tree, ".git"));
+    expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"), 3000)).toBe(true);
+  } finally { links.close(); }
 }, 10_000);
 
 test("watch setup failures and emitted errors are recoverable and close allocated watchers", () => {
