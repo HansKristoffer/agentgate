@@ -50,7 +50,10 @@ export const manifestSchema = prepareSchema.extend({
 }).strict();
 type Prepare = z.infer<typeof prepareSchema>;
 /** A gitignored file from the source checkout, such as `.env.local` (checkout-files.ts). */
-export const checkoutFile = (path: string) => path.startsWith("checkout-files/") && safePath(path.slice(15));
+const CHECKOUT_FILES = "checkout-files/";
+export const checkoutFile = (path: string) => path.startsWith(CHECKOUT_FILES) && safePath(path.slice(CHECKOUT_FILES.length));
+/** The checkout file paths a manifest carries, relative to the checkout. */
+const carried = (m: Manifest) => m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
 export type Manifest = z.infer<typeof manifestSchema>;
 
 export interface DestState {
@@ -329,7 +332,7 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     st.codeTaken = !kept;
     if (kept) {
       st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);
-      const edits = m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(15));
+      const edits = carried(m);
       if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
       // New dependencies in the arriving code: install them again once the first setup is done.
@@ -353,7 +356,7 @@ async function apply(h: Handoffs, job: Job<DestState>) {
  * store, so buncargo keeps them as local edits. A file this checkout edited itself is kept, with a warning. */
 async function placeEdits(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
-  const edits = st.manifest!.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(15));
+  const edits = carried(st.manifest!);
   if (!edits.length) return;
   const key = await checkoutKey(st.cwd!);
   const kept = edits.filter((path) => !placeEdit(h.options.filesRoot, key, st.cwd!, path, readFileSync(join(h.dir(job.id), "files", "checkout-files", path))));

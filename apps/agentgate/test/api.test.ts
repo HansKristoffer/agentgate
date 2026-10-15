@@ -8,6 +8,10 @@ import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
+import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
+import { repos, tmp } from "./fixtures/git.ts";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -479,10 +483,6 @@ test("shared logins show in status without their secrets, share only locally and
 });
 
 test("env files: the app adds one from a local checkout, sees paths only, and removes it everywhere", async () => {
-  const { repos, tmp } = await import("./fixtures/git.ts");
-  const { CheckoutFiles, readStore } = await import("../src/checkout-files.ts");
-  const { join } = await import("node:path");
-  const { writeFileSync } = await import("node:fs");
   const { call, ctx } = fixture();
   const root = join(tmp(), ".buncargo", "files");
   ctx.files = new CheckoutFiles(ctx.s, root);

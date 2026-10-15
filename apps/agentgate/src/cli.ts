@@ -16,7 +16,7 @@ import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
-import { FILES_ROOT, addFiles, listFiles, removeFiles } from "./checkout-files.ts";
+import { FILES_ROOT, addFiles, checkoutProject, listFiles, removeFiles } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
@@ -444,7 +444,7 @@ async function main() {
         const relative = paths.map((p) => relativePath(top, resolve(realpathSync(process.cwd()), p)));
         if (action === "add" && paths.length) return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
         if (action === "rm" && paths.length) {
-          const project = (await listFiles(s, FILES_ROOT, top)).project;
+          const { project } = await checkoutProject(s, top);
           return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
         }
         if (action === "ls" || action === undefined) {

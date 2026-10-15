@@ -106,7 +106,6 @@ test("stores sync through the project record, without machine files or machine-b
 
   // B keeps a machine file of its own; A removes a file and edits another. The newer edit and the deletion arrive,
   // and B's machine file stays.
-  writeStore(join(b.root, KEY), [], []);
   const manifest = JSON.parse(readFileSync(join(b.root, KEY, "manifest.json"), "utf8"));
   manifest.files[".env.server"] = { sha256: sha("x"), updatedAt: "2026-10-01T00:00:00.000Z", machine: true };
   writeFileSync(join(b.root, KEY, "manifest.json"), JSON.stringify(manifest));
