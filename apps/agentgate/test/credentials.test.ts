@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Credentials, NeedsLogin } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
+import { accountStatus } from "../src/llm/pool.ts";
 import { Store } from "../src/store.ts";
 import { noteSyncRound } from "../src/sync.ts";
 
@@ -83,15 +84,31 @@ test("a node back from sleep does not take over until it has synced for two minu
   // one the holder already rotated.
   syncFor(srv, 5 * MIN);
   T += 3 * 60 * MIN;
-  const creds = credsFor(srv, () => mac);
-  await expect(creds.token("a")).rejects.toThrow("expired");
+  const creds = new Credentials(srv, (p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
+  await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
   syncFor(srv, 90_000);
-  await expect(creds.token("a")).rejects.toThrow("expired");
+  await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
   expect(refreshes).toBe(0);
   // Two minutes of syncing without a word from the holder: it really is gone.
   syncFor(srv, 45_000);
   expect((await creds.token("a")).holder).toBe("srv");
   expect(refreshes).toBe(1);
+});
+
+test("a node back from sleep fetches the holder's newer token for its expired copy", async () => {
+  // mac refreshed while srv slept; srv wakes with a copy that has expired and must not ask anyone to sign in again.
+  const fresh = await credsFor(mac, () => srv).refresh("a");
+  T += 30 * MIN;
+  const c = await credsFor(srv, () => mac).token("a");
+  expect(c.accessToken).toBe(fresh.accessToken);
+  expect(refreshes).toBe(1);
+});
+
+test("an expired copy of a login another machine holds shows what it waits for, not a sign-in", () => {
+  T += 30 * MIN;
+  expect(accountStatus(srv, srv.get("account", "a")!)).toMatchObject({ expired: true, needsLogin: false, waitingFor: "mac" });
+  // The holder's own expired copy is its to refresh; nobody else will.
+  expect(accountStatus(mac, mac.get("account", "a")!)).toMatchObject({ expired: true, waitingFor: undefined });
 });
 
 test("no takeover while the holder is still seen", async () => {

@@ -133,6 +133,8 @@ export const accountStatusSchema = z.object({
   observedBy: z.string().optional(),
   observationSource: z.enum(["headers", "poll", "manual"]).optional(),
   holder: z.string().optional(),
+  /** This machine's copy has expired, and the machine holding the login refreshes it; nothing to sign in to. */
+  waitingFor: z.string().optional(),
   expiresAt: z.number().optional(),
   refreshError: z.string().optional(),
 });

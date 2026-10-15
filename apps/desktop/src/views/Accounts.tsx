@@ -69,9 +69,10 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
   // A login Desktop runs that Agentgate hasn't saved yet: it shows on its account's row, or as its own row.
   const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
-  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
+  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead.
+   * An expired copy of a login another machine holds is not missing: that machine refreshes it and sync brings it here. */
   const problem = (a: AccountStatus) =>
-    a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
+    a.waitingFor ? `Waiting for ${a.waitingFor}` : a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
   const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
   const pinTitle = (a: AccountStatus) =>
     a.account.pinned
@@ -196,7 +197,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       </Button>
                     )}
                     <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
-                    {(a.needsLogin || a.expired) && (
+                    {(a.needsLogin || (a.expired && !a.waitingFor)) && (
                       <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
                         Sign in again
                       </Button>

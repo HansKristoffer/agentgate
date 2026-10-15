@@ -174,7 +174,7 @@ async function main() {
         if (!accounts.length) console.log("  (no accounts)");
         for (const a of accounts) {
           const st = accountStatus(s, a);
-          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", st.needsLogin && "NEEDS LOGIN", st.expired && "TOKEN EXPIRED", st.refreshError && "REFRESH FAILED", st.exhausted && "exhausted"].filter(Boolean).join(", ");
+          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", st.needsLogin && "NEEDS LOGIN", (st.waitingFor ? `waiting for ${st.waitingFor} to refresh` : st.expired && "TOKEN EXPIRED"), st.refreshError && "REFRESH FAILED", st.exhausted && "exhausted"].filter(Boolean).join(", ");
           console.log(`  ${a.id}  ${a.label}${flags ? `  [${flags}]` : ""}  holder ${st.holder ?? "-"}, token expires in ${mins(st.expiresAt)}`);
           for (const w of st.windows) console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
           if (!st.windows.length && !st.needsLogin) console.log("    no quota data yet (or unrecognised quota headers)");
