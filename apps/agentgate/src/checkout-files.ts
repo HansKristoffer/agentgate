@@ -1,6 +1,6 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
 import { RELAY_LIMITS } from "@agentgate/protocol/relay";
 import { z } from "zod";
@@ -403,9 +403,22 @@ export async function addFiles(s: Store, root: string, top: string, paths: strin
   return project;
 }
 
+/** Save one file the app picked, after checking it belongs to a checkout of `project`. */
+export async function addFileAt(s: Store, root: string, project: string, file: string) {
+  file = realpathSync(file);
+  const git = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { cwd: dirname(file), stderr: "ignore" });
+  if (git.exitCode !== 0) throw new Error("That file is not in a checkout of a repository");
+  const top = realpathSync(git.stdout.toString().trim());
+  const found = (await checkoutProject(s, top)).project;
+  if (found.toLowerCase() !== project.toLowerCase()) throw new Error(`That file is in a checkout of ${found}, not ${project}`);
+  return addFiles(s, root, top, [relative(top, file)]);
+}
+
 /** Drop files from the project's file list and the store; other machines remove them from their stores too. */
-export async function removeFiles(s: Store, root: string, top: string, paths: string[]) {
-  const { key, project } = await checkoutProject(s, top);
+export function removeFiles(s: Store, root: string, project: string, paths: string[]) {
+  project = canonicalProject(s, project);
+  const key = keyForProject(project);
+  if (!key) throw new Error(`${project} has no file store`);
   writeStore(join(root, key), [], paths, s.now());
   const p = s.get("project", project);
   if (p?.fileList) s.put("project", project, { ...p, fileList: p.fileList.filter((f) => !paths.includes(f)) });

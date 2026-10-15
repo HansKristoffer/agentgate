@@ -250,6 +250,8 @@ export interface Status {
   skillConflicts: string[];
   skillHealth: SkillHealth;
   skillRepos: SkillRepoSummary[];
+  /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
+  fileErrors: Record<string, string>;
   /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
   checkouts: { path: string; project: string; skills: string[]; mirror: boolean }[];
   nodes: (z.infer<typeof nodeSchema> & {
@@ -358,6 +360,7 @@ export const statusSchema = z.object({
   skillConflicts: z.array(z.string()),
   skillRepos: z.array(z.object({ url: z.string(), projects: z.array(z.string()), skills: z.array(z.string()), commit: z.string().optional(), syncedAt: z.number().optional(), error: z.string().optional(), skipped: z.array(z.string()) })).default([]),
   skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),
+  fileErrors: z.record(z.string(), z.string()).default({}),
   checkouts: z.array(z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() })),
   nodes: z.array(nodeSchema.extend({ lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional() })),
   peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),

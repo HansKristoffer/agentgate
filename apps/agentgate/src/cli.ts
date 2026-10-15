@@ -443,7 +443,10 @@ async function main() {
         // Paths are relative to where you are, stored relative to the checkout.
         const relative = paths.map((p) => relativePath(top, resolve(realpathSync(process.cwd()), p)));
         if (action === "add" && paths.length) return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
-        if (action === "rm" && paths.length) return console.log(`removed from ${await removeFiles(s, FILES_ROOT, top, relative)} on every machine`);
+        if (action === "rm" && paths.length) {
+          const project = (await listFiles(s, FILES_ROOT, top)).project;
+          return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
+        }
         if (action === "ls" || action === undefined) {
           const list = await listFiles(s, FILES_ROOT, top);
           for (const f of list.files) console.log(`${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`);

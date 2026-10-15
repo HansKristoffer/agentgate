@@ -191,7 +191,7 @@ agentgate project files ls
 agentgate project files rm .env.local
 ```
 
-Run `add` again to save a newer version; the newest save of each file wins. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
 
 Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
