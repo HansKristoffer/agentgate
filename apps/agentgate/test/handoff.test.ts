@@ -5,7 +5,7 @@ import { repos, sh, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { addWorktree, createBundle, describe, fetchBundle, moveToSource, snapshot, stashIfUnchanged } from "../src/handoff/code.ts";
 import { claudeProjectKey, claudeSessions, rewriteCwd, safeRelative } from "../src/handoff/session.ts";
-import { claudeInstance, connectT3, parsePairing, projection, t3Client, t3State } from "../src/handoff/t3.ts";
+import { claudeInstance, connectT3, connectWith, createPairingLink, host as t3Host, parsePairing, projection, t3Client, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 
 const stops: (() => unknown)[] = [];
@@ -160,6 +160,33 @@ test("the T3 client pairs, reads over HTTP, calls RPC methods and decodes failur
   s.now = () => Date.now() + 31 * 86_400_000;
   expect(t3State(s)).toMatchObject({ connected: false, repair: true });
   expect(() => t3Client(s)).toThrow("expired");
+});
+
+test("T3 Code's own t3 pair creates the link: shown to the user, or redeemed to connect", async () => {
+  const t3 = fakeT3({ claudeDir: tmp() }); stops.push(t3.stop);
+  const s = new Store(":memory:"); s.setLocal("node", "a");
+  // A stand-in for `t3 pair`, printing what upstream prints around a fresh token.
+  const dir = tmp(), bin = join(dir, "t3"), args = join(dir, "args");
+  const fake = (body: string) => { writeFileSync(bin, `#!/bin/sh\necho "$@" > ${args}\n${body}`, { mode: 0o755 }); };
+  const real = t3Host.t3;
+  t3Host.t3 = () => bin;
+  stops.push(() => { t3Host.t3 = real; });
+
+  fake(`echo "Pairing URL: ${t3.url}/pair#token=${t3.pairingToken()}"\necho "Expires: 2026-10-14T12:05:00.000Z"\necho ""\necho "Note: This URL is only reachable from this machine."`);
+  const link = await createPairingLink(s, { tailscale: true });
+  expect(link).toEqual({ url: expect.stringContaining("/pair#token="), expiresAt: "2026-10-14T12:05:00.000Z", notes: ["This URL is only reachable from this machine."] });
+  expect(readFileSync(args, "utf8").trim()).toBe("pair --log-level error --tailscale");
+
+  fake(`echo "Pairing URL: ${t3.url}/pair#token=${t3.pairingToken()}"`);
+  await connectWith(s, { create: true });
+  expect(t3State(s)).toMatchObject({ connected: true, url: t3.url });
+  expect(readFileSync(args, "utf8").trim()).toBe("pair --log-level error --label agentgate a");
+
+  // A failure says why, and never repeats stdout, where a token would be.
+  fake(`echo "Token: secret-token"\necho "No running T3 Code server found." >&2\nexit 1`);
+  await expect(createPairingLink(s)).rejects.toThrow(/^t3 pair failed on a: No running T3 Code server found\.$/);
+  t3Host.t3 = () => undefined;
+  await expect(createPairingLink(s)).rejects.toThrow("not installed on a");
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {

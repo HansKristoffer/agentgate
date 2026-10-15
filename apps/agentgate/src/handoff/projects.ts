@@ -4,7 +4,7 @@ import { projectIdSchema, projectSchema } from "@agentgate/protocol";
 import { canonicalProject, parseRemote, scanRepos } from "../mcp/gateway.ts";
 import { run } from "./code.ts";
 import type { Handoffs } from "./jobs.ts";
-import { t3Client, t3State, type T3 } from "./t3.ts";
+import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
 
 /** T3 project sync (the `t3ProjectSync` setting). Each node marks the GitHub repositories its T3 Code has as projects
  * by setting `t3Title` on the synced project record, once. Each node adds every marked repository its T3 Code lacks,
@@ -37,7 +37,10 @@ export async function syncT3Projects(h: Handoffs) {
   s.setLocal("t3:knownRepos", undefined);
   const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
   const remember = (repo: string) => { known.add(repo.toLowerCase()); s.setLocal(KNOWN, JSON.stringify([...known])); };
-  const errors: string[] = [];
+  // Repositories by error, so a cause they share is said once.
+  const errors = new Map<string, string[]>();
+  // A permission T3 Code refused is refused for every clone; stop asking until agentgate is paired again.
+  let denied: string | undefined;
 
   // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
   const all = await t3Projects(t3).catch(() => undefined);
@@ -66,7 +69,7 @@ export async function syncT3Projects(h: Handoffs) {
       if (path) {
         await t3.rpc((call) => call("projects.mutate", { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: p.t3Title, workspaceRoot: path }));
         remember(p.id);
-      } else if (!cloning(name)) {
+      } else if (!denied && !cloning(name)) {
         mkdirSync(h.options.cloneDir, { recursive: true });
         let dir = join(h.options.cloneDir, name);
         for (let n = 2; existsSync(dir); n++) dir = join(h.options.cloneDir, `${name}-${n}`);
@@ -77,10 +80,11 @@ export async function syncT3Projects(h: Handoffs) {
         }));
       }
     } catch (e) {
-      errors.push(`${p.id}: ${(e as Error).message}`);
+      if (e instanceof T3PermissionError) denied = e.message;
+      else errors.set((e as Error).message, [...errors.get((e as Error).message) ?? [], p.id]);
     }
   }
-  report(errors);
+  report([...denied ? [denied] : [], ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
 }
 
 /** This node's main checkouts by lowercase `owner/repo`: registered ones, then clones in the clone folder. */

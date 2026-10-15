@@ -259,7 +259,7 @@ export interface Status {
   /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
   logins: SharedLogin[];
 }
-export const loginIdSchema = z.enum(["github", "infisical"]);
+export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
 export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
 export interface RelayStatus {

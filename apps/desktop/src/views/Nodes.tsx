@@ -363,7 +363,7 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
   return (
     <Panel
       title="Shared logins"
-      detail="Sign every machine in to GitHub and Infisical as you, including servers that join later."
+      detail="Sign every machine in to GitHub and Infisical, including servers that join later."
       foot={local ? undefined : "Sharing reads this machine's own logins, so it is only available on the daemon's own machine."}
     >
       {LOGINS.map(({ id, name, tool }) => {
@@ -419,6 +419,78 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
           </div>
         );
       })}
+      <InfisicalIdentity data={data} connection={connection} perform={perform} local={local} />
     </Panel>
+  );
+}
+
+/** An Infisical machine identity on every machine, for tools that run unattended (hanzio reads it when a process has no
+ * client credentials). Unlike a user login it does not expire. */
+function InfisicalIdentity({ data, connection, perform, local }: ViewProps) {
+  const [open, setOpen] = useState(false);
+  const identity = data.logins.find((l) => l.id === "infisical-identity");
+  return (
+    <div className="item">
+      <div className="machine-icon">
+        <KeyRound size={16} />
+      </div>
+      <div className="grow">
+        <div className="row">
+          <strong>Infisical machine identity</strong>
+          {identity && <Badge good={identity.signedIn}>{identity.signedIn ? "On this machine" : "Not on this machine yet"}</Badge>}
+        </div>
+        <small>
+          {identity
+            ? `${identity.account} · set from ${identity.from}`
+            : "For unattended tools such as hanzio: a Universal Auth client id and secret that does not expire, kept on every machine."}
+        </small>
+        {identity?.error && <small>{identity.error}</small>}
+      </div>
+      <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => setOpen(true)}>
+        {identity ? "Replace" : "Set"}
+      </Button>
+      {identity && (
+        <RowMenu
+          label="More for the Infisical machine identity"
+          items={[{
+            label: "Remove from every machine",
+            danger: true,
+            onAction: async () => {
+              if (await confirmDialog("Remove the Infisical machine identity from every machine?", { destructive: true, okLabel: "Remove" }))
+                void perform(() => request(connection, "/logins/infisical-identity", "DELETE"), "Infisical machine identity removed");
+            },
+          }]}
+        />
+      )}
+      {open && (
+        <Modal title="Infisical machine identity" close={() => setOpen(false)}>
+          <p className="muted">
+            Create a machine identity with Universal Auth in Infisical (Organization → Access Control → Identities) and give it
+            access to your projects. agentgate checks it with Infisical, then writes it to ~/.infisical/universal-auth.json on
+            every machine.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              const siteUrl = field(f, "siteUrl");
+              void perform(async () => {
+                await request(connection, "/logins/infisical-identity", "PUT", {
+                  clientId: field(f, "clientId"),
+                  clientSecret: field(f, "clientSecret"),
+                  ...(siteUrl && { siteUrl }),
+                });
+                setOpen(false);
+              }, "Infisical machine identity set on every machine");
+            }}
+          >
+            <Field label="Client ID" name="clientId" isRequired />
+            <Field label="Client secret" name="clientSecret" type="password" isRequired />
+            <Field label="Infisical URL" name="siteUrl" description="Leave empty for the instance the Infisical CLI here uses" placeholder="https://eu.infisical.com" />
+            <Button type="submit" size="sm">Save</Button>
+          </form>
+        </Modal>
+      )}
+    </div>
   );
 }
