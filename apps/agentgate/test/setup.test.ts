@@ -28,6 +28,17 @@ test("primary undo restores the previous URL without reverting subsequent settin
   rmSync(dir, { recursive: true });
 });
 
+test("primary gives Claude Code a placeholder login only where it has none of its own, and undo removes it", async () => {
+  const fresh = mkdtempSync(join(tmpdir(), "agentgate-primary-")), signedIn = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
+  writeFileSync(join(signedIn, ".claude.json"), '{"oauthAccount":{"emailAddress":"me@example.com"}}');
+  const env = (dir: string) => JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).env;
+  await primary(true, fresh); await primary(true, signedIn);
+  expect(env(fresh).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+  expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  await primary(false, fresh); expect(env(fresh)).toBeUndefined();
+  rmSync(fresh, { recursive: true }); rmSync(signedIn, { recursive: true });
+});
+
 test("generated service definitions propagate custom configuration and quote executable arguments", () => {
   expect(plist()).toContain("AGENTGATE_HOME"); expect(plist()).toContain("AGENTGATE_PORT");
   expect(unit()).toContain("AGENTGATE_HOME="); expect(unit()).toContain("AGENTGATE_PORT=");
