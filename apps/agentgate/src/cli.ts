@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { relative as relativePath, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
+import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
 import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
@@ -16,7 +17,7 @@ import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
-import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles, setFileContent } from "./checkout-files.ts";
+import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
@@ -52,7 +53,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
-  project files cat <path> | set <path> < new-contents   print or replace a synced file's contents
+  project files cat <path> | set <path> [--if-sha <sha256>] < new-contents
+                                             print or replace a synced file's contents; --if-sha refuses to
+                                             replace a newer version than the one cat printed (cat | shasum -a 256)
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
@@ -108,6 +111,7 @@ const { values: opts, positionals: pos } = parseArgs({
     skill: { type: "string" },
     project: { type: "string", multiple: true },
     file: { type: "string" },
+    "if-sha": { type: "string" },
     tailnet: { type: "boolean" },
     tailscale: { type: "boolean" },
     relay: { type: "boolean" },
@@ -151,6 +155,9 @@ async function main() {
   if (cmd === "mcp" && !sub) return (await import("./mcp/shim.ts")).runShim();
 
   const s = store();
+  // The daemon writes its version on its node record when it starts.
+  const daemon = s.get("node", s.nodeId)?.version;
+  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd)) console.error((await import("./update.ts")).versionNotice(daemon));
   switch (cmd) {
     case "init": {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
@@ -451,7 +458,11 @@ async function main() {
         if ((action === "cat" || action === "set") && relative.length === 1) {
           const { project } = await checkoutProject(s, top);
           if (action === "cat") return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
-          return console.log(`saved for ${await setFileContent(s, FILES_ROOT, project, relative[0]!, await Bun.stdin.text())} on every machine`);
+          // Through the daemon, which follows the save into this machine's checkouts and logs it.
+          const edit = { project, path: relative[0]!, content: await Bun.stdin.text(), sha256: str("if-sha") };
+          const saved = await management<{ project: string; checkouts: Record<string, number> }>("/projects/files/content", "PUT", edit).catch((e: Error) => die(e.message));
+          const followed = Object.entries(saved.checkouts).filter(([, n]) => n).map(([outcome, n]) => `${n} ${outcome}`);
+          return console.log(`saved for ${saved.project} on every machine${followed.length ? `; checkouts here: ${followed.join(", ")}` : ""}`);
         }
         if (action === "ls" || action === undefined) {
           const list = await listFiles(s, FILES_ROOT, top);
@@ -460,7 +471,7 @@ async function main() {
           if (list.error) console.log(`not syncing: ${list.error}`);
           return;
         }
-        return die("project files add|rm <path> [...] | cat|set <path> | ls");
+        return die("project files add|rm <path> [...] | cat <path> | set <path> [--if-sha <sha256>] | ls");
       }
       const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
       if (sub === "show") {
@@ -794,9 +805,19 @@ async function main() {
         const r = await management<{ version?: string; restarting: boolean }>(`/nodes/${encodeURIComponent(sub)}/update`, "POST");
         return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}${r.restarting ? " and is restarting" : "; restart agentgate there to use it"}`);
       }
-      const { target, version, restart } = await (await import("./update.ts")).updateSelf().catch((e: Error) => die(e.message));
-      if (!version) return console.log("agentgate is up to date");
-      console.log(`installed agentgate ${version} at ${target}`);
+      const update = await import("./update.ts");
+      const { target, version, restart } = await update.updateSelf().catch((e: Error) => die(e.message));
+      console.log(version ? `installed agentgate ${version} at ${target}` : "agentgate is up to date");
+      // A global npm or bun install that PATH finds first would keep running the old CLI.
+      const copy = update.pathCopy(), latest = version ?? packageInfo.version;
+      if (copy && copy.version !== latest) {
+        const command = copy.install(latest);
+        console.log(`${copy.path} is agentgate ${copy.version ?? "(unknown)"}; running ${command.join(" ")}`);
+        let ok = false;
+        try { ok = Bun.spawnSync(command, { stdio: ["ignore", "inherit", "inherit"] }).exitCode === 0; } catch { }
+        if (!ok) console.log(`that failed; run it yourself: ${command.join(" ")}`);
+      }
+      if (!version) return;
       if (restart) return process.exit(await (await import("./service.ts")).service("restart"));
       return console.log("restart agentgate to use it");
     }

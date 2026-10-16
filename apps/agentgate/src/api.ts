@@ -518,7 +518,7 @@ export function management(ctx: Ctx) {
   app.put("/projects/files/content", async (c) => {
     local(c.env.listener);
     const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(512), content: z.string().max(1024 * 1024), sha256: z.string().max(64).optional() }).strict().parse(await json(c.req.raw));
-    return c.json({ project: await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)) });
+    return c.json(await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)));
   });
   app.delete("/projects/files", (c) => {
     const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));

@@ -31,7 +31,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
-Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. `agentgate update <node>` does the same on a paired machine, and the app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service, and also updates a global npm or bun install of agentgate that your PATH finds first. The CLI warns when it is not the release the daemon runs. `agentgate update <node>` does the same on a paired machine, and the app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
@@ -190,12 +190,13 @@ agentgate project files add .env.local apps/expo-app/.env   # save them for ever
 agentgate project files ls
 agentgate project files cat .env.local                      # print the saved contents
 agentgate project files set .env.local < new.env            # replace them on every machine
+agentgate project files set .env.local --if-sha <sha256> < new.env   # unless saved again since (cat | shasum -a 256)
 agentgate project files rm .env.local
 ```
 
-In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts, and every worktree of them, that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
 
-Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
+Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run agentgate 0.20.0 or later, because older versions drop the files when they save a project: until then none are saved, and the app and `project files ls` name the machine to update. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
 ## Your MCP servers and skills in Grok
 

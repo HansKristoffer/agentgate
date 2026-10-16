@@ -1,4 +1,4 @@
-import { chmodSync, renameSync, rmSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import packageInfo from "../../../package.json";
 import { PeerError, peerCall } from "./handoff/jobs.ts";
@@ -7,6 +7,7 @@ import { selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
 
 const REPO = process.env.AGENTGATE_REPO ?? "HansKristoffer/agentgate";
+const NPM = "@hanskristoffer/agentpool";
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 
 /** Replace `target` with the latest release's binary for this machine, checked against the release's SHA256SUMS
@@ -49,7 +50,7 @@ export async function updateSelf() {
   const target = selfCommand()[0]!;
   // The app reinstalls its bundled copy whenever it differs, which would undo this update.
   if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate")) throw new Error("This copy belongs to the Agentgate app, which keeps it up to date. Update the app instead.");
-  if (target.includes("/node_modules/")) throw new Error("agentgate was installed with npm; update it with npm install -g @hanskristoffer/agentpool@latest, then agentgate service restart");
+  if (target.includes("/node_modules/")) throw new Error(`agentgate was installed with npm; update it with npm install -g ${NPM}@latest, then agentgate service restart`);
   const version = await installLatest(target);
   return { target, version, restart: !!version && serviceRuns(target) };
 }
@@ -75,4 +76,32 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
     if (e instanceof PeerError && e.status === 404) throw new Error(`${node} runs an agentgate too old to update from here; run agentgate update on ${node}`);
     throw e;
   }
+}
+
+/** What to tell someone whose CLI is not the release the daemon runs. The daemon writes its version on its node record
+ * when it starts; a global npm or bun install earlier on PATH than the installed binary is the usual stale copy. */
+export function versionNotice(daemon: string, mine = packageInfo.version, exec = process.execPath) {
+  const older = mine.localeCompare(daemon, "en", { numeric: true }) < 0;
+  const fix = !older ? "restart it with agentgate service restart, or update the copy it runs"
+    : exec.includes("/.bun/install/global/") ? `update this copy with bun add -g ${NPM}@${daemon}`
+    : exec.includes("/node_modules/") ? `update this copy with npm install -g ${NPM}@${daemon}`
+    : "update this copy with agentgate update";
+  return `this agentgate is ${mine} (${exec}) but the daemon runs ${daemon}; ${fix}`;
+}
+
+/** A global npm or bun install of agentgate that PATH finds, its version, and the command that installs another. */
+export function pathCopy(found = Bun.which("agentgate")) {
+  let script: string;
+  try {
+    script = realpathSync(found ?? "");
+  } catch {
+    return undefined;
+  }
+  if (!script.endsWith(`/node_modules/${NPM}/bin/agentpool.js`)) return undefined;
+  let version: string | undefined;
+  try {
+    version = JSON.parse(readFileSync(join(dirname(script), "..", "package.json"), "utf8")).version;
+  } catch { }
+  const manager = script.includes("/.bun/install/global/") ? ["bun", "add", "-g"] : ["npm", "install", "-g"];
+  return { path: found!, version, install: (to: string) => [...manager, `${NPM}@${to}`] };
 }
