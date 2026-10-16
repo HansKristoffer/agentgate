@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.1](https://github.com/HansKristoffer/agentgate/compare/v0.21.0...v0.21.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **files:** a saved env file reaches every worktree, and saves are logged ([#71](https://github.com/HansKristoffer/agentgate/issues/71)) ([6748bae](https://github.com/HansKristoffer/agentgate/commit/6748baef7cc46309b04ba53d84b12402bffb1069))
+
 ## [0.21.0](https://github.com/HansKristoffer/agentgate/compare/v0.20.0...v0.21.0) (2026-10-16)
 
 
