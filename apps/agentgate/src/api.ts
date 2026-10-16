@@ -54,7 +54,7 @@ import {
 import * as desktop from "./desktop.ts";
 import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
-import { addFileAt, filesErrors, removeFiles } from "./checkout-files.ts";
+import { addFileAt, fileContent, filesErrors, removeFiles, setFileContent } from "./checkout-files.ts";
 import {
   connectSkillRepo,
   deleteSkill,
@@ -508,6 +508,17 @@ export function management(ctx: Ctx) {
     local(c.env.listener);
     const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(4096) }).strict().parse(await json(c.req.raw));
     return c.json({ project: await inputAsync(() => addFileAt(s, filesRoot(), f.project, f.path)) });
+  });
+  // A file's contents are secrets, so reading and editing them is local only.
+  app.get("/projects/files/content", (c) => {
+    local(c.env.listener);
+    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    return c.json(input(() => fileContent(s, filesRoot(), id, path)));
+  });
+  app.put("/projects/files/content", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(512), content: z.string().max(1024 * 1024), sha256: z.string().max(64).optional() }).strict().parse(await json(c.req.raw));
+    return c.json({ project: await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)) });
   });
   app.delete("/projects/files", (c) => {
     const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));

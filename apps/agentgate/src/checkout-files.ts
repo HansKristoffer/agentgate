@@ -404,12 +404,27 @@ export const rememberCheckout = (s: Store, path: string, key: string) => s.setLo
 
 // ---------------------------------------------------------------- inside a checkout
 
-/** A checkout that uses buncargo: `dev.config.ts` and buncargo installed. Buncargo then owns its checkout files. */
-const usesBuncargo = (cwd: string) => existsSync(join(cwd, "dev.config.ts")) && existsSync(join(cwd, "node_modules", "buncargo"));
+/** The checkout's own buncargo CLI. Not `bunx buncargo`: without `node_modules/.bin` links (a worktree set up without
+ * them) bunx falls back to a global buncargo, which can be a version without `files`. */
+function buncargoBin(cwd: string): string | undefined {
+  const dir = join(cwd, "node_modules", "buncargo");
+  try {
+    const { bin } = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    const path = typeof bin === "string" ? bin : bin?.buncargo;
+    return typeof path === "string" ? join(dir, path) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
-/** `bunx buncargo …` in a checkout, with the HOME whose store `root` is. Never reports output: it may hold values. */
+/** A checkout that uses buncargo: `dev.config.ts` and buncargo installed. Buncargo then owns its checkout files. */
+const usesBuncargo = (cwd: string) => existsSync(join(cwd, "dev.config.ts")) && !!buncargoBin(cwd);
+
+/** The checkout's buncargo, with the HOME whose store `root` is. Never reports output: it may hold values. */
 async function buncargo(root: string, cwd: string, args: string[]): Promise<string> {
-  const child = Bun.spawn(["bunx", "buncargo", ...args], {
+  const bin = buncargoBin(cwd);
+  if (!bin) throw new Error("buncargo is not installed in this checkout");
+  const child = Bun.spawn(["bun", bin, ...args], {
     cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore",
     env: { ...process.env, HOME: dirname(dirname(root)) },
   });
@@ -542,6 +557,61 @@ export function removeFiles(s: Store, root: string, project: string, paths: stri
   if (p?.fileList) s.put("project", project, { ...p, fileList: p.fileList.filter((f) => !paths.includes(f)) });
   reconcile(s, root, key);
   return project;
+}
+
+/** The store and its key for one of a project's files on this machine. */
+function storeFile(s: Store, root: string, project: string, path: string) {
+  project = canonicalProject(s, project);
+  const key = keyForProject(project);
+  if (!key) throw new Error(`${project} has no file store`);
+  if (!safePath(path)) throw new Error(`${path} is not a plain path inside the checkout`);
+  const store = readStore(join(root, key));
+  if (store.state === "unsupported") throw new Error("the file store has a newer format; update agentgate");
+  if (store.state === "pending") throw new StoreBusy("the file store is being written; try again");
+  const f = store.files.get(path);
+  if (f?.machine) throw new Error(`${path} is kept for one machine only`);
+  return { project, key, f };
+}
+
+/** A file's text as this machine's store has it, for editing; empty when it is not saved yet. `sha256` identifies the
+ * version, so a save can refuse to replace a newer one. */
+export function fileContent(s: Store, root: string, project: string, path: string) {
+  const { f } = storeFile(s, root, project, path);
+  try {
+    return { content: new TextDecoder("utf-8", { fatal: true }).decode(f?.data ?? new Uint8Array()), sha256: f?.sha256 ?? "" };
+  } catch {
+    throw new Error(`${path} is not text, so it cannot be edited here`);
+  }
+}
+
+/** Save a file's new text (now, as a deliberate save) for every machine. This machine's checkouts of the repository that
+ * hold the previous version, or none, get the new one (through buncargo's pull where they use it); a checkout with its
+ * own edits keeps them. With `expected` (fileContent's sha256), it refuses to replace a version saved in the meantime. */
+export async function setFileContent(s: Store, root: string, project: string, path: string, content: string, expected?: string) {
+  const { project: id, key, f } = storeFile(s, root, project, path);
+  if (expected !== undefined && expected !== (f?.sha256 ?? "")) throw new Error(`${path} changed since you opened it; open it again to see the new version`);
+  const old = oldNodesError(s);
+  if (old) throw new Error(old);
+  const data = Buffer.from(content);
+  if (data.byteLength > 1024 * 1024) throw new Error(`${path} is larger than 1 MiB`);
+
+  let registered: Record<string, string> = {};
+  try { registered = JSON.parse(s.local("checkouts") ?? "{}"); } catch { } // SkillLinks.checkouts()
+  const checkouts = new Set([
+    ...Object.entries(registered).filter(([, p]) => p.toLowerCase() === id.toLowerCase()).map(([cwd]) => cwd),
+    ...Object.entries(createdCheckouts(s)).filter(([, k]) => k === key).map(([cwd]) => cwd),
+  ]);
+  const present = [...checkouts].filter((cwd) => existsSync(cwd));
+  // Before the store changes: placeEdit tells the previous version from a checkout's own edits by the store.
+  for (const cwd of present) if (!usesBuncargo(cwd)) placeEdit(root, key, cwd, path, data);
+
+  writeStore(join(root, key), [{ path, data, updatedAt: iso(s.now()) }], [], s.now());
+  reconcile(s, root, key);
+  // Buncargo keeps its own record of each checkout's copy, so its pull decides whether a checkout takes the new one.
+  for (const cwd of present) {
+    if (usesBuncargo(cwd)) await buncargo(root, cwd, ["files", "pull", path]).catch((e) => console.error(`checkout files: ${cwd}: ${(e as Error).message}`));
+  }
+  return id;
 }
 
 /** Each store file of the checkout's repository, whether it is listed, and the project's sync error. */

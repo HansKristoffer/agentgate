@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { tmp } from "./fixtures/git.ts";
-import { CheckoutFiles, StoreBusy, fillCheckout, keyForProject, localEdits, lockStore, placeEdit, readStore, reconcile, repoKey, writeStore } from "../src/checkout-files.ts";
+import { CheckoutFiles, StoreBusy, fileContent, fillCheckout, keyForProject, localEdits, lockStore, placeEdit, readStore, reconcile, repoKey, setFileContent, writeStore } from "../src/checkout-files.ts";
 import { Store, exportBackup } from "../src/store.ts";
 import { publicProject } from "../src/remote.ts";
 
@@ -36,6 +36,18 @@ function pair(...nodes: ReturnType<typeof node>[]) {
 const copy = (from: Store, to: Store) => { for (const r of from.changes(0).records) to.merge(r); };
 
 const KEY = "github.com/bliss-budget/budget-app";
+
+/** A checkout using buncargo, whose own CLI logs its calls. No `node_modules/.bin`: agentgate must not need one. */
+function fakeBuncargo(cwd: string, status: unknown = {}) {
+  writeFileSync(join(cwd, "dev.config.ts"), "");
+  mkdirSync(join(cwd, "node_modules", "buncargo"), { recursive: true });
+  writeFileSync(join(cwd, "node_modules", "buncargo", "package.json"), JSON.stringify({ bin: { buncargo: "./cli.js" } }));
+  writeFileSync(join(cwd, "node_modules", "buncargo", "cli.js"), `const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync("calls.log", process.env.HOME + " " + args.join(" ") + "\\n");
+if (args[1] === "status") console.log(${JSON.stringify(JSON.stringify(status))});
+`);
+}
 
 test("repository keys follow the contract", () => {
   expect(repoKey("https://github.com/Bliss-Budget/budget-app.git")).toBe(KEY);
@@ -178,9 +190,6 @@ test("a checkout without buncargo gets missing store files and keeps its own", a
 
 test("in a buncargo checkout, buncargo's status picks what a handoff carries and its pull fills the checkout", async () => {
   const home = tmp(), root = join(home, ".buncargo", "files"), cwd = tmp();
-  writeFileSync(join(cwd, "dev.config.ts"), "");
-  mkdirSync(join(cwd, "node_modules", "buncargo"), { recursive: true });
-  mkdirSync(join(cwd, "node_modules", ".bin"));
   const status = { version: 1, repoKey: KEY, files: [
     { path: ".env.local", state: "local-edits", machine: false },
     { path: "apps/api/.env", state: "conflict", machine: false },
@@ -188,7 +197,7 @@ test("in a buncargo checkout, buncargo's status picks what a handoff carries and
     { path: ".env", state: "in-sync", machine: false },
     { path: ".env.gone", state: "local-edits", machine: false },
   ] };
-  writeFileSync(join(cwd, "node_modules", ".bin", "buncargo"), `#!/bin/sh\necho "$HOME $*" >> calls.log\n[ "$2" = status ] && echo '${JSON.stringify(status)}'\nexit 0\n`, { mode: 0o755 });
+  fakeBuncargo(cwd, status);
   for (const f of [".env.local", "apps/api/.env", ".env.host", ".env"]) { mkdirSync(join(cwd, f, ".."), { recursive: true }); writeFileSync(join(cwd, f), "x"); }
 
   expect(await localEdits(root, cwd, [])).toEqual([".env.local", "apps/api/.env"]);
@@ -206,6 +215,41 @@ test("a handed-off file replaces the checkout's copy only when that copy has no 
   expect(placeEdit(root, KEY, cwd, ".env", Buffer.from("ARRIVED AGAIN\n"))).toBe(false);
   expect(readFileSync(join(cwd, ".env"), "utf8")).toBe("MINE\n");
   expect(placeEdit(root, KEY, cwd, "new/.env", Buffer.from("NEW\n"))).toBe(true);
+});
+
+test("editing a file in the app saves it for every machine and updates this machine's checkouts without edits of their own", async () => {
+  const a = node("a");
+  pair(a);
+  fixtureStore(join(a.root, KEY), {
+    ".env": { data: "OLD=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+    ".env.machine": { data: "HOST=laptop\n", updatedAt: "2026-10-01T00:00:00.000Z", machine: true },
+  });
+  files(a).sync();
+  const clean = tmp(), edited = tmp();
+  writeFileSync(join(clean, ".env"), "OLD=1\n");
+  writeFileSync(join(edited, ".env"), "MINE=1\n");
+  const withBuncargo = tmp();
+  fakeBuncargo(withBuncargo);
+  writeFileSync(join(withBuncargo, ".env"), "OLD=1\n");
+  a.s.setLocal("checkouts", JSON.stringify({ [clean]: "Bliss-Budget/budget-app", [edited]: "bliss-budget/budget-app", [withBuncargo]: "bliss-budget/budget-app" }));
+
+  const opened = fileContent(a.s, a.root, "bliss-budget/budget-app", ".env");
+  expect(opened.content).toBe("OLD=1\n");
+  expect(fileContent(a.s, a.root, "bliss-budget/budget-app", ".env.local")).toEqual({ content: "", sha256: "" });
+  expect(() => fileContent(a.s, a.root, "bliss-budget/budget-app", ".env.machine")).toThrow("one machine");
+
+  await setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "NEW=2\n", opened.sha256);
+  expect(contents(join(a.root, KEY))[".env"]).toBe("NEW=2\n");
+  expect(a.s.get("project", "bliss-budget/budget-app")!.files!.find((f) => f.path === ".env")!.data).toBe(btoa("NEW=2\n"));
+  expect(readFileSync(join(clean, ".env"), "utf8")).toBe("NEW=2\n");
+  expect(readFileSync(join(edited, ".env"), "utf8")).toBe("MINE=1\n");
+  // Buncargo's pull decides for its checkouts, by its own record of each checkout's copy.
+  expect(readFileSync(join(withBuncargo, ".env"), "utf8")).toBe("OLD=1\n");
+  expect(readFileSync(join(withBuncargo, "calls.log"), "utf8")).toEndWith(" files pull .env\n");
+  await expect(setFileContent(a.s, a.root, "bliss-budget/budget-app", "../.env", "x")).rejects.toThrow("plain path");
+  // An editor still open on the old version cannot replace the new one.
+  await expect(setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "STALE=1\n", opened.sha256)).rejects.toThrow("changed since you opened it");
+  expect(contents(join(a.root, KEY))[".env"]).toBe("NEW=2\n");
 });
 
 test("file contents stay out of the API's project view and backups without secrets", () => {
