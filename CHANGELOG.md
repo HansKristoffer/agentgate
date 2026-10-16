@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/HansKristoffer/agentgate/compare/v0.20.0...v0.21.0) (2026-10-16)
+
+
+### Features
+
+* **files:** edit an env file's contents from the app and CLI ([#69](https://github.com/HansKristoffer/agentgate/issues/69)) ([d556957](https://github.com/HansKristoffer/agentgate/commit/d556957c1a848a23f6c1f19b2358c297a8615754))
+
 ## [0.20.0](https://github.com/HansKristoffer/agentgate/compare/v0.19.0...v0.20.0) (2026-10-15)
 
 
