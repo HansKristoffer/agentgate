@@ -13,10 +13,10 @@ import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
 import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
-import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
+import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
 import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
@@ -92,7 +92,9 @@ export function app(ctx: Ctx) {
     if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
-    console.error(`request failed: ${error.name}`);
+    // The path, never the query, and for SQLite the free space; the client only learns that it failed.
+    const detail = sqliteDetail(error, s.db.filename);
+    console.error(`request failed: ${c.req.method} ${c.req.path}: ${error.name}${detail ? `: ${detail}` : ""}`);
     return c.json({ error: "request failed" }, 500);
   });
   app.use("*", async (_, next) => {
@@ -169,7 +171,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     s.put("node", s.nodeId, { ...me, protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL), version: packageInfo.version });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
-  console.log(`agentgate ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
+  console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
   const schedule = (task: () => Promise<unknown>, interval: number) => {
     const serial = serialTask(async () => { if (!stopped) await task(); });
     const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
@@ -207,12 +209,10 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(async () => { ctx.files.sync(); }, 30000);
-  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);
+  const skillBackoff = new SkillBackoff(s);
+  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
-  schedule(async () => {
-    for (const { id, outcome } of await updateSkills(s, undefined, ctx.abort.signal))
-      if (outcome.startsWith("failed")) console.error(`skills: ${id}: ${outcome}`);
-  }, 3600000);
+  schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
   schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);

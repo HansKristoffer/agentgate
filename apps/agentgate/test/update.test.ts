@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { outdatedNodes } from "@agentgate/protocol";
 import { Store } from "../src/store.ts";
-import { installLatest, pathCopy, updateNode, versionNotice } from "../src/update.ts";
+import { installLatest, pathCopy, updateNode, versionNotice, waitForVersion } from "../src/update.ts";
 
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -87,4 +87,17 @@ test("a CLI that is not the daemon's release says how to fix the copy that is st
   expect(copy.install("0.21.0")).toEqual(["bun", "add", "-g", "@hanskristoffer/agentpool@0.21.0"]);
   expect(pathCopy("/usr/local/bin/agentgate-not-there")).toBeUndefined();
   rmSync(home, { recursive: true, force: true });
+});
+
+test("waiting for an update returns once the node reports the new version, or after the timeout", async () => {
+  const s = new Store(":memory:");
+  let now = 0; s.now = () => now;
+  s.put("node", "worker", { id: "worker", version: "0.21.0" });
+  let polls = 0;
+  // The restarted node's record arrives through sync after a few polls.
+  const sleep = async (ms: number) => { now += ms; if (++polls === 3) s.put("node", "worker", { id: "worker", version: "0.21.1" }); };
+  expect(await waitForVersion(s, "worker", "0.21.1", 90_000, sleep)).toBe(true);
+  expect(polls).toBe(3);
+  expect(await waitForVersion(s, "worker", "0.22.0", 10_000, async (ms) => { now += ms; })).toBe(false);
+  expect(now).toBe(13_000);
 });

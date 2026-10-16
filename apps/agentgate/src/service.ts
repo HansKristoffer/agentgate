@@ -129,3 +129,11 @@ export function rotateLogs(dir = LOGS, maxBytes = 5 * 1024 * 1024) {
   for (let i = 4; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
   copyFileSync(file, `${file}.1`); truncateSync(file, 0);
 }
+
+/** Start every daemon log line with an ISO 8601 timestamp: launchd's log file has none of its own. */
+export function stampLogs(out: Pick<Console, "log" | "info" | "warn" | "error"> = console, now = () => new Date()) {
+  for (const level of ["log", "info", "warn", "error"] as const) {
+    const write = out[level].bind(out);
+    out[level] = (...args: unknown[]) => write(now().toISOString(), ...args);
+  }
+}

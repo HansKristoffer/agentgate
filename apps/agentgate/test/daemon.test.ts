@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { app, makeCtx, serve } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
 
@@ -47,4 +47,18 @@ test("shutdown waits for an already-issued refresh to persist before the store c
     await start; let closed = false; const stopping = daemon.stop().then(() => { closed = true; }); await Bun.sleep(10); expect(closed).toBe(false);
     release(); await stopping; await response; expect(s.get("credential", "a")?.accessToken).toBe("persisted"); expect(daemon.ctx.pending.size).toBe(0);
   } finally { release(); await daemon.stop(); CLAUDE.api = originalApi; upstream.stop(true); s.close(); }
+});
+
+test("a SQLite error in a request logs its code, message and free space, and the client gets a generic error", async () => {
+  const s = new Store(":memory:"), handler = app(makeCtx(s));
+  handler.get("/boom", () => { s.db.run("insert into missing values (1)"); return new Response(); });
+  const error = spyOn(console, "error").mockImplementation(() => { });
+  try {
+    const res = await handler.fetch(request("/boom?token=hidden"), { listener: "loopback" });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "request failed" });
+    const line = error.mock.calls.map(c => c.join(" ")).join("\n");
+    expect(line).toMatch(/^request failed: GET \/boom: SQLiteError: no such table: missing \(SQLITE_ERROR; .* GiB free in .*, .* GiB free in .*\)$/);
+    expect(line).not.toContain("hidden");
+  } finally { error.mockRestore(); }
 });

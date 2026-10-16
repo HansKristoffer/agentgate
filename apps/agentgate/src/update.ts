@@ -78,6 +78,17 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
   }
 }
 
+/** Wait until `node` reports running `version`: a daemon writes it on its node record when it starts, and the record
+ * reaches this store through sync. Resolves whether it did within `timeout`. A seam for tests: `sleep`. */
+export async function waitForVersion(s: Store, node: string, version: string, timeout = 90_000, sleep: (ms: number) => Promise<unknown> = Bun.sleep) {
+  const deadline = s.now() + timeout;
+  for (;;) {
+    if (s.get("node", node)?.version === version) return true;
+    if (s.now() >= deadline) return false;
+    await sleep(1000);
+  }
+}
+
 /** What to tell someone whose CLI is not the release the daemon runs. The daemon writes its version on its node record
  * when it starts; a global npm or bun install earlier on PATH than the installed binary is the usual stale copy. */
 export function versionNotice(daemon: string, mine = packageInfo.version, exec = process.execPath) {
