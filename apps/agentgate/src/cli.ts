@@ -16,7 +16,7 @@ import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
 
 import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
-import { FILES_ROOT, addFiles, checkoutProject, listFiles, removeFiles } from "./checkout-files.ts";
+import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles, setFileContent } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
@@ -52,6 +52,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
+  project files cat <path> | set <path> < new-contents   print or replace a synced file's contents
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
@@ -447,6 +448,11 @@ async function main() {
           const { project } = await checkoutProject(s, top);
           return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
         }
+        if ((action === "cat" || action === "set") && relative.length === 1) {
+          const { project } = await checkoutProject(s, top);
+          if (action === "cat") return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
+          return console.log(`saved for ${await setFileContent(s, FILES_ROOT, project, relative[0]!, await Bun.stdin.text())} on every machine`);
+        }
         if (action === "ls" || action === undefined) {
           const list = await listFiles(s, FILES_ROOT, top);
           for (const f of list.files) console.log(`${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`);
@@ -454,7 +460,7 @@ async function main() {
           if (list.error) console.log(`not syncing: ${list.error}`);
           return;
         }
-        return die("project files add|rm <path> [...] | ls");
+        return die("project files add|rm <path> [...] | cat|set <path> | ls");
       }
       const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
       if (sub === "show") {

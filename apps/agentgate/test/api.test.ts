@@ -505,6 +505,16 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
   expect(JSON.stringify(status)).not.toContain(btoa("API_KEY=private-value\n"));
   expect(status.fileErrors).toEqual({});
 
+  const content = `/api/projects/files/content?id=${encodeURIComponent(project)}&path=.env.local`;
+  expect((await call(content, "GET", undefined, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  const opened = await (await call(content)).json() as { content: string; sha256: string };
+  expect(opened.content).toBe("API_KEY=private-value\n");
+  const edit = { project, path: ".env.local", content: "API_KEY=new-value\n", sha256: opened.sha256 };
+  expect((await call("/api/projects/files/content", "PUT", edit, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect((await call("/api/projects/files/content", "PUT", edit)).status).toBe(200);
+  expect(((await (await call(content)).json()) as { content: string }).content).toBe("API_KEY=new-value\n");
+  expect((await call("/api/projects/files/content", "PUT", { ...edit, content: "STALE\n" })).status).toBe(400);
+
   expect((await call(`/api/projects/files?id=${encodeURIComponent(project)}&path=.env.local`, "DELETE")).status).toBe(200);
   expect([...readStore(join(root, `github.com/${project}`)).files.keys()]).toEqual([]);
   const after = await (await call("/api/status")).json() as Status;

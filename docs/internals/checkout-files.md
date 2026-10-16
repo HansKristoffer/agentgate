@@ -50,7 +50,8 @@ fix this side and its fixture stores in `test/checkout-files.test.ts`.
   it never had.
 - One project record must fit one relay entry (1 MiB sealed), so all of a repository's files together can be about
   700 KiB. A larger set stays on its machine with an error, rather than blocking relay uploads.
-- File contents are secrets: the API shows only paths, and `export --no-secrets` drops them. On disk in `agentgate.db`
+- File contents are secrets: status shows only paths, reading or editing contents is loopback-only, and
+  `export --no-secrets` drops them. On disk in `agentgate.db`
   they are plaintext, like MCP secrets.
 - A checkout's dev daemon uses `.agentgate/home/.buncargo/files` and runs buncargo with that `HOME`, so it never reads or
   writes the real store.

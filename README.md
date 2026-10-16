@@ -188,10 +188,12 @@ Gitignored files such as `.env.local` or `apps/expo-app/.env` follow a repositor
 ```sh
 agentgate project files add .env.local apps/expo-app/.env   # save them for every machine
 agentgate project files ls
+agentgate project files cat .env.local                      # print the saved contents
+agentgate project files set .env.local < new.env            # replace them on every machine
 agentgate project files rm .env.local
 ```
 
-In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
 
 Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
