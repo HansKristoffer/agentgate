@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, realpathSync, writeFileSync, rmSync, renameSync, unlinkSync, symlinkSync, utimesSync, watch, type FSWatcher } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connectSkillRepo, deleteSkill, description, installSkills, readSkill, repoUrl, setSkillProjects, setSkillRepoProjects, SkillLinks, skillRepoSummaries, syncSkillRepo, updateSkill, updateSkills, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
+import { connectSkillRepo, deleteSkill, description, installSkills, readSkill, repoUrl, setSkillProjects, setSkillRepoProjects, SkillBackoff, SkillLinks, skillRepoSummaries, syncSkillRepo, syncSkillRepos, updateSkill, updateSkills, writeSkillMd, skillRevision, skillSummaries, type FetchedSkill } from "../src/skills.ts";
 import { readRepoSkills, type RepoFetch, type RepoFetcher } from "../src/skill-import.ts";
 import { MAX_SKILL, SkillConflict } from "@agentgate/protocol";
 import { parseData, parseRecord, importBackup, Store } from "../src/store.ts";
@@ -411,4 +411,42 @@ test("a repository's skills folder that links outside the repository is ignored"
   mkdirSync(join(repo, ".agents", "skills", "beta"), { recursive: true }); writeFileSync(join(repo, ".agents", "skills", "beta", "SKILL.md"), md("beta"));
   mkdirSync(join(repo, ".claude"), { recursive: true }); symlinkSync(join(dir, "outside"), join(repo, ".claude", "skills"));
   expect(readRepoSkills(repo).skills.map(k => k.id)).toEqual(["beta"]);
+});
+
+test("background skill syncs back off a failing source and log each failure once until it changes or clears", async () => {
+  const { s } = setup();
+  let now = 1_000_000; s.now = () => now;
+  setSkillRepoProjects(s, "owner/repo", ["*"]);
+  installSkills(s, "owner/pack", [fetched("a")]);
+  const errors = spyOn(console, "error").mockImplementation(() => { });
+  const logs = spyOn(console, "log").mockImplementation(() => { });
+  try {
+    const backoff = new SkillBackoff(s);
+    let repoError: string | undefined = "timed out", calls = 0;
+    const fetchRepo: RepoFetcher = async () => { calls++; if (repoError) throw new Error(repoError); return null; };
+    const fetchPack = async () => { calls++; throw new Error("timed out"); };
+    const round = async () => { await syncSkillRepos(s, fetchRepo, undefined, backoff); await updateSkills(s, fetchPack, undefined, backoff); };
+
+    await round();
+    expect(calls).toBe(2);
+    expect(errors.mock.calls.map(c => c.join(" "))).toEqual(["skills: https://github.com/owner/repo: timed out", "skills: a: failed: timed out"]);
+    // Still failing on the summary the app and `skills repos` show.
+    expect(skillRepoSummaries(s)[0]!.error).toBe("timed out");
+
+    await round(); expect(calls).toBe(2); // backing off
+    now += 10 * 60_000; await round(); expect(calls).toBe(4);
+    now += 10 * 60_000; await round(); expect(calls).toBe(4); // the second wait is 20 minutes
+    now += 10 * 60_000; await round(); expect(calls).toBe(6);
+    expect(errors).toHaveBeenCalledTimes(2); // the same failures are not logged again
+
+    repoError = "not found"; now += 60 * 60_000; await round();
+    expect(errors.mock.calls.at(-1)!.join(" ")).toBe("skills: https://github.com/owner/repo: not found");
+    expect(errors).toHaveBeenCalledTimes(3);
+
+    repoError = undefined; now += 6 * 3600_000; await round();
+    expect(logs.mock.calls.map(c => c.join(" "))).toEqual(["skills: https://github.com/owner/repo: works again"]);
+    expect(skillRepoSummaries(s)[0]!.error).toBeUndefined();
+    repoError = "not found"; await round();
+    expect(errors).toHaveBeenCalledTimes(4); // a failure after a success is new again
+  } finally { errors.mockRestore(); logs.mockRestore(); }
 });

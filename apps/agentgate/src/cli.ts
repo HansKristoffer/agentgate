@@ -177,6 +177,10 @@ async function main() {
     }
     case "serve":
       initialized(s);
+      (await import("./service.ts")).stampLogs();
+      // Bun reports these on stderr without the timestamp; the daemon still exits so the service restarts it.
+      for (const event of ["uncaughtException", "unhandledRejection"] as const)
+        process.on(event, (e: unknown) => { console.error(`${event}: ${e instanceof Error ? e.stack : String(e)}`); process.exit(1); });
       const daemon = await (await import("./daemon.ts")).serve(s);
       let shuttingDown = false;
       const shutdown = () => { if (shuttingDown) return; shuttingDown = true; void daemon.stop().then(() => { s.close(); process.exit(0); }); };
@@ -803,7 +807,9 @@ async function main() {
       if (sub) {
         initialized(s);
         const r = await management<{ version?: string; restarting: boolean }>(`/nodes/${encodeURIComponent(sub)}/update`, "POST");
-        return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}${r.restarting ? " and is restarting" : "; restart agentgate there to use it"}`);
+        if (!r.version || !r.restarting) return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}; restart agentgate there to use it`);
+        console.log(`${sub} installed agentgate ${r.version} and is restarting`);
+        return console.log(await (await import("./update.ts")).waitForVersion(s, sub, r.version) ? `${sub} runs agentgate ${r.version}` : `${sub} is still restarting; check with agentgate nodes`);
       }
       const update = await import("./update.ts");
       const { target, version, restart } = await update.updateSelf().catch((e: Error) => die(e.message));
@@ -818,7 +824,11 @@ async function main() {
         if (!ok) console.log(`that failed; run it yourself: ${command.join(" ")}`);
       }
       if (!version) return;
-      if (restart) return process.exit(await (await import("./service.ts")).service("restart"));
+      if (restart) {
+        const code = await (await import("./service.ts")).service("restart");
+        if (code === 0 && s.local("node")) console.log(await update.waitForVersion(s, s.nodeId, version) ? `this node runs agentgate ${version}` : "agentgate is still restarting; check with agentgate nodes");
+        return process.exit(code);
+      }
       return console.log("restart agentgate to use it");
     }
 

@@ -1,12 +1,12 @@
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statfsSync, watch, writeFileSync, type FSWatcher } from "node:fs";
-import { homedir, hostname, tmpdir } from "node:os";
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
 import { RELAY_LIMITS } from "@agentgate/protocol/relay";
 import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, sqliteDetail, type Store } from "./store.ts";
 
 /** Checkout files (docs/internals/checkout-files.md): buncargo's per-machine file store of a repository's gitignored
  * files, carried between machines on the synced `project` record. Buncargo owns what happens inside a checkout; this
@@ -250,25 +250,14 @@ function report(s: Store, project: string, message: string | undefined) {
   s.setLocal(errorsKey, Object.keys(errors).length ? JSON.stringify(errors) : undefined);
 }
 
-/** SQLite says SQLITE_FULL ("database or disk is full") for a full disk, a short write and a full temporary folder
- * (where large writes spill their journal) alike, and macOS counts purgeable space as free where statfs does not. Name
- * the write, the database and the free space statfs sees on both, so the real cause shows. */
+/** Name the write, so the cause in sqliteDetail shows against what failed. */
 function dbWrite<T>(s: Store, what: string, fn: () => T): T {
   try {
     return fn();
   } catch (e) {
-    const code = (e as { code?: unknown }).code;
-    if (typeof code !== "string" || !code.startsWith("SQLITE_")) throw e;
-    const free = (dir: string) => {
-      try {
-        const st = statfsSync(dir);
-        return `${(st.bavail * st.bsize / 2 ** 30).toFixed(1)} GiB free in ${dir}`;
-      } catch {
-        return `${dir} unreadable`;
-      }
-    };
-    const file = s.db.filename;
-    throw new Error(`${what} in ${file} failed: ${(e as Error).message} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`, { cause: e });
+    const detail = sqliteDetail(e, s.db.filename);
+    if (!detail) throw e;
+    throw new Error(`${what} in ${s.db.filename} failed: ${detail}`, { cause: e });
   }
 }
 
