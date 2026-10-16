@@ -1,10 +1,10 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { outdatedNodes } from "@agentgate/protocol";
 import { Store } from "../src/store.ts";
-import { installLatest, updateNode } from "../src/update.ts";
+import { installLatest, pathCopy, updateNode, versionNotice } from "../src/update.ts";
 
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -65,4 +65,26 @@ test("updating a paired node asks it over the peer channel and explains a node t
   } finally {
     peer.stop(true);
   }
+});
+
+test("a CLI that is not the daemon's release says how to fix the copy that is stale", () => {
+  const bun = "/Users/me/.bun/install/global/node_modules/agentpool-darwin-arm64/bin/agentgate";
+  expect(versionNotice("0.21.0", "0.20.0", bun)).toEndWith("update this copy with bun add -g @hanskristoffer/agentpool@0.21.0");
+  expect(versionNotice("0.21.0", "0.20.0", "/usr/lib/node_modules/agentpool-linux-x64/bin/agentgate")).toEndWith("npm install -g @hanskristoffer/agentpool@0.21.0");
+  expect(versionNotice("0.10.0", "0.9.0", "/home/me/.local/bin/agentgate")).toEndWith("agentgate update");
+  expect(versionNotice("0.21.0", "0.22.0", bun)).toContain("agentgate service restart");
+
+  // A bun global install on PATH: ~/.bun/bin/agentgate links to the package's launcher.
+  const home = mkdtempSync(join(tmpdir(), "agentgate-path-"));
+  const pkg = join(home, ".bun", "install", "global", "node_modules", "@hanskristoffer", "agentpool");
+  mkdirSync(join(pkg, "bin"), { recursive: true });
+  mkdirSync(join(home, ".bun", "bin"));
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ version: "0.20.0" }));
+  writeFileSync(join(pkg, "bin", "agentpool.js"), "");
+  symlinkSync(join(pkg, "bin", "agentpool.js"), join(home, ".bun", "bin", "agentgate"));
+  const copy = pathCopy(join(home, ".bun", "bin", "agentgate"))!;
+  expect(copy.version).toBe("0.20.0");
+  expect(copy.install("0.21.0")).toEqual(["bun", "add", "-g", "@hanskristoffer/agentpool@0.21.0"]);
+  expect(pathCopy("/usr/local/bin/agentgate-not-there")).toBeUndefined();
+  rmSync(home, { recursive: true, force: true });
 });

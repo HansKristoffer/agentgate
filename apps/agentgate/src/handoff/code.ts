@@ -1,4 +1,4 @@
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 
@@ -131,14 +131,16 @@ export async function dropStash(cwd: string, message: string) {
   }
 }
 
-/** `git worktree list --porcelain` as path and branch pairs; the main checkout comes first. */
+/** `git worktree list --porcelain` as path and branch pairs; the main checkout comes first. A bare repository and
+ * worktrees whose folder is gone (prunable) are left out. */
 export async function worktrees(cwd: string): Promise<{ path: string; branch: string | null }[]> {
-  return (await git(cwd, ["worktree", "list", "--porcelain"])).split("\n\n").map((block) => {
+  return (await git(cwd, ["worktree", "list", "--porcelain"])).split("\n\n").flatMap((block) => {
     const lines = block.split("\n");
     const path = lines.find((l) => l.startsWith("worktree "))?.slice(9) ?? "";
     const head = lines.find((l) => l.startsWith("branch "))?.slice(7);
-    return { path, branch: head?.replace(/^refs\/heads\//, "") ?? null };
-  }).filter((w) => w.path);
+    if (!path || lines.some((l) => l === "bare" || l.startsWith("prunable")) || !existsSync(path)) return [];
+    return [{ path, branch: head?.replace(/^refs\/heads\//, "") ?? null }];
+  });
 }
 
 export async function addWorktree(main: string, path: string, branch: string | null, start: string) {
