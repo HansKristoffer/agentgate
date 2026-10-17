@@ -44,6 +44,9 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
   const session = provider.session?.(req.headers, json);
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount = options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);
+  // A response that is not streamed sends its headers only once the model is done (Codex compaction, non-streaming
+  // Claude calls): waiting only the short header deadline would fail a request the upstream completes and bills.
+  const headerWait = () => Math.min(json && json.stream !== true ? Infinity : limits.headerTimeout, budget.remaining());
   const deliver = (res: Response, accountId: string, release: () => void) => {
     budget.close(); telemetry.headers(res.status);
     const observer = streamObserver(id => { if (accountId) rememberContinuation(s, id, accountId); });
@@ -61,7 +64,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     const attempt = telemetry.attempt("", "client login fallback"), started = performance.now();
     const up = provider.prepare(path, new Headers(headers), body, { accessToken: own } as import("../store.ts").Credential);
     try {
-      const res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, Math.min(limits.headerTimeout, budget.remaining()));
+      const res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, headerWait());
       attempt.status = res.status; attempt.headersMs = Math.round(performance.now() - started); if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, ""); telemetry.saveAttempt(attempt);
       return deliver(res, "", () => {});
     } catch { attempt.status = 502; attempt.failure = "transient"; attempt.headersMs = Math.round(performance.now() - started); telemetry.saveAttempt(attempt); return error(req.signal.aborted ? 408 : 502, "upstream unreachable or timed out", req.signal.aborted ? "cancelled" : "transient"); }
@@ -106,7 +109,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
       const attempt = telemetry.attempt(account.id, decision.reason), started = performance.now();
       const release = beginRoute(s, provider.name, account.id, session);
       let res: Response;
-      try { res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, Math.min(limits.headerTimeout, budget.remaining())); }
+      try { res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, headerWait()); }
       catch {
         release(); attempt.status = 502; attempt.headersMs = Math.round(performance.now() - started); attempt.failure = req.signal.aborted ? "cancelled" : budget.signal.aborted ? "budget" : "transient"; telemetry.saveAttempt(attempt);
         if (!budget.signal.aborted) cool(s, account.id, "transient", s.now() + 15000);
