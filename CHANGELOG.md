@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/HansKristoffer/agentgate/compare/v0.22.0...v0.23.0) (2026-10-17)
+
+
+### Features
+
+* **nodes:** see and switch each machine's Claude Code and Codex routing from Machines ([#79](https://github.com/HansKristoffer/agentgate/issues/79)) ([e8ef588](https://github.com/HansKristoffer/agentgate/commit/e8ef58873f5f1b59832af7f281bee63f9179c46f))
+
 ## [0.22.0](https://github.com/HansKristoffer/agentgate/compare/v0.21.2...v0.22.0) (2026-10-17)
 
 
