@@ -565,7 +565,12 @@ async function main() {
       initialized(s);
       for (const p of peers(s)) console.log(`${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
       for (const n of relayNodes(s)) console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
-      for (const n of outdatedNodes(s.list("node"))) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
+      const outdated = new Set(outdatedNodes(s.list("node")).map((n) => n.id));
+      for (const n of s.list("node")) {
+        const u = (await import("./update.ts")).nodeUpdate(s, n.id);
+        if (u) console.log(`${n.id}: ${u.state === "installing" ? "installing an update" : u.state === "restarting" ? `restarting on agentgate ${u.version}` : u.state === "installed" ? `installed agentgate ${u.version}; restart agentgate there to use it` : `update failed: ${u.error}`}`);
+        else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
+      }
       return;
     case "unpair": {
       initialized(s);

@@ -29,7 +29,7 @@ import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
-import { updateNode } from "./update.ts";
+import { nodeUpdate, updateTracked } from "./update.ts";
 import {
   aliasesFor,
   connect,
@@ -206,6 +206,7 @@ export function management(ctx: Ctx) {
         online: n.id === s.nodeId || s.now() - lastSeen(s, n.id) < 60_000,
         syncError: s.local(`syncError:${n.id}`) ? "Sync failed" : undefined,
         via: n.id === s.nodeId ? [] : via(s, n.id),
+        update: nodeUpdate(s, n.id),
       })),
       relay: relayStatus(s),
       logins: listLogins(s),
@@ -682,7 +683,7 @@ export function management(ctx: Ctx) {
   app.post("/nodes/:id/update", async (c) => {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
-    return c.json(await inputAsync(() => updateNode(s, n!.id)));
+    return c.json(await inputAsync(() => updateTracked(s, n!.id)));
   });
   app.delete("/nodes/:id", async (c) => {
     // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.

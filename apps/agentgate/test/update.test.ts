@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { outdatedNodes } from "@agentgate/protocol";
 import { Store } from "../src/store.ts";
-import { installLatest, pathCopy, updateNode, versionNotice, waitForVersion } from "../src/update.ts";
+import { installLatest, nodeUpdate, pathCopy, updateNode, updateTracked, versionNotice, waitForVersion } from "../src/update.ts";
 
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -87,6 +87,35 @@ test("a CLI that is not the daemon's release says how to fix the copy that is st
   expect(copy.install("0.21.0")).toEqual(["bun", "add", "-g", "@hanskristoffer/agentpool@0.21.0"]);
   expect(pathCopy("/usr/local/bin/agentgate-not-there")).toBeUndefined();
   rmSync(home, { recursive: true, force: true });
+});
+
+test("an update shows while it installs and restarts, clears once the node runs the release, and shows a failure", async () => {
+  const gate = Promise.withResolvers<Response>();
+  let answer: () => Promise<Response> = () => gate.promise;
+  const peer = Bun.serve({ port: 0, fetch: () => answer() });
+  try {
+    const s = new Store(":memory:");
+    let now = 1_000_000; s.now = () => now;
+    s.setLocal("node", "laptop");
+    s.put("node", "server", { id: "server", version: "9.9.8" });
+    s.db.run("insert or replace into peers values ('server', ?, 't', 0, null)", [peer.url.origin]);
+    const running = updateTracked(s, "server");
+    expect(nodeUpdate(s, "server")).toMatchObject({ state: "installing" });
+    await expect(updateTracked(s, "server")).rejects.toThrow("already updating");
+    gate.resolve(Response.json({ node: "server", version: "9.9.9", restarting: true }));
+    await running;
+    expect(nodeUpdate(s, "server")).toMatchObject({ state: "restarting", version: "9.9.9" });
+    // The restarted node's record arrives through sync.
+    s.put("node", "server", { id: "server", version: "9.9.9" });
+    expect(nodeUpdate(s, "server")).toBeUndefined();
+
+    answer = async () => Response.json({ error: "this copy belongs to npm" }, { status: 409 });
+    await expect(updateTracked(s, "server")).rejects.toThrow("npm");
+    expect(nodeUpdate(s, "server")).toMatchObject({ state: "failed", error: "this copy belongs to npm" });
+    now += 2 * 60 * 60_000;
+    expect(nodeUpdate(s, "server")).toBeUndefined();
+    s.close();
+  } finally { peer.stop(true); }
 });
 
 test("waiting for an update returns once the node reports the new version, or after the timeout", async () => {

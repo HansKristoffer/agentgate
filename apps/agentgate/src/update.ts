@@ -5,6 +5,7 @@ import { PeerError, peerCall } from "./handoff/jobs.ts";
 import { serviceRuns } from "./service.ts";
 import { selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
+import { nodeUpdateSchema, type NodeUpdate } from "@agentgate/protocol";
 
 const REPO = process.env.AGENTGATE_REPO ?? "HansKristoffer/agentgate";
 const NPM = "@hanskristoffer/agentpool";
@@ -74,6 +75,40 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
     return await peerCall(s, node, "/update", { method: "POST", timeout: 90_000 });
   } catch (e) {
     if (e instanceof PeerError && e.status === 404) throw new Error(`${node} runs an agentgate too old to update from here; run agentgate update on ${node}`);
+    throw e;
+  }
+}
+
+/** Where an update this daemon started stands, until the node runs the new release: node-local, shown in status so the
+ * app and `agentgate nodes` can follow it. Done once the node's record reports the version; a node that does not come
+ * back in time shows as failed. */
+export function nodeUpdate(s: Store, node: string): NodeUpdate | undefined {
+  const raw = s.local(`update:${node}`);
+  if (!raw) return undefined;
+  const parsed = nodeUpdateSchema.safeParse(JSON.parse(raw));
+  if (!parsed.success) return undefined;
+  const u = parsed.data;
+  if (u.version && s.get("node", node)?.version === u.version) return undefined;
+  const age = s.now() - u.since;
+  if (u.state === "installing" && age > 15 * 60_000) return { ...u, state: "failed", error: `${node} did not answer` };
+  if (u.state === "restarting" && age > 3 * 60_000) return { ...u, state: "failed", error: `${node} installed ${u.version} but did not come back on it` };
+  // A failure stays visible for a while, then the Update button is all that is left.
+  return u.state === "failed" && age > 60 * 60_000 ? undefined : u;
+}
+
+/** `updateNode`, recorded for `nodeUpdate`. Refuses a second update of a node while one is under way. */
+export async function updateTracked(s: Store, node: string) {
+  const key = `update:${node}`;
+  const running = nodeUpdate(s, node);
+  if (running && running.state !== "failed") throw new Error(`${node} is already updating`);
+  const note = (u: Omit<NodeUpdate, "since"> | undefined) => s.setLocal(key, u && JSON.stringify({ ...u, since: s.now() }));
+  note({ state: "installing" });
+  try {
+    const result = await updateNode(s, node);
+    note(!result.version ? undefined : { state: result.restarting ? "restarting" : "installed", version: result.version });
+    return result;
+  } catch (e) {
+    note({ state: "failed", error: (e as Error).message });
     throw e;
   }
 }
