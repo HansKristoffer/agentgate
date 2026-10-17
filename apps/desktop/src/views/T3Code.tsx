@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Button } from "@heroui/react";
+import { Button, toast } from "@heroui/react";
 import { ArrowLeftRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
 import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
-import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle } from "../components/ui.tsx";
+import {
+  Badge,
+  Empty,
+  Field,
+  HeaderActions,
+  Modal,
+  Panel,
+  RowMenu,
+  Toggle,
+  ActionButton,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, elapsed, field, since } from "./utils.ts";
@@ -90,10 +100,10 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
       close();
     }, `T3 Code connected on ${node}`);
   };
-  const disconnect = (node: string) => perform(
-    () => request(conn, `/t3?node=${encodeURIComponent(node)}`, "DELETE"),
-    `T3 Code disconnected on ${node}`,
-  );
+  const disconnect = (node: string) => perform(async () => {
+    await request(conn, `/t3?node=${encodeURIComponent(node)}`, "DELETE");
+    await connected();
+  }, `T3 Code disconnected on ${node}`);
 
   return (
     <Modal title="Machines" close={close}>
@@ -290,14 +300,15 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           : !target.available ? target.reason : undefined;
     return (
       <span title={reason}>
-        <Button size="sm" variant="tertiary" isDisabled={!!reason} onPress={() => void perform(async () => {
+        <ActionButton size="sm" variant="tertiary" isDisabled={!!reason} pendingKey={`handoff:${t.id}`} onPress={() => void perform(async () => {
           const body = { threadId: t.id, node: t.node, to: toHere ? "here" : "server" };
           const r = await request<{ handoffId: string; node: string }>(conn, "/handoffs", "POST", body);
           setStarted((old) => [...old, { handoffId: r.handoffId, node: r.node }]);
-        }, `Handing ${t.title} to ${toHere ? here : target!.node}`)}>
+          toast(`Handing ${t.title} to ${toHere ? here : target!.node}`);
+        }, undefined, `handoff:${t.id}`)}>
           <ArrowLeftRight size={14} />
           {toHere ? "To here" : "To server"}
-        </Button>
+        </ActionButton>
       </span>
     );
   };
@@ -353,7 +364,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           label="Keep projects in sync"
           description="Every machine with T3 Code connected adds the GitHub projects your other machines have, cloning them into its clone folder. Removing a project stays on that machine."
           isSelected={data.settings.t3ProjectSync}
-          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }))}
+          onChange={(on) => perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }), undefined, "t3ProjectSync")}
         />
         {views.filter((v) => v.t3?.projectSyncError).map((v) => (
           <div className="item" key={v.node}><small>{v.node}: {v.t3!.projectSyncError}</small></div>
@@ -364,7 +375,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           label="Show messages from other machines"
           description="A thread that comes back shows the messages it got on your other machines. agentgate writes them into T3 Code's own database, which T3 Code does not support; turn this off if T3 Code misbehaves after a handoff."
           isSelected={data.settings.t3HandoffHistory}
-          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3HandoffHistory: on } }))}
+          onChange={(on) => perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3HandoffHistory: on } }), undefined, "t3HandoffHistory")}
         />
       </Panel>
     </>

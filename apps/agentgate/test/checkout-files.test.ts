@@ -1,11 +1,13 @@
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { tmp } from "./fixtures/git.ts";
+import { sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { CheckoutFiles, StoreBusy, fileContent, fillCheckout, keyForProject, localEdits, lockStore, placeEdit, readStore, reconcile, repoKey, setFileContent, writeStore } from "../src/checkout-files.ts";
 import { Store, exportBackup } from "../src/store.ts";
 import { publicProject } from "../src/remote.ts";
+
+afterAll(removeTmp);
 
 /** Fixture stores in buncargo's format (docs/internals/checkout-files.md). */
 const sha = (data: string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
@@ -235,7 +237,7 @@ test("editing a file in the app saves it for every machine and updates this mach
 
   const opened = fileContent(a.s, a.root, "bliss-budget/budget-app", ".env");
   expect(opened.content).toBe("OLD=1\n");
-  expect(fileContent(a.s, a.root, "bliss-budget/budget-app", ".env.local")).toEqual({ content: "", sha256: "" });
+  expect(fileContent(a.s, a.root, "bliss-budget/budget-app", ".env.local")).toEqual({ content: "", sha256: sha("") });
   expect(() => fileContent(a.s, a.root, "bliss-budget/budget-app", ".env.machine")).toThrow("one machine");
 
   await setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "NEW=2\n", opened.sha256);
@@ -260,4 +262,55 @@ test("file contents stay out of the API's project view and backups without secre
   expect(JSON.parse(shown).files).toEqual([{ path: ".env", updatedAt: "2026-10-01T00:00:00.000Z" }]);
   expect(JSON.stringify(exportBackup(s, false))).not.toContain(btoa("SECRET=1"));
   expect(JSON.stringify(exportBackup(s, true))).toContain(btoa("SECRET=1"));
+});
+
+test("a save follows into every worktree of a registered checkout, and logs what each did without the contents", async () => {
+  const a = node("a");
+  pair(a);
+  fixtureStore(join(a.root, KEY), { ".env": { data: "OLD=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
+  files(a).sync();
+  // SkillLinks registers only the main checkout; its worktrees live elsewhere, as T3 Code's do.
+  const main = tmp(), trees = tmp();
+  sh(main, "init", "-b", "main");
+  writeFileSync(join(main, ".gitignore"), ".env\nnode_modules\ncalls.log\ndev.config.ts\n");
+  sh(main, "add", "-A");
+  sh(main, "commit", "-m", "init");
+  const [plain, withBuncargo, gone] = ["plain", "buncargo", "gone"].map((name) => join(trees, name));
+  for (const [i, wt] of [plain, withBuncargo, gone].entries()) sh(main, "worktree", "add", "-b", `b${i}`, wt!);
+  rmSync(gone!, { recursive: true }); // prunable: git still lists it
+  fakeBuncargo(withBuncargo!);
+  for (const cwd of [main, plain!, withBuncargo!]) writeFileSync(join(cwd, ".env"), "OLD=1\n");
+  writeFileSync(join(main, ".env"), "MINE=1\n");
+  a.s.setLocal("checkouts", JSON.stringify({ [main]: "bliss-budget/budget-app" }));
+
+  const log = spyOn(console, "log").mockImplementation(() => { });
+  try {
+    const saved = await setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "NEW=2\n", sha("OLD=1\n"));
+    expect(saved.checkouts).toEqual({ updated: 1, kept: 1, pulled: 1, failed: 0 });
+    expect(log.mock.calls.flat()).toContain("checkout files: bliss-budget/budget-app .env saved; followed 3 checkouts (1 updated, 1 kept, 1 pulled)");
+    expect(JSON.stringify(log.mock.calls)).not.toContain("NEW=2");
+  } finally {
+    log.mockRestore();
+  }
+  expect(readFileSync(join(plain!, ".env"), "utf8")).toBe("NEW=2\n");
+  expect(readFileSync(join(main, ".env"), "utf8")).toBe("MINE=1\n");
+  expect(readFileSync(join(withBuncargo!, "calls.log"), "utf8")).toEndWith(" files pull .env\n");
+  expect(existsSync(gone!)).toBe(false);
+});
+
+test("a SQLite write that fails says which write, which database and what the disks have free", () => {
+  const dir = tmp(), s = new Store(join(dir, "agentgate.db"));
+  stores.push(s);
+  s.setLocal("node", "a");
+  s.put("node", "a", { id: "a", protocol: 6 });
+  const root = join(tmp(), ".buncargo", "files");
+  fixtureStore(join(root, KEY), { ".env": { data: "x".repeat(200_000), updatedAt: "2026-10-01T00:00:00.000Z" } });
+  // SQLITE_FULL without a full disk, as a database at its page limit gives it.
+  const pages = (s.db.query("pragma page_count").get() as { page_count: number }).page_count;
+  s.db.run(`pragma max_page_count = ${pages}`);
+  let error: Error | undefined;
+  try { reconcile(s, root, KEY); } catch (e) { error = e as Error; }
+  expect(error?.message).toContain(`in ${join(dir, "agentgate.db")} failed: database or disk is full (SQLITE_FULL; `);
+  expect(error?.message).toMatch(/GiB free in .*GiB free in /);
+  expect(error?.message).not.toContain("xxxx");
 });

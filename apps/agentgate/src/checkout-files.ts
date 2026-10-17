@@ -4,8 +4,9 @@ import { dirname, join, relative } from "node:path";
 import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
 import { RELAY_LIMITS } from "@agentgate/protocol/relay";
 import { z } from "zod";
+import { worktrees } from "./handoff/code.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, sqliteDetail, type Store } from "./store.ts";
 
 /** Checkout files (docs/internals/checkout-files.md): buncargo's per-machine file store of a repository's gitignored
  * files, carried between machines on the synced `project` record. Buncargo owns what happens inside a checkout; this
@@ -215,22 +216,30 @@ function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
   return Buffer.byteLength(JSON.stringify({ protocol: 999, record })) + NONCE_AND_TAG <= RELAY_LIMITS.blobBytes;
 }
 
-/** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project. */
+/** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project.
+ * FILES_PROTOCOL arrived in 0.20.0, so nodes on 0.20.0 or later keep them. */
 function oldNodesError(s: Store) {
   const old = s.list("node").filter((n) => (n.protocol ?? 0) < FILES_PROTOCOL).map((n) => n.id);
-  return old.length ? `Update agentgate on ${old.join(", ")} first: older versions drop checkout files when they save a project` : undefined;
+  return old.length ? `Update agentgate on ${old.join(", ")} to 0.20.0 or later: older versions drop env files when they save a project, so none are saved until then` : undefined;
 }
 
 const errorsKey = "checkoutFiles:errors";
-export function filesErrors(s: Store): Record<string, string> {
+function storedErrors(s: Store): Record<string, string> {
   try {
     return JSON.parse(s.local(errorsKey) ?? "{}");
   } catch {
     return {};
   }
 }
+/** Why each project's env files are not syncing. An old node blocks every project with files, whether or not a pass
+ * has had something to send since. */
+export function filesErrors(s: Store): Record<string, string> {
+  const errors = storedErrors(s), old = oldNodesError(s);
+  if (old) for (const p of s.list("project")) if (p.files?.length || p.fileList?.length) errors[p.id] ??= old;
+  return errors;
+}
 function report(s: Store, project: string, message: string | undefined) {
-  const errors = filesErrors(s);
+  const errors = storedErrors(s);
   if (errors[project] === message) return;
   if (message) {
     errors[project] = message;
@@ -239,6 +248,17 @@ function report(s: Store, project: string, message: string | undefined) {
     delete errors[project];
   }
   s.setLocal(errorsKey, Object.keys(errors).length ? JSON.stringify(errors) : undefined);
+}
+
+/** Name the write, so the cause in sqliteDetail shows against what failed. */
+function dbWrite<T>(s: Store, what: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (e) {
+    const detail = sqliteDetail(e, s.db.filename);
+    if (!detail) throw e;
+    throw new Error(`${what} in ${s.db.filename} failed: ${detail}`, { cause: e });
+  }
 }
 
 /** What this node last made the store and the record agree on, without data: a file in it that left the store was
@@ -284,17 +304,18 @@ export function reconcile(s: Store, root: string, key: string): boolean {
   if (put.length || remove.length) {
     const writes = put.map((f) => ({ path: f.path, data: Buffer.from(f.data!, "base64"), updatedAt: f.updatedAt }));
     writeStore(dir, writes, remove, s.now());
+    console.log(`checkout files: ${project}: this machine's store took ${[...put.map((f) => f.path), ...remove.map((path) => `${path} (removed)`)].join(", ")} from the synced record`);
   }
-  s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f)));
+  dbWrite(s, "saving what this pass reconciled", () => s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f))));
 
   let error: string | undefined;
   if (merged.length && !same(merged, remote)) {
     const next = { ...(record ?? projectSchema.parse({ id: project })), files: merged };
     error = oldNodesError(s);
     if (!error && !fitsRelay(s, next)) error = "the files are larger than one synced record can carry (about 700 KiB in all); they stay on this machine";
-    if (!error) s.put("project", project, next);
+    if (!error) dbWrite(s, `saving ${project}'s project record`, () => s.put("project", project, next));
   }
-  report(s, project, error);
+  dbWrite(s, "saving the sync error", () => report(s, project, error));
   return put.length > 0 || remove.length > 0;
 }
 
@@ -573,45 +594,78 @@ function storeFile(s: Store, root: string, project: string, path: string) {
   return { project, key, f };
 }
 
-/** A file's text as this machine's store has it, for editing; empty when it is not saved yet. `sha256` identifies the
- * version, so a save can refuse to replace a newer one. */
+/** A file's text as this machine's store has it, for editing; empty when it is not saved yet. `sha256` is the sha256 of
+ * that text (`cat | shasum -a 256`), so a save can refuse to replace a newer version. */
 export function fileContent(s: Store, root: string, project: string, path: string) {
   const { f } = storeFile(s, root, project, path);
   try {
-    return { content: new TextDecoder("utf-8", { fatal: true }).decode(f?.data ?? new Uint8Array()), sha256: f?.sha256 ?? "" };
+    return { content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(f?.data ?? new Uint8Array()), sha256: f?.sha256 ?? sha256("") };
   } catch {
     throw new Error(`${path} is not text, so it cannot be edited here`);
   }
 }
 
+/** This machine's checkouts of a repository: the main checkouts SkillLinks registered and the checkouts agentgate
+ * created, each with every worktree of its repository. */
+async function checkoutsOf(s: Store, project: string, key: string): Promise<string[]> {
+  let registered: Record<string, string> = {};
+  try { registered = JSON.parse(s.local("checkouts") ?? "{}"); } catch { } // SkillLinks.checkouts()
+  const known = [
+    ...Object.entries(registered).filter(([, p]) => p.toLowerCase() === project.toLowerCase()).map(([cwd]) => cwd),
+    ...Object.entries(createdCheckouts(s)).filter(([, k]) => k === key).map(([cwd]) => cwd),
+  ];
+  const found = new Set<string>();
+  for (const cwd of known) {
+    if (!existsSync(cwd)) continue;
+    found.add(realpathSync(cwd));
+    for (const w of await worktrees(cwd).catch(() => [])) found.add(realpathSync(w.path));
+  }
+  return [...found];
+}
+
+type Followed = "updated" | "kept" | "pulled" | "failed";
+
 /** Save a file's new text (now, as a deliberate save) for every machine. This machine's checkouts of the repository that
  * hold the previous version, or none, get the new one (through buncargo's pull where they use it); a checkout with its
- * own edits keeps them. With `expected` (fileContent's sha256), it refuses to replace a version saved in the meantime. */
+ * own edits keeps them. With `expected` (fileContent's sha256), it refuses to replace a version saved in the meantime.
+ * Logs one line with what each checkout did, never the contents. */
 export async function setFileContent(s: Store, root: string, project: string, path: string, content: string, expected?: string) {
   const { project: id, key, f } = storeFile(s, root, project, path);
-  if (expected !== undefined && expected !== (f?.sha256 ?? "")) throw new Error(`${path} changed since you opened it; open it again to see the new version`);
+  if (expected !== undefined && expected !== (f?.sha256 ?? sha256(""))) throw new Error(`${path} changed since you opened it; open it again to see the new version`);
   const old = oldNodesError(s);
   if (old) throw new Error(old);
   const data = Buffer.from(content);
   if (data.byteLength > 1024 * 1024) throw new Error(`${path} is larger than 1 MiB`);
 
-  let registered: Record<string, string> = {};
-  try { registered = JSON.parse(s.local("checkouts") ?? "{}"); } catch { } // SkillLinks.checkouts()
-  const checkouts = new Set([
-    ...Object.entries(registered).filter(([, p]) => p.toLowerCase() === id.toLowerCase()).map(([cwd]) => cwd),
-    ...Object.entries(createdCheckouts(s)).filter(([, k]) => k === key).map(([cwd]) => cwd),
-  ]);
-  const present = [...checkouts].filter((cwd) => existsSync(cwd));
+  const checkouts = await checkoutsOf(s, id, key);
+  const followed = new Map<string, Followed>();
+  const fail = (cwd: string, e: unknown) => {
+    followed.set(cwd, "failed");
+    console.error(`checkout files: ${cwd}: ${(e as Error).message}`);
+  };
   // Before the store changes: placeEdit tells the previous version from a checkout's own edits by the store.
-  for (const cwd of present) if (!usesBuncargo(cwd)) placeEdit(root, key, cwd, path, data);
+  for (const cwd of checkouts) {
+    if (usesBuncargo(cwd)) continue;
+    try {
+      followed.set(cwd, placeEdit(root, key, cwd, path, data) ? "updated" : "kept");
+    } catch (e) {
+      fail(cwd, e);
+    }
+  }
 
   writeStore(join(root, key), [{ path, data, updatedAt: iso(s.now()) }], [], s.now());
   reconcile(s, root, key);
   // Buncargo keeps its own record of each checkout's copy, so its pull decides whether a checkout takes the new one.
-  for (const cwd of present) {
-    if (usesBuncargo(cwd)) await buncargo(root, cwd, ["files", "pull", path]).catch((e) => console.error(`checkout files: ${cwd}: ${(e as Error).message}`));
+  for (const cwd of checkouts) {
+    if (!usesBuncargo(cwd)) continue;
+    await buncargo(root, cwd, ["files", "pull", path]).then(() => followed.set(cwd, "pulled"), (e) => fail(cwd, e));
   }
-  return id;
+
+  const counts = { updated: 0, kept: 0, pulled: 0, failed: 0 };
+  for (const outcome of followed.values()) counts[outcome]++;
+  const parts = Object.entries(counts).filter(([, n]) => n).map(([outcome, n]) => `${n} ${outcome}`);
+  console.log(`checkout files: ${id} ${path} saved; followed ${checkouts.length} ${checkouts.length === 1 ? "checkout" : "checkouts"}${parts.length ? ` (${parts.join(", ")})` : ""}`);
+  return { project: id, checkouts: counts };
 }
 
 /** Each store file of the checkout's repository, whether it is listed, and the project's sync error. */

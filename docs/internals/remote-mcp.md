@@ -10,7 +10,7 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
 ## Decisions
 
 - Virtual projects reuse the `project` kind with an `@slug` id instead of a new kind, because old nodes
-  stall on unknown kinds. Enabling an endpoint is gated on every node advertising `NODE_PROTOCOL` 2,
+  stall on unknown kinds. Enabling an endpoint is gated on every node advertising node protocol 2 (`REMOTE_PROTOCOL`),
   because old nodes would drop the `remote` field when they edit the project.
 - One explicitly chosen node serves each endpoint (`remote.servedBy`, always-on nodes by default), not
   automatic routing: shared stdio servers depend on that machine's PATH and environment, and an HTTP

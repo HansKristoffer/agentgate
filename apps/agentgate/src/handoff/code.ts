@@ -1,6 +1,7 @@
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { killGroup } from "../runtime.ts";
 
 /** The code that travels with a thread: local commits plus a snapshot commit of uncommitted and untracked files,
  * as a git bundle sent between daemons. Nothing is pushed to `origin`; the source's branch, index and files stay
@@ -10,14 +11,21 @@ export type Snapshot = { sha: string; uncommitted: boolean };
 // A throwaway commit; a fixed identity keeps it from failing where git has none configured.
 const IDENTITY = { GIT_AUTHOR_NAME: "agentgate", GIT_AUTHOR_EMAIL: "agentgate@localhost", GIT_COMMITTER_NAME: "agentgate", GIT_COMMITTER_EMAIL: "agentgate@localhost" };
 
+/** A fetch or clone can stall on a dead remote or an SSH agent waiting for approval; past the deadline git and its
+ * helpers are killed, and the step fails instead of holding the handoff and daemon shutdown. */
+const GIT_TIMEOUT = 10 * 60_000;
+
 export async function run(cwd: string, args: string[], env: Record<string, string> = {}) {
   const child = Bun.spawn(["git", ...args], {
-    cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore",
+    cwd, stdout: "pipe", stderr: "pipe", stdin: "ignore", detached: true,
     // Never wait on a credential prompt nobody can answer.
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...env },
   });
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  return { ok: code === 0, out: out.trim(), err: err.trim() };
+  const timer = setTimeout(() => killGroup(child), GIT_TIMEOUT);
+  try {
+    const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { ok: code === 0, out: out.trim(), err: err.trim() };
+  } finally { clearTimeout(timer); }
 }
 export async function git(cwd: string, args: string[], env?: Record<string, string>): Promise<string> {
   const r = await run(cwd, args, env);
@@ -131,14 +139,16 @@ export async function dropStash(cwd: string, message: string) {
   }
 }
 
-/** `git worktree list --porcelain` as path and branch pairs; the main checkout comes first. */
+/** `git worktree list --porcelain` as path and branch pairs; the main checkout comes first. A bare repository and
+ * worktrees whose folder is gone (prunable) are left out. */
 export async function worktrees(cwd: string): Promise<{ path: string; branch: string | null }[]> {
-  return (await git(cwd, ["worktree", "list", "--porcelain"])).split("\n\n").map((block) => {
+  return (await git(cwd, ["worktree", "list", "--porcelain"])).split("\n\n").flatMap((block) => {
     const lines = block.split("\n");
     const path = lines.find((l) => l.startsWith("worktree "))?.slice(9) ?? "";
     const head = lines.find((l) => l.startsWith("branch "))?.slice(7);
-    return { path, branch: head?.replace(/^refs\/heads\//, "") ?? null };
-  }).filter((w) => w.path);
+    if (!path || lines.some((l) => l === "bare" || l.startsWith("prunable")) || !existsSync(path)) return [];
+    return [{ path, branch: head?.replace(/^refs\/heads\//, "") ?? null }];
+  });
 }
 
 export async function addWorktree(main: string, path: string, branch: string | null, start: string) {

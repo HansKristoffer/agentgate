@@ -12,7 +12,7 @@ Skill sync uses byte-bounded pages so initial pairing and offline catch-up can e
 
 Local skill reconciliation runs independently every 30 seconds, with event-driven retries for worktree creation. Publication failures restore the previous disk copy; interrupted swaps are recovered on restart. The two-rename directory swap has a brief availability gap during successful updates. Skills → **Skills need attention** reports filesystem/watch errors and case-variant project IDs that require consolidation. Managed skill links are kept out of Git status, and mirroring repository-owned skills is an explicit local opt-in.
 
-The app/API restore limit is 16 MiB of serialized JSON. For larger inventories, restore on the daemon's machine with `agentgate import /absolute/path/backup.json`; the CLI validates the full backup before committing it. Exported backups can exceed the app restore limit. Protect skill sources and script contents as part of the backup.
+The app/API restore limit is 16 MiB of serialized JSON. For larger inventories, restore on the daemon's machine with `agentgate import-backup /absolute/path/backup.json`; the CLI validates the full backup before committing it. Exported backups can exceed the app restore limit. Protect skill sources and script contents as part of the backup.
 
 Only pool accounts you own and use them within the provider's applicable terms. Automated fixture checks do not establish provider permission or support for every live CLI version.
 

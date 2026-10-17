@@ -253,7 +253,6 @@ export const modelSnapshotSchema = z.object({
   at: z.number(),
   models: z.array(modelIdSchema).max(1000),
 });
-export type ModelSnapshot = z.infer<typeof modelSnapshotSchema>;
 export class ConfigurationConflict extends Error {
   constructor() {
     super("Configuration changed. Reload or reapply your draft.");

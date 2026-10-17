@@ -3,10 +3,14 @@ import { Ellipsis } from "lucide-react";
 import {
   createContext,
   useContext,
+  useOptimistic,
+  useTransition,
   type ComponentProps,
   type ReactNode,
 } from "react";
 import {
+  Button,
+  Spinner,
   buttonVariants,
   Card,
   Checkbox,
@@ -28,8 +32,21 @@ import {
   TextField,
 } from "@heroui/react";
 
-/** True while an action runs; blocks controls that render outside the workspace, such as dialogs. */
+/** True while an action runs; blocks the controls of an open dialog, which is what started it. */
 export const BusyContext = createContext(false);
+/** The actions under way, by the key `perform` got. */
+export const PendingContext = createContext<ReadonlySet<string>>(new Set());
+export const usePending = () => useContext(PendingContext);
+/** A button for an action that can take a while: a spinner while `perform` runs it under `pendingKey`. */
+export function ActionButton({ pendingKey, children, ...props }: ComponentProps<typeof Button> & { pendingKey: string; children: ReactNode }) {
+  const pending = usePending().has(pendingKey);
+  return (
+    <Button {...props} isPending={pending}>
+      {pending && <Spinner size="sm" color="current" />}
+      {children}
+    </Button>
+  );
+}
 
 /** Where a view's page actions go: the card header, beside the title. */
 export const HeaderSlot = createContext<HTMLElement | null>(null);
@@ -82,6 +99,15 @@ export function Badge({
     <Chip size="sm" variant="soft" color={good ? "success" : "default"}>
       {children}
     </Chip>
+  );
+}
+/** A row's action that is under way, e.g. "Syncing". */
+export function Working({ children }: { children: ReactNode }) {
+  return (
+    <Badge>
+      <Spinner size="sm" color="current" />
+      {children}
+    </Badge>
   );
 }
 export function Quota({ value }: { value: number }) {
@@ -214,24 +240,39 @@ export function Choice({
   );
 }
 /** A labelled switch, label first as in System Settings. */
+/** A switch that moves when clicked. When `onChange` returns a promise (a `perform`), it shows the new value while the
+ * change is saved, and whatever the daemon reports afterwards. */
+export function LiveSwitch({ isSelected, onChange, ...props }: Omit<ComponentProps<typeof Switch>, "onChange"> & {
+  onChange?: (on: boolean) => unknown;
+}) {
+  const [shown, show] = useOptimistic(!!isSelected);
+  const [, start] = useTransition();
+  return (
+    <Switch
+      {...props}
+      isSelected={shown}
+      onChange={(on) => start(async () => { show(on); await onChange?.(on); })}
+    />
+  );
+}
 export function Toggle({
   label,
   description,
   className = "item",
   ...props
-}: ComponentProps<typeof Switch> & {
+}: ComponentProps<typeof LiveSwitch> & {
   label: ReactNode;
   description?: ReactNode;
 }) {
   return (
-    <Switch className={className} {...props}>
+    <LiveSwitch className={className} {...props}>
       <Switch.Content className="toggle">
         <Labelled label={label} description={description} />
         <Switch.Control>
           <Switch.Thumb />
         </Switch.Control>
       </Switch.Content>
-    </Switch>
+    </LiveSwitch>
   );
 }
 /** A checkbox that submits `name=value` (default `on`), like the native one it replaces. Without children, give it an aria-label. */

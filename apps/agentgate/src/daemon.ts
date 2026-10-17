@@ -13,10 +13,10 @@ import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
+import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
+import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
-import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
+import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
 import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
@@ -67,8 +67,6 @@ export function handoffOptions(s: Store): HandoffOptions {
   };
 }
 
-export { providers } from "./llm/providers.ts";
-
 export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
@@ -92,7 +90,9 @@ export function app(ctx: Ctx) {
     if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
-    console.error(`request failed: ${error.name}`);
+    // The path, never the query, and for SQLite the free space; the client only learns that it failed.
+    const detail = sqliteDetail(error, s.db.filename);
+    console.error(`request failed: ${c.req.method} ${c.req.path}: ${error.name}${detail ? `: ${detail}` : ""}`);
     return c.json({ error: "request failed" }, 500);
   });
   app.use("*", async (_, next) => {
@@ -111,7 +111,7 @@ export function app(ctx: Ctx) {
   // Register before every API handler, including the MCP shim's checkout write.
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
-    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
+    if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
       if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
@@ -123,7 +123,8 @@ export function app(ctx: Ctx) {
   app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
-  app.all("/mcp", loopbackOnly, (c) => ctx.gateway.handle(c.req.raw));
+  // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
+  app.all("/mcp", loopbackOnly, (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))
@@ -147,6 +148,9 @@ export function app(ctx: Ctx) {
   return app;
 }
 
+/** Browsers send these on every request a page makes; the CLI, the app's Rust client and MCP clients never do. */
+const fromBrowser = (req: Request) => !!(req.headers.get("origin") || req.headers.get("sec-fetch-site"));
+
 function pathAfter(url: string, prefix: string) {
   const u = new URL(url);
   return u.pathname.slice(prefix.length) + u.search;
@@ -169,7 +173,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     s.put("node", s.nodeId, { ...me, protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL), version: packageInfo.version });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
-  console.log(`agentgate ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
+  console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
   const schedule = (task: () => Promise<unknown>, interval: number) => {
     const serial = serialTask(async () => { if (!stopped) await task(); });
     const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
@@ -209,14 +213,12 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
   schedule(async () => { ctx.files.sync(); }, 30000);
-  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);
+  const skillBackoff = new SkillBackoff(s);
+  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
-  schedule(async () => {
-    for (const { id, outcome } of await updateSkills(s, undefined, ctx.abort.signal))
-      if (outcome.startsWith("failed")) console.error(`skills: ${id}: ${outcome}`);
-  }, 3600000);
+  schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
+  schedule(() => { noteSyncTurn(s); return Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }); }, PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);

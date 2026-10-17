@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.22.0](https://github.com/HansKristoffer/agentgate/compare/v0.21.2...v0.22.0) (2026-10-17)
+
+
+### Features
+
+* **app:** actions no longer freeze the window, and machine updates show their progress ([#78](https://github.com/HansKristoffer/agentgate/issues/78)) ([d1f0058](https://github.com/HansKristoffer/agentgate/commit/d1f0058e835a6ae6a17bddcfb372f03b5d8c5192))
+
+
+### Bug Fixes
+
+* **handoff:** recognize clones of renamed repositories ([#75](https://github.com/HansKristoffer/agentgate/issues/75)) ([fdd4030](https://github.com/HansKristoffer/agentgate/commit/fdd403008f9962080b08a422cc8b5216f5d9e454))
+
+## [0.21.2](https://github.com/HansKristoffer/agentgate/compare/v0.21.1...v0.21.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **daemon:** timestamped logs, detailed request errors, update waits for the node, quieter skill retries ([#73](https://github.com/HansKristoffer/agentgate/issues/73)) ([ceded96](https://github.com/HansKristoffer/agentgate/commit/ceded968a227734cda3c770ea40546730532b7a4))
+
+## [0.21.1](https://github.com/HansKristoffer/agentgate/compare/v0.21.0...v0.21.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **files:** a saved env file reaches every worktree, and saves are logged ([#71](https://github.com/HansKristoffer/agentgate/issues/71)) ([6748bae](https://github.com/HansKristoffer/agentgate/commit/6748baef7cc46309b04ba53d84b12402bffb1069))
+
 ## [0.21.0](https://github.com/HansKristoffer/agentgate/compare/v0.20.0...v0.21.0) (2026-10-16)
 
 

@@ -31,7 +31,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
-Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. `agentgate update <node>` does the same on a paired machine, and the app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service, and also updates a global npm or bun install of agentgate that your PATH finds first. The CLI warns when it is not the release the daemon runs. `agentgate update <node>` does the same on a paired machine. Both wait until the machine reports the new release, and say so if it is still restarting after 90 seconds. The app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
@@ -47,7 +47,7 @@ agentgate service install           # launchd (macOS) or systemd --user (Linux)
 
 You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, and starts a launchd service. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
 
-The app has Accounts, Activity, MCP servers, Skills, Projects, Machines, T3 Code, and Settings screens. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
+The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, and Settings screens; request activity is a tab in Settings. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
 
 ## A second machine (e.g. an always-on server)
 
@@ -83,7 +83,7 @@ To control the server from the native app over Tailscale, open the connection se
 | Claude | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
 | Codex | `CODEX_HOME path` = `~/.config/agentgate/codex` |
 
-One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, choose an **Active subscription** separately for Claude, Codex, and Cursor, or click **Use subscription** on an account. Your choice applies to the next request in every routed session and syncs to paired machines; if it is unavailable, the pool falls back to another account. Choose **Automatic** to clear the preference. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
+One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, click an account's pin to prefer it for its provider. The pin applies to the next request in every routed session and syncs to paired machines; while the pinned account has no room, the pool falls back to another one. Click the pin again to go back to automatic. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
 
 **Cursor** accounts can be added too (`agentgate login cursor`, or **Add account** in the app). Agentgate keeps their logins, shows each account's monthly plan usage, counts their tokens in the overview chart (read from Cursor's usage history every 15 minutes), and syncs the accounts to paired machines. Agent runs are pooled like Claude and Codex: set `CURSOR_API_BASE_URL` to `http://127.0.0.1:<port>/cursor` (the address `agentgate status` prints, with `/cursor` on the end). Other Cursor calls keep the CLI's own login. A machine on an older agentgate stops syncing once a Cursor account exists, until it is updated.
 
@@ -190,16 +190,17 @@ agentgate project files add .env.local apps/expo-app/.env   # save them for ever
 agentgate project files ls
 agentgate project files cat .env.local                      # print the saved contents
 agentgate project files set .env.local < new.env            # replace them on every machine
+agentgate project files set .env.local --if-sha <sha256> < new.env   # unless saved again since (cat | shasum -a 256)
 agentgate project files rm .env.local
 ```
 
-In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts, and every worktree of them, that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
 
-Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
+Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run agentgate 0.20.0 or later, because older versions drop the files when they save a project: until then none are saved, and the app and `project files ls` name the machine to update. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
 ## Your MCP servers and skills in Grok
 
-Assistants such as Grok only accept an MCP server URL and an `Authorization` header. A **virtual project** gives them one: in Projects, choose **New virtual project**, pick its MCP servers and skills, then **Connect to Grok** and copy the URL and `Authorization` value into Grok. One of your machines (an always-on server by default) answers through the relay. Grok also gets `skills__list` and `skills__read` tools, so it can find a skill and follow its SKILL.md.
+Assistants such as Grok only accept an MCP server URL and an `Authorization` header. A **virtual project** gives them one: in Projects, choose **New virtual project**, pick its MCP servers and skills, then **Create endpoint for Grok** and copy the URL and `Authorization` value into Grok. One of your machines (an always-on server by default) answers through the relay. Grok also gets `skills__list` and `skills__read` tools, so it can find a skill and follow its SKILL.md.
 
 ```sh
 agentgate project set @grok linear=linear posthog=posthog-lullu
@@ -258,7 +259,7 @@ See [running agentgate](docs/operations/running.md) for backup, upgrade, and liv
 
 Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 4** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
-`export --no-secrets` / **Without secrets** produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
+`export --no-secrets` (or a backup with **Include credentials** off) produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
 
 `setup` preserves unrelated Claude/Codex settings and first-run backups. Generated shims/services include `AGENTGATE_HOME` and `AGENTGATE_PORT`; rerun setup and reinstall the service if you change either value or move the binary. An unsuccessful temporary CLI login/import keeps its folder for recovery instead of deleting the only credential copy.
 

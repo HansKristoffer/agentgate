@@ -1,17 +1,19 @@
 import { revision } from "../src/configuration.ts";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
-import { choose } from "../src/llm/pool.ts";
+import { route } from "../src/llm/routing.ts";
 import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
 import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
-import { repos, tmp } from "./fixtures/git.ts";
+import { repos, tmp, removeTmp } from "./fixtures/git.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+afterAll(removeTmp);
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -112,23 +114,23 @@ test("subscription selection switches each provider independently and keeps quot
     }
     s.setLocal(`active:${provider}`, `${provider}-personal`);
     expect((await call(`/api/accounts/${provider}-work`, "PATCH", { pinned: true })).status).toBe(200);
-    expect(choose(s, provider, undefined)?.id).toBe(`${provider}-work`);
+    expect(route(s, provider).account).toBe(`${provider}-work`);
   }
   // Switching Claude leaves the Codex preference intact and replaces the old pin.
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: true })).status).toBe(200);
   expect(s.get("account", "claude-work")?.pinned).toBe(false);
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-work");
+  expect(route(s, "codex").account).toBe("codex-work");
   // A selected subscription at its limit falls back without clearing the preference.
   s.put("usage", "codex-work", {
     accountId: "codex-work", windows: [], status: "exhausted",
     exhaustedUntil: s.now() + 60000, observedAt: s.now(), observedBy: "test",
   });
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-personal");
+  expect(route(s, "codex").account).toBe("codex-personal");
   expect(s.get("account", "codex-work")?.pinned).toBe(true);
   // Automatic selection clears the pin and respects the account used most recently.
   s.setLocal("active:claude", "claude-work");
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: false })).status).toBe(200);
-  expect(choose(s, "claude", undefined)?.id).toBe("claude-work");
+  expect(route(s, "claude").account).toBe("claude-work");
   const status = await (await call("/api/status")).json() as Status;
   expect(status.accounts.filter(a => a.account.pinned).map(a => a.account.id)).toEqual(["codex-work"]);
 });
@@ -347,7 +349,7 @@ test("malformed JSON and form submissions get clear errors without changing sett
   ] as const) {
     const response = await handler.fetch(
       new Request("http://127.0.0.1:7878/api/settings", {
-        method: "PUT",
+        method: "PATCH",
         body,
         headers: { host: "127.0.0.1:7878", "content-type": type },
       }),
@@ -454,11 +456,20 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect(statusSchema.safeParse(missing).success).toBe(false);
 });
 
+test("the app's status schema keeps the relay and how each machine is reached", async () => {
+  const { s, call } = fixture();
+  s.put("node", "test", { id: "test", alwaysOn: false });
+  s.put("node", "b", { id: "b", alwaysOn: false });
+  s.setLocal("relay:invite", "agentgate-relay.invalid");
+  s.setLocal("relaySeen:b", String(s.now()));
+  const parsed = statusSchema.parse(await (await call("/api/status")).json());
+  expect(parsed.relay).toMatchObject({ reconciling: true, rotating: false });
+  expect(parsed.nodes.find((n) => n.id === "b")?.via).toEqual(["relay"]);
+});
+
 test("thread handoff routes: T3 connection state, cross-node listing, and connect only from this machine", async () => {
   const { s, call } = fixture();
   s.put("node", "test", { id: "test", alwaysOn: false });
-  const status = (await (await call("/api/status")).json()) as Status;
-  expect(status.t3).toEqual({ connected: false });
   expect(await (await call("/api/t3")).json()).toEqual({ connected: false });
   expect((await call("/api/t3/connect", "POST", { url: "http://127.0.0.1:1", token: "x" }, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
   const nodes = await (await call("/api/threads")).json();

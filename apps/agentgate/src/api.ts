@@ -3,7 +3,6 @@ import {
   accountSchema,
   projectSchema,
   providerSchema,
-  settingsSchema,
   SkillConflict,
   decodedSize,
   projectIdSchema,
@@ -30,29 +29,30 @@ import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
-import { routeNode, updateNode } from "./update.ts";
+import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import {
   aliasesFor,
   connect,
   listAllTools,
   needsLogin,
   serverHealth,
-  renameInstance,
   scanRepos,
   toolName,
 } from "./mcp/gateway.ts";
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
   createInstance,
   labelInstance,
   deleteAccount,
   deleteInstance,
+  removeNode,
+  renameInstance,
   saveProject,
   setAccount,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
-import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
 import { addFileAt, fileContent, filesErrors, removeFiles, setFileContent } from "./checkout-files.ts";
 import {
@@ -72,7 +72,7 @@ import {
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
 import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
 import { allNodes, connectNode, disconnectNode, handoffJob, pairingLinkNode, requestHandoff } from "./handoff/threads.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import {
   RelayBusy,
   RelayError,
@@ -84,8 +84,6 @@ import {
   newNodeName,
   parseJoin,
   reconcileRelay,
-  relayInvite,
-  relayNodes,
   relayStatus,
   rotateRelay,
   setServiceKey,
@@ -97,15 +95,16 @@ const required = (value: unknown, name: string) => {
 };
 const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
-const readableEndpoint = (url?: string) => {
-  if (!url) return "Local command";
-  try {
-    const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
-  } catch {
-    return "HTTP server";
-  }
-};
+/** The coding tools' own logins, read at most every 30 s: ~/.claude.json alone can be megabytes, and the app polls
+ * status every second while something is under way. */
+const detections = new Map<keyof typeof providerLogins, { at: number; found: ReturnType<(typeof providerLogins)[keyof typeof providerLogins]["detect"]> }>();
+function detect(provider: keyof typeof providerLogins) {
+  const cached = detections.get(provider);
+  if (cached && Date.now() - cached.at < 30_000) return cached.found;
+  const found = moduleFor(provider).detect();
+  detections.set(provider, { at: Date.now(), found });
+  return found;
+}
 
 /** JSON control plane. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {
@@ -178,11 +177,10 @@ export function management(ctx: Ctx) {
       apiVersion: API_VERSION,
       daemon: { version: packageInfo.version, build: process.env.AGENTGATE_BUILD ?? "development", providers: providerCapabilities() },
       settingsRevision: revision(s, "setting", "settings"),
-      metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: providerSchema.options.flatMap((provider) => {
-        const found = moduleFor(provider).detect();
+        const found = detect(provider);
         const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
         return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
       }),
@@ -218,9 +216,9 @@ export function management(ctx: Ctx) {
         online: n.id === s.nodeId || s.now() - lastSeen(s, n.id) < 60_000,
         syncError: s.local(`syncError:${n.id}`) ? "Sync failed" : undefined,
         via: n.id === s.nodeId ? [] : via(s, n.id),
+        update: nodeUpdate(s, n.id),
       })),
       relay: relayStatus(s),
-      t3: t3State(s),
       logins: listLogins(s),
       peers: peers(s).map((p) => ({
         node: p.node,
@@ -261,10 +259,10 @@ export function management(ctx: Ctx) {
     return c.json(input(() => requests(s, f)));
   });
   app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
-  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
+  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));
@@ -518,7 +516,7 @@ export function management(ctx: Ctx) {
   app.put("/projects/files/content", async (c) => {
     local(c.env.listener);
     const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(512), content: z.string().max(1024 * 1024), sha256: z.string().max(64).optional() }).strict().parse(await json(c.req.raw));
-    return c.json({ project: await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)) });
+    return c.json(await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)));
   });
   app.delete("/projects/files", (c) => {
     const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
@@ -695,7 +693,7 @@ export function management(ctx: Ctx) {
   app.post("/nodes/:id/update", async (c) => {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
-    return c.json(await inputAsync(() => updateNode(s, n!.id)));
+    return c.json(await inputAsync(() => updateTracked(s, n!.id)));
   });
   // Not local-only either, on purpose: see routeNode.
   app.post("/nodes/:id/primary", async (c) => {
@@ -705,19 +703,10 @@ export function management(ctx: Ctx) {
     return c.json(await inputAsync(() => routeNode(s, n!.id, on)));
   });
   app.delete("/nodes/:id", async (c) => {
-    const id = c.req.param("id");
-    // The removed machine knows every endpoint's credentials, so each gets a new URL (shown again locally).
-    const endpoints = s.list("project").some(p => p.remote) ? (local(c.env.listener), regenerateAfterUnpair(s, id)) : [];
+    // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.
+    const { endpoints, rotated } = await relayed(() => removeNode(s, c.req.param("id"), () => local(c.env.listener)));
     if (endpoints.length) ctx.remote.reconcile();
-    if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
-      // A relay member can only be removed by moving everyone else to a new secret.
-      local(c.env.listener);
-      if (peers(s).some((p) => p.node === id)) unpair(s, id);
-      const rotated = await relayed(() => rotateRelay(s));
-      return c.json({ ok: true, rotated: true, ...rotated, endpoints });
-    }
-    input(() => unpair(s, id));
-    return c.json({ ok: true, endpoints });
+    return c.json(rotated ? { ok: true, rotated: true, ...rotated, endpoints } : { ok: true, endpoints });
   });
   // Thread handoff. Connecting receives a T3 pairing token and a pairing link is one, credentials: local callers only.
   app.get("/t3", (c) => c.json(t3State(s)));
@@ -755,11 +744,6 @@ export function management(ctx: Ctx) {
   app.patch("/settings", async (c) => {
     const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));
     return c.json(patchSettings(s, f.patch, f.revision));
-  });
-  app.put("/settings", async (c) => {
-    const f = settingsSchema.extend({ revision: z.string().length(64) }).strict().parse(await json(c.req.raw));
-    const { revision: expected, ...settings } = f;
-    return c.json(patchSettings(s, settings, expected));
   });
   app.get("/backup", (c) => {
     local(c.env.listener);

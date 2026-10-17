@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { retryAfterMs } from "../src/llm/pool.ts";
+import { retryAfterMs } from "../src/llm/policy.ts";
 import { BodyTooLarge, fetchHeaders, readBody, serialTask, streamBody } from "../src/runtime.ts";
 
 test("Retry-After remains finite and is not shortened below the upstream minimum", () => {

@@ -27,8 +27,12 @@ export const host = {
   installed: () => process.platform === "darwin" && existsSync(DESKTOP.app),
   running: () => Bun.spawnSync(["/usr/bin/pgrep", "-x", "Claude"]).exitCode === 0,
   async quit() {
-    Bun.spawnSync(["/usr/bin/osascript", "-e", 'quit app "Claude"']);
-    for (const end = Date.now() + DESKTOP.quitTimeout; Date.now() < end; await Bun.sleep(250)) if (!host.running()) return;
+    // Not spawnSync: AppleScript waits for Desktop's answer, up to two minutes when it asks about unsaved work, and the
+    // daemon would stop serving meanwhile.
+    const ask = Bun.spawn(["/usr/bin/osascript", "-e", 'quit app "Claude"'], { stdio: ["ignore", "ignore", "ignore"] });
+    try {
+      for (const end = Date.now() + DESKTOP.quitTimeout; Date.now() < end; await Bun.sleep(250)) if (!host.running()) return;
+    } finally { ask.kill(); }
     // Never force-kill: Desktop may be asking about unsaved work.
     throw new Error("Claude Desktop did not quit. Quit it yourself and try again.");
   },

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, ScrollShadow, Toast, toast } from "@heroui/react";
+import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
 import {
   AppShell,
@@ -48,6 +48,7 @@ import type { Perform } from "./types.ts";
 import {
   Badge,
   BusyContext,
+  PendingContext,
   Field,
   HeaderSlot,
   Modal,
@@ -75,6 +76,16 @@ const descriptions: Record<View, string> = {
   settings: "Make Agentgate work the way you do.",
 };
 
+/** Something that changes on its own over the next seconds, which the app follows by polling every second. Stuck states
+ * (an error is shown) go back to the normal pace. */
+function underWay(data: Status, desktop?: DesktopStatus) {
+  const relay = data.relay;
+  return data.nodes.some((n) => n.update?.state === "installing" || n.update?.state === "restarting")
+    || (!!relay && (relay.reconciling || relay.rotating) && !relay.pushError && !relay.pullError)
+    || data.projects.some((p) => p.remote?.enabled && p.remote.servedBy === data.node && !p.remote.connected && !p.remote.error)
+    || !!desktop?.pendingAdd;
+}
+
 export function App() {
   const [view, setView] = useState<View>("overview");
   const [connection, setConnection] = useState<Connection>({
@@ -87,7 +98,9 @@ export function App() {
   const [desktop, setDesktop] = useState<DesktopStatus>();
   const [welcome, setWelcome] = useState(false);
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  // Actions under way, by key: each control shows its own, and the rest of the window stays usable.
+  const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
+  const busy = pending.size > 0;
   // Checked on launch and every four hours, since the app is left open for days.
   // Nothing downloads until the user chooses to install; offline is not an error.
   const updater = useAppUpdate({ enabled: native });
@@ -96,7 +109,7 @@ export function App() {
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
   const current = useRef(connection);
   const isLocal = useRef(false);
-  const actionLock = useRef(false);
+  const running = useRef(new Set<string>());
   const local =
     connection.url.replace("localhost", "127.0.0.1").replace(/\/$/, "") ===
     localUrl;
@@ -146,13 +159,13 @@ export function App() {
       if (current.current === c) setError(String(e));
     }
   }, []);
-  // Polls, and refreshes on focus and on every page change, so a view never opens on stale data.
+  // Polls, every second while something is under way so it shows as it happens, and refreshes on focus and on every
+  // page change, so a view never opens on stale data.
+  const live = !!data && underWay(data, desktop);
   useEffect(() => {
     if (!ready || !native) return;
     void refresh();
-    const timer = setInterval(() => {
-      if (!actionLock.current) void refresh();
-    }, 5000);
+    const timer = setInterval(() => void refresh(), live ? 1000 : 5000);
     const focus = () => {
       void refresh();
     };
@@ -161,7 +174,7 @@ export function App() {
       clearInterval(timer);
       window.removeEventListener("focus", focus);
     };
-  }, [ready, connection, refresh, view]);
+  }, [ready, connection, refresh, view, live]);
   useEffect(() => {
     if (!updater.update) return;
     const id = toast(`Agentgate ${updater.update.version} is available.`, {
@@ -183,20 +196,24 @@ export function App() {
     if (local && data && !data.accounts.length && !localStorage.getItem("onboarding"))
       setWelcome(true);
   }, [local, data]);
-  const perform: Perform = async (task, message) => {
-    if (actionLock.current) return;
-    actionLock.current = true;
-    setBusy(true);
+  /** Runs an action and refreshes. A second press of the same action while it runs is ignored; `key` names it when the
+   * message does not, and is what `usePending` asks about. */
+  const perform: Perform = async (task, message, key = message ?? "action") => {
+    if (running.current.has(key)) return;
+    running.current.add(key);
+    setPending(new Set(running.current));
     try {
       await task();
       await refresh();
       // Confirmations fade on their own; errors stay until dismissed.
       if (message) toast(message);
+      // The daemon applies record changes within a second (links, endpoints, peers): show those too.
+      setTimeout(() => void refresh(), 1500);
     } catch (e) {
       toast.danger(messageOf(e), { timeout: 0 });
     } finally {
-      actionLock.current = false;
-      setBusy(false);
+      running.current.delete(key);
+      setPending(new Set(running.current));
     }
   };
   const desktopAct = desktopActions(connection, perform);
@@ -224,6 +241,7 @@ export function App() {
     : {};
   return (
     <BusyContext value={busy}>
+     <PendingContext value={pending}>
       <HeaderSlot value={actions}>
         <AppShell
           sidebar={
@@ -295,11 +313,12 @@ export function App() {
             <div className="card-title-row">
               <h1>{selected.title}</h1>
               {!local && <Badge>Remote</Badge>}
+              {busy && <Spinner size="sm" color="current" aria-label="Working" />}
               {/* Views portal their actions here; blocked like the workspace below. */}
               <div
                 ref={setActions}
                 className="header-actions"
-                inert={busy || !!error}
+                inert={!!error}
               />
             </div>
             <p className="card-sub">{descriptions[view]}</p>
@@ -340,8 +359,8 @@ export function App() {
               {props && views ? (
                 <fieldset
                   key={JSON.stringify([connection.url, connection.token])}
-                  disabled={busy || !!error}
-                  inert={busy || !!error}
+                  disabled={!!error}
+                  inert={!!error}
                   className="workspace"
                 >
                   {views[view]}
@@ -545,8 +564,8 @@ export function App() {
               <li>
                 <strong>Using the Claude Desktop app?</strong>
                 <p>
-                  Open Accounts. Claude uses picks the account for Claude Code
-                  and Claude Desktop together. The menu bar shares your
+                  Open Accounts. Pinning a Claude account moves Claude Code
+                  and Claude Desktop to it together. The menu bar shares your
                   subscriptions in Desktop's Code tab instead.
                 </p>
               </li>
@@ -565,6 +584,7 @@ export function App() {
           </Modal>
         )}
       </HeaderSlot>
+     </PendingContext>
     </BusyContext>
   );
 }

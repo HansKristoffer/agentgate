@@ -32,7 +32,7 @@ Terms whose meaning matters across agentgate. Constraints belong in the [overvie
 
 | Term | Meaning |
 |---|---|
-| Provider | Claude or Codex. Each has an adapter in `llm/`. |
+| Provider | Claude, Codex or Cursor. Each has an adapter in `llm/`. |
 | Account | A pooled provider subscription: an `account` record plus its `credential`. |
 | Pool | The enabled accounts the proxy routes each request among. |
 | Pin | The user's preferred account for a provider; the pool falls back when it is unavailable. |

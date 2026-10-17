@@ -7,7 +7,7 @@ import type { Store } from "../store.ts";
 import type { Observation, Provider, Window } from "./provider.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 
-// Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
+// Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
 export const CODEX = {
   api: "https://chatgpt.com",
   usagePath: "/backend-api/wham/usage",

@@ -4,7 +4,7 @@ import { basename, join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
 import { z } from "zod";
 import { parseRemote } from "../mcp/gateway.ts";
-import { sleep } from "../runtime.ts";
+import { killGroup, sleep } from "../runtime.ts";
 import { addWorktree, dropRef, dropStash, ensureCommit, fetchBundle, git, manifestsChanged, moveToSource, run, worktrees } from "./code.ts";
 import { sessionNote, timed, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
@@ -78,6 +78,8 @@ export interface DestState {
   imported?: boolean;
   /** The checkout got the repository's file store. */
   filled?: boolean;
+  /** The setup script finished (or there was none to wait for); a restart runs an unfinished one again. */
+  setupDone?: boolean;
   /** Recorded before sending, so a restart never sends a message twice. */
   readied?: boolean;
   continued?: boolean;
@@ -185,7 +187,13 @@ export async function runDestination(h: Handoffs, id: string) {
         default: return;
       }
     } catch (e) {
-      h.fail(job, `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`);
+      const message = `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`;
+      // Imported: the thread lives here now, and a failure must not make the source take it back.
+      if (job.step === "continue") {
+        job.state.warnings.push(`${message}; the thread is here, continue it in T3 Code`);
+        rmSync(h.dir(job.id), { recursive: true, force: true });
+        h.advance(job, "done");
+      } else h.fail(job, message);
       return;
     }
   }
@@ -292,12 +300,17 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
     const started = performance.now();
     try {
       const child = Bun.spawn([process.env.SHELL || "/bin/sh", "-lc", command], {
-        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+        cwd, stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: true,
         env: { ...process.env, T3CODE_PROJECT_ROOT: st.main!, ...(cwd !== st.main && { T3CODE_WORKTREE_PATH: cwd }), COLORTERM: "" },
       });
-      const timer = setTimeout(() => child.kill(), h.options.setupTimeoutMs ?? 15 * 60_000);
-      const [, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const timer = setTimeout(() => killGroup(child), h.options.setupTimeoutMs ?? 15 * 60_000);
+      h.setupProcesses.add(child);
+      const stderr = new Response(child.stderr).text();
+      const code = await child.exited;
       clearTimeout(timer);
+      h.setupProcesses.delete(child);
+      // Done when the script exits: something it left running in the background may hold stderr open for good.
+      const err = await Promise.race([stderr, sleep(1000).then(() => "")]);
       if (code !== 0) {
         const last = err.trim().split("\n").at(-1)?.slice(0, 300);
         notes.warnings.push(`Setup in ${cwd} failed (exit ${code})${last ? `: ${last}` : ""}`);
@@ -462,13 +475,17 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
  * bug); the next turn resumes. A short message takes that failure so the user's first message does not. */
 async function carryOn(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
-  const setup = await h.setups.get(job.id);
+  // The daemon stopped during setup, which stopped it too: run it again before the agent goes on.
+  if (!h.setups.has(job.id) && st.created && !st.setupDone) startSetup(h, job);
+  const setup = await Promise.race([h.setups.get(job.id), h.closing.then(() => "closed" as const)]);
+  if (setup === "closed") return;
   h.setups.delete(job.id);
+  st.setupDone = true;
   if (setup) {
     st.warnings.push(...setup.warnings);
     st.timings.push(...setup.timings);
-    h.save(job);
   }
+  h.save(job);
 
   await fillFiles(h, job);
 
@@ -479,6 +496,8 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       await turnOrRetry(h, call, st.threadId!, READY);
     }));
   }
+  // Shutting down mid-turn: the restart sends what follows, after READY ran.
+  if (h.closed) return;
   const m = st.manifest!;
   const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""].filter(Boolean).join("\n\n");
   if (next && !st.continued) {
@@ -488,6 +507,7 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       await turnOrRetry(h, call, st.threadId!, next);
     }));
   }
+  if (h.closed) return;
 
   // Behind whatever runs now, in order, as the user queued them. T3 starts the first at once if the thread is idle.
   const queued = m.queued ?? [];

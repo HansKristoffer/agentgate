@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
-import { Button, Switch, toast } from "@heroui/react";
+import { Button, Spinner, Switch, toast } from "@heroui/react";
 import { outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
@@ -9,14 +9,17 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  LiveSwitch,
   RowMenu,
+  usePending,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
-type Shown = { command: string; method: Method; rotated?: boolean };
+/** `known`: the machines there were when the command was shown, so the one that joins can be told apart. */
+type Shown = { command: string; method: Method; rotated?: boolean; known?: string[] };
 
 const routingText = (r: { claude: boolean; codex: boolean }) =>
   r.claude && r.codex
@@ -31,7 +34,15 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [joinOpen, setJoinOpen] = useState(false);
   const [name, setName] = useState("");
   const relay = data.relay;
+  const pending = usePending();
   const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
+  // The machine the pairing command was for has joined: say so, and the dialog has done its job.
+  const joined = shown?.known && data.nodes.find((n) => !shown.known!.includes(n.id));
+  useEffect(() => {
+    if (!joined) return;
+    toast(`${joined.id} joined`);
+    setShown(undefined);
+  }, [joined]);
   const update = (node: string) =>
     void perform(async () => {
       const result = await request<{ version?: string; restarting: boolean }>(
@@ -46,7 +57,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             ? `${node} installed Agentgate ${result.version} and is restarting`
             : `${node} installed Agentgate ${result.version}; restart Agentgate there to use it`,
       );
-    });
+    }, undefined, `update:${node}`);
   const route = (node: string, on: boolean) =>
     void perform(async () => {
       await request(connection, `/nodes/${idPath(node)}/primary`, "POST", { on });
@@ -62,7 +73,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       );
       setChoosing(false);
       setName("");
-      setShown({ command: result.command, method });
+      setShown({ command: result.command, method, known: data.nodes.map((n) => n.id) });
     });
   const relayState = relay && [
     relay.reconciling && "Reconciling",
@@ -111,20 +122,32 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                       : `Last seen ${relative(n.lastSeen)}`)}
                   {n.version && ` · Agentgate ${n.version}`}
                 </small>
+                {n.update?.state === "failed" && <small>Update failed: {n.update.error}</small>}
                 {n.routing && <small>{routingText(n.routing)}</small>}
               </div>
-              {outdated.has(n.id) && (
-                <Button size="sm" variant="tertiary" onPress={() => update(n.id)}>
-                  Update
-                </Button>
+              {n.update?.state === "installing" || n.update?.state === "restarting" || pending.has(`update:${n.id}`) ? (
+                <Badge>
+                  <Spinner size="sm" color="current" />
+                  {n.update?.state === "restarting" ? `Restarting on ${n.update.version}` : "Installing update"}
+                </Badge>
+              ) : n.update?.state === "installed" ? (
+                <small>Restart Agentgate on {n.id} to use {n.update.version}</small>
+              ) : (
+                outdated.has(n.id) && (
+                  <Button size="sm" variant="tertiary" onPress={() => update(n.id)}>
+                    {n.update?.state === "failed" ? "Retry update" : "Update"}
+                  </Button>
+                )
               )}
-              <Switch
+              <LiveSwitch
                 isSelected={!!n.alwaysOn}
-                onChange={() =>
-                  void perform(() =>
+                onChange={(on) =>
+                  perform(() =>
                     request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                      alwaysOn: !n.alwaysOn,
+                      alwaysOn: on,
                     }),
+                    undefined,
+                    `alwaysOn:${n.id}`,
                   )
                 }
               >
@@ -134,7 +157,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     <Switch.Thumb />
                   </Switch.Control>
                 </Switch.Content>
-              </Switch>
+              </LiveSwitch>
               <RowMenu
                 label={`More for ${n.id}`}
                 items={[
@@ -200,6 +223,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               <Button
                 size="sm"
                 variant="tertiary"
+                isPending={pending.has("Relay reconciled")}
                 onPress={() =>
                   void perform(
                     () => request(connection, "/relay/reconcile", "POST"),
@@ -207,6 +231,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   )
                 }
               >
+                {pending.has("Relay reconciled") && <Spinner size="sm" color="current" />}
                 Reconcile now
               </Button>
             )
@@ -315,6 +340,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                 : "Start Tailscale on the other machine, then run this there. It installs Agentgate, joins this machine, starts the service and routes that machine's Claude Code and Codex through Agentgate. The code expires in 10 minutes."}
           </p>
           <pre>{shown.command}</pre>
+          {shown.known && (
+            <p className="row note">
+              <Spinner size="sm" color="current" />
+              Waiting for the other machine to join
+            </p>
+          )}
           <Button
             size="sm"
             variant="tertiary"

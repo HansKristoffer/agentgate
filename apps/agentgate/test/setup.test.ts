@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plist, rotateLogs, service, unit, waitForService } from "../src/service.ts";
+import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import { agentEnvironment, codexConfig, cursorMcp, cursorMcpEnabled, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
 import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
 
@@ -166,4 +166,12 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
   writeFileSync(file, '{"mcpServers":[]}\n');
   await expect(cursorMcp(true, file)).rejects.toThrow("mcpServers must be an object");
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("daemon log lines start with an ISO 8601 timestamp", () => {
+  const lines: unknown[][] = [];
+  const out = { log: (...a: unknown[]) => lines.push(a), info: (...a: unknown[]) => lines.push(a), warn: (...a: unknown[]) => lines.push(a), error: (...a: unknown[]) => lines.push(a) };
+  stampLogs(out, () => new Date("2026-10-16T08:30:00.000Z"));
+  out.log("agentgate 0.21.1 n: http://127.0.0.1:7878"); out.error("request failed:", "x");
+  expect(lines).toEqual([["2026-10-16T08:30:00.000Z", "agentgate 0.21.1 n: http://127.0.0.1:7878"], ["2026-10-16T08:30:00.000Z", "request failed:", "x"]]);
 });

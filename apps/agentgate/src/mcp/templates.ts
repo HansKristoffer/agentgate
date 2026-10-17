@@ -62,10 +62,15 @@ export function fromPreset(p: Preset, id = p.id): McpInstance {
   return newInstance({ id, template: p.id, url: p.url, command: p.command, args: p.args, mode: p.mode });
 }
 
-/** A free name for a new instance: `posthog`, then `posthog-2`, … */
-export function freeId(taken: (id: string) => boolean, base: string): string {
-  if (!taken(base)) return base;
-  for (let i = 2; ; i++) if (!taken(`${base}-${i}`)) return `${base}-${i}`;
+/** A server's address without what may carry a credential: the query, the user and password. */
+export function readableEndpoint(url?: string) {
+  if (!url) return "Local command";
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "HTTP server";
+  }
 }
 
 // Older instances may use `{{x}}` / `{{secret.x}}` placeholders filled from fields and secrets.

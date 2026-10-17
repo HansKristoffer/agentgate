@@ -12,6 +12,8 @@ import {
   Panel,
   HeaderActions,
   RowMenu,
+  Working,
+  usePending,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
@@ -21,6 +23,7 @@ import { ago, field, idPath, confirmDelete } from "./utils.ts";
 const custom = "__custom";
 
 export function Servers({ data, connection, perform }: ViewProps) {
+  const pending = usePending();
   const [add, setAdd] = useState(false);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [preset, setPreset] = useState("");
@@ -47,7 +50,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
         "POST",
       );
       if (result.url) await openExternal(result.url);
-    }, "Login started. Complete it in your browser; the server updates automatically.");
+    }, "Login started. Complete it in your browser; the server updates automatically.", `login:${id}`);
   return (
     <>
       <HeaderActions>
@@ -92,7 +95,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     title={health}
                     aria-label={health}
                     // The test records the result whether or not it connects; the next status poll recolors the dot.
-                    onClick={() => void perform(() => request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(() => {}, () => {}))}
+                    onClick={() => void perform(() => request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(() => {}, () => {}), undefined, `test:${server.id}`)}
                   >
                     <span className={`dot ${server.available === true ? "online" : server.available === false ? "offline" : ""}`} />
                   </button>
@@ -106,6 +109,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
                             ? "HTTP"
                             : "Local"}
                   </Badge>
+                  {pending.has(`test:${server.id}`) && <Working>Testing</Working>}
+                  {pending.has(`login:${server.id}`) && <Working>Starting sign-in</Working>}
                 </div>
                 <small>{server.label ? `Tool prefix ${server.id} · ${server.endpoint}` : server.endpoint}</small>
                 <small className={server.refreshError ? "danger" : ""}>
@@ -127,7 +132,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                       void perform(async () => {
                         const result = await request<{ tools: ToolPreview[] }>(connection, `/servers/${idPath(server.id)}/test`, "POST");
                         setTools({ id: server.id, tools: result.tools });
-                      }),
+                      }, undefined, `test:${server.id}`),
                   },
                   server.transport === "http" && !server.needsLogin && { label: "Sign in", onAction: () => void signIn(server.id) },
                   { label: "Rename", onAction: () => setRename(server) },

@@ -50,7 +50,7 @@ Domain terms (account, pool, holder, record, peer, relay group, project, virtual
 The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
 
 - **Entry points.** CLI (`apps/agentgate/src/cli.ts`), the control API (`api.ts`) and the desktop views. A capability reachable from one is usually expected from the others, and from the MCP gateway when an agent should reach it.
-- **Providers.** Claude and Codex each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
+- **Providers.** Claude, Codex and Cursor each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
 - **Sync.** A new record kind or field must sync over peers and the relay, survive a tombstone, and merge with a peer on the previous version. Ask whether `SYNC_PROTOCOL` (`sync.ts`), `RELAY_PROTOCOL` or `API_VERSION` (`packages/protocol`) must change, and whether backups export and restore it, including `export --no-secrets`.
 - **Contracts.** Anything the app and daemon exchange is typed in `packages/protocol`. Change the schema and both sides follow.
 - **Remote management.** The app can manage a remote node over Tailscale. Local-only actions (service, coding-tool setup, backups, Claude Desktop) must stay refused for remote connections. The one deliberate exception is `setup --primary` on a paired node (`routeNode` in `update.ts`), because routing your own server is set up from your laptop.

@@ -3,21 +3,23 @@ import { homedir, hostname } from "node:os";
 import { relative as relativePath, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
+import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
 import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import { accountStatus, relevant } from "./llm/pool.ts";
-import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
+import { accountStatus } from "./llm/pool.ts";
+import { relevant } from "./llm/quota.ts";
+import { aliasesFor, connect, listAllTools, needsLogin, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
-import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
+import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
-import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles, setFileContent } from "./checkout-files.ts";
-import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount } from "./operations.ts";
+import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
+import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
@@ -52,7 +54,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
-  project files cat <path> | set <path> < new-contents   print or replace a synced file's contents
+  project files cat <path> | set <path> [--if-sha <sha256>] < new-contents
+                                             print or replace a synced file's contents; --if-sha refuses to
+                                             replace a newer version than the one cat printed (cat | shasum -a 256)
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
@@ -108,6 +112,7 @@ const { values: opts, positionals: pos } = parseArgs({
     skill: { type: "string" },
     project: { type: "string", multiple: true },
     file: { type: "string" },
+    "if-sha": { type: "string" },
     tailnet: { type: "boolean" },
     tailscale: { type: "boolean" },
     relay: { type: "boolean" },
@@ -151,6 +156,9 @@ async function main() {
   if (cmd === "mcp" && !sub) return (await import("./mcp/shim.ts")).runShim();
 
   const s = store();
+  // The daemon writes its version on its node record when it starts.
+  const daemon = s.get("node", s.nodeId)?.version;
+  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd)) console.error((await import("./update.ts")).versionNotice(daemon));
   switch (cmd) {
     case "init": {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
@@ -170,6 +178,10 @@ async function main() {
     }
     case "serve":
       initialized(s);
+      (await import("./service.ts")).stampLogs();
+      // Bun reports these on stderr without the timestamp; the daemon still exits so the service restarts it.
+      for (const event of ["uncaughtException", "unhandledRejection"] as const)
+        process.on(event, (e: unknown) => { console.error(`${event}: ${e instanceof Error ? e.stack : String(e)}`); process.exit(1); });
       const daemon = await (await import("./daemon.ts")).serve(s);
       let shuttingDown = false;
       const shutdown = () => { if (shuttingDown) return; shuttingDown = true; void daemon.stop().then(() => { s.close(); process.exit(0); }); };
@@ -200,7 +212,7 @@ async function main() {
       if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
       const t3 = (await import("./handoff/t3.ts")).t3State(s);
       console.log(`\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`);
-      const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
+      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }
@@ -240,7 +252,7 @@ async function main() {
       else if (sub === "priority") setAccount(s, id, { priority: Number(rest[1] ?? 0) });
       else if (sub === "rm") deleteAccount(s, id);
       else if (sub === "exhaust") {
-        // Test flag (PLAN §14 phase 1): pretend this account hit its quota.
+        // Test flag: pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
         const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
         s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until, source: "manual" });
@@ -295,7 +307,7 @@ async function main() {
       if (sub === "ls") {
         for (const i of s.list("mcp")) {
           const h = serverHealth(s, i.id), state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
-          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
+          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
         }
         return;
       }
@@ -451,7 +463,11 @@ async function main() {
         if ((action === "cat" || action === "set") && relative.length === 1) {
           const { project } = await checkoutProject(s, top);
           if (action === "cat") return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
-          return console.log(`saved for ${await setFileContent(s, FILES_ROOT, project, relative[0]!, await Bun.stdin.text())} on every machine`);
+          // Through the daemon, which follows the save into this machine's checkouts and logs it.
+          const edit = { project, path: relative[0]!, content: await Bun.stdin.text(), sha256: str("if-sha") };
+          const saved = await management<{ project: string; checkouts: Record<string, number> }>("/projects/files/content", "PUT", edit).catch((e: Error) => die(e.message));
+          const followed = Object.entries(saved.checkouts).filter(([, n]) => n).map(([outcome, n]) => `${n} ${outcome}`);
+          return console.log(`saved for ${saved.project} on every machine${followed.length ? `; checkouts here: ${followed.join(", ")}` : ""}`);
         }
         if (action === "ls" || action === undefined) {
           const list = await listFiles(s, FILES_ROOT, top);
@@ -460,7 +476,7 @@ async function main() {
           if (list.error) console.log(`not syncing: ${list.error}`);
           return;
         }
-        return die("project files add|rm <path> [...] | cat|set <path> | ls");
+        return die("project files add|rm <path> [...] | cat <path> | set <path> [--if-sha <sha256>] | ls");
       }
       const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
       if (sub === "show") {
@@ -549,16 +565,19 @@ async function main() {
       initialized(s);
       for (const p of peers(s)) console.log(`${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
       for (const n of relayNodes(s)) console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
-      for (const n of outdatedNodes(s.list("node"))) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
+      const outdated = new Set(outdatedNodes(s.list("node")).map((n) => n.id));
+      for (const n of s.list("node")) {
+        const u = (await import("./update.ts")).nodeUpdate(s, n.id);
+        if (u) console.log(`${n.id}: ${u.state === "installing" ? "installing an update" : u.state === "restarting" ? `restarting on agentgate ${u.version}` : u.state === "installed" ? `installed agentgate ${u.version}; restart agentgate there to use it` : `update failed: ${u.error}`}`);
+        else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
+      }
       return;
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");
-      // The removed machine knows every endpoint's credentials: give each one a new URL it has never seen.
-      for (const e of regenerateAfterUnpair(s, node)) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
-      if (!via(s, node).includes("relay")) { unpair(s, node); return console.log("ok"); }
-      if (peers(s).some((p) => p.node === node)) unpair(s, node);
-      const rotated = await rotateRelay(s);
+      const { endpoints, rotated } = await removeNode(s, node);
+      for (const e of endpoints) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
+      if (!rotated) return console.log("ok");
       console.log(`Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`);
       console.log(`Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`);
       if (rotated.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
@@ -796,12 +815,28 @@ async function main() {
       if (sub) {
         initialized(s);
         const r = await management<{ version?: string; restarting: boolean }>(`/nodes/${encodeURIComponent(sub)}/update`, "POST");
-        return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}${r.restarting ? " and is restarting" : "; restart agentgate there to use it"}`);
+        if (!r.version || !r.restarting) return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}; restart agentgate there to use it`);
+        console.log(`${sub} installed agentgate ${r.version} and is restarting`);
+        return console.log(await (await import("./update.ts")).waitForVersion(s, sub, r.version) ? `${sub} runs agentgate ${r.version}` : `${sub} is still restarting; check with agentgate nodes`);
       }
-      const { target, version, restart } = await (await import("./update.ts")).updateSelf().catch((e: Error) => die(e.message));
-      if (!version) return console.log("agentgate is up to date");
-      console.log(`installed agentgate ${version} at ${target}`);
-      if (restart) return process.exit(await (await import("./service.ts")).service("restart"));
+      const update = await import("./update.ts");
+      const { target, version, restart } = await update.updateSelf().catch((e: Error) => die(e.message));
+      console.log(version ? `installed agentgate ${version} at ${target}` : "agentgate is up to date");
+      // A global npm or bun install that PATH finds first would keep running the old CLI.
+      const copy = update.pathCopy(), latest = version ?? packageInfo.version;
+      if (copy && copy.version !== latest) {
+        const command = copy.install(latest);
+        console.log(`${copy.path} is agentgate ${copy.version ?? "(unknown)"}; running ${command.join(" ")}`);
+        let ok = false;
+        try { ok = Bun.spawnSync(command, { stdio: ["ignore", "inherit", "inherit"] }).exitCode === 0; } catch { }
+        if (!ok) console.log(`that failed; run it yourself: ${command.join(" ")}`);
+      }
+      if (!version) return;
+      if (restart) {
+        const code = await (await import("./service.ts")).service("restart");
+        if (code === 0 && s.local("node")) console.log(await update.waitForVersion(s, s.nodeId, version) ? `this node runs agentgate ${version}` : "agentgate is still restarting; check with agentgate nodes");
+        return process.exit(code);
+      }
       return console.log("restart agentgate to use it");
     }
 
