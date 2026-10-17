@@ -36,12 +36,13 @@ afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn()
 
 const SID = "7d1f0c2e-9a7b-4c51-8e3d-2b6f4a9c0e11";
 
-async function until<T>(fn: () => T | undefined | false, what: string, ms = 20_000): Promise<T> {
+/** Gives up before bun's 5 second test timeout, so a stuck wait fails with what it was waiting for. */
+async function until<T>(fn: () => T | undefined | false, what: string | (() => string), ms = 4_000): Promise<T> {
   const deadline = Date.now() + ms;
   for (; ;) {
     const value = fn();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${typeof what === "string" ? what : what()}`);
     await Bun.sleep(20);
   }
 }
@@ -81,7 +82,8 @@ function session(n: Node, cwd: string, words: string[]) {
 }
 
 async function done(n: Node, id: string, role: "source" | "destination" = "source") {
-  return until(() => { const j = n.h.load(role, id); return j && ["done", "failed"].includes(j.step) && j; }, `${role} job on ${n.name}`);
+  return until(() => { const j = n.h.load(role, id); return j && ["done", "failed"].includes(j.step) && j; },
+    () => `${role} job on ${n.name}, still at ${n.h.load(role, id)?.step ?? "no job"}`);
 }
 
 test("a working thread moves to the server with its session and code, continues there, and comes back and goes again", async () => {
