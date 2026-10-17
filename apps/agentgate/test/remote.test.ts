@@ -11,6 +11,7 @@ import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
 import { enableRemote, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
+import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
 import { exportBackup, Store } from "../src/store.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -126,6 +127,19 @@ test("aborting a remote request cancels the upstream tool call", async () => {
   await expect(pending).rejects.toBeDefined();
   for (let i = 0; i < 50 && !existsSync(cancelled); i++) await Bun.sleep(100);
   expect(existsSync(cancelled)).toBe(true);
+});
+
+test("an endpoint uses this node's relay, and the service key goes to no other relay", () => {
+  const s = store();
+  saveProject(s, "@grok", {});
+  s.setLocal("relay:invite", makeInvite("https://relay.self-hosted.example"));
+  setServiceKey(s, "deploy-secret");
+  expect(enableRemote(s, "@grok").url).toStartWith("https://relay.self-hosted.example/mcp/");
+  expect(serviceKeyFor(s, "https://relay.self-hosted.example")).toBe("deploy-secret");
+  expect(serviceKeyFor(s, DEFAULT_RELAY_URL)).toBeUndefined();
+  // After leaving the relay, endpoints that live on it keep working.
+  s.setLocal("relay:invite", undefined);
+  expect(serviceKeyFor(s, "https://relay.self-hosted.example")).toBe("deploy-secret");
 });
 
 test("enabling waits for every node's version; status and backups never show endpoint keys", async () => {

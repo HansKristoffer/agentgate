@@ -486,15 +486,32 @@ test("after a sleep, the relay is retried within seconds even if it failed for h
   expect(a.get("account", "fresh")).toBeDefined();
 });
 
-test("an oversized record blocks the upload checkpoint and is reported", async () => {
+test("a rotation that cannot create its new group says why uploads wait", async () => {
   const r = relay();
-  const a = node("a");
-  await createRelay(a, r.url);
-  const before = relayStatus(a)!.pushed;
-  a.put("mcp", "big", { id: "big", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(1_200_000) } });
+  const a = node("a"), b = node("b");
+  await joinRelay(b, await createRelay(a, r.url));
+  r.config.newGroupsDisabled = true; // the operator stops new groups, then a machine is removed
+  await expect(rotateRelay(a)).rejects.toThrow();
   await sync(a);
+  expect(relayStatus(a)).toMatchObject({ rotating: true, pushError: expect.stringContaining("Uploads wait for the new relay group") });
+});
+
+test("an oversized record is left out and reported, and the records after it still reach the group", async () => {
+  const r = relay();
+  const a = node("a"), b = node("b");
+  const invite = await createRelay(a, r.url);
+  await joinRelay(b, invite);
+  a.put("mcp", "big", { id: "big", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(1_200_000) } });
+  seed(a);
+  await sync(a); await sync(b);
   expect(relayStatus(a)!.pushError).toContain("mcp big");
-  expect(relayStatus(a)!.pushed).toBe(before);
+  expect(b.get("credential", "acc")?.accessToken).toBe("sk-ant-secret-token");
+  expect(b.get("mcp", "big")).toBeUndefined();
+  // Once it fits again, it goes up and the report clears.
+  a.put("mcp", "big", { ...a.get("mcp", "big")!, headers: {} });
+  await sync(a); await sync(b);
+  expect(relayStatus(a)!.pushError).toBeUndefined();
+  expect(b.get("mcp", "big")).toBeDefined();
 });
 
 test("a deployment key is required, configured separately, and never exposed", async () => {
