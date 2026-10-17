@@ -69,6 +69,12 @@ export function streamBody(body: ReadableStream<Uint8Array> | null, signal: Abor
   });
 }
 
+/** Stop a process spawned with `detached: true` together with what it started: a helper such as ssh, or a server a
+ * script put in the background, keeps the output pipes open after the process itself is gone. */
+export function killGroup(child: { pid: number; kill(signal?: number | NodeJS.Signals): void }) {
+  try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+}
+
 export function serialTask(task: () => Promise<unknown>): () => Promise<void> {
   let running: Promise<void> | undefined;
   let again = false;

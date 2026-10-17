@@ -23,6 +23,8 @@ export interface SourceState {
   remoteUrl?: string; branch?: string | null; baseSha?: string | null;
   wasWorking?: boolean; background?: string[]; queued?: string[]; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
   files?: { path: string; size: number }[];
+  /** The manifest went out at least once, so B may have imported the thread. */
+  started?: boolean;
   destThreadId?: string; codeTaken?: boolean; lostSince?: number; finishAt?: number;
   warnings: string[]; timings: Timing[]; remoteTimings?: Timing[];
 }
@@ -241,6 +243,8 @@ async function carriedFiles(h: Handoffs, job: Job<SourceState>): Promise<string[
 
 async function send(h: Handoffs, job: Job<SourceState>) {
   const st = job.state;
+  // The manifest went out before a restart: B either has it or abandons the prepare, and await learns which.
+  if (st.started) return h.advance(job, "await");
   const out = join(h.dir(job.id), "out");
   await timed(h.s, st.timings, "send", async () => {
     // Again, idempotently: B may have missed the first prepare or restarted, and takes files only for a known job.
@@ -270,7 +274,12 @@ async function send(h: Handoffs, job: Job<SourceState>) {
       ...(st.queued?.length ? { queued: st.queued } : {}),
       oldPaths: [...new Set([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)]))], files: st.files!,
     };
-    await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest });
+    st.started = true;
+    h.save(job);
+    // B may take the manifest and still lose its answer (a relay timeout, a dropped connection): only a refusal is
+    // certain. Failing on anything else could leave the thread on both machines; await learns from B what happened.
+    await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest })
+      .catch((e) => { if (e instanceof PeerError && e.status < 500) throw e; });
   });
   h.advance(job, "await");
 }
