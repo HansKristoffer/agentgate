@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/HansKristoffer/agentgate/compare/v0.21.1...v0.21.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **daemon:** timestamped logs, detailed request errors, update waits for the node, quieter skill retries ([#73](https://github.com/HansKristoffer/agentgate/issues/73)) ([ceded96](https://github.com/HansKristoffer/agentgate/commit/ceded968a227734cda3c770ea40546730532b7a4))
+
 ## [0.21.1](https://github.com/HansKristoffer/agentgate/compare/v0.21.0...v0.21.1) (2026-10-16)
 
 
