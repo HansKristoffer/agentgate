@@ -4,6 +4,9 @@ import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
 import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
+import { relayInvite, rotateRelay, via } from "./relay.ts";
+import { regenerateAfterUnpair } from "./remote.ts";
+import { unpair } from "./sync.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
 export function parseCommand(text: string): string[] {
@@ -121,4 +124,17 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);
   // Virtual projects list their servers explicitly; `*` defaults never leak into a public endpoint.
   return s.put("project", id, { ...prev, ...patch, ...(patch.skills && { skills: [...new Set(patch.skills)] }), ...(virtual && { inheritDefaults: false }), id });
+}
+
+/** Remove a machine: when it is in the relay group everyone else moves to a new relay secret, since only that shuts it
+ * out; then every remote endpoint gets a new URL it has never seen, and it is unpaired. The rotation goes first, so a
+ * failed one changes nothing and can be retried. `allow` may refuse a step first. */
+export async function removeNode(s: Store, node: string, allow: (step: "endpoints" | "relay") => void = () => { }) {
+  const member = !!relayInvite(s) && via(s, node).includes("relay");
+  if (member) allow("relay");
+  if (s.list("project").some((p) => p.remote)) allow("endpoints");
+  const rotated = member ? await rotateRelay(s) : undefined;
+  const endpoints = regenerateAfterUnpair(s, node);
+  unpair(s, node);
+  return { endpoints, rotated };
 }

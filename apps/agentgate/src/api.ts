@@ -48,11 +48,12 @@ import {
   labelInstance,
   deleteAccount,
   deleteInstance,
+  removeNode,
   saveProject,
   setAccount,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
-import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
 import { addFileAt, fileContent, filesErrors, removeFiles, setFileContent } from "./checkout-files.ts";
 import {
@@ -72,7 +73,7 @@ import {
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
 import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
 import { allNodes, connectNode, disconnectNode, handoffJob, pairingLinkNode, requestHandoff } from "./handoff/threads.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import {
   RelayBusy,
   RelayError,
@@ -84,8 +85,6 @@ import {
   newNodeName,
   parseJoin,
   reconcileRelay,
-  relayInvite,
-  relayNodes,
   relayStatus,
   rotateRelay,
   setServiceKey,
@@ -687,19 +686,10 @@ export function management(ctx: Ctx) {
     return c.json(await inputAsync(() => updateNode(s, n!.id)));
   });
   app.delete("/nodes/:id", async (c) => {
-    const id = c.req.param("id");
-    // The removed machine knows every endpoint's credentials, so each gets a new URL (shown again locally).
-    const endpoints = s.list("project").some(p => p.remote) ? (local(c.env.listener), regenerateAfterUnpair(s, id)) : [];
+    // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.
+    const { endpoints, rotated } = await relayed(() => removeNode(s, c.req.param("id"), () => local(c.env.listener)));
     if (endpoints.length) ctx.remote.reconcile();
-    if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
-      // A relay member can only be removed by moving everyone else to a new secret.
-      local(c.env.listener);
-      if (peers(s).some((p) => p.node === id)) unpair(s, id);
-      const rotated = await relayed(() => rotateRelay(s));
-      return c.json({ ok: true, rotated: true, ...rotated, endpoints });
-    }
-    input(() => unpair(s, id));
-    return c.json({ ok: true, endpoints });
+    return c.json(rotated ? { ok: true, rotated: true, ...rotated, endpoints } : { ok: true, endpoints });
   });
   // Thread handoff. Connecting receives a T3 pairing token and a pairing link is one, credentials: local callers only.
   app.get("/t3", (c) => c.json(t3State(s)));

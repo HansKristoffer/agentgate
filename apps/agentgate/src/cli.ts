@@ -13,12 +13,12 @@ import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHe
 import { startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
-import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
+import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, saveProject, setAccount } from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
-import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
@@ -569,11 +569,9 @@ async function main() {
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");
-      // The removed machine knows every endpoint's credentials: give each one a new URL it has never seen.
-      for (const e of regenerateAfterUnpair(s, node)) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
-      if (!via(s, node).includes("relay")) { unpair(s, node); return console.log("ok"); }
-      if (peers(s).some((p) => p.node === node)) unpair(s, node);
-      const rotated = await rotateRelay(s);
+      const { endpoints, rotated } = await removeNode(s, node);
+      for (const e of endpoints) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
+      if (!rotated) return console.log("ok");
       console.log(`Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`);
       console.log(`Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`);
       if (rotated.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
