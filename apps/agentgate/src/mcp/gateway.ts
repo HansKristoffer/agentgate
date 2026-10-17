@@ -8,6 +8,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, ToolListChangedNotificat
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual } from "@agentgate/protocol";
+import { NeedsLogin } from "../credentials.ts";
 import { fetchHeaders } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
 import { authenticatedFetch } from "./oauth.ts";
@@ -400,7 +401,7 @@ export class Gateway {
 
 /** A connect error that a login would fix. */
 export const needsLogin = (e: unknown) =>
-  (e as { code?: number })?.code === 401 || /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(String((e as Error)?.message ?? e));
+  e instanceof NeedsLogin || (e as { code?: number })?.code === 401 || /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(String((e as Error)?.message ?? e));
 
 /** Git repos directly inside `dir` whose origin parses as owner/repo. */
 export function scanRepos(dir: string): { repo: string; path: string }[] {

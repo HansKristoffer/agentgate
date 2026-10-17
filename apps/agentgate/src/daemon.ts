@@ -14,7 +14,7 @@ import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
+import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
@@ -214,7 +214,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
+  schedule(() => { noteSyncTurn(s); return Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }); }, PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);

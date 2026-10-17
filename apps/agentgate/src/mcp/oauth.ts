@@ -36,8 +36,14 @@ export class InstanceAuth implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return { client_name: "agentgate", redirect_uris: [this.redirectUrl ?? ""], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
   }
+  /** The SDK starts a new login when a refresh fails for any reason, a network error or a 5xx included. Only a login
+   * without a refresh token needs one; a refused refresh token arrives as invalidateCredentials. */
+  private noLogin(): never {
+    if (this.deferred && this.credential().tokens?.refresh_token) throw new Error(`${this.id}: token refresh failed`);
+    throw new NeedsLogin(`${this.id}: needs a login`);
+  }
   state() {
-    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    if (!this.interactive) this.noLogin();
     const state = crypto.randomUUID();
     const c = this.credential();
     this.stateValue = state;
@@ -53,7 +59,7 @@ export class InstanceAuth implements OAuthClientProvider {
     this.s.setLocal(`mcpHealth:${this.id}`, undefined);
   }
   redirectToAuthorization(url: URL) {
-    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    if (!this.interactive) this.noLogin();
     this.authUrl = url;
   }
   saveCodeVerifier(verifier: string) {

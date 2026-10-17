@@ -74,6 +74,17 @@ export function listeningFor(s: Store): number {
   return s.now() - Number(s.local("sync:listeningSince") ?? s.now());
 }
 
+/** How long this daemon has been running without a gap, from its sync turns, answered or not: a machine back from
+ * sleep or a daemon just started reads 0. */
+export function noteSyncTurn(s: Store) {
+  if (s.now() - Number(s.local("sync:turn") ?? 0) > ROUND_GAP) s.setLocal("sync:awakeSince", String(s.now()));
+  s.setLocal("sync:turn", String(s.now()));
+}
+export function awakeFor(s: Store): number {
+  if (s.now() - Number(s.local("sync:turn") ?? 0) > ROUND_GAP) return 0;
+  return s.now() - Number(s.local("sync:awakeSince") ?? s.now());
+}
+
 export function lastSeen(s: Store, node: string): number {
   if (node === s.nodeId) return s.now();
   const direct = peers(s).find((p) => p.node === node)?.last_seen ?? 0;

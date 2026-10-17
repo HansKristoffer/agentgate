@@ -56,7 +56,10 @@ through a synced refresh request, and take over only when the holder has been un
 minutes and the token is close to expiry, and only after syncing for two minutes themselves: a laptop
 waking briefly from sleep (macOS dark wakes), or one whose relay pulls are failing, otherwise sees the holder as
 long gone and refreshes with a token the holder already rotated, which gets the login revoked everywhere. Only a
-pull that got an answer counts as syncing. A local lease stops the CLI and daemon on one machine from
+pull that got an answer counts as syncing. The holder itself pulls before refreshing when it has not been syncing (back
+from sleep, it may have been taken over and its refresh token rotated), and waits while nobody answers during its first
+two minutes awake (`awakeFor`). A refused refresh token is never sent again, and marks the login as needing a sign-in
+only once every machine answered or this one has been awake two minutes, since another may hold the newer copy. A local lease stops the CLI and daemon on one machine from
 refreshing at once. During a network partition two nodes can still race; that is accepted, not solved.
 
 ## Proxy
