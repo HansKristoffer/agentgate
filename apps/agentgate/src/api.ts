@@ -29,7 +29,7 @@ import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
-import { nodeUpdate, updateTracked } from "./update.ts";
+import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import {
   aliasesFor,
   connect,
@@ -694,6 +694,13 @@ export function management(ctx: Ctx) {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
     return c.json(await inputAsync(() => updateTracked(s, n!.id)));
+  });
+  // Not local-only either, on purpose: see routeNode.
+  app.post("/nodes/:id/primary", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await json(c.req.raw));
+    const n = s.get("node", c.req.param("id"));
+    required(n, "node");
+    return c.json(await inputAsync(() => routeNode(s, n!.id, on)));
   });
   app.delete("/nodes/:id", async (c) => {
     // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.

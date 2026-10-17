@@ -14,6 +14,7 @@ import { startHandoff } from "./source.ts";
 import { T3Error, connectInput, connectWith, createPairingLink, disconnectT3, pairingLinkInput } from "./t3.ts";
 import { localView, resolveTarget } from "./threads.ts";
 import { updateHere } from "../update.ts";
+import { routeHere } from "../setup.ts";
 
 /** `/peer/handoff/*` and `/peer/threads`, mounted behind the peer token check (sync.ts). Every step is keyed by the
  * handoff id, so a retried request is safe. Unknown ids answer 404. */
@@ -42,6 +43,15 @@ export function handoffRoutes(h: Handoffs) {
   app.post("/update", async (c) => {
     try {
       return c.json(await updateHere(h.s));
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 409);
+    }
+  });
+
+  app.post("/setup/primary", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await jsonInput(c.req.raw));
+    try {
+      return c.json(await routeHere(h.s, on));
     } catch (e) {
       return c.json({ error: (e as Error).message }, 409);
     }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { outdatedNodes } from "@agentgate/protocol";
 import { Store } from "../src/store.ts";
-import { installLatest, nodeUpdate, pathCopy, updateNode, updateTracked, versionNotice, waitForVersion } from "../src/update.ts";
+import { installLatest, nodeUpdate, pathCopy, routeNode, updateNode, updateTracked, versionNotice, waitForVersion } from "../src/update.ts";
 
 const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
 const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
@@ -49,6 +49,23 @@ test("nodes behind the newest reported release are outdated, including ones too 
   const nodes = [{ id: "a", version: "0.13.0" }, { id: "b", version: "0.9.1" }, { id: "c" }, { id: "d", version: "0.13.0" }];
   expect(outdatedNodes(nodes).map((n) => n.id)).toEqual(["b", "c"]);
   expect(outdatedNodes(nodes.map(({ id }) => ({ id })))).toEqual([]);
+});
+
+test("routing a paired node's coding tools asks it over the peer channel; this checkout never touches its own", async () => {
+  let answer = (on: boolean) => Response.json({ node: "server", message: on ? "on" : "off" });
+  const peer = Bun.serve({ port: 0, fetch: async (req) => (new URL(req.url).pathname === "/peer/setup/primary" && req.headers.get("authorization") === "Bearer t" ? answer(((await req.json()) as { on: boolean }).on) : new Response("no", { status: 401 })) });
+  try {
+    const s = new Store(":memory:");
+    s.setLocal("node", "laptop");
+    s.put("node", "laptop", { id: "laptop", alwaysOn: false });
+    s.db.run("insert or replace into peers values ('server', ?, 't', 0, null)", [peer.url.origin]);
+    expect(await routeNode(s, "server", false)).toEqual({ node: "server", message: "off" });
+    answer = () => Response.json({ error: "not found" }, { status: 404 });
+    await expect(routeNode(s, "server", true)).rejects.toThrow("too old to switch from here");
+    await expect(routeNode(s, "laptop", true)).rejects.toThrow("real setup");
+  } finally {
+    peer.stop(true);
+  }
 });
 
 test("updating a paired node asks it over the peer channel and explains a node too old to answer", async () => {

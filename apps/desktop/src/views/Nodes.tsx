@@ -21,6 +21,13 @@ type Method = "tailnet" | "relay";
 /** `known`: the machines there were when the command was shown, so the one that joins can be told apart. */
 type Shown = { command: string; method: Method; rotated?: boolean; known?: string[] };
 
+const routingText = (r: { claude: boolean; codex: boolean }) =>
+  r.claude && r.codex
+    ? "Claude Code and Codex use Agentgate"
+    : r.claude || r.codex
+      ? `Only ${r.claude ? "Claude Code" : "Codex"} uses Agentgate`
+      : "Claude Code and Codex use their own logins";
+
 export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [choosing, setChoosing] = useState(false);
   const [shown, setShown] = useState<Shown>();
@@ -51,6 +58,11 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             : `${node} installed Agentgate ${result.version}; restart Agentgate there to use it`,
       );
     }, undefined, `update:${node}`);
+  const route = (node: string, on: boolean) =>
+    void perform(async () => {
+      await request(connection, `/nodes/${idPath(node)}/primary`, "POST", { on });
+      toast(on ? `Claude Code and Codex on ${node} now use Agentgate` : `Claude Code and Codex on ${node} use their own logins again`);
+    });
   const pair = (method: Method) =>
     void perform(async () => {
       const result = await request<{ command: string }>(
@@ -111,6 +123,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   {n.version && ` · Agentgate ${n.version}`}
                 </small>
                 {n.update?.state === "failed" && <small>Update failed: {n.update.error}</small>}
+                {n.routing && <small>{routingText(n.routing)}</small>}
               </div>
               {n.update?.state === "installing" || n.update?.state === "restarting" || pending.has(`update:${n.id}`) ? (
                 <Badge>
@@ -145,44 +158,57 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   </Switch.Control>
                 </Switch.Content>
               </LiveSwitch>
-              {n.id !== data.node && !(viaRelay && !local) && (
-                // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
-                <RowMenu
-                  label={`More for ${n.id}`}
-                  items={[
-                    {
-                      label: viaRelay ? "Remove" : "Unpair",
-                      danger: true,
-                      onAction: async () => {
-                        const endpoints = data.projects.some((p) => p.remote)
-                          ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
-                          : "";
-                        const message = (viaRelay
-                          ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
-                          : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
-                        if (
-                          await confirmDialog(message, {
-                            destructive: true,
-                            okLabel: viaRelay ? "Remove and rotate" : "Unpair",
-                          })
+              <RowMenu
+                label={`More for ${n.id}`}
+                items={[
+                  (n.online || n.id === data.node) && {
+                    label: n.routing?.claude && n.routing.codex ? "Stop routing Claude Code and Codex" : "Route Claude Code and Codex",
+                    onAction: async () => {
+                      const on = !(n.routing?.claude && n.routing.codex);
+                      if (
+                        await confirmDialog(
+                          on
+                            ? `Route ${n.id}'s own Claude Code and Codex through Agentgate? This changes ~/.claude and ~/.codex on ${n.id}; you can undo it here.`
+                            : `Stop routing ${n.id}'s Claude Code and Codex? They go back to the logins they had before, and stop if they had none.`,
+                          { okLabel: on ? "Route" : "Stop routing" },
                         )
-                          void perform(async () => {
-                            const result = await request<{
-                              rotated?: boolean;
-                              command?: string;
-                            }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
-                            if (result.rotated && result.command)
-                              setShown({
-                                command: result.command,
-                                method: "relay",
-                                rotated: true,
-                              });
-                          }, viaRelay ? undefined : "Machine unpaired");
-                      },
+                      )
+                        route(n.id, on);
                     },
-                  ]}
-                />
-              )}
+                  },
+                  // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
+                  n.id !== data.node && !(viaRelay && !local) && {
+                    label: viaRelay ? "Remove" : "Unpair",
+                    danger: true,
+                    onAction: async () => {
+                      const endpoints = data.projects.some((p) => p.remote)
+                        ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
+                        : "";
+                      const message = (viaRelay
+                        ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
+                        : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
+                      if (
+                        await confirmDialog(message, {
+                          destructive: true,
+                          okLabel: viaRelay ? "Remove and rotate" : "Unpair",
+                        })
+                      )
+                        void perform(async () => {
+                          const result = await request<{
+                            rotated?: boolean;
+                            command?: string;
+                          }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
+                          if (result.rotated && result.command)
+                            setShown({
+                              command: result.command,
+                              method: "relay",
+                              rotated: true,
+                            });
+                        }, viaRelay ? undefined : "Machine unpaired");
+                    },
+                  },
+                ]}
+              />
             </div>
           );
         })}
