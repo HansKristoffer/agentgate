@@ -74,8 +74,8 @@ unknown owner returns 409 so the client starts over. User-facing controls are in
 ## Loopback trust
 
 Provider and MCP traffic, and the control API without a token, are served on loopback only. The daemon
-rejects foreign `Host` headers (DNS rebinding) and any request with `Origin` or Fetch Metadata headers,
-so a web page cannot reach it. On the tailnet listener the control API requires the admin bearer token
+rejects foreign `Host` headers (DNS rebinding), and the control API and `/mcp` refuse any request with `Origin` or
+Fetch Metadata headers, so a web page cannot use them. The provider proxies do not check those headers yet. On the tailnet listener the control API requires the admin bearer token
 and peer sync (`/peer`) its peer tokens; the proxy and MCP endpoints are never served there. Code that is reachable from the relay, such as remote MCP endpoints, must be called
 directly and never through a loopback listener, so it cannot borrow loopback trust.
 

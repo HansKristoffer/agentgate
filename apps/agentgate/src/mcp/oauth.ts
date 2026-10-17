@@ -8,6 +8,12 @@ import { syncAll } from "../relay.ts";
 import { resolve } from "./templates.ts";
 
 const SESSION_TTL = 10 * 60_000;
+/** The longest one tool call may run. */
+export const CALL_LIMIT = 30 * 60_000;
+/** How long an upstream may take to send response headers. A server answering in JSON sends them only when the tool
+ * is done, so a call (POST) may take as long as a tool call may run; failing it earlier reports a tool that did run as
+ * failed, and agents then run it again. */
+export const headerWait = (method: string | undefined, others: number) => method === "POST" ? CALL_LIMIT : method === "DELETE" ? 2000 : others;
 const sessionSchema = z.object({ id: z.string(), loginId: z.string(), expiresAt: z.number(), verifier: z.string().optional() });
 export function expireLogins(s: Store) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as { key: string; value: string }[]) {
@@ -102,7 +108,7 @@ export function authenticatedFetch(s: Store, id: string) {
     const send = (token?: string) => {
       const headers = new Headers(init.headers);
       if (token) headers.set("authorization", `Bearer ${token}`);
-      return fetchHeaders(url, { ...init, headers }, init.method === "DELETE" ? 2000 : 30000);
+      return fetchHeaders(url, { ...init, headers }, headerWait(init.method, 30000));
     };
     const res = await send(c?.tokens?.access_token);
     if (res.status !== 401 || !c?.tokens) return res;

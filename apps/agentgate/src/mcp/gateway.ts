@@ -7,11 +7,11 @@ import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.j
 import { CallToolRequestSchema, ListToolsRequestSchema, ToolListChangedNotificationSchema, type CallToolRequest, type Tool } from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { isVirtual } from "@agentgate/protocol";
+import { isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { NeedsLogin } from "../credentials.ts";
-import { fetchHeaders } from "../runtime.ts";
+import { fetchHeaders, sleep } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
-import { authenticatedFetch } from "./oauth.ts";
+import { CALL_LIMIT, authenticatedFetch, headerWait } from "./oauth.ts";
 import { skillsSource } from "./skills.ts";
 import { resolve } from "./templates.ts";
 export { renameInstance } from "../operations.ts";
@@ -82,7 +82,7 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
     if (!r.url) throw new Error(`${inst.id}: no url`);
     transport = new StreamableHTTPClientTransport(new URL(r.url), {
       requestInit: { headers: r.headers },
-      fetch: s ? authenticatedFetch(s, inst.id) : (url, init) => fetchHeaders(url, init, init?.method === "DELETE" ? 2000 : 10000),
+      fetch: s ? authenticatedFetch(s, inst.id) : (url, init) => fetchHeaders(url, init, headerWait(init?.method, 10000)),
     });
   } else {
     if (!r.command) throw new Error(`${inst.id}: no command`);
@@ -172,7 +172,7 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
         // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
-        signal: signal ? AbortSignal.any([extra.signal, signal]) : extra.signal, timeout: 5 * 60_000, maxTotalTimeout: 30 * 60_000, resetTimeoutOnProgress: true,
+        signal: signal ? AbortSignal.any([extra.signal, signal]) : extra.signal, timeout: 5 * 60_000, maxTotalTimeout: CALL_LIMIT, resetTimeoutOnProgress: true,
         onprogress: progressToken === undefined ? undefined : p => { void extra.sendNotification({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
       };
       const params = { ...req.params, name: route.tool };
@@ -267,10 +267,11 @@ export class Gateway {
       }
     };
   }
-  private async sources(project: string): Promise<Source[]> {
-    const out = await Promise.all(Object.keys(aliasesFor(this.s, project)).map(async alias => {
-      try { return await this.source(project, alias); }
-      catch (e) { this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`); return undefined; }
+  /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. */
+  private async sources(project: string, wait?: number): Promise<Source[]> {
+    const out = await Promise.all(Object.keys(aliasesFor(this.s, project)).map(alias => {
+      const source = this.source(project, alias).catch((e) => { this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`); return undefined; });
+      return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
     }));
     return out.filter((source): source is Source => !!source);
   }
@@ -279,9 +280,9 @@ export class Gateway {
     if (!this.builtin || this.closed) return Promise.resolve(undefined);
     return this.builtinSource ??= this.builtin().catch((e) => { this.builtinSource = undefined; throw e; });
   }
-  private async localSources(project: string): Promise<Source[]> {
+  private async localSources(project: string, wait?: number): Promise<Source[]> {
     const builtin = await this.builtinTools().catch(() => undefined);
-    const out = await this.sources(project);
+    const out = await this.sources(project, wait);
     return builtin ? [...out.filter((src) => src.alias !== BUILTIN_ALIAS), builtin] : out;
   }
 
@@ -300,13 +301,17 @@ export class Gateway {
     if (this.closed) return new Response("gateway stopped", { status: 503 });
     if (this.sessions.size >= 256) return new Response("too many MCP sessions", { status: 503 });
     const project = new URL(req.url).searchParams.get("project") || "*";
-    this.seen(project);
-    const instructions = mergeInstructions(await this.localSources(project));
+    if (project !== "*" && !projectIdSchema.safeParse(project).success) return new Response("invalid project", { status: 400 });
+    // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
+    const instructions = mergeInstructions(await this.localSources(project, 3000));
     const usage = { lastUsed: this.s.now(), calls: 0 };
     const server = mergedServer(instructions, () => this.localSources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`), async alias => alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
-      onsessioninitialized: (id) => void this.sessions.set(id, { transport, server, project, get lastUsed() { return usage.lastUsed; }, set lastUsed(value) { usage.lastUsed = value; }, get calls() { return usage.calls; }, set calls(value) { usage.calls = value; } }),
+      onsessioninitialized: (id) => {
+        this.seen(project);
+        this.sessions.set(id, { transport, server, project, get lastUsed() { return usage.lastUsed; }, set lastUsed(value) { usage.lastUsed = value; }, get calls() { return usage.calls; }, set calls(value) { usage.calls = value; } });
+      },
       onsessionclosed: (id) => void this.sessions.delete(id),
     });
     transport.onclose = () => transport.sessionId && this.sessions.delete(transport.sessionId);
@@ -337,7 +342,11 @@ export class Gateway {
       }));
       return [...out.filter((source): source is Source => !!source), skills];
     };
-    const resolveSource = (alias: string) => alias === skills.alias ? Promise.resolve(skills) : this.source(project, alias);
+    // A connect error carries the server's stderr and local details: logged here, never sent to the public client.
+    const resolveSource = (alias: string) => alias === skills.alias ? Promise.resolve(skills) : this.source(project, alias).catch((e) => {
+      failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
+      throw new Error(`${alias} is unavailable`);
+    });
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
     const instructions = (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
     const server = mergedServer(instructions, sources, (alias, e) => { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`); }, resolveSource, undefined, signal);

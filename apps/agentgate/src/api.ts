@@ -42,7 +42,7 @@ import {
   toolName,
 } from "./mcp/gateway.ts";
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
   createInstance,
   labelInstance,
@@ -97,15 +97,6 @@ const required = (value: unknown, name: string) => {
 };
 const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
-const readableEndpoint = (url?: string) => {
-  if (!url) return "Local command";
-  try {
-    const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
-  } catch {
-    return "HTTP server";
-  }
-};
 
 /** JSON control plane. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {

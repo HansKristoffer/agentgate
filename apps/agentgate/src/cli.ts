@@ -11,7 +11,7 @@ import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus, relevant } from "./llm/pool.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
@@ -306,7 +306,7 @@ async function main() {
       if (sub === "ls") {
         for (const i of s.list("mcp")) {
           const h = serverHealth(s, i.id), state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
-          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
+          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
         }
         return;
       }

@@ -113,7 +113,7 @@ export function app(ctx: Ctx) {
   // Register before every API handler, including the MCP shim's checkout write.
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
-    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
+    if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
       if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
@@ -125,7 +125,8 @@ export function app(ctx: Ctx) {
   app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
-  app.all("/mcp", loopbackOnly, (c) => ctx.gateway.handle(c.req.raw));
+  // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
+  app.all("/mcp", loopbackOnly, (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))
@@ -148,6 +149,9 @@ export function app(ctx: Ctx) {
   app.route("/api", management(ctx));
   return app;
 }
+
+/** Browsers send these on every request a page makes; the CLI, the app's Rust client and MCP clients never do. */
+const fromBrowser = (req: Request) => !!(req.headers.get("origin") || req.headers.get("sec-fetch-site"));
 
 function pathAfter(url: string, prefix: string) {
   const u = new URL(url);
