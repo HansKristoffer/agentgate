@@ -1,6 +1,6 @@
 # Coding standards
 
-Read this when reviewing a diff. It holds the judgement calls a compiler or test cannot make; anything mechanical belongs in a check instead. [AGENTS.md](AGENTS.md) still applies, especially "Hit every surface".
+Apply every rule below to the whole diff before calling a change done. These are the judgement calls a compiler or test cannot make; anything mechanical belongs in a check instead. [AGENTS.md](AGENTS.md) still applies, especially "Hit every surface".
 
 ## Secrets stay out of what we print
 
