@@ -95,6 +95,16 @@ const required = (value: unknown, name: string) => {
 };
 const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
+/** The coding tools' own logins, read at most every 30 s: ~/.claude.json alone can be megabytes, and the app polls
+ * status every second while something is under way. */
+const detections = new Map<keyof typeof providerLogins, { at: number; found: ReturnType<(typeof providerLogins)[keyof typeof providerLogins]["detect"]> }>();
+function detect(provider: keyof typeof providerLogins) {
+  const cached = detections.get(provider);
+  if (cached && Date.now() - cached.at < 30_000) return cached.found;
+  const found = moduleFor(provider).detect();
+  detections.set(provider, { at: Date.now(), found });
+  return found;
+}
 
 /** JSON control plane. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {
@@ -170,7 +180,7 @@ export function management(ctx: Ctx) {
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: providerSchema.options.flatMap((provider) => {
-        const found = moduleFor(provider).detect();
+        const found = detect(provider);
         const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
         return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
       }),
