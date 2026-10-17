@@ -295,7 +295,7 @@ export class Gateway {
     // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
     const instructions = mergeInstructions(await this.localSources(project, 3000));
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(instructions, () => this.localSources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`), async alias => alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
+    const server = mergedServer(instructions, () => this.localSources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`), async alias => alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
@@ -339,7 +339,7 @@ export class Gateway {
     });
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
     const instructions = (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
-    const server = mergedServer(instructions, sources, (alias, e) => { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: ${e}`); }, resolveSource, undefined, signal);
+    const server = mergedServer(instructions, sources, (alias, e) => { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`); }, resolveSource, undefined, signal);
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     try {
       await server.connect(transport);

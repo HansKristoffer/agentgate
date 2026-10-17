@@ -363,8 +363,11 @@ export class Store {
     });
   }
 
+  /** A request, or with a note an event (a token refresh, a refused login, an MCP connect failure), which also goes to
+   * the daemon's log, since no client shows request_log. Notes never carry secrets. */
   log(provider: string, account: string, model: string, status: number, ms: number, note = "") {
     this.db.run("insert into request_log values (?, ?, ?, ?, ?, ?, ?)", [this.now(), provider, account, model, status, ms, note]);
+    if (note) console.error(`${provider}${account ? ` ${account}` : ""}: ${note}`);
   }
 
   trimLog() {
