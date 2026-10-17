@@ -178,7 +178,6 @@ export function management(ctx: Ctx) {
       apiVersion: API_VERSION,
       daemon: { version: packageInfo.version, build: process.env.AGENTGATE_BUILD ?? "development", providers: providerCapabilities() },
       settingsRevision: revision(s, "setting", "settings"),
-      metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: providerSchema.options.flatMap((provider) => {
@@ -220,7 +219,6 @@ export function management(ctx: Ctx) {
         via: n.id === s.nodeId ? [] : via(s, n.id),
       })),
       relay: relayStatus(s),
-      t3: t3State(s),
       logins: listLogins(s),
       peers: peers(s).map((p) => ({
         node: p.node,
@@ -261,10 +259,10 @@ export function management(ctx: Ctx) {
     return c.json(input(() => requests(s, f)));
   });
   app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
-  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
+  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));

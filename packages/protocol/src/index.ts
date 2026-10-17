@@ -4,7 +4,6 @@ import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, qu
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
-import { t3NodeStateSchema, type T3NodeState } from "./handoff.ts";
 
 export const API_VERSION = 4;
 export const accountSchema = z.object({
@@ -228,75 +227,16 @@ export interface Preset {
   args?: string[];
   note?: string;
 }
-export interface Activity {
-  at: number;
-  provider: string;
-  account: string;
-  model: string;
-  status: number;
-  ms: number;
-  note: string;
-}
-export interface Status {
-  apiVersion: number;
-  node: string;
-  accounts: AccountStatus[];
-  /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
-  detected: { provider: Provider; email: string; plan?: string; source: string }[];
-  servers: ServerSummary[];
-  projects: PublicProject[];
-  skills: SkillSummary[];
-  /** Skill links this node skipped because something else already uses the name. */
-  skillConflicts: string[];
-  skillHealth: SkillHealth;
-  skillRepos: SkillRepoSummary[];
-  /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
-  fileErrors: Record<string, string>;
-  /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
-  checkouts: { path: string; project: string; skills: string[]; mirror: boolean }[];
-  nodes: (z.infer<typeof nodeSchema> & {
-    lastSeen: number;
-    online: boolean;
-    syncError?: string;
-    /** Observed paths to this node; not proof of membership. */
-    via?: ("tailnet" | "relay")[];
-  })[];
-  relay?: RelayStatus;
-  peers: {
-    node: string;
-    url: string;
-    lastSeen: number;
-    cursor: number;
-    error?: string;
-  }[];
-  unknownQuota: Record<string, string | undefined>;
-  settings: Settings;
-  activity: Activity[];
-  settingsRevision?: string;
-  daemon?: { version: string; build: string; providers: Record<Provider, import("./proxy.ts").ProviderCapabilities> };
-  metrics?: import("./proxy.ts").ProxyMetrics;
-  /** This node's connection to its T3 Code server, for thread handoffs. */
-  t3?: T3NodeState;
-  /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
-  logins: SharedLogin[];
-}
 export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
 export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
-export interface RelayStatus {
-  url: string;
-  hosted: boolean;
-  generation?: string;
-  cursor: number;
-  pushed: number;
-  reconciling: boolean;
-  rotating: boolean;
-  cleanupPending: boolean;
-  pushError?: string;
-  pullError?: string;
+export const relayStatusSchema = z.object({
+  url: z.string(), hosted: z.boolean(), generation: z.string().optional(), cursor: z.number(), pushed: z.number(),
+  reconciling: z.boolean(), rotating: z.boolean(), cleanupPending: z.boolean(), pushError: z.string().optional(), pullError: z.string().optional(),
   /** Entries that could not be decrypted or validated since the last full read. */
-  skipped?: number;
-}
+  skipped: z.number().optional(),
+});
+export type RelayStatus = z.infer<typeof relayStatusSchema>;
 export interface LoginStart {
   state: string;
   url: string;
@@ -350,25 +290,35 @@ export interface DesktopStatus {
   cursorMcp?: boolean;
 }
 /** Validate native status before views access required fields from a remote daemon. */
+/** What `/status` returns. The app validates a remote daemon's answer with it and keeps only the fields named here. */
 export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION), node: z.string(),
   accounts: z.array(accountStatusSchema),
+  /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
   servers: z.array(z.object({ id: z.string(), label: z.string().optional(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), available: z.boolean().optional(), checkedAt: z.number().optional(), refreshError: z.string().optional() })),
   projects: z.array(publicProjectSchema),
   skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
+  /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: z.array(z.string()),
   skillRepos: z.array(z.object({ url: z.string(), projects: z.array(z.string()), skills: z.array(z.string()), commit: z.string().optional(), syncedAt: z.number().optional(), error: z.string().optional(), skipped: z.array(z.string()) })).default([]),
   skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),
+  /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
   fileErrors: z.record(z.string(), z.string()).default({}),
+  /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
   checkouts: z.array(z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() })),
-  nodes: z.array(nodeSchema.extend({ lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional() })),
+  nodes: z.array(nodeSchema.extend({
+    lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional(),
+    /** Observed paths to this node; not proof of membership. */
+    via: z.array(z.enum(["tailnet", "relay"])).optional(),
+  })),
+  relay: relayStatusSchema.optional(),
   peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),
   unknownQuota: z.record(z.string(), z.string().optional()), settings: settingsSchema,
   activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
   settingsRevision: z.string().optional(),
   daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }) }).optional(),
-  t3: t3NodeStateSchema.optional(),
+  /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
   logins: z.array(sharedLoginSchema).default([]),
-  metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });
+export type Status = z.infer<typeof statusSchema>;

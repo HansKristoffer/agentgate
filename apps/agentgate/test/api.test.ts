@@ -454,11 +454,20 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect(statusSchema.safeParse(missing).success).toBe(false);
 });
 
+test("the app's status schema keeps the relay and how each machine is reached", async () => {
+  const { s, call } = fixture();
+  s.put("node", "test", { id: "test", alwaysOn: false });
+  s.put("node", "b", { id: "b", alwaysOn: false });
+  s.setLocal("relay:invite", "agentgate-relay.invalid");
+  s.setLocal("relaySeen:b", String(s.now()));
+  const parsed = statusSchema.parse(await (await call("/api/status")).json());
+  expect(parsed.relay).toMatchObject({ reconciling: true, rotating: false });
+  expect(parsed.nodes.find((n) => n.id === "b")?.via).toEqual(["relay"]);
+});
+
 test("thread handoff routes: T3 connection state, cross-node listing, and connect only from this machine", async () => {
   const { s, call } = fixture();
   s.put("node", "test", { id: "test", alwaysOn: false });
-  const status = (await (await call("/api/status")).json()) as Status;
-  expect(status.t3).toEqual({ connected: false });
   expect(await (await call("/api/t3")).json()).toEqual({ connected: false });
   expect((await call("/api/t3/connect", "POST", { url: "http://127.0.0.1:1", token: "x" }, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
   const nodes = await (await call("/api/threads")).json();
