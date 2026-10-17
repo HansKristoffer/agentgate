@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { TriangleAlert } from "lucide-react";
+import { Spinner } from "@heroui/react";
 import type { AccountStatus } from "@agentgate/protocol";
 import { Badge, Quota } from "../../components/ui.tsx";
 import { ago, resetIn, windowName } from "../../views/utils.ts";
@@ -22,14 +23,18 @@ const subscribe = (listener: () => void) => {
 };
 const snapshot = () => Math.floor(Date.now() / 1000);
 /** The account's limits as small bars with their resets, on Overview and Accounts. Stale usage gets a warning icon; `onRefresh` makes it a refresh button. */
-export function AccountQuota({ account, onRefresh }: { account: AccountStatus; onRefresh?: () => void }) {
+export function AccountQuota({ account, onRefresh, refreshing }: { account: AccountStatus; onRefresh?: () => void; refreshing?: boolean }) {
   const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
   const updated = account.observedAt ? `Updated ${ago(account.observedAt)}` : "Usage unknown";
   const stale = account.quotaState === "stale" && account.windows.length > 0;
   const staleNote = `Usage is out of date. ${updated}.${onRefresh ? " Click to refresh." : ""}`;
   return (
     <div className={stale ? "mini-quotas stale" : "mini-quotas"} title={updated}>
-      {stale &&
+      {refreshing ? (
+        <span className="stale-usage" title="Refreshing usage">
+          <Spinner size="sm" color="current" />
+        </span>
+      ) : stale &&
         (onRefresh ? (
           <button type="button" className="stale-usage" title={staleNote} aria-label={staleNote} onClick={onRefresh}>
             <TriangleAlert size={13} />

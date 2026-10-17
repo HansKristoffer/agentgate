@@ -230,6 +230,13 @@ export interface Preset {
 export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
 export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
+/** An update this node started on another one (or itself), until that node runs the new release. */
+export const nodeUpdateSchema = z.object({
+  /** `installed`: the node has the release but its service does not run that binary; restart agentgate there. */
+  state: z.enum(["installing", "restarting", "installed", "failed"]),
+  version: z.string().optional(), error: z.string().optional(), since: z.number(),
+});
+export type NodeUpdate = z.infer<typeof nodeUpdateSchema>;
 export const relayStatusSchema = z.object({
   url: z.string(), hosted: z.boolean(), generation: z.string().optional(), cursor: z.number(), pushed: z.number(),
   reconciling: z.boolean(), rotating: z.boolean(), cleanupPending: z.boolean(), pushError: z.string().optional(), pullError: z.string().optional(),
@@ -311,6 +318,7 @@ export const statusSchema = z.object({
     lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional(),
     /** Observed paths to this node; not proof of membership. */
     via: z.array(z.enum(["tailnet", "relay"])).optional(),
+    update: nodeUpdateSchema.optional(),
   })),
   relay: relayStatusSchema.optional(),
   peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),
