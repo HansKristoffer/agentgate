@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.22.0](https://github.com/HansKristoffer/agentgate/compare/v0.21.2...v0.22.0) (2026-10-17)
+
+
+### Features
+
+* **app:** actions no longer freeze the window, and machine updates show their progress ([#78](https://github.com/HansKristoffer/agentgate/issues/78)) ([d1f0058](https://github.com/HansKristoffer/agentgate/commit/d1f0058e835a6ae6a17bddcfb372f03b5d8c5192))
+
+
+### Bug Fixes
+
+* **handoff:** recognize clones of renamed repositories ([#75](https://github.com/HansKristoffer/agentgate/issues/75)) ([fdd4030](https://github.com/HansKristoffer/agentgate/commit/fdd403008f9962080b08a422cc8b5216f5d9e454))
+
 ## [0.21.2](https://github.com/HansKristoffer/agentgate/compare/v0.21.1...v0.21.2) (2026-10-16)
 
 
