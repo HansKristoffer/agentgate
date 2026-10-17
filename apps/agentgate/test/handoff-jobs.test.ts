@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { repos, sh, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
@@ -28,6 +28,8 @@ import { NODE_PROTOCOL } from "../src/remote.ts";
 import { checkoutFile } from "../src/handoff/destination.ts";
 import { parseRemote } from "../src/mcp/gateway.ts";
 import { keyForProject, writeStore } from "../src/checkout-files.ts";
+
+afterAll(removeTmp);
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -508,6 +510,7 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
 
 test("a handoff works through the relay alone; the relay sees only sealed calls and cannot replay one", async () => {
   process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  cleanup.push(() => { delete process.env.AGENTGATE_RELAY_ALLOW_HTTP; });
   const relay = memoryRelay();
   const calls: { path: string; body: string }[] = [];
   const server = serveRelay(relay, async (req) => {

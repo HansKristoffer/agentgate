@@ -1,4 +1,4 @@
-import { appendFileSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,7 +9,10 @@ writeFileSync(config, "[user]\n\tname = Test\n\temail = test@example.com\n[init]
 process.env.GIT_CONFIG_GLOBAL = config;
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
-export const tmp = (prefix = "agentgate-test-") => realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+const made: string[] = [];
+/** A temporary folder; a test file that makes them runs `afterAll(removeTmp)`. */
+export const tmp = (prefix = "agentgate-test-") => { const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix))); made.push(dir); return dir; };
+export const removeTmp = () => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }); };
 
 export function sh(cwd: string, ...args: string[]): string {
   const r = Bun.spawnSync(["git", ...args], { cwd, stderr: "pipe", env: process.env });

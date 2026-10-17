@@ -1,5 +1,5 @@
 import { revision } from "../src/configuration.ts";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
@@ -9,9 +9,11 @@ import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
 import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
-import { repos, tmp } from "./fixtures/git.ts";
+import { repos, tmp, removeTmp } from "./fixtures/git.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+afterAll(removeTmp);
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
