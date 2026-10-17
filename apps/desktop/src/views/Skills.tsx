@@ -18,6 +18,8 @@ import {
   Panel,
   HeaderActions,
   RowMenu,
+  Working,
+  usePending,
 } from "../components/ui.tsx";
 import { ProjectChecks } from "../components/SkillAssignments.tsx";
 import type { ViewProps } from "../types.ts";
@@ -50,6 +52,7 @@ const sourceLabel = (source?: string) => {
 };
 
 export function Skills({ data, connection, perform }: ViewProps) {
+  const pending = usePending();
   const [add, setAdd] = useState<"browse" | "source" | "repo" | "write">();
   const [results, setResults] = useState<SkillSearchResult[]>();
   const [preview, setPreview] = useState<{
@@ -169,6 +172,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   </Button>
                 </span>
                 <Badge good={!!skill.source}>{sourceLabel(skill.source)}</Badge>
+                {pending.has(`update:${skill.id}`) && <Working>Updating</Working>}
               </div>
               {skill.description && <small>{short(skill.description)}</small>}
               <small>
@@ -202,7 +206,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                         "POST",
                       );
                       toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
-                    }),
+                    }, undefined, `update:${skill.id}`),
                 },
                 !fromRepo(skill.source) && {
                   label: "Delete",
@@ -233,7 +237,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               <div className="grow">
                 <div className="row">
                   <strong>{repoName(repo.url)}</strong>
-                  {repo.error && <Badge>Sync failed</Badge>}
+                  {pending.has(`sync:${repo.url}`) ? <Working>Syncing</Working> : repo.error && <Badge>Sync failed</Badge>}
                 </div>
                 <small>
                   {places(repo.projects)} · {repo.skills.length} {repo.skills.length === 1 ? "skill" : "skills"} ·{" "}
@@ -253,7 +257,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                       void perform(async () => {
                         const { updated } = await request<{ updated: boolean }>(connection, "/skill-repos/sync", "POST", { url: repo.url });
                         toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
-                      }),
+                      }, undefined, `sync:${repo.url}`),
                   },
                   { label: "Choose projects", onAction: () => setRepoAssign(repo.url) },
                   {

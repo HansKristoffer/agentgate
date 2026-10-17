@@ -106,7 +106,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 }
                 isSelected={!!desktop.mcp && !!desktop.cursorMcp}
                 onChange={(on) =>
-                  void perform(
+                  perform(
                     () => localAction(on ? "mcp-on" : "mcp-off", connection),
                     on ? "MCP servers added" : "MCP servers removed",
                   )

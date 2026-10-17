@@ -13,6 +13,7 @@ import {
   Panel,
   HeaderActions,
   RowMenu,
+  usePending,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { DesktopAlerts, DesktopHelp, desktopActions, desktopNote, forgetLogin, nameOf, usable } from "./ClaudeDesktop.tsx";
@@ -55,11 +56,12 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<AccountStatus>();
+  const pending = usePending();
   const refreshUsage = (id: string) =>
     void perform(async () => {
       const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", { ids: [id], action: "quota" });
       if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
-    }, "Usage refreshed");
+    }, "Usage refreshed", `quota:${id}`);
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
@@ -196,7 +198,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                         Save login
                       </Button>
                     )}
-                    <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
+                    <AccountQuota account={a} refreshing={pending.has(`quota:${a.account.id}`)} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
                     {(a.needsLogin || (a.expired && !a.waitingFor)) && (
                       <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
                         Sign in again
