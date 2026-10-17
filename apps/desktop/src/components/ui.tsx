@@ -256,6 +256,7 @@ type MenuAction = { label: string; onAction: () => void; danger?: boolean };
 /** A row's secondary actions behind "⋯"; falsy entries are skipped. */
 export function RowMenu({ label, items }: { label: string; items: (MenuAction | false | undefined)[] }) {
   const list = items.filter((i): i is MenuAction => !!i);
+  if (!list.length) return null;
   return (
     <Dropdown>
       {/* The trigger's own display: inline-block would undo the button's centering. */}

@@ -2,7 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSyn
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
-import { CONFIG_DIR, liveOnly, LOCAL_URL, PORT } from "./store.ts";
+import { CONFIG_DIR, liveOnly, LOCAL_URL, PORT, type Store } from "./store.ts";
 
 export const CLAUDE_DIR = join(CONFIG_DIR, "claude");
 export const CODEX_DIR = join(CONFIG_DIR, "codex");
@@ -108,6 +108,20 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
 }
 
+/** `setup --primary [off]` on this machine: Claude Code, Codex and Cursor. Records the result on this node, so every
+ * machine's Machines view shows it. */
+export async function routeHere(s: Store, on: boolean) {
+  const message = [await primary(on), await primaryCodex(on), await cursorMcp(on)].join("\n");
+  publishRouting(s);
+  return { node: s.nodeId, message };
+}
+
+/** Keep this node's record in step with its own config, which the CLI or a hand edit may change behind the daemon. */
+export function publishRouting(s: Store) {
+  const me = s.get("node", s.nodeId), routing = primaryState();
+  if (me && (me.routing?.claude !== routing.claude || me.routing?.codex !== routing.codex)) s.put("node", s.nodeId, { ...me, routing });
+}
+
 /** Whether `setup --primary` currently routes your own ~/.claude and ~/.codex through this daemon. */
 export function primaryState(claudeDir = PRIMARY_CLAUDE_DIR, codexDir = PRIMARY_CODEX_DIR) {
   const read = <T>(fn: () => T) => { try { return fn(); } catch { return undefined; } };
@@ -198,21 +212,27 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
   return on ? `New Claude sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.\nKeep the daemon running.` : `Restored the previous base URL in ${file}; other settings are preserved.`;
 }
 
+const PLACEHOLDER_AUTH = JSON.stringify({ OPENAI_API_KEY: PLACEHOLDER_TOKEN }) + "\n";
+
 /** The Codex half of `setup --primary`: point the user's own ~/.codex at the daemon, keeping its login as last resort. */
 export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promise<string> {
   if (dir === PRIMARY_CODEX_DIR) liveOnly("Changing your own Codex config");
-  const file = join(dir, "config.toml"), undo = `${file}.agentgate-undo`;
+  const file = join(dir, "config.toml"), undo = `${file}.agentgate-undo`, auth = join(dir, "auth.json");
   if (!existsSync(dir)) return `No Codex home at ${dir}; skipped Codex.`;
   const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
   const current = (Bun.TOML.parse(existing) as { model_provider?: string }).model_provider;
   if (on) {
     if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: current !== undefined && current !== "agentgate", value: current }));
     backup(file); atomicWrite(file, codexConfig(existing, undefined, undefined, true));
+    // Like Claude above: a server set up from scratch has no Codex login, so `codex login status` (which T3 Code
+    // checks before offering Codex) says "Not logged in". The proxy swaps this placeholder key for a pool account.
+    if (!existsSync(auth) && !/^\s*cli_auth_credentials_store\s*=\s*"keyring"/m.test(existing)) atomicWrite(auth, PLACEHOLDER_AUTH);
     return `New Codex sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.`;
   }
   if (current !== "agentgate") { if (existsSync(undo)) unlinkSync(undo); return `No agentgate setup change to undo in ${file}.`; }
   const previous = existsSync(undo) ? json(undo) : { hadValue: false };
   const kept = withoutAgentgate(existing);
+  if (existsSync(auth) && readFileSync(auth, "utf8") === PLACEHOLDER_AUTH) unlinkSync(auth);
   atomicWrite(file, `${previous.hadValue ? `model_provider = ${quote(previous.value)}\n` : ""}${kept}\n`);
   if (existsSync(undo)) unlinkSync(undo);
   return `Restored the previous Codex provider in ${file}; other settings are preserved.`;

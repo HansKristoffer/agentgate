@@ -73,7 +73,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
   logins forget infisical-identity            remove it from every machine
   setup                                       write Claude/Codex config, print the T3 settings
-  setup --primary [off]                       route your normal ~/.claude and ~/.codex through agentgate
+  setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex through agentgate, here or on a paired node
   setup --mcp [off]                           add agentgate's MCP servers to Claude Code, Claude Desktop's Code tab, and Cursor
   desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
   desktop add [email] | use <account> | capture | forget <account>
@@ -782,6 +782,10 @@ async function main() {
 
     case "setup": {
       const setupMod = await import("./setup.ts");
+      if (opts.primary && opts.node) {
+        initialized(s);
+        return console.log((await management<{ message: string }>(`/nodes/${encodeURIComponent(opts.node)}/primary`, "POST", { on: sub !== "off" })).message);
+      }
       if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
       if (opts.mcp) return console.log(`${await setupMod.mcp(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
       return console.log(await setupMod.setup());

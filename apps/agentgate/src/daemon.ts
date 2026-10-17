@@ -26,7 +26,7 @@ import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 import { syncLogins } from "./logins.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PRIMARY_CLAUDE_DIR } from "./setup.ts";
+import { PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
@@ -175,6 +175,8 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
     timers.push(setInterval(run, interval)); run();
   };
+  // The CLI or a hand edit can change routing behind the daemon; a minute late is fine for a status badge.
+  if (!DEV) schedule(async () => publishRouting(s), 60_000);
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {
     const ts = await (options.discover ?? tailscale)();

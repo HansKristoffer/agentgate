@@ -53,7 +53,7 @@ The most common defect is a change that works on the path you tested and is miss
 - **Providers.** Claude and Codex each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
 - **Sync.** A new record kind or field must sync over peers and the relay, survive a tombstone, and merge with a peer on the previous version. Ask whether `SYNC_PROTOCOL` (`sync.ts`), `RELAY_PROTOCOL` or `API_VERSION` (`packages/protocol`) must change, and whether backups export and restore it, including `export --no-secrets`.
 - **Contracts.** Anything the app and daemon exchange is typed in `packages/protocol`. Change the schema and both sides follow.
-- **Remote management.** The app can manage a remote node over Tailscale. Local-only actions (service, coding-tool setup, backups, Claude Desktop) must stay refused for remote connections.
+- **Remote management.** The app can manage a remote node over Tailscale. Local-only actions (service, coding-tool setup, backups, Claude Desktop) must stay refused for remote connections. The one deliberate exception is `setup --primary` on a paired node (`routeNode` in `update.ts`), because routing your own server is set up from your laptop.
 - **Platforms.** macOS launchd and Linux systemd, with and without the app, and the compiled binary as well as source.
 - **Reverse states.** If you added a way in, add the way out and the way to see it: enable needs disable, setup needs undo, pin needs unpin.
 - **Docs.** Check whether the change makes the README or a doc inaccurate. Apply the [documentation rules](#documentation) before adding anything.

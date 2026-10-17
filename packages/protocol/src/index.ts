@@ -91,6 +91,8 @@ export const nodeSchema = z.object({
   protocol: z.number().int().optional(),
   /** The agentgate release this node's daemon last started as. Absent on older daemons. */
   version: z.string().max(64).optional(),
+  /** Whether this node's own ~/.claude and ~/.codex use agentgate (setup --primary). Absent on older daemons. */
+  routing: z.object({ claude: z.boolean(), codex: z.boolean() }).optional(),
 });
 /** Nodes running an older agentgate than the newest one among them. A node that reports no version predates
  * version reporting, so it is older too once any node reports one. */

@@ -2,6 +2,7 @@ import { chmodSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import packageInfo from "../../../package.json";
 import { PeerError, peerCall } from "./handoff/jobs.ts";
+import { routeHere } from "./setup.ts";
 import { serviceRuns } from "./service.ts";
 import { selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
@@ -63,6 +64,18 @@ export async function updateHere(s: Store) {
   const { version, restart: restarting } = await updateSelf();
   if (restarting) restart.soon();
   return { node: s.nodeId, version, restarting };
+}
+
+/** `setup --primary [off]` on any node: this one, or a paired one over the peer channel. The deliberate exception to
+ * coding-tool setup being local-only: routing your own server is something you set up from your laptop. */
+export async function routeNode(s: Store, node: string, on: boolean): Promise<Awaited<ReturnType<typeof routeHere>>> {
+  if (node === s.nodeId) return routeHere(s, on);
+  try {
+    return await peerCall(s, node, "/setup/primary", { json: { on } });
+  } catch (e) {
+    if (e instanceof PeerError && e.status === 404) throw new Error(`${node} runs an agentgate too old to switch from here; run agentgate setup --primary on ${node}`);
+    throw e;
+  }
 }
 
 /** Update any node: this one, or a paired one over the peer channel.
