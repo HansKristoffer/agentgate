@@ -119,7 +119,7 @@ export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
 }
 
 /** What A polls: the status, the imported thread, and B's warnings and timings. */
-export function peerStatus(h: Handoffs, job: Job<DestState>) {
+export function peerStatus(job: Job<DestState>) {
   const st = job.state;
   return {
     step: job.step, status: STATUS[job.step] ?? "running", threadId: st.threadId,

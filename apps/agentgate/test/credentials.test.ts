@@ -49,7 +49,7 @@ const pull = (into: Store, from: Store) => {
 };
 /** Let time pass while `s` keeps syncing every 15 s, as an awake daemon with a working network does, without hearing from the holder. */
 const syncFor = (s: Store, ms: number) => { for (const end = T + ms; T < end;) { T += 15_000; noteSyncRound(s); } };
-const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (p, rt) => claude.refresh(rt), async () => pull(s, peer()));
+const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (_p, rt) => claude.refresh(rt), async () => pull(s, peer()));
 
 beforeEach(() => {
   valid = new Set(["rt-0"]);
@@ -87,7 +87,7 @@ test("a node back from sleep does not take over until it has synced for two minu
   // one the holder already rotated.
   syncFor(srv, 5 * MIN);
   T += 3 * 60 * MIN;
-  const creds = new Credentials(srv, (p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
+  const creds = new Credentials(srv, (_p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
   syncFor(srv, 90_000);
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
@@ -160,7 +160,7 @@ test("a holder that hears from nobody right after waking waits instead of refres
   await credsFor(srv, () => mac).token("a");
   T += 3 * 60 * MIN;
   // mac's network is not up yet: its pull fails. It must not try rt-0, which srv rotated.
-  const offline = new Credentials(mac, (p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
+  const offline = new Credentials(mac, (_p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
   await expect(offline.token("a")).rejects.toThrow("waiting to hear from the other machines");
   expect(reused).toBe(0);
   expect(mac.get("credential", "a")!.needsLogin).toBeFalsy();
@@ -171,7 +171,7 @@ test("a holder that hears from nobody right after waking waits instead of refres
 
 test("a refused refresh token is sent once, and the login needs a sign-in once the others had their chance", async () => {
   valid.clear(); // the provider revoked mac's login
-  const unheard = new Credentials(mac, (p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
+  const unheard = new Credentials(mac, (_p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
   // mac keeps syncing through the relay until its token expires, but srv does not answer and mac's daemon only just started.
   for (const end = mac.get("credential", "a")!.expiresAt + 1; T < end;) { T += 15_000; noteSyncRound(mac); }
   await expect(unheard.token("a")).rejects.toThrow("token refresh failed");

@@ -127,7 +127,6 @@ const { values: opts, positionals: pos } = parseArgs({
   },
 });
 const str = (k: string) => opts[k] as string | undefined;
-const kv = (list: unknown) => Object.fromEntries(((list as string[] | undefined) ?? []).map((p) => [p.slice(0, p.indexOf("=")), p.slice(p.indexOf("=") + 1)]));
 
 const [cmd, sub, ...rest] = pos;
 async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {

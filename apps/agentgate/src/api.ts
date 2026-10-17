@@ -1,6 +1,5 @@
 import {
   API_VERSION,
-  accountSchema,
   projectSchema,
   providerSchema,
   SkillConflict,
@@ -18,8 +17,6 @@ import { homedir } from "node:os";
 import { z } from "zod";
 import { pkce } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
-import * as claude from "./llm/claude.ts";
-import * as codex from "./llm/codex.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { forgetLogin, infisicalSite, listLogins, setInfisicalIdentity, shareLogins } from "./logins.ts";

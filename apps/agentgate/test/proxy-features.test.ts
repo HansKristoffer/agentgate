@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { accountPatchSchema, aliasesSchema, settingsPatchSchema, settingsSchema } from "@agentgate/protocol";
+import { accountPatchSchema, aliasesSchema, settingsPatchSchema } from "@agentgate/protocol";
 import { patchSettings, revision } from "../src/configuration.ts";
 import { Credentials } from "../src/credentials.ts";
 import { deleteAccount, saveAccount } from "../src/operations.ts";
@@ -306,8 +306,8 @@ test("transient cooldown is separate from provider quota and reset preserves quo
 
 test("stream provider error, idle timeout, and cancellation produce distinct final outcomes", async () => {
   for (const mode of ["error", "idle", "cancel"] as const) {
-    const { s, creds } = fixture(); let cancelled = false;
-    const url = upstream(() => new Response(mode === "error" ? 'data: {"type":"error"}\n\n' : new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("data: {}\n\n")); }, cancel() { cancelled = true; } }), { headers: { "content-type": "text/event-stream" } }));
+    const { s, creds } = fixture();
+    const url = upstream(() => new Response(mode === "error" ? 'data: {"type":"error"}\n\n' : new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("data: {}\n\n")); } }), { headers: { "content-type": "text/event-stream" } }));
     const abort = new AbortController(); const response = await proxy(s, creds, adapter, client("sonnet", abort.signal), url, { headerTimeout: 1000, streamIdle: 20, maxBody: 1024 });
     if (mode === "cancel") abort.abort();
     await response.text().catch(() => {});

@@ -78,13 +78,14 @@ An empty store is a bad test. With your dev daemon stopped, run `bun run seed-de
 - Rust changes: `cargo check` in `apps/desktop/src-tauri` (`bun run check:native` runs clippy). The build needs a sidecar file in `apps/desktop/src-tauri/binaries/`; an empty placeholder named for your target is enough for a check.
 - Live provider traffic, real logins, two physical machines and installed services are outside CI. Say when a change needs one of those checks rather than claiming it works.
 - Do not verify in the desktop app or a browser unless the developer asks for it.
+- Before calling work done, check the diff against [CODING_STANDARDS.md](CODING_STANDARDS.md): the review rules for error text, credential refresh, deadlines and child processes.
 
 ## Pull requests
 
 - Never open a PR unless the developer explicitly asks.
-- Conventional commit titles in plain language: `fix(proxy): exhausted accounts no longer get retried`. CI enforces the format, and Release Please builds the changelog from it.
+- Conventional commit titles in plain language: `fix(proxy): exhausted accounts no longer get retried`. CI enforces the format, and Release Please builds the changelog from it. PRs are squashed, so the PR title is the only changelog entry: give it the highest type among its commits, so a PR holding a `fix` commit is at least `fix`.
 - Body: the problem in a sentence or two, then how you fixed it, then how you verified it. End with the model and harness that did the work. Follow `.github/pull_request_template.md`.
-- UI changes need before and after images. Upload them to GitHub; never commit PR-only assets.
+- UI changes need before and after images. Upload them to GitHub; never commit PR-only assets. On a machine that cannot run the desktop app, hand the thread to a Mac with the `handoff-thread` skill to take them.
 - One request is one PR. Split it only when the maintainer asks.
 
 ## Documentation

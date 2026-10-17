@@ -234,7 +234,7 @@ function resetTarget(s: Store, t: Target, grp: string) {
 }
 
 interface Decoded { node: string; key: string; pusherSeq: number; rec?: Rec }
-async function decode(s: Store, c: Conn, generation: string, page: ChangesResponse): Promise<{ decoded: Decoded[]; skipped: number }> {
+async function decode(c: Conn, generation: string, page: ChangesResponse): Promise<{ decoded: Decoded[]; skipped: number }> {
   const decoded: Decoded[] = [];
   let skipped = 0;
   for (const e of page.entries) {
@@ -276,7 +276,7 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
   if (!page.success || page.data.generation !== generation) throw new RelayError("The relay returned an invalid page");
   const problem = checkPage(page.data, since);
   if (problem) throw new RelayError(`The relay returned an invalid page (${problem})`);
-  const { decoded, skipped } = await decode(s, c, generation, page.data);
+  const { decoded, skipped } = await decode(c, generation, page.data);
   s.transaction(() => {
     if (identity(s, t) !== before) throw new RelayError("relay configuration changed");
     for (const d of decoded) {

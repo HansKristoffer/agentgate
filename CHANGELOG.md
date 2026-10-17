@@ -18,6 +18,14 @@
 ### Bug Fixes
 
 * **handoff:** recognize clones of renamed repositories ([#75](https://github.com/HansKristoffer/agentgate/issues/75)) ([fdd4030](https://github.com/HansKristoffer/agentgate/commit/fdd403008f9962080b08a422cc8b5216f5d9e454))
+* **app:** the Machines page shows the relay and how each machine is reached ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **credentials:** a holder back from sleep can no longer revoke a login everywhere ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **daemon:** switching Claude Desktop, updating and status can no longer hang ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **daemon:** token refresh failures and MCP connect failures reach the daemon log ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **handoff:** a handoff never leaves the thread on both machines, and never hangs ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **mcp:** one slow server no longer empties a session, and pages cannot reach /mcp ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **proxy:** non-streaming requests are no longer cut off after 30 seconds ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **relay:** one large record no longer stops relay sync, and the service key stays off the hosted relay ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
 
 ## [0.21.2](https://github.com/HansKristoffer/agentgate/compare/v0.21.1...v0.21.2) (2026-10-16)
 

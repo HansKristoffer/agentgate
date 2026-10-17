@@ -112,7 +112,7 @@ export function handoffRoutes(h: Handoffs) {
   });
   app.get("/handoff/:id", (c) => {
     const job = own(c);
-    return job ? c.json(peerStatus(h, job)) : c.json(missing, 404);
+    return job ? c.json(peerStatus(job)) : c.json(missing, 404);
   });
   app.delete("/handoff/:id", (c) => {
     const job = own(c);
