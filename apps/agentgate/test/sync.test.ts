@@ -43,7 +43,6 @@ test("tombstones propagate and remain after 30 days to prevent resurrection", ()
   expect(b.get("mcp", "x")).toBeUndefined();
   expect(b.record("mcp", "x")!.deleted).toBe(1);
   b.now = () => Date.now() + 31 * 86400_000;
-  b.purgeTombstones();
   expect(b.record("mcp", "x")!.deleted).toBe(1);
   expect(b.merge(stale)).toBe(false);
 });

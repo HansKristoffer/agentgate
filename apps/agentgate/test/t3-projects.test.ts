@@ -1,11 +1,13 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import { repos, sh, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { syncT3Projects } from "../src/handoff/projects.ts";
 import { connectT3, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
+
+afterAll(removeTmp);
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });

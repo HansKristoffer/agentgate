@@ -36,7 +36,6 @@ export const pushRequest = z.object({
   node: relayNode,
   entries: z.array(relayEnvelope).min(1).max(RELAY_LIMITS.pushEntries),
 }).strict();
-export type PushRequest = z.infer<typeof pushRequest>;
 
 export const relayEntry = relayEnvelope.extend({ node: relayNode, seq: seq.min(1) });
 export type RelayEntry = z.infer<typeof relayEntry>;

@@ -58,7 +58,7 @@ Example settings patch:
 
 ## Activity
 
-Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search. Follow refreshes the latest page every five seconds. Pause preserves the current page and enables loading older results; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy loaded diagnostics** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
+Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search. Follow refreshes the latest page every five seconds. Pause preserves the current page and enables loading older results; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy diagnostics** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
 
 ```sh
 agentgate requests --provider claude --outcome failed
@@ -71,22 +71,5 @@ The filter timestamps `since` and `until` are Unix milliseconds. List cursors ar
 One request with multiple attempts counts once in totals. Account fallback counts distinct accounts, excluding same-account retries. The aggregate window is completed requests retained from the last 24 hours. Headers latency, first forwarded byte, and total duration are separate; first byte is not necessarily a generated token. HTTP 200 can still have an interrupted or provider-error stream. Clean EOF and provider-declared completion are recorded separately.
 
 Default retention is 5,000 requests and 16 MiB including attempts. Completed requests exceeding either budget are deleted together with their attempts; active requests remain until finalized. A terminated daemon can leave pending diagnostics from unfinished streams. Model fields are bounded and sanitized; telemetry excludes prompts, response bodies, credentials, arbitrary headers, and raw upstream errors. Diagnostics are absent from configuration backups and sync.
-
-## Management contracts and upgrades
-
-Management API **3**, tailnet sync **5**, and backup format **4** accompany this change. SQLite migration **2** adds local telemetry tables and invalidates obsolete pending relay uploads. Upgrade the app and all paired nodes together. The encrypted relay payload contains the sync version; incompatible entries are skipped and reported, never merged with silently stripped policy. After all nodes have upgraded, run `agentgate relay reconcile` if skipped entries remain. Current backup imports accept formats 1–4; older readers reject format 4.
-
-New endpoints retain bearer authentication on tailnet and browser-origin rejection:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/requests`, `/api/requests/:id` | Filtered history and attempts |
-| `GET /api/proxy/metrics` | Completed-request aggregates |
-| `GET /api/proxy/route?provider=claude&model=…` | Read-only selection explanation |
-| `POST /api/accounts/batch` | `{ids, action}` operations |
-| `POST /api/accounts/:id/verify` | Optional `{probe: true, model}` |
-| `PATCH /api/settings` | `{revision, patch}` |
-| `PATCH /api/accounts/:id` | Policy/label/priority require `revision`; enabled/pinned intent operations remain supported |
-| `DELETE /api/accounts/login/:state` | Cancel a pending native OAuth attempt |
 
 Before release, validate native interaction and current live Claude/Codex clients, quota failover, long streaming, cancellation, concurrent sessions, and remote management. The automated checks exercise implementation behavior using fake upstreams, not provider acceptance.

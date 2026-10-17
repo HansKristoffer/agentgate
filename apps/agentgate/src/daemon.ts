@@ -14,7 +14,7 @@ import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
+import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
@@ -67,8 +67,6 @@ export function handoffOptions(s: Store): HandoffOptions {
   };
 }
 
-export { providers } from "./llm/providers.ts";
-
 export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
@@ -113,7 +111,7 @@ export function app(ctx: Ctx) {
   // Register before every API handler, including the MCP shim's checkout write.
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
-    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
+    if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
       if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
@@ -125,7 +123,8 @@ export function app(ctx: Ctx) {
   app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
-  app.all("/mcp", loopbackOnly, (c) => ctx.gateway.handle(c.req.raw));
+  // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
+  app.all("/mcp", loopbackOnly, (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))
@@ -148,6 +147,9 @@ export function app(ctx: Ctx) {
   app.route("/api", management(ctx));
   return app;
 }
+
+/** Browsers send these on every request a page makes; the CLI, the app's Rust client and MCP clients never do. */
+const fromBrowser = (req: Request) => !!(req.headers.get("origin") || req.headers.get("sec-fetch-site"));
 
 function pathAfter(url: string, prefix: string) {
   const u = new URL(url);
@@ -214,7 +216,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
+  schedule(() => { noteSyncTurn(s); return Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }); }, PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);

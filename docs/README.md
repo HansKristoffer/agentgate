@@ -24,4 +24,5 @@ traps the source alone does not explain. Most changes need no internal doc updat
 - [Relay](./internals/relay.md)
 - [Remote MCP endpoints](./internals/remote-mcp.md)
 - [Skills](./internals/skills.md)
+- [Checkout files](./internals/checkout-files.md)
 - [Claude Desktop](./internals/claude-desktop.md)

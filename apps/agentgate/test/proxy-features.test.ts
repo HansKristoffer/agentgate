@@ -288,8 +288,14 @@ test("account attempt limits prevent unbounded quota failover", async () => {
 
 test("uncertain network outcome never replays on another account", async () => {
   const { s, creds } = fixture(); let count = 0; const url = upstream(async () => { count++; await Bun.sleep(50); return new Response("late"); });
-  const response = await proxy(s, creds, adapter, client(), url, { headerTimeout: 10, streamIdle: 1000, maxBody: 1024 });
+  const response = await proxy(s, creds, adapter, client("sonnet", undefined, { stream: true }), url, { headerTimeout: 10, streamIdle: 1000, maxBody: 1024 });
   expect(response.status).toBe(502); expect(await response.text()).toContain("outcome uncertain"); expect(count).toBe(1); expect(metrics(s).fallback).toBe(0);
+});
+
+test("a request that is not streamed waits for its answer past the streaming header deadline", async () => {
+  const { s, creds } = fixture(); const url = upstream(async () => { await Bun.sleep(50); return new Response("done"); });
+  const response = await proxy(s, creds, adapter, client(), url, { headerTimeout: 10, streamIdle: 1000, maxBody: 1024 });
+  expect(response.status).toBe(200); expect(await response.text()).toBe("done");
 });
 
 test("transient cooldown is separate from provider quota and reset preserves quota", async () => {

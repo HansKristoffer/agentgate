@@ -1,12 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { repos, sh, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { addWorktree, createBundle, describe, fetchBundle, moveToSource, snapshot, stashIfUnchanged } from "../src/handoff/code.ts";
 import { claudeProjectKey, claudeSessions, rewriteCwd, safeRelative } from "../src/handoff/session.ts";
 import { claudeInstance, connectT3, connectWith, createPairingLink, host as t3Host, parsePairing, projection, t3Client, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
+
+afterAll(removeTmp);
 
 const stops: (() => unknown)[] = [];
 afterEach(() => { for (const stop of stops.splice(0)) stop(); });

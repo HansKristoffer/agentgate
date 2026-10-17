@@ -7,9 +7,8 @@ import { saveAccount } from "../operations.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import type { Provider, Window } from "./provider.ts";
-import { Quotas } from "./quota.ts";
 
-// Undocumented upstream details, kept in one place (PLAN §16). Mutable so tests can point them at fakes.
+// Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
 export const CLAUDE = {
   api: "https://api.anthropic.com",
   tokenUrl: "https://platform.claude.com/v1/oauth/token",
@@ -124,12 +123,6 @@ export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
   const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, 10_000);
   if (!res.ok) { await res.body?.cancel(); throw new Error(`usage request failed (${res.status})`); }
   return parseUsage(JSON.parse(new TextDecoder().decode(await readBody(res.body, 256 * 1024, signal))));
-}
-
-/** Compatibility wrapper for callers that already provide coordinated tokens. */
-export async function pollUsage(s: Store, token: (accountId: string) => Promise<{ accessToken: string }>, signal = new AbortController().signal) {
-  const service = new Quotas(s, { token: async id => ({ ...s.get("credential", id)!, ...await token(id) }) }, { claude });
-  await service.poll(signal);
 }
 
 /** `email` pre-selects that account on the login page (OAuth login_hint). */

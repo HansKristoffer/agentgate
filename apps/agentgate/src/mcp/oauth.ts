@@ -8,6 +8,12 @@ import { syncAll } from "../relay.ts";
 import { resolve } from "./templates.ts";
 
 const SESSION_TTL = 10 * 60_000;
+/** The longest one tool call may run. */
+export const CALL_LIMIT = 30 * 60_000;
+/** How long an upstream may take to send response headers. A server answering in JSON sends them only when the tool
+ * is done, so a call (POST) may take as long as a tool call may run; failing it earlier reports a tool that did run as
+ * failed, and agents then run it again. */
+export const headerWait = (method: string | undefined, others: number) => method === "POST" ? CALL_LIMIT : method === "DELETE" ? 2000 : others;
 const sessionSchema = z.object({ id: z.string(), loginId: z.string(), expiresAt: z.number(), verifier: z.string().optional() });
 export function expireLogins(s: Store) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as { key: string; value: string }[]) {
@@ -36,8 +42,14 @@ export class InstanceAuth implements OAuthClientProvider {
   get clientMetadata(): OAuthClientMetadata {
     return { client_name: "agentgate", redirect_uris: [this.redirectUrl ?? ""], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" };
   }
+  /** The SDK starts a new login when a refresh fails for any reason, a network error or a 5xx included. Only a login
+   * without a refresh token needs one; a refused refresh token arrives as invalidateCredentials. */
+  private noLogin(): never {
+    if (this.deferred && this.credential().tokens?.refresh_token) throw new Error(`${this.id}: token refresh failed`);
+    throw new NeedsLogin(`${this.id}: needs a login`);
+  }
   state() {
-    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    if (!this.interactive) this.noLogin();
     const state = crypto.randomUUID();
     const c = this.credential();
     this.stateValue = state;
@@ -53,7 +65,7 @@ export class InstanceAuth implements OAuthClientProvider {
     this.s.setLocal(`mcpHealth:${this.id}`, undefined);
   }
   redirectToAuthorization(url: URL) {
-    if (!this.interactive) throw new NeedsLogin(`${this.id}: needs a login`);
+    if (!this.interactive) this.noLogin();
     this.authUrl = url;
   }
   saveCodeVerifier(verifier: string) {
@@ -96,7 +108,7 @@ export function authenticatedFetch(s: Store, id: string) {
     const send = (token?: string) => {
       const headers = new Headers(init.headers);
       if (token) headers.set("authorization", `Bearer ${token}`);
-      return fetchHeaders(url, { ...init, headers }, init.method === "DELETE" ? 2000 : 30000);
+      return fetchHeaders(url, { ...init, headers }, headerWait(init.method, 30000));
     };
     const res = await send(c?.tokens?.access_token);
     if (res.status !== 401 || !c?.tokens) return res;

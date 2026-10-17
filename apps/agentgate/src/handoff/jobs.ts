@@ -1,7 +1,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
-import { fetchHeaders, readBody, serialTask } from "../runtime.ts";
+import { fetchHeaders, killGroup, readBody, serialTask } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import { peers } from "../sync.ts";
 import { relayInvite, via } from "../relay.ts";
@@ -108,9 +108,14 @@ export class Handoffs {
   private running = new Set<Promise<void>>();
   /** Setup scripts started on this node, per job, with their outcome; the destination waits for them before continuing the agent. */
   setups = new Map<string, Promise<{ warnings: string[]; timings: Timing[] }>>();
+  /** Their processes, stopped on close: a restart runs an unfinished setup again. */
+  setupProcesses = new Set<{ pid: number; kill(signal?: number | NodeJS.Signals): void }>();
   /** Short-lived listing cache: T3's Claude provider instances. */
   cache = new Map<string, { at: number; value: unknown }>();
   closed = false;
+  private stopped = Promise.withResolvers<void>();
+  /** Resolves on close, so a step waiting on setup lets shutdown go; the step resumes on restart. */
+  readonly closing = this.stopped.promise;
   /** One T3 project sync at a time: the timer, record changes and the app's T3 Code page all ask for it. */
   syncProjects = serialTask(() => syncT3Projects(this));
 
@@ -190,6 +195,8 @@ export class Handoffs {
   /** Waits for step loops; setup scripts keep running on their own. */
   async close() {
     this.closed = true;
+    this.stopped.resolve();
+    for (const child of this.setupProcesses) killGroup(child);
     await Promise.allSettled([...this.running]);
   }
 

@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { safePath } from "@agentgate/protocol";
+import { isVirtual, safePath } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
 import type { Source } from "./gateway.ts";
 
@@ -17,7 +17,9 @@ const fail = (value: string): CallToolResult => ({ isError: true, content: [{ ty
 /** Skill ids a project may read right now; read on every call, so an unassigned skill stops working mid-session. */
 function assigned(s: Store, project: string): string[] {
   const p = s.get("project", project);
-  const ids = new Set([...(p?.skills ?? []), ...(p?.inheritDefaults ? s.get("project", "*")?.skills ?? [] : [])]);
+  // A virtual project's endpoint is public: only what it names explicitly, never the `*` defaults (see aliasesFor).
+  const defaults = p?.inheritDefaults && !isVirtual(project) ? s.get("project", "*")?.skills ?? [] : [];
+  const ids = new Set([...(p?.skills ?? []), ...defaults]);
   return [...ids].filter(id => s.get("skill", id)).sort();
 }
 

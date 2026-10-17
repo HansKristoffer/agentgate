@@ -101,7 +101,7 @@ test("update refetches from the original source", async () => {
   expect(await updateSkill(s, "alpha", async () => [fetched("alpha", "New.")])).toBe(true);
   expect(Buffer.from(s.get("skill", "alpha")!.files[0]!.data, "base64").toString()).toContain("New.");
   writeSkillMd(s, "mine", md("mine"));
-  expect(updateSkill(s, "mine")).rejects.toThrow(/by hand/);
+  await expect(updateSkill(s, "mine")).rejects.toThrow(/by hand/);
 });
 
 test("repository mirroring reaches worktrees and preserves committed links after source removal", () => {

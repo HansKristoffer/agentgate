@@ -119,7 +119,7 @@ export class NodeChannel {
   private closed = false;
   connected = false;
 
-  constructor(private s: Store, private handler: (from: string, req: Request) => Promise<Response>, private options: { pingMs?: number } = {}) { }
+  constructor(private s: Store, private handler: (from: string, req: Request) => Promise<Response>) { }
 
   /** Open, reopen or close the socket to match the relay group and whether this node can take handoffs. */
   async reconcile() {
@@ -162,7 +162,7 @@ export class NodeChannel {
       this.connected = true;
       this.backoff = 1000;
       this.lastPong = Date.now();
-      const pingMs = this.options.pingMs ?? 30_000;
+      const pingMs = 30_000;
       this.ping = setInterval(() => {
         if (Date.now() - this.lastPong > pingMs * 2) return ws.close();
         try {

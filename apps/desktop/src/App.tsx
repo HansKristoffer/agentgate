@@ -545,8 +545,8 @@ export function App() {
               <li>
                 <strong>Using the Claude Desktop app?</strong>
                 <p>
-                  Open Accounts. Claude uses picks the account for Claude Code
-                  and Claude Desktop together. The menu bar shares your
+                  Open Accounts. Pinning a Claude account moves Claude Code
+                  and Claude Desktop to it together. The menu bar shares your
                   subscriptions in Desktop's Code tab instead.
                 </p>
               </li>

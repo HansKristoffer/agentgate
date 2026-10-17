@@ -8,17 +8,18 @@ import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
 import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import { accountStatus, relevant } from "./llm/pool.ts";
-import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
+import { accountStatus } from "./llm/pool.ts";
+import { relevant } from "./llm/quota.ts";
+import { aliasesFor, connect, listAllTools, needsLogin, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
-import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay, via } from "./relay.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
+import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, saveProject, setAccount } from "./operations.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount } from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
-import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
@@ -211,7 +212,7 @@ async function main() {
       if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
       const t3 = (await import("./handoff/t3.ts")).t3State(s);
       console.log(`\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`);
-      const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
+      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }
@@ -251,7 +252,7 @@ async function main() {
       else if (sub === "priority") setAccount(s, id, { priority: Number(rest[1] ?? 0) });
       else if (sub === "rm") deleteAccount(s, id);
       else if (sub === "exhaust") {
-        // Test flag (PLAN §14 phase 1): pretend this account hit its quota.
+        // Test flag: pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
         const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
         s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until, source: "manual" });
@@ -306,7 +307,7 @@ async function main() {
       if (sub === "ls") {
         for (const i of s.list("mcp")) {
           const h = serverHealth(s, i.id), state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
-          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ?? [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
+          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
         }
         return;
       }
@@ -569,11 +570,9 @@ async function main() {
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");
-      // The removed machine knows every endpoint's credentials: give each one a new URL it has never seen.
-      for (const e of regenerateAfterUnpair(s, node)) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
-      if (!via(s, node).includes("relay")) { unpair(s, node); return console.log("ok"); }
-      if (peers(s).some((p) => p.node === node)) unpair(s, node);
-      const rotated = await rotateRelay(s);
+      const { endpoints, rotated } = await removeNode(s, node);
+      for (const e of endpoints) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
+      if (!rotated) return console.log("ok");
       console.log(`Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`);
       console.log(`Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`);
       if (rotated.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");

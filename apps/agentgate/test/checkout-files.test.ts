@@ -1,11 +1,13 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { sh, tmp } from "./fixtures/git.ts";
+import { sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { CheckoutFiles, StoreBusy, fileContent, fillCheckout, keyForProject, localEdits, lockStore, placeEdit, readStore, reconcile, repoKey, setFileContent, writeStore } from "../src/checkout-files.ts";
 import { Store, exportBackup } from "../src/store.ts";
 import { publicProject } from "../src/remote.ts";
+
+afterAll(removeTmp);
 
 /** Fixture stores in buncargo's format (docs/internals/checkout-files.md). */
 const sha = (data: string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
