@@ -37,7 +37,8 @@ Nodes upgrade independently, so a new field or kind must not break a node on the
 
 - An unknown record kind fails `recordSchema`, and a Tailscale pull parses a whole page before it
   commits its cursor. One such record stalls sync on old nodes. Prefer new fields on an existing kind.
-- Old nodes drop fields they do not know when they edit a record. If losing a field matters, gate
+- Old nodes drop fields they do not know when they edit a record, and when they merge one, so they also
+  pass the stripped copy on to other nodes. If losing a field matters, gate
   the feature: each daemon writes `protocol: NODE_PROTOCOL` into its own `node` record
   (`daemon.ts`), and the feature refuses to enable until every node has it (`enableRemote` in
   `remote.ts` is the example).

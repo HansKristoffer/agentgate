@@ -591,7 +591,7 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   expect(Date.now() - started).toBeLessThan(2000);
 });
 
-/** Published in docs/operations.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
+/** Published in docs/operations/relay.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
 const VECTORS = {
   groupId: "8f6ba714a69c73f1fbdcd8efe342493a",
   authToken: "ZxB1Uo3DlItacW62HpLUewhYoxYs8G2M_1fl8d29AnE",

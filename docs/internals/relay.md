@@ -21,7 +21,7 @@ the relay group. Do not remove it without tagging where records came from.
 
 - The AAD binds `[1, groupId, generation, node, key, pusherSeq]`, so a blob cannot be moved to another
   slot. The relay's `seq` and its `seen` heartbeats are not authenticated; treat them as hints.
-- Replay protection is a counter per key, not per node. `relay_counters` holds the highest
+- Replay protection is a counter per group, generation, node and key. `relay_counters` holds the highest
   authenticated `pusherSeq`, updated in the same transaction as the merge and the cursor.
 - The upload chunk (`relay_pending`, one per group) is saved before sending and resent byte for byte
   until acknowledged, so a crash never reuses a counter for different ciphertext.
