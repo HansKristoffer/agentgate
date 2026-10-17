@@ -14,14 +14,14 @@ const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64
  * like install.sh does. Returns the new version, or undefined when `current` is already the latest. */
 export async function installLatest(target: string, current = packageInfo.version, github = "https://github.com") {
   // The redirect names the release, so the binary and its checksum come from the same one.
-  const latest = await fetch(`${github}/${REPO}/releases/latest`, { redirect: "manual" });
+  const latest = await fetch(`${github}/${REPO}/releases/latest`, { redirect: "manual", signal: AbortSignal.timeout(30_000) });
   const tag = latest.headers.get("location")?.split("/").pop();
   if (!tag) throw new Error(`could not find the latest agentgate release (HTTP ${latest.status})`);
   if (tag.replace(/^v/, "") === current) return undefined;
 
   const base = `${github}/${REPO}/releases/download/${tag}`;
   const download = async (name: string) => {
-    const response = await fetch(`${base}/${name}`);
+    const response = await fetch(`${base}/${name}`, { signal: AbortSignal.timeout(10 * 60_000) });
     if (!response.ok) throw new Error(`could not download ${name} from ${tag} (HTTP ${response.status})`);
     return new Uint8Array(await response.arrayBuffer());
   };

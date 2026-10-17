@@ -211,7 +211,7 @@ async function main() {
       if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
       const t3 = (await import("./handoff/t3.ts")).t3State(s);
       console.log(`\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`);
-      const up = await fetch(`${LOCAL_URL}/api/status`).then((r) => r.ok, () => false);
+      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }
