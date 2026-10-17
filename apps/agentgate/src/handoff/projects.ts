@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { join } from "node:path";
 import { projectIdSchema, projectSchema } from "@agentgate/protocol";
 import { canonicalProject, parseRemote, scanRepos } from "../mcp/gateway.ts";
 import { run } from "./code.ts";
@@ -14,6 +14,9 @@ import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
 
 // Renamed from t3:knownRepos, which also held clones that never arrived.
 const KNOWN = "t3:repos";
+/** Clones this node started, as lowercase `owner/repo` → destination. Whatever arrives there counts, even when its
+ * origin names another repository: GitHub redirects a renamed one, so a clone of `old/name` checks out `new/name`. */
+const CLONES = "t3:clones";
 
 /** T3 projects on this node, with the GitHub `owner/repo` and origin URL of those whose checkout has one. */
 export async function t3Projects(t3: T3) {
@@ -37,6 +40,8 @@ export async function syncT3Projects(h: Handoffs) {
   s.setLocal("t3:knownRepos", undefined);
   const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
   const remember = (repo: string) => { known.add(repo.toLowerCase()); s.setLocal(KNOWN, JSON.stringify([...known])); };
+  const clones: Record<string, string> = JSON.parse(s.local(CLONES) ?? "{}");
+  const saveClones = () => s.setLocal(CLONES, Object.keys(clones).length ? JSON.stringify(clones) : undefined);
   // Repositories by error, so a cause they share is said once.
   const errors = new Map<string, string[]>();
   // A permission T3 Code refused is refused for every clone; stop asking until agentgate is paired again.
@@ -46,11 +51,6 @@ export async function syncT3Projects(h: Handoffs) {
   const all = await t3Projects(t3).catch(() => undefined);
   if (!all) return report([]);
   const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
-  // A project in the clone folder without a checkout yet: a clone this node started that is running or failed.
-  const cloning = (name: string) => all.some(({ repo, project: { workspaceRoot: root } }) => {
-    const b = basename(root);
-    return !repo && dirname(root) === h.options.cloneDir && (b === name || (b.startsWith(`${name}-`) && /^\d+$/.test(b.slice(name.length + 1))));
-  });
   // T3 clones over SSH unless told otherwise; follow how this machine's checkouts reach GitHub, HTTPS by default.
   const protocol = here.length && here.every((p) => !/^https:/i.test(p.origin)) ? "ssh" : "https";
   for (const { repo, project } of here) {
@@ -60,16 +60,25 @@ export async function syncT3Projects(h: Handoffs) {
     if (!record?.t3Title) s.put("project", id, { ...(record ?? projectSchema.parse({ id })), t3Title: project.title });
   }
 
+  // A clone that arrived under the name it was started with is known now.
+  for (const key of Object.keys(clones)) if (known.has(key)) delete clones[key];
+  saveClones();
+
   const local = localCheckouts(h);
   for (const p of s.list("project")) {
     if (!p.t3Title || known.has(p.id.toLowerCase())) continue;
     try {
-      const path = local.get(p.id.toLowerCase());
-      const name = p.id.split("/")[1]!;
+      const key = p.id.toLowerCase();
+      const path = local.get(key);
+      // The project T3 Code keeps for a clone this node started: without a checkout yet, it is running or failed.
+      const started = clones[key] && all.find((a) => a.project.workspaceRoot === clones[key]);
       if (path) {
         await t3.rpc((call) => call("projects.mutate", { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: p.t3Title, workspaceRoot: path }));
         remember(p.id);
-      } else if (!denied && !cloning(name)) {
+      } else if (started) {
+        if (started.repo) remember(p.id);
+      } else if (!denied) {
+        const name = p.id.split("/")[1]!;
         mkdirSync(h.options.cloneDir, { recursive: true });
         let dir = join(h.options.cloneDir, name);
         for (let n = 2; existsSync(dir); n++) dir = join(h.options.cloneDir, `${name}-${n}`);
@@ -78,6 +87,8 @@ export async function syncT3Projects(h: Handoffs) {
           projectId: crypto.randomUUID(), title: p.t3Title, createdAt: new Date(s.now()).toISOString(),
           provider: "github", repository: p.id, destinationPath: dir, protocol,
         }));
+        clones[key] = dir;
+        saveClones();
       }
     } catch (e) {
       if (e instanceof T3PermissionError) denied = e.message;

@@ -53,6 +53,23 @@ test("a project added in one machine's T3 Code is cloned into the other's, once"
   expect(t3State(b.s).projectSyncError).toBeUndefined();
 });
 
+test("a clone of a renamed repository counts once it arrives under the new name", async () => {
+  const r = repos("a");
+  const a = await node("a"), b = await node("b");
+  a.t3.addProject(r.a); // a's checkout still names the old repository
+  await syncT3Projects(a.h);
+  carry(a.s, b.s);
+
+  await syncT3Projects(b.h);
+  // GitHub redirects the old name, so the checkout's origin is the new one.
+  const dest = String(b.t3.clones[0]!.destinationPath);
+  sh(b.root, "clone", r.url, dest);
+  sh(dest, "remote", "set-url", "origin", "https://github.com/test/renamed.git");
+  await syncT3Projects(b.h);
+  await syncT3Projects(b.h);
+  expect(b.t3.clones).toHaveLength(1);
+});
+
 test("a failed clone removed in T3 Code is tried again", async () => {
   const r = repos("a");
   const a = await node("a"), b = await node("b");
