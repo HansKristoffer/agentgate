@@ -67,8 +67,6 @@ export function handoffOptions(s: Store): HandoffOptions {
   };
 }
 
-export { providers } from "./llm/providers.ts";
-
 export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);

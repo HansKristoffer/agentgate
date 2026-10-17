@@ -135,7 +135,7 @@ export class RemoteEndpoints {
   private conns = new Map<string, Conn>();
   private closed = false;
 
-  constructor(private s: Store, private gateway: Gateway, private options: { pingMs?: number; WebSocket?: typeof WebSocket } = {}) { }
+  constructor(private s: Store, private gateway: Gateway) { }
 
   /** Start, restart or stop sockets to match the project records; also retries queued deletions. */
   reconcile() {
@@ -211,15 +211,14 @@ export class RemoteEndpoints {
     catch (e) { return this.later(c, describe(e)); }
     if (c.closed || this.closed) return;
     const key = serviceKeyFor(this.s, c.remote.relay);
-    const Socket = this.options.WebSocket ?? WebSocket;
     // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
-    const ws = new Socket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
+    const ws = new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
       headers: { authorization: `Bearer ${c.remote.token}`, "x-agentgate-node": this.s.nodeId, ...(key && { "x-relay-key": key }) },
     } as unknown as string[]);
     c.ws = ws;
     ws.onopen = () => {
       c.connected = true; c.error = undefined; c.backoff = 1000; c.lastPong = Date.now();
-      const pingMs = this.options.pingMs ?? 30_000;
+      const pingMs = 30_000;
       c.ping = setInterval(() => {
         if (Date.now() - c.lastPong > pingMs * 2) return ws.close();
         try { ws.send("ping"); } catch { /* closing */ }

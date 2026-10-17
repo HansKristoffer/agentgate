@@ -14,7 +14,6 @@ import type { McpInstance, Store } from "../store.ts";
 import { CALL_LIMIT, authenticatedFetch, headerWait } from "./oauth.ts";
 import { skillsSource } from "./skills.ts";
 import { resolve } from "./templates.ts";
-export { renameInstance } from "../operations.ts";
 
 export const VERSION = "0.1.0";
 /** The tool prefix of agentgate's own tools in local sessions (thread handoff); reserved in project mappings. */
@@ -188,7 +187,6 @@ interface Upstream {
   connecting?: Promise<Client>;
   config: string;
   lastUsed: number;
-  error?: string;
   calls: number;
   retired?: boolean;
 }
@@ -224,7 +222,6 @@ export class Gateway {
       async (c) => {
         if (this.closed || entry.retired || this.upstreams.get(inst.id) !== entry) { await c.close(); throw new Error("MCP configuration changed during connection"); }
         entry.client = c;
-        entry.error = undefined;
         entry.connecting = undefined;
         c.setNotificationHandler(ToolListChangedNotificationSchema, () => this.toolsChanged());
         c.onclose = () => {
@@ -233,18 +230,11 @@ export class Gateway {
         return c;
       },
       (e) => {
-        entry.error = String(e?.message ?? e);
         entry.connecting = undefined;
         throw e;
       },
     );
     return entry.connecting;
-  }
-
-  status(id: string): "running" | "idle" | "error" | "needs login" {
-    const u = this.upstreams.get(id);
-    if (u?.error) return needsLogin(u.error) ? "needs login" : "error";
-    return u?.client ? "running" : "idle";
   }
 
   private async source(project: string, alias: string): Promise<Source | undefined> {

@@ -17,7 +17,7 @@ consensus: every node accepts writes and records converge by last-writer-wins.
   both Tailscale sync and the relay stay simple.
 - Every local write or merge gets a new local `seq`. A node's change feed therefore also carries what
   it learned from others, and peers pull everything after their cursor.
-- Deletions are tombstones and are never purged (`purgeTombstones` is a deliberate no-op). An offline
+- Deletions are tombstones and are never purged. An offline
   node can return after any amount of time without resurrecting deleted configuration.
 - Revision checks (`configuration.ts`, `skillRevision`) protect concurrent edits on one node. They do
   not serialize changes across disconnected replicas; the merge decides those.

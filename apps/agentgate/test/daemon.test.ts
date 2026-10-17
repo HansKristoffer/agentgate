@@ -13,7 +13,7 @@ test("loopback rejects foreign hosts and malformed settings return actionable 40
   const s = new Store(":memory:"), ctx = makeCtx(s), handler = app(ctx);
   try {
     expect((await handler.fetch(new Request("http://hostile.example/api/status", { headers: { host: "hostile.example" } }), { listener: "loopback" })).status).toBe(403);
-    const res = await handler.fetch(request("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ threshold: "NaN", retryLimit: 999, logRetention: -1, whenExhausted: "other" }) }), { listener: "loopback" }); expect(res.status).toBe(400); expect(await res.text()).toContain("invalid input");
+    const res = await handler.fetch(request("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: "0".repeat(64), patch: { threshold: "NaN", retryLimit: 999, logRetention: -1, whenExhausted: "other" } }) }), { listener: "loopback" }); expect(res.status).toBe(400); expect(await res.text()).toContain("invalid input");
     expect(s.get("setting", "settings")).toBeUndefined();
   } finally { await ctx.gateway.close(); s.close(); }
 });

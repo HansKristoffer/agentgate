@@ -3,7 +3,6 @@ import {
   accountSchema,
   projectSchema,
   providerSchema,
-  settingsSchema,
   SkillConflict,
   decodedSize,
   projectIdSchema,
@@ -37,7 +36,6 @@ import {
   listAllTools,
   needsLogin,
   serverHealth,
-  renameInstance,
   scanRepos,
   toolName,
 } from "./mcp/gateway.ts";
@@ -49,6 +47,7 @@ import {
   deleteAccount,
   deleteInstance,
   removeNode,
+  renameInstance,
   saveProject,
   setAccount,
 } from "./operations.ts";
@@ -727,11 +726,6 @@ export function management(ctx: Ctx) {
   app.patch("/settings", async (c) => {
     const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));
     return c.json(patchSettings(s, f.patch, f.revision));
-  });
-  app.put("/settings", async (c) => {
-    const f = settingsSchema.extend({ revision: z.string().length(64) }).strict().parse(await json(c.req.raw));
-    const { revision: expected, ...settings } = f;
-    return c.json(patchSettings(s, settings, expected));
   });
   app.get("/backup", (c) => {
     local(c.env.listener);

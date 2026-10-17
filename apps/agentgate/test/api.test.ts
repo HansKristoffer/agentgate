@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
-import { choose } from "../src/llm/pool.ts";
+import { route } from "../src/llm/routing.ts";
 import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
@@ -112,23 +112,23 @@ test("subscription selection switches each provider independently and keeps quot
     }
     s.setLocal(`active:${provider}`, `${provider}-personal`);
     expect((await call(`/api/accounts/${provider}-work`, "PATCH", { pinned: true })).status).toBe(200);
-    expect(choose(s, provider, undefined)?.id).toBe(`${provider}-work`);
+    expect(route(s, provider).account).toBe(`${provider}-work`);
   }
   // Switching Claude leaves the Codex preference intact and replaces the old pin.
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: true })).status).toBe(200);
   expect(s.get("account", "claude-work")?.pinned).toBe(false);
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-work");
+  expect(route(s, "codex").account).toBe("codex-work");
   // A selected subscription at its limit falls back without clearing the preference.
   s.put("usage", "codex-work", {
     accountId: "codex-work", windows: [], status: "exhausted",
     exhaustedUntil: s.now() + 60000, observedAt: s.now(), observedBy: "test",
   });
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-personal");
+  expect(route(s, "codex").account).toBe("codex-personal");
   expect(s.get("account", "codex-work")?.pinned).toBe(true);
   // Automatic selection clears the pin and respects the account used most recently.
   s.setLocal("active:claude", "claude-work");
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: false })).status).toBe(200);
-  expect(choose(s, "claude", undefined)?.id).toBe("claude-work");
+  expect(route(s, "claude").account).toBe("claude-work");
   const status = await (await call("/api/status")).json() as Status;
   expect(status.accounts.filter(a => a.account.pinned).map(a => a.account.id)).toEqual(["codex-work"]);
 });
@@ -347,7 +347,7 @@ test("malformed JSON and form submissions get clear errors without changing sett
   ] as const) {
     const response = await handler.fetch(
       new Request("http://127.0.0.1:7878/api/settings", {
-        method: "PUT",
+        method: "PATCH",
         body,
         headers: { host: "127.0.0.1:7878", "content-type": type },
       }),

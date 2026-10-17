@@ -346,10 +346,6 @@ export class Store {
     }).immediate();
   }
 
-  purgeTombstones() {
-    // Keep deletion history: an offline node can return after any amount of time.
-  }
-
   /** A lease shared by CLI and daemon processes using this database. */
   acquireLease(key: string, owner: string, ttl = 60_000): boolean {
     return this.transaction(() => {

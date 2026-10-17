@@ -8,15 +8,16 @@ import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
 import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import { accountStatus, relevant } from "./llm/pool.ts";
-import { aliasesFor, connect, listAllTools, needsLogin, renameInstance, serverHealth } from "./mcp/gateway.ts";
+import { accountStatus } from "./llm/pool.ts";
+import { relevant } from "./llm/quota.ts";
+import { aliasesFor, connect, listAllTools, needsLogin, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, saveProject, setAccount } from "./operations.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount } from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
 
@@ -251,7 +252,7 @@ async function main() {
       else if (sub === "priority") setAccount(s, id, { priority: Number(rest[1] ?? 0) });
       else if (sub === "rm") deleteAccount(s, id);
       else if (sub === "exhaust") {
-        // Test flag (PLAN §14 phase 1): pretend this account hit its quota.
+        // Test flag: pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
         const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
         s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until, source: "manual" });

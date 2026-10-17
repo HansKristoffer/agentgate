@@ -4,9 +4,8 @@ import { canonicalProject } from "./mcp/gateway.ts";
 import { description, fetchRepo, fetchSkills, repoUrl, validateFetched, type FetchedSkill, type RepoFetcher, type SkillFetcher } from "./skill-import.ts";
 import type { Skill, Store } from "./store.ts";
 
-export { MAX_SKILL } from "@agentgate/protocol";
-export { SkillLinks, SKILLS_DIR, globalSkillDirs } from "./skill-links.ts";
-export { description, readSkill, skillId, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
+export { SkillLinks } from "./skill-links.ts";
+export { description, readSkill, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
 
 export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
