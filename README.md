@@ -74,6 +74,15 @@ An Infisical login expires after a few days and can't be renewed, so you have to
 
 To control the server from the native app over Tailscale, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale. The relay carries sync only, not remote management.
 
+## Machine dashboard
+
+Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and the last hour as charts. In **Machines**, turn on **Dashboard** for a machine, then **Open dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
+
+- It runs on Linux machines only, since it reads `/proc`. On a Mac, opening it only says so.
+- Anyone on your tailnet can open it without signing in, as they could the server health page before. It shows program names and resource use, never command lines, credentials or accounts. Turn it off on machines you don't want it on.
+- Turning it on waits until every machine runs this release, because older releases drop the setting when they save a machine's record.
+- The history is kept in memory for the last hour, so a restart starts the charts over.
+
 ## T3 Code
 
 `agentgate setup` writes a Claude config dir (whose `settings.json` points Claude Code at the daemon) and a Codex home. In T3 Code, add one provider instance per provider:
@@ -213,7 +222,7 @@ Unlike sync, this traffic is readable by the relay (your logins stay on your mac
 
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 

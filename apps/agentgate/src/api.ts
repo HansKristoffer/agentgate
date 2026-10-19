@@ -47,6 +47,7 @@ import {
   renameInstance,
   saveProject,
   setAccount,
+  setHealthDashboard,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
 import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, rotateSecret, showRemote } from "./remote.ts";
@@ -684,6 +685,12 @@ export function management(ctx: Ctx) {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
     return c.json(s.put("node", n!.id, { ...n!, ...f }));
+  });
+  // Not local-only, like always-on: any paired machine's dashboard is turned on from here (operations.ts).
+  app.post("/nodes/:id/dashboard", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await json(c.req.raw));
+    required(s.get("node", c.req.param("id")), "node");
+    return c.json(input(() => setHealthDashboard(s, c.req.param("id"), on)));
   });
   // Not local-only: updating an always-on server from wherever you are is the point. The node runs the release
   // checks itself and refuses copies another tool owns.

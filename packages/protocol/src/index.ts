@@ -92,7 +92,11 @@ export const nodeSchema = z.object({
   version: z.string().max(64).optional(),
   /** Whether this node's own ~/.claude and ~/.codex use agentgate (setup --primary). Absent on older daemons. */
   routing: z.object({ claude: z.boolean(), codex: z.boolean() }).optional(),
+  /** Whether this node serves its machine health dashboard at HEALTH_PATH (health.ts). Older daemons never serve it. */
+  healthDashboard: z.boolean().default(false),
 });
+/** Where a node with healthDashboard on serves its machine health dashboard, on both of its listeners. */
+export const HEALTH_PATH = "/health";
 /** Nodes running an older agentgate than the newest one among them. A node that reports no version predates
  * version reporting, so it is older too once any node reports one. */
 export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {

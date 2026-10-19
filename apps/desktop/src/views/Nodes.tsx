@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
+import { Copy, ExternalLink, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
 import { Button, Spinner, Switch, toast } from "@heroui/react";
-import { outdatedNodes, type SharedLogin } from "@agentgate/protocol";
+import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Badge,
@@ -14,7 +14,7 @@ import {
   usePending,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
+import { openExternal, request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
@@ -96,6 +96,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       >
         {data.nodes.map((n) => {
           const viaRelay = !!n.via?.includes("relay");
+          // This machine's dashboard is opened on loopback, which works without Tailscale; the others at their address.
+          const origin = n.id === data.node && local ? connection.url.replace(/\/$/, "") : n.url;
           return (
             <div className="item" key={n.id}>
               <div className="machine-icon">
@@ -139,6 +141,36 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   </Button>
                 )
               )}
+              {n.healthDashboard && origin && (n.online || n.id === data.node) && (
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onPress={() => void perform(() => openExternal(`${origin}${HEALTH_PATH}`), undefined, `open:${n.id}`)}
+                >
+                  <ExternalLink size={15} />
+                  Open dashboard
+                </Button>
+              )}
+              <LiveSwitch
+                isSelected={!!n.healthDashboard}
+                onChange={(on) =>
+                  perform(
+                    () =>
+                      request(connection, `/nodes/${idPath(n.id)}/dashboard`, "POST", {
+                        on,
+                      }),
+                    undefined,
+                    `dashboard:${n.id}`,
+                  )
+                }
+              >
+                <Switch.Content className="check muted">
+                  Dashboard
+                  <Switch.Control>
+                    <Switch.Thumb />
+                  </Switch.Control>
+                </Switch.Content>
+              </LiveSwitch>
               <LiveSwitch
                 isSelected={!!n.alwaysOn}
                 onChange={(on) =>
