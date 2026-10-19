@@ -6,7 +6,7 @@ import { parseArgs } from "node:util";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
-import { loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
+import { HEALTH_PATH, loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { relevant } from "./llm/quota.ts";
@@ -17,7 +17,7 @@ import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } fro
 import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount } from "./operations.ts";
+import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount, setHealthDashboard } from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
 import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
 
@@ -62,6 +62,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
+  dashboard [on|off] [--node <node>]          machine health dashboard at <address>/health (Linux): state, or turn it on or off
   relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
   t3 connect [<pairing link> | --url <url> --token <token>] [--node <node>]   connect a machine's agentgate to its T3 Code; with no link, its T3 Code creates one
   t3 pair [--tailscale] [--node <node>]   create a pairing link to connect a T3 Code client to a machine's T3 Code
@@ -170,7 +171,7 @@ async function main() {
       if (!s.local("adminToken")) s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
       const ts = await tailscale();
       const prev = s.get("node", name);
-      s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn, protocol: NODE_PROTOCOL });
+      s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn, healthDashboard: !!prev?.healthDashboard, protocol: NODE_PROTOCOL });
       console.log(`node ${name}${opts["always-on"] ? " (always on)" : ""}, store ${s.db.filename}`);
       console.log(ts ? `tailnet: ${ts.url}` : "Tailscale not found; the daemon will keep looking for it. Without Tailscale, connect machines with `agentgate pair --relay`.");
       return;
@@ -205,7 +206,7 @@ async function main() {
       for (const n of s.list("node")) {
         const seen = lastSeen(s, n.id);
         const peer = peers(s).find((p) => p.node === n.id);
-        console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`);
+        console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`);
       }
       const relay = relayStatus(s);
       if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
@@ -571,6 +572,15 @@ async function main() {
         else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
       }
       return;
+    case "dashboard": {
+      initialized(s);
+      const node = str("node") ?? s.nodeId;
+      if (sub === "on" || sub === "off") setHealthDashboard(s, node, sub === "on");
+      else if (sub !== undefined) die("dashboard [on|off] [--node <node>]");
+      const n = s.get("node", node) ?? die(`no machine ${node}`);
+      console.log(`${node}: health dashboard ${n.healthDashboard ? "on" : "off"}${n.healthDashboard && n.url ? `, ${n.url}${HEALTH_PATH}` : ""}`);
+      return;
+    }
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");

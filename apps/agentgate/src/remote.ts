@@ -12,8 +12,8 @@ import type { Store } from "./store.ts";
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
  * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
- * (checkout-files.ts). A feature waits until every node reports its protocol. */
-export const NODE_PROTOCOL = 6;
+ * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts). A feature waits until every node reports its protocol. */
+export const NODE_PROTOCOL = 7;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;

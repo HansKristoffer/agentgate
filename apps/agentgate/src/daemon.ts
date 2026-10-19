@@ -18,8 +18,9 @@ import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, pee
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
-import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
+import { HEALTH_PATH, projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
+import { HealthDashboard } from "./health.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
@@ -52,6 +53,7 @@ export interface Ctx {
   handoffs: Handoffs;
   /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
+  health: HealthDashboard;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -76,7 +78,7 @@ export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: Checko
   const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
   gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, memory ? null : undefined), files, imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs };
+  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, memory ? null : undefined), files, imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs, health: new HealthDashboard(s) };
 }
 
 export function app(ctx: Ctx) {
@@ -144,6 +146,8 @@ export function app(ctx: Ctx) {
   app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)));
 
   app.get("/oauth/callback", oauthCallback(ctx));
+  // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
+  app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
   app.route("/api", management(ctx));
   return app;
 }
@@ -174,6 +178,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
+  ctx.health.reconcile();
   const schedule = (task: () => Promise<unknown>, interval: number) => {
     const serial = serialTask(async () => { if (!stopped) await task(); });
     const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
@@ -205,6 +210,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
     // A store arrived from another machine, or the last old node updated so stores may sync.
     if (snapshot.records.some(r => r.kind === "project" || r.kind === "node")) ctx.files.soon();
+    if (snapshot.records.some(r => r.kind === "node")) ctx.health.reconcile();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
     if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
     if (snapshot.records.some(r => r.kind === "login")) void logins().catch(() => { });
@@ -235,7 +241,7 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
       stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.files.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
-      ctx.remote.close(); ctx.channel.close();
+      ctx.remote.close(); ctx.channel.close(); ctx.health.stop();
       await ctx.gateway.close();
       await ctx.handoffs.close();
       await stopRelay(s);
