@@ -55,7 +55,8 @@ test("the dashboard is off until a machine turns it on, and turning it on waits 
 
   s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL });
   expect(setHealthDashboard(s, "mac", true).healthDashboard).toBe(true);
-  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(200);
+  // Linux serves the page; any other machine answers with a note instead.
+  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(process.platform === "linux" ? 200 : 501);
 
   // Turning it off needs no wait: a machine that drops the field reads it as off.
   s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL - 1 });
