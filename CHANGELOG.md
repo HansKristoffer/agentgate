@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/HansKristoffer/agentgate/compare/v0.23.0...v0.24.0) (2026-10-19)
+
+
+### Features
+
+* **health:** machine health dashboard, switched on from Machines ([#82](https://github.com/HansKristoffer/agentgate/issues/82)) ([1210e1c](https://github.com/HansKristoffer/agentgate/commit/1210e1c7ad2e1318a7cf20d9e7c710abf3490130))
+
 ## [0.23.0](https://github.com/HansKristoffer/agentgate/compare/v0.22.0...v0.23.0) (2026-10-17)
 
 
