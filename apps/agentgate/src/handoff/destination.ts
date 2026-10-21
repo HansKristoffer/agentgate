@@ -341,13 +341,17 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     if (!st.cwd) throw new T3Error("could not create a worktree for the thread");
 
     const before = await git(st.cwd, ["rev-parse", "HEAD"]);
-    const kept = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot);
+    const { kept, replaced } = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot);
     st.codeTaken = !kept;
     if (kept) {
       st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);
       const edits = carried(m);
       if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
+      if (replaced.length) {
+        const names = replaced.slice(0, 5).join(", ") + (replaced.length > 5 ? ` and ${replaced.length - 5} more` : "");
+        st.warnings.push(`Replaced ${h.s.nodeId}'s own ${names} in ${st.cwd} with the versions from ${m.source}; ${h.s.nodeId}'s are in git stash`);
+      }
       // New dependencies in the arriving code: install them again once the first setup is done.
       if (await manifestsChanged(st.cwd, before, m.snapshot.sha)) startSetup(h, job);
 

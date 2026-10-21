@@ -9,7 +9,7 @@ import { sessionLines } from "./history.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
 import { QUEUED_MAX, type Manifest } from "./destination.ts";
-import { FILES_PROTOCOL, localEdits } from "../checkout-files.ts";
+import { FILES_PROTOCOL, localEdits, managedFiles } from "../checkout-files.ts";
 import { canonicalProject, parseRemote } from "../mcp/gateway.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
@@ -190,7 +190,7 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     // HEAD may have moved since resolve if the agent committed before stopping; the bundle is built from now.
     const code = await describe(st.cwd!);
     st.headSha = code.headSha;
-    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha, code.dirty);
+    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha, await storeFiles(h, job));
 
     const out = join(h.dir(job.id), "out");
     rmSync(out, { recursive: true, force: true });
@@ -218,6 +218,14 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     h.s.setLocal(sessionNote.lines(st.sessionId!), String(sessionLines(readFileSync(join(located.root, located.files[0]!), "utf8"))));
   });
   h.advance(job, "send");
+}
+
+/** The files the file store manages for this checkout; they travel through it, never in the snapshot. */
+async function storeFiles(h: Handoffs, job: Job<SourceState>): Promise<string[]> {
+  const root = h.options.filesRoot;
+  const repo = parseRemote(job.state.remoteUrl!);
+  if (!root || !repo) return [];
+  return managedFiles(root, job.state.cwd!, h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? []).catch(() => []);
 }
 
 /** Gitignored files the checkout changed from its file store (checkout-files.ts): the thread's own `.env.local` edits.

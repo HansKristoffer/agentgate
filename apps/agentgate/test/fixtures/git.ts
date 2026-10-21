@@ -32,7 +32,7 @@ export function repos<K extends string>(...clones: K[]) {
   sh(root, "clone", url, seed);
   writeFileSync(join(seed, "README.md"), "hello\n");
   writeFileSync(join(seed, "old.txt"), "to be deleted\n");
-  writeFileSync(join(seed, ".gitignore"), "node_modules\n");
+  writeFileSync(join(seed, ".gitignore"), "node_modules\n.plans\n.env\n");
   sh(seed, "add", "-A"); sh(seed, "commit", "-m", "init"); sh(seed, "push", "origin", "main");
   const paths = Object.fromEntries(clones.map((c) => { const p = join(root, c); sh(root, "clone", url, p); return [c, p]; }));
   return { root, origin, url, ...paths } as { root: string; origin: string; url: string } & Record<K, string>;

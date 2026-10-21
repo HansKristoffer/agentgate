@@ -507,6 +507,12 @@ export async function localEdits(root: string, cwd: string, listed: string[]): P
   });
 }
 
+/** Every file the file store manages for this checkout, machine-specific ones included: a handoff's snapshot leaves
+ * them to the store, which carries the edits (`localEdits`) and keeps each machine's own. */
+export async function managedFiles(root: string, cwd: string, listed: string[]): Promise<string[]> {
+  return [...new Set([...listed, ...readStore(join(root, await checkoutKey(cwd))).files.keys()])];
+}
+
 /** Write a handed-off checkout file unless the checkout has its own edits to it (different from both the arriving copy
  * and the store's). Returns false when it kept the checkout's own. */
 export function placeEdit(root: string | undefined, key: string, cwd: string, path: string, data: Buffer): boolean {
