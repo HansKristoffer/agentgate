@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/HansKristoffer/agentgate/compare/v0.24.0...v0.25.0) (2026-10-21)
+
+
+### Features
+
+* **handoff:** gitignored files such as plans move with a thread ([#84](https://github.com/HansKristoffer/agentgate/issues/84)) ([1dd65d7](https://github.com/HansKristoffer/agentgate/commit/1dd65d73d82ff14389ad3ea5784a9dd77fce78e4))
+
 ## [0.24.0](https://github.com/HansKristoffer/agentgate/compare/v0.23.0...v0.24.0) (2026-10-19)
 
 
