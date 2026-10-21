@@ -2,8 +2,8 @@ import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, 
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, statfsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -23,6 +23,24 @@ export function liveOnly(what: string) {
 }
 if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
 export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
+
+/** SQLite says SQLITE_FULL ("database or disk is full") for a full disk, a short write and a full temporary folder
+ * (where large writes spill their journal) alike, and macOS counts purgeable space as free where statfs does not. For a
+ * SQLite error, its message, code and the free space statfs sees beside `file` and in the temporary folder, so the real
+ * cause shows; undefined for any other error. */
+export function sqliteDetail(e: unknown, file: string) {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code !== "string" || !code.startsWith("SQLITE_")) return undefined;
+  const free = (dir: string) => {
+    try {
+      const st = statfsSync(dir);
+      return `${(st.bavail * st.bsize / 2 ** 30).toFixed(1)} GiB free in ${dir}`;
+    } catch {
+      return `${dir} unreadable`;
+    }
+  };
+  return `${(e as Error).message} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`;
+}
 
 const id = z.string().min(1).max(512);
 const timestamp = z.number().int().nonnegative();
@@ -77,7 +95,7 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
-  /** A GitHub CLI or Infisical CLI login one node shared with every node (logins.ts). */
+  /** A GitHub CLI or Infisical CLI login, or an Infisical machine identity, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
     z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
     z.object({
@@ -86,6 +104,11 @@ export const schemas = {
       account: z.string().min(1).max(320).regex(/^[^/\\\0]+$/).refine((a) => a !== "." && a !== ".."),
       config: z.string().max(64 * 1024).refine((c) => { try { return !!JSON.parse(c); } catch { return false; } }),
       keyring: z.string().min(1).max(64 * 1024),
+    }),
+    /** An Infisical machine identity (Universal Auth) set in agentgate; `account` is its client id. */
+    z.object({
+      id: z.literal("infisical-identity"), from: id, account: z.string().max(512),
+      clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048),
     }),
   ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
@@ -323,10 +346,6 @@ export class Store {
     }).immediate();
   }
 
-  purgeTombstones() {
-    // Keep deletion history: an offline node can return after any amount of time.
-  }
-
   /** A lease shared by CLI and daemon processes using this database. */
   acquireLease(key: string, owner: string, ttl = 60_000): boolean {
     return this.transaction(() => {
@@ -344,8 +363,11 @@ export class Store {
     });
   }
 
+  /** A request, or with a note an event (a token refresh, a refused login, an MCP connect failure), which also goes to
+   * the daemon's log, since no client shows request_log. Notes never carry secrets. */
   log(provider: string, account: string, model: string, status: number, ms: number, note = "") {
     this.db.run("insert into request_log values (?, ?, ?, ?, ?, ?, ?)", [this.now(), provider, account, model, status, ms, note]);
+    if (note) console.error(`${provider}${account ? ` ${account}` : ""}: ${note}`);
   }
 
   trimLog() {
@@ -376,7 +398,7 @@ export function exportBackup(s: Store, secrets = true) {
     .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest", "login"].includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
-      if (!secrets && r.kind === "project") delete data.remote; // endpoint keys are credentials
+      if (!secrets && r.kind === "project") { delete data.remote; delete data.files; } // endpoint keys and env files are secrets
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };

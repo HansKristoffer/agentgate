@@ -24,7 +24,7 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 3. On the **Accounts** screen:
    - **Add your subscriptions** with **Add account**. One browser sign-in per account. Agentgate uses it to show each account's limits.
    - **Connect each account to Claude Desktop** (Switch accounts only). Choose **Connect to Claude Desktop** from the account's ⋯ menu: Claude Desktop restarts signed out, you sign in with that account, and Agentgate saves the login by itself. The account Claude Desktop already had is saved first.
-   - **Pick the account** with **Claude uses** under Claude. Claude Code and Claude Desktop both move to it; Desktop restarts. *Automatic* lets Claude Code move between accounts and leaves Desktop where it is. To share automatically in the Code tab instead, use the menu bar.
+   - **Pick the account** by pinning it. Claude Code and Claude Desktop both move to it; Desktop restarts. Unpinned, Claude Code moves between accounts and Desktop stays where it is. To share automatically in the Code tab instead, use the menu bar.
 
 ## Every day
 
@@ -36,7 +36,7 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 
 - **Don't use Log out in Claude Desktop.** Signing out ends that login for good, including Agentgate's saved copy. To add or change accounts, use **Connect to Desktop** in Agentgate; it signs Claude Desktop out on this Mac only.
 - **Switching restarts Claude Desktop.** Running Cowork and Code sessions stop, and messages you haven't sent yet are lost.
-- **MCP servers.** Turn on *Use Agentgate's MCP servers in the Code tab* to get your MCP servers and per-repository tools in Claude Desktop's Code tab (both modes). Chat and Cowork don't load them.
+- **MCP servers.** Turn on *Agentgate's MCP servers* in Settings to get your MCP servers and per-repository tools in Claude Desktop's Code tab (both modes). Chat and Cowork don't load them.
 - **Your data.** Saved logins stay on this Mac, encrypted with its keychain, and are never synced to other machines. Before its first change, Agentgate backs up Claude Desktop's files to `~/.config/agentgate/desktop-backup/`.
 - **Removing Agentgate.** Claude Desktop keeps the account it was last switched to. If you use *Share automatically*, switch back to your own sign-in first.
 - **Rules.** Agentgate only uses accounts you sign in to yourself, and only sends Claude Code requests with subscription logins. The terms of each plan still apply.

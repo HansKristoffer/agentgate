@@ -1,7 +1,7 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
-import type { T3NodeState } from "@agentgate/protocol";
+import { join, resolve } from "node:path";
+import type { T3NodeState, T3PairingLink } from "@agentgate/protocol";
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
@@ -16,6 +16,9 @@ const PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 const REPAIR_AHEAD = 3 * 86_400_000;
 
 export class T3Error extends Error { }
+/** T3 Code refused a call because agentgate's token lacks a permission. Newer T3 Code splits permissions finer (in
+ * October 2026 cloning moved to `source-control:write`) and never widens a token it issued, so only a new pairing helps. */
+export class T3PermissionError extends T3Error { }
 
 const run = z.object({
   id: z.string(), status: z.string(), userMessageId: z.string().optional(),
@@ -138,7 +141,7 @@ export class T3 {
         if (!p) return;
         pending.delete(frame.requestId);
         if (frame.exit?._tag === "Success") p.resolve(frame.exit.value);
-        else p.reject(new T3Error(`T3 Code on ${this.node}: ${causeText(frame.exit?.cause)}`));
+        else p.reject(failure(this.node, frame.exit?.cause));
       };
 
       let next = 0;
@@ -161,6 +164,17 @@ export class T3 {
   }
 }
 
+function failure(node: string, cause: unknown) {
+  const denied = (Array.isArray(cause) ? cause : [cause])
+    .map((c) => (c as { error?: { _tag?: unknown; requiredPermission?: unknown; requiredScope?: unknown } })?.error)
+    .find((e) => e?._tag === "EnvironmentAuthorizationError");
+  if (denied) {
+    const permission = String(denied.requiredPermission ?? denied.requiredScope);
+    return new T3PermissionError(`T3 Code on ${node} has not given agentgate the ${permission} permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on ${node}`);
+  }
+  return new T3Error(`T3 Code on ${node}: ${causeText(cause)}`);
+}
+
 /** Effect RPC failures carry a cause list of `{ _tag: "Fail", error }` / `{ _tag: "Die", defect }`. */
 function causeText(cause: unknown): string {
   const parts = (Array.isArray(cause) ? cause : [cause]).map((c) => {
@@ -178,12 +192,42 @@ export const dispatch = (call: Call, command: Record<string, unknown>) =>
 export const projection = async (call: Call, threadId: string) =>
   projectionSchema.parse(await call("orchestration.getThreadProjection", { threadId }));
 
-/** What connecting takes: T3's pairing link, or its URL and the token `t3 pair` prints. */
+/** What connecting takes: T3's pairing link, its URL and the token `t3 pair` prints, or `create` to have this machine's
+ * T3 Code create the link itself. */
 export const connectInput = z.union([
   z.object({ pairingUrl: z.string().min(1).max(4096) }).strict(),
   z.object({ url: z.string().min(1).max(2048), token: z.string().min(1).max(4096) }).strict(),
+  z.object({ create: z.literal(true) }).strict(),
 ]);
-export const pairing = (input: z.infer<typeof connectInput>) => "pairingUrl" in input ? parsePairing(input.pairingUrl) : input;
+export async function connectWith(s: Store, input: z.infer<typeof connectInput>) {
+  if ("create" in input) return connectT3(s, parsePairing((await createPairingLink(s, { label: `agentgate ${s.nodeId}` })).url));
+  return connectT3(s, "pairingUrl" in input ? parsePairing(input.pairingUrl) : input);
+}
+
+/** T3 Code's own CLI: `t3` on PATH on a server, or the launcher T3 Code's desktop app writes. Tests point it elsewhere. */
+export const host = {
+  t3: () => Bun.which("t3") ?? [join(homedir(), ".t3", "bin", "t3")].find((p) => existsSync(p)),
+};
+
+export const pairingLinkInput = z.object({ tailscale: z.boolean().optional() }).strict();
+
+/** A new single-use pairing link from the T3 Code server running on this machine, made by its `t3 pair`, which writes
+ * straight into T3's own state: no token of ours is needed, so it also works when agentgate's token expired. With
+ * `tailscale`, T3 Code publishes itself over Tailscale Serve (a lasting change T3 reports in the notes) so the link
+ * works from other machines. */
+export async function createPairingLink(s: Store, options: { label?: string; tailscale?: boolean } = {}): Promise<T3PairingLink> {
+  const bin = host.t3();
+  if (!bin) throw new T3Error(`T3 Code's t3 command is not installed on ${s.nodeId}; open T3 Code there once, or create a pairing link in its Settings → Connections`);
+  const child = Bun.spawn([bin, "pair", "--log-level", "error", ...options.label ? ["--label", options.label] : [], ...options.tailscale ? ["--tailscale"] : []], {
+    stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60_000,
+  });
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  const line = (key: string) => out.match(new RegExp(`^${key}: (.+)$`, "m"))?.[1]?.trim();
+  const url = line("Pairing URL");
+  // stdout holds the token; only stderr may go into an error.
+  if (code !== 0 || !url) throw new T3Error(`t3 pair failed on ${s.nodeId}: ${err.trim().split("\n").at(-1) || `exit ${code}`}`);
+  return { url, expiresAt: line("Expires"), notes: [...out.matchAll(/^Note: (.+)$/gm)].map((m) => m[1]!.trim()) };
+}
 
 /** `http://host:port/pair#token=XXXX`, the pairing link from T3 Code's Settings → Connections. */
 export function parsePairing(link: string): { url: string; token: string } {
@@ -259,7 +303,7 @@ export function t3State(s: Store): T3NodeState {
 /** This node's T3 client, or an error that says how to connect. */
 export function t3Client(s: Store): T3 {
   const state = t3State(s);
-  if (!state.url) throw new T3Error(`T3 Code is not connected on ${s.nodeId}; run agentgate t3 connect <pairing link> there`);
+  if (!state.url) throw new T3Error(`T3 Code is not connected on ${s.nodeId}; run agentgate t3 connect there`);
   if (!state.connected) throw new T3Error(`agentgate's T3 Code token on ${s.nodeId} expired; pair T3 Code again there`);
   return new T3(state.url, s.local("t3:token")!, s.nodeId);
 }

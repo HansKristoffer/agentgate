@@ -1,10 +1,9 @@
 import { z } from "zod";
-import { skillIdSchema, skillRepoSchema } from "./skills.ts";
+import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
-import { t3NodeStateSchema, type T3NodeState } from "./handoff.ts";
 
 export const API_VERSION = 4;
 export const accountSchema = z.object({
@@ -31,6 +30,16 @@ export const remoteSchema = z.object({
   /** Relay base URL, fixed when the endpoint is created. */
   relay: z.string().url().max(2000),
 });
+/** A file a repository keeps out of Git, such as `.env.local`, as it travels between machines on the project record
+ * (docs/internals/checkout-files.md). A removed file stays as `deleted`, so an offline machine cannot bring it back. */
+export const checkoutFileSchema = z.object({
+  path: skillFileSchema.shape.path,
+  data: skillFileSchema.shape.data.optional(),
+  updatedAt: z.string().datetime(),
+  deleted: z.literal(true).optional(),
+});
+export type CheckoutFile = z.infer<typeof checkoutFileSchema>;
+const checkoutPath = z.string().max(512).refine(safePath, "unsafe checkout file path");
 export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
@@ -46,6 +55,11 @@ export const projectSchema = z.object({
   /** A T3 Code project for this repo exists on some node, under this title; set once by T3 project sync. Older daemons
    * drop this field when they save the project; the node that has it in T3 sets it again. */
   t3Title: z.string().max(500).optional(),
+  /** The repository's file store (gitignored files), synced to every machine. Written only once every node runs node
+   * protocol 6, since older daemons drop it when they save the project. */
+  files: z.array(checkoutFileSchema).max(1000).refine((fs) => new Set(fs.map((f) => f.path)).size === fs.length, "duplicate checkout file path").optional(),
+  /** Paths `agentgate project files add` keeps in the file store, for repositories without buncargo. */
+  fileList: z.array(checkoutPath).max(200).optional(),
 });
 /** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
 export const remoteSummarySchema = z.object({
@@ -62,7 +76,11 @@ export const remoteSummarySchema = z.object({
   lastCall: z.number().optional(),
 });
 export type RemoteSummary = z.infer<typeof remoteSummarySchema>;
-export const publicProjectSchema = projectSchema.extend({ remote: remoteSummarySchema.optional() });
+/** File contents are secrets: the API shows only which files there are. */
+export const publicProjectSchema = projectSchema.extend({
+  remote: remoteSummarySchema.optional(),
+  files: z.array(z.object({ path: z.string(), updatedAt: z.string() })).optional(),
+});
 export type PublicProject = z.infer<typeof publicProjectSchema>;
 export const nodeSchema = z.object({
   id: z.string(),
@@ -72,7 +90,13 @@ export const nodeSchema = z.object({
   protocol: z.number().int().optional(),
   /** The agentgate release this node's daemon last started as. Absent on older daemons. */
   version: z.string().max(64).optional(),
+  /** Whether this node's own ~/.claude and ~/.codex use agentgate (setup --primary). Absent on older daemons. */
+  routing: z.object({ claude: z.boolean(), codex: z.boolean() }).optional(),
+  /** Whether this node serves its machine health dashboard at HEALTH_PATH (health.ts). Older daemons never serve it. */
+  healthDashboard: z.boolean().default(false),
 });
+/** Where a node with healthDashboard on serves its machine health dashboard, on both of its listeners. */
+export const HEALTH_PATH = "/health";
 /** Nodes running an older agentgate than the newest one among them. A node that reports no version predates
  * version reporting, so it is older too once any node reports one. */
 export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {
@@ -209,73 +233,23 @@ export interface Preset {
   args?: string[];
   note?: string;
 }
-export interface Activity {
-  at: number;
-  provider: string;
-  account: string;
-  model: string;
-  status: number;
-  ms: number;
-  note: string;
-}
-export interface Status {
-  apiVersion: number;
-  node: string;
-  accounts: AccountStatus[];
-  /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
-  detected: { provider: Provider; email: string; plan?: string; source: string }[];
-  servers: ServerSummary[];
-  projects: PublicProject[];
-  skills: SkillSummary[];
-  /** Skill links this node skipped because something else already uses the name. */
-  skillConflicts: string[];
-  skillHealth: SkillHealth;
-  skillRepos: SkillRepoSummary[];
-  /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
-  checkouts: { path: string; project: string; skills: string[]; mirror: boolean }[];
-  nodes: (z.infer<typeof nodeSchema> & {
-    lastSeen: number;
-    online: boolean;
-    syncError?: string;
-    /** Observed paths to this node; not proof of membership. */
-    via?: ("tailnet" | "relay")[];
-  })[];
-  relay?: RelayStatus;
-  peers: {
-    node: string;
-    url: string;
-    lastSeen: number;
-    cursor: number;
-    error?: string;
-  }[];
-  unknownQuota: Record<string, string | undefined>;
-  settings: Settings;
-  activity: Activity[];
-  settingsRevision?: string;
-  daemon?: { version: string; build: string; providers: Record<Provider, import("./proxy.ts").ProviderCapabilities> };
-  metrics?: import("./proxy.ts").ProxyMetrics;
-  /** This node's connection to its T3 Code server, for thread handoffs. */
-  t3?: T3NodeState;
-  /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
-  logins: SharedLogin[];
-}
-export const loginIdSchema = z.enum(["github", "infisical"]);
+export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
 export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
-export interface RelayStatus {
-  url: string;
-  hosted: boolean;
-  generation?: string;
-  cursor: number;
-  pushed: number;
-  reconciling: boolean;
-  rotating: boolean;
-  cleanupPending: boolean;
-  pushError?: string;
-  pullError?: string;
+/** An update this node started on another one (or itself), until that node runs the new release. */
+export const nodeUpdateSchema = z.object({
+  /** `installed`: the node has the release but its service does not run that binary; restart agentgate there. */
+  state: z.enum(["installing", "restarting", "installed", "failed"]),
+  version: z.string().optional(), error: z.string().optional(), since: z.number(),
+});
+export type NodeUpdate = z.infer<typeof nodeUpdateSchema>;
+export const relayStatusSchema = z.object({
+  url: z.string(), hosted: z.boolean(), generation: z.string().optional(), cursor: z.number(), pushed: z.number(),
+  reconciling: z.boolean(), rotating: z.boolean(), cleanupPending: z.boolean(), pushError: z.string().optional(), pullError: z.string().optional(),
   /** Entries that could not be decrypted or validated since the last full read. */
-  skipped?: number;
-}
+  skipped: z.number().optional(),
+});
+export type RelayStatus = z.infer<typeof relayStatusSchema>;
 export interface LoginStart {
   state: string;
   url: string;
@@ -329,24 +303,36 @@ export interface DesktopStatus {
   cursorMcp?: boolean;
 }
 /** Validate native status before views access required fields from a remote daemon. */
+/** What `/status` returns. The app validates a remote daemon's answer with it and keeps only the fields named here. */
 export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION), node: z.string(),
   accounts: z.array(accountStatusSchema),
+  /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
   detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
   servers: z.array(z.object({ id: z.string(), label: z.string().optional(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), available: z.boolean().optional(), checkedAt: z.number().optional(), refreshError: z.string().optional() })),
   projects: z.array(publicProjectSchema),
   skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
+  /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: z.array(z.string()),
   skillRepos: z.array(z.object({ url: z.string(), projects: z.array(z.string()), skills: z.array(z.string()), commit: z.string().optional(), syncedAt: z.number().optional(), error: z.string().optional(), skipped: z.array(z.string()) })).default([]),
   skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),
+  /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
+  fileErrors: z.record(z.string(), z.string()).default({}),
+  /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
   checkouts: z.array(z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() })),
-  nodes: z.array(nodeSchema.extend({ lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional() })),
+  nodes: z.array(nodeSchema.extend({
+    lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional(),
+    /** Observed paths to this node; not proof of membership. */
+    via: z.array(z.enum(["tailnet", "relay"])).optional(),
+    update: nodeUpdateSchema.optional(),
+  })),
+  relay: relayStatusSchema.optional(),
   peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),
   unknownQuota: z.record(z.string(), z.string().optional()), settings: settingsSchema,
   activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
   settingsRevision: z.string().optional(),
   daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }) }).optional(),
-  t3: t3NodeStateSchema.optional(),
+  /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
   logins: z.array(sharedLoginSchema).default([]),
-  metrics: z.object({ since: z.number(), total: z.number(), succeeded: z.number(), failed: z.number(), interrupted: z.number(), cancelled: z.number(), fallback: z.number(), averageHeadersMs: z.number().optional(), averageFirstByteMs: z.number().optional() }).optional(),
 });
+export type Status = z.infer<typeof statusSchema>;

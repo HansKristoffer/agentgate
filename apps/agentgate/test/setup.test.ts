@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { plist, rotateLogs, service, unit, waitForService } from "../src/service.ts";
+import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import { agentEnvironment, codexConfig, cursorMcp, cursorMcpEnabled, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
 import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
 
@@ -94,6 +94,14 @@ test("binaries run from an npx/dlx/bunx cache are copied to a stable path", () =
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("primary Codex keeps a real Codex login untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")), auth = join(dir, "auth.json");
+  writeFileSync(auth, '{"tokens":{}}');
+  await primaryCodex(true, dir); await primaryCodex(false, dir);
+  expect(readFileSync(auth, "utf8")).toBe('{"tokens":{}}');
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("primary Codex sends its own login through agentgate and undoes cleanly", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")), file = join(dir, "config.toml");
   writeFileSync(file, 'model = "gpt-5"\nmodel_provider = "openai"\n[mcp_servers.mine]\ncommand = "mine"\n');
@@ -101,7 +109,10 @@ test("primary Codex sends its own login through agentgate and undoes cleanly", a
   const on = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
   expect(on.model_provider).toBe("agentgate"); expect(on.model_providers.agentgate.requires_openai_auth).toBe(true);
   expect(on.mcp_servers.agentgate.args.at(-1)).toBe("mcp"); expect(on.mcp_servers.mine.command).toBe("mine"); expect(on.model).toBe("gpt-5");
+  // No login of its own: a placeholder key keeps `codex login status` happy, and goes away with the setup.
+  expect(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "agentgate" });
   await primaryCodex(false, dir);
+  expect(existsSync(join(dir, "auth.json"))).toBe(false);
   const off = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
   expect(off.model_provider).toBe("openai"); expect(off.model_providers).toBeUndefined(); expect(off.mcp_servers.mine.command).toBe("mine");
   rmSync(dir, { recursive: true, force: true });
@@ -155,4 +166,12 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
   writeFileSync(file, '{"mcpServers":[]}\n');
   await expect(cursorMcp(true, file)).rejects.toThrow("mcpServers must be an object");
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("daemon log lines start with an ISO 8601 timestamp", () => {
+  const lines: unknown[][] = [];
+  const out = { log: (...a: unknown[]) => lines.push(a), info: (...a: unknown[]) => lines.push(a), warn: (...a: unknown[]) => lines.push(a), error: (...a: unknown[]) => lines.push(a) };
+  stampLogs(out, () => new Date("2026-10-16T08:30:00.000Z"));
+  out.log("agentgate 0.21.1 n: http://127.0.0.1:7878"); out.error("request failed:", "x");
+  expect(lines).toEqual([["2026-10-16T08:30:00.000Z", "agentgate 0.21.1 n: http://127.0.0.1:7878"], ["2026-10-16T08:30:00.000Z", "request failed:", "x"]]);
 });

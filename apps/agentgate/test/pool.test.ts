@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { proxy, recordUsage } from "../src/llm/pool.ts";
+import { route } from "../src/llm/routing.ts";
 import { Store } from "../src/store.ts";
 
 // Fake Anthropic: behaviour per bearer token.
@@ -172,11 +173,14 @@ test("an exhausted quota window without a reset cannot permanently disable an ac
   recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 100 }], status: "exhausted" });
   expect(s.get("usage", "a")?.windows[0]?.resetsAt).toBe(now + 60000);
   s.now = () => now + 61000;
-  const { choose } = await import("../src/llm/pool.ts"); expect(choose(s, "claude", "sonnet")?.id).toBe("a");
+  expect(route(s, "claude", "sonnet").account).toBe("a");
 });
 
 test("usage endpoint maps onto the quota windows and is polled only for idle accounts", async () => {
-  const { parseUsage, pollUsage } = await import("../src/llm/claude.ts");
+  const { parseUsage } = await import("../src/llm/claude.ts");
+  const { Quotas } = await import("../src/llm/quota.ts");
+  const pollUsage = (s: Store, token: (id: string) => Promise<{ accessToken: string }>, signal = new AbortController().signal) =>
+    new Quotas(s, { token: async (id) => ({ ...s.get("credential", id)!, ...await token(id) }) }, { claude }).poll(signal);
   expect(parseUsage({ five_hour: { utilization: 18, resets_at: "2026-10-02T12:30:00Z" }, seven_day: { utilization: 100, resets_at: null }, seven_day_cowork: { utilization: 50 }, seven_day_opus: null })).toEqual({
     windows: [{ name: "5h", usedPct: 18, resetsAt: Date.parse("2026-10-02T12:30:00Z") }, { name: "7d", usedPct: 100, resetsAt: undefined }],
     status: "exhausted",
@@ -186,7 +190,8 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
 
   // A locked account is skipped by the pool; a lock on the Opus window only affects Opus.
   const { Store: S } = await import("../src/store.ts");
-  const { choose, recordUsage } = await import("../src/llm/pool.ts");
+  const { recordUsage } = await import("../src/llm/pool.ts");
+  const choose = (s: Store, provider: "claude", model: string) => route(s, provider, model).account;
   const p = new S(":memory:"); p.setLocal("node", "n");
   for (const id of ["claude-a", "claude-b"]) {
     p.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: id === "claude-a" ? 1 : 0 });
@@ -194,10 +199,10 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   }
   const later = new Date(Date.now() + 3600_000).toISOString();
   recordUsage(p, "claude-a", parseUsage({ five_hour: { utilization: 1, locked_reason: "x", resets_at: later } })!);
-  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
+  expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
   recordUsage(p, "claude-b", parseUsage({ five_hour: { utilization: 1 }, seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: later } })!);
   expect(choose(p, "claude", "claude-opus-5")).toBeUndefined();
-  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
+  expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
   p.close();
 
   const { Store } = await import("../src/store.ts");
@@ -220,11 +225,11 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   // Live traffic records newer usage while a poll is out: the poll's older answer is dropped.
   s.setLocal("quotaHealth:claude-idle", undefined);
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
-  let answer!: () => void;
-  globalThis.fetch = (() => new Promise<Response>((r) => { answer = () => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } }))); })) as unknown as typeof fetch;
+  const asking = Promise.withResolvers<() => void>();
+  globalThis.fetch = (() => new Promise<Response>((r) => asking.resolve(() => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } })))))) as unknown as typeof fetch;
   try {
     const poll = pollUsage(s, async () => ({ accessToken: "t" }));
-    await Bun.sleep(5);
+    const answer = await asking.promise;
     const { recordUsage } = await import("../src/llm/pool.ts");
     recordUsage(s, "claude-idle", { windows: [{ name: "5h", usedPct: 98 }], status: "ok" });
     answer(); await poll;
@@ -236,10 +241,11 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
   const stop = new AbortController();
   let sawAbort = false;
-  globalThis.fetch = ((_: unknown, init: RequestInit) => new Promise<Response>((_r, reject) => init.signal!.addEventListener("abort", () => { sawAbort = true; reject(new Error("aborted")); }))) as unknown as typeof fetch;
+  const asked2 = Promise.withResolvers<void>();
+  globalThis.fetch = ((_: unknown, init: RequestInit) => new Promise<Response>((_r, reject) => { asked2.resolve(); init.signal!.addEventListener("abort", () => { sawAbort = true; reject(new Error("aborted")); }); })) as unknown as typeof fetch;
   try {
     const poll = pollUsage(s, async () => ({ accessToken: "t" }), stop.signal);
-    await Bun.sleep(5); stop.abort(); await poll;
+    await asked2.promise; stop.abort(); await poll;
   } finally { globalThis.fetch = realFetch; }
   expect(sawAbort).toBe(true);
   expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);

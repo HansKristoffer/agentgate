@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { app, makeCtx, serve } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
 
@@ -13,7 +13,7 @@ test("loopback rejects foreign hosts and malformed settings return actionable 40
   const s = new Store(":memory:"), ctx = makeCtx(s), handler = app(ctx);
   try {
     expect((await handler.fetch(new Request("http://hostile.example/api/status", { headers: { host: "hostile.example" } }), { listener: "loopback" })).status).toBe(403);
-    const res = await handler.fetch(request("/api/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ threshold: "NaN", retryLimit: 999, logRetention: -1, whenExhausted: "other" }) }), { listener: "loopback" }); expect(res.status).toBe(400); expect(await res.text()).toContain("invalid input");
+    const res = await handler.fetch(request("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: "0".repeat(64), patch: { threshold: "NaN", retryLimit: 999, logRetention: -1, whenExhausted: "other" } }) }), { listener: "loopback" }); expect(res.status).toBe(400); expect(await res.text()).toContain("invalid input");
     expect(s.get("setting", "settings")).toBeUndefined();
   } finally { await ctx.gateway.close(); s.close(); }
 });
@@ -47,4 +47,18 @@ test("shutdown waits for an already-issued refresh to persist before the store c
     await start; let closed = false; const stopping = daemon.stop().then(() => { closed = true; }); await Bun.sleep(10); expect(closed).toBe(false);
     release(); await stopping; await response; expect(s.get("credential", "a")?.accessToken).toBe("persisted"); expect(daemon.ctx.pending.size).toBe(0);
   } finally { release(); await daemon.stop(); CLAUDE.api = originalApi; upstream.stop(true); s.close(); }
+});
+
+test("a SQLite error in a request logs its code, message and free space, and the client gets a generic error", async () => {
+  const s = new Store(":memory:"), handler = app(makeCtx(s));
+  handler.get("/boom", () => { s.db.run("insert into missing values (1)"); return new Response(); });
+  const error = spyOn(console, "error").mockImplementation(() => { });
+  try {
+    const res = await handler.fetch(request("/boom?token=hidden"), { listener: "loopback" });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "request failed" });
+    const line = error.mock.calls.map(c => c.join(" ")).join("\n");
+    expect(line).toMatch(/^request failed: GET \/boom: SQLiteError: no such table: missing \(SQLITE_ERROR; .* GiB free in .*, .* GiB free in .*\)$/);
+    expect(line).not.toContain("hidden");
+  } finally { error.mockRestore(); }
 });

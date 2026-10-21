@@ -9,6 +9,8 @@ import { sessionLines } from "./history.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
 import { QUEUED_MAX, type Manifest } from "./destination.ts";
+import { FILES_PROTOCOL, localEdits, managedFiles } from "../checkout-files.ts";
+import { canonicalProject, parseRemote } from "../mcp/gateway.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
  * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort and nothing
@@ -21,6 +23,8 @@ export interface SourceState {
   remoteUrl?: string; branch?: string | null; baseSha?: string | null;
   wasWorking?: boolean; background?: string[]; queued?: string[]; headSha?: string; snapshot?: Snapshot; bundle?: boolean;
   files?: { path: string; size: number }[];
+  /** The manifest went out at least once, so B may have imported the thread. */
+  started?: boolean;
   destThreadId?: string; codeTaken?: boolean; lostSince?: number; finishAt?: number;
   warnings: string[]; timings: Timing[]; remoteTimings?: Timing[];
 }
@@ -186,7 +190,7 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     // HEAD may have moved since resolve if the agent committed before stopping; the bundle is built from now.
     const code = await describe(st.cwd!);
     st.headSha = code.headSha;
-    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha);
+    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha, await storeFiles(h, job));
 
     const out = join(h.dir(job.id), "out");
     rmSync(out, { recursive: true, force: true });
@@ -200,7 +204,12 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
       mkdirSync(dirname(join(out, "session", file)), { recursive: true });
       copyFileSync(join(located.root, file), join(out, "session", file));
     }
-    const paths = [...(st.bundle ? ["bundle"] : []), ...located.files.map((f) => `session/${f}`)];
+    const edits = await carriedFiles(h, job);
+    for (const path of edits) {
+      mkdirSync(dirname(join(out, "checkout-files", path)), { recursive: true });
+      copyFileSync(join(st.cwd!, path), join(out, "checkout-files", path));
+    }
+    const paths = [...(st.bundle ? ["bundle"] : []), ...located.files.map((f) => `session/${f}`), ...edits.map((f) => `checkout-files/${f}`)];
     st.files = paths.map((path) => ({ path, size: statSync(join(out, path)).size }));
 
     // A later handoff back here finds the thread that held this session (round trips reuse threads), and the records
@@ -211,8 +220,39 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
   h.advance(job, "send");
 }
 
+/** The files the file store manages for this checkout; they travel through it, never in the snapshot. */
+async function storeFiles(h: Handoffs, job: Job<SourceState>): Promise<string[]> {
+  const root = h.options.filesRoot;
+  const repo = parseRemote(job.state.remoteUrl!);
+  if (!root || !repo) return [];
+  return managedFiles(root, job.state.cwd!, h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? []).catch(() => []);
+}
+
+/** Gitignored files the checkout changed from its file store (checkout-files.ts): the thread's own `.env.local` edits.
+ * Never what fails a handoff; they stay here with a warning instead. */
+async function carriedFiles(h: Handoffs, job: Job<SourceState>): Promise<string[]> {
+  const st = job.state;
+  const root = h.options.filesRoot;
+  if (!root) return [];
+  try {
+    const repo = parseRemote(st.remoteUrl!);
+    const listed = repo ? h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? [] : [];
+    const paths = await localEdits(root, st.cwd!, listed);
+    if (paths.length && (h.s.get("node", job.target)?.protocol ?? 0) < FILES_PROTOCOL) {
+      st.warnings.push(`Your changes to ${paths.join(", ")} stayed on ${h.s.nodeId}: update agentgate on ${job.target} to carry them`);
+      return [];
+    }
+    return paths;
+  } catch (e) {
+    st.warnings.push(`Changes to gitignored files stayed on ${h.s.nodeId}: ${(e as Error).message}`);
+    return [];
+  }
+}
+
 async function send(h: Handoffs, job: Job<SourceState>) {
   const st = job.state;
+  // The manifest went out before a restart: B either has it or abandons the prepare, and await learns which.
+  if (st.started) return h.advance(job, "await");
   const out = join(h.dir(job.id), "out");
   await timed(h.s, st.timings, "send", async () => {
     // Again, idempotently: B may have missed the first prepare or restarted, and takes files only for a known job.
@@ -242,7 +282,12 @@ async function send(h: Handoffs, job: Job<SourceState>) {
       ...(st.queued?.length ? { queued: st.queued } : {}),
       oldPaths: [...new Set([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)]))], files: st.files!,
     };
-    await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest });
+    st.started = true;
+    h.save(job);
+    // B may take the manifest and still lose its answer (a relay timeout, a dropped connection): only a refusal is
+    // certain. Failing on anything else could leave the thread on both machines; await learns from B what happened.
+    await peerCall(h.s, job.target, `/handoff/${job.id}/start`, { json: manifest })
+      .catch((e) => { if (e instanceof PeerError && e.status < 500) throw e; });
   });
   h.advance(job, "await");
 }

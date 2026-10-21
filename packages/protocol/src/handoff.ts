@@ -16,6 +16,15 @@ export const t3NodeStateSchema = z.object({
 });
 export type T3NodeState = z.infer<typeof t3NodeStateSchema>;
 
+/** A single-use T3 Code pairing link a machine's T3 Code created, valid for a few minutes. */
+export const t3PairingLinkSchema = z.object({
+  url: z.string(),
+  expiresAt: z.string().optional(),
+  /** What T3 Code said about the link, such as that it only works on that machine. */
+  notes: z.array(z.string()),
+});
+export type T3PairingLink = z.infer<typeof t3PairingLinkSchema>;
+
 const t3ThreadSchema = z.object({
   id: z.string(),
   title: z.string(),

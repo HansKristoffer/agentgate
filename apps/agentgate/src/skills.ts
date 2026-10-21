@@ -4,9 +4,8 @@ import { canonicalProject } from "./mcp/gateway.ts";
 import { description, fetchRepo, fetchSkills, repoUrl, validateFetched, type FetchedSkill, type RepoFetcher, type SkillFetcher } from "./skill-import.ts";
 import type { Skill, Store } from "./store.ts";
 
-export { MAX_SKILL } from "@agentgate/protocol";
-export { SkillLinks, SKILLS_DIR, globalSkillDirs } from "./skill-links.ts";
-export { description, readSkill, skillId, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
+export { SkillLinks } from "./skill-links.ts";
+export { description, readSkill, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
 
 export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
@@ -127,16 +126,39 @@ export function updateSkill(s: Store, id: string, fetch: SkillFetcher = fetchSki
   return work;
 }
 
-/** Updates every skill installed once from a source; connected repositories sync on their own. Never throws. */
-export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, signal?: AbortSignal) {
+/** Background syncs of failing skill sources wait longer after each failure, and log a failure once until it changes or
+ * clears, so a missing repository or a slow network does not fill the log. In memory: a restart logs it once more. */
+export class SkillBackoff {
+  private failing = new Map<string, { error: string; failures: number; retryAt: number }>();
+  constructor(private s: Store) {}
+  due(key: string) { return (this.failing.get(key)?.retryAt ?? 0) <= this.s.now(); }
+  /** `error` undefined records a success. */
+  record(key: string, error?: string) {
+    const prev = this.failing.get(key);
+    if (error === undefined) {
+      if (this.failing.delete(key)) console.log(`skills: ${key}: works again`);
+      return;
+    }
+    const failures = (prev?.failures ?? 0) + 1;
+    // 10 minutes, doubling up to 6 hours.
+    this.failing.set(key, { error, failures, retryAt: this.s.now() + Math.min(5 * 60_000 * 2 ** failures, 6 * 3600_000) });
+    if (prev?.error !== error) console.error(`skills: ${key}: ${error}`);
+  }
+}
+
+/** Updates every skill installed once from a source; connected repositories sync on their own. Never throws. With a
+ * backoff, skips skills that failed recently and logs failures through it. */
+export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, signal?: AbortSignal, backoff?: SkillBackoff) {
   const repos = new Set(skillRepoSummaries(s).map((r) => r.url));
   const results: { id: string; outcome: string }[] = [];
   for (const k of skillSummaries(s).filter((k) => k.source && !repos.has(k.source))) {
     if (signal?.aborted) break;
+    if (backoff && !backoff.due(k.id)) continue;
     const outcome = await updateSkill(s, k.id, fetch, signal).then(
       (changed) => (changed ? "updated" : "up to date"),
       (error) => `failed: ${error instanceof Error ? error.message : error}`,
     );
+    if (!signal?.aborted) backoff?.record(k.id, outcome.startsWith("failed") ? outcome : undefined);
     results.push({ id: k.id, outcome });
   }
   return results;
@@ -232,9 +254,12 @@ export function syncSkillRepo(s: Store, input: string, fetch: RepoFetcher = fetc
   return work;
 }
 
-export async function syncSkillRepos(s: Store, fetch: RepoFetcher = fetchRepo, signal?: AbortSignal) {
+/** The background sync; a failure stays on the repository's summary, where the app and `skills repos` show it. */
+export async function syncSkillRepos(s: Store, fetch: RepoFetcher = fetchRepo, signal?: AbortSignal, backoff = new SkillBackoff(s)) {
   for (const { url } of skillRepoSummaries(s)) {
     if (signal?.aborted) return;
-    await syncSkillRepo(s, url, fetch, signal).catch(error => console.error(`skills: ${url}: ${error instanceof Error ? error.message : error}`));
+    if (!backoff.due(url)) continue;
+    const error = await syncSkillRepo(s, url, fetch, signal).then(() => undefined, (e) => e instanceof Error ? e.message : String(e));
+    if (!signal?.aborted) backoff.record(url, error);
   }
 }

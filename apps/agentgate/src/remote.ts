@@ -1,8 +1,8 @@
 import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { REMOTE_LIMITS, relayFrame, sha256Hex, type RemoteResponseFrame } from "@agentgate/protocol/remote";
 import type { Gateway } from "./mcp/gateway.ts";
-import { b64url, checkRelayUrl, relayUrlDefault, serviceKey } from "./relay.ts";
-import { fetchHeaders } from "./runtime.ts";
+import { b64url, checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
+import { fetchHeaders, serialTask } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
 /**
@@ -11,8 +11,9 @@ import type { Store } from "./store.ts";
  */
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
- * 4 knows `login` records (logins.ts). A feature waits until every node reports its protocol. */
-export const NODE_PROTOCOL = 4;
+ * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
+ * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts). A feature waits until every node reports its protocol. */
+export const NODE_PROTOCOL = 7;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
@@ -45,7 +46,7 @@ export function enableRemote(s: Store, id: string, servedBy?: string): { url: st
     if (servedBy && !s.get("node", servedBy)) throw new Error(`no machine ${servedBy}`);
     const remote: Remote = p.remote
       ? { ...p.remote, enabled: true, servedBy: servedBy ?? p.remote.servedBy }
-      : fresh(checkRelayUrl(relayUrlDefault()), servedBy ?? defaultServer(s), true);
+      : fresh(checkRelayUrl(relayUrl(s)), servedBy ?? defaultServer(s), true);
     s.put("project", id, { ...p, remote });
     return { url: endpointUrl(remote), secret: remote.secret };
   });
@@ -134,7 +135,7 @@ export class RemoteEndpoints {
   private conns = new Map<string, Conn>();
   private closed = false;
 
-  constructor(private s: Store, private gateway: Gateway, private options: { pingMs?: number; WebSocket?: typeof WebSocket } = {}) { }
+  constructor(private s: Store, private gateway: Gateway) { }
 
   /** Start, restart or stop sockets to match the project records; also retries queued deletions. */
   reconcile() {
@@ -148,7 +149,7 @@ export class RemoteEndpoints {
     for (const [id, remote] of wanted) if (!this.conns.has(id)) this.start(id, remote);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
     for (const p of this.s.list("project")) if (p.remote && !p.remote.enabled && p.remote.servedBy === this.s.nodeId) void this.put(p.remote).catch(() => { });
-    void this.drainDeletes();
+    void this.drainDeletes().catch((e) => console.error(`remote: endpoint deletions failed: ${e?.name ?? "error"}`));
   }
 
   /** Live state for the API. */
@@ -166,7 +167,7 @@ export class RemoteEndpoints {
   private async put(r: Remote) {
     const marker = this.pushedValue(r, r.enabled);
     if (this.s.local(`remote:pushed:${r.key}`) === marker) return;
-    const key = serviceKey(this.s);
+    const key = serviceKeyFor(this.s, r.relay);
     const res = await fetchHeaders(`${r.relay}/e/${r.key}`, {
       method: "PUT",
       headers: { authorization: `Bearer ${r.token}`, "content-type": "application/json", ...(key && { "x-relay-key": key }) },
@@ -209,16 +210,15 @@ export class RemoteEndpoints {
     try { await this.put(c.remote); }
     catch (e) { return this.later(c, describe(e)); }
     if (c.closed || this.closed) return;
-    const key = serviceKey(this.s);
-    const Socket = this.options.WebSocket ?? WebSocket;
+    const key = serviceKeyFor(this.s, c.remote.relay);
     // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
-    const ws = new Socket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
+    const ws = new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
       headers: { authorization: `Bearer ${c.remote.token}`, "x-agentgate-node": this.s.nodeId, ...(key && { "x-relay-key": key }) },
     } as unknown as string[]);
     c.ws = ws;
     ws.onopen = () => {
       c.connected = true; c.error = undefined; c.backoff = 1000; c.lastPong = Date.now();
-      const pingMs = this.options.pingMs ?? 30_000;
+      const pingMs = 30_000;
       c.ping = setInterval(() => {
         if (Date.now() - c.lastPong > pingMs * 2) return ws.close();
         try { ws.send("ping"); } catch { /* closing */ }
@@ -275,13 +275,14 @@ export class RemoteEndpoints {
     }
   }
 
-  private async drainDeletes() {
+  /** One pass at a time: a slow relay would otherwise pile up a pass per reconcile. */
+  private drainDeletes = serialTask(async () => {
     const queue = JSON.parse(this.s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
     if (!queue.length) return;
     const left: typeof queue = [];
     for (const d of queue) {
       try {
-        const key = serviceKey(this.s);
+        const key = serviceKeyFor(this.s, d.relay);
         const res = await fetchHeaders(`${d.relay}/e/${d.key}`, { method: "DELETE", headers: { authorization: `Bearer ${d.token}`, ...(key && { "x-relay-key": key }) } }, 10_000);
         await res.body?.cancel();
         if (!res.ok && res.status !== 404 && res.status !== 401) left.push(d);
@@ -291,7 +292,7 @@ export class RemoteEndpoints {
     const now = JSON.parse(this.s.local("remote:delete") ?? "[]") as typeof queue;
     const done = new Set(queue.filter(d => !left.includes(d)).map(d => d.key));
     this.s.setLocal("remote:delete", JSON.stringify(now.filter(d => !done.has(d.key))));
-  }
+  });
 
   close() {
     this.closed = true;
@@ -301,7 +302,8 @@ export class RemoteEndpoints {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, ...rest } = p;
+  const { remote, files, ...rest } = p;
   const summary = endpoints.summary(p);
-  return summary ? { ...rest, remote: summary } : rest;
+  const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
+  return { ...rest, ...shown, ...(summary && { remote: summary }) };
 }

@@ -1,9 +1,9 @@
-import { firstServer, handoffTargets, type HandoffJob, type NodeThreads, type T3NodeState, type T3Thread } from "@agentgate/protocol";
+import { firstServer, handoffTargets, type HandoffJob, type NodeThreads, type T3NodeState, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { startHandoff, type SourceState } from "./source.ts";
 import type { z } from "zod";
-import { ACTIVE, T3Error, claudeHomes, connectT3, disconnectT3, pairing, t3Client, t3State, type connectInput } from "./t3.ts";
+import { ACTIVE, T3Error, claudeHomes, connectWith, createPairingLink, disconnectT3, t3Client, t3State, type connectInput, type pairingLinkInput } from "./t3.ts";
 
 /** Threads on every node, and which node "server", "here" or a node id means. One rule set for the API, CLI,
  * MCP tools and app, so "To server" picks the same machine everywhere. */
@@ -152,8 +152,14 @@ export async function requestHandoff(h: Handoffs, input: { threadId: string; nod
 /** Connect a node's agentgate to the T3 Code next to it. For another node the pairing token travels over the peer
  * channel, like every other credential, and that node redeems it with its own T3 Code. */
 export async function connectNode(h: Handoffs, node: string | undefined, input: z.infer<typeof connectInput>) {
-  if (!node || node === h.s.nodeId) return connectT3(h.s, pairing(input));
-  return peerCall<T3NodeState>(h.s, node, "/t3/connect", { json: input });
+  if (!node || node === h.s.nodeId) return connectWith(h.s, input);
+  return peerCall<T3NodeState>(h.s, node, "/t3/connect", { json: input, timeout: 90_000 });
+}
+
+/** A new pairing link from a node's T3 Code, to connect a T3 Code client to it. */
+export async function pairingLinkNode(h: Handoffs, node: string | undefined, input: z.infer<typeof pairingLinkInput>) {
+  if (!node || node === h.s.nodeId) return createPairingLink(h.s, input);
+  return peerCall<T3PairingLink>(h.s, node, "/t3/pairing-link", { json: input, timeout: 90_000 });
 }
 
 export async function disconnectNode(h: Handoffs, node: string | undefined) {

@@ -13,24 +13,26 @@ import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
+import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
+import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
-import { SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
+import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
-import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
+import { HEALTH_PATH, projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
+import { HealthDashboard } from "./health.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 import { syncLogins } from "./logins.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PRIMARY_CLAUDE_DIR } from "./setup.ts";
+import { PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
+import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -41,6 +43,7 @@ export interface Ctx {
   creds: Credentials;
   gateway: Gateway;
   skills: SkillLinks;
+  files: CheckoutFiles;
   imports: SkillImports;
   abort: AbortController;
   pending: Set<Promise<void>>;
@@ -50,6 +53,7 @@ export interface Ctx {
   handoffs: Handoffs;
   /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
+  health: HealthDashboard;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -61,19 +65,20 @@ export function handoffOptions(s: Store): HandoffOptions {
     get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
     tempDir: join(CONFIG_DIR, "handoffs"),
     t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),
+    filesRoot: FILES_ROOT,
   };
 }
 
-export { providers } from "./llm/providers.ts";
-
-export function makeCtx(s: Store, options: { skills?: SkillLinks; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
+export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
   const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
   const quotas = new Quotas(s, creds, providers);
   const gateway = new Gateway(s);
+  const memory = s.db.filename === ":memory:";
+  const files = options.files ?? new CheckoutFiles(s, memory ? null : undefined);
   const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
   gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, s.db.filename === ":memory:" ? null : undefined), imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs };
+  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, memory ? null : undefined), files, imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs, health: new HealthDashboard(s) };
 }
 
 export function app(ctx: Ctx) {
@@ -87,7 +92,9 @@ export function app(ctx: Ctx) {
     if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
-    console.error(`request failed: ${error.name}`);
+    // The path, never the query, and for SQLite the free space; the client only learns that it failed.
+    const detail = sqliteDetail(error, s.db.filename);
+    console.error(`request failed: ${c.req.method} ${c.req.path}: ${error.name}${detail ? `: ${detail}` : ""}`);
     return c.json({ error: "request failed" }, 500);
   });
   app.use("*", async (_, next) => {
@@ -106,7 +113,7 @@ export function app(ctx: Ctx) {
   // Register before every API handler, including the MCP shim's checkout write.
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
-    if (c.req.header("origin") || c.req.header("sec-fetch-site")) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
+    if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
       if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
@@ -118,7 +125,8 @@ export function app(ctx: Ctx) {
   app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
-  app.all("/mcp", loopbackOnly, (c) => ctx.gateway.handle(c.req.raw));
+  // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
+  app.all("/mcp", loopbackOnly, (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))
@@ -138,9 +146,14 @@ export function app(ctx: Ctx) {
   app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)));
 
   app.get("/oauth/callback", oauthCallback(ctx));
+  // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
+  app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
   app.route("/api", management(ctx));
   return app;
 }
+
+/** Browsers send these on every request a page makes; the CLI, the app's Rust client and MCP clients never do. */
+const fromBrowser = (req: Request) => !!(req.headers.get("origin") || req.headers.get("sec-fetch-site"));
 
 function pathAfter(url: string, prefix: string) {
   const u = new URL(url);
@@ -164,12 +177,15 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     s.put("node", s.nodeId, { ...me, protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL), version: packageInfo.version });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
-  console.log(`agentgate ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
+  console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
+  ctx.health.reconcile();
   const schedule = (task: () => Promise<unknown>, interval: number) => {
     const serial = serialTask(async () => { if (!stopped) await task(); });
     const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
     timers.push(setInterval(run, interval)); run();
   };
+  // The CLI or a hand edit can change routing behind the daemon; a minute late is fine for a status badge.
+  if (!DEV) schedule(async () => publishRouting(s), 60_000);
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {
     const ts = await (options.discover ?? tailscale)();
@@ -192,6 +208,9 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
     if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
     if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
+    // A store arrived from another machine, or the last old node updated so stores may sync.
+    if (snapshot.records.some(r => r.kind === "project" || r.kind === "node")) ctx.files.soon();
+    if (snapshot.records.some(r => r.kind === "node")) ctx.health.reconcile();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
     if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
     if (snapshot.records.some(r => r.kind === "login")) void logins().catch(() => { });
@@ -199,14 +218,13 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   schedule(logins, 10 * 60_000);
   schedule(async () => { ctx.remote.reconcile(); }, 30000);
   schedule(async () => { ctx.skills.sync(); }, 30000);
-  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal), 10 * 60_000);
+  schedule(async () => { ctx.files.sync(); }, 30000);
+  const skillBackoff = new SkillBackoff(s);
+  schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
-  schedule(async () => {
-    for (const { id, outcome } of await updateSkills(s, undefined, ctx.abort.signal))
-      if (outcome.startsWith("failed")) console.error(`skills: ${id}: ${outcome}`);
-  }, 3600000);
+  schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }), PULL_INTERVAL);
+  schedule(() => { noteSyncTurn(s); return Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }); }, PULL_INTERVAL);
   schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);
@@ -220,10 +238,10 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
   let stopping: Promise<void> | undefined;
   return {
     ctx, loopback, stop: () => stopping ??= (async () => {
-      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.imports.close();
+      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.files.close(); ctx.imports.close();
       // Abort active streams and MCP sessions; finite background requests finish before the store closes.
       loopback.stop(true); tailnet?.stop(true);
-      ctx.remote.close(); ctx.channel.close();
+      ctx.remote.close(); ctx.channel.close(); ctx.health.stop();
       await ctx.gateway.close();
       await ctx.handoffs.close();
       await stopRelay(s);

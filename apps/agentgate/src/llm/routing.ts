@@ -231,15 +231,6 @@ export function route(
     })),
   };
 }
-export function choose(
-  s: Store,
-  provider: ProviderName,
-  model?: string,
-  exclude?: Set<string>,
-) {
-  const id = route(s, provider, model, { exclude }).account;
-  return id ? s.get("account", id) : undefined;
-}
 /** Keep upstream model metadata, exposing only models the configured pool can currently serve. */
 export function filterModelList(
   s: Store,

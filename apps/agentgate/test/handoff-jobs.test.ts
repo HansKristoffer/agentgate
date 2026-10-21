@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { repos, sh, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
@@ -24,24 +24,32 @@ import { memoryRelay, serveRelay } from "../../relay/test/memory.ts";
 import { createRelay, deriveKeys, joinRelay, parseInvite, syncAll } from "../src/relay.ts";
 import { NodeChannel } from "../src/channel.ts";
 import { relayedRoutes } from "../src/handoff/routes.ts";
+import { NODE_PROTOCOL } from "../src/remote.ts";
+import { checkoutFile } from "../src/handoff/destination.ts";
+import { parseRemote } from "../src/mcp/gateway.ts";
+import { keyForProject, writeStore } from "../src/checkout-files.ts";
+
+afterAll(removeTmp);
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
 const SID = "7d1f0c2e-9a7b-4c51-8e3d-2b6f4a9c0e11";
 
-async function until<T>(fn: () => T | undefined | false, what: string, ms = 20_000): Promise<T> {
+/** Gives up before bun's 5 second test timeout, so a stuck wait fails with what it was waiting for. */
+async function until<T>(fn: () => T | undefined | false, what: string | (() => string), ms = 4_000): Promise<T> {
   const deadline = Date.now() + ms;
   for (; ;) {
     const value = fn();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${typeof what === "string" ? what : what()}`);
     await Bun.sleep(20);
   }
 }
 
 /** One node: a store, a fake T3 Code with a project for its checkout, a Claude home, and its peer listener. */
-async function node(name: string, main: string, options: { server?: boolean; setup?: string } = {}) {
+/** `peer` stands in front of the node's peer routes, to lose or delay answers. */
+async function node(name: string, main: string, options: { server?: boolean; setup?: string; peer?: (req: Request, next: (req: Request) => Promise<Response>) => Promise<Response> } = {}) {
   const root = tmp(), claudeDir = join(root, "claude");
   mkdirSync(claudeDir);
   const s = new Store(":memory:");
@@ -49,8 +57,10 @@ async function node(name: string, main: string, options: { server?: boolean; set
   const t3 = fakeT3({ claudeDir });
   const project = t3.addProject(main, options.setup ? [{ id: "setup", name: "Setup", command: options.setup, icon: "configure", runOnWorktreeCreate: true }] : []);
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), pollMs: 20, retryPauseMs: 100 });
-  const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(s, () => { }).route("/", handoffRoutes(h))).fetch });
+  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), filesRoot: join(root, ".buncargo", "files"), pollMs: 20, retryPauseMs: 100 });
+  const routes = new Hono().route("/peer", peerRoutes(s, () => { }).route("/", handoffRoutes(h)));
+  const next = async (req: Request) => routes.fetch(req);
+  const server = Bun.serve({ port: 0, fetch: (req) => options.peer ? options.peer(req, next) : next(req) });
   cleanup.push(async () => { await h.close(); server.stop(true); t3.stop(); s.close(); });
   return { name, s, t3, project, claudeDir, h, url: `http://127.0.0.1:${server.port}`, server: !!options.server };
 }
@@ -58,7 +68,7 @@ type Node = Awaited<ReturnType<typeof node>>;
 
 function pair(...nodes: Node[]) {
   for (const n of nodes) for (const m of nodes) {
-    n.s.put("node", m.name, { id: m.name, alwaysOn: m.server });
+    n.s.put("node", m.name, { id: m.name, alwaysOn: m.server, protocol: NODE_PROTOCOL });
     if (n !== m) n.s.db.run("insert into peers values (?, ?, ?, 0, ?)", [m.name, m.url, [n.name, m.name].sort().join("-") + "-token-0123456789abcdef", Date.now()]);
   }
 }
@@ -72,7 +82,8 @@ function session(n: Node, cwd: string, words: string[]) {
 }
 
 async function done(n: Node, id: string, role: "source" | "destination" = "source") {
-  return until(() => { const j = n.h.load(role, id); return j && ["done", "failed"].includes(j.step) && j; }, `${role} job on ${n.name}`);
+  return until(() => { const j = n.h.load(role, id); return j && ["done", "failed"].includes(j.step) && j; },
+    () => `${role} job on ${n.name}, still at ${n.h.load(role, id)?.step ?? "no job"}`);
 }
 
 test("a working thread moves to the server with its session and code, continues there, and comes back and goes again", async () => {
@@ -193,6 +204,56 @@ test("when the destination keeps its own code, the source keeps its uncommitted 
   expect(existsSync(join(wtB, "mine.txt"))).toBe(false);
 });
 
+test("gitignored files the thread changed travel with it; the store's other files fill the new worktree", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  pair(a, b);
+  for (const main of [r.a, r.b]) appendFileSync(join(main, ".git", "info", "exclude"), ".env*\n");
+  const project = parseRemote(r.url)!, key = keyForProject(project)!;
+  // A repository without buncargo: .env.local is on the project's file list, and A's copy differs from the store.
+  a.s.put("project", project, { id: project, fileList: [".env.local"] });
+  writeStore(join(a.h.options.filesRoot!, key), [{ path: ".env.local", data: Buffer.from("API=old\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
+  writeStore(join(b.h.options.filesRoot!, key), [{ path: ".env.shared", data: Buffer.from("SHARED=1\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  writeFileSync(join(wtA, ".env.local"), "API=edited\n");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).error).toBeUndefined();
+  // B fills the worktree after it reports the import, once setup is done.
+  expect((await done(b, handoffId, "destination")).error).toBeUndefined();
+  const wtB = b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath!;
+  expect(readFileSync(join(wtB, ".env.local"), "utf8")).toBe("API=edited\n");
+  expect(readFileSync(join(wtB, ".env.shared"), "utf8")).toBe("SHARED=1\n");
+  // B made the worktree, so later store updates reach it.
+  expect(JSON.parse(b.s.local("checkoutFiles:checkouts")!)).toEqual({ [wtB]: key });
+});
+
+test("handed-off checkout files are plain paths inside the checkout", () => {
+  expect(checkoutFile("checkout-files/apps/expo-app/.env")).toBe(true);
+  for (const path of ["checkout-files/../x", "checkout-files//x", "checkout-files/.git/config", "checkout-files/"]) expect(checkoutFile(path)).toBe(false);
+});
+
+test("a repository the destination clones runs its setup script from t3.json", async () => {
+  const r = repos("a"), other = repos("b");
+  const setupLog = join(r.root, "setup.log");
+  writeFileSync(join(r.a, "t3.json"), JSON.stringify({ scripts: [{ name: "Setup", command: `echo ran >> ${setupLog}`, runOnWorktreeCreate: true }] }));
+  sh(r.a, "add", "-A"); sh(r.a, "commit", "-m", "t3.json"); sh(r.a, "push", "origin", "main");
+  // B's T3 Code has a project for another repository only, so it clones this one.
+  const a = await node("a", r.a), b = await node("b", other.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).error).toBeUndefined();
+  expect((await done(b, handoffId, "destination")).error).toBeUndefined();
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath).toBeNull();
+  expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
+});
+
 test("an idle thread's background work is stopped on the source and named on the destination", async () => {
   const r = repos("a", "b");
   const a = await node("a", r.a), b = await node("b", r.b, { server: true });
@@ -259,6 +320,90 @@ test("a failure on the destination before import aborts and leaves the source as
   expect(existsSync(a.h.dir(handoffId))).toBe(false);
   expect((await done(b, handoffId, "destination")).step).toBe("failed");
   expect(existsSync(b.h.dir(handoffId))).toBe(false);
+});
+
+test("a lost answer to start never leaves the thread on both machines: the source waits for the destination", async () => {
+  const r = repos("a", "b");
+  // B takes the manifest, but its answer is lost on the way back, and so is any abort that follows.
+  const lossy = async (req: Request, next: (req: Request) => Promise<Response>) => {
+    if (req.method === "DELETE") return new Response("bad gateway", { status: 502 });
+    const res = await next(req);
+    return new URL(req.url).pathname.endsWith("/start") ? new Response("bad gateway", { status: 502 }) : res;
+  };
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true, peer: lossy });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.archivedAt).toBeNull();
+});
+
+test("a failure on the destination after import finishes there with a warning, so the source never aborts", async () => {
+  const r = repos("a", "b");
+  // A cannot see B's progress for now, so it misses the moment B reports the import.
+  let hidden = true;
+  const peer = async (req: Request, next: (req: Request) => Promise<Response>) =>
+    hidden && req.method === "GET" && /\/handoff\/[^/]+$/.test(new URL(req.url).pathname) ? new Response("bad gateway", { status: 502 }) : next(req);
+  // A setup script that takes a moment keeps B in its last step until T3 Code goes away there.
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true, setup: "sleep 1", peer });
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }] });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => b.h.load("destination", handoffId)?.step === "continue", "B imported");
+  disconnectT3(b.s);
+  const dest = await done(b, handoffId, "destination");
+  expect(dest.step).toBe("done");
+  expect(dest.state.warnings.join("\n")).toContain("continue it in T3 Code");
+
+  hidden = false;
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+});
+
+test("a setup script past its deadline is stopped with what it started, and the thread carries on", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true, setup: "(sleep 30 &); sleep 30" });
+  b.h.options.setupTimeoutMs = 300;
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }] });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  const dest = await done(b, handoffId, "destination");
+  expect(dest.step).toBe("done");
+  expect(dest.state.warnings.join("\n")).toContain("Setup in");
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toContain(CONTINUE);
+});
+
+test("a daemon stopped during setup runs it again on restart before the agent goes on", async () => {
+  const r = repos("a", "b");
+  const log = join(r.root, "setup.log");
+  const a = await node("a", r.a), b = await node("b", r.b, { server: true, setup: `echo started >> ${log}; sleep 2; echo finished >> ${log}` });
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }] });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => b.h.load("destination", handoffId)?.step === "continue", "B waiting for setup");
+  await b.h.close(); // the daemon stops; its setup with it
+  const restarted = new Handoffs(b.s, b.h.options);
+  cleanup.push(() => restarted.close());
+  restarted.tick();
+  const dest = await until(() => { const j = restarted.load("destination", handoffId); return j && ["done", "failed"].includes(j.step) && j; }, "resumed destination");
+  expect(dest.step).toBe("done");
+  expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["started", "started", "finished"]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toContain(CONTINUE);
 });
 
 test("a daemon restart resumes a handoff from the step it reached", async () => {
@@ -367,6 +512,7 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
 
 test("a handoff works through the relay alone; the relay sees only sealed calls and cannot replay one", async () => {
   process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  cleanup.push(() => { delete process.env.AGENTGATE_RELAY_ALLOW_HTTP; });
   const relay = memoryRelay();
   const calls: { path: string; body: string }[] = [];
   const server = serveRelay(relay, async (req) => {

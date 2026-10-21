@@ -50,10 +50,10 @@ Domain terms (account, pool, holder, record, peer, relay group, project, virtual
 The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
 
 - **Entry points.** CLI (`apps/agentgate/src/cli.ts`), the control API (`api.ts`) and the desktop views. A capability reachable from one is usually expected from the others, and from the MCP gateway when an agent should reach it.
-- **Providers.** Claude and Codex each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
+- **Providers.** Claude, Codex and Cursor each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
 - **Sync.** A new record kind or field must sync over peers and the relay, survive a tombstone, and merge with a peer on the previous version. Ask whether `SYNC_PROTOCOL` (`sync.ts`), `RELAY_PROTOCOL` or `API_VERSION` (`packages/protocol`) must change, and whether backups export and restore it, including `export --no-secrets`.
 - **Contracts.** Anything the app and daemon exchange is typed in `packages/protocol`. Change the schema and both sides follow.
-- **Remote management.** The app can manage a remote node over Tailscale. Local-only actions (service, coding-tool setup, backups, Claude Desktop) must stay refused for remote connections.
+- **Remote management.** The app can manage a remote node over Tailscale. Local-only actions (service, coding-tool setup, backups, Claude Desktop) must stay refused for remote connections. The one deliberate exception is `setup --primary` on a paired node (`routeNode` in `update.ts`), because routing your own server is set up from your laptop.
 - **Platforms.** macOS launchd and Linux systemd, with and without the app, and the compiled binary as well as source.
 - **Reverse states.** If you added a way in, add the way out and the way to see it: enable needs disable, setup needs undo, pin needs unpin.
 - **Docs.** Check whether the change makes the README or a doc inaccurate. Apply the [documentation rules](#documentation) before adding anything.
@@ -78,13 +78,14 @@ An empty store is a bad test. With your dev daemon stopped, run `bun run seed-de
 - Rust changes: `cargo check` in `apps/desktop/src-tauri` (`bun run check:native` runs clippy). The build needs a sidecar file in `apps/desktop/src-tauri/binaries/`; an empty placeholder named for your target is enough for a check.
 - Live provider traffic, real logins, two physical machines and installed services are outside CI. Say when a change needs one of those checks rather than claiming it works.
 - Do not verify in the desktop app or a browser unless the developer asks for it.
+- Before calling work done, check the diff against [CODING_STANDARDS.md](CODING_STANDARDS.md): the review rules for error text, credential refresh, deadlines and child processes.
 
 ## Pull requests
 
 - Never open a PR unless the developer explicitly asks.
-- Conventional commit titles in plain language: `fix(proxy): exhausted accounts no longer get retried`. CI enforces the format, and Release Please builds the changelog from it.
+- Conventional commit titles in plain language: `fix(proxy): exhausted accounts no longer get retried`. CI enforces the format, and Release Please builds the changelog from it. PRs are squashed, so the PR title is the only changelog entry: give it the highest type among its commits, so a PR holding a `fix` commit is at least `fix`.
 - Body: the problem in a sentence or two, then how you fixed it, then how you verified it. End with the model and harness that did the work. Follow `.github/pull_request_template.md`.
-- UI changes need before and after images. Upload them to GitHub; never commit PR-only assets.
+- UI changes need before and after images. Upload them to GitHub; never commit PR-only assets. On a machine that cannot run the desktop app, hand the thread to a Mac with the `handoff-thread` skill to take them.
 - One request is one PR. Split it only when the maintainer asks.
 
 ## Documentation

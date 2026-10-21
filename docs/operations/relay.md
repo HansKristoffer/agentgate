@@ -20,7 +20,7 @@ On every daemon start, on `join`, after a group reset and on `agentgate relay re
 
 ## Limits and errors
 
-- One record can be at most 1 MiB once encrypted. That is stricter than the local store's 4 MiB, so a larger record blocks uploads and is named in the upload error until it shrinks. Downloads keep working.
+- One record can be at most 1 MiB once encrypted. That is stricter than the local store's 4 MiB, so a larger record does not reach machines through the relay, and is named in the upload error until it shrinks. Everything else keeps syncing.
 - Each group holds at most 64 machines and 50 MiB. A full group returns "out of storage"; downloads keep working while uploads are rejected.
 - Upload and download errors are reported separately. Uploads are retried with exponential backoff (and `Retry-After`), and every unacknowledged chunk is resent byte for byte.
 

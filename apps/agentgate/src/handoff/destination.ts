@@ -4,12 +4,14 @@ import { basename, join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
 import { z } from "zod";
 import { parseRemote } from "../mcp/gateway.ts";
-import { sleep } from "../runtime.ts";
+import { killGroup, sleep } from "../runtime.ts";
 import { addWorktree, dropRef, dropStash, ensureCommit, fetchBundle, git, manifestsChanged, moveToSource, run, worktrees } from "./code.ts";
 import { sessionNote, timed, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
 import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, t3State, type Call } from "./t3.ts";
 import { HistoryError, appendToThread, sessionMessages, t3Database } from "./history.ts";
+import { safePath } from "@agentgate/protocol";
+import { checkoutKey, fillCheckout, placeEdit, rememberCheckout } from "../checkout-files.ts";
 
 /** The steps on the receiving machine (B). `prepare` (find or clone the repository, make the worktree, start setup)
  * overlaps with A stopping and packing; after `start`: apply the code → place the session → import it into T3 →
@@ -47,6 +49,11 @@ export const manifestSchema = prepareSchema.extend({
   files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
 }).strict();
 type Prepare = z.infer<typeof prepareSchema>;
+/** A gitignored file from the source checkout, such as `.env.local` (checkout-files.ts). */
+const CHECKOUT_FILES = "checkout-files/";
+export const checkoutFile = (path: string) => path.startsWith(CHECKOUT_FILES) && safePath(path.slice(CHECKOUT_FILES.length));
+/** The checkout file paths a manifest carries, relative to the checkout. */
+const carried = (m: Manifest) => m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
 export type Manifest = z.infer<typeof manifestSchema>;
 
 export interface DestState {
@@ -59,6 +66,8 @@ export interface DestState {
   /** Where the thread runs: the main checkout or a worktree. */
   cwd?: string;
   setupCommand?: string;
+  /** The checkout was cloned or created here, so later file store updates reach it too. */
+  created?: boolean;
   /** Whether the checkout moved onto the source's code; the source parks its sent changes only then. */
   codeTaken?: boolean;
   threadId?: string;
@@ -67,6 +76,10 @@ export interface DestState {
   claudeHome?: string;
   /** No thread here held the session, so T3 imported it from a copy under the main checkout. */
   imported?: boolean;
+  /** The checkout got the repository's file store. */
+  filled?: boolean;
+  /** The setup script finished (or there was none to wait for); a restart runs an unfinished one again. */
+  setupDone?: boolean;
   /** Recorded before sending, so a restart never sends a message twice. */
   readied?: boolean;
   continued?: boolean;
@@ -106,7 +119,7 @@ export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
 }
 
 /** What A polls: the status, the imported thread, and B's warnings and timings. */
-export function peerStatus(h: Handoffs, job: Job<DestState>) {
+export function peerStatus(job: Job<DestState>) {
   const st = job.state;
   return {
     step: job.step, status: STATUS[job.step] ?? "running", threadId: st.threadId,
@@ -137,7 +150,7 @@ export function start(h: Handoffs, id: string, source: string, manifest: Manifes
   if (job.step === "prepare" || job.step === "prepared") {
     for (const f of manifest.files) {
       const session = f.path.startsWith("session/");
-      if (!session && f.path !== "bundle") throw new T3Error(`unexpected file ${f.path}`);
+      if (!session && f.path !== "bundle" && !checkoutFile(f.path)) throw new T3Error(`unexpected file ${f.path}`);
       if (session && !sessionProviders[manifest.driver]?.accepts(manifest.sessionId, f.path.slice(8))) throw new T3Error(`unexpected session file ${f.path}`);
       const path = join(h.dir(id), "files", f.path);
       if (!existsSync(path) || Bun.file(path).size !== f.size) throw new T3Error(`${f.path} has not fully arrived`);
@@ -174,7 +187,13 @@ export async function runDestination(h: Handoffs, id: string) {
         default: return;
       }
     } catch (e) {
-      h.fail(job, `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`);
+      const message = `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`;
+      // Imported: the thread lives here now, and a failure must not make the source take it back.
+      if (job.step === "continue") {
+        job.state.warnings.push(`${message}; the thread is here, continue it in T3 Code`);
+        rmSync(h.dir(job.id), { recursive: true, force: true });
+        h.advance(job, "done");
+      } else h.fail(job, message);
       return;
     }
   }
@@ -193,7 +212,7 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
         const setupCommand = project.scripts.find((s) => s.runOnWorktreeCreate)?.command;
         Object.assign(st, { projectId: project.id, main: project.workspaceRoot, setupCommand });
       } else {
-        Object.assign(st, await cloneProject(h, p.remoteUrl));
+        Object.assign(st, await cloneProject(h, p.remoteUrl), { created: true });
         if (!p.worktree) {
           st.cwd = st.main;
           startSetup(h, job);
@@ -229,7 +248,18 @@ async function cloneProject(h: Handoffs, remoteUrl: string) {
 
   const create = { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: repo, workspaceRoot: dir };
   const project = z.object({ id: z.string() }).passthrough().parse(await t3Client(h.s).rpc((call) => call("projects.mutate", create)));
-  return { projectId: project.id, main: dir };
+  return { projectId: project.id, main: dir, setupCommand: repoSetupCommand(dir) };
+}
+
+/** A new T3 project has no scripts of its own: the setup script of a fresh clone is the one the repository shares in
+ * its `t3.json`. */
+function repoSetupCommand(dir: string) {
+  const t3json = z.object({ scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean().optional() }).passthrough()) }).passthrough();
+  try {
+    return t3json.parse(JSON.parse(readFileSync(join(dir, "t3.json"), "utf8"))).scripts.find((s) => s.runOnWorktreeCreate)?.command;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The checkout the thread runs in: B's main checkout, a worktree already on the branch (reused, so setup runs once
@@ -252,6 +282,7 @@ async function workspace(h: Handoffs, job: Job<DestState>, startAt: string | nul
   const path = join(h.options.worktreesDir, repo, `${repo}-${job.id.slice(0, 8)}`);
   mkdirSync(join(h.options.worktreesDir, repo), { recursive: true });
   if (!existsSync(path)) await addWorktree(main, path, p.branch, startAt);
+  st.created = true;
   use(path);
   startSetup(h, job);
 }
@@ -269,12 +300,17 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
     const started = performance.now();
     try {
       const child = Bun.spawn([process.env.SHELL || "/bin/sh", "-lc", command], {
-        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+        cwd, stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: true,
         env: { ...process.env, T3CODE_PROJECT_ROOT: st.main!, ...(cwd !== st.main && { T3CODE_WORKTREE_PATH: cwd }), COLORTERM: "" },
       });
-      const timer = setTimeout(() => child.kill(), h.options.setupTimeoutMs ?? 15 * 60_000);
-      const [, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      const timer = setTimeout(() => killGroup(child), h.options.setupTimeoutMs ?? 15 * 60_000);
+      h.setupProcesses.add(child);
+      const stderr = new Response(child.stderr).text();
+      const code = await child.exited;
       clearTimeout(timer);
+      h.setupProcesses.delete(child);
+      // Done when the script exits: something it left running in the background may hold stderr open for good.
+      const err = await Promise.race([stderr, sleep(1000).then(() => "")]);
       if (code !== 0) {
         const last = err.trim().split("\n").at(-1)?.slice(0, 300);
         notes.warnings.push(`Setup in ${cwd} failed (exit ${code})${last ? `: ${last}` : ""}`);
@@ -309,6 +345,8 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     st.codeTaken = !kept;
     if (kept) {
       st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);
+      const edits = carried(m);
+      if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
       if (replaced.length) {
         const names = replaced.slice(0, 5).join(", ") + (replaced.length > 5 ? ` and ${replaced.length - 5} more` : "");
@@ -316,6 +354,8 @@ async function apply(h: Handoffs, job: Job<DestState>) {
       }
       // New dependencies in the arriving code: install them again once the first setup is done.
       if (await manifestsChanged(st.cwd, before, m.snapshot.sha)) startSetup(h, job);
+
+      await placeEdits(h, job);
 
       // The thread came back: the changes this machine parked when it left are in the code that just arrived.
       const parked = h.s.local(sessionNote.stash(m.sessionId));
@@ -327,6 +367,17 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     await dropRef(main, job.id);
   });
   h.advance(job, "place");
+}
+
+/** The source checkout's own edits to gitignored files, written once the code moved here. They then differ from the file
+ * store, so buncargo keeps them as local edits. A file this checkout edited itself is kept, with a warning. */
+async function placeEdits(h: Handoffs, job: Job<DestState>) {
+  const st = job.state;
+  const edits = carried(st.manifest!);
+  if (!edits.length) return;
+  const key = await checkoutKey(st.cwd!);
+  const kept = edits.filter((path) => !placeEdit(h.options.filesRoot, key, st.cwd!, path, readFileSync(join(h.dir(job.id), "files", "checkout-files", path))));
+  if (kept.length) st.warnings.push(`Kept ${h.s.nodeId}'s own ${kept.join(", ")} in ${st.cwd}; the changes from ${st.source} to them are not there`);
 }
 
 /** The thread on this node that already holds the session: the one it had before the thread left (a round trip), or
@@ -428,13 +479,19 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
  * bug); the next turn resumes. A short message takes that failure so the user's first message does not. */
 async function carryOn(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
-  const setup = await h.setups.get(job.id);
+  // The daemon stopped during setup, which stopped it too: run it again before the agent goes on.
+  if (!h.setups.has(job.id) && st.created && !st.setupDone) startSetup(h, job);
+  const setup = await Promise.race([h.setups.get(job.id), h.closing.then(() => "closed" as const)]);
+  if (setup === "closed") return;
   h.setups.delete(job.id);
+  st.setupDone = true;
   if (setup) {
     st.warnings.push(...setup.warnings);
     st.timings.push(...setup.timings);
-    h.save(job);
   }
+  h.save(job);
+
+  await fillFiles(h, job);
 
   if (st.imported && !st.readied) {
     await timed(h.s, st.timings, "ready", () => t3Client(h.s).rpc(async (call) => {
@@ -443,6 +500,8 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       await turnOrRetry(h, call, st.threadId!, READY);
     }));
   }
+  // Shutting down mid-turn: the restart sends what follows, after READY ran.
+  if (h.closed) return;
   const m = st.manifest!;
   const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""].filter(Boolean).join("\n\n");
   if (next && !st.continued) {
@@ -452,6 +511,7 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       await turnOrRetry(h, call, st.threadId!, next);
     }));
   }
+  if (h.closed) return;
 
   // Behind whatever runs now, in order, as the user queued them. T3 starts the first at once if the thread is idle.
   const queued = m.queued ?? [];
@@ -467,6 +527,23 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
 
   rmSync(h.dir(job.id), { recursive: true, force: true });
   h.advance(job, "done");
+}
+
+/** After setup (buncargo is installed by then): the repository's checkout files into the checkout. A failure is a
+ * warning. */
+async function fillFiles(h: Handoffs, job: Job<DestState>) {
+  const st = job.state;
+  const root = h.options.filesRoot;
+  if (!root || st.filled) return;
+  try {
+    const key = await checkoutKey(st.cwd!);
+    if (st.created) rememberCheckout(h.s, st.cwd!, key);
+    await fillCheckout(root, st.cwd!, key);
+  } catch (e) {
+    st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${(e as Error).message}`);
+  }
+  st.filled = true;
+  h.save(job);
 }
 
 async function send(call: Call, threadId: string, text: string, mode: "start_immediately" | "queue_after_active") {

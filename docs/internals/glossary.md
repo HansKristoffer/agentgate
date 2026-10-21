@@ -32,7 +32,7 @@ Terms whose meaning matters across agentgate. Constraints belong in the [overvie
 
 | Term | Meaning |
 |---|---|
-| Provider | Claude or Codex. Each has an adapter in `llm/`. |
+| Provider | Claude, Codex or Cursor. Each has an adapter in `llm/`. |
 | Account | A pooled provider subscription: an `account` record plus its `credential`. |
 | Pool | The enabled accounts the proxy routes each request among. |
 | Pin | The user's preferred account for a provider; the pool falls back when it is unavailable. |
@@ -52,4 +52,5 @@ Terms whose meaning matters across agentgate. Constraints belong in the [overvie
 | Virtual project | A project with id `@slug`: no repository, no `*` defaults, and it can have a remote endpoint. |
 | Remote endpoint | A public relay URL `/mcp/<key>` for a virtual project, answered by its serving node. |
 | Checkout | A local repository path registered on this node and mapped to a project, used to link skills. |
+| File store | Buncargo's per-machine store of a repository's gitignored files (`~/.buncargo/files/<repo key>`), synced on its project record. |
 | Skill | A synced bundle with a root `SKILL.md`, written to disk on each node and linked where it is assigned. |

@@ -1,9 +1,7 @@
 import {
   API_VERSION,
-  accountSchema,
   projectSchema,
   providerSchema,
-  settingsSchema,
   SkillConflict,
   decodedSize,
   projectIdSchema,
@@ -19,41 +17,42 @@ import { homedir } from "node:os";
 import { z } from "zod";
 import { pkce } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
-import * as claude from "./llm/claude.ts";
-import * as codex from "./llm/codex.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
-import { forgetLogin, listLogins, shareLogins } from "./logins.ts";
+import { forgetLogin, infisicalSite, listLogins, setInfisicalIdentity, shareLogins } from "./logins.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenHours, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
 import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
-import { updateNode } from "./update.ts";
+import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import {
   aliasesFor,
   connect,
   listAllTools,
   needsLogin,
   serverHealth,
-  renameInstance,
   scanRepos,
   toolName,
 } from "./mcp/gateway.ts";
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
   createInstance,
   labelInstance,
   deleteAccount,
   deleteInstance,
+  removeNode,
+  renameInstance,
   saveProject,
   setAccount,
+  setHealthDashboard,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
-import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, rotateSecret, showRemote } from "./remote.ts";
 import { jsonInput } from "./http.ts";
+import { addFileAt, fileContent, filesErrors, removeFiles, setFileContent } from "./checkout-files.ts";
 import {
   connectSkillRepo,
   deleteSkill,
@@ -69,9 +68,9 @@ import {
   skillRevision,
 } from "./skills.ts";
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
-import { connectInput, t3State } from "./handoff/t3.ts";
-import { allNodes, connectNode, disconnectNode, handoffJob, requestHandoff } from "./handoff/threads.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
+import { allNodes, connectNode, disconnectNode, handoffJob, pairingLinkNode, requestHandoff } from "./handoff/threads.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import {
   RelayBusy,
   RelayError,
@@ -83,8 +82,6 @@ import {
   newNodeName,
   parseJoin,
   reconcileRelay,
-  relayInvite,
-  relayNodes,
   relayStatus,
   rotateRelay,
   setServiceKey,
@@ -96,15 +93,16 @@ const required = (value: unknown, name: string) => {
 };
 const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
-const readableEndpoint = (url?: string) => {
-  if (!url) return "Local command";
-  try {
-    const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
-  } catch {
-    return "HTTP server";
-  }
-};
+/** The coding tools' own logins, read at most every 30 s: ~/.claude.json alone can be megabytes, and the app polls
+ * status every second while something is under way. */
+const detections = new Map<keyof typeof providerLogins, { at: number; found: ReturnType<(typeof providerLogins)[keyof typeof providerLogins]["detect"]> }>();
+function detect(provider: keyof typeof providerLogins) {
+  const cached = detections.get(provider);
+  if (cached && Date.now() - cached.at < 30_000) return cached.found;
+  const found = moduleFor(provider).detect();
+  detections.set(provider, { at: Date.now(), found });
+  return found;
+}
 
 /** JSON control plane. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {
@@ -177,11 +175,10 @@ export function management(ctx: Ctx) {
       apiVersion: API_VERSION,
       daemon: { version: packageInfo.version, build: process.env.AGENTGATE_BUILD ?? "development", providers: providerCapabilities() },
       settingsRevision: revision(s, "setting", "settings"),
-      metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: providerSchema.options.flatMap((provider) => {
-        const found = moduleFor(provider).detect();
+        const found = detect(provider);
         const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
         return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
       }),
@@ -208,6 +205,7 @@ export function management(ctx: Ctx) {
       skillConflicts: ctx.skills.conflicts(),
       skillHealth: ctx.skills.health(),
       skillRepos: skillRepoSummaries(s),
+      fileErrors: filesErrors(s),
       checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({ path, project, skills: ctx.skills.repoSkills(path), mirror: ctx.skills.mirroring(path) })),
       settings: s.settings(),
       nodes: s.list("node").map((n) => ({
@@ -216,9 +214,9 @@ export function management(ctx: Ctx) {
         online: n.id === s.nodeId || s.now() - lastSeen(s, n.id) < 60_000,
         syncError: s.local(`syncError:${n.id}`) ? "Sync failed" : undefined,
         via: n.id === s.nodeId ? [] : via(s, n.id),
+        update: nodeUpdate(s, n.id),
       })),
       relay: relayStatus(s),
-      t3: t3State(s),
       logins: listLogins(s),
       peers: peers(s).map((p) => ({
         node: p.node,
@@ -259,10 +257,10 @@ export function management(ctx: Ctx) {
     return c.json(input(() => requests(s, f)));
   });
   app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
-  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
+  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));
@@ -500,6 +498,28 @@ export function management(ctx: Ctx) {
     ctx.remote.reconcile();
     return c.json(publicProject(saved, ctx.remote));
   });
+  // A repository's env files (checkout-files.ts). Adding reads a file from this machine's checkout, so it is local only.
+  const filesRoot = () => { if (!ctx.files.root) throw new Error("Env files are off in this daemon"); return ctx.files.root; };
+  app.post("/projects/files", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(4096) }).strict().parse(await json(c.req.raw));
+    return c.json({ project: await inputAsync(() => addFileAt(s, filesRoot(), f.project, f.path)) });
+  });
+  // A file's contents are secrets, so reading and editing them is local only.
+  app.get("/projects/files/content", (c) => {
+    local(c.env.listener);
+    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    return c.json(input(() => fileContent(s, filesRoot(), id, path)));
+  });
+  app.put("/projects/files/content", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(512), content: z.string().max(1024 * 1024), sha256: z.string().max(64).optional() }).strict().parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)));
+  });
+  app.delete("/projects/files", (c) => {
+    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    return c.json({ project: input(() => removeFiles(s, filesRoot(), id, [path])) });
+  });
   // Virtual projects' endpoints. Every route that returns or changes a secret is loopback-only.
   const remoteId = (c: { req: { query(name: string): string | undefined } }) => z.string().min(1).max(80).parse(c.req.query("id"));
   const remoteBody = async (req: Request) => z.object({ id: z.string().min(1).max(80), servedBy: z.string().min(1).max(512).optional() }).strict().parse(await json(req));
@@ -666,35 +686,44 @@ export function management(ctx: Ctx) {
     required(n, "node");
     return c.json(s.put("node", n!.id, { ...n!, ...f }));
   });
+  // Not local-only, like always-on: any paired machine's dashboard is turned on from here (operations.ts).
+  app.post("/nodes/:id/dashboard", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await json(c.req.raw));
+    required(s.get("node", c.req.param("id")), "node");
+    return c.json(input(() => setHealthDashboard(s, c.req.param("id"), on)));
+  });
   // Not local-only: updating an always-on server from wherever you are is the point. The node runs the release
   // checks itself and refuses copies another tool owns.
   app.post("/nodes/:id/update", async (c) => {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
-    return c.json(await inputAsync(() => updateNode(s, n!.id)));
+    return c.json(await inputAsync(() => updateTracked(s, n!.id)));
+  });
+  // Not local-only either, on purpose: see routeNode.
+  app.post("/nodes/:id/primary", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await json(c.req.raw));
+    const n = s.get("node", c.req.param("id"));
+    required(n, "node");
+    return c.json(await inputAsync(() => routeNode(s, n!.id, on)));
   });
   app.delete("/nodes/:id", async (c) => {
-    const id = c.req.param("id");
-    // The removed machine knows every endpoint's credentials, so each gets a new URL (shown again locally).
-    const endpoints = s.list("project").some(p => p.remote) ? (local(c.env.listener), regenerateAfterUnpair(s, id)) : [];
+    // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.
+    const { endpoints, rotated } = await relayed(() => removeNode(s, c.req.param("id"), () => local(c.env.listener)));
     if (endpoints.length) ctx.remote.reconcile();
-    if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
-      // A relay member can only be removed by moving everyone else to a new secret.
-      local(c.env.listener);
-      if (peers(s).some((p) => p.node === id)) unpair(s, id);
-      const rotated = await relayed(() => rotateRelay(s));
-      return c.json({ ok: true, rotated: true, ...rotated, endpoints });
-    }
-    input(() => unpair(s, id));
-    return c.json({ ok: true, endpoints });
+    return c.json(rotated ? { ok: true, rotated: true, ...rotated, endpoints } : { ok: true, endpoints });
   });
-  // Thread handoff. Connecting receives a T3 pairing token, a credential: local callers only.
+  // Thread handoff. Connecting receives a T3 pairing token and a pairing link is one, credentials: local callers only.
   app.get("/t3", (c) => c.json(t3State(s)));
   app.post("/t3/connect", async (c) => {
     local(c.env.listener);
     const node = c.req.query("node");
     const input = connectInput.parse(await json(c.req.raw));
     return c.json(await inputAsync(() => connectNode(ctx.handoffs, node, input)));
+  });
+  app.post("/t3/pairing-link", async (c) => {
+    local(c.env.listener);
+    const input = pairingLinkInput.parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => pairingLinkNode(ctx.handoffs, c.req.query("node"), input)));
   });
   app.delete("/t3", async (c) => {
     await inputAsync(() => disconnectNode(ctx.handoffs, c.req.query("node")));
@@ -720,11 +749,6 @@ export function management(ctx: Ctx) {
     const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));
     return c.json(patchSettings(s, f.patch, f.revision));
   });
-  app.put("/settings", async (c) => {
-    const f = settingsSchema.extend({ revision: z.string().length(64) }).strict().parse(await json(c.req.raw));
-    const { revision: expected, ...settings } = f;
-    return c.json(patchSettings(s, settings, expected));
-  });
   app.get("/backup", (c) => {
     local(c.env.listener);
     return c.json(exportBackup(s, c.req.query("secrets") === "true"));
@@ -739,6 +763,13 @@ export function management(ctx: Ctx) {
     local(c.env.listener);
     const f = z.object({ id: loginIdSchema.optional() }).strict().parse(await json(c.req.raw));
     return c.json({ results: await inputAsync(() => shareLogins(s, f.id)) });
+  });
+  // Receives a client secret: loopback only.
+  app.put("/logins/infisical-identity", async (c) => {
+    local(c.env.listener);
+    const f = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048).optional() }).strict().parse(await json(c.req.raw));
+    await inputAsync(() => setInfisicalIdentity(s, { ...f, siteUrl: f.siteUrl ?? infisicalSite() }));
+    return c.json({ ok: true });
   });
   app.delete("/logins/:id", (c) => {
     input(() => forgetLogin(s, loginIdSchema.parse(c.req.param("id"))));

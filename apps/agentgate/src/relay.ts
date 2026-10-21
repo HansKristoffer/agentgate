@@ -101,12 +101,12 @@ export async function open(keys: Keys, a: Aad, blob: string): Promise<string> {
 
 /** "active" is the group in use; "rot" is a replacement group being seeded by a rotation. */
 type Target = "active" | "rot";
-type Field = "invite" | "generation" | "pushed" | "cursor" | "phase" | "readCursor" | "pushError" | "pullError" | "skipped";
+type Field = "invite" | "generation" | "pushed" | "cursor" | "phase" | "readCursor" | "pushError" | "pullError" | "skipped" | "oversize";
 const k = (t: Target, f: Field) => t === "active" ? `relay:${f}` : `relay:rot:${f}`;
 const get = (s: Store, t: Target, f: Field) => s.local(k(t, f));
 const num = (s: Store, t: Target, f: Field) => Number(get(s, t, f) ?? 0);
 const put = (s: Store, t: Target, f: Field, v: string | number | undefined) => s.setLocal(k(t, f), v === undefined ? undefined : String(v));
-const FIELDS: Field[] = ["invite", "generation", "pushed", "cursor", "phase", "readCursor", "pushError", "pullError", "skipped"];
+const FIELDS: Field[] = ["invite", "generation", "pushed", "cursor", "phase", "readCursor", "pushError", "pullError", "skipped", "oversize"];
 
 interface Cleanup { invite: string; serviceKey?: string; attempts: number; nextAt: number }
 const cleanups = (s: Store): Cleanup[] => JSON.parse(s.local("relay:cleanup") ?? "[]");
@@ -234,7 +234,7 @@ function resetTarget(s: Store, t: Target, grp: string) {
 }
 
 interface Decoded { node: string; key: string; pusherSeq: number; rec?: Rec }
-async function decode(s: Store, c: Conn, generation: string, page: ChangesResponse): Promise<{ decoded: Decoded[]; skipped: number }> {
+async function decode(c: Conn, generation: string, page: ChangesResponse): Promise<{ decoded: Decoded[]; skipped: number }> {
   const decoded: Decoded[] = [];
   let skipped = 0;
   for (const e of page.entries) {
@@ -276,7 +276,7 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
   if (!page.success || page.data.generation !== generation) throw new RelayError("The relay returned an invalid page");
   const problem = checkPage(page.data, since);
   if (problem) throw new RelayError(`The relay returned an invalid page (${problem})`);
-  const { decoded, skipped } = await decode(s, c, generation, page.data);
+  const { decoded, skipped } = await decode(c, generation, page.data);
   s.transaction(() => {
     if (identity(s, t) !== before) throw new RelayError("relay configuration changed");
     for (const d of decoded) {
@@ -319,27 +319,32 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
       const before = identity(s, t);
       const entries: RelayEnvelope[] = [];
       const counters: [string, number][] = [];
-      let bytes = 256 + s.nodeId.length * 6;
+      const oversize = new Set<string>(JSON.parse(get(s, t, "oversize") ?? "[]"));
+      let bytes = 256 + s.nodeId.length * 6, taken = 0;
       for (const r of snapshot.records) {
         const key = await entryKey(c.keys, r.kind, r.id);
         const pusherSeq = counter(s, grp, generation, s.nodeId, key) + 1;
         const { seq: _, ...plain } = r;
         const blob = await seal(c.keys, { groupId: grp, generation, node: s.nodeId, key, pusherSeq }, JSON.stringify({ protocol: SYNC_PROTOCOL, record: plain }));
-        if (Math.floor(blob.length * 3 / 4) > RELAY_LIMITS.blobBytes) {
-          if (entries.length) break; // send what fits; the next chunk starts with this record and stops there
-          throw new RelayError(`${r.kind} ${r.id} is larger than the relay's 1 MiB record limit; uploads are blocked until it shrinks`, 0, "oversize");
-        }
+        const name = `${r.kind} ${r.id}`;
+        // Too large for the relay. Holding the feed at it would stop every later record for every relay machine,
+        // refreshed credentials included, so it is left out and reported until it changes.
+        if (Math.floor(blob.length * 3 / 4) > RELAY_LIMITS.blobBytes) { oversize.add(name); taken++; continue; }
         const length = JSON.stringify({ key, pusherSeq, blob }).length + 1;
         if (entries.length && (entries.length === RELAY_LIMITS.pushEntries || bytes + length > RELAY_LIMITS.messageBytes)) break;
-        entries.push({ key, pusherSeq, blob }); counters.push([key, pusherSeq]); bytes += length;
+        oversize.delete(name);
+        entries.push({ key, pusherSeq, blob }); counters.push([key, pusherSeq]); bytes += length; taken++;
       }
-      const checkpoint = entries.length === snapshot.records.length ? snapshot.seq : snapshot.records[entries.length - 1]!.seq!;
+      const checkpoint = taken === snapshot.records.length ? snapshot.seq : snapshot.records[taken - 1]!.seq!;
       const body = JSON.stringify({ protocol: RELAY_PROTOCOL, generation, node: s.nodeId, entries });
       s.transaction(() => {
         if (identity(s, t) !== before) throw new RelayError("relay configuration changed");
+        put(s, t, "oversize", oversize.size ? JSON.stringify([...oversize]) : undefined);
+        if (!entries.length) return put(s, t, "pushed", checkpoint); // only records the relay cannot take
         for (const [key, value] of counters) setCounter(s, grp, generation, s.nodeId, key, value);
         s.db.run("insert or replace into relay_pending values (?, ?, ?, ?)", [grp, generation, checkpoint, body]);
       });
+      if (!entries.length) continue;
       chunk = { generation, checkpoint, body };
     }
     const sent = identity(s, t);
@@ -400,6 +405,12 @@ const ready = (s: Store, r: Runtime, slot: string, force: boolean) => force || (
 const succeeded = (r: Runtime, slot: string) => r.backoff.delete(slot);
 const message = (e: unknown) => e instanceof RelayError || e instanceof RelayBusy ? e.message : "Relay sync failed";
 
+/** Why uploads to the active group wait: a pending rotation sends nothing new to the old secret's group. */
+function rotationBlocks(s: Store, t: Target) {
+  if (t !== "active" || !s.local("relay:rotation")) return undefined;
+  return `Uploads wait for the new relay group: ${get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "it is not ready yet"}`;
+}
+
 /** Reconcile if needed, then push and pull independently. Errors are kept per direction. */
 async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push: boolean; pull: boolean; force: boolean }) {
   const r = rt(s);
@@ -423,7 +434,7 @@ async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push
     }
   }
   if (want.push && get(s, t, "phase") === "done" && ready(s, r, slot("push"), want.force)) {
-    try { await pushLoop(s, t, c, signal); put(s, t, "pushError", undefined); succeeded(r, slot("push")); }
+    try { await pushLoop(s, t, c, signal); put(s, t, "pushError", rotationBlocks(s, t)); succeeded(r, slot("push")); }
     catch (e) {
       if (signal.aborted) throw e;
       backoff(s, r, slot("push"), e);
@@ -629,6 +640,15 @@ export function setServiceKey(s: Store, key: string | undefined) {
 }
 
 export const relayInvite = (s: Store) => get(s, "active", "invite");
+/** The relay this node uses: its group's, else the configured default. */
+export function relayUrl(s: Store) {
+  const invite = relayInvite(s);
+  return invite ? parseInvite(invite).url : relayUrlDefault();
+}
+/** A service key is for a self-hosted relay: it never goes to the hosted one, which an older endpoint may point at,
+ * unless that is the relay this node uses. */
+export const serviceKeyFor = (s: Store, url: string) =>
+  url.replace(/\/$/, "") !== DEFAULT_RELAY_URL || relayUrl(s).replace(/\/$/, "") === DEFAULT_RELAY_URL ? serviceKey(s) : undefined;
 export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!s.local("relay:rotation");
 
 /** Sanitized status: never the invite, the service key or a raw relay response. */
@@ -638,6 +658,7 @@ export function relayStatus(s: Store) {
   let url = "";
   try { url = invite ? parseInvite(invite).url : ""; } catch { }
   const skipped = get(s, "active", "skipped");
+  const oversize: string[] = JSON.parse(get(s, "active", "oversize") ?? "[]");
   return {
     url,
     hosted: !!url && url === DEFAULT_RELAY_URL,
@@ -647,7 +668,8 @@ export function relayStatus(s: Store) {
     reconciling: !!invite && get(s, "active", "phase") !== "done",
     rotating: !!s.local("relay:rotation"),
     cleanupPending: cleanups(s).length > 0,
-    pushError: get(s, "active", "pushError"),
+    pushError: get(s, "active", "pushError")
+      ?? (oversize.length ? `${oversize.slice(0, 3).join(", ")}${oversize.length > 3 ? ` and ${oversize.length - 3} more` : ""}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay` : undefined),
     pullError: get(s, "active", "pullError"),
     skipped: skipped ? (JSON.parse(skipped) as { count: number }).count : undefined,
   };

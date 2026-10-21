@@ -11,6 +11,7 @@ import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
 import { enableRemote, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
+import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
 import { exportBackup, Store } from "../src/store.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -95,6 +96,20 @@ test("a virtual project answers stateless JSON requests with its servers and ski
   expect((await call("{")).status).toBe(400);
 });
 
+test("a virtual project's endpoint never offers the * skills, even on a record that inherits defaults", async () => {
+  const s = store();
+  writeSkillMd(s, "private", "---\nname: private\ndescription: internal only\n---\nSecret process.\n");
+  writeSkillMd(s, "public", "---\nname: public\ndescription: for grok\n---\nHi.\n");
+  s.put("project", "*", { id: "*", skills: ["private"] });
+  // What linking a skill to a virtual project that did not exist yet used to create.
+  s.put("project", "@grok", { id: "@grok", skills: ["public"], inheritDefaults: true });
+  const gateway = new Gateway(s);
+  cleanup.push(() => gateway.close());
+  const { response } = await gateway.handleRemote("@grok", rpc("tools/call", { name: "skills__list", arguments: {} }), {}, new AbortController().signal);
+  const body = await response.json() as { result: { content: { text: string }[] } };
+  expect(JSON.parse(body.result.content[0]!.text)).toEqual({ skills: [{ id: "public", description: "for grok" }] });
+});
+
 test("aborting a remote request cancels the upstream tool call", async () => {
   const s = store();
   const dir = mkdtempSync(join(tmpdir(), "agentgate-remote-")), cancelled = join(dir, "cancelled");
@@ -112,6 +127,19 @@ test("aborting a remote request cancels the upstream tool call", async () => {
   await expect(pending).rejects.toBeDefined();
   for (let i = 0; i < 50 && !existsSync(cancelled); i++) await Bun.sleep(100);
   expect(existsSync(cancelled)).toBe(true);
+});
+
+test("an endpoint uses this node's relay, and the service key goes to no other relay", () => {
+  const s = store();
+  saveProject(s, "@grok", {});
+  s.setLocal("relay:invite", makeInvite("https://relay.self-hosted.example"));
+  setServiceKey(s, "deploy-secret");
+  expect(enableRemote(s, "@grok").url).toStartWith("https://relay.self-hosted.example/mcp/");
+  expect(serviceKeyFor(s, "https://relay.self-hosted.example")).toBe("deploy-secret");
+  expect(serviceKeyFor(s, DEFAULT_RELAY_URL)).toBeUndefined();
+  // After leaving the relay, endpoints that live on it keep working.
+  s.setLocal("relay:invite", undefined);
+  expect(serviceKeyFor(s, "https://relay.self-hosted.example")).toBe("deploy-secret");
 });
 
 test("enabling waits for every node's version; status and backups never show endpoint keys", async () => {

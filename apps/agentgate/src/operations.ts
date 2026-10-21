@@ -4,6 +4,9 @@ import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
 import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
+import { relayInvite, rotateRelay, via } from "./relay.ts";
+import { NODE_PROTOCOL, regenerateAfterUnpair } from "./remote.ts";
+import { unpair } from "./sync.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
 export function parseCommand(text: string): string[] {
@@ -121,4 +124,32 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);
   // Virtual projects list their servers explicitly; `*` defaults never leak into a public endpoint.
   return s.put("project", id, { ...prev, ...patch, ...(patch.skills && { skills: [...new Set(patch.skills)] }), ...(virtual && { inheritDefaults: false }), id });
+}
+
+/** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a
+ * node record, so turning it on waits until every node reports NODE_PROTOCOL. Turning it off needs no wait: a dropped
+ * field reads as off. */
+export function setHealthDashboard(s: Store, node: string, on: boolean) {
+  return s.transaction(() => {
+    const n = s.get("node", node);
+    if (!n) throw new Error(`no machine ${node}`);
+    if (on) {
+      const old = s.list("node").filter((m) => (m.protocol ?? 0) < NODE_PROTOCOL).map((m) => m.id);
+      if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the dashboard setting`);
+    }
+    return s.put("node", node, { ...n, healthDashboard: on });
+  });
+}
+
+/** Remove a machine: when it is in the relay group everyone else moves to a new relay secret, since only that shuts it
+ * out; then every remote endpoint gets a new URL it has never seen, and it is unpaired. The rotation goes first, so a
+ * failed one changes nothing and can be retried. `allow` may refuse a step first. */
+export async function removeNode(s: Store, node: string, allow: (step: "endpoints" | "relay") => void = () => { }) {
+  const member = !!relayInvite(s) && via(s, node).includes("relay");
+  if (member) allow("relay");
+  if (s.list("project").some((p) => p.remote)) allow("endpoints");
+  const rotated = member ? await rotateRelay(s) : undefined;
+  const endpoints = regenerateAfterUnpair(s, node);
+  unpair(s, node);
+  return { endpoints, rotated };
 }

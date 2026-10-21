@@ -1,5 +1,4 @@
-import { loginIdSchema } from "@agentgate/protocol";
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
@@ -10,12 +9,22 @@ import { liveOnly, type Data, type Store } from "./store.ts";
  * and reads secrets as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
  * The sharing node re-reads it each round, so a refreshed or replaced login follows; every other node signs in with it
  * whenever it changes.
+ *
+ * An Infisical user login expires and cannot be renewed, so for tools that run unattended the user can also set an
+ * Infisical machine identity (Universal Auth) here. Every node, the one it was set on included, keeps it in
+ * ~/.infisical/universal-auth.json, which hanzio reads when its process has no client credentials; forgetting it
+ * removes that file everywhere.
  */
 
 /** The node protocol that understands `login` records (see NODE_PROTOCOL in remote.ts). */
 export const LOGINS_PROTOCOL = 4;
+/** The node protocol that understands the `infisical-identity` login. */
+export const IDENTITY_PROTOCOL = 5;
 type Login = Data<"login">;
 type LoginId = Login["id"];
+/** Logins read from this machine's own tools; the machine identity is entered instead. */
+const SHAREABLE = ["github", "infisical"] as const;
+const IDENTITY = "infisical-identity";
 
 /** The user's home and the `gh` command; tests point both elsewhere. */
 export const host = {
@@ -39,10 +48,15 @@ const realHome = (what: string) => {
 const infisical = () => ({
   config: join(host.home, ".infisical", "infisical-config.json"),
   keyring: join(host.home, "infisical-keyring"),
+  identity: join(host.home, ".infisical", "universal-auth.json"),
 });
+const requireProtocol = (s: Store, protocol: number) => {
+  const old = s.list("node").filter((n) => (n.protocol ?? 0) < protocol).map((n) => n.id);
+  if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync this login`);
+};
 
 /** This machine's login, or why it has none to share. */
-async function read(s: Store, id: LoginId): Promise<Login | string> {
+async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | string> {
   if (id === "github") {
     const token = await host.gh(["auth", "token", "--hostname", "github.com"]);
     if (!token) return "gh is not installed";
@@ -77,6 +91,10 @@ async function read(s: Store, id: LoginId): Promise<Login | string> {
 
 /** Sign this machine in with a login another machine shared. */
 async function apply(l: Login) {
+  if (l.id === IDENTITY) {
+    atomicWrite(infisical().identity, JSON.stringify({ clientId: l.account, clientSecret: l.clientSecret, siteUrl: l.siteUrl }, null, 2));
+    return;
+  }
   if (l.id === "github") {
     const current = await host.gh(["auth", "token", "--hostname", "github.com"]);
     if (!current) throw new Error("install gh to sign in to GitHub");
@@ -107,11 +125,11 @@ const hash = (l: Login) => new Bun.CryptoHasher("sha256").update(JSON.stringify(
 /** Share this machine's logins with every node. Logins this machine does not use are skipped, never shared. */
 export async function shareLogins(s: Store, only?: LoginId) {
   realHome("Sharing this machine's logins");
-  const old = s.list("node").filter((n) => (n.protocol ?? 0) < LOGINS_PROTOCOL).map((n) => n.id);
-  if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync shared logins`);
+  requireProtocol(s, LOGINS_PROTOCOL);
+  if (only === IDENTITY) throw new Error("set the Infisical machine identity with agentgate logins identity");
 
   const out: { id: LoginId; account?: string; skipped?: string }[] = [];
-  for (const id of only ? [only] : loginIdSchema.options) {
+  for (const id of only ? [only] : SHAREABLE) {
     const login = await read(s, id);
     if (typeof login === "string") {
       out.push({ id, skipped: login });
@@ -124,17 +142,43 @@ export async function shareLogins(s: Store, only?: LoginId) {
   return out;
 }
 
-/** Stop sharing a login. Machines already signed in stay signed in. */
+/** The Infisical instance this machine's CLI is signed in to, else Infisical Cloud (US). */
+export function infisicalSite() {
+  try {
+    const domain = JSON.parse(readFileSync(infisical().config, "utf8"))?.LoggedInUserDomain;
+    if (typeof domain === "string" && domain) return new URL(domain).origin;
+  } catch { } // no CLI config
+  return "https://app.infisical.com";
+}
+
+/** Check an Infisical machine identity with Infisical, then keep it on every machine. */
+export async function setInfisicalIdentity(s: Store, input: { clientId: string; clientSecret: string; siteUrl: string }) {
+  realHome("Setting the Infisical machine identity");
+  requireProtocol(s, IDENTITY_PROTOCOL);
+  const siteUrl = new URL(input.siteUrl).origin;
+  const res = await fetch(`${siteUrl}/api/v1/auth/universal-auth/login`, {
+    method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(15_000),
+    body: JSON.stringify({ clientId: input.clientId, clientSecret: input.clientSecret }),
+  }).catch(() => { throw new Error(`Infisical at ${siteUrl} is not reachable`); });
+  await res.body?.cancel();
+  if (!res.ok) throw new Error(`Infisical at ${siteUrl} did not accept this client id and secret (${res.status})`);
+  s.put("login", IDENTITY, { id: IDENTITY, from: s.nodeId, account: input.clientId, clientSecret: input.clientSecret, siteUrl });
+  await syncLogins(s);
+}
+
+/** Stop sharing a login. Machines already signed in stay signed in; the machine identity leaves every machine. */
 export function forgetLogin(s: Store, id: LoginId) {
   if (!s.get("login", id)) throw new Error(`${id} is not shared`);
+  if (id === IDENTITY) realHome("Forgetting the Infisical machine identity");
   s.del("login", id);
+  if (id === IDENTITY) rmSync(infisical().identity, { force: true });
   s.setLocal(`login:${id}`, undefined);
 }
 
 /** One daemon round: the sharing node re-reads its logins, every other node signs in with any that changed. */
 export async function syncLogins(s: Store) {
   for (const l of s.list("login")) {
-    if (l.from === s.nodeId) {
+    if (l.from === s.nodeId && l.id !== IDENTITY) {
       const current = await read(s, l.id);
       if (typeof current === "string") {
         setState(s, l.id, { error: `${current}; other machines keep the last shared login` });
@@ -153,6 +197,11 @@ export async function syncLogins(s: Store) {
     } catch (e) {
       setState(s, l.id, { error: (e as Error).message });
     }
+  }
+  // A forgotten machine identity must stop being used here too, or tools keep authenticating with it.
+  if (!s.get("login", IDENTITY) && s.local(`login:${IDENTITY}`)) {
+    rmSync(infisical().identity, { force: true });
+    s.setLocal(`login:${IDENTITY}`, undefined);
   }
 }
 

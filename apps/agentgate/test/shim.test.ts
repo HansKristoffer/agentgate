@@ -8,7 +8,8 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
-import { aliasesFor, parseRemote, renameInstance, toolName } from "../src/mcp/gateway.ts";
+import { aliasesFor, parseRemote, toolName } from "../src/mcp/gateway.ts";
+import { renameInstance } from "../src/operations.ts";
 import { DAEMON_DOWN, buildShim } from "../src/mcp/shim.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
@@ -157,6 +158,34 @@ test("active MCP calls survive idle sweeps and cached tools acquire a new connec
     const result = await client.callTool({ name: "fake__whoami" }); expect(result.isError).not.toBe(true); expect(ctx.gateway.upstreams.get("fake")?.client).not.toBe(before);
     s.put("project", "*", { id: "*", mcp: {} }); const removed = await client.callTool({ name: "fake__whoami" }); expect(removed.isError).toBe(true);
   } finally { await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); }
+});
+
+test("one hung server does not cost a new session the daemon and every other server", async () => {
+  // Answers nothing until the test ends.
+  const answer = Promise.withResolvers<Response>();
+  const hung = Bun.serve({ port: 0, fetch: () => answer.promise }); servers.push(hung);
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  s.put("mcp", "good", newInstance({ id: "good", url: fakeUpstream("good") }));
+  s.put("mcp", "hung", newInstance({ id: "hung", url: `http://127.0.0.1:${hung.port}/mcp` }));
+  s.put("project", "*", { id: "*", mcp: { good: "good", hung: "hung" } });
+  const ctx = makeCtx(s), handler = app(ctx), daemon = Bun.serve({ port: 0, fetch: req => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(tmpdir(), `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "*" }, { reconnectMs: 60_000 });
+  const client = await connectTo(shim.server);
+  try { expect(client.getInstructions()).toContain("Data for good"); }
+  finally { answer.resolve(new Response("gone", { status: 503 })); await client.close(); await shim.close(); await ctx.gateway.close(); daemon.stop(true); s.close(); }
+});
+
+test("a web page cannot reach the MCP endpoint, and a project is recorded only for a real session", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n");
+  const ctx = makeCtx(s), handler = app(ctx);
+  const get = (headers: Record<string, string>, project = "evil/spam") => handler.fetch(new Request(`http://127.0.0.1:7878/mcp?project=${project}`, { headers: { host: "127.0.0.1:7878", ...headers } }), { listener: "loopback" });
+  try {
+    expect((await get({ "sec-fetch-site": "cross-site" })).status).toBe(403);
+    expect((await get({ origin: "https://evil.example" })).status).toBe(403);
+    expect((await get({}, "not a project")).status).toBe(400);
+    await get({}); // a GET without a session starts none
+    expect(s.get("project", "evil/spam")).toBeUndefined();
+  } finally { await ctx.gateway.close(); s.close(); }
 });
 
 test("a running shim recovers when the daemon starts late and restarts", async () => {

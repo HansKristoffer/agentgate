@@ -21,7 +21,7 @@ afterEach(async () => {
   for (const s of stores.splice(0)) { await stopRelay(s); try { s.close(); } catch { } }
   for (const x of servers.splice(0)) x.stop(true);
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.AGENTGATE_RELAY_ALLOW_HTTP; });
 
 function node(name: string, file?: string) {
   const s = new Store(file ?? ":memory:");
@@ -81,7 +81,7 @@ test("crypto vectors are pinned", async () => {
   expect(blob).toBe(VECTORS.blob);
   expect(await open(keys, aad, blob)).toBe('{"x":1}');
   for (const changed of [{ pusherSeq: 2 }, { node: "b" }, { generation: "1".repeat(32) }, { key: "x".repeat(43) }])
-    expect(open(keys, { ...aad, ...changed }, blob)).rejects.toThrow();
+    await expect(open(keys, { ...aad, ...changed }, blob)).rejects.toThrow();
 });
 
 test("invites and pairing commands are validated without echoing secrets", () => {
@@ -185,8 +185,7 @@ test("tampered entries are skipped without advancing replay state, and the diagn
   await sync(b);
   expect(relayStatus(b)!.skipped).toBe(3); // a later clean page does not clear it
   // A forged higher counter can't be recovered by its owner: that is a reported conflict, not silent loss.
-  expect(reconcileRelay(a)).rejects.toThrow("counter conflict");
-  await Bun.sleep(10);
+  await expect(reconcileRelay(a)).rejects.toThrow("counter conflict");
   db.run("update entries set pusher_seq = pusher_seq - 5 where key = ?", [rows[2]!.key]);
   // With an honest relay again, a re-uploads everything; a full re-read on b clears the diagnostic.
   await reconcileRelay(a);
@@ -316,8 +315,7 @@ test("rotation resumes the same invite after interruption; failed cleanup stays 
   const old = await createRelay(a, r.url);
   await joinRelay(b, old);
   r.ctl.mode = "down";
-  expect(rotateRelay(a)).rejects.toThrow();
-  await Bun.sleep(10);
+  await expect(rotateRelay(a)).rejects.toThrow();
   const pendingInvite = JSON.parse(a.local("relay:rotation")!).invite as string;
   expect(relayInvite(a)).toBe(old); // not switched before seeding succeeds
   expect(relayStatus(a)!.rotating).toBe(true);
@@ -486,22 +484,38 @@ test("after a sleep, the relay is retried within seconds even if it failed for h
   expect(a.get("account", "fresh")).toBeDefined();
 });
 
-test("an oversized record blocks the upload checkpoint and is reported", async () => {
+test("a rotation that cannot create its new group says why uploads wait", async () => {
   const r = relay();
-  const a = node("a");
-  await createRelay(a, r.url);
-  const before = relayStatus(a)!.pushed;
-  a.put("mcp", "big", { id: "big", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(1_200_000) } });
+  const a = node("a"), b = node("b");
+  await joinRelay(b, await createRelay(a, r.url));
+  r.config.newGroupsDisabled = true; // the operator stops new groups, then a machine is removed
+  await expect(rotateRelay(a)).rejects.toThrow();
   await sync(a);
+  expect(relayStatus(a)).toMatchObject({ rotating: true, pushError: expect.stringContaining("Uploads wait for the new relay group") });
+});
+
+test("an oversized record is left out and reported, and the records after it still reach the group", async () => {
+  const r = relay();
+  const a = node("a"), b = node("b");
+  const invite = await createRelay(a, r.url);
+  await joinRelay(b, invite);
+  a.put("mcp", "big", { id: "big", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(1_200_000) } });
+  seed(a);
+  await sync(a); await sync(b);
   expect(relayStatus(a)!.pushError).toContain("mcp big");
-  expect(relayStatus(a)!.pushed).toBe(before);
+  expect(b.get("credential", "acc")?.accessToken).toBe("sk-ant-secret-token");
+  expect(b.get("mcp", "big")).toBeUndefined();
+  // Once it fits again, it goes up and the report clears.
+  a.put("mcp", "big", { ...a.get("mcp", "big")!, headers: {} });
+  await sync(a); await sync(b);
+  expect(relayStatus(a)!.pushError).toBeUndefined();
+  expect(b.get("mcp", "big")).toBeDefined();
 });
 
 test("a deployment key is required, configured separately, and never exposed", async () => {
   const r = relay({ relayKey: "deploy-secret" });
   const a = node("a");
-  expect(createRelay(a, r.url)).rejects.toThrow("service key");
-  await Bun.sleep(10);
+  await expect(createRelay(a, r.url)).rejects.toThrow("service key");
   expect(relayInvite(a)).toBeUndefined();
   setServiceKey(a, "deploy-secret");
   const invite = await createRelay(a, r.url);
@@ -537,7 +551,7 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
   expect((await call(handlerA, "/api/relay/rotate", undefined, "tailnet")).status).toBe(403);
   // A Tailscale join URL is an origin: it cannot be aimed at this daemon's own routes.
   for (const url of ["http://127.0.0.1:7878/api/relay/rotate?x=", "http://127.0.0.1:7878/api/relay/rotate#", "http://127.0.0.1:7878/api"])
-    expect(join(a, url, "amber-anchor-apple-arrow-basil-beacon-birch", "http://127.0.0.1:7879")).rejects.toThrow("origin");
+    await expect(join(a, url, "amber-anchor-apple-arrow-basil-beacon-birch", "http://127.0.0.1:7879")).rejects.toThrow("origin");
   await sync(a);
   const status = await (await handlerA.fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), { listener: "loopback" })).json() as any;
   expect(status.relay).toMatchObject({ url: r.url, hosted: false, reconciling: false });
@@ -559,9 +573,10 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
 
   const other = node("a", aFile); // a second process on the same database
   let release!: () => void;
-  const held = withRelay(a, () => new Promise<void>((resolve) => { release = resolve; }));
-  await Bun.sleep(20);
-  expect(withRelay(other, async () => 1, 0)).rejects.toBeInstanceOf(RelayBusy);
+  const holding = Promise.withResolvers<void>();
+  const held = withRelay(a, () => new Promise<void>((resolve) => { release = resolve; holding.resolve(); }));
+  await holding.promise;
+  await expect(withRelay(other, async () => 1, 0)).rejects.toBeInstanceOf(RelayBusy);
   release(); await held;
   expect(await withRelay(other, async () => 2, 1000)).toBe(2);
 
@@ -576,7 +591,7 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   expect(Date.now() - started).toBeLessThan(2000);
 });
 
-/** Published in docs/operations.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
+/** Published in docs/operations/relay.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
 const VECTORS = {
   groupId: "8f6ba714a69c73f1fbdcd8efe342493a",
   authToken: "ZxB1Uo3DlItacW62HpLUewhYoxYs8G2M_1fl8d29AnE",

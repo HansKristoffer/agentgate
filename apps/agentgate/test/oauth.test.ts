@@ -12,6 +12,7 @@ const challenges = new Map<string, string>();
 const access = new Set<string>();
 const refresh = new Set<string>();
 let n = 0;
+let tokenEndpointDown = false;
 const issue = () => {
   const t = { access_token: `at-${++n}`, refresh_token: `rt-${n}`, token_type: "Bearer", expires_in: 3600 };
   access.add(t.access_token);
@@ -44,6 +45,7 @@ const server = Bun.serve({
         return Response.redirect(back.href, 302);
       }
       case "/token": {
+        if (tokenEndpointDown) return Response.json({ error: "server_error" }, { status: 503 });
         const f = new URLSearchParams(await req.text());
         if (f.get("grant_type") === "authorization_code") {
           const want = challenges.get(f.get("code")!);
@@ -106,7 +108,7 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   expect(text).toBe(`token ${second}`);
 
   // A reused state is refused.
-  expect(finishLogin(s, back.searchParams.get("state")!, "x")).rejects.toThrow();
+  await expect(finishLogin(s, back.searchParams.get("state")!, "x")).rejects.toThrow();
 });
 
 test("headers parse from lines or pairs; ids and URLs are validated", () => {
@@ -128,6 +130,20 @@ test("MCP refresh uses holder coordination and concurrent callers rotate once", 
   expect(remote.get("refreshRequest", "mcpCredential:fake")).toBeDefined();
   const [a, b] = await Promise.all([refreshMcp(holder, "fake", true), refreshMcp(holder, "fake", true)]); expect(a.tokens?.access_token).toBe(b.tokens?.access_token); expect(a.tokens?.access_token).not.toBe(first);
   holder.close(); remote.close();
+});
+
+test("an MCP token endpoint that is briefly down keeps the valid token instead of asking for a login", async () => {
+  const s = new Store(":memory:"); s.setLocal("node", "n"); s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(s, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
+  await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!);
+  const { refreshMcp } = await import("../src/mcp/oauth.ts"); const current = s.get("mcpCredential", "fake")!;
+  s.put("mcpCredential", "fake", { ...current, expiresAt: s.now() + 60_000 }); // close to expiry, so it refreshes
+  tokenEndpointDown = true;
+  try { expect((await refreshMcp(s, "fake")).tokens?.access_token).toBe(current.tokens!.access_token); }
+  finally { tokenEndpointDown = false; }
+  expect(s.get("mcpCredential", "fake")!.needsLogin).toBeFalsy();
+  expect(s.local("refreshError:mcpCredential:fake")).toBeDefined();
+  s.close();
 });
 
 test("expired MCP OAuth state is refused before token exchange", async () => {

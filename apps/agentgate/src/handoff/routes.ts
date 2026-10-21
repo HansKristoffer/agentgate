@@ -7,13 +7,14 @@ import { CHANNEL_CHUNK } from "../channel.ts";
 import { jsonInput } from "../http.ts";
 import { MAX_BODY, readBody } from "../runtime.ts";
 import type { Peer } from "../sync.ts";
-import { abort, manifestSchema, peerStatus, prepare, prepareSchema, start, type DestState } from "./destination.ts";
+import { abort, checkoutFile, manifestSchema, peerStatus, prepare, prepareSchema, start, type DestState } from "./destination.ts";
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
 import { startHandoff } from "./source.ts";
-import { T3Error, connectInput, connectT3, disconnectT3, pairing } from "./t3.ts";
+import { T3Error, connectInput, connectWith, createPairingLink, disconnectT3, pairingLinkInput } from "./t3.ts";
 import { localView, resolveTarget } from "./threads.ts";
 import { updateHere } from "../update.ts";
+import { routeHere } from "../setup.ts";
 
 /** `/peer/handoff/*` and `/peer/threads`, mounted behind the peer token check (sync.ts). Every step is keyed by the
  * handoff id, so a retried request is safe. Unknown ids answer 404. */
@@ -47,8 +48,18 @@ export function handoffRoutes(h: Handoffs) {
     }
   });
 
-  // Set up from another machine: it forwards the pairing link created in this machine's T3 Code.
-  app.post("/t3/connect", async (c) => c.json(await connectT3(h.s, pairing(connectInput.parse(await jsonInput(c.req.raw))))));
+  app.post("/setup/primary", async (c) => {
+    const { on } = z.object({ on: z.boolean() }).strict().parse(await jsonInput(c.req.raw));
+    try {
+      return c.json(await routeHere(h.s, on));
+    } catch (e) {
+      return c.json({ error: (e as Error).message }, 409);
+    }
+  });
+
+  // Set up from another machine: it forwards the pairing link created in this machine's T3 Code, or asks for one.
+  app.post("/t3/connect", async (c) => c.json(await connectWith(h.s, connectInput.parse(await jsonInput(c.req.raw)))));
+  app.post("/t3/pairing-link", async (c) => c.json(await createPairingLink(h.s, pairingLinkInput.parse(await jsonInput(c.req.raw)))));
   app.post("/t3/disconnect", (c) => {
     disconnectT3(h.s);
     return c.json({ ok: true });
@@ -76,7 +87,7 @@ export function handoffRoutes(h: Handoffs) {
 
     const path = c.req.query("path") ?? "";
     const offset = Number(c.req.query("offset"));
-    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/"))) return c.json({ error: "invalid path" }, 400);
+    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/") || checkoutFile(path))) return c.json({ error: "invalid path" }, 400);
     if (!Number.isInteger(offset) || offset < 0) return c.json({ error: "invalid offset" }, 400);
 
     const chunk = gunzipSync(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), { maxOutputLength: CHANNEL_CHUNK });
@@ -101,7 +112,7 @@ export function handoffRoutes(h: Handoffs) {
   });
   app.get("/handoff/:id", (c) => {
     const job = own(c);
-    return job ? c.json(peerStatus(h, job)) : c.json(missing, 404);
+    return job ? c.json(peerStatus(job)) : c.json(missing, 404);
   });
   app.delete("/handoff/:id", (c) => {
     const job = own(c);

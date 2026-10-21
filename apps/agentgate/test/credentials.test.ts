@@ -6,17 +6,19 @@ import { Credentials, NeedsLogin } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { accountStatus } from "../src/llm/pool.ts";
 import { Store } from "../src/store.ts";
-import { noteSyncRound } from "../src/sync.ts";
+import { noteSyncRound, noteSyncTurn } from "../src/sync.ts";
 
 // Fake OAuth endpoint that rotates refresh tokens: each one works exactly once.
 let valid = new Set<string>();
 let refreshes = 0;
+/** Refresh tokens sent again after they were used: a provider that detects reuse revokes the login. */
+let reused = 0;
 let n = 0;
 const oauth = Bun.serve({
   port: 0,
   async fetch(req) {
     const { refresh_token } = (await req.json()) as { refresh_token: string };
-    if (!valid.delete(refresh_token)) return Response.json({ error: "invalid_grant" }, { status: 400 });
+    if (!valid.delete(refresh_token)) return reused++, Response.json({ error: "invalid_grant" }, { status: 400 });
     refreshes++;
     const rt = `rt-${++n}`;
     valid.add(rt);
@@ -47,11 +49,12 @@ const pull = (into: Store, from: Store) => {
 };
 /** Let time pass while `s` keeps syncing every 15 s, as an awake daemon with a working network does, without hearing from the holder. */
 const syncFor = (s: Store, ms: number) => { for (const end = T + ms; T < end;) { T += 15_000; noteSyncRound(s); } };
-const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (p, rt) => claude.refresh(rt), async () => pull(s, peer()));
+const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (_p, rt) => claude.refresh(rt), async () => pull(s, peer()));
 
 beforeEach(() => {
   valid = new Set(["rt-0"]);
   refreshes = 0;
+  reused = 0;
   n = 0;
   srv = node("srv");
   mac = node("mac");
@@ -84,7 +87,7 @@ test("a node back from sleep does not take over until it has synced for two minu
   // one the holder already rotated.
   syncFor(srv, 5 * MIN);
   T += 3 * 60 * MIN;
-  const creds = new Credentials(srv, (p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
+  const creds = new Credentials(srv, (_p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
   syncFor(srv, 90_000);
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
@@ -137,9 +140,62 @@ test("invalid_grant pulls from peers and uses the newer copy", async () => {
 
 test("invalid_grant with no newer copy marks the account needsLogin", async () => {
   valid.clear();
-  expect(credsFor(mac, () => srv).refresh("a")).rejects.toBeInstanceOf(NeedsLogin);
-  await Bun.sleep(20);
+  await expect(credsFor(mac, () => srv).refresh("a")).rejects.toBeInstanceOf(NeedsLogin);
   expect(mac.get("credential", "a")!.needsLogin).toBe(true);
+});
+
+test("a holder back from sleep hears the others before refreshing, and never uses a token the taker rotated", async () => {
+  // mac sleeps; srv keeps syncing, never hears from it, and takes the login over as it nears expiry.
+  syncFor(srv, 12 * MIN);
+  expect((await credsFor(srv, () => mac).token("a")).holder).toBe("srv");
+  // mac wakes hours later, still holding rt-0 as the holder. Its first credential tick runs before any pull.
+  T += 3 * 60 * MIN;
+  await credsFor(mac, () => srv).tick();
+  expect(reused).toBe(0);
+  expect(mac.get("credential", "a")).toMatchObject({ holder: "srv", refreshToken: "rt-1" });
+});
+
+test("a holder that hears from nobody right after waking waits instead of refreshing", async () => {
+  syncFor(srv, 12 * MIN);
+  await credsFor(srv, () => mac).token("a");
+  T += 3 * 60 * MIN;
+  // mac's network is not up yet: its pull fails. It must not try rt-0, which srv rotated.
+  const offline = new Credentials(mac, (_p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
+  await expect(offline.token("a")).rejects.toThrow("waiting to hear from the other machines");
+  expect(reused).toBe(0);
+  expect(mac.get("credential", "a")!.needsLogin).toBeFalsy();
+  // Once it hears from srv, srv's working copy wins.
+  pull(mac, srv);
+  expect(mac.get("credential", "a")).toMatchObject({ holder: "srv", refreshToken: "rt-1", needsLogin: false });
+});
+
+test("a refused refresh token is sent once, and the login needs a sign-in once the others had their chance", async () => {
+  valid.clear(); // the provider revoked mac's login
+  const unheard = new Credentials(mac, (_p, rt) => claude.refresh(rt), async () => ["srv is not reachable"]);
+  // mac keeps syncing through the relay until its token expires, but srv does not answer and mac's daemon only just started.
+  for (const end = mac.get("credential", "a")!.expiresAt + 1; T < end;) { T += 15_000; noteSyncRound(mac); }
+  await expect(unheard.token("a")).rejects.toThrow("token refresh failed");
+  await expect(unheard.token("a")).rejects.toThrow("token refresh failed");
+  expect(reused).toBe(1);
+  expect(mac.get("credential", "a")!.needsLogin).toBeFalsy();
+  // Two minutes awake without a word from srv: srv is offline, and the login is dead.
+  for (const end = T + 2 * MIN + 15_000; T < end;) { T += 15_000; noteSyncRound(mac); noteSyncTurn(mac); }
+  await expect(unheard.token("a")).rejects.toBeInstanceOf(NeedsLogin);
+  expect(reused).toBe(1);
+  expect(mac.get("credential", "a")!.needsLogin).toBe(true);
+});
+
+test("a holder change that syncs in during a refresh keeps the freshly rotated tokens", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(r => release = r), started = new Promise<void>(r => entered = r);
+  const task = new Credentials(mac, async () => { entered(); await gate; return { accessToken: "at-1", refreshToken: "rt-1", expiresAt: T + 8 * 60 * MIN }; }, async () => { }).refresh("a");
+  await started;
+  // The always-on server reclaims the holder role, and that record arrives while the provider rotates rt-0.
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, holder: "srv" });
+  pull(mac, srv);
+  release();
+  expect((await task).refreshToken).toBe("rt-1");
+  expect(mac.get("credential", "a")!.refreshToken).toBe("rt-1");
 });
 
 test("simultaneous forced refreshes across independent stores rotate exactly once", async () => {

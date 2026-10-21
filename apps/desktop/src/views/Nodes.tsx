@@ -1,7 +1,7 @@
-import { useState } from "react";
-import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
-import { Button, Switch, toast } from "@heroui/react";
-import { outdatedNodes, type SharedLogin } from "@agentgate/protocol";
+import { useEffect, useState } from "react";
+import { Copy, ExternalLink, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
+import { Button, Spinner, Switch, toast } from "@heroui/react";
+import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
   Badge,
@@ -9,14 +9,24 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  LiveSwitch,
   RowMenu,
+  usePending,
 } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
+import { openExternal, request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
-type Shown = { command: string; method: Method; rotated?: boolean };
+/** `known`: the machines there were when the command was shown, so the one that joins can be told apart. */
+type Shown = { command: string; method: Method; rotated?: boolean; known?: string[] };
+
+const routingText = (r: { claude: boolean; codex: boolean }) =>
+  r.claude && r.codex
+    ? "Claude Code and Codex use Agentgate"
+    : r.claude || r.codex
+      ? `Only ${r.claude ? "Claude Code" : "Codex"} uses Agentgate`
+      : "Claude Code and Codex use their own logins";
 
 export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [choosing, setChoosing] = useState(false);
@@ -24,7 +34,15 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [joinOpen, setJoinOpen] = useState(false);
   const [name, setName] = useState("");
   const relay = data.relay;
+  const pending = usePending();
   const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
+  // The machine the pairing command was for has joined: say so, and the dialog has done its job.
+  const joined = shown?.known && data.nodes.find((n) => !shown.known!.includes(n.id));
+  useEffect(() => {
+    if (!joined) return;
+    toast(`${joined.id} joined`);
+    setShown(undefined);
+  }, [joined]);
   const update = (node: string) =>
     void perform(async () => {
       const result = await request<{ version?: string; restarting: boolean }>(
@@ -39,6 +57,11 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             ? `${node} installed Agentgate ${result.version} and is restarting`
             : `${node} installed Agentgate ${result.version}; restart Agentgate there to use it`,
       );
+    }, undefined, `update:${node}`);
+  const route = (node: string, on: boolean) =>
+    void perform(async () => {
+      await request(connection, `/nodes/${idPath(node)}/primary`, "POST", { on });
+      toast(on ? `Claude Code and Codex on ${node} now use Agentgate` : `Claude Code and Codex on ${node} use their own logins again`);
     });
   const pair = (method: Method) =>
     void perform(async () => {
@@ -50,7 +73,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       );
       setChoosing(false);
       setName("");
-      setShown({ command: result.command, method });
+      setShown({ command: result.command, method, known: data.nodes.map((n) => n.id) });
     });
   const relayState = relay && [
     relay.reconciling && "Reconciling",
@@ -73,6 +96,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       >
         {data.nodes.map((n) => {
           const viaRelay = !!n.via?.includes("relay");
+          // This machine's dashboard is opened on loopback, which works without Tailscale; the others at their address.
+          const origin = n.id === data.node && local ? connection.url.replace(/\/$/, "") : n.url;
           return (
             <div className="item" key={n.id}>
               <div className="machine-icon">
@@ -99,19 +124,62 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                       : `Last seen ${relative(n.lastSeen)}`)}
                   {n.version && ` · Agentgate ${n.version}`}
                 </small>
+                {n.update?.state === "failed" && <small>Update failed: {n.update.error}</small>}
+                {n.routing && <small>{routingText(n.routing)}</small>}
               </div>
-              {outdated.has(n.id) && (
-                <Button size="sm" variant="tertiary" onPress={() => update(n.id)}>
-                  Update
+              {n.update?.state === "installing" || n.update?.state === "restarting" || pending.has(`update:${n.id}`) ? (
+                <Badge>
+                  <Spinner size="sm" color="current" />
+                  {n.update?.state === "restarting" ? `Restarting on ${n.update.version}` : "Installing update"}
+                </Badge>
+              ) : n.update?.state === "installed" ? (
+                <small>Restart Agentgate on {n.id} to use {n.update.version}</small>
+              ) : (
+                outdated.has(n.id) && (
+                  <Button size="sm" variant="tertiary" onPress={() => update(n.id)}>
+                    {n.update?.state === "failed" ? "Retry update" : "Update"}
+                  </Button>
+                )
+              )}
+              {n.healthDashboard && origin && (n.online || n.id === data.node) && (
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  onPress={() => void perform(() => openExternal(`${origin}${HEALTH_PATH}`), undefined, `open:${n.id}`)}
+                >
+                  <ExternalLink size={15} />
+                  Open dashboard
                 </Button>
               )}
-              <Switch
+              <LiveSwitch
+                isSelected={!!n.healthDashboard}
+                onChange={(on) =>
+                  perform(
+                    () =>
+                      request(connection, `/nodes/${idPath(n.id)}/dashboard`, "POST", {
+                        on,
+                      }),
+                    undefined,
+                    `dashboard:${n.id}`,
+                  )
+                }
+              >
+                <Switch.Content className="check muted">
+                  Dashboard
+                  <Switch.Control>
+                    <Switch.Thumb />
+                  </Switch.Control>
+                </Switch.Content>
+              </LiveSwitch>
+              <LiveSwitch
                 isSelected={!!n.alwaysOn}
-                onChange={() =>
-                  void perform(() =>
+                onChange={(on) =>
+                  perform(() =>
                     request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                      alwaysOn: !n.alwaysOn,
+                      alwaysOn: on,
                     }),
+                    undefined,
+                    `alwaysOn:${n.id}`,
                   )
                 }
               >
@@ -121,45 +189,58 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     <Switch.Thumb />
                   </Switch.Control>
                 </Switch.Content>
-              </Switch>
-              {n.id !== data.node && !(viaRelay && !local) && (
-                // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
-                <RowMenu
-                  label={`More for ${n.id}`}
-                  items={[
-                    {
-                      label: viaRelay ? "Remove" : "Unpair",
-                      danger: true,
-                      onAction: async () => {
-                        const endpoints = data.projects.some((p) => p.remote)
-                          ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
-                          : "";
-                        const message = (viaRelay
-                          ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
-                          : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
-                        if (
-                          await confirmDialog(message, {
-                            destructive: true,
-                            okLabel: viaRelay ? "Remove and rotate" : "Unpair",
-                          })
+              </LiveSwitch>
+              <RowMenu
+                label={`More for ${n.id}`}
+                items={[
+                  (n.online || n.id === data.node) && {
+                    label: n.routing?.claude && n.routing.codex ? "Stop routing Claude Code and Codex" : "Route Claude Code and Codex",
+                    onAction: async () => {
+                      const on = !(n.routing?.claude && n.routing.codex);
+                      if (
+                        await confirmDialog(
+                          on
+                            ? `Route ${n.id}'s own Claude Code and Codex through Agentgate? This changes ~/.claude and ~/.codex on ${n.id}; you can undo it here.`
+                            : `Stop routing ${n.id}'s Claude Code and Codex? They go back to the logins they had before, and stop if they had none.`,
+                          { okLabel: on ? "Route" : "Stop routing" },
                         )
-                          void perform(async () => {
-                            const result = await request<{
-                              rotated?: boolean;
-                              command?: string;
-                            }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
-                            if (result.rotated && result.command)
-                              setShown({
-                                command: result.command,
-                                method: "relay",
-                                rotated: true,
-                              });
-                          }, viaRelay ? undefined : "Machine unpaired");
-                      },
+                      )
+                        route(n.id, on);
                     },
-                  ]}
-                />
-              )}
+                  },
+                  // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
+                  n.id !== data.node && !(viaRelay && !local) && {
+                    label: viaRelay ? "Remove" : "Unpair",
+                    danger: true,
+                    onAction: async () => {
+                      const endpoints = data.projects.some((p) => p.remote)
+                        ? ` Virtual projects get new URLs and secrets, because ${n.id} knows the current ones; update them in Grok.`
+                        : "";
+                      const message = (viaRelay
+                        ? `Remove ${n.id}? The relay secret changes: every other relay machine must join again with the new command. Also remove ${n.id}'s Tailscale pairing on every machine you keep, because a new relay secret cannot revoke those links.`
+                        : `Unpair ${n.id}? It will stop syncing with this node.`) + endpoints;
+                      if (
+                        await confirmDialog(message, {
+                          destructive: true,
+                          okLabel: viaRelay ? "Remove and rotate" : "Unpair",
+                        })
+                      )
+                        void perform(async () => {
+                          const result = await request<{
+                            rotated?: boolean;
+                            command?: string;
+                          }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
+                          if (result.rotated && result.command)
+                            setShown({
+                              command: result.command,
+                              method: "relay",
+                              rotated: true,
+                            });
+                        }, viaRelay ? undefined : "Machine unpaired");
+                    },
+                  },
+                ]}
+              />
             </div>
           );
         })}
@@ -174,6 +255,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               <Button
                 size="sm"
                 variant="tertiary"
+                isPending={pending.has("Relay reconciled")}
                 onPress={() =>
                   void perform(
                     () => request(connection, "/relay/reconcile", "POST"),
@@ -181,6 +263,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   )
                 }
               >
+                {pending.has("Relay reconciled") && <Spinner size="sm" color="current" />}
                 Reconcile now
               </Button>
             )
@@ -289,6 +372,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                 : "Start Tailscale on the other machine, then run this there. It installs Agentgate, joins this machine, starts the service and routes that machine's Claude Code and Codex through Agentgate. The code expires in 10 minutes."}
           </p>
           <pre>{shown.command}</pre>
+          {shown.known && (
+            <p className="row note">
+              <Spinner size="sm" color="current" />
+              Waiting for the other machine to join
+            </p>
+          )}
           <Button
             size="sm"
             variant="tertiary"
@@ -363,7 +452,7 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
   return (
     <Panel
       title="Shared logins"
-      detail="Sign every machine in to GitHub and Infisical as you, including servers that join later."
+      detail="Sign every machine in to GitHub and Infisical, including servers that join later."
       foot={local ? undefined : "Sharing reads this machine's own logins, so it is only available on the daemon's own machine."}
     >
       {LOGINS.map(({ id, name, tool }) => {
@@ -419,6 +508,78 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
           </div>
         );
       })}
+      <InfisicalIdentity data={data} connection={connection} perform={perform} local={local} />
     </Panel>
+  );
+}
+
+/** An Infisical machine identity on every machine, for tools that run unattended (hanzio reads it when a process has no
+ * client credentials). Unlike a user login it does not expire. */
+function InfisicalIdentity({ data, connection, perform, local }: ViewProps) {
+  const [open, setOpen] = useState(false);
+  const identity = data.logins.find((l) => l.id === "infisical-identity");
+  return (
+    <div className="item">
+      <div className="machine-icon">
+        <KeyRound size={16} />
+      </div>
+      <div className="grow">
+        <div className="row">
+          <strong>Infisical machine identity</strong>
+          {identity && <Badge good={identity.signedIn}>{identity.signedIn ? "On this machine" : "Not on this machine yet"}</Badge>}
+        </div>
+        <small>
+          {identity
+            ? `${identity.account} · set from ${identity.from}`
+            : "For unattended tools such as hanzio: a Universal Auth client id and secret that does not expire, kept on every machine."}
+        </small>
+        {identity?.error && <small>{identity.error}</small>}
+      </div>
+      <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => setOpen(true)}>
+        {identity ? "Replace" : "Set"}
+      </Button>
+      {identity && (
+        <RowMenu
+          label="More for the Infisical machine identity"
+          items={[{
+            label: "Remove from every machine",
+            danger: true,
+            onAction: async () => {
+              if (await confirmDialog("Remove the Infisical machine identity from every machine?", { destructive: true, okLabel: "Remove" }))
+                void perform(() => request(connection, "/logins/infisical-identity", "DELETE"), "Infisical machine identity removed");
+            },
+          }]}
+        />
+      )}
+      {open && (
+        <Modal title="Infisical machine identity" close={() => setOpen(false)}>
+          <p className="muted">
+            Create a machine identity with Universal Auth in Infisical (Organization → Access Control → Identities) and give it
+            access to your projects. agentgate checks it with Infisical, then writes it to ~/.infisical/universal-auth.json on
+            every machine.
+          </p>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              const siteUrl = field(f, "siteUrl");
+              void perform(async () => {
+                await request(connection, "/logins/infisical-identity", "PUT", {
+                  clientId: field(f, "clientId"),
+                  clientSecret: field(f, "clientSecret"),
+                  ...(siteUrl && { siteUrl }),
+                });
+                setOpen(false);
+              }, "Infisical machine identity set on every machine");
+            }}
+          >
+            <Field label="Client ID" name="clientId" isRequired />
+            <Field label="Client secret" name="clientSecret" type="password" isRequired />
+            <Field label="Infisical URL" name="siteUrl" description="Leave empty for the instance the Infisical CLI here uses" placeholder="https://eu.infisical.com" />
+            <Button type="submit" size="sm">Save</Button>
+          </form>
+        </Modal>
+      )}
+    </div>
   );
 }
