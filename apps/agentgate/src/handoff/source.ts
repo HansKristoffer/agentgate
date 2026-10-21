@@ -186,7 +186,7 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     // HEAD may have moved since resolve if the agent committed before stopping; the bundle is built from now.
     const code = await describe(st.cwd!);
     st.headSha = code.headSha;
-    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha, code.dirty);
+    st.snapshot = await snapshot(st.cwd!, job.id, code.headSha);
 
     const out = join(h.dir(job.id), "out");
     rmSync(out, { recursive: true, force: true });

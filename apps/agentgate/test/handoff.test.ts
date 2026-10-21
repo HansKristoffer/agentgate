@@ -70,8 +70,8 @@ test("code travels as a bundle: unpushed commits and uncommitted, untracked and 
   const statusBefore = sh(wtA, "status", "--porcelain");
 
   const code = await describe(wtA);
-  expect(code).toMatchObject({ branch: "feature", dirty: true, remoteUrl: r.url, baseSha: sh(r.a, "rev-parse", "main") });
-  const snap = await snapshot(wtA, "h1", code.headSha, code.dirty);
+  expect(code).toMatchObject({ branch: "feature", remoteUrl: r.url, baseSha: sh(r.a, "rev-parse", "main") });
+  const snap = await snapshot(wtA, "h1", code.headSha);
   expect(snap.uncommitted).toBe(true);
   const bundle = join(r.root, "out.bundle");
   expect(await createBundle(wtA, "h1", snap.sha, bundle)).toBe(true);
@@ -82,7 +82,7 @@ test("code travels as a bundle: unpushed commits and uncommitted, untracked and 
   const wtB = join(r.root, "wt-b");
   await addWorktree(r.b, wtB, "feature", code.baseSha!);
   expect(await fetchBundle(r.b, bundle, "h1")).toBe(true);
-  expect(await moveToSource(wtB, "feature", code.headSha, snap)).toBeUndefined();
+  expect(await moveToSource(wtB, "feature", code.headSha, snap)).toEqual({ replaced: [] });
   expect(readFileSync(join(wtB, "feature.txt"), "utf8")).toBe("committed\n");
   expect(readFileSync(join(wtB, "README.md"), "utf8")).toBe("edited\n");
   expect(readFileSync(join(wtB, "new.txt"), "utf8")).toBe("untracked\n");
@@ -100,13 +100,50 @@ test("code travels as a bundle: unpushed commits and uncommitted, untracked and 
   sh(wtB, "add", "-A"); sh(wtB, "commit", "-m", "on b");
   writeFileSync(join(wtB, "b.txt"), "dirty on b\n");
   const back = await describe(wtB);
-  const snapB = await snapshot(wtB, "h2", back.headSha, back.dirty);
+  const snapB = await snapshot(wtB, "h2", back.headSha);
   const bundleB = join(r.root, "back.bundle");
   expect(await createBundle(wtB, "h2", snapB.sha, bundleB)).toBe(true);
   expect(await fetchBundle(r.a, bundleB, "h2")).toBe(true);
-  expect(await moveToSource(wtA, "feature", back.headSha, snapB)).toBeUndefined();
+  expect(await moveToSource(wtA, "feature", back.headSha, snapB)).toEqual({ replaced: [] });
   expect(readFileSync(join(wtA, "b.txt"), "utf8")).toBe("dirty on b\n");
   expect(readFileSync(join(wtA, "new.txt"), "utf8")).toBe("untracked\n");
+});
+
+test("ignored files travel except rebuilt folders; the destination's own versions go to a stash, a stale copy does not", async () => {
+  const r = repos("a", "b");
+  const write = (dir: string, file: string, text: string) => { mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), text); };
+  write(r.a, ".plans/plan.md", "v1\n");
+  write(r.a, ".env", "from a\n");
+  write(r.a, "node_modules/dep.js", "a's dependency\n");
+  write(r.b, ".env", "b's own\n");
+  write(r.b, "node_modules/own.js", "b's dependency\n");
+  const head = sh(r.a, "rev-parse", "HEAD");
+
+  const snap = await snapshot(r.a, "h1", head);
+  expect(snap.uncommitted).toBe(true);
+  expect(await createBundle(r.a, "h1", snap.sha, join(r.root, "a.bundle"))).toBe(true);
+  expect(await fetchBundle(r.b, join(r.root, "a.bundle"), "h1")).toBe(true);
+  expect(await moveToSource(r.b, "main", head, snap)).toEqual({ replaced: [".env"] });
+  expect(readFileSync(join(r.b, ".plans/plan.md"), "utf8")).toBe("v1\n");
+  expect(readFileSync(join(r.b, ".env"), "utf8")).toBe("from a\n");
+  expect(existsSync(join(r.b, "node_modules/dep.js"))).toBe(false);
+  expect(existsSync(join(r.b, "node_modules/own.js"))).toBe(true);
+  expect(sh(r.b, "show", "stash@{0}^3:.env")).toBe("b's own");
+  expect(sh(r.b, "status", "--porcelain")).toBe("");
+
+  // Ignored files are not stashed on the source, so writing one after sending does not keep the rest from it.
+  write(r.a, ".plans/later.md", "written after sending\n");
+  expect(await stashIfUnchanged(r.a, snap, "agentgate: handed to b")).toBe(true);
+  expect(readFileSync(join(r.a, ".plans/plan.md"), "utf8")).toBe("v1\n");
+
+  // Round trip: B's edited plan replaces A's copy without a stash, since A sent that copy itself.
+  write(r.b, ".plans/plan.md", "v2\n");
+  const snapB = await snapshot(r.b, "h2", head);
+  expect(await createBundle(r.b, "h2", snapB.sha, join(r.root, "b.bundle"))).toBe(true);
+  expect(await fetchBundle(r.a, join(r.root, "b.bundle"), "h2")).toBe(true);
+  expect(await moveToSource(r.a, "main", head, snapB)).toEqual({ replaced: [] });
+  expect(readFileSync(join(r.a, ".plans/plan.md"), "utf8")).toBe("v2\n");
+  expect(sh(r.a, "stash", "list")).toBe("");
 });
 
 test("a destination with its own changes or commits keeps its code", async () => {
@@ -117,9 +154,9 @@ test("a destination with its own changes or commits keeps its code", async () =>
   expect(await createBundle(r.a, "x", head, bundle)).toBe(true);
   expect(await fetchBundle(r.b, bundle, "x")).toBe(true);
   writeFileSync(join(r.b, "README.md"), "local edit\n");
-  expect(await moveToSource(r.b, "main", head, undefined)).toBe("it has uncommitted changes");
+  expect((await moveToSource(r.b, "main", head, undefined)).kept).toBe("it has uncommitted changes");
   sh(r.b, "commit", "-am", "b's own work");
-  expect(await moveToSource(r.b, "main", head, undefined)).toBe("it has commits the source does not");
+  expect((await moveToSource(r.b, "main", head, undefined)).kept).toBe("it has commits the source does not");
   expect(readFileSync(join(r.b, "README.md"), "utf8")).toBe("local edit\n");
   // Nothing unpushed and nothing dirty: no bundle at all, B fetches origin.
   expect(await createBundle(r.b, "y", sh(r.b, "rev-parse", "origin/main"), join(r.root, "none.bundle"))).toBe(false);
