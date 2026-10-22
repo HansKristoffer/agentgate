@@ -29,7 +29,4 @@ export type RemoteResponseFrame = z.infer<typeof remoteResponseFrame>;
 /** `PUT /e/:key`: the serving node sets the hashes the relay checks. */
 export const endpointUpdate = z.object({ secretHash: z.string().regex(/^[0-9a-f]{64}$/), enabled: z.boolean() }).strict();
 
-export async function sha256Hex(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-}
+export { sha256Hex } from "hanzio/crypto";

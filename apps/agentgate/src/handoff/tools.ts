@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { getErrorMessage } from "hanzio";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -42,7 +43,7 @@ function server(h: Handoffs): Server {
       if (typeof args.threadId !== "string" || !args.threadId) return fail("threadId is required");
       const started = await requestHandoff(h, { threadId: args.threadId, to: typeof args.to === "string" ? args.to : undefined });
       return text({ status: "started", ...started });
-    } catch (e) { return fail((e as Error).message); }
+    } catch (e) { return fail(getErrorMessage(e)); }
   });
   return server;
 }

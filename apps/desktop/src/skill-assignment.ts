@@ -1,9 +1,10 @@
 import type { Status } from "@agentgate/protocol";
+import { getUniqueValues } from "hanzio";
 
 export function projectSkillChoices(data: Pick<Status, "skills" | "projects" | "checkouts">, project: string, selected: string[]) {
   const global = new Set(project === "*" ? [] : data.projects.find(p => p.id === "*")?.skills ?? []);
   const repository = new Set(data.checkouts.filter(c => project === "*" || c.project.toLowerCase() === project.toLowerCase()).flatMap(c => c.skills));
-  const ids = [...new Set([...data.skills.map(k => k.id), ...selected])];
+  const ids = getUniqueValues([...data.skills.map(k => k.id), ...selected]);
   return ids.map(id => ({
     id, selected: selected.includes(id),
     detail: [global.has(id) ? "Also available in every session" : undefined, repository.has(id) ? project === "*" ? "A local repository has its own skill with this name; Claude Code runs this one instead" : "Also present in a local repository checkout" : undefined,

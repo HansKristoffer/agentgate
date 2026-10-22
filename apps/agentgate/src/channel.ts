@@ -1,6 +1,7 @@
 import { CHANNEL_LIMITS, MiB, channelRelayFrame } from "@agentgate/protocol/relay";
+import { encodeBase64Url } from "hanzio/crypto";
 import { z } from "zod";
-import { b64url, deriveKeys, parseInvite, relayInvite, serviceKey, type Keys } from "./relay.ts";
+import { deriveKeys, parseInvite, relayInvite, serviceKey, type Keys } from "./relay.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
@@ -47,7 +48,7 @@ async function seal(keys: Keys, data: Uint8Array<ArrayBuffer>, meta: object, bod
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: data }, keys.enc, plain));
   const out = new Uint8Array(12 + ct.length);
   out.set(nonce); out.set(ct, 12);
-  return b64url(out);
+  return encodeBase64Url(out);
 }
 async function open(keys: Keys, data: Uint8Array<ArrayBuffer>, box: string): Promise<{ meta: z.infer<typeof metaSchema>; body: Uint8Array }> {
   const bytes = new Uint8Array(Buffer.from(box, "base64url"));

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { getUniqueValues, isTruthy } from "hanzio";
 import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
@@ -44,9 +45,9 @@ export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
   /** Skill ids linked into this repo's checkouts; on `*`, linked for every session. */
-  skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => [...new Set(ids)]),
+  skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => getUniqueValues(ids)),
   /** GitHub repositories whose skills the daemon keeps installed and linked here. Older daemons drop this field. */
-  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => [...new Set(urls)]),
+  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => getUniqueValues(urls)),
   inheritDefaults: z.boolean().default(true),
   /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
   remote: remoteSchema.optional(),
@@ -101,7 +102,7 @@ export const HEALTH_PATH = "/health";
  * version reporting, so it is older too once any node reports one. */
 export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {
   const compare = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
-  const newest = nodes.map((n) => n.version).filter((v): v is string => !!v).sort(compare).at(-1);
+  const newest = nodes.map((n) => n.version).filter(isTruthy).sort(compare).at(-1);
   return newest ? nodes.filter((n) => !n.version || compare(n.version, newest) < 0) : [];
 }
 export const settingsSchema = z.object({

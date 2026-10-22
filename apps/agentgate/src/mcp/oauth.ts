@@ -1,6 +1,7 @@
 import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { z } from "zod";
+import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
 import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
 import { fetchHeaders } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
@@ -17,8 +18,7 @@ export const headerWait = (method: string | undefined, others: number) => method
 const sessionSchema = z.object({ id: z.string(), loginId: z.string(), expiresAt: z.number(), verifier: z.string().optional() });
 export function expireLogins(s: Store) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as { key: string; value: string }[]) {
-    let value: unknown; try { value = JSON.parse(row.value); } catch { }
-    const result = sessionSchema.safeParse(value);
+    const result = sessionSchema.safeParse(safeJsonParse(row.value).data);
     if (!result.success || result.data.expiresAt <= s.now()) s.setLocal(row.key, undefined);
   }
 }
@@ -77,9 +77,12 @@ export class InstanceAuth implements OAuthClientProvider {
   codeVerifier() { if (!this.verifier) throw new Error("login expired; start it again"); return this.verifier; }
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
     if (this.deferred && (scope === "all" || scope === "tokens")) throw new InvalidGrant("MCP refresh token is no longer valid");
-    if (scope === "all") this.update({ client: undefined, tokens: undefined, needsLogin: true });
-    if (scope === "client") this.update({ client: undefined });
-    if (scope === "tokens") this.update({ tokens: undefined, needsLogin: true });
+    typedSwitch(scope, {
+      all: () => this.update({ client: undefined, tokens: undefined, needsLogin: true }),
+      client: () => this.update({ client: undefined }),
+      tokens: () => this.update({ tokens: undefined, needsLogin: true }),
+      ...typedSwitchGroup(scope, ["verifier", "discovery"], () => { }),
+    });
   }
 }
 

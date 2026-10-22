@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { relative as relativePath, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { buildQueryString, getErrorMessage, typedSwitch } from "hanzio";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
@@ -272,7 +273,7 @@ async function main() {
       initialized(s);
       if (sub === "capabilities") { const st = await management<{ daemon: unknown }>("/status"); return console.log(JSON.stringify(st.daemon, null, 2)); }
       if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? "")) die("proxy route claude|codex|cursor [--model <id>]");
-      const query = new URLSearchParams({ provider: rest[0]! }); if (str("model")) query.set("model", str("model")!);
+      const query = buildQueryString({ provider: rest[0]!, model: str("model") || undefined });
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
     }
     case "tokens": {
@@ -517,7 +518,7 @@ async function main() {
         if (sub === "secret") return printEndpoint(rotateSecret(s, id));
         if (sub === "regenerate") return printEndpoint(regenerate(s, id));
         if (sub === "disable") { disableRemote(s, id); return console.log("ok"); }
-      } catch (e) { return die(String((e as Error).message)); }
+      } catch (e) { return die(getErrorMessage(e)); }
       return die(HELP);
     }
 
@@ -531,7 +532,7 @@ async function main() {
       method ??= (await tailscale()) ? "tailnet" : "relay";
       const asked = str("name") ?? (process.stdin.isTTY && process.stdout.isTTY ? prompt("Name for the other machine (Enter for its hostname):") : undefined);
       let name: string | undefined;
-      try { name = asked?.trim() ? newNodeName(s, asked.trim()) : undefined; } catch (e) { die((e as Error).message); }
+      try { name = asked?.trim() ? newNodeName(s, asked.trim()) : undefined; } catch (e) { die(getErrorMessage(e)); }
       const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate${name ? ` as ${name}` : ""}, join, start the service and route its Claude Code and Codex through agentgate:\n\n  ${installAndJoin(args, name)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
       if (method === "relay") {
         const invite = await createRelay(s, str("relay-url"));
@@ -568,7 +569,12 @@ async function main() {
       const outdated = new Set(outdatedNodes(s.list("node")).map((n) => n.id));
       for (const n of s.list("node")) {
         const u = (await import("./update.ts")).nodeUpdate(s, n.id);
-        if (u) console.log(`${n.id}: ${u.state === "installing" ? "installing an update" : u.state === "restarting" ? `restarting on agentgate ${u.version}` : u.state === "installed" ? `installed agentgate ${u.version}; restart agentgate there to use it` : `update failed: ${u.error}`}`);
+        if (u) console.log(`${n.id}: ${typedSwitch(u.state, {
+          installing: () => "installing an update",
+          restarting: () => `restarting on agentgate ${u.version}`,
+          installed: () => `installed agentgate ${u.version}; restart agentgate there to use it`,
+          failed: () => `update failed: ${u.error}`,
+        })}`);
         else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
       }
       return;
@@ -662,7 +668,7 @@ async function main() {
           return console.log(id === "infisical-identity" ? "ok; removed from every machine" : "ok; machines already signed in stay signed in");
         }
       } catch (e) {
-        return die((e as Error).message);
+        return die(getErrorMessage(e));
       }
       if (sub !== undefined && sub !== "ls") return die(HELP);
 
@@ -687,7 +693,11 @@ async function main() {
       };
       if (!sub) {
         console.log(`Claude Desktop ${st.version ?? ""}${st.running ? "" : " (not running)"}`);
-        console.log(st.mode === "pool" ? "mode: Code tab uses the pool (gateway mode)" : st.mode === "other-gateway" ? "mode: another company gateway" : `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`);
+        console.log(typedSwitch(st.mode, {
+          pool: () => "mode: Code tab uses the pool (gateway mode)",
+          "other-gateway": () => "mode: another company gateway",
+          "signed-in": () => `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`,
+        }));
         for (const l of st.logins) {
           const pct = l.accountId ? Math.max(0, ...relevant(s.get("usage", l.accountId), undefined, Date.now()).map((w) => w.usedPct)) : undefined; // windows that have reset count as 0
           console.log(`  ${st.current?.accountUuid === l.accountUuid ? "*" : " "} ${name(l).padEnd(28)} ${pct === undefined ? "not in the pool" : `${Math.round(pct)}% used`}${l.expired ? "  LOGIN EXPIRED" : l.sessionExpiresAt ? `  login valid ${Math.round((l.sessionExpiresAt - Date.now()) / 86_400_000)} days` : ""}${l.problem ? `  ${l.problem}` : ""}`);

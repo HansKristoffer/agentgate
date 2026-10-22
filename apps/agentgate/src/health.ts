@@ -1,6 +1,7 @@
 // The machine health dashboard at HEALTH_PATH, sampled while this node's healthDashboard setting is on. It reads /proc,
 // /sys and pressure stall files as the daemon's own user, so it runs on Linux only.
 import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
+import { sortBy, sumBy } from "hanzio";
 import os from "node:os";
 import { t3State } from "./handoff/t3.ts";
 import { HEALTH_PAGE } from "./health-page.ts";
@@ -39,7 +40,7 @@ function cpuTimes() {
   const fields = read("/proc/stat").split("\n")[0]!.trim().split(/\s+/).slice(1).map(Number);
   return {
     idle: fields[3]! + fields[4]!,
-    total: fields.reduce((sum, value) => sum + value, 0),
+    total: sumBy(fields, (value) => value),
   };
 }
 
@@ -392,15 +393,16 @@ export class HealthDashboard {
         oom_kills: { since_boot: oom, last_hour: oom - (this.history[0]?.oom_kills ?? oom) },
       },
       services: await this.services(count("dockerd") > 0),
-      top_processes: [...byProgram]
-        .map(([program, group]) => ({
+      top_processes: sortBy(
+        [...byProgram].map(([program, group]) => ({
           program,
           processes: group.processes,
           cpu_cores: round(group.cores),
           memory_gb: round(group.memoryBytes / GB),
-        }))
-        .sort((a, b) => b.cpu_cores - a.cpu_cores || b.memory_gb - a.memory_gb)
-        .slice(0, 8),
+        })),
+        { by: "cpu_cores", order: "desc" },
+        { by: "memory_gb", order: "desc" },
+      ).slice(0, 8),
     };
 
     this.previous = { ...now, ticksByPid: new Map(list.map((proc) => [proc.pid, proc.ticks])) };

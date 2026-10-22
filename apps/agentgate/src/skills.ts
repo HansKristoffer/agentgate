@@ -1,4 +1,5 @@
 import { SkillConflict, projectIdSchema, skillSchema, type SkillRepoSummary, type SkillSummary } from "@agentgate/protocol";
+import { exponentialBackoff, getErrorMessage, getUniqueValues, safeJsonParse } from "hanzio";
 import type { z } from "zod";
 import { canonicalProject } from "./mcp/gateway.ts";
 import { description, fetchRepo, fetchSkills, repoUrl, validateFetched, type FetchedSkill, type RepoFetcher, type SkillFetcher } from "./skill-import.ts";
@@ -37,7 +38,7 @@ function putSkill(s: Store, input: Omit<z.input<typeof skillSchema>, "updatedAt"
 }
 
 function projectsFor(s: Store, projects: string[]) {
-  return [...new Set(projects.map(project => canonicalProject(s, projectIdSchema.parse(project))))];
+  return getUniqueValues(projects.map(project => canonicalProject(s, projectIdSchema.parse(project))));
 }
 
 function assign(s: Store, project: string, id: string, on: boolean) {
@@ -141,7 +142,7 @@ export class SkillBackoff {
     }
     const failures = (prev?.failures ?? 0) + 1;
     // 10 minutes, doubling up to 6 hours.
-    this.failing.set(key, { error, failures, retryAt: this.s.now() + Math.min(5 * 60_000 * 2 ** failures, 6 * 3600_000) });
+    this.failing.set(key, { error, failures, retryAt: this.s.now() + exponentialBackoff(failures, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000, jitter: false }) });
     if (prev?.error !== error) console.error(`skills: ${key}: ${error}`);
   }
 }
@@ -156,7 +157,7 @@ export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, 
     if (backoff && !backoff.due(k.id)) continue;
     const outcome = await updateSkill(s, k.id, fetch, signal).then(
       (changed) => (changed ? "updated" : "up to date"),
-      (error) => `failed: ${error instanceof Error ? error.message : error}`,
+      (error) => `failed: ${getErrorMessage(error)}`,
     );
     if (!signal?.aborted) backoff?.record(k.id, outcome.startsWith("failed") ? outcome : undefined);
     results.push({ id: k.id, outcome });
@@ -169,10 +170,10 @@ export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, 
 const repoProjects = (s: Store, url: string) => s.list("project").filter(p => p.skillRepos.includes(url)).map(p => p.id);
 const repoSkills = (s: Store, url: string) => skillSummaries(s).filter(k => k.source === url).map(k => k.id);
 interface RepoState { commit?: string; syncedAt?: number; error?: string; skills?: string[]; skipped?: string[] }
-const repoState = (s: Store, url: string): RepoState => { try { return JSON.parse(s.local(`skillRepo:${url}`) ?? "{}"); } catch { return {}; } };
+const repoState = (s: Store, url: string) => safeJsonParse<RepoState>(s.local(`skillRepo:${url}`) ?? "{}").data ?? {};
 
 export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
-  const urls = [...new Set(s.list("project").flatMap(p => p.skillRepos))].sort();
+  const urls = getUniqueValues(s.list("project").flatMap(p => p.skillRepos)).sort();
   return urls.map(url => {
     const { commit, syncedAt, error, skipped = [] } = repoState(s, url);
     return { url, projects: repoProjects(s, url), skills: repoSkills(s, url), commit, syncedAt, error, skipped };
@@ -246,7 +247,7 @@ export function syncSkillRepo(s: Store, input: string, fetch: RepoFetcher = fetc
       if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, syncedAt: s.now(), error: undefined }));
       return false;
     } catch (error) {
-      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: error instanceof Error ? error.message : String(error) }));
+      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: getErrorMessage(error) }));
       throw error;
     }
   })().finally(() => flights!.delete(url));
@@ -259,7 +260,7 @@ export async function syncSkillRepos(s: Store, fetch: RepoFetcher = fetchRepo, s
   for (const { url } of skillRepoSummaries(s)) {
     if (signal?.aborted) return;
     if (!backoff.due(url)) continue;
-    const error = await syncSkillRepo(s, url, fetch, signal).then(() => undefined, (e) => e instanceof Error ? e.message : String(e));
+    const error = await syncSkillRepo(s, url, fetch, signal).then(() => undefined, getErrorMessage);
     if (!signal?.aborted) backoff.record(url, error);
   }
 }

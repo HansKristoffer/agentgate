@@ -1,4 +1,5 @@
 import type { Status } from "@agentgate/protocol";
+import { getUniqueValues } from "hanzio";
 import { Check, Empty } from "./ui.tsx";
 import { projectSkillChoices, repoClashes } from "../skill-assignment.ts";
 
@@ -14,7 +15,7 @@ function AssignmentChecks({ title, name, choices }: { title: string; name: strin
 /** `skills` are the skills being assigned; the every-session choice warns when a local repository has its own by that name. */
 export function ProjectChecks({ data, selected, skills = [] }: { data: Status; selected: string[]; skills?: string[] }) {
   const clashes = repoClashes(data, skills);
-  const names = [...new Set(clashes.map(c => c.skill))].join(", "), projects = [...new Set(clashes.map(c => c.project))].join(", ");
+  const names = getUniqueValues(clashes.map(c => c.skill)).join(", "), projects = getUniqueValues(clashes.map(c => c.project)).join(", ");
   return <AssignmentChecks title="Use in" name="project" choices={[
     { id: "*", label: "Every session", selected: selected.includes("*"), detail: clashes.length
       ? `All repositories, on every machine. ${projects} has its own ${names}; Claude Code would run this one instead there.`

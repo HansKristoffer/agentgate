@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { trimTrailingSlash } from "hanzio";
+import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
@@ -42,7 +44,7 @@ export function pairCode(s: Store): string {
 
 /** `agentgate join <url> <code>` on node B. */
 export async function join(s: Store, url: string, code: string, selfUrl: string) {
-  url = url.replace(/\/$/, "");
+  url = trimTrailingSlash(url);
   peerUrl.parse(url); peerUrl.parse(selfUrl);
   const res = await fetchHeaders(`${url}/peer/join`, {
     method: "POST",
@@ -175,7 +177,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
 
   app.use("*", async (c, next) => {
     const token = c.req.header("authorization")?.replace(/^Bearer /, "");
-    const peer = peers(s).find((p) => p.token === token);
+    const peer = token ? peers(s).find((p) => safeEqual(p.token, token)) : undefined;
     if (!token || !peer) return c.json({ error: "unauthorized" }, 401);
     c.set("peer", peer);
     await next();

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
@@ -33,8 +34,6 @@ description: What this skill does, and when the agent should use it.
 
 Instructions for the agent.
 `;
-const short = (text: string, max = 180) =>
-  text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const size = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
 const places = (ids: string[]) =>
@@ -174,7 +173,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 <Badge good={!!skill.source}>{sourceLabel(skill.source)}</Badge>
                 {pending.has(`update:${skill.id}`) && <Working>Updating</Working>}
               </div>
-              {skill.description && <small>{short(skill.description)}</small>}
+              {skill.description && <small>{truncate(skill.description, 180)}</small>}
               <small>
                 {where(data, skill.id)}
                 {sourceLabel(skill.source) === "skills.sh" && ` · ${skill.source}`} · {size(skill.size)}
@@ -309,107 +308,109 @@ export function Skills({ data, connection, perform }: ViewProps) {
               </Tabs.List>
             </Tabs.ListContainer>
           </Tabs>
-          {add === "browse" && (
-            <>
+          {typedSwitch(add, {
+            browse: () => (
+              <>
+                <form
+                  className="inline-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const q = field(new FormData(e.currentTarget), "q");
+                    void perform(async () =>
+                      setResults(
+                        await request<SkillSearchResult[]>(
+                          connection,
+                          `/skills/search?q=${encodeURIComponent(q)}`,
+                        ),
+                      ),
+                    );
+                  }}
+                >
+                  <TextField name="q" isRequired minLength={2} aria-label="Search skills" className="grow">
+                    <Input placeholder="react, testing, postgres…" />
+                  </TextField>
+                  <Button type="submit" size="sm" variant="tertiary">
+                    Search
+                  </Button>
+                </form>
+                {results && (
+                  <div className="tool-list">
+                    {results.length ? (
+                      results.map((r) => (
+                        <div key={`${r.source}@${r.skill}`} className="row">
+                          <span className="grow">
+                            <code>{r.skill}</code>
+                            <p>
+                              {r.source} · {r.installs.toLocaleString()} installs
+                              {data.skills.some((k) => k.id === r.skill) && " · installed"}
+                            </p>
+                          </span>
+                          <Button size="sm" variant="ghost" onPress={() => void load(r.source, r.skill)}>
+                            Preview
+                          </Button>
+                        </div>
+                      ))
+                    ) : (
+                      <Empty>No skills found.</Empty>
+                    )}
+                  </div>
+                )}
+              </>
+            ),
+            source: () => (
               <form
-                className="inline-form"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  const q = field(new FormData(e.currentTarget), "q");
-                  void perform(async () =>
-                    setResults(
-                      await request<SkillSearchResult[]>(
-                        connection,
-                        `/skills/search?q=${encodeURIComponent(q)}`,
-                      ),
-                    ),
-                  );
+                  void load(field(new FormData(e.currentTarget), "source"));
                 }}
               >
-                <TextField name="q" isRequired minLength={2} aria-label="Search skills" className="grow">
-                  <Input placeholder="react, testing, postgres…" />
-                </TextField>
-                <Button type="submit" size="sm" variant="tertiary">
-                  Search
+                <Field
+                  label="Source"
+                  name="source"
+                  isRequired
+                  description="A GitHub owner/repo (optionally @skill), a Git or GitHub URL, or a folder on the daemon's machine. Fetched with npx skills."
+                  placeholder="vercel-labs/agent-skills"
+                />
+                <Button type="submit" size="sm">
+                  Find skills
+                  <ArrowRight size={15} />
                 </Button>
               </form>
-              {results && (
-                <div className="tool-list">
-                  {results.length ? (
-                    results.map((r) => (
-                      <div key={`${r.source}@${r.skill}`} className="row">
-                        <span className="grow">
-                          <code>{r.skill}</code>
-                          <p>
-                            {r.source} · {r.installs.toLocaleString()} installs
-                            {data.skills.some((k) => k.id === r.skill) && " · installed"}
-                          </p>
-                        </span>
-                        <Button size="sm" variant="ghost" onPress={() => void load(r.source, r.skill)}>
-                          Preview
-                        </Button>
-                      </div>
-                    ))
-                  ) : (
-                    <Empty>No skills found.</Empty>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-          {add === "source" && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void load(field(new FormData(e.currentTarget), "source"));
-              }}
-            >
-              <Field
-                label="Source"
-                name="source"
-                isRequired
-                description="A GitHub owner/repo (optionally @skill), a Git or GitHub URL, or a folder on the daemon's machine. Fetched with npx skills."
-                placeholder="vercel-labs/agent-skills"
-              />
-              <Button type="submit" size="sm">
-                Find skills
-                <ArrowRight size={15} />
-              </Button>
-            </form>
-          )}
-          {add === "repo" && (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
-                const projects = f.getAll("project") as string[];
-                void perform(async () => {
-                  if (!projects.length) throw new Error("Choose every session or at least one project");
-                  await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
-                  setAdd(undefined);
-                }, "Repository connected");
-              }}
-            >
-              <Field
-                label="Repository"
-                name="url"
-                isRequired
-                description="A public repository. Agentgate installs every skill in its .claude/skills and .agents/skills folders and keeps them in sync."
-                placeholder="https://github.com/owner/repo"
-              />
-              <p className="note">
-                Skills can run scripts in your sessions and are copied to every
-                paired machine. New commits are installed automatically, so
-                connect only repositories you trust.
-              </p>
-              <ProjectChecks data={data} selected={[]} />
-              <Button type="submit" size="sm">
-                <Plus size={15} />
-                Connect
-              </Button>
-            </form>
-          )}
-          {add === "write" && editorForm({ skillMd: TEMPLATE })}
+            ),
+            repo: () => (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const f = new FormData(e.currentTarget);
+                  const projects = f.getAll("project") as string[];
+                  void perform(async () => {
+                    if (!projects.length) throw new Error("Choose every session or at least one project");
+                    await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
+                    setAdd(undefined);
+                  }, "Repository connected");
+                }}
+              >
+                <Field
+                  label="Repository"
+                  name="url"
+                  isRequired
+                  description="A public repository. Agentgate installs every skill in its .claude/skills and .agents/skills folders and keeps them in sync."
+                  placeholder="https://github.com/owner/repo"
+                />
+                <p className="note">
+                  Skills can run scripts in your sessions and are copied to every
+                  paired machine. New commits are installed automatically, so
+                  connect only repositories you trust.
+                </p>
+                <ProjectChecks data={data} selected={[]} />
+                <Button type="submit" size="sm">
+                  <Plus size={15} />
+                  Connect
+                </Button>
+              </form>
+            ),
+            write: () => editorForm({ skillMd: TEMPLATE }),
+          })}
         </Modal>
       )}
       {repoAssign && (
@@ -487,7 +488,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                               </Badge>
                             ))}
                       </span>
-                      {k.description && <small>{short(k.description)}</small>}
+                      {k.description && <small>{truncate(k.description, 180)}</small>}
                       <small>
                         {k.files} {k.files === 1 ? "file" : "files"} · {size(k.size)}
                       </small>

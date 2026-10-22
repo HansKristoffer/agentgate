@@ -2,6 +2,8 @@ import {
   RELAY_LIMITS, RELAY_PROTOCOL, changesResponse, checkPage, errorResponse, groupState, nodesResponse,
   type ChangesResponse, type RelayEnvelope,
 } from "@agentgate/protocol/relay";
+import { bytesToHex, encodeBase64Url, randomToken } from "hanzio/crypto";
+import { exponentialBackoff, isTruthy, trimTrailingSlash } from "hanzio";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, type Rec, type Store } from "./store.ts";
 import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
@@ -25,9 +27,7 @@ const SALT = new TextEncoder().encode("agentgate-relay-v1");
 const INVITE = /^agr1\.([A-Za-z0-9_-]{1,2800})\.([A-Za-z0-9_-]{43})$/;
 export class RelayError extends Error { constructor(message: string, readonly status = 0, readonly code?: string, readonly retryAfter?: number) { super(message); } }
 
-export const b64url = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
 const unb64url = (text: string): Uint8Array<ArrayBuffer> => new Uint8Array(Buffer.from(text, "base64url"));
-const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
 /** HTTPS only, no credentials, query or fragment; plain HTTP is a local-development opt-in. */
 export function checkRelayUrl(input: string): string {
@@ -36,7 +36,7 @@ export function checkRelayUrl(input: string): string {
   const http = u.protocol === "http:" && process.env.AGENTGATE_RELAY_ALLOW_HTTP === "1";
   if (u.protocol !== "https:" && !http) throw new RelayError("The relay URL must use HTTPS");
   if (u.username || u.password || u.search || u.hash) throw new RelayError("The relay URL must not contain credentials, a query or a fragment");
-  return u.toString().replace(/\/$/, "");
+  return trimTrailingSlash(u.toString());
 }
 
 export interface Invite { text: string; url: string; secret: Uint8Array<ArrayBuffer> }
@@ -50,14 +50,14 @@ export function parseInvite(text: string): Invite {
 }
 
 export function makeInvite(url: string): string {
-  return `agr1.${b64url(new TextEncoder().encode(checkRelayUrl(url)))}.${b64url(crypto.getRandomValues(new Uint8Array(32)))}`;
+  return `agr1.${encodeBase64Url(new TextEncoder().encode(checkRelayUrl(url)))}.${randomToken(32)}`;
 }
 
 export interface Keys { groupId: string; authToken: string; enc: CryptoKey; mac: CryptoKey }
 const keyCache = new Map<string, Promise<Keys>>();
 
 export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
-  const cacheKey = hex(secret);
+  const cacheKey = bytesToHex(secret);
   let keys = keyCache.get(cacheKey);
   if (!keys) {
     keys = (async () => {
@@ -65,8 +65,8 @@ export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
       const bits = async (label: string, bytes: number) => new Uint8Array(await crypto.subtle.deriveBits(
         { name: "HKDF", hash: "SHA-256", salt: SALT, info: new TextEncoder().encode(`agentgate-relay-v1/${label}`) }, base, bytes * 8));
       return {
-        groupId: hex(await bits("group", 16)),
-        authToken: b64url(await bits("auth", 32)),
+        groupId: bytesToHex(await bits("group", 16)),
+        authToken: encodeBase64Url(await bits("auth", 32)),
         enc: await crypto.subtle.importKey("raw", await bits("enc", 32), "AES-GCM", false, ["encrypt", "decrypt"]),
         mac: await crypto.subtle.importKey("raw", await bits("mac", 32), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
       };
@@ -77,7 +77,7 @@ export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
 }
 
 export async function entryKey(keys: Keys, kind: string, id: string): Promise<string> {
-  return b64url(new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, new TextEncoder().encode(`${kind}\0${id}`))));
+  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, new TextEncoder().encode(`${kind}\0${id}`))));
 }
 
 export interface Aad { groupId: string; generation: string; node: string; key: string; pusherSeq: number }
@@ -87,7 +87,7 @@ export async function seal(keys: Keys, a: Aad, plaintext: string, nonce = crypto
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad(a) }, keys.enc, new TextEncoder().encode(plaintext)));
   const out = new Uint8Array(12 + ct.length);
   out.set(nonce); out.set(ct, 12);
-  return b64url(out);
+  return encodeBase64Url(out);
 }
 
 export async function open(keys: Keys, a: Aad, blob: string): Promise<string> {
@@ -397,7 +397,7 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
 function backoff(s: Store, r: Runtime, slot: string, e: unknown) {
   const b = r.backoff.get(slot) ?? { until: 0, failures: 0 };
   b.failures++;
-  const base = e instanceof RelayError && e.retryAfter ? e.retryAfter * 1000 : Math.min(15_000 * 2 ** (b.failures - 1), 10 * 60_000);
+  const base = e instanceof RelayError && e.retryAfter ? e.retryAfter * 1000 : exponentialBackoff(b.failures, { baseMs: 15_000, maxMs: 10 * 60_000, jitter: false });
   b.until = s.now() + base * (0.75 + Math.random() * 0.5);
   r.backoff.set(slot, b);
 }
@@ -470,7 +470,7 @@ async function runCleanups(s: Store, signal: AbortSignal, force = false) {
       const i = list.findIndex((j) => j.invite === job.invite);
       if (i < 0) return;
       if (done) list.splice(i, 1);
-      else { list[i]!.attempts++; list[i]!.nextAt = s.now() + Math.min(60_000 * 2 ** list[i]!.attempts, 6 * 3_600_000); }
+      else { list[i]!.attempts++; list[i]!.nextAt = s.now() + exponentialBackoff(list[i]!.attempts, { baseMs: 2 * 60_000, maxMs: 6 * 3_600_000, jitter: false }); }
       setCleanups(s, list);
     });
   }
@@ -614,7 +614,7 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
 /** Stop using the relay here. `wipe` queues deletion of the group; a failure never re-enables sync. */
 export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: boolean }> {
   return withRelay(s, async (signal) => {
-    const groups = await Promise.all((["active", "rot"] as const).map((t) => get(s, t, "invite")).filter(Boolean).map(async (i) => ({ invite: i!, grp: (await conn(s, i!)).keys.groupId })));
+    const groups = await Promise.all((["active", "rot"] as const).map((t) => get(s, t, "invite")).filter(isTruthy).map(async (i) => ({ invite: i, grp: (await conn(s, i)).keys.groupId })));
     s.transaction(() => {
       if (wipe) setCleanups(s, [...cleanups(s).filter((j) => !groups.some((g) => g.invite === j.invite)), ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 }))]);
       for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);
@@ -648,7 +648,7 @@ export function relayUrl(s: Store) {
 /** A service key is for a self-hosted relay: it never goes to the hosted one, which an older endpoint may point at,
  * unless that is the relay this node uses. */
 export const serviceKeyFor = (s: Store, url: string) =>
-  url.replace(/\/$/, "") !== DEFAULT_RELAY_URL || relayUrl(s).replace(/\/$/, "") === DEFAULT_RELAY_URL ? serviceKey(s) : undefined;
+  trimTrailingSlash(url) !== DEFAULT_RELAY_URL || trimTrailingSlash(relayUrl(s)) === DEFAULT_RELAY_URL ? serviceKey(s) : undefined;
 export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!s.local("relay:rotation");
 
 /** Sanitized status: never the invite, the service key or a raw relay response. */

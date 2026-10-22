@@ -1,4 +1,5 @@
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync } from "node:fs";
+import { escapeRegExp } from "hanzio";
 import { dirname, join, relative, sep } from "node:path";
 import { atomicWrite } from "../files.ts";
 
@@ -51,7 +52,7 @@ export function rewriteCwd(text: string, oldPaths: string[], to: string): string
   let out = text;
   for (const from of new Set(oldPaths)) {
     if (from === to) continue;
-    const literal = JSON.stringify(from).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const literal = escapeRegExp(JSON.stringify(from));
     out = out.replace(new RegExp(`(?<!\\\\)"cwd"(\\s*):(\\s*)${literal}`, "g"), (_m, a: string, b: string) => `"cwd"${a}:${b}${JSON.stringify(to)}`);
   }
   return out;

@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { groupBy, typedEntries } from "hanzio";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR } from "../setup.ts";
 import { parseData, type Data, type Store } from "../store.ts";
 import type { Tokens } from "./telemetry.ts";
@@ -126,13 +127,9 @@ export function publishTokens(s: Store) {
      union all select hour, 'cursor', model, account, input, output, cache_read, cache_write from cursor_tokens where hour >= ?1
      order by hour, provider, model, account`,
   ).all(from) as (Data<"tokens">["rows"][number] & { account: string | null })[];
-  const days = new Map<string, Data<"tokens">["rows"]>();
-  for (const { account, ...row } of rows) {
-    const day = new Date(row.hour).toISOString().slice(0, 10), list = days.get(day) ?? [];
-    list.push(account ? { ...row, account } : row);
-    days.set(day, list);
-  }
-  for (const [day, dayRows] of days) {
+  const tokenRows: Data<"tokens">["rows"] = rows.map(({ account, ...row }) => account ? { ...row, account } : row);
+  const days = groupBy(tokenRows, (row) => new Date(row.hour).toISOString().slice(0, 10));
+  for (const [day, dayRows = []] of typedEntries(days)) {
     const id = `${s.nodeId}:${day}`, data = parseData("tokens", id, { id, node: s.nodeId, rows: dayRows });
     if (s.record("tokens", id)?.data !== JSON.stringify(data)) s.put("tokens", id, data);
   }

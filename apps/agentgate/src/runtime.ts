@@ -1,4 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { anySignal } from "hanzio";
 
 export const MAX_BODY = 16 * 1024 * 1024;
 export class BodyTooLarge extends Error { }
@@ -34,7 +35,7 @@ export async function readBody(body: ReadableStream<Uint8Array> | null, limit = 
 export async function fetchHeaders(url: string | URL | Request, init: RequestInit = {}, timeout = 30_000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Unavailable("upstream response timeout")), timeout);
-  const signal = init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal;
+  const signal = anySignal(init.signal ?? undefined, controller.signal);
   try { return await fetch(url, { ...init, signal }); }
   finally { clearTimeout(timer); }
 }

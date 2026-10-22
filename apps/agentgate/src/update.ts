@@ -1,4 +1,5 @@
 import { chmodSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { getErrorMessage } from "hanzio";
 import { dirname, join, resolve } from "node:path";
 import packageInfo from "../../../package.json";
 import { PeerError, peerCall } from "./handoff/jobs.ts";
@@ -121,7 +122,7 @@ export async function updateTracked(s: Store, node: string) {
     note(!result.version ? undefined : { state: result.restarting ? "restarting" : "installed", version: result.version });
     return result;
   } catch (e) {
-    note({ state: "failed", error: (e as Error).message });
+    note({ state: "failed", error: getErrorMessage(e) });
     throw e;
   }
 }

@@ -1,9 +1,10 @@
 import type { AccountStatus, Failure } from "@agentgate/protocol";
+import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin } from "../credentials.ts";
 import { revision } from "../configuration.ts";
 import { BodyTooLarge, MAX_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import { Budget, abortable } from "./policy.ts";
+import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
 import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
@@ -16,7 +17,10 @@ const HOP_HEADERS = ["host", "connection", "content-length", "transfer-encoding"
 export function exhaustedResponse(provider: ProviderName, resetAt: number | undefined, now: number): Response {
   const secs = resetAt ? Math.max(1, Math.ceil((resetAt - now) / 1000)) : 3600;
   const message = `agentgate: every ${provider} account has reached its usage limit; resets in ${Math.ceil(secs / 60)} min`;
-  const body = provider === "claude" ? { type: "error", error: { type: "rate_limit_error", message } } : { error: { type: "usage_limit_reached", message, resets_in_seconds: secs } };
+  const body = typedSwitch(provider, {
+    claude: () => ({ type: "error", error: { type: "rate_limit_error", message } }),
+    ...typedSwitchGroup(provider, ["codex", "cursor"], () => ({ error: { type: "usage_limit_reached", message, resets_in_seconds: secs } })),
+  });
   return Response.json(body, { status: 429, headers: { "retry-after": String(secs) } });
 }
 function cleanHeaders(h: Headers): Headers {
@@ -31,7 +35,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
   };
   try {
     body = req.method === "GET" || req.method === "HEAD" ? undefined : await readBody(req.body, limits.maxBody, AbortSignal.any([budget.signal, AbortSignal.timeout(30000)]));
-    if (body?.length) { try { const value = JSON.parse(new TextDecoder().decode(body)); if (value && typeof value === "object" && !Array.isArray(value)) json = value; } catch {} }
+    if (body?.length) { const value = safeJsonParse(new TextDecoder().decode(body)).data; if (isRecord(value)) json = value; }
   } catch (e) { return error(e instanceof BodyTooLarge ? 413 : 408, e instanceof BodyTooLarge ? e.message : "request body cancelled or timed out", req.signal.aborted ? "cancelled" : "request"); }
   const requestedModel = provider.requestedModel?.(json) ?? (typeof json?.model === "string" ? json.model : undefined);
   const model = resolveModel(s, provider.name, requestedModel); telemetry.models(requestedModel, model);
@@ -58,13 +62,13 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     return new Response(stream, { status: res.status, statusText: res.statusText, headers: cleanHeaders(res.headers) });
   };
   const passthrough = async () => {
-    const attempt = telemetry.attempt("", "client login fallback"), started = performance.now();
+    const attempt = telemetry.attempt("", "client login fallback"), elapsed = startTimer();
     const up = provider.prepare(path, new Headers(headers), body, { accessToken: own } as import("../store.ts").Credential);
     try {
       const res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, headerWait());
-      attempt.status = res.status; attempt.headersMs = Math.round(performance.now() - started); if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, ""); telemetry.saveAttempt(attempt);
+      attempt.status = res.status; attempt.headersMs = Math.round(elapsed()); if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, ""); telemetry.saveAttempt(attempt);
       return deliver(res, "", () => {});
-    } catch { attempt.status = 502; attempt.failure = "transient"; attempt.headersMs = Math.round(performance.now() - started); telemetry.saveAttempt(attempt); return error(req.signal.aborted ? 408 : 502, "upstream unreachable or timed out", req.signal.aborted ? "cancelled" : "transient"); }
+    } catch { attempt.status = 502; attempt.failure = "transient"; attempt.headersMs = Math.round(elapsed()); telemetry.saveAttempt(attempt); return error(req.signal.aborted ? 408 : 502, "upstream unreachable or timed out", req.signal.aborted ? "cancelled" : "transient"); }
   };
   if (own && !provider.pooled(path)) return passthrough();
   if (previousResponse && !requiredAccount) return own ? passthrough() : error(409, "continuation owner is unknown; start a new response", "stateful");
@@ -97,22 +101,23 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     }
     accountCount++;
     let credential: import("../store.ts").Credential;
-    try { credential = await abortable(creds.token(account.id), budget.signal); }
+    // Cancelling stops only this wait; coordinated credential work stays owned and drained by Credentials.
+    try { credential = await raceAbort(creds.token(account.id), budget.signal); }
     catch (e) { if (budget.signal.aborted) continue; if (!(e instanceof NeedsLogin)) s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "credential unavailable"); tried.add(account.id); unavailable = true; continue; }
     let authRetried = false, rateRetries = 0;
     for (;;) {
       if (budget.signal.aborted) break;
       const up = provider.prepare(path, new Headers(headers), body, credential);
-      const attempt = telemetry.attempt(account.id, decision.reason), started = performance.now();
+      const attempt = telemetry.attempt(account.id, decision.reason), elapsed = startTimer();
       const release = beginRoute(s, provider.name, account.id, session);
       let res: Response;
       try { res = await fetchHeaders(up.url, { method: req.method, headers: up.headers, body: up.body, redirect: "manual", signal: budget.signal }, headerWait()); }
       catch {
-        release(); attempt.status = 502; attempt.headersMs = Math.round(performance.now() - started); attempt.failure = req.signal.aborted ? "cancelled" : budget.signal.aborted ? "budget" : "transient"; telemetry.saveAttempt(attempt);
+        release(); attempt.status = 502; attempt.headersMs = Math.round(elapsed()); attempt.failure = req.signal.aborted ? "cancelled" : budget.signal.aborted ? "budget" : "transient"; telemetry.saveAttempt(attempt);
         if (!budget.signal.aborted) cool(s, account.id, "transient", s.now() + 15000);
         return error(req.signal.aborted ? 408 : 502, "upstream unreachable or timed out; outcome uncertain", attempt.failure);
       }
-      attempt.status = res.status; attempt.headersMs = Math.round(performance.now() - started);
+      attempt.status = res.status; attempt.headersMs = Math.round(elapsed());
       const observed = provider.usage(res.headers);
       if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path)) s.setLocal(`quotaUnknown:${provider.name}`, String(s.now())); else if (observed) s.setLocal(`quotaUnknown:${provider.name}`, undefined);
       if (res.status === 429 || res.status === 401 || (res.status === 400 || res.status === 404)) {
@@ -121,21 +126,21 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
         catch { release(); return error(502, "upstream rejection response too large or timed out", "transient"); }
         release(); const failure = classify(provider, res.status, res.headers, text); attempt.failure = failure; telemetry.saveAttempt(attempt);
         if (res.status === 401) {
-          if (!authRetried) { authRetried = true; try { const next = await abortable(creds.refresh(account.id), budget.signal); if (next.accessToken !== credential.accessToken) { credential = next; continue; } } catch {} }
+          if (!authRetried) { authRetried = true; try { const next = await raceAbort(creds.refresh(account.id), budget.signal); if (next.accessToken !== credential.accessToken) { credential = next; continue; } } catch {} }
           tried.add(account.id); unavailable = true; break;
         }
         if (failure === "quota") {
           const windows = observed?.windows.filter(w => w.usedPct >= 100) ?? [], global = windows.filter(w => normalizedWindow(w).scope?.kind === "account");
           const until = global.length ? Math.max(...global.map(w => w.resetsAt ?? s.now() + Math.max(1000, retryAfterMs(res.headers)))) : !windows.length ? s.now() + Math.max(1000, retryAfterMs(res.headers)) : undefined;
           recordUsage(s, account.id, { windows: observed?.windows ?? [], status: "exhausted" }, until);
-          s.log(provider.name, account.id, telemetry.request.routedModel, 429, Math.round(performance.now() - started), "quota exhausted; switching"); tried.add(account.id); break;
+          s.log(provider.name, account.id, telemetry.request.routedModel, 429, Math.round(elapsed()), "quota exhausted; switching"); tried.add(account.id); break;
         }
         if (observed) recordUsage(s, account.id, observed);
         if (failure === "model" && model) { cool(s, account.id, "model", s.now() + 300000, model); tried.add(account.id); break; }
         if (failure === "rate") {
           const delay = retryAfterMs(res.headers, s.now()); cool(s, account.id, "rate", s.now() + delay);
           if (rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) && delay < budget.remaining()) {
-            try { await sleep(delay + Math.min(250, Math.max(0, budget.remaining() - delay - 1)) * Math.random(), budget.signal); } catch { break; }
+            try { await sleep(delay + clamp(budget.remaining() - delay - 1, 0, 250) * Math.random(), budget.signal); } catch { break; }
             continue;
           }
         }
@@ -148,7 +153,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
       if (observed) recordUsage(s, account.id, observed);
       const previous = s.local(`active:${provider.name}`);
       if (res.ok && previous !== account.id) { s.setLocal(`active:${provider.name}`, account.id); s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "active subscription changed"); }
-      s.log(provider.name, account.id, telemetry.request.routedModel, res.status, Math.round(performance.now() - started));
+      s.log(provider.name, account.id, telemetry.request.routedModel, res.status, Math.round(elapsed()));
       const listing = req.method === "GET" && res.ok ? provider.modelList?.(path) : undefined;
       if (listing) {
         try {

@@ -1,7 +1,8 @@
 import { REMOTE_LIMITS, endpointUpdate, remoteResponseFrame, sha256Hex } from "@agentgate/protocol/remote";
+import { safeEqual } from "hanzio/crypto";
 import { relayNode } from "@agentgate/protocol/relay";
 import type { EndpointOp } from "./app.ts";
-import { sameHash, Window, type Config } from "./group.ts";
+import { Window, type Config } from "./group.ts";
 
 /**
  * One remote MCP endpoint (a virtual project): a public POST URL for clients like Grok, forwarded over the one
@@ -95,7 +96,7 @@ export class EndpointCore {
     if (op === "update") return this.update(req, key, tokenHash, ipHash);
     const m = this.meta();
     if (!m?.admitted) return json(404, { error: "no such endpoint" });
-    if (!sameHash(m.tokenHash, tokenHash)) return this.unauthorized(json(401, { error: "unauthorized" }));
+    if (!safeEqual(m.tokenHash, tokenHash)) return this.unauthorized(json(401, { error: "unauthorized" }));
     if (op === "delete") { await this.destroy(m.key); return json(200, { ok: true }); }
     if (op === "connect") return this.connect(req, m);
     return json(400, { error: "unknown operation" });
@@ -115,7 +116,7 @@ export class EndpointCore {
     // Serialized: the admission call below awaits another object.
     return this.ctx.blockConcurrencyWhile(async () => {
       const m = this.meta(), now = Date.now();
-      if (m?.admitted && !sameHash(m.tokenHash, tokenHash)) return this.unauthorized(json(401, { error: "unauthorized" }));
+      if (m?.admitted && !safeEqual(m.tokenHash, tokenHash)) return this.unauthorized(json(401, { error: "unauthorized" }));
       if (!m?.admitted) {
         // Record, then reserve: the alarm deletes a create that stopped between the two.
         await this.ctx.storage.setAlarm(now + PENDING_MS);
@@ -149,7 +150,7 @@ export class EndpointCore {
     if (limited) return rpcError(429, "too many requests", { "retry-after": String(limited) });
     // Authenticate before reading the body.
     const secret = bearer(req);
-    if (!secret || !sameHash(m.secretHash, await sha256Hex(secret))) return this.unauthorized(rpcError(401, "unauthorized"));
+    if (!secret || !safeEqual(m.secretHash, await sha256Hex(secret))) return this.unauthorized(rpcError(401, "unauthorized"));
     if (!m.enabled) return rpcError(403, "this endpoint is disabled");
     const ws = this.socket();
     if (!ws) return rpcError(503, "the machine serving this endpoint is offline", { "retry-after": "30" });

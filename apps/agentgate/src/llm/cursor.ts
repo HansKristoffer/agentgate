@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { clamp, isRecord, safeJsonParse } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -39,7 +40,7 @@ function dashboard(method: string, accessToken: string, signal: AbortSignal) {
 }
 
 const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
-const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const record = (value: unknown) => isRecord(value) ? value : undefined;
 
 /** Model ids from `GetUsableModels`. Display-only rows are skipped. */
 export function parseModels(payload: unknown): string[] {
@@ -73,7 +74,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
   const used = body?.planUsage?.totalPercentUsed;
   if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
   const reset = Number(body?.billingCycleEnd);
-  const usedPct = Math.min(100, Math.max(0, used));
+  const usedPct = clamp(used, 0, 100);
   return { windows: [{ name: "month", usedPct, resetsAt: Number.isFinite(reset) && reset > 0 ? reset : undefined, scope: { kind: "account" } }], status: usedPct >= 100 ? "exhausted" : "ok" };
 }
 
@@ -108,7 +109,7 @@ export const cursor: Provider = {
       signal: AbortSignal.timeout(30_000),
     });
     const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30_000)));
-    const body = (() => { try { return JSON.parse(text) as { access_token?: unknown; shouldLogout?: unknown }; } catch { return {}; } })();
+    const body = safeJsonParse<{ access_token?: unknown; shouldLogout?: unknown }>(text).data ?? {};
     if (body.shouldLogout === true) throw new InvalidGrant("Cursor ended this login");
     if (!res.ok || typeof body.access_token !== "string" || !body.access_token) throw new Error(`Cursor token endpoint returned ${res.status}`);
     // The IDE keeps the new access token as its refresh token too.
@@ -135,7 +136,7 @@ export async function finish(s: Store, uuid: string, verifier: string, label: st
     await res.body?.cancel();
     // 404 means not signed in yet; Cursor's CLI retries server errors the same way.
     if (res.status !== 404 && res.status < 500) throw new Error(`Cursor sign-in failed (${res.status})`);
-    await sleep(Math.min(CURSOR.pollMs, Math.max(0, deadline - Date.now())), signal);
+    await sleep(clamp(deadline - Date.now(), 0, CURSOR.pollMs), signal);
   }
   return undefined;
 }

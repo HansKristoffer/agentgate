@@ -1,4 +1,5 @@
 import type { SkillHealth } from "@agentgate/protocol";
+import { getErrorMessage, safeJsonParse } from "hanzio";
 import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -73,7 +74,7 @@ export class SkillLinks {
     private io: { rename?: typeof renameSync; watch?: typeof watch } = {}) { }
 
   health(): SkillHealth {
-    try { return JSON.parse(this.s.local("skillHealth") ?? '{"errors":[]}'); } catch { return { errors: [] }; }
+    return safeJsonParse<SkillHealth>(this.s.local("skillHealth") ?? '{"errors":[]}').data ?? { errors: [] };
   }
 
   mirroring(main: string): boolean {
@@ -88,7 +89,7 @@ export class SkillLinks {
   }
 
   checkouts(): Record<string, string> {
-    try { return JSON.parse(this.s.local("checkouts") ?? "{}"); } catch { return {}; }
+    return safeJsonParse<Record<string, string>>(this.s.local("checkouts") ?? "{}").data ?? {};
   }
 
   /** Skills the repository itself carries in a checkout: SKILL.md folders we did not link. */
@@ -103,7 +104,7 @@ export class SkillLinks {
   }
 
   conflicts(): string[] {
-    try { return JSON.parse(this.s.local("skillConflicts") ?? "[]"); } catch { return []; }
+    return safeJsonParse<string[]>(this.s.local("skillConflicts") ?? "[]").data ?? [];
   }
 
   /** Remember the main checkout of the repo containing `path`. Returns it, or undefined for non-repos. */
@@ -142,7 +143,7 @@ export class SkillLinks {
 
   private attempt(path: string, action: () => void) {
     try { action(); } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       this.errors.push({ path, message });
       console.error(`skills: ${path}: ${message}`);
     }
@@ -269,8 +270,7 @@ export class SkillLinks {
   private mirror(root: string, tree: string): string[] {
     const names: string[] = [];
     const key = `skillMirrors:${tree}`;
-    let owned: Record<string, string>;
-    try { owned = JSON.parse(this.s.local(key) ?? "{}"); } catch { owned = {}; }
+    const owned = safeJsonParse<Record<string, string>>(this.s.local(key) ?? "{}").data ?? {};
     const pairs = [[".claude", ".agents"], [".agents", ".claude"]] as const;
     for (const [from, to] of pairs) {
       const src = join(tree, from, "skills"), dest = join(tree, to, "skills"), rel = `../../${from}/skills`;

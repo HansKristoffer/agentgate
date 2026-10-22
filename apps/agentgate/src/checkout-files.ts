@@ -1,4 +1,5 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { getErrorMessage, getUniqueValues, safeJsonParse, sortBy, trimTrailingSlash } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
@@ -36,7 +37,7 @@ export function repoKey(url: string): string | undefined {
   const m = urlForm ?? scpForm;
   if (!m) return undefined;
 
-  const key = `${m[1]}/${m[2]}`.replace(/\/+$/, "").replace(/\.git$/, "").toLowerCase();
+  const key = trimTrailingSlash(`${m[1]}/${m[2]}`).replace(/\.git$/, "").toLowerCase();
   return KEY.test(key) ? key : undefined;
 }
 
@@ -192,9 +193,8 @@ export function writeStore(dir: string, put: { path: string; data: Buffer; updat
 
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
 const digest = (f: CheckoutFile) => f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64"));
-const byPath = (x: CheckoutFile, y: CheckoutFile) => x.path < y.path ? -1 : x.path > y.path ? 1 : 0;
 const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
-  const plain = (fs: CheckoutFile[]) => JSON.stringify([...fs].sort(byPath).map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })));
+  const plain = (fs: CheckoutFile[]) => JSON.stringify(sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })));
   return plain(a) === plain(b);
 };
 
@@ -206,7 +206,7 @@ function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
     const newer = !mine || time(f) > time(mine) || (time(f) === time(mine) && digest(f) > digest(mine));
     if (newer) out.set(f.path, f);
   }
-  return [...out.values()].sort(byPath);
+  return sortBy([...out.values()], "path");
 }
 
 /** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */
@@ -374,7 +374,7 @@ export class CheckoutFiles {
         if (reconcile(this.s, root, key)) this.fill(key);
       } catch (e) {
         // A busy store is retried by the event that ends the write, or the next pass.
-        if (!(e instanceof StoreBusy)) console.error(`checkout files: ${key}: ${(e as Error).message}`);
+        if (!(e instanceof StoreBusy)) console.error(`checkout files: ${key}: ${getErrorMessage(e)}`);
       }
     }
   }
@@ -386,7 +386,7 @@ export class CheckoutFiles {
         delete all[path];
         this.s.setLocal(createdKey, JSON.stringify(all));
       } else if (k === key) {
-        void fillCheckout(this.root!, path, key).catch((e) => console.error(`checkout files: ${path}: ${(e as Error).message}`));
+        void fillCheckout(this.root!, path, key).catch((e) => console.error(`checkout files: ${path}: ${getErrorMessage(e)}`));
       }
     }
   }
@@ -510,7 +510,7 @@ export async function localEdits(root: string, cwd: string, listed: string[]): P
 /** Every file the file store manages for this checkout, machine-specific ones included: a handoff's snapshot leaves
  * them to the store, which carries the edits (`localEdits`) and keeps each machine's own. */
 export async function managedFiles(root: string, cwd: string, listed: string[]): Promise<string[]> {
-  return [...new Set([...listed, ...readStore(join(root, await checkoutKey(cwd))).files.keys()])];
+  return getUniqueValues([...listed, ...readStore(join(root, await checkoutKey(cwd))).files.keys()]);
 }
 
 /** Write a handed-off checkout file unless the checkout has its own edits to it (different from both the arriving copy
@@ -556,7 +556,7 @@ export async function addFiles(s: Store, root: string, top: string, paths: strin
   writeStore(join(root, key), put, [], s.now());
 
   const p = s.get("project", project) ?? projectSchema.parse({ id: project });
-  s.put("project", project, { ...p, fileList: [...new Set([...p.fileList ?? [], ...paths])].sort() });
+  s.put("project", project, { ...p, fileList: getUniqueValues([...p.fileList ?? [], ...paths]).sort() });
   reconcile(s, root, key);
   return project;
 }
@@ -614,8 +614,7 @@ export function fileContent(s: Store, root: string, project: string, path: strin
 /** This machine's checkouts of a repository: the main checkouts SkillLinks registered and the checkouts agentgate
  * created, each with every worktree of its repository. */
 async function checkoutsOf(s: Store, project: string, key: string): Promise<string[]> {
-  let registered: Record<string, string> = {};
-  try { registered = JSON.parse(s.local("checkouts") ?? "{}"); } catch { } // SkillLinks.checkouts()
+  const registered = safeJsonParse<Record<string, string>>(s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
   const known = [
     ...Object.entries(registered).filter(([, p]) => p.toLowerCase() === project.toLowerCase()).map(([cwd]) => cwd),
     ...Object.entries(createdCheckouts(s)).filter(([, k]) => k === key).map(([cwd]) => cwd),
@@ -647,7 +646,7 @@ export async function setFileContent(s: Store, root: string, project: string, pa
   const followed = new Map<string, Followed>();
   const fail = (cwd: string, e: unknown) => {
     followed.set(cwd, "failed");
-    console.error(`checkout files: ${cwd}: ${(e as Error).message}`);
+    console.error(`checkout files: ${cwd}: ${getErrorMessage(e)}`);
   };
   // Before the store changes: placeEdit tells the previous version from a checkout's own edits by the store.
   for (const cwd of checkouts) {
@@ -679,7 +678,7 @@ export async function listFiles(s: Store, root: string, top: string) {
   const { key, project } = await checkoutProject(s, top);
   const store = readStore(join(root, key));
   const listed = new Set(s.get("project", project)?.fileList ?? []);
-  const files = [...new Set([...store.files.keys(), ...listed])].sort().map((path) => {
+  const files = getUniqueValues([...store.files.keys(), ...listed]).sort().map((path) => {
     const f = store.files.get(path);
     return { path, updatedAt: f?.updatedAt, machine: !!f?.machine, listed: listed.has(path), stored: !!f };
   });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
 import {
@@ -111,7 +112,7 @@ export function App() {
   const isLocal = useRef(false);
   const running = useRef(new Set<string>());
   const local =
-    connection.url.replace("localhost", "127.0.0.1").replace(/\/$/, "") ===
+    trimTrailingSlash(connection.url.replace("localhost", "127.0.0.1")) ===
     localUrl;
   isLocal.current = local;
   const selected = navigation.find((n) => n.id === view)!;
@@ -435,7 +436,7 @@ export function App() {
                 e.preventDefault();
                 const f = new FormData(e.currentTarget);
                 const c: Connection = {
-                  url: String(f.get("url")).trim().replace(/\/$/, ""),
+                  url: trimTrailingSlash(String(f.get("url")).trim()),
                   token: String(f.get("token")).trim() || undefined,
                 };
                 void perform(async () => {

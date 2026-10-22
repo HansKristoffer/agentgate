@@ -1,4 +1,5 @@
 import { firstServer, handoffTargets, type HandoffJob, type NodeThreads, type T3NodeState, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
+import { getErrorMessage, getUniqueValues, isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { startHandoff, type SourceState } from "./source.ts";
@@ -11,18 +12,10 @@ import { ACTIVE, T3Error, claudeHomes, connectWith, createPairingLink, disconnec
 const CACHE = 5 * 60_000;
 const RECENT = 10 * 60_000;
 
-async function cached<T>(h: Handoffs, key: string, fn: () => Promise<T>): Promise<T> {
-  const hit = h.cache.get(key);
-  if (hit && h.s.now() - hit.at < CACHE) return hit.value as T;
-  const value = await fn();
-  h.cache.set(key, { at: h.s.now(), value });
-  return value;
-}
-
 async function localThreads(h: Handoffs): Promise<T3Thread[]> {
   const t3 = t3Client(h.s);
   const claudeIds = () => t3.rpc(async (call) => (await claudeHomes(call, h.options.claudeDir)).map(([id]) => id));
-  const [shell, claude] = await Promise.all([t3.shell(), cached(h, "claude", claudeIds)]);
+  const [shell, claude] = await Promise.all([t3.shell(), h.cache.getOrSet("claude", claudeIds, { ttlMs: CACHE })]);
 
   // What T3's sidebar lists outside Settled: top-level threads. Subagents move with their parent.
   const listed = shell.threads.filter((t) => {
@@ -51,7 +44,7 @@ type ProjectShell = { title: string; repositoryIdentity?: { canonicalKey?: strin
 function projectLabel(project: ProjectShell, all: ProjectShell[]) {
   const key = project.repositoryIdentity?.canonicalKey;
   const members = key ? all.filter((p) => p.repositoryIdentity?.canonicalKey === key) : [project];
-  const unique = (values: (string | undefined)[]) => [...new Set(values.filter((v): v is string => !!v))];
+  const unique = (values: (string | undefined)[]) => getUniqueValues(values.filter(isTruthy));
   const titles = unique(members.map((m) => m.title));
   const displayNames = unique(members.map((m) => m.repositoryIdentity?.displayName));
   const names = unique(members.map((m) => m.repositoryIdentity?.name));
@@ -76,9 +69,11 @@ const byCode = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Threads the user dragged into place, in key order, and the others newest first by `anchor`. */
 function arranged<T extends Ordered>(threads: T[], key: (t: T) => string | null | undefined, anchor: (t: T) => number) {
-  const keyed = threads.filter((t) => key(t) != null).sort((a, b) => byCode(key(a)!, key(b)!) || a.id.localeCompare(b.id));
-  const loose = threads.filter((t) => key(t) == null).sort((a, b) => anchor(b) - anchor(a) || a.id.localeCompare(b.id));
-  return { keyed, loose };
+  const [keyed, loose] = partition(threads, (t) => key(t) != null);
+  return {
+    keyed: keyed.sort((a, b) => byCode(key(a)!, key(b)!) || a.id.localeCompare(b.id)),
+    loose: loose.sort((a, b) => anchor(b) - anchor(a) || a.id.localeCompare(b.id)),
+  };
 }
 
 /** T3's default sidebar order (client-runtime threadSort.ts): pinned threads first, arranged ones before the rest;
@@ -99,7 +94,7 @@ export async function localView(h: Handoffs): Promise<{ t3: T3NodeState; threads
   try {
     return { t3, threads: await localThreads(h), jobs };
   } catch (e) {
-    return { t3: { ...t3, error: (e as Error).message }, threads: [], jobs };
+    return { t3: { ...t3, error: getErrorMessage(e) }, threads: [], jobs };
   }
 }
 
@@ -114,7 +109,7 @@ export async function allNodes(h: Handoffs): Promise<NodeThreads[]> {
     try {
       return { ...base, ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })) };
     } catch (e) {
-      return { ...base, error: (e as Error).message };
+      return { ...base, error: getErrorMessage(e) };
     }
   }));
 }

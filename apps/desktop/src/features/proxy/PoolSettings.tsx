@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { buildQueryString, typedKeys } from "hanzio";
 import { Button } from "@heroui/react";
 import {
   settingsSchema,
@@ -6,7 +7,6 @@ import {
   type Settings,
   type RouteExplanation,
   type SettingsUpdateResult,
-  type Provider,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
@@ -84,11 +84,10 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
   const explainRouting = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    const query = new URLSearchParams({
+    const query = buildQueryString({
       provider: String(form.get("provider")),
+      model: String(form.get("model") ?? "").trim() || undefined,
     });
-    const model = String(form.get("model") ?? "").trim();
-    if (model) query.set("model", model);
     void perform(async () => {
       const current = capture();
       const result = await request<RouteExplanation>(
@@ -111,7 +110,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
         }
       >
         {data.daemon &&
-          (Object.keys(data.daemon.providers) as Provider[]).map((provider) => (
+          typedKeys(data.daemon.providers).map((provider) => (
             <div className="item" key={provider}>
               <div className={`provider-icon ${provider}`}>
                 {providerIcon(provider)}

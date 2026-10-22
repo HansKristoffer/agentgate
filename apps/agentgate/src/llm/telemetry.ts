@@ -9,12 +9,13 @@ import {
   type RequestDetail,
   type RequestPage,
 } from "@agentgate/protocol";
+import { clamp, startTimer } from "hanzio";
 import type { Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
 export class Telemetry {
   readonly request: ProxyRequest;
-  private started = performance.now();
+  private elapsed = startTimer();
   private ended = false;
   constructor(
     readonly s: Store,
@@ -91,12 +92,12 @@ export class Telemetry {
   }
   headers(status: number) {
     this.request.status = status;
-    this.request.headersMs = Math.round(performance.now() - this.started);
+    this.request.headersMs = Math.round(this.elapsed());
     this.save();
   }
   firstByte() {
     if (this.request.firstByteMs === undefined)
-      this.request.firstByteMs = Math.round(performance.now() - this.started);
+      this.request.firstByteMs = Math.round(this.elapsed());
   }
   finish(
     outcome: ProxyRequest["outcome"],
@@ -109,7 +110,7 @@ export class Telemetry {
       outcome,
       failure,
       stream,
-      durationMs: Math.round(performance.now() - this.started),
+      durationMs: Math.round(this.elapsed()),
     });
     this.save();
     if (!this.s.closed) trimTelemetry(this.s);
@@ -197,7 +198,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     where.push("seq < ?");
     args.push(cursor);
   }
-  const limit = Math.max(1, Math.min(100, filter.limit ?? 50));
+  const limit = clamp(filter.limit ?? 50, 1, 100);
   const rows = s.db
     .query(
       `select seq,data from proxy_requests ${where.length ? `where ${where.join(" and ")}` : ""} order by seq desc limit ?`,

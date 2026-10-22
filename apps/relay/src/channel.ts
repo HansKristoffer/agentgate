@@ -1,5 +1,6 @@
 import { CHANNEL_LIMITS, MiB, channelResponseFrame, relayNode } from "@agentgate/protocol/relay";
-import { sameHash, Window } from "./group.ts";
+import { safeEqual } from "hanzio/crypto";
+import { Window } from "./group.ts";
 
 /**
  * A group's node channel: a member calls another member, and the call is forwarded over the WebSocket the target
@@ -50,7 +51,7 @@ export class ChannelCore {
 
   /** Undefined when the token is this group's; otherwise the refusal. */
   async authorize(authHash: string, ipHash: string): Promise<Response | undefined> {
-    if (this.authHash && sameHash(this.authHash, authHash)) return undefined;
+    if (this.authHash && safeEqual(this.authHash, authHash)) return undefined;
     if (!this.authHash && await this.deps.checkAuth(authHash, ipHash)) { this.authHash = authHash; return undefined; }
     const limited = this.failures.hit(this.deps.limits.failedAuthPerMinute, this.now());
     return limited ? json(429, { error: "too many failed attempts" }, { "retry-after": String(limited) }) : json(401, { error: "unauthorized" });

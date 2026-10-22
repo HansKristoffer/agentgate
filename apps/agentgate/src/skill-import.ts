@@ -1,4 +1,5 @@
 import { MAX_SKILL, MAX_SKILL_FILES, SKILL_MARKER, SkillConflict, skillSchema, type SkillSearchResult } from "@agentgate/protocol";
+import { getErrorMessage, raceAbort, sumBy, timeoutSignal } from "hanzio";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, type Dirent } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -32,7 +33,7 @@ export function description(text: string, expectedName?: string): string {
     if (expectedName && value?.name !== undefined && value.name !== expectedName) throw new Error(`Frontmatter name must be ${expectedName}`);
     return typeof value?.description === "string" ? value.description.trim().slice(0, 8192) : "";
   } catch (error) {
-    if (expectedName) throw new Error(`Invalid SKILL.md frontmatter: ${error instanceof Error ? error.message : error}`);
+    if (expectedName) throw new Error(`Invalid SKILL.md frontmatter: ${getErrorMessage(error)}`);
     return "";
   }
 }
@@ -126,7 +127,7 @@ export async function fetchSkills(source: string, selector = "*", signal?: Abort
   if (!runner) throw new Error("adding skills needs Node (npx) or Bun (bunx) on the daemon's machine");
   if (source.startsWith("-")) throw new Error("a skill source cannot start with a dash");
   const dir = mkdtempSync(join(tmpdir(), "agentgate-skills-"));
-  const bounded = AbortSignal.any([AbortSignal.timeout(100_000), ...(signal ? [signal] : [])]);
+  const bounded = timeoutSignal(100_000, signal);
   try {
     const { out, err, code } = await runSkillCommand([...runner, `skills@${SKILLS_CLI_VERSION}`, "add", source.replace(/^~(?=\/|$)/, homedir()), "--skill", selector, "--agent", "codex", "--copy", "-y", "--json"], dir, bounded);
     if (code !== 0) throw new Error(`skills add failed: ${plain(err) || plain(out) || `exit ${code}`}`);
@@ -160,7 +161,7 @@ export function readRepoSkills(root: string): { skills: FetchedSkill[]; skipped:
       const id = skillId(entry.name);
       if (!entry.isDirectory() || !existsSync(join(dir, entry.name, "SKILL.md")) || skills.some(k => k.id === id)) continue;
       try { skills.push({ id, ...readSkill(join(dir, entry.name)) }); }
-      catch (error) { skipped.push(`${entry.name}: ${error instanceof Error ? error.message : error}`); }
+      catch (error) { skipped.push(`${entry.name}: ${getErrorMessage(error)}`); }
     }
   }
   if (!skills.length) throw new Error(skipped.length ? `no usable skills: ${skipped.join("; ")}` : "no skills in .claude/skills or .agents/skills");
@@ -177,7 +178,7 @@ export const fetchRepo: RepoFetcher = async (url, since, signal) => {
   const bin = Bun.which("git");
   if (!bin) throw new Error("syncing skill repositories needs git on the daemon's machine");
   const dir = mkdtempSync(join(tmpdir(), "agentgate-repo-"));
-  const bounded = AbortSignal.any([AbortSignal.timeout(120_000), ...(signal ? [signal] : [])]);
+  const bounded = timeoutSignal(120_000, signal);
   const git = async (cwd: string, ...args: string[]) => {
     const { out, err, code } = await runSkillCommand([bin, "-c", "credential.helper=", ...args], cwd, bounded);
     if (code !== 0) throw new Error(args[0] === "ls-remote" ? `${url} was not found or is not public${err.trim() ? ` (${plain(err)})` : ""}` : `git ${args[0]} failed: ${plain(err) || `exit ${code}`}`);
@@ -194,7 +195,7 @@ export const fetchRepo: RepoFetcher = async (url, since, signal) => {
 };
 
 export async function searchSkills(query: string, signal?: AbortSignal): Promise<SkillSearchResult[]> {
-  const bounded = AbortSignal.any([AbortSignal.timeout(10_000), ...(signal ? [signal] : [])]);
+  const bounded = timeoutSignal(10_000, signal);
   const res = await fetchHeaders(`https://skills.sh/api/search?q=${encodeURIComponent(query)}&limit=30`, { signal: bounded });
   if (!res.ok) { await res.body?.cancel(); throw new Error(`skills.sh search failed (${res.status})`); }
   const body = z.object({ skills: z.array(z.object({ source: z.string().max(2048), skillId: z.string().max(256), installs: z.number().nonnegative().default(0) })).max(100) })
@@ -232,7 +233,7 @@ export class SkillImports {
         const bytes = Buffer.byteLength(JSON.stringify(skills));
         if (bytes > this.maxBytes) throw new Error("skill preview exceeds the cache limit; select individual skills");
         this.prune();
-        while (!fresh && this.artifacts.size && (this.artifacts.size >= 16 || [...this.artifacts.values()].reduce((n, a) => n + a.bytes, 0) + bytes > this.maxBytes)) this.artifacts.delete(this.artifacts.keys().next().value!);
+        while (!fresh && this.artifacts.size && (this.artifacts.size >= 16 || sumBy([...this.artifacts.values()], "bytes") + bytes > this.maxBytes)) this.artifacts.delete(this.artifacts.keys().next().value!);
         const artifact = { token: crypto.randomUUID(), source, selector, at: this.now(), bytes, skills };
         if (!fresh) this.artifacts.set(artifact.token, artifact);
         return artifact;
@@ -241,11 +242,9 @@ export class SkillImports {
     }
     flight.users++;
     const current = flight;
-    let onAbort: (() => void) | undefined;
     try {
-      return structuredClone(await (signal ? Promise.race([current.work, new Promise<never>((_, reject) => { onAbort = () => reject(signal.reason); signal.addEventListener("abort", onAbort, { once: true }); if (signal.aborted) onAbort(); })]) : current.work));
+      return structuredClone(await raceAbort(current.work, signal));
     } finally {
-      if (onAbort) signal?.removeEventListener("abort", onAbort);
       if (--current.users === 0 && this.flights.get(key) === current) current.abort.abort();
     }
   }

@@ -1,12 +1,13 @@
 import { modelSnapshotSchema, type BatchResult, type Check, type Verification } from "@agentgate/protocol";
+import { getUniqueValues, pMap, raceAbort, typedKeys, typedSwitch } from "hanzio";
 import type { Credentials } from "../credentials.ts";
 import type { Store } from "../store.ts";
 import { revision } from "../configuration.ts";
 import { readBody } from "../runtime.ts";
 import { setAccount } from "../operations.ts";
-import { abortable, resetCooldown } from "./policy.ts";
+import { resetCooldown } from "./policy.ts";
 import { proxy } from "./pool.ts";
-import { bounded, type Quotas } from "./quota.ts";
+import type { Quotas } from "./quota.ts";
 import type { Provider, ProviderName } from "./provider.ts";
 import { streamObserver } from "./telemetry.ts";
 
@@ -14,14 +15,14 @@ export class ProxyOperations {
   private discovery = new Map<string, Promise<string[]>>();
   constructor(readonly s: Store, readonly creds: Credentials, readonly quotas: Quotas, readonly providers: Record<ProviderName, Provider>) {}
   discover(id: string, signal: AbortSignal): Promise<string[]> {
-    const existing = this.discovery.get(id); if (existing) return abortable(existing, signal);
+    const existing = this.discovery.get(id); if (existing) return raceAbort(existing, signal);
     const task = (async () => {
       const a = this.s.get("account", id); if (!a) throw new Error("Account does not exist");
       const adapter = this.providers[a.provider]; if (!adapter.discoverModels) throw new Error("Model discovery is unsupported");
       const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
-      const token = await abortable(this.creds.token(id), combined), before = revision(this.s, "credential", id);
+      const token = await raceAbort(this.creds.token(id), combined), before = revision(this.s, "credential", id);
       try {
-        const models = [...new Set(await adapter.discoverModels(token, combined))]; combined.throwIfAborted();
+        const models = getUniqueValues(await adapter.discoverModels(token, combined)); combined.throwIfAborted();
         const snapshot = modelSnapshotSchema.parse({ at: this.s.now(), models });
         if (this.s.closed || !this.s.get("account", id) || revision(this.s, "credential", id) !== before) throw new Error("Account changed during discovery");
         this.s.setLocal(`models:${id}`, JSON.stringify(snapshot)); this.s.setLocal(`modelError:${id}`, undefined); return snapshot.models;
@@ -36,7 +37,7 @@ export class ProxyOperations {
     const account = this.s.get("account", id); if (!account) throw new Error("Account does not exist");
     const adapter = this.providers[account.provider], checks: Verification["checks"] = { credential: { status: "failed", message: "Login unavailable" }, quota: { status: "unsupported", message: "Usage refresh unsupported" }, models: { status: "unsupported", message: "Model discovery unsupported" } };
     const checked = async (fn: () => Promise<unknown>, message: string): Promise<Check> => { try { await fn(); return { status: "ok", message }; } catch { return { status: "failed", message: signal.aborted ? "Check cancelled or timed out" : "Check failed; inspect account health" }; } };
-    checks.credential = await checked(() => abortable(this.creds.token(id), signal), "Coordinated login is usable");
+    checks.credential = await checked(() => raceAbort(this.creds.token(id), signal), "Coordinated login is usable");
     const credentialRevision = revision(this.s, "credential", id);
     if (checks.credential.status === "ok") {
       await Promise.all([
@@ -55,23 +56,26 @@ export class ProxyOperations {
         }, "Inference probe reached the requested account");
       }
     }
-    if (this.s.closed || !this.s.get("account", id) || revision(this.s, "credential", id) !== credentialRevision) for (const key of Object.keys(checks) as (keyof typeof checks)[]) checks[key] = { status: "obsolete", message: "Account changed; verify again" };
+    if (this.s.closed || !this.s.get("account", id) || revision(this.s, "credential", id) !== credentialRevision) for (const key of typedKeys(checks)) checks[key] = { status: "obsolete", message: "Account changed; verify again" };
     return { accountId: id, at: this.s.now(), node: this.s.nodeId, checks };
   }
   async batch(ids: string[], action: "quota" | "verify" | "enable" | "disable" | "refresh" | "models" | "reset-cooldown", signal: AbortSignal): Promise<BatchResult[]> {
-    return bounded([...new Set(ids)], async id => {
+    return pMap(getUniqueValues(ids), async id => {
       try {
         signal.throwIfAborted(); if (!this.s.get("account", id)) throw new Error("Account does not exist");
-        let result: unknown;
-        if (action === "quota") result = await this.quotas.refresh(id, signal, true);
-        else if (action === "verify") result = await this.verify(id, signal);
-        else if (action === "models") result = await this.discover(id, signal);
-        else if (action === "refresh") { await abortable(this.creds.refresh(id), signal); result = { refreshed: true }; }
-        else if (action === "reset-cooldown") { resetCooldown(this.s, id); result = { reset: true }; }
-        else { setAccount(this.s, id, { enabled: action === "enable" }); result = { enabled: action === "enable" }; }
+        const toggle = (enabled: boolean) => { setAccount(this.s, id, { enabled }); return { enabled }; };
+        const result: unknown = await typedSwitch(action, {
+          quota: () => this.quotas.refresh(id, signal, true),
+          verify: () => this.verify(id, signal),
+          models: () => this.discover(id, signal),
+          refresh: async () => { await raceAbort(this.creds.refresh(id), signal); return { refreshed: true }; },
+          "reset-cooldown": () => { resetCooldown(this.s, id); return { reset: true }; },
+          enable: () => toggle(true),
+          disable: () => toggle(false),
+        });
         const verification = action === "verify" ? result as Verification : undefined;
         return { id, ok: verification ? Object.values(verification.checks).every(c => c.status === "ok" || c.status === "unsupported") : true, result };
       } catch { return { id, ok: false, error: signal.aborted ? "Operation cancelled or timed out" : "Operation failed; inspect account health" }; }
-    });
+    }, { concurrency: 4 });
   }
 }
