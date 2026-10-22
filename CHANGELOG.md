@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.1](https://github.com/HansKristoffer/agentgate/compare/v0.25.0...v0.25.1) (2026-10-22)
+
+
+### Build System
+
+* move to Bun 1.4.4, typecheck with bun check and format with bun fmt ([#87](https://github.com/HansKristoffer/agentgate/issues/87)) ([73ee1fc](https://github.com/HansKristoffer/agentgate/commit/73ee1fcb3e1ca23951621c54a559f54f98043f79))
+
 ## [0.25.0](https://github.com/HansKristoffer/agentgate/compare/v0.24.0...v0.25.0) (2026-10-21)
 
 
