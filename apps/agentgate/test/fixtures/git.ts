@@ -11,8 +11,14 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 const made: string[] = [];
 /** A temporary folder; a test file that makes them runs `afterAll(removeTmp)`. */
-export const tmp = (prefix = "agentgate-test-") => { const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix))); made.push(dir); return dir; };
-export const removeTmp = () => { for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true }); };
+export const tmp = (prefix = "agentgate-test-") => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
+  made.push(dir);
+  return dir;
+};
+export const removeTmp = () => {
+  for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
+};
 
 export function sh(cwd: string, ...args: string[]): string {
   const r = Bun.spawnSync(["git", ...args], { cwd, stderr: "pipe", env: process.env });
@@ -33,7 +39,15 @@ export function repos<K extends string>(...clones: K[]) {
   writeFileSync(join(seed, "README.md"), "hello\n");
   writeFileSync(join(seed, "old.txt"), "to be deleted\n");
   writeFileSync(join(seed, ".gitignore"), "node_modules\n.plans\n.env\n");
-  sh(seed, "add", "-A"); sh(seed, "commit", "-m", "init"); sh(seed, "push", "origin", "main");
-  const paths = Object.fromEntries(clones.map((c) => { const p = join(root, c); sh(root, "clone", url, p); return [c, p]; }));
+  sh(seed, "add", "-A");
+  sh(seed, "commit", "-m", "init");
+  sh(seed, "push", "origin", "main");
+  const paths = Object.fromEntries(
+    clones.map((c) => {
+      const p = join(root, c);
+      sh(root, "clone", url, p);
+      return [c, p];
+    }),
+  );
   return { root, origin, url, ...paths } as { root: string; origin: string; url: string } & Record<K, string>;
 }

@@ -3,27 +3,47 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 // Remote MCP endpoints on real workerd: hashes set by the node, one hibernatable socket, no replay.
-const TOKEN = "T".repeat(43), SECRET = "S".repeat(43);
-const sha = async (s: string) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))), b => b.toString(16).padStart(2, "0")).join("");
+const TOKEN = "T".repeat(43),
+  SECRET = "S".repeat(43);
+const sha = async (s: string) =>
+  Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
 const keyOf = (i: number) => `key${String(i).padStart(19, "0")}`;
 
-const put = async (key: string, update: { secretHash?: string; enabled?: boolean }, token = TOKEN) => exports.default.fetch(`https://relay.test/e/${key}`, {
-  method: "PUT", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-  body: JSON.stringify({ secretHash: update.secretHash ?? await sha(SECRET), enabled: update.enabled ?? true }),
-});
-const mcp = (key: string, body: unknown = { jsonrpc: "2.0", id: 1, method: "tools/list" }, secret = SECRET) => exports.default.fetch(`https://relay.test/mcp/${key}`, {
-  method: "POST", headers: { authorization: `Bearer ${secret}`, "content-type": "application/json", "mcp-protocol-version": "2025-06-18" },
-  body: typeof body === "string" ? body : JSON.stringify(body),
-});
+const put = async (key: string, update: { secretHash?: string; enabled?: boolean }, token = TOKEN) =>
+  exports.default.fetch(`https://relay.test/e/${key}`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify({ secretHash: update.secretHash ?? (await sha(SECRET)), enabled: update.enabled ?? true }),
+  });
+const mcp = (key: string, body: unknown = { jsonrpc: "2.0", id: 1, method: "tools/list" }, secret = SECRET) =>
+  exports.default.fetch(`https://relay.test/mcp/${key}`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/json",
+      "mcp-protocol-version": "2025-06-18",
+    },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
 async function connect(key: string, token = TOKEN) {
-  const res = await exports.default.fetch(`https://relay.test/e/${key}/connect`, { headers: { upgrade: "websocket", authorization: `Bearer ${token}`, "x-agentgate-node": "srv" } });
+  const res = await exports.default.fetch(`https://relay.test/e/${key}/connect`, {
+    headers: { upgrade: "websocket", authorization: `Bearer ${token}`, "x-agentgate-node": "srv" },
+  });
   expect(res.status).toBe(101);
   const ws = res.webSocket!;
   ws.accept();
   const frames: any[] = [];
   const waiters: (() => void)[] = [];
-  ws.addEventListener("message", (e) => { frames.push(JSON.parse(e.data as string)); waiters.splice(0).forEach(w => w()); });
-  const next = async () => { while (!frames.length) await new Promise<void>(r => waiters.push(r)); return frames.shift(); };
+  ws.addEventListener("message", (e) => {
+    frames.push(JSON.parse(e.data as string));
+    waiters.splice(0).forEach((w) => w());
+  });
+  const next = async () => {
+    while (!frames.length) await new Promise<void>((r) => waiters.push(r));
+    return frames.shift();
+  };
   return { ws, next };
 }
 
@@ -38,7 +58,15 @@ describe("remote MCP endpoints", () => {
     expect(req).toMatchObject({ t: "req", headers: { "mcp-protocol-version": "2025-06-18" } });
     expect(JSON.parse(req.body)).toMatchObject({ method: "tools/list" });
     expect(req.headers.authorization).toBeUndefined(); // the relay checked the secret; it isn't forwarded
-    node.ws.send(JSON.stringify({ t: "res", id: req.id, status: 200, headers: { "content-type": "application/json" }, body: '{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}' }));
+    node.ws.send(
+      JSON.stringify({
+        t: "res",
+        id: req.id,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: '{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}',
+      }),
+    );
     const res = await pending;
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ result: { tools: [] } });
@@ -72,7 +100,7 @@ describe("remote MCP endpoints", () => {
     const first = await connect(key);
     const pending = mcp(key);
     await first.next();
-    const closed = new Promise<void>(r => first.ws.addEventListener("close", () => r()));
+    const closed = new Promise<void>((r) => first.ws.addEventListener("close", () => r()));
     const second = await connect(key); // closes the first socket
     await closed;
     expect((await pending).status).toBe(502);
@@ -87,15 +115,24 @@ describe("remote MCP endpoints", () => {
     const key = keyOf(4);
     await put(key, {});
     const node = await connect(key);
-    const closed = new Promise<void>(r => node.ws.addEventListener("close", () => r()));
-    expect((await exports.default.fetch(`https://relay.test/e/${key}`, { method: "DELETE", headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(200);
+    const closed = new Promise<void>((r) => node.ws.addEventListener("close", () => r()));
+    expect(
+      (
+        await exports.default.fetch(`https://relay.test/e/${key}`, {
+          method: "DELETE",
+          headers: { authorization: `Bearer ${TOKEN}` },
+        })
+      ).status,
+    ).toBe(200);
     await closed;
     expect((await mcp(key)).status).toBe(404);
 
     const idle = keyOf(5);
     await put(idle, {});
     const stub = env.ENDPOINTS.getByName(idle);
-    await runInDurableObject(stub, (_, state) => { state.storage.sql.exec("update meta set lastActive = 0"); });
+    await runInDurableObject(stub, (_, state) => {
+      state.storage.sql.exec("update meta set lastActive = 0");
+    });
     await runDurableObjectAlarm(stub);
     expect((await mcp(idle)).status).toBe(404);
   });

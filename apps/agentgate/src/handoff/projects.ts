@@ -23,7 +23,9 @@ const CLONES = "t3:clones";
 export async function t3Projects(t3: T3) {
   const out: { repo?: string; origin?: string; project: Awaited<ReturnType<T3["shell"]>>["projects"][number] }[] = [];
   for (const project of (await t3.shell()).projects) {
-    const origin = existsSync(project.workspaceRoot) ? (await run(project.workspaceRoot, ["config", "--get", "remote.origin.url"])).out : "";
+    const origin = existsSync(project.workspaceRoot)
+      ? (await run(project.workspaceRoot, ["config", "--get", "remote.origin.url"])).out
+      : "";
     const repo = github(origin) ? parseRemote(origin) : undefined;
     out.push(repo && projectIdSchema.safeParse(repo).success ? { repo, origin, project } : { project });
   }
@@ -40,7 +42,10 @@ export async function syncT3Projects(h: Handoffs) {
   const t3 = t3Client(s);
   s.setLocal("t3:knownRepos", undefined);
   const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
-  const remember = (repo: string) => { known.add(repo.toLowerCase()); s.setLocal(KNOWN, JSON.stringify([...known])); };
+  const remember = (repo: string) => {
+    known.add(repo.toLowerCase());
+    s.setLocal(KNOWN, JSON.stringify([...known]));
+  };
   const clones: Record<string, string> = JSON.parse(s.local(CLONES) ?? "{}");
   const saveClones = () => s.setLocal(CLONES, Object.keys(clones).length ? JSON.stringify(clones) : undefined);
   // Repositories by error, so a cause they share is said once.
@@ -74,7 +79,15 @@ export async function syncT3Projects(h: Handoffs) {
       // The project T3 Code keeps for a clone this node started: without a checkout yet, it is running or failed.
       const started = clones[key] && all.find((a) => a.project.workspaceRoot === clones[key]);
       if (path) {
-        await t3.rpc((call) => call("projects.mutate", { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: p.t3Title, workspaceRoot: path }));
+        await t3.rpc((call) =>
+          call("projects.mutate", {
+            type: "project.create",
+            commandId: crypto.randomUUID(),
+            projectId: crypto.randomUUID(),
+            title: p.t3Title,
+            workspaceRoot: path,
+          }),
+        );
         remember(p.id);
       } else if (started) {
         if (started.repo) remember(p.id);
@@ -84,25 +97,37 @@ export async function syncT3Projects(h: Handoffs) {
         let dir = join(h.options.cloneDir, name);
         for (let n = 2; existsSync(dir); n++) dir = join(h.options.cloneDir, `${name}-${n}`);
         // T3 registers the project at once and clones in the background, showing progress in its sidebar.
-        await t3.rpc((call) => call("projectClone.start", {
-          projectId: crypto.randomUUID(), title: p.t3Title, createdAt: new Date(s.now()).toISOString(),
-          provider: "github", repository: p.id, destinationPath: dir, protocol,
-        }));
+        await t3.rpc((call) =>
+          call("projectClone.start", {
+            projectId: crypto.randomUUID(),
+            title: p.t3Title,
+            createdAt: new Date(s.now()).toISOString(),
+            provider: "github",
+            repository: p.id,
+            destinationPath: dir,
+            protocol,
+          }),
+        );
         clones[key] = dir;
         saveClones();
       }
     } catch (e) {
       if (e instanceof T3PermissionError) denied = e.message;
-      else { const message = getErrorMessage(e); errors.set(message, [...errors.get(message) ?? [], p.id]); }
+      else {
+        const message = getErrorMessage(e);
+        errors.set(message, [...(errors.get(message) ?? []), p.id]);
+      }
     }
   }
-  report([...denied ? [denied] : [], ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
+  report([...(denied ? [denied] : []), ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
 }
 
 /** This node's main checkouts by lowercase `owner/repo`: registered ones, then clones in the clone folder. */
 function localCheckouts(h: Handoffs) {
   const found = new Map<string, string>();
-  const add = (repo: string, path: string) => { if (existsSync(join(path, ".git")) && !found.has(repo.toLowerCase())) found.set(repo.toLowerCase(), path); };
+  const add = (repo: string, path: string) => {
+    if (existsSync(join(path, ".git")) && !found.has(repo.toLowerCase())) found.set(repo.toLowerCase(), path);
+  };
   const registered = safeJsonParse<Record<string, string>>(h.s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
   for (const [path, repo] of Object.entries(registered)) add(repo, path);
   if (existsSync(h.options.cloneDir)) for (const { repo, path } of scanRepos(h.options.cloneDir)) add(repo, path);

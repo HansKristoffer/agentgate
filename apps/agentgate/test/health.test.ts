@@ -17,7 +17,8 @@ function machine() {
   s.setLocal("node", "mac");
   s.setLocal("adminToken", "admin-secret");
   s.put("node", "mac", { id: "mac", url: "http://mac.tail123.ts.net:7878", protocol: NODE_PROTOCOL });
-  const ctx = makeCtx(s), handler = app(ctx);
+  const ctx = makeCtx(s),
+    handler = app(ctx);
   cleanup.push(async () => {
     ctx.health.stop();
     ctx.abort.abort();
@@ -29,13 +30,22 @@ function machine() {
   });
   const call = (
     path: string,
-    options: { method?: string; body?: unknown; listener?: "loopback" | "tailnet"; headers?: Record<string, string> } = {},
+    options: {
+      method?: string;
+      body?: unknown;
+      listener?: "loopback" | "tailnet";
+      headers?: Record<string, string>;
+    } = {},
   ) => {
     const { method = "GET", body, listener = "loopback", headers = {} } = options;
     return handler.fetch(
       new Request(`http://127.0.0.1:7878${path}`, {
         method,
-        headers: { host: "127.0.0.1:7878", ...(body === undefined ? {} : { "content-type": "application/json" }), ...headers },
+        headers: {
+          host: "127.0.0.1:7878",
+          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          ...headers,
+        },
         body: body === undefined ? undefined : JSON.stringify(body),
       }),
       { listener },
@@ -56,7 +66,9 @@ test("the dashboard is off until a machine turns it on, and turning it on waits 
   s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL });
   expect(setHealthDashboard(s, "mac", true).healthDashboard).toBe(true);
   // Linux serves the page; any other machine answers with a note instead.
-  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(process.platform === "linux" ? 200 : 501);
+  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(
+    process.platform === "linux" ? 200 : 501,
+  );
 
   // Turning it off needs no wait: a machine that drops the field reads it as off.
   s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL - 1 });
@@ -93,48 +105,65 @@ test.skipIf(process.platform === "linux")("a machine that is not Linux says so a
   expect((await call(HEALTH_PATH, { headers: { accept: "application/json" } })).status).toBe(501);
 });
 
-test.skipIf(process.platform !== "linux")("the dashboard reports T3 Code only while agentgate is connected to it, and whether it answers", async () => {
-  const { s, ctx, call } = machine();
-  const t3 = Bun.serve({ port: 0, fetch: () => new Response("ok") });
-  cleanup.push(() => t3.stop(true));
-  s.setLocal("t3:url", `http://127.0.0.1:${t3.port}`);
-  s.setLocal("t3:token", "t3-token");
-  setHealthDashboard(s, "mac", true);
-  ctx.health.reconcile();
-  const services = async () => ((await (await call(HEALTH_PATH, { headers: { accept: "application/json" } })).json()) as { services: Record<string, boolean> }).services;
+test.skipIf(process.platform !== "linux")(
+  "the dashboard reports T3 Code only while agentgate is connected to it, and whether it answers",
+  async () => {
+    const { s, ctx, call } = machine();
+    const t3 = Bun.serve({ port: 0, fetch: () => new Response("ok") });
+    cleanup.push(() => t3.stop(true));
+    s.setLocal("t3:url", `http://127.0.0.1:${t3.port}`);
+    s.setLocal("t3:token", "t3-token");
+    setHealthDashboard(s, "mac", true);
+    ctx.health.reconcile();
+    const services = async () =>
+      (
+        (await (await call(HEALTH_PATH, { headers: { accept: "application/json" } })).json()) as {
+          services: Record<string, boolean>;
+        }
+      ).services;
 
-  await ctx.health.sample();
-  expect(await services()).toMatchObject({ t3_code: true });
-  t3.stop(true);
-  await ctx.health.sample();
-  expect(await services()).toMatchObject({ t3_code: false });
-});
+    await ctx.health.sample();
+    expect(await services()).toMatchObject({ t3_code: true });
+    t3.stop(true);
+    await ctx.health.sample();
+    expect(await services()).toMatchObject({ t3_code: false });
+  },
+);
 
-test.skipIf(process.platform !== "linux")("while on, the daemon samples this machine: the page and JSON answer, and the tailnet listener answers only this node's names", async () => {
-  const { s, ctx, call } = machine();
-  setHealthDashboard(s, "mac", true);
-  ctx.health.reconcile();
-  const json = { headers: { accept: "application/json" } };
-  expect((await call(`${HEALTH_PATH}?history=1`, json)).status).toBe(503); // no sample yet
+test.skipIf(process.platform !== "linux")(
+  "while on, the daemon samples this machine: the page and JSON answer, and the tailnet listener answers only this node's names",
+  async () => {
+    const { s, ctx, call } = machine();
+    setHealthDashboard(s, "mac", true);
+    ctx.health.reconcile();
+    const json = { headers: { accept: "application/json" } };
+    expect((await call(`${HEALTH_PATH}?history=1`, json)).status).toBe(503); // no sample yet
 
-  await ctx.health.sample();
-  const data = (await (await call(`${HEALTH_PATH}?history=1`, json)).json()) as { status: string; host: string; history: unknown[]; services: Record<string, boolean> };
-  expect(data).toMatchObject({ status: "ok", host: hostname() });
-  expect(data.history).toHaveLength(1);
-  expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
+    await ctx.health.sample();
+    const data = (await (await call(`${HEALTH_PATH}?history=1`, json)).json()) as {
+      status: string;
+      host: string;
+      history: unknown[];
+      services: Record<string, boolean>;
+    };
+    expect(data).toMatchObject({ status: "ok", host: hostname() });
+    expect(data.history).toHaveLength(1);
+    expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
 
-  const page = await call(HEALTH_PATH, { headers: { accept: "text/html" } });
-  expect(page.headers.get("content-type")).toContain("text/html");
-  expect(await page.text()).toContain("<title>Machine dashboard</title>");
+    const page = await call(HEALTH_PATH, { headers: { accept: "text/html" } });
+    expect(page.headers.get("content-type")).toContain("text/html");
+    expect(await page.text()).toContain("<title>Machine dashboard</title>");
 
-  // A page on another site reaches the tailnet address by DNS rebinding under its own name: refused. An address or this
-  // node's own name is what the app and the browser use.
-  const tailnetHost = (host: string) => call(HEALTH_PATH, { listener: "tailnet", headers: { host, accept: "application/json" } });
-  expect((await tailnetHost("evil.example:7878")).status).toBe(403);
-  expect((await tailnetHost("mac.tail123.ts.net:7878")).status).toBe(200);
-  expect((await tailnetHost("100.89.253.6:7878")).status).toBe(200);
+    // A page on another site reaches the tailnet address by DNS rebinding under its own name: refused. An address or this
+    // node's own name is what the app and the browser use.
+    const tailnetHost = (host: string) =>
+      call(HEALTH_PATH, { listener: "tailnet", headers: { host, accept: "application/json" } });
+    expect((await tailnetHost("evil.example:7878")).status).toBe(403);
+    expect((await tailnetHost("mac.tail123.ts.net:7878")).status).toBe(200);
+    expect((await tailnetHost("100.89.253.6:7878")).status).toBe(200);
 
-  setHealthDashboard(s, "mac", false);
-  ctx.health.reconcile();
-  expect((await call(HEALTH_PATH, json)).status).toBe(404);
-});
+    setHealthDashboard(s, "mac", false);
+    ctx.health.reconcile();
+    expect((await call(HEALTH_PATH, json)).status).toBe(404);
+  },
+);

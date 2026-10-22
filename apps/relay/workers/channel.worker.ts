@@ -6,14 +6,22 @@ import { describe, expect, it } from "vitest";
 const T = "C".repeat(43);
 const group = "c".repeat(32);
 
-const create = () => exports.default.fetch(`https://relay.test/g/${group}`, {
-  method: "POST", headers: { authorization: `Bearer ${T}`, "content-type": "application/json" }, body: JSON.stringify({ protocol: 1 }),
-});
-const call = (node: string, body: string, token = T) => exports.default.fetch(`https://relay.test/g/${group}/n/${node}/call`, {
-  method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" }, body,
-});
+const create = () =>
+  exports.default.fetch(`https://relay.test/g/${group}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${T}`, "content-type": "application/json" },
+    body: JSON.stringify({ protocol: 1 }),
+  });
+const call = (node: string, body: string, token = T) =>
+  exports.default.fetch(`https://relay.test/g/${group}/n/${node}/call`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}`, "content-type": "text/plain" },
+    body,
+  });
 const upgrade = (node: string, token = T) =>
-  exports.default.fetch(`https://relay.test/g/${group}/n/${node}/connect`, { headers: { upgrade: "websocket", authorization: `Bearer ${token}` } });
+  exports.default.fetch(`https://relay.test/g/${group}/n/${node}/connect`, {
+    headers: { upgrade: "websocket", authorization: `Bearer ${token}` },
+  });
 async function connect(node: string) {
   const res = await upgrade(node);
   expect(res.status).toBe(101);
@@ -21,8 +29,14 @@ async function connect(node: string) {
   ws.accept();
   const frames: any[] = [];
   const waiters: (() => void)[] = [];
-  ws.addEventListener("message", (e) => { frames.push(JSON.parse(e.data as string)); waiters.splice(0).forEach((w) => w()); });
-  const next = async () => { while (!frames.length) await new Promise<void>((r) => waiters.push(r)); return frames.shift(); };
+  ws.addEventListener("message", (e) => {
+    frames.push(JSON.parse(e.data as string));
+    waiters.splice(0).forEach((w) => w());
+  });
+  const next = async () => {
+    while (!frames.length) await new Promise<void>((r) => waiters.push(r));
+    return frames.shift();
+  };
   return { ws, next };
 }
 

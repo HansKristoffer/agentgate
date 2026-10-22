@@ -16,11 +16,43 @@ import { startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
 import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
-import { cleanupRelay, createRelay, installAndJoin, joinRelay, leaveRelay, newNodeName, reconcileRelay, relayNodes, relayStatus, rotateRelay, setServiceKey, usesRelay } from "./relay.ts";
+import {
+  cleanupRelay,
+  createRelay,
+  installAndJoin,
+  joinRelay,
+  leaveRelay,
+  newNodeName,
+  reconcileRelay,
+  relayNodes,
+  relayStatus,
+  rotateRelay,
+  setServiceKey,
+  usesRelay,
+} from "./relay.ts";
 
-import { createInstance, deleteAccount, deleteInstance, labelInstance, removeNode, renameInstance, saveProject, setAccount, setHealthDashboard } from "./operations.ts";
+import {
+  createInstance,
+  deleteAccount,
+  deleteInstance,
+  labelInstance,
+  removeNode,
+  renameInstance,
+  saveProject,
+  setAccount,
+  setHealthDashboard,
+} from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
-import { NODE_PROTOCOL, deleteProject, disableRemote, enableRemote, endpointUrl, regenerate, rotateSecret, showRemote } from "./remote.ts";
+import {
+  NODE_PROTOCOL,
+  deleteProject,
+  disableRemote,
+  enableRemote,
+  endpointUrl,
+  regenerate,
+  rotateSecret,
+  showRemote,
+} from "./remote.ts";
 
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
@@ -100,7 +132,17 @@ const { values: opts, positionals: pos } = parseArgs({
   strict: false,
   options: {
     name: { type: "string" },
-    model: { type: "string" }, provider: { type: "string" }, account: { type: "string" }, outcome: { type: "string" }, failure: { type: "string" }, search: { type: "string" }, since: { type: "string" }, until: { type: "string" }, limit: { type: "string" }, cursor: { type: "string" }, probe: { type: "boolean" },
+    model: { type: "string" },
+    provider: { type: "string" },
+    account: { type: "string" },
+    outcome: { type: "string" },
+    failure: { type: "string" },
+    search: { type: "string" },
+    since: { type: "string" },
+    until: { type: "string" },
+    limit: { type: "string" },
+    cursor: { type: "string" },
+    probe: { type: "boolean" },
     "always-on": { type: "boolean" },
     node: { type: "string" },
     label: { type: "string" },
@@ -123,8 +165,14 @@ const { values: opts, positionals: pos } = parseArgs({
     wipe: { type: "boolean" },
     abandon: { type: "boolean" },
     clear: { type: "boolean" },
-    "client-id": { type: "string" }, site: { type: "string" },
-    to: { type: "string" }, url: { type: "string" }, token: { type: "string" }, "no-wait": { type: "boolean" }, worktrees: { type: "string" }, clones: { type: "string" },
+    "client-id": { type: "string" },
+    site: { type: "string" },
+    to: { type: "string" },
+    url: { type: "string" },
+    token: { type: "string" },
+    "no-wait": { type: "boolean" },
+    worktrees: { type: "string" },
+    clones: { type: "string" },
     help: { type: "boolean", short: "h" },
   },
 });
@@ -133,7 +181,17 @@ const str = (k: string) => opts[k] as string | undefined;
 const [cmd, sub, ...rest] = pos;
 async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const signal = AbortSignal.timeout(100000);
-  const res = await fetchHeaders(`${LOCAL_URL}/api${path}`, { method, signal, redirect: "manual", headers: body === undefined ? {} : { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, 100000);
+  const res = await fetchHeaders(
+    `${LOCAL_URL}/api${path}`,
+    {
+      method,
+      signal,
+      redirect: "manual",
+      headers: body === undefined ? {} : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    },
+    100000,
+  );
   const result = JSON.parse(new TextDecoder().decode(await readBody(res.body, 2 * 1024 * 1024, signal)));
   if (!res.ok) throw new Error(result.error ?? "Daemon rejected the operation");
   return result;
@@ -159,22 +217,34 @@ async function main() {
   const s = store();
   // The daemon writes its version on its node record when it starts.
   const daemon = s.get("node", s.nodeId)?.version;
-  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd)) console.error((await import("./update.ts")).versionNotice(daemon));
+  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd))
+    console.error((await import("./update.ts")).versionNotice(daemon));
   switch (cmd) {
     case "init": {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
       const old = s.local("node");
       if (old && old !== name) {
-        if (peers(s).length || usesRelay(s) || s.list("credential").length || s.list("mcpCredential").length) die("cannot rename a paired node, relay member or credential holder; keep its existing name");
+        if (peers(s).length || usesRelay(s) || s.list("credential").length || s.list("mcpCredential").length)
+          die("cannot rename a paired node, relay member or credential holder; keep its existing name");
         s.del("node", old);
       }
       s.setLocal("node", name);
       if (!s.local("adminToken")) s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
       const ts = await tailscale();
       const prev = s.get("node", name);
-      s.put("node", name, { id: name, url: ts?.url ?? prev?.url, alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn, healthDashboard: !!prev?.healthDashboard, protocol: NODE_PROTOCOL });
+      s.put("node", name, {
+        id: name,
+        url: ts?.url ?? prev?.url,
+        alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn,
+        healthDashboard: !!prev?.healthDashboard,
+        protocol: NODE_PROTOCOL,
+      });
       console.log(`node ${name}${opts["always-on"] ? " (always on)" : ""}, store ${s.db.filename}`);
-      console.log(ts ? `tailnet: ${ts.url}` : "Tailscale not found; the daemon will keep looking for it. Without Tailscale, connect machines with `agentgate pair --relay`.");
+      console.log(
+        ts
+          ? `tailnet: ${ts.url}`
+          : "Tailscale not found; the daemon will keep looking for it. Without Tailscale, connect machines with `agentgate pair --relay`.",
+      );
       return;
     }
     case "serve":
@@ -182,11 +252,22 @@ async function main() {
       (await import("./service.ts")).stampLogs();
       // Bun reports these on stderr without the timestamp; the daemon still exits so the service restarts it.
       for (const event of ["uncaughtException", "unhandledRejection"] as const)
-        process.on(event, (e: unknown) => { console.error(`${event}: ${e instanceof Error ? e.stack : String(e)}`); process.exit(1); });
+        process.on(event, (e: unknown) => {
+          console.error(`${event}: ${e instanceof Error ? e.stack : String(e)}`);
+          process.exit(1);
+        });
       const daemon = await (await import("./daemon.ts")).serve(s);
       let shuttingDown = false;
-      const shutdown = () => { if (shuttingDown) return; shuttingDown = true; void daemon.stop().then(() => { s.close(); process.exit(0); }); };
-      process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
+      const shutdown = () => {
+        if (shuttingDown) return;
+        shuttingDown = true;
+        void daemon.stop().then(() => {
+          s.close();
+          process.exit(0);
+        });
+      };
+      process.once("SIGTERM", shutdown);
+      process.once("SIGINT", shutdown);
       return;
 
     case "status": {
@@ -197,23 +278,47 @@ async function main() {
         if (!accounts.length) console.log("  (no accounts)");
         for (const a of accounts) {
           const st = accountStatus(s, a);
-          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", st.needsLogin && "NEEDS LOGIN", (st.waitingFor ? `waiting for ${st.waitingFor} to refresh` : st.expired && "TOKEN EXPIRED"), st.refreshError && "REFRESH FAILED", st.exhausted && "exhausted"].filter(Boolean).join(", ");
-          console.log(`  ${a.id}  ${a.label}${flags ? `  [${flags}]` : ""}  holder ${st.holder ?? "-"}, token expires in ${mins(st.expiresAt)}`);
-          for (const w of st.windows) console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
-          if (!st.windows.length && !st.needsLogin) console.log("    no quota data yet (or unrecognised quota headers)");
+          const flags = [
+            st.active && "active",
+            a.pinned && "pinned",
+            !a.enabled && "disabled",
+            st.needsLogin && "NEEDS LOGIN",
+            st.waitingFor ? `waiting for ${st.waitingFor} to refresh` : st.expired && "TOKEN EXPIRED",
+            st.refreshError && "REFRESH FAILED",
+            st.exhausted && "exhausted",
+          ]
+            .filter(Boolean)
+            .join(", ");
+          console.log(
+            `  ${a.id}  ${a.label}${flags ? `  [${flags}]` : ""}  holder ${st.holder ?? "-"}, token expires in ${mins(st.expiresAt)}`,
+          );
+          for (const w of st.windows)
+            console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
+          if (!st.windows.length && !st.needsLogin)
+            console.log("    no quota data yet (or unrecognised quota headers)");
         }
       }
       console.log("\nnodes");
       for (const n of s.list("node")) {
         const seen = lastSeen(s, n.id);
         const peer = peers(s).find((p) => p.node === n.id);
-        console.log(`  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`);
+        console.log(
+          `  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`,
+        );
       }
       const relay = relayStatus(s);
-      if (relay) console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`);
+      if (relay)
+        console.log(
+          `\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`,
+        );
       const t3 = (await import("./handoff/t3.ts")).t3State(s);
-      console.log(`\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`);
-      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.ok, () => false);
+      console.log(
+        `\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`,
+      );
+      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then(
+        (r) => r.ok,
+        () => false,
+      );
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }
@@ -221,29 +326,58 @@ async function main() {
     case "login":
     case "import": {
       initialized(s);
-      const mod = sub === "claude" || sub === "codex" || sub === "cursor" ? providerLogins[sub] : die(`${cmd} claude|codex|cursor`);
+      const mod =
+        sub === "claude" || sub === "codex" || sub === "cursor"
+          ? providerLogins[sub]
+          : die(`${cmd} claude|codex|cursor`);
       if (cmd === "login") return console.log(`added ${await mod.login(s, str("label"))}`);
       const dir = (str("from") ?? die("--from <dir> is required")).replace(/^~/, process.env.HOME ?? "~");
       const id = await mod.importFrom(s, dir, str("label"));
       console.log(`imported ${id}`);
-      console.warn(`\nWARNING: agentgate now owns this login. Stop using ${dir} directly: its CLI would refresh the token and log agentgate out.`);
+      console.warn(
+        `\nWARNING: agentgate now owns this login. Stop using ${dir} directly: its CLI would refresh the token and log agentgate out.`,
+      );
       return;
     }
 
     case "accounts": {
       initialized(s);
       if (!sub) {
-        for (const a of s.list("account")) console.log(`${a.id.padEnd(24)} ${a.provider.padEnd(7)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`);
+        for (const a of s.list("account"))
+          console.log(
+            `${a.id.padEnd(24)} ${a.provider.padEnd(7)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`,
+          );
         return;
       }
       const id = rest[0] ?? die(`accounts ${sub} <id>`);
-      if (sub === "verify" && opts.probe) return console.log(JSON.stringify(await management(`/accounts/${encodeURIComponent(id)}/verify`, "POST", { probe: true, model: str("model") ?? die("--model is required for an inference probe") }), null, 2));
-      if (["quota", "verify", "models", "refresh", "reset-cooldown"].includes(sub)) return console.log(JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2));
-      if ((sub === "enable" || sub === "disable") && rest.length > 1) return console.log(JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2));
+      if (sub === "verify" && opts.probe)
+        return console.log(
+          JSON.stringify(
+            await management(`/accounts/${encodeURIComponent(id)}/verify`, "POST", {
+              probe: true,
+              model: str("model") ?? die("--model is required for an inference probe"),
+            }),
+            null,
+            2,
+          ),
+        );
+      if (["quota", "verify", "models", "refresh", "reset-cooldown"].includes(sub))
+        return console.log(
+          JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2),
+        );
+      if ((sub === "enable" || sub === "disable") && rest.length > 1)
+        return console.log(
+          JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2),
+        );
       if (sub === "policy") {
         const expected = revision(s, "account", id);
-        const policy = modelPolicySchema.parse(await Bun.file(str("file") ?? die("--file policy.json is required")).json());
-        s.transaction(() => { checkRevision(s, "account", id, expected); setAccount(s, id, { policy }); });
+        const policy = modelPolicySchema.parse(
+          await Bun.file(str("file") ?? die("--file policy.json is required")).json(),
+        );
+        s.transaction(() => {
+          checkRevision(s, "account", id, expected);
+          setAccount(s, id, { policy });
+        });
         return console.log("Policy saved; synchronizes to paired machines");
       }
       if (sub === "enable") setAccount(s, id, { enabled: true });
@@ -256,7 +390,15 @@ async function main() {
         // Test flag: pretend this account hit its quota.
         s.get("account", id) ?? die(`no account ${id}`);
         const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
-        s.put("usage", id, { accountId: id, observedAt: Date.now(), observedBy: s.nodeId, windows: [], status: "exhausted", exhaustedUntil: until, source: "manual" });
+        s.put("usage", id, {
+          accountId: id,
+          observedAt: Date.now(),
+          observedBy: s.nodeId,
+          windows: [],
+          status: "exhausted",
+          exhaustedUntil: until,
+          source: "manual",
+        });
       } else die(HELP);
       return console.log("ok");
     }
@@ -271,8 +413,12 @@ async function main() {
     }
     case "proxy": {
       initialized(s);
-      if (sub === "capabilities") { const st = await management<{ daemon: unknown }>("/status"); return console.log(JSON.stringify(st.daemon, null, 2)); }
-      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? "")) die("proxy route claude|codex|cursor [--model <id>]");
+      if (sub === "capabilities") {
+        const st = await management<{ daemon: unknown }>("/status");
+        return console.log(JSON.stringify(st.daemon, null, 2));
+      }
+      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? ""))
+        die("proxy route claude|codex|cursor [--model <id>]");
       const query = buildQueryString({ provider: rest[0]!, model: str("model") || undefined });
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
     }
@@ -285,9 +431,22 @@ async function main() {
     }
     case "requests": {
       initialized(s);
-      if (sub && sub !== "export") return console.log(JSON.stringify(await management(`/requests/${encodeURIComponent(sub)}`), null, 2));
+      if (sub && sub !== "export")
+        return console.log(JSON.stringify(await management(`/requests/${encodeURIComponent(sub)}`), null, 2));
       const query = new URLSearchParams();
-      for (const key of ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"]) if (str(key)) query.set(key, str(key)!);
+      for (const key of [
+        "provider",
+        "account",
+        "model",
+        "outcome",
+        "failure",
+        "search",
+        "since",
+        "until",
+        "limit",
+        "cursor",
+      ])
+        if (str(key)) query.set(key, str(key)!);
       if (sub !== "export") return console.log(JSON.stringify(await management(`/requests?${query}`), null, 2));
       query.set("limit", "100");
       for (let pages = 0; pages < 1000; pages++) {
@@ -302,23 +461,41 @@ async function main() {
     case "mcp": {
       initialized(s);
       if (sub === "presets") {
-        for (const p of presets) console.log(`${p.id.padEnd(12)} ${p.url ?? [p.command, ...(p.args ?? [])].join(" ")}${p.note ? `  (${p.note})` : ""}`);
+        for (const p of presets)
+          console.log(
+            `${p.id.padEnd(12)} ${p.url ?? [p.command, ...(p.args ?? [])].join(" ")}${p.note ? `  (${p.note})` : ""}`,
+          );
         return;
       }
       if (sub === "ls") {
         for (const i of s.list("mcp")) {
-          const h = serverHealth(s, i.id), state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
-          console.log(`${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`);
+          const h = serverHealth(s, i.id),
+            state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
+          console.log(
+            `${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`,
+          );
         }
         return;
       }
       if (sub === "add") {
         const [name, target] = rest;
-        if (!name || (!target && !str("command"))) die('mcp add <name> <url|preset> [--header "Name: value"] | mcp add <name> --command "npx …" [--per-session]');
-        const inst = createInstance(s, { name: name!, target, command: str("command"), perSession: !!opts["per-session"], headers: opts.header as string[] | undefined });
+        if (!name || (!target && !str("command")))
+          die(
+            'mcp add <name> <url|preset> [--header "Name: value"] | mcp add <name> --command "npx …" [--per-session]',
+          );
+        const inst = createInstance(s, {
+          name: name!,
+          target,
+          command: str("command"),
+          perSession: !!opts["per-session"],
+          headers: opts.header as string[] | undefined,
+        });
         const id = inst.id;
         if (inst.url) {
-          const ok = await connect(inst, process.cwd(), s).then((c) => c.close().then(() => true), (e) => (needsLogin(e) ? false : die(`${id}: ${e}`)));
+          const ok = await connect(inst, process.cwd(), s).then(
+            (c) => c.close().then(() => true),
+            (e) => (needsLogin(e) ? false : die(`${id}: ${e}`)),
+          );
           if (!ok) console.log(`${id} needs a login: agentgate mcp login ${id}`);
         }
         return console.log(`added ${id}; use it with: agentgate project set <owner/repo|*> ${id}=${id}`);
@@ -333,9 +510,15 @@ async function main() {
       }
       if (sub === "test") {
         const inst = s.get("mcp", rest[0] ?? "") ?? die(`no instance ${rest[0]}`);
-        const client = await connect(inst, process.cwd(), s).catch((e) => die(needsLogin(e) ? `${inst.id} needs a login: agentgate mcp login ${inst.id}` : String(e)));
+        const client = await connect(inst, process.cwd(), s).catch((e) =>
+          die(needsLogin(e) ? `${inst.id} needs a login: agentgate mcp login ${inst.id}` : String(e)),
+        );
         let tools;
-        try { tools = await listAllTools(client); } finally { await client.close(); }
+        try {
+          tools = await listAllTools(client);
+        } finally {
+          await client.close();
+        }
         console.log(`${inst.id}: ${tools.length} tools`);
         for (const t of tools) console.log(`  ${t.name}`);
         return;
@@ -365,11 +548,21 @@ async function main() {
         const path = resolve((rest[0] ?? process.cwd()).replace(/^~(?=\/|$)/, homedir()));
         const { fetchHeaders, readBody } = await import("./runtime.ts");
         const signal = AbortSignal.timeout(30_000);
-        const response = await fetchHeaders(`${LOCAL_URL}/api/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, project: projects[0] }), signal });
-        const result = JSON.parse(new TextDecoder().decode(await readBody(response.body, 1024 * 1024, signal))) as { checkout?: string; error?: string; errors?: { path: string; message: string }[] };
+        const response = await fetchHeaders(`${LOCAL_URL}/api/checkout`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ path, project: projects[0] }),
+          signal,
+        });
+        const result = JSON.parse(new TextDecoder().decode(await readBody(response.body, 1024 * 1024, signal))) as {
+          checkout?: string;
+          error?: string;
+          errors?: { path: string; message: string }[];
+        };
         if (!response.ok) die(result.error ?? "Could not prepare checkout");
-        if (!result.checkout) die("No repository/project found. Supply --project owner/repo for a repository without an origin.");
-        if (result.errors?.length) die(result.errors.map(e => `${e.path}: ${e.message}`).join("\n"));
+        if (!result.checkout)
+          die("No repository/project found. Supply --project owner/repo for a repository without an origin.");
+        if (result.errors?.length) die(result.errors.map((e) => `${e.path}: ${e.message}`).join("\n"));
         return console.log(`Prepared ${result.checkout}; start your session now.`);
       }
       if (sub === "find") {
@@ -379,8 +572,13 @@ async function main() {
       }
       if (!sub || sub === "ls") {
         for (const k of sk.skillSummaries(s)) {
-          const where = s.list("project").filter((p) => p.skills.includes(k.id)).map((p) => p.id);
-          console.log(`${k.id.padEnd(32)} ${(k.source ?? "(hand-written)").padEnd(40)} ${where.join(" ") || "(no projects)"}`);
+          const where = s
+            .list("project")
+            .filter((p) => p.skills.includes(k.id))
+            .map((p) => p.id);
+          console.log(
+            `${k.id.padEnd(32)} ${(k.source ?? "(hand-written)").padEnd(40)} ${where.join(" ") || "(no projects)"}`,
+          );
         }
         return;
       }
@@ -398,28 +596,53 @@ async function main() {
         const [action, url] = rest;
         if (action === "ls" || !action) {
           for (const r of sk.skillRepoSummaries(s))
-            console.log(`${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`);
+            console.log(
+              `${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`,
+            );
           return;
         }
         if (action === "add") {
-          const connected = await sk.connectSkillRepo(s, url ?? die("skills repo add <github-url> --project <owner/repo|*>"), (opts.project as string[] | undefined) ?? die("Choose where its skills go: --project '*' for every session, or --project owner/repo"));
+          const connected = await sk.connectSkillRepo(
+            s,
+            url ?? die("skills repo add <github-url> --project <owner/repo|*>"),
+            (opts.project as string[] | undefined) ??
+              die("Choose where its skills go: --project '*' for every session, or --project owner/repo"),
+          );
           const r = sk.skillRepoSummaries(s).find((r) => r.url === connected)!;
-          console.log(`connected ${connected}: ${r.skills.join(", ") || "no skills installed"}${r.skipped.length ? `\nskipped: ${r.skipped.join("\nskipped: ")}` : ""}`);
+          console.log(
+            `connected ${connected}: ${r.skills.join(", ") || "no skills installed"}${r.skipped.length ? `\nskipped: ${r.skipped.join("\nskipped: ")}` : ""}`,
+          );
           return;
         }
         if (action === "sync") {
           for (const r of sk.skillRepoSummaries(s).filter((r) => !url || r.url === sk.repoUrl(url)))
-            console.log(`${r.url}: ${await sk.syncSkillRepo(s, r.url).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
+            console.log(
+              `${r.url}: ${await sk.syncSkillRepo(s, r.url).then(
+                (changed) => (changed ? "updated" : "up to date"),
+                (e) => `failed: ${e.message}`,
+              )}`,
+            );
           return;
         }
-        if (action === "projects") { sk.setSkillRepoProjects(s, url ?? die("skills repo projects <url> <owner/repo|*> ..."), rest.slice(2)); return console.log("ok"); }
-        if (action === "rm") { sk.setSkillRepoProjects(s, url ?? die("skills repo rm <url>"), []); return console.log("disconnected; its skills were removed"); }
+        if (action === "projects") {
+          sk.setSkillRepoProjects(s, url ?? die("skills repo projects <url> <owner/repo|*> ..."), rest.slice(2));
+          return console.log("ok");
+        }
+        if (action === "rm") {
+          sk.setSkillRepoProjects(s, url ?? die("skills repo rm <url>"), []);
+          return console.log("disconnected; its skills were removed");
+        }
         return die(HELP);
       }
       if (sub === "update" && !rest[0]) {
         for (const { id, outcome } of await sk.updateSkills(s)) console.log(`${id}: ${outcome}`);
         for (const r of sk.skillRepoSummaries(s))
-          console.log(`${r.url}: ${await sk.syncSkillRepo(s, r.url).then((changed) => (changed ? "updated" : "up to date"), (e) => `failed: ${e.message}`)}`);
+          console.log(
+            `${r.url}: ${await sk.syncSkillRepo(s, r.url).then(
+              (changed) => (changed ? "updated" : "up to date"),
+              (e) => `failed: ${e.message}`,
+            )}`,
+          );
         return;
       }
       const id = rest[0] ?? die(`skills ${sub} <name>`);
@@ -438,8 +661,15 @@ async function main() {
         return;
       }
       if (sub === "update") return console.log((await sk.updateSkill(s, id)) ? "updated" : "up to date");
-      if (sub === "projects") { sk.setSkillProjects(s, id, rest.slice(1)); return console.log("ok"); }
-      if (sub === "rm") { s.get("skill", id) ?? die(`no skill ${id}`); sk.deleteSkill(s, id); return console.log("ok"); }
+      if (sub === "projects") {
+        sk.setSkillProjects(s, id, rest.slice(1));
+        return console.log("ok");
+      }
+      if (sub === "rm") {
+        s.get("skill", id) ?? die(`no skill ${id}`);
+        sk.deleteSkill(s, id);
+        return console.log("ok");
+      }
       return die(HELP);
     }
 
@@ -447,16 +677,24 @@ async function main() {
       initialized(s);
       if (sub === "ls") {
         for (const p of s.list("project"))
-          console.log(`${p.id.padEnd(32)} ${Object.entries(p.mcp).map(([a, i]) => `${a}=${i}`).join(" ")}${p.skills.length ? `  skills: ${p.skills.join(",")}` : ""}${p.id !== "*" && !p.inheritDefaults ? "  (no * defaults)" : ""}`);
+          console.log(
+            `${p.id.padEnd(32)} ${Object.entries(p.mcp)
+              .map(([a, i]) => `${a}=${i}`)
+              .join(
+                " ",
+              )}${p.skills.length ? `  skills: ${p.skills.join(",")}` : ""}${p.id !== "*" && !p.inheritDefaults ? "  (no * defaults)" : ""}`,
+          );
         return;
       }
       if (sub === "files") {
         const git = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stderr: "ignore" });
-        const top = git.exitCode === 0 ? git.stdout.toString().trim() : die("Run project files in a checkout of the repository");
+        const top =
+          git.exitCode === 0 ? git.stdout.toString().trim() : die("Run project files in a checkout of the repository");
         const [action, ...paths] = rest;
         // Paths are relative to where you are, stored relative to the checkout.
         const relative = paths.map((p) => relativePath(top, resolve(realpathSync(process.cwd()), p)));
-        if (action === "add" && paths.length) return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
+        if (action === "add" && paths.length)
+          return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
         if (action === "rm" && paths.length) {
           const { project } = await checkoutProject(s, top);
           return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
@@ -466,14 +704,26 @@ async function main() {
           if (action === "cat") return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
           // Through the daemon, which follows the save into this machine's checkouts and logs it.
           const edit = { project, path: relative[0]!, content: await Bun.stdin.text(), sha256: str("if-sha") };
-          const saved = await management<{ project: string; checkouts: Record<string, number> }>("/projects/files/content", "PUT", edit).catch((e: Error) => die(e.message));
-          const followed = Object.entries(saved.checkouts).filter(([, n]) => n).map(([outcome, n]) => `${n} ${outcome}`);
-          return console.log(`saved for ${saved.project} on every machine${followed.length ? `; checkouts here: ${followed.join(", ")}` : ""}`);
+          const saved = await management<{ project: string; checkouts: Record<string, number> }>(
+            "/projects/files/content",
+            "PUT",
+            edit,
+          ).catch((e: Error) => die(e.message));
+          const followed = Object.entries(saved.checkouts)
+            .filter(([, n]) => n)
+            .map(([outcome, n]) => `${n} ${outcome}`);
+          return console.log(
+            `saved for ${saved.project} on every machine${followed.length ? `; checkouts here: ${followed.join(", ")}` : ""}`,
+          );
         }
         if (action === "ls" || action === undefined) {
           const list = await listFiles(s, FILES_ROOT, top);
-          for (const f of list.files) console.log(`${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`);
-          if (!list.files.length) console.log(`no files for ${list.project}; add one with: agentgate project files add .env.local`);
+          for (const f of list.files)
+            console.log(
+              `${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`,
+            );
+          if (!list.files.length)
+            console.log(`no files for ${list.project}; add one with: agentgate project files add .env.local`);
           if (list.error) console.log(`not syncing: ${list.error}`);
           return;
         }
@@ -481,7 +731,8 @@ async function main() {
       }
       const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
       if (sub === "show") {
-        for (const [alias, inst] of Object.entries(aliasesFor(s, id))) console.log(`${alias.padEnd(16)} → ${inst}${s.get("mcp", inst) ? "" : "  (missing)"}`);
+        for (const [alias, inst] of Object.entries(aliasesFor(s, id)))
+          console.log(`${alias.padEnd(16)} → ${inst}${s.get("mcp", inst) ? "" : "  (missing)"}`);
         return;
       }
       const p = s.get("project", id) ?? schemas.project.parse({ id });
@@ -506,9 +757,15 @@ async function main() {
     case "remote": {
       initialized(s);
       const printEndpoint = (r: { url: string; secret: string }) =>
-        console.log(`URL:            ${r.url}\nAuthorization:  Bearer ${r.secret}\n\nThe relay can read requests and results for this endpoint; your logins stay on your machines.`);
+        console.log(
+          `URL:            ${r.url}\nAuthorization:  Bearer ${r.secret}\n\nThe relay can read requests and results for this endpoint; your logins stay on your machines.`,
+        );
       if (sub === "ls" || sub === undefined) {
-        for (const p of s.list("project")) if (p.remote) console.log(`${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}`);
+        for (const p of s.list("project"))
+          if (p.remote)
+            console.log(
+              `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}`,
+            );
         return;
       }
       const id = rest[0] ?? die(`remote ${sub} @name`);
@@ -517,8 +774,13 @@ async function main() {
         if (sub === "show") return printEndpoint(showRemote(s, id));
         if (sub === "secret") return printEndpoint(rotateSecret(s, id));
         if (sub === "regenerate") return printEndpoint(regenerate(s, id));
-        if (sub === "disable") { disableRemote(s, id); return console.log("ok"); }
-      } catch (e) { return die(getErrorMessage(e)); }
+        if (sub === "disable") {
+          disableRemote(s, id);
+          return console.log("ok");
+        }
+      } catch (e) {
+        return die(getErrorMessage(e));
+      }
       return die(HELP);
     }
 
@@ -526,24 +788,44 @@ async function main() {
       initialized(s);
       let method = opts.tailnet ? "tailnet" : opts.relay || str("relay-url") ? "relay" : undefined;
       if (!method && process.stdin.isTTY && process.stdout.isTTY) {
-        const answer = prompt("How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:")?.trim();
+        const answer = prompt(
+          "How will the other machine connect?\n  [1] Same network (Tailscale)\n  [2] Agentgate relay (any network, end-to-end encrypted)\nChoose 1 or 2:",
+        )?.trim();
         method = answer === "2" ? "relay" : answer === "1" ? "tailnet" : die("Choose 1 or 2.");
       }
       method ??= (await tailscale()) ? "tailnet" : "relay";
-      const asked = str("name") ?? (process.stdin.isTTY && process.stdout.isTTY ? prompt("Name for the other machine (Enter for its hostname):") : undefined);
+      const asked =
+        str("name") ??
+        (process.stdin.isTTY && process.stdout.isTTY
+          ? prompt("Name for the other machine (Enter for its hostname):")
+          : undefined);
       let name: string | undefined;
-      try { name = asked?.trim() ? newNodeName(s, asked.trim()) : undefined; } catch (e) { die(getErrorMessage(e)); }
-      const printJoin = (args: string) => console.log(`On the other machine run this to install agentgate${name ? ` as ${name}` : ""}, join, start the service and route its Claude Code and Codex through agentgate:\n\n  ${installAndJoin(args, name)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`);
+      try {
+        name = asked?.trim() ? newNodeName(s, asked.trim()) : undefined;
+      } catch (e) {
+        die(getErrorMessage(e));
+      }
+      const printJoin = (args: string) =>
+        console.log(
+          `On the other machine run this to install agentgate${name ? ` as ${name}` : ""}, join, start the service and route its Claude Code and Codex through agentgate:\n\n  ${installAndJoin(args, name)}\n\nIf agentgate is already installed there, run instead:\n\n  agentgate join ${args}\n`,
+        );
       if (method === "relay") {
         const invite = await createRelay(s, str("relay-url"));
         printJoin(invite);
-        console.log("This invite does not expire. Anyone who has it can read every account and MCP login, so share it privately.\nIf it leaks, run `agentgate relay rotate` and have every relay machine join again.");
-        if (process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey")) console.log("This relay needs a service key: set AGENTGATE_RELAY_KEY on the other machine before joining.");
+        console.log(
+          "This invite does not expire. Anyone who has it can read every account and MCP login, so share it privately.\nIf it leaks, run `agentgate relay rotate` and have every relay machine join again.",
+        );
+        if (process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey"))
+          console.log("This relay needs a service key: set AGENTGATE_RELAY_KEY on the other machine before joining.");
         const status = relayStatus(s);
-        if (status?.pushError) console.warn(`\nUpload not finished yet: ${status.pushError}. The daemon keeps retrying.`);
+        if (status?.pushError)
+          console.warn(`\nUpload not finished yet: ${status.pushError}. The daemon keeps retrying.`);
         return;
       }
-      const url = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL; is Tailscale running? Use `agentgate pair --relay` to connect over the relay instead.");
+      const url =
+        s.get("node", s.nodeId)?.url ??
+        (await tailscale())?.url ??
+        die("No tailnet URL; is Tailscale running? Use `agentgate pair --relay` to connect over the relay instead.");
       console.log("Start Tailscale on the other machine. The code is valid for 10 minutes.\n");
       printJoin(`${url} ${pairCode(s)}`);
       return;
@@ -552,30 +834,47 @@ async function main() {
       initialized(s);
       if (sub?.startsWith("agr1.")) {
         await joinRelay(s, sub, !!opts.force);
-        console.log(`joined the relay; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`);
+        console.log(
+          `joined the relay; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`,
+        );
         return;
       }
       const [url, code] = [sub, rest[0]];
       if (!url || !code) die("join <url> <code>, or join agr1.…");
-      const self = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url ?? die("No tailnet URL for this node; is Tailscale running?");
+      const self =
+        s.get("node", s.nodeId)?.url ??
+        (await tailscale())?.url ??
+        die("No tailnet URL for this node; is Tailscale running?");
       const peer = await join(s, url!, code!, self);
-      console.log(`paired with ${peer}; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`);
+      console.log(
+        `paired with ${peer}; ${s.list("account").length} accounts, ${s.list("mcp").length} MCP instances, ${s.list("project").length} projects`,
+      );
       return;
     }
     case "nodes":
       initialized(s);
-      for (const p of peers(s)) console.log(`${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`);
-      for (const n of relayNodes(s)) console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
+      for (const p of peers(s))
+        console.log(
+          `${p.node.padEnd(16)} tailscale ${p.url}  cursor ${p.cursor}  last seen ${p.last_seen ? new Date(p.last_seen).toISOString() : "never"}`,
+        );
+      for (const n of relayNodes(s))
+        console.log(`${n.node.padEnd(16)} relay  last seen ${new Date(n.lastSeen).toISOString()}`);
       const outdated = new Set(outdatedNodes(s.list("node")).map((n) => n.id));
       for (const n of s.list("node")) {
         const u = (await import("./update.ts")).nodeUpdate(s, n.id);
-        if (u) console.log(`${n.id}: ${typedSwitch(u.state, {
-          installing: () => "installing an update",
-          restarting: () => `restarting on agentgate ${u.version}`,
-          installed: () => `installed agentgate ${u.version}; restart agentgate there to use it`,
-          failed: () => `update failed: ${u.error}`,
-        })}`);
-        else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
+        if (u)
+          console.log(
+            `${n.id}: ${typedSwitch(u.state, {
+              installing: () => "installing an update",
+              restarting: () => `restarting on agentgate ${u.version}`,
+              installed: () => `installed agentgate ${u.version}; restart agentgate there to use it`,
+              failed: () => `update failed: ${u.error}`,
+            })}`,
+          );
+        else if (outdated.has(n.id))
+          console.log(
+            `${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`,
+          );
       }
       return;
     case "dashboard": {
@@ -584,31 +883,46 @@ async function main() {
       if (sub === "on" || sub === "off") setHealthDashboard(s, node, sub === "on");
       else if (sub !== undefined) die("dashboard [on|off] [--node <node>]");
       const n = s.get("node", node) ?? die(`no machine ${node}`);
-      console.log(`${node}: health dashboard ${n.healthDashboard ? "on" : "off"}${n.healthDashboard && n.url ? `, ${n.url}${HEALTH_PATH}` : ""}`);
+      console.log(
+        `${node}: health dashboard ${n.healthDashboard ? "on" : "off"}${n.healthDashboard && n.url ? `, ${n.url}${HEALTH_PATH}` : ""}`,
+      );
       return;
     }
     case "unpair": {
       initialized(s);
       const node = sub ?? die("unpair <node>");
       const { endpoints, rotated } = await removeNode(s, node);
-      for (const e of endpoints) console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
+      for (const e of endpoints)
+        console.log(`${e.project} has a new URL; update it in Grok: ${e.url} (agentgate remote show ${e.project})`);
       if (!rotated) return console.log("ok");
-      console.log(`Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`);
-      console.log(`Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`);
-      if (rotated.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
+      console.log(
+        `Moved this machine to a new relay secret. Every other relay machine must join again:\n\n  ${rotated.command}\n`,
+      );
+      console.log(
+        `Also remove ${node}'s Tailscale pairing from every machine you keep: rotation cannot revoke those links. If ${node} may be compromised, log in to its accounts again.`,
+      );
+      if (rotated.cleanupPending)
+        console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
       return;
     }
     case "relay": {
       initialized(s);
       switch (sub) {
-        case "status": case undefined: {
+        case "status":
+        case undefined: {
           const r = relayStatus(s);
           if (!r) return console.log("This machine does not use a relay. Connect one with `agentgate pair --relay`.");
-          console.log(`relay       ${r.url}${r.hosted ? " (hosted)" : ""}\ngeneration  ${r.generation ?? "-"}\ncursor      ${r.cursor}\nuploaded    ${r.pushed} of ${s.seq()}\nstate       ${[r.reconciling && "reconciling", r.rotating && "rotation pending", r.cleanupPending && "cleanup pending"].filter(Boolean).join(", ") || "in sync"}`);
+          console.log(
+            `relay       ${r.url}${r.hosted ? " (hosted)" : ""}\ngeneration  ${r.generation ?? "-"}\ncursor      ${r.cursor}\nuploaded    ${r.pushed} of ${s.seq()}\nstate       ${[r.reconciling && "reconciling", r.rotating && "rotation pending", r.cleanupPending && "cleanup pending"].filter(Boolean).join(", ") || "in sync"}`,
+          );
           if (r.pushError) console.log(`upload      ${r.pushError}`);
           if (r.pullError) console.log(`download    ${r.pullError}`);
-          if (r.skipped) console.log(`skipped     ${r.skipped} entries could not be decrypted (agentgate relay reconcile retries them)`);
-          for (const n of relayNodes(s)) console.log(`machine     ${n.node}, last seen ${new Date(n.lastSeen).toISOString()}`);
+          if (r.skipped)
+            console.log(
+              `skipped     ${r.skipped} entries could not be decrypted (agentgate relay reconcile retries them)`,
+            );
+          for (const n of relayNodes(s))
+            console.log(`machine     ${n.node}, last seen ${new Date(n.lastSeen).toISOString()}`);
           return;
         }
         case "reconcile":
@@ -617,17 +931,22 @@ async function main() {
         case "rotate": {
           const r = await rotateRelay(s);
           console.log(`New relay secret. Every other relay machine must join again:\n\n  ${r.command}\n`);
-          if (r.cleanupPending) console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
+          if (r.cleanupPending)
+            console.warn("Deleting the old relay group failed; it will be retried (agentgate relay cleanup).");
           return;
         }
         case "leave": {
           const r = await leaveRelay(s, !!opts.wipe);
-          console.log(`This machine no longer uses the relay.${r.cleanupPending ? " Deleting the group failed; it will be retried (agentgate relay cleanup)." : ""}`);
+          console.log(
+            `This machine no longer uses the relay.${r.cleanupPending ? " Deleting the group failed; it will be retried (agentgate relay cleanup)." : ""}`,
+          );
           return;
         }
         case "cleanup": {
           const r = await cleanupRelay(s, !!opts.abandon);
-          return console.log(r.cleanupPending ? "Some old relay groups could not be deleted yet." : "No cleanup pending.");
+          return console.log(
+            r.cleanupPending ? "Some old relay groups could not be deleted yet." : "No cleanup pending.",
+          );
         }
         case "key":
           if (!opts.clear && !rest[0]) die("relay key <value> | relay key --clear");
@@ -641,31 +960,51 @@ async function main() {
     case "logins": {
       initialized(s);
       const lg = await import("./logins.ts");
-      const id = rest[0] === undefined || sub === "identity" ? undefined : loginIdSchema.safeParse(rest[0]).data ?? die(`${rest[0]}: expected github, infisical or infisical-identity`);
+      const id =
+        rest[0] === undefined || sub === "identity"
+          ? undefined
+          : (loginIdSchema.safeParse(rest[0]).data ??
+            die(`${rest[0]}: expected github, infisical or infisical-identity`));
       try {
         if (sub === "identity") {
-          const usage = "logins identity --client-id <id> [--site https://eu.infisical.com] (the client secret comes from stdin)";
+          const usage =
+            "logins identity --client-id <id> [--site https://eu.infisical.com] (the client secret comes from stdin)";
           const clientId = str("client-id") ?? die(usage);
           // From stdin so it stays out of shell history and process lists.
           const typed = () => {
             Bun.spawnSync(["stty", "-echo"], { stdin: "inherit" });
-            try { return prompt("Client secret:") ?? ""; } finally { Bun.spawnSync(["stty", "echo"], { stdin: "inherit" }); console.log(); }
+            try {
+              return prompt("Client secret:") ?? "";
+            } finally {
+              Bun.spawnSync(["stty", "echo"], { stdin: "inherit" });
+              console.log();
+            }
           };
           const clientSecret = (process.stdin.isTTY ? typed() : await Bun.stdin.text()).trim() || die(usage);
           const siteUrl = str("site") ?? lg.infisicalSite();
           await lg.setInfisicalIdentity(s, { clientId, clientSecret, siteUrl });
-          return console.log(`Infisical machine identity ${clientId} set; every machine keeps it in ~/.infisical/universal-auth.json`);
+          return console.log(
+            `Infisical machine identity ${clientId} set; every machine keeps it in ~/.infisical/universal-auth.json`,
+          );
         }
         if (sub === "share") {
           for (const r of await lg.shareLogins(s, id)) {
             const account = r.account ? ` (${r.account})` : "";
-            console.log(r.skipped ? `${r.id.padEnd(10)} not shared: ${r.skipped}` : `${r.id.padEnd(10)} shared${account}; every machine signs in with it`);
+            console.log(
+              r.skipped
+                ? `${r.id.padEnd(10)} not shared: ${r.skipped}`
+                : `${r.id.padEnd(10)} shared${account}; every machine signs in with it`,
+            );
           }
           return;
         }
         if (sub === "forget") {
           lg.forgetLogin(s, id ?? die("logins forget github|infisical|infisical-identity"));
-          return console.log(id === "infisical-identity" ? "ok; removed from every machine" : "ok; machines already signed in stay signed in");
+          return console.log(
+            id === "infisical-identity"
+              ? "ok; removed from every machine"
+              : "ok; machines already signed in stay signed in",
+          );
         }
       } catch (e) {
         return die(getErrorMessage(e));
@@ -673,10 +1012,16 @@ async function main() {
       if (sub !== undefined && sub !== "ls") return die(HELP);
 
       const list = lg.listLogins(s);
-      if (!list.length) return console.log("No shared logins. Share this machine's gh and Infisical logins with: agentgate logins share");
+      if (!list.length)
+        return console.log(
+          "No shared logins. Share this machine's gh and Infisical logins with: agentgate logins share",
+        );
       for (const l of list) {
-        const here = l.from === s.nodeId ? "shared from here" : l.signedIn ? "signed in here" : "not signed in here yet";
-        console.log(`${l.id.padEnd(10)} ${(l.account || "-").padEnd(28)} from ${l.from.padEnd(12)} ${here}${l.error ? `: ${l.error}` : ""}`);
+        const here =
+          l.from === s.nodeId ? "shared from here" : l.signedIn ? "signed in here" : "not signed in here yet";
+        console.log(
+          `${l.id.padEnd(10)} ${(l.account || "-").padEnd(28)} from ${l.from.padEnd(12)} ${here}${l.error ? `: ${l.error}` : ""}`,
+        );
       }
       return;
     }
@@ -685,45 +1030,82 @@ async function main() {
       const desktop = await import("./desktop.ts");
       const st = desktop.status(s);
       if (!st.available) die("Claude Desktop is not installed on this Mac.");
-      const name = (l: { label?: string; email?: string; accountUuid: string }) => l.label ?? l.email ?? l.accountUuid.slice(0, 8);
+      const name = (l: { label?: string; email?: string; accountUuid: string }) =>
+        l.label ?? l.email ?? l.accountUuid.slice(0, 8);
       const find = (arg?: string) => {
         const q = arg ?? die(`desktop ${sub} <account>`);
-        const l = st.logins.find((l) => [l.accountId, l.label, l.email, l.accountUuid].includes(q) || l.accountUuid.startsWith(q));
-        return l?.accountUuid ?? die(`No saved Claude Desktop login matches ${q}. Saved: ${st.logins.map(name).join(", ") || "none"}`);
+        const l = st.logins.find(
+          (l) => [l.accountId, l.label, l.email, l.accountUuid].includes(q) || l.accountUuid.startsWith(q),
+        );
+        return (
+          l?.accountUuid ??
+          die(`No saved Claude Desktop login matches ${q}. Saved: ${st.logins.map(name).join(", ") || "none"}`)
+        );
       };
       if (!sub) {
         console.log(`Claude Desktop ${st.version ?? ""}${st.running ? "" : " (not running)"}`);
-        console.log(typedSwitch(st.mode, {
-          pool: () => "mode: Code tab uses the pool (gateway mode)",
-          "other-gateway": () => "mode: another company gateway",
-          "signed-in": () => `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`,
-        }));
+        console.log(
+          typedSwitch(st.mode, {
+            pool: () => "mode: Code tab uses the pool (gateway mode)",
+            "other-gateway": () => "mode: another company gateway",
+            "signed-in": () =>
+              `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`,
+          }),
+        );
         for (const l of st.logins) {
-          const pct = l.accountId ? Math.max(0, ...relevant(s.get("usage", l.accountId), undefined, Date.now()).map((w) => w.usedPct)) : undefined; // windows that have reset count as 0
-          console.log(`  ${st.current?.accountUuid === l.accountUuid ? "*" : " "} ${name(l).padEnd(28)} ${pct === undefined ? "not in the pool" : `${Math.round(pct)}% used`}${l.expired ? "  LOGIN EXPIRED" : l.sessionExpiresAt ? `  login valid ${Math.round((l.sessionExpiresAt - Date.now()) / 86_400_000)} days` : ""}${l.problem ? `  ${l.problem}` : ""}`);
+          const pct = l.accountId
+            ? Math.max(0, ...relevant(s.get("usage", l.accountId), undefined, Date.now()).map((w) => w.usedPct))
+            : undefined; // windows that have reset count as 0
+          console.log(
+            `  ${st.current?.accountUuid === l.accountUuid ? "*" : " "} ${name(l).padEnd(28)} ${pct === undefined ? "not in the pool" : `${Math.round(pct)}% used`}${l.expired ? "  LOGIN EXPIRED" : l.sessionExpiresAt ? `  login valid ${Math.round((l.sessionExpiresAt - Date.now()) / 86_400_000)} days` : ""}${l.problem ? `  ${l.problem}` : ""}`,
+          );
         }
         if (st.pendingAdd) console.log("Waiting for you to sign in to Claude Desktop…");
-        console.log(`MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`);
+        console.log(
+          `MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`,
+        );
         console.log(`MCP servers in Cursor: ${st.cursorMcp ? "on" : "off (agentgate setup --mcp)"}`);
         return;
       }
       if (sub === "capture") return console.log(`saved ${desktop.capture(s)}`);
-      if (sub === "use") { await desktop.use(s, find(rest[0])); return console.log("switched; Claude Desktop is restarting"); }
-      if (sub === "forget") { desktop.forget(s, find(rest[0])); return console.log("ok"); }
-      if (sub === "gateway") { await desktop.gateway(s, rest[0] !== "off"); return console.log(rest[0] === "off" ? "Claude Desktop uses its own sign-in again" : "Claude Desktop's Code tab now uses the pool; keep the agentgate service running"); }
+      if (sub === "use") {
+        await desktop.use(s, find(rest[0]));
+        return console.log("switched; Claude Desktop is restarting");
+      }
+      if (sub === "forget") {
+        desktop.forget(s, find(rest[0]));
+        return console.log("ok");
+      }
+      if (sub === "gateway") {
+        await desktop.gateway(s, rest[0] !== "off");
+        return console.log(
+          rest[0] === "off"
+            ? "Claude Desktop uses its own sign-in again"
+            : "Claude Desktop's Code tab now uses the pool; keep the agentgate service running",
+        );
+      }
       if (sub === "add") {
         const started = Date.now();
         await desktop.add(s, rest[0]);
-        console.log(`Claude Desktop restarted signed out. Sign in${rest[0] ? ` with ${rest[0]}` : " with the next account"}; this waits up to 10 minutes. Don't use Log out in Desktop: it ends saved logins.`);
+        console.log(
+          `Claude Desktop restarted signed out. Sign in${rest[0] ? ` with ${rest[0]}` : " with the next account"}; this waits up to 10 minutes. Don't use Log out in Desktop: it ends saved logins.`,
+        );
         for (;;) {
           await Bun.sleep(2000);
           // The agentgate service may save it first; then this loop only reports it.
           const uuid = (await desktop.pollDesktopLogin(s)) ?? desktop.addedSince(s, started);
           if (uuid) {
             const wrong = desktop.status(s).addMismatch;
-            return console.log(wrong ? `saved ${name(wrong)}, but you asked for ${wrong.expected}. Run agentgate desktop add ${wrong.expected} to connect it.` : `saved ${uuid}`);
+            return console.log(
+              wrong
+                ? `saved ${name(wrong)}, but you asked for ${wrong.expected}. Run agentgate desktop add ${wrong.expected} to connect it.`
+                : `saved ${uuid}`,
+            );
           }
-          if (!s.local("desktop:pendingAdd")) die(`Timed out waiting for the sign-in. Try again with: agentgate desktop add${rest[0] ? ` ${rest[0]}` : ""}`);
+          if (!s.local("desktop:pendingAdd"))
+            die(
+              `Timed out waiting for the sign-in. Try again with: agentgate desktop add${rest[0] ? ` ${rest[0]}` : ""}`,
+            );
         }
       }
       return die(HELP);
@@ -737,7 +1119,11 @@ async function main() {
       const query = node ? `?node=${encodeURIComponent(node)}` : "";
       if (sub === "connect") {
         // No link: that machine's T3 Code creates one with `t3 pair`.
-        const input = rest[0] ? { pairingUrl: rest[0] } : str("url") ? { url: str("url")!, token: str("token") ?? die("--token is required") } : { create: true as const };
+        const input = rest[0]
+          ? { pairingUrl: rest[0] }
+          : str("url")
+            ? { url: str("url")!, token: str("token") ?? die("--token is required") }
+            : { create: true as const };
         const state = node
           ? await management<import("@agentgate/protocol").T3NodeState>(`/t3/connect${query}`, "POST", input)
           : await t3.connectWith(s, input);
@@ -746,7 +1132,7 @@ async function main() {
         return console.log(`connected ${node ?? "this machine"} to T3 Code${label}; the token expires ${expires}`);
       }
       if (sub === "pair") {
-        const input = { ...opts.tailscale && { tailscale: true } };
+        const input = { ...(opts.tailscale && { tailscale: true }) };
         const link = node
           ? await management<import("@agentgate/protocol").T3PairingLink>(`/t3/pairing-link${query}`, "POST", input)
           : await t3.createPairingLink(s, input);
@@ -761,51 +1147,80 @@ async function main() {
         return console.log("disconnected");
       }
       if (sub === "dirs") {
-        for (const [key, value] of [["worktreesDir", str("worktrees")], ["cloneDir", str("clones")]] as const) if (value) s.setLocal(`handoff:${key}`, resolve(value.replace(/^~(?=\/|$)/, homedir())));
+        for (const [key, value] of [
+          ["worktreesDir", str("worktrees")],
+          ["cloneDir", str("clones")],
+        ] as const)
+          if (value) s.setLocal(`handoff:${key}`, resolve(value.replace(/^~(?=\/|$)/, homedir())));
         const { handoffOptions } = await import("./daemon.ts");
         const o = handoffOptions(s);
         return console.log(`worktrees  ${o.worktreesDir}\nclones     ${o.cloneDir}`);
       }
       if (sub === "sync") {
-        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3ProjectSync: rest[0] === "on" }, revision(s, "setting", "settings"));
+        if (rest[0] === "on" || rest[0] === "off")
+          patchSettings(s, { t3ProjectSync: rest[0] === "on" }, revision(s, "setting", "settings"));
         else if (rest[0]) die("t3 sync [on|off]");
-        await management("/t3/projects/sync", "POST").catch(() => { }); // a stopped daemon syncs when it starts
+        await management("/t3/projects/sync", "POST").catch(() => {}); // a stopped daemon syncs when it starts
         const error = t3.t3State(s).projectSyncError;
-        return console.log(`T3 project sync is ${s.settings().t3ProjectSync ? "on" : "off"} on every machine${error ? `; here: ${error}` : ""}`);
+        return console.log(
+          `T3 project sync is ${s.settings().t3ProjectSync ? "on" : "off"} on every machine${error ? `; here: ${error}` : ""}`,
+        );
       }
       if (sub === "history") {
-        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3HandoffHistory: rest[0] === "on" }, revision(s, "setting", "settings"));
+        if (rest[0] === "on" || rest[0] === "off")
+          patchSettings(s, { t3HandoffHistory: rest[0] === "on" }, revision(s, "setting", "settings"));
         else if (rest[0]) die("t3 history [on|off]");
-        return console.log(`Copying a returning thread's messages into T3 Code is ${s.settings().t3HandoffHistory ? "on" : "off"} on every machine. It writes T3 Code's own database, which T3 Code does not support; turn it off if T3 Code misbehaves after a handoff.`);
+        return console.log(
+          `Copying a returning thread's messages into T3 Code is ${s.settings().t3HandoffHistory ? "on" : "off"} on every machine. It writes T3 Code's own database, which T3 Code does not support; turn it off if T3 Code misbehaves after a handoff.`,
+        );
       }
       if (sub && sub !== "status") die(HELP);
       const st = t3.t3State(s);
       if (!st.url) return console.log("T3 Code is not connected. With T3 Code running, run: agentgate t3 connect");
-      return console.log(`T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect" : ""}`);
+      return console.log(
+        `T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect" : ""}`,
+      );
     }
     case "threads": {
       initialized(s);
       const nodes = await management<import("@agentgate/protocol").NodeThreads[]>("/threads");
       for (const n of nodes.filter((n) => !str("node") || n.node === str("node"))) {
-        console.log(`\n${n.node}${n.server ? " (server)" : ""}${n.error ? `  ${n.error}` : !n.t3?.connected ? "  T3 Code not connected" : ""}`);
-        for (const th of n.threads) console.log(`  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}`);
+        console.log(
+          `\n${n.node}${n.server ? " (server)" : ""}${n.error ? `  ${n.error}` : !n.t3?.connected ? "  T3 Code not connected" : ""}`,
+        );
+        for (const th of n.threads)
+          console.log(
+            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}`,
+          );
       }
       return;
     }
     case "handoff": {
       initialized(s);
       const threadId = sub ?? die("handoff <thread> [--to server|here|<node>] [--no-wait]");
-      const started = await management<{ handoffId: string; node: string; to: string }>("/handoffs", "POST", { threadId, to: str("to") ?? "server" });
+      const started = await management<{ handoffId: string; node: string; to: string }>("/handoffs", "POST", {
+        threadId,
+        to: str("to") ?? "server",
+      });
       if (opts["no-wait"]) return console.log(started.handoffId);
       console.log(`handing ${threadId} from ${started.node} to ${started.to} (${started.handoffId})`);
       let last = "";
-      for (; ;) {
-        const job = await management<import("@agentgate/protocol").HandoffJob>(`/handoffs/${started.handoffId}?node=${encodeURIComponent(started.node)}`);
-        if (job.step !== last) { console.log(`  ${job.step}`); last = job.step; }
+      for (;;) {
+        const job = await management<import("@agentgate/protocol").HandoffJob>(
+          `/handoffs/${started.handoffId}?node=${encodeURIComponent(started.node)}`,
+        );
+        if (job.step !== last) {
+          console.log(`  ${job.step}`);
+          last = job.step;
+        }
         if (job.status === "failed") die(`handoff failed: ${job.error}`);
         if (job.status === "imported" || job.status === "done") {
           for (const w of job.warnings) console.warn(`warning: ${w}`);
-          console.log(job.timings.map((x) => `${x.step}${x.node === started.node ? "" : ` on ${x.node}`} ${(x.ms / 1000).toFixed(1)} s`).join(" · "));
+          console.log(
+            job.timings
+              .map((x) => `${x.step}${x.node === started.node ? "" : ` on ${x.node}`} ${(x.ms / 1000).toFixed(1)} s`)
+              .join(" · "),
+          );
           return console.log(`now on ${started.to} as thread ${job.destThreadId}`);
         }
         await Bun.sleep(1000);
@@ -814,7 +1229,9 @@ async function main() {
     case "handoffs": {
       initialized(s);
       for (const j of await management<import("@agentgate/protocol").HandoffJob[]>("/handoffs"))
-        console.log(`${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`);
+        console.log(
+          `${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`,
+        );
       return;
     }
 
@@ -822,10 +1239,20 @@ async function main() {
       const setupMod = await import("./setup.ts");
       if (opts.primary && opts.node) {
         initialized(s);
-        return console.log((await management<{ message: string }>(`/nodes/${encodeURIComponent(opts.node)}/primary`, "POST", { on: sub !== "off" })).message);
+        return console.log(
+          (
+            await management<{ message: string }>(`/nodes/${encodeURIComponent(opts.node)}/primary`, "POST", {
+              on: sub !== "off",
+            })
+          ).message,
+        );
       }
-      if (opts.primary) return console.log(`${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
-      if (opts.mcp) return console.log(`${await setupMod.mcp(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
+      if (opts.primary)
+        return console.log(
+          `${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`,
+        );
+      if (opts.mcp)
+        return console.log(`${await setupMod.mcp(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
       return console.log(await setupMod.setup());
     }
     case "service":
@@ -833,27 +1260,47 @@ async function main() {
     case "update": {
       if (sub) {
         initialized(s);
-        const r = await management<{ version?: string; restarting: boolean }>(`/nodes/${encodeURIComponent(sub)}/update`, "POST");
-        if (!r.version || !r.restarting) return console.log(!r.version ? `${sub} is up to date` : `${sub} installed agentgate ${r.version}; restart agentgate there to use it`);
+        const r = await management<{ version?: string; restarting: boolean }>(
+          `/nodes/${encodeURIComponent(sub)}/update`,
+          "POST",
+        );
+        if (!r.version || !r.restarting)
+          return console.log(
+            !r.version
+              ? `${sub} is up to date`
+              : `${sub} installed agentgate ${r.version}; restart agentgate there to use it`,
+          );
         console.log(`${sub} installed agentgate ${r.version} and is restarting`);
-        return console.log(await (await import("./update.ts")).waitForVersion(s, sub, r.version) ? `${sub} runs agentgate ${r.version}` : `${sub} is still restarting; check with agentgate nodes`);
+        return console.log(
+          (await (await import("./update.ts")).waitForVersion(s, sub, r.version))
+            ? `${sub} runs agentgate ${r.version}`
+            : `${sub} is still restarting; check with agentgate nodes`,
+        );
       }
       const update = await import("./update.ts");
       const { target, version, restart } = await update.updateSelf().catch((e: Error) => die(e.message));
       console.log(version ? `installed agentgate ${version} at ${target}` : "agentgate is up to date");
       // A global npm or bun install that PATH finds first would keep running the old CLI.
-      const copy = update.pathCopy(), latest = version ?? packageInfo.version;
+      const copy = update.pathCopy(),
+        latest = version ?? packageInfo.version;
       if (copy && copy.version !== latest) {
         const command = copy.install(latest);
         console.log(`${copy.path} is agentgate ${copy.version ?? "(unknown)"}; running ${command.join(" ")}`);
         let ok = false;
-        try { ok = Bun.spawnSync(command, { stdio: ["ignore", "inherit", "inherit"] }).exitCode === 0; } catch { }
+        try {
+          ok = Bun.spawnSync(command, { stdio: ["ignore", "inherit", "inherit"] }).exitCode === 0;
+        } catch {}
         if (!ok) console.log(`that failed; run it yourself: ${command.join(" ")}`);
       }
       if (!version) return;
       if (restart) {
         const code = await (await import("./service.ts")).service("restart");
-        if (code === 0 && s.local("node")) console.log(await update.waitForVersion(s, s.nodeId, version) ? `this node runs agentgate ${version}` : "agentgate is still restarting; check with agentgate nodes");
+        if (code === 0 && s.local("node"))
+          console.log(
+            (await update.waitForVersion(s, s.nodeId, version))
+              ? `this node runs agentgate ${version}`
+              : "agentgate is still restarting; check with agentgate nodes",
+          );
         return process.exit(code);
       }
       return console.log("restart agentgate to use it");
@@ -862,7 +1309,9 @@ async function main() {
     case "export":
       return console.log(JSON.stringify(exportBackup(s, !opts["no-secrets"]), null, 2));
     case "import-backup":
-      return console.log(`restored ${importBackup(s, await Bun.file(sub ?? die("import-backup <file>")).json())} records`);
+      return console.log(
+        `restored ${importBackup(s, await Bun.file(sub ?? die("import-backup <file>")).json())} records`,
+      );
     case "admin-token":
       return console.log(initialized(s).local("adminToken"));
     default:

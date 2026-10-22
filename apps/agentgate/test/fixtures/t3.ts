@@ -7,14 +7,47 @@ import { claudeProjectKey } from "../../src/handoff/session.ts";
  * `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
  * recognised), and a first turn that fails once. */
 
-type Run = { id: string; status: string; userMessageId?: string; ordinal?: number; queuePosition?: number | null; dispatchedAt?: number; settledAt?: number };
+type Run = {
+  id: string;
+  status: string;
+  userMessageId?: string;
+  ordinal?: number;
+  queuePosition?: number | null;
+  dispatchedAt?: number;
+  settledAt?: number;
+};
 type Message = { id: string; text: string; attachments: unknown[]; delegatedCompletion?: unknown };
 export type FakeThread = {
-  id: string; projectId: string; title: string; providerInstanceId: string; modelSelection: Record<string, unknown>;
-  runtimeMode: string; interactionMode: string; branch: string | null; worktreePath: string | null;
-  archivedAt: string | null; updatedAt: string; runs: Run[]; settledOverride?: "settled" | "active" | null; subagent?: boolean; createdAt: string; pinnedAt?: string | null; pinOrderKey?: string | null; activeOrderKey?: string | null; sessionId: string; failNextTurn?: boolean; messages: string[]; conversation?: Message[]; background?: { kind: string; description: string }[];
+  id: string;
+  projectId: string;
+  title: string;
+  providerInstanceId: string;
+  modelSelection: Record<string, unknown>;
+  runtimeMode: string;
+  interactionMode: string;
+  branch: string | null;
+  worktreePath: string | null;
+  archivedAt: string | null;
+  updatedAt: string;
+  runs: Run[];
+  settledOverride?: "settled" | "active" | null;
+  subagent?: boolean;
+  createdAt: string;
+  pinnedAt?: string | null;
+  pinOrderKey?: string | null;
+  activeOrderKey?: string | null;
+  sessionId: string;
+  failNextTurn?: boolean;
+  messages: string[];
+  conversation?: Message[];
+  background?: { kind: string; description: string }[];
 };
-type Project = { id: string; title: string; workspaceRoot: string; scripts: { id: string; name: string; command: string; icon: string; runOnWorktreeCreate: boolean }[] };
+type Project = {
+  id: string;
+  title: string;
+  workspaceRoot: string;
+  scripts: { id: string; name: string; command: string; icon: string; runOnWorktreeCreate: boolean }[];
+};
 
 export function fakeT3(options: { claudeDir: string; protocol?: number; label?: string }) {
   const threads = new Map<string, FakeThread>();
@@ -26,35 +59,100 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const clones: Record<string, unknown>[] = [];
   const protocol = String(options.protocol ?? 2);
   const now = () => new Date().toISOString();
-  const status = (t: FakeThread) => t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
-  const shellThread = (t: FakeThread) => ({ id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, branch: t.branch, worktreePath: t.worktreePath, status: status(t), archivedAt: t.archivedAt, updatedAt: t.updatedAt, createdAt: t.createdAt, pinnedAt: t.pinnedAt ?? null, pinOrderKey: t.pinOrderKey ?? null, activeOrderKey: t.activeOrderKey ?? null, settledOverride: t.settledOverride ?? null, lineage: { relationshipToParent: t.subagent ? "subagent" : null } });
+  const status = (t: FakeThread) =>
+    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
+  const shellThread = (t: FakeThread) => ({
+    id: t.id,
+    projectId: t.projectId,
+    title: t.title,
+    providerInstanceId: t.providerInstanceId,
+    branch: t.branch,
+    worktreePath: t.worktreePath,
+    status: status(t),
+    archivedAt: t.archivedAt,
+    updatedAt: t.updatedAt,
+    createdAt: t.createdAt,
+    pinnedAt: t.pinnedAt ?? null,
+    pinOrderKey: t.pinOrderKey ?? null,
+    activeOrderKey: t.activeOrderKey ?? null,
+    settledOverride: t.settledOverride ?? null,
+    lineage: { relationshipToParent: t.subagent ? "subagent" : null },
+  });
   const projection = (t: FakeThread) => ({
-    thread: { id: t.id, projectId: t.projectId, title: t.title, providerInstanceId: t.providerInstanceId, modelSelection: t.modelSelection, runtimeMode: t.runtimeMode, interactionMode: t.interactionMode, branch: t.branch, worktreePath: t.worktreePath, activeProviderThreadId: `pt-${t.id}`, archivedAt: t.archivedAt, settledOverride: t.settledOverride ?? null },
+    thread: {
+      id: t.id,
+      projectId: t.projectId,
+      title: t.title,
+      providerInstanceId: t.providerInstanceId,
+      modelSelection: t.modelSelection,
+      runtimeMode: t.runtimeMode,
+      interactionMode: t.interactionMode,
+      branch: t.branch,
+      worktreePath: t.worktreePath,
+      activeProviderThreadId: `pt-${t.id}`,
+      archivedAt: t.archivedAt,
+      settledOverride: t.settledOverride ?? null,
+    },
     runs: t.runs,
     messages: t.conversation ?? [],
-    providerThreads: [{ id: `pt-${t.id}`, driver: "claudeAgent", nativeThreadRef: { nativeId: t.sessionId, strength: "strong" }, pendingBackgroundTasks: t.background ?? [] }],
+    providerThreads: [
+      {
+        id: `pt-${t.id}`,
+        driver: "claudeAgent",
+        nativeThreadRef: { nativeId: t.sessionId, strength: "strong" },
+        pendingBackgroundTasks: t.background ?? [],
+      },
+    ],
   });
-  const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) => setTimeout(() => { run.status = outcome; run.settledAt = Date.now(); t.updatedAt = now(); }, ms);
+  const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) =>
+    setTimeout(() => {
+      run.status = outcome;
+      run.settledAt = Date.now();
+      t.updatedAt = now();
+    }, ms);
 
   const rpc: Record<string, (p: Record<string, unknown>) => unknown> = {
-    "server.getConfig": () => ({ settings: { providerInstances: {}, providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} } } }),
+    "server.getConfig": () => ({
+      settings: { providerInstances: {}, providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} } },
+    }),
     "orchestration.getThreadProjection": (p) => {
       const t = threads.get(String(p.threadId));
       if (!t) throw { _tag: "OrchestrationV2ThreadNotFoundError", message: "thread not found" };
       return projection(t);
     },
     "projects.mutate": (p) => {
-      const project = { id: String(p.projectId), title: String(p.title), workspaceRoot: String(p.workspaceRoot), scripts: [] };
+      const project = {
+        id: String(p.projectId),
+        title: String(p.title),
+        workspaceRoot: String(p.workspaceRoot),
+        scripts: [],
+      };
       projects.push(project);
       return project;
     },
     // Like upstream: the project is registered at once and the clone runs in the background (not simulated here).
     "projectClone.start": (p) => {
       // Like upstream T3 Code since October 2026 for a token paired before cloning got its own permission.
-      if (api.denyClones) throw { _tag: "EnvironmentAuthorizationError", message: "The authenticated token is missing required scope: source-control:write.", requiredScope: "orchestration:operate", requiredPermission: "source-control:write" };
+      if (api.denyClones)
+        throw {
+          _tag: "EnvironmentAuthorizationError",
+          message: "The authenticated token is missing required scope: source-control:write.",
+          requiredScope: "orchestration:operate",
+          requiredPermission: "source-control:write",
+        };
       clones.push(p);
-      projects.push({ id: String(p.projectId), title: String(p.title), workspaceRoot: String(p.destinationPath), scripts: [] });
-      return { projectId: p.projectId, cwd: p.destinationPath, remoteUrl: `https://github.com/${p.repository}.git`, repository: null };
+      projects.push({
+        id: String(p.projectId),
+        title: String(p.title),
+        workspaceRoot: String(p.destinationPath),
+        scripts: [],
+      });
+      return {
+        projectId: p.projectId,
+        cwd: p.destinationPath,
+        remoteUrl: `https://github.com/${p.repository}.git`,
+        repository: null,
+      };
     },
     "agentSessions.scan": () => ({ candidates: [] }),
     "agentSessions.import": (p) => {
@@ -66,7 +164,25 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
         // Like upstream: only its own earlier imports count, not a native thread that holds the same session.
         const id = `import:claudeAgent:${sessionId}`;
         if (threads.has(id)) continue;
-        threads.set(id, { id, projectId: project.id, title: "Imported", providerInstanceId: "claudeAgent", modelSelection: { instanceId: "claudeAgent", model: "default" }, runtimeMode: "approval-required", interactionMode: "default", branch: null, worktreePath: null, archivedAt: null, settledOverride: "settled", updatedAt: now(), createdAt: now(), runs: [], sessionId, failNextTurn: true, messages: [] });
+        threads.set(id, {
+          id,
+          projectId: project.id,
+          title: "Imported",
+          providerInstanceId: "claudeAgent",
+          modelSelection: { instanceId: "claudeAgent", model: "default" },
+          runtimeMode: "approval-required",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          archivedAt: null,
+          settledOverride: "settled",
+          updatedAt: now(),
+          createdAt: now(),
+          runs: [],
+          sessionId,
+          failNextTurn: true,
+          messages: [],
+        });
         importedCount++;
       }
       return { importedCount, skippedCount: 0 };
@@ -77,23 +193,53 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       t.updatedAt = now();
       switch (c.type) {
         // Like T3's Stop: interrupting the latest run also ends the background work.
-        case "run.interrupt": settle(t, t.runs.find((r) => r.id === c.runId)!, "interrupted"); t.background = []; break;
-        case "queued-run.cancel": t.runs.find((r) => r.id === c.runId)!.status = "cancelled"; break;
-        case "thread.archive": t.archivedAt = now(); break;
-        case "thread.unarchive": t.archivedAt = null; break;
-        case "thread.unsettle": t.settledOverride = "active"; break;
-        case "thread.metadata.update": Object.assign(t, { worktreePath: c.worktreePath, branch: c.branch, ...(c.title ? { title: c.title } : {}) }); break;
-        case "thread.runtime-mode.set": t.runtimeMode = String(c.runtimeMode); break;
-        case "thread.interaction-mode.set": t.interactionMode = String(c.interactionMode); break;
-        case "thread.model-selection.set": t.modelSelection = c.modelSelection as Record<string, unknown>; break;
+        case "run.interrupt":
+          settle(
+            t,
+            t.runs.find((r) => r.id === c.runId)!,
+            "interrupted",
+          );
+          t.background = [];
+          break;
+        case "queued-run.cancel":
+          t.runs.find((r) => r.id === c.runId)!.status = "cancelled";
+          break;
+        case "thread.archive":
+          t.archivedAt = now();
+          break;
+        case "thread.unarchive":
+          t.archivedAt = null;
+          break;
+        case "thread.unsettle":
+          t.settledOverride = "active";
+          break;
+        case "thread.metadata.update":
+          Object.assign(t, { worktreePath: c.worktreePath, branch: c.branch, ...(c.title ? { title: c.title } : {}) });
+          break;
+        case "thread.runtime-mode.set":
+          t.runtimeMode = String(c.runtimeMode);
+          break;
+        case "thread.interaction-mode.set":
+          t.interactionMode = String(c.interactionMode);
+          break;
+        case "thread.model-selection.set":
+          t.modelSelection = c.modelSelection as Record<string, unknown>;
+          break;
         case "message.dispatch": {
-          const run: Run = { id: crypto.randomUUID(), status: "running", userMessageId: String(c.messageId), dispatchedAt: Date.now() };
-          t.runs.push(run); t.messages.push(String(c.text));
+          const run: Run = {
+            id: crypto.randomUUID(),
+            status: "running",
+            userMessageId: String(c.messageId),
+            dispatchedAt: Date.now(),
+          };
+          t.runs.push(run);
+          t.messages.push(String(c.text));
           settle(t, run, t.failNextTurn ? "failed" : "completed");
           t.failNextTurn = false;
           break;
         }
-        default: throw { _tag: "UnknownCommand", message: `unknown command ${c.type}` };
+        default:
+          throw { _tag: "UnknownCommand", message: `unknown command ${c.type}` };
       }
       return { sequence: commands.length };
     },
@@ -107,56 +253,110 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       if (url.pathname === "/oauth/token") {
         const form = new URLSearchParams(await req.text());
         const token = form.get("subject_token") ?? "";
-        if (!pairing.delete(token) || form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:token-exchange") return Response.json({ error: "invalid_grant" }, { status: 400 });
+        if (!pairing.delete(token) || form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:token-exchange")
+          return Response.json({ error: "invalid_grant" }, { status: 400 });
         const access = crypto.randomUUID();
         tokens.add(access);
         return Response.json({ access_token: access, token_type: "Bearer", expires_in: 30 * 86400, scope: "" });
       }
-      if (url.pathname === "/.well-known/t3/environment") return Response.json({ environmentId: "env", label: options.label ?? "fake" });
+      if (url.pathname === "/.well-known/t3/environment")
+        return Response.json({ environmentId: "env", label: options.label ?? "fake" });
       if (url.pathname === "/ws") {
-        if (url.searchParams.get("orchestrationProtocol") !== protocol) return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
-        if (!tickets.delete(url.searchParams.get("wsTicket") ?? "")) return new Response("unauthorized", { status: 401 });
+        if (url.searchParams.get("orchestrationProtocol") !== protocol)
+          return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
+        if (!tickets.delete(url.searchParams.get("wsTicket") ?? ""))
+          return new Response("unauthorized", { status: 401 });
         return srv.upgrade(req, { data: { ok: true } }) ? undefined : new Response("upgrade failed", { status: 400 });
       }
       if (!authorized(req)) return Response.json({ error: "unauthorized" }, { status: 401 });
-      if (url.pathname === "/api/auth/websocket-ticket") { const ticket = crypto.randomUUID(); tickets.add(ticket); return Response.json({ ticket }); }
+      if (url.pathname === "/api/auth/websocket-ticket") {
+        const ticket = crypto.randomUUID();
+        tickets.add(ticket);
+        return Response.json({ ticket });
+      }
       if (url.pathname === "/api/orchestration/shell") {
-        if (req.headers.get("x-t3-orchestration-protocol") !== protocol) return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
+        if (req.headers.get("x-t3-orchestration-protocol") !== protocol)
+          return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
         const all = [...threads.values()];
-        return Response.json({ threads: all.filter((t) => !t.archivedAt).map(shellThread), archivedThreads: all.filter((t) => t.archivedAt).map(shellThread), projects });
+        return Response.json({
+          threads: all.filter((t) => !t.archivedAt).map(shellThread),
+          archivedThreads: all.filter((t) => t.archivedAt).map(shellThread),
+          projects,
+        });
       }
       return new Response("not found", { status: 404 });
     },
     websocket: {
       message(ws, raw) {
-        const frame = JSON.parse(String(raw)) as { _tag: string; id: string; tag: string; payload: Record<string, unknown> };
+        const frame = JSON.parse(String(raw)) as {
+          _tag: string;
+          id: string;
+          tag: string;
+          payload: Record<string, unknown>;
+        };
         if (frame._tag !== "Request") return;
         try {
           const handler = rpc[frame.tag];
           if (!handler) throw { _tag: "RpcNotFound", message: `no method ${frame.tag}` };
-          ws.send(JSON.stringify({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Success", value: handler(frame.payload) } }));
+          ws.send(
+            JSON.stringify({
+              _tag: "Exit",
+              requestId: frame.id,
+              exit: { _tag: "Success", value: handler(frame.payload) },
+            }),
+          );
         } catch (error) {
-          ws.send(JSON.stringify({ _tag: "Exit", requestId: frame.id, exit: { _tag: "Failure", cause: [{ _tag: "Fail", error }] } }));
+          ws.send(
+            JSON.stringify({
+              _tag: "Exit",
+              requestId: frame.id,
+              exit: { _tag: "Failure", cause: [{ _tag: "Fail", error }] },
+            }),
+          );
         }
       },
     },
   });
   const url = `http://127.0.0.1:${server.port}`;
   const api = {
-    url, threads, projects, commands, clones, server,
+    url,
+    threads,
+    projects,
+    commands,
+    clones,
+    server,
     /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
     homePath: options.claudeDir as string | undefined,
     /** Refuse clones for a missing permission. */
     denyClones: false,
     /** A single-use pairing token, as `t3 pair` prints. */
-    pairingToken() { const token = crypto.randomUUID(); pairing.add(token); return token; },
+    pairingToken() {
+      const token = crypto.randomUUID();
+      pairing.add(token);
+      return token;
+    },
     addProject(workspaceRoot: string, scripts: Project["scripts"] = []) {
       const project = { id: crypto.randomUUID(), title: "repo", workspaceRoot, scripts };
       projects.push(project);
       return project;
     },
     addThread(t: Partial<FakeThread> & { projectId: string; sessionId: string }) {
-      const thread: FakeThread = { id: crypto.randomUUID(), title: "Fix the bug", providerInstanceId: "claudeAgent", modelSelection: { instanceId: "claudeAgent", model: "opus" }, runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null, archivedAt: null, updatedAt: now(), createdAt: now(), runs: [], messages: [], ...t };
+      const thread: FakeThread = {
+        id: crypto.randomUUID(),
+        title: "Fix the bug",
+        providerInstanceId: "claudeAgent",
+        modelSelection: { instanceId: "claudeAgent", model: "opus" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        archivedAt: null,
+        updatedAt: now(),
+        createdAt: now(),
+        runs: [],
+        messages: [],
+        ...t,
+      };
       threads.set(thread.id, thread);
       return thread;
     },

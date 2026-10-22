@@ -42,8 +42,10 @@ export function realPath(path: string) {
 
 function filesUnder(dir: string): string[] {
   if (!existsSync(dir)) return [];
-  return (readdirSync(dir, { recursive: true }) as string[]).sort()
-    .filter((f) => lstatSync(join(dir, f)).isFile()).map((f) => f.split(sep).join("/"));
+  return (readdirSync(dir, { recursive: true }) as string[])
+    .sort()
+    .filter((f) => lstatSync(join(dir, f)).isFile())
+    .map((f) => f.split(sep).join("/"));
 }
 
 /** Replace `"cwd": "<old>"` values without re-serializing: other fields keep their exact bytes, and tool inputs
@@ -53,7 +55,10 @@ export function rewriteCwd(text: string, oldPaths: string[], to: string): string
   for (const from of new Set(oldPaths)) {
     if (from === to) continue;
     const literal = escapeRegExp(JSON.stringify(from));
-    out = out.replace(new RegExp(`(?<!\\\\)"cwd"(\\s*):(\\s*)${literal}`, "g"), (_m, a: string, b: string) => `"cwd"${a}:${b}${JSON.stringify(to)}`);
+    out = out.replace(
+      new RegExp(`(?<!\\\\)"cwd"(\\s*):(\\s*)${literal}`, "g"),
+      (_m, a: string, b: string) => `"cwd"${a}:${b}${JSON.stringify(to)}`,
+    );
   }
   return out;
 }
@@ -81,11 +86,18 @@ export const claudeSessions: SessionProvider = {
     if (!SAFE_ID.test(sessionId)) return undefined;
     const projects = join(home, "projects");
     // The session may have started in another directory of this home.
-    const keys = [claudeProjectKey(realPath(cwd)), claudeProjectKey(cwd), ...(existsSync(projects) ? readdirSync(projects) : [])];
+    const keys = [
+      claudeProjectKey(realPath(cwd)),
+      claudeProjectKey(cwd),
+      ...(existsSync(projects) ? readdirSync(projects) : []),
+    ];
     for (const key of keys) {
       const root = join(projects, key);
       if (!existsSync(join(root, `${sessionId}.jsonl`))) continue;
-      return { root, files: [`${sessionId}.jsonl`, ...filesUnder(join(root, sessionId)).map((f) => `${sessionId}/${f}`)] };
+      return {
+        root,
+        files: [`${sessionId}.jsonl`, ...filesUnder(join(root, sessionId)).map((f) => `${sessionId}/${f}`)],
+      };
     }
     return undefined;
   },
@@ -113,7 +125,11 @@ export const claudeSessions: SessionProvider = {
     }
   },
   accepts(sessionId, file) {
-    return SAFE_ID.test(sessionId) && safeRelative(file) && (file === `${sessionId}.jsonl` || file.startsWith(`${sessionId}/`));
+    return (
+      SAFE_ID.test(sessionId) &&
+      safeRelative(file) &&
+      (file === `${sessionId}.jsonl` || file.startsWith(`${sessionId}/`))
+    );
   },
 };
 
@@ -121,6 +137,12 @@ export const sessionProviders: Record<string, SessionProvider> = { claudeAgent: 
 
 /** A relative path with plain segments: no absolute paths, `..`, empty segments or backslashes. */
 export function safeRelative(path: string): boolean {
-  return path.length > 0 && path.length <= 1024 && !path.startsWith("/") && !path.includes("\\") && !path.includes("\0")
-    && path.split("/").every((part) => part && part !== "." && part !== "..");
+  return (
+    path.length > 0 &&
+    path.length <= 1024 &&
+    !path.startsWith("/") &&
+    !path.includes("\\") &&
+    !path.includes("\0") &&
+    path.split("/").every((part) => part && part !== "." && part !== "..")
+  );
 }

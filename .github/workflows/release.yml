@@ -85,7 +85,7 @@ jobs:
       - run: bun scripts/smoke.ts dist/agentgate-darwin-arm64
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: "24"
       # The script skips versions already on npm, so a failed run can be rerun.
       - run: bun "$RUNNER_TEMP/agentgate-npm.ts" "$TAG" --publish
       - run: gh release upload "$TAG" dist/agentgate-* dist/SHA256SUMS --clobber

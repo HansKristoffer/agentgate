@@ -43,14 +43,14 @@ export function Servers({ data, connection, perform }: ViewProps) {
     };
   }, [connection]);
   const signIn = (id: string) =>
-    perform(async () => {
-      const result = await request<{ url?: string }>(
-        connection,
-        `/servers/${idPath(id)}/login`,
-        "POST",
-      );
-      if (result.url) await openExternal(result.url);
-    }, "Login started. Complete it in your browser; the server updates automatically.", `login:${id}`);
+    perform(
+      async () => {
+        const result = await request<{ url?: string }>(connection, `/servers/${idPath(id)}/login`, "POST");
+        if (result.url) await openExternal(result.url);
+      },
+      "Login started. Complete it in your browser; the server updates automatically.",
+      `login:${id}`,
+    );
   return (
     <>
       <HeaderActions>
@@ -74,9 +74,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
           </Empty>
         )}
         {data.servers.map((server) => {
-          const mappings = data.projects.filter((p) =>
-            Object.values(p.mcp).includes(server.id),
-          ).length;
+          const mappings = data.projects.filter((p) => Object.values(p.mcp).includes(server.id)).length;
           const checked = server.checkedAt ? ` · checked ${ago(server.checkedAt)}` : "";
           const health =
             server.available === undefined
@@ -95,27 +93,38 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     title={health}
                     aria-label={health}
                     // The test records the result whether or not it connects; the next status poll recolors the dot.
-                    onClick={() => void perform(() => request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(() => {}, () => {}), undefined, `test:${server.id}`)}
+                    onClick={() =>
+                      void perform(
+                        () =>
+                          request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(
+                            () => {},
+                            () => {},
+                          ),
+                        undefined,
+                        `test:${server.id}`,
+                      )
+                    }
                   >
-                    <span className={`dot ${server.available === true ? "online" : server.available === false ? "offline" : ""}`} />
+                    <span
+                      className={`dot ${server.available === true ? "online" : server.available === false ? "offline" : ""}`}
+                    />
                   </button>
                   <strong>{server.label ?? server.id}</strong>
                   <Badge good={server.loggedIn}>
                     {server.mode === "perSession"
-                        ? "Per session"
-                        : server.loggedIn
-                          ? "Signed in"
-                          : server.transport === "http"
-                            ? "HTTP"
-                            : "Local"}
+                      ? "Per session"
+                      : server.loggedIn
+                        ? "Signed in"
+                        : server.transport === "http"
+                          ? "HTTP"
+                          : "Local"}
                   </Badge>
                   {pending.has(`test:${server.id}`) && <Working>Testing</Working>}
                   {pending.has(`login:${server.id}`) && <Working>Starting sign-in</Working>}
                 </div>
                 <small>{server.label ? `Tool prefix ${server.id} · ${server.endpoint}` : server.endpoint}</small>
                 <small className={server.refreshError ? "danger" : ""}>
-                  {server.refreshError ??
-                    `${mappings} ${mappings === 1 ? "project" : "projects"}`}
+                  {server.refreshError ?? `${mappings} ${mappings === 1 ? "project" : "projects"}`}
                 </small>
               </div>
               {server.needsLogin && server.transport === "http" && (
@@ -129,19 +138,31 @@ export function Servers({ data, connection, perform }: ViewProps) {
                   {
                     label: "Test",
                     onAction: () =>
-                      void perform(async () => {
-                        const result = await request<{ tools: ToolPreview[] }>(connection, `/servers/${idPath(server.id)}/test`, "POST");
-                        setTools({ id: server.id, tools: result.tools });
-                      }, undefined, `test:${server.id}`),
+                      void perform(
+                        async () => {
+                          const result = await request<{ tools: ToolPreview[] }>(
+                            connection,
+                            `/servers/${idPath(server.id)}/test`,
+                            "POST",
+                          );
+                          setTools({ id: server.id, tools: result.tools });
+                        },
+                        undefined,
+                        `test:${server.id}`,
+                      ),
                   },
-                  server.transport === "http" && !server.needsLogin && { label: "Sign in", onAction: () => void signIn(server.id) },
+                  server.transport === "http" &&
+                    !server.needsLogin && { label: "Sign in", onAction: () => void signIn(server.id) },
                   { label: "Rename", onAction: () => setRename(server) },
                   {
                     label: "Delete",
                     danger: true,
                     onAction: async () => {
                       if (await confirmDelete(server.id))
-                        void perform(() => request(connection, `/servers/${idPath(server.id)}`, "DELETE"), "Server deleted");
+                        void perform(
+                          () => request(connection, `/servers/${idPath(server.id)}`, "DELETE"),
+                          "Server deleted",
+                        );
                     },
                   },
                 ]}
@@ -160,12 +181,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 // The daemon turns the name into the id and tool prefix.
                 await request(connection, "/servers", "POST", {
                   id: name,
-                  target:
-                    preset || (mode === "http" ? field(f, "url") : undefined),
-                  command:
-                    !preset && mode === "stdio"
-                      ? field(f, "command")
-                      : undefined,
+                  target: preset || (mode === "http" ? field(f, "url") : undefined),
+                  command: !preset && mode === "stdio" ? field(f, "command") : undefined,
                   perSession: f.get("perSession") === "on",
                   headers: field(f, "headers"),
                 });
@@ -179,16 +196,17 @@ export function Servers({ data, connection, perform }: ViewProps) {
               value={name}
               onChange={setName}
               placeholder="e.g. PostHog Work"
-              description={slugify(name) ? `Agents see its tools as ${slugify(name)}__…` : "Any name. Agents see a short tool prefix made from it."}
+              description={
+                slugify(name)
+                  ? `Agents see its tools as ${slugify(name)}__…`
+                  : "Any name. Agents see a short tool prefix made from it."
+              }
             />
             <Choice
               label="Preset"
               value={preset || custom}
               onChange={(key) => setPreset(key === custom ? "" : String(key))}
-              options={[
-                { id: custom, label: "Custom server" },
-                ...presets.map((p) => ({ id: p.id, label: p.label })),
-              ]}
+              options={[{ id: custom, label: "Custom server" }, ...presets.map((p) => ({ id: p.id, label: p.label }))]}
             />
             {preset ? (
               <p className="note">
@@ -208,13 +226,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                   ]}
                 />
                 {mode === "http" ? (
-                  <Field
-                    label="Server URL"
-                    name="url"
-                    type="url"
-                    isRequired
-                    placeholder="https://example.com/mcp"
-                  />
+                  <Field label="Server URL" name="url" type="url" isRequired placeholder="https://example.com/mcp" />
                 ) : (
                   <>
                     <Field
@@ -223,9 +235,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                       isRequired
                       placeholder="npx -y @modelcontextprotocol/server-filesystem"
                     />
-                    <Check name="perSession">
-                      Start separately in each session's worktree
-                    </Check>
+                    <Check name="perSession">Start separately in each session's worktree</Check>
                   </>
                 )}
               </>
@@ -244,10 +254,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {tools && (
-        <Modal
-          title={`${tools.id} · ${tools.tools.length} tools`}
-          close={() => setTools(undefined)}
-        >
+        <Modal title={`${tools.id} · ${tools.tools.length} tools`} close={() => setTools(undefined)}>
           <div className="tool-list">
             {tools.tools.map((t) => (
               <div key={t.name}>

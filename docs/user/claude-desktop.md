@@ -4,14 +4,14 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 
 ## The two ways
 
-| | **Switch accounts** | **Share automatically** |
-|---|---|---|
-| Chat | Yes | Not available |
-| Cowork | Yes | Not yet verified |
-| Code tab | Yes | Yes |
-| Your claude.ai history and projects | Yes | No: a separate local profile |
-| When a subscription runs out | You switch (one click; Claude Desktop restarts) | Moves on to the next subscription by itself |
-| Needs Agentgate running | Only to switch | Yes |
+|                                     | **Switch accounts**                             | **Share automatically**                     |
+| ----------------------------------- | ----------------------------------------------- | ------------------------------------------- |
+| Chat                                | Yes                                             | Not available                               |
+| Cowork                              | Yes                                             | Not yet verified                            |
+| Code tab                            | Yes                                             | Yes                                         |
+| Your claude.ai history and projects | Yes                                             | No: a separate local profile                |
+| When a subscription runs out        | You switch (one click; Claude Desktop restarts) | Moves on to the next subscription by itself |
+| Needs Agentgate running             | Only to switch                                  | Yes                                         |
 
 **Switch accounts** keeps Claude Desktop signed in to your normal Claude account. Agentgate keeps a saved login for each of your accounts on this Mac, so switching needs no password: Claude Desktop restarts and opens signed in to the other account.
 
@@ -20,7 +20,7 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 ## Set up (no terminal needed)
 
 1. Install and open the Agentgate app, and choose **Set up this machine**.
-2. Answer **Where do you use Claude?** with *The Claude Desktop app*.
+2. Answer **Where do you use Claude?** with _The Claude Desktop app_.
 3. On the **Accounts** screen:
    - **Add your subscriptions** with **Add account**. One browser sign-in per account. Agentgate uses it to show each account's limits.
    - **Connect each account to Claude Desktop** (Switch accounts only). Choose **Connect to Claude Desktop** from the account's ⋯ menu: Claude Desktop restarts signed out, you sign in with that account, and Agentgate saves the login by itself. The account Claude Desktop already had is saved first.
@@ -36,9 +36,9 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 
 - **Don't use Log out in Claude Desktop.** Signing out ends that login for good, including Agentgate's saved copy. To add or change accounts, use **Connect to Desktop** in Agentgate; it signs Claude Desktop out on this Mac only.
 - **Switching restarts Claude Desktop.** Running Cowork and Code sessions stop, and messages you haven't sent yet are lost.
-- **MCP servers.** Turn on *Agentgate's MCP servers* in Settings to get your MCP servers and per-repository tools in Claude Desktop's Code tab (both modes). Chat and Cowork don't load them.
+- **MCP servers.** Turn on _Agentgate's MCP servers_ in Settings to get your MCP servers and per-repository tools in Claude Desktop's Code tab (both modes). Chat and Cowork don't load them.
 - **Your data.** Saved logins stay on this Mac, encrypted with its keychain, and are never synced to other machines. Before its first change, Agentgate backs up Claude Desktop's files to `~/.config/agentgate/desktop-backup/`.
-- **Removing Agentgate.** Claude Desktop keeps the account it was last switched to. If you use *Share automatically*, switch back to your own sign-in first.
+- **Removing Agentgate.** Claude Desktop keeps the account it was last switched to. If you use _Share automatically_, switch back to your own sign-in first.
 - **Rules.** Agentgate only uses accounts you sign in to yourself, and only sends Claude Code requests with subscription logins. The terms of each plan still apply.
 
 ## From the command line

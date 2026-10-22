@@ -1,10 +1,29 @@
-import { firstServer, handoffTargets, type HandoffJob, type NodeThreads, type T3NodeState, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
+import {
+  firstServer,
+  handoffTargets,
+  type HandoffJob,
+  type NodeThreads,
+  type T3NodeState,
+  type T3PairingLink,
+  type T3Thread,
+} from "@agentgate/protocol";
 import { getErrorMessage, getUniqueValues, isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { startHandoff, type SourceState } from "./source.ts";
 import type { z } from "zod";
-import { ACTIVE, T3Error, claudeHomes, connectWith, createPairingLink, disconnectT3, t3Client, t3State, type connectInput, type pairingLinkInput } from "./t3.ts";
+import {
+  ACTIVE,
+  T3Error,
+  claudeHomes,
+  connectWith,
+  createPairingLink,
+  disconnectT3,
+  t3Client,
+  t3State,
+  type connectInput,
+  type pairingLinkInput,
+} from "./t3.ts";
 
 /** Threads on every node, and which node "server", "here" or a node id means. One rule set for the API, CLI,
  * MCP tools and app, so "To server" picks the same machine everywhere. */
@@ -27,15 +46,25 @@ async function localThreads(h: Handoffs): Promise<T3Thread[]> {
   return sidebarOrder(listed).map((t) => {
     const running = ACTIVE.has(t.status) || t.status === "queued";
     return {
-      id: t.id, title: t.title, project: projects.get(t.projectId) ?? t.projectId, branch: t.branch, worktree: !!t.worktreePath,
-      running, claude: claude.includes(t.providerInstanceId), updatedAt: t.updatedAt, node: h.s.nodeId,
+      id: t.id,
+      title: t.title,
+      project: projects.get(t.projectId) ?? t.projectId,
+      branch: t.branch,
+      worktree: !!t.worktreePath,
+      running,
+      claude: claude.includes(t.providerInstanceId),
+      updatedAt: t.updatedAt,
+      node: h.s.nodeId,
       lastActivity: t.latestUserMessageAt ?? t.updatedAt,
       ...(running && t.activityRunStartedAt && { workingSince: t.activityRunStartedAt }),
     };
   });
 }
 
-type ProjectShell = { title: string; repositoryIdentity?: { canonicalKey?: string; displayName?: string; name?: string } | null };
+type ProjectShell = {
+  title: string;
+  repositoryIdentity?: { canonicalKey?: string; displayName?: string; name?: string } | null;
+};
 
 /** T3's project label (client-runtime projectGrouping.ts deriveProjectGroupLabel) over the projects of the same
  * repository: a shared title unless it is just the repository's name, else `owner/repo`, else the name.
@@ -80,15 +109,29 @@ function arranged<T extends Ordered>(threads: T[], key: (t: T) => string | null 
  * then the others, the rest before arranged ones. Stable while threads run, unlike updatedAt.
  * ponytail: T3's optional "Working" shelf (a client setting) is not mirrored; threads stay in their inbox place. */
 export function sidebarOrder<T extends Ordered>(threads: T[]): T[] {
-  const pinned = arranged(threads.filter((t) => t.pinnedAt), (t) => t.pinOrderKey, (t) => time(t.createdAt));
-  const active = arranged(threads.filter((t) => !t.pinnedAt), (t) => t.activeOrderKey, (t) => Math.max(time(t.createdAt), time(t.unsettledAt)));
+  const pinned = arranged(
+    threads.filter((t) => t.pinnedAt),
+    (t) => t.pinOrderKey,
+    (t) => time(t.createdAt),
+  );
+  const active = arranged(
+    threads.filter((t) => !t.pinnedAt),
+    (t) => t.activeOrderKey,
+    (t) => Math.max(time(t.createdAt), time(t.unsettledAt)),
+  );
   return [...pinned.keyed, ...pinned.loose, ...active.loose, ...active.keyed];
 }
 
 /** What this node tells the others (`GET /peer/threads`): its T3 connection, active threads and recent handoffs it drove. */
-export async function localView(h: Handoffs): Promise<{ t3: T3NodeState; threads: T3Thread[]; jobs: HandoffJob[]; error?: string }> {
-  const recent = (j: { step: string; updatedAt: number }) => !["done", "failed"].includes(j.step) || h.s.now() - j.updatedAt < RECENT;
-  const jobs = h.list<SourceState>("source").filter(recent).map((j) => h.view(j));
+export async function localView(
+  h: Handoffs,
+): Promise<{ t3: T3NodeState; threads: T3Thread[]; jobs: HandoffJob[]; error?: string }> {
+  const recent = (j: { step: string; updatedAt: number }) =>
+    !["done", "failed"].includes(j.step) || h.s.now() - j.updatedAt < RECENT;
+  const jobs = h
+    .list<SourceState>("source")
+    .filter(recent)
+    .map((j) => h.view(j));
   const t3 = t3State(h.s);
   if (!t3.connected) return { t3, threads: [], jobs };
   try {
@@ -100,29 +143,41 @@ export async function localView(h: Handoffs): Promise<{ t3: T3NodeState; threads
 
 /** Every node's view. Unreachable nodes are listed with the reason instead of failing the whole answer. */
 export async function allNodes(h: Handoffs): Promise<NodeThreads[]> {
-  return Promise.all(h.s.list("node").map(async (n): Promise<NodeThreads> => {
-    const online = n.id === h.s.nodeId || h.s.now() - lastSeen(h.s, n.id) < 60_000;
-    const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
-    if (n.id === h.s.nodeId) return { ...base, ...(await localView(h)) };
-    if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
-    if (!online) return { ...base, error: "offline" };
-    try {
-      return { ...base, ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })) };
-    } catch (e) {
-      return { ...base, error: getErrorMessage(e) };
-    }
-  }));
+  return Promise.all(
+    h.s.list("node").map(async (n): Promise<NodeThreads> => {
+      const online = n.id === h.s.nodeId || h.s.now() - lastSeen(h.s, n.id) < 60_000;
+      const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
+      if (n.id === h.s.nodeId) return { ...base, ...(await localView(h)) };
+      if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
+      if (!online) return { ...base, error: "offline" };
+      try {
+        return {
+          ...base,
+          ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })),
+        };
+      } catch (e) {
+        return { ...base, error: getErrorMessage(e) };
+      }
+    }),
+  );
 }
 
-export async function resolveTarget(h: Handoffs, threadNode: string, to: string, views?: NodeThreads[]): Promise<string> {
-  const list = handoffTargets(views ?? await allNodes(h), threadNode);
+export async function resolveTarget(
+  h: Handoffs,
+  threadNode: string,
+  to: string,
+  views?: NodeThreads[],
+): Promise<string> {
+  const list = handoffTargets(views ?? (await allNodes(h)), threadNode);
   if (to === "server") {
     const pick = firstServer(list);
     if (pick) return pick.node;
     const servers = list.filter((t) => t.server);
-    throw new T3Error(servers.length
-      ? `no server available: ${servers.map((t) => `${t.node} (${t.reason})`).join(", ")}`
-      : "no server: mark an always-on node with agentgate init --always-on or on the Machines screen");
+    throw new T3Error(
+      servers.length
+        ? `no server available: ${servers.map((t) => `${t.node} (${t.reason})`).join(", ")}`
+        : "no server: mark an always-on node with agentgate init --always-on or on the Machines screen",
+    );
   }
   const node = to === "here" ? h.s.nodeId : to;
   if (node === threadNode) throw new T3Error(`the thread already runs on ${node}`);
@@ -138,9 +193,15 @@ export async function requestHandoff(h: Handoffs, input: { threadId: string; nod
   const node = input.node ?? views.find((v) => v.threads.some((t) => t.id === input.threadId))?.node;
   if (!node) throw new T3Error(`no active thread ${input.threadId} on any node`);
   const to = await resolveTarget(h, node, input.to ?? "server", views);
-  const handoffId = node === h.s.nodeId
-    ? await startHandoff(h, input.threadId, to)
-    : (await peerCall<{ handoffId: string }>(h.s, node, "/handoff/request", { json: { threadId: input.threadId, to }, timeout: 60_000 })).handoffId;
+  const handoffId =
+    node === h.s.nodeId
+      ? await startHandoff(h, input.threadId, to)
+      : (
+          await peerCall<{ handoffId: string }>(h.s, node, "/handoff/request", {
+            json: { threadId: input.threadId, to },
+            timeout: 60_000,
+          })
+        ).handoffId;
   return { handoffId, node, to };
 }
 

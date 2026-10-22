@@ -87,10 +87,10 @@ Each machine can show its own health: CPU, load, memory, disk, time spent waitin
 
 `agentgate setup` writes a Claude config dir (whose `settings.json` points Claude Code at the daemon) and a Codex home. In T3 Code, add one provider instance per provider:
 
-| Provider | T3 setting |
-|---|---|
-| Claude | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
-| Codex | `CODEX_HOME path` = `~/.config/agentgate/codex` |
+| Provider | T3 setting                                              |
+| -------- | ------------------------------------------------------- |
+| Claude   | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
+| Codex    | `CODEX_HOME path` = `~/.config/agentgate/codex`         |
 
 One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, click an account's pin to prefer it for its provider. The pin applies to the next request in every routed session and syncs to paired machines; while the pinned account has no room, the pool falls back to another one. Click the pin again to go back to automatic. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
 
@@ -247,13 +247,13 @@ Running from a git checkout keeps its state in the checkout's gitignored `.agent
 
 ## Monorepo
 
-| Workspace | Role |
-|---|---|
-| `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
-| `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
-| `apps/site` (`@agentgate/site`) | Static Astro landing page for Cloudflare Pages |
-| `apps/relay` (`@agentgate/relay`) | Cloudflare Worker and Durable Objects for the encrypted sync relay |
-| `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
+| Workspace                                   | Role                                                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `apps/agentgate` (`@agentgate/daemon`)      | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway                        |
+| `apps/desktop` (`@agentgate/desktop`)       | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
+| `apps/site` (`@agentgate/site`)             | Static Astro landing page for Cloudflare Pages                                                     |
+| `apps/relay` (`@agentgate/relay`)           | Cloudflare Worker and Durable Objects for the encrypted sync relay                                 |
+| `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas                                                 |
 
 The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
 
@@ -298,17 +298,17 @@ bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, f
 
 Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; npm trusted publishing is configured for each generated package) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
 
-| Secret | Value |
-|---|---|
-| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12`, including the G2 intermediate |
-| `APPLE_CERTIFICATE_PASSWORD` | its password |
-| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
-| `APPLE_TEAM_ID` | ten-character team id |
-| `APPLE_API_KEY` | App Store Connect API key id |
-| `APPLE_API_ISSUER` | its issuer id |
-| `APPLE_API_KEY_CONTENT` | contents of the `.p8` |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
+| Secret                               | Value                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `APPLE_CERTIFICATE`                  | base64 of the Developer ID Application `.p12`, including the G2 intermediate                 |
+| `APPLE_CERTIFICATE_PASSWORD`         | its password                                                                                 |
+| `APPLE_SIGNING_IDENTITY`             | `Developer ID Application: Name (TEAMID)`                                                    |
+| `APPLE_TEAM_ID`                      | ten-character team id                                                                        |
+| `APPLE_API_KEY`                      | App Store Connect API key id                                                                 |
+| `APPLE_API_ISSUER`                   | its issuer id                                                                                |
+| `APPLE_API_KEY_CONTENT`              | contents of the `.p8`                                                                        |
+| `TAURI_SIGNING_PRIVATE_KEY`          | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password                                                                                 |
 
 The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 

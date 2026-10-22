@@ -52,7 +52,10 @@ const infisical = () => ({
   identity: join(host.home, ".infisical", "universal-auth.json"),
 });
 const requireProtocol = (s: Store, protocol: number) => {
-  const old = s.list("node").filter((n) => (n.protocol ?? 0) < protocol).map((n) => n.id);
+  const old = s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < protocol)
+    .map((n) => n.id);
   if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync this login`);
 };
 
@@ -94,13 +97,19 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
 async function apply(l: Login) {
   await typedSwitch(l, "id", {
     [IDENTITY]: (l) => {
-      atomicWrite(infisical().identity, JSON.stringify({ clientId: l.account, clientSecret: l.clientSecret, siteUrl: l.siteUrl }, null, 2));
+      atomicWrite(
+        infisical().identity,
+        JSON.stringify({ clientId: l.account, clientSecret: l.clientSecret, siteUrl: l.siteUrl }, null, 2),
+      );
     },
     github: async (l) => {
       const current = await host.gh(["auth", "token", "--hostname", "github.com"]);
       if (!current) throw new Error("install gh to sign in to GitHub");
       if (!current.ok || current.out !== l.token) {
-        const login = await host.gh(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"], l.token);
+        const login = await host.gh(
+          ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"],
+          l.token,
+        );
         if (!login?.ok) throw new Error("gh auth login failed");
       }
       // git itself uses gh's login over HTTPS, which is how T3 Code clones synced projects.
@@ -121,7 +130,8 @@ async function apply(l: Login) {
 }
 
 const state = (s: Store, id: LoginId): { hash?: string; error?: string } => JSON.parse(s.local(`login:${id}`) ?? "{}");
-const setState = (s: Store, id: LoginId, value: { hash?: string; error?: string }) => s.setLocal(`login:${id}`, JSON.stringify(value));
+const setState = (s: Store, id: LoginId, value: { hash?: string; error?: string }) =>
+  s.setLocal(`login:${id}`, JSON.stringify(value));
 const hash = (l: Login) => new Bun.CryptoHasher("sha256").update(JSON.stringify(l)).digest("hex");
 
 /** Share this machine's logins with every node. Logins this machine does not use are skipped, never shared. */
@@ -149,22 +159,35 @@ export function infisicalSite() {
   try {
     const domain = JSON.parse(readFileSync(infisical().config, "utf8"))?.LoggedInUserDomain;
     if (typeof domain === "string" && domain) return new URL(domain).origin;
-  } catch { } // no CLI config
+  } catch {} // no CLI config
   return "https://app.infisical.com";
 }
 
 /** Check an Infisical machine identity with Infisical, then keep it on every machine. */
-export async function setInfisicalIdentity(s: Store, input: { clientId: string; clientSecret: string; siteUrl: string }) {
+export async function setInfisicalIdentity(
+  s: Store,
+  input: { clientId: string; clientSecret: string; siteUrl: string },
+) {
   realHome("Setting the Infisical machine identity");
   requireProtocol(s, IDENTITY_PROTOCOL);
   const siteUrl = new URL(input.siteUrl).origin;
   const res = await fetch(`${siteUrl}/api/v1/auth/universal-auth/login`, {
-    method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(15_000),
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    signal: AbortSignal.timeout(15_000),
     body: JSON.stringify({ clientId: input.clientId, clientSecret: input.clientSecret }),
-  }).catch(() => { throw new Error(`Infisical at ${siteUrl} is not reachable`); });
+  }).catch(() => {
+    throw new Error(`Infisical at ${siteUrl} is not reachable`);
+  });
   await res.body?.cancel();
   if (!res.ok) throw new Error(`Infisical at ${siteUrl} did not accept this client id and secret (${res.status})`);
-  s.put("login", IDENTITY, { id: IDENTITY, from: s.nodeId, account: input.clientId, clientSecret: input.clientSecret, siteUrl });
+  s.put("login", IDENTITY, {
+    id: IDENTITY,
+    from: s.nodeId,
+    account: input.clientId,
+    clientSecret: input.clientSecret,
+    siteUrl,
+  });
   await syncLogins(s);
 }
 

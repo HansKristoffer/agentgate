@@ -3,11 +3,7 @@ import { Copy, Terminal } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Button, Tabs } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import {
-  Modal,
-  Panel,
-  Toggle,
-} from "../components/ui.tsx";
+import { Modal, Panel, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, restoreFile } from "../api.ts";
 import { PoolSettings } from "../features/proxy/PoolSettings.tsx";
@@ -18,10 +14,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
   const [secrets, setSecrets] = useState(false);
   const [tab, setTab] = useState<"general" | "activity">("general");
   const action = (name: string) =>
-    perform(
-      async () => setOutput(await localAction(name, connection)),
-      "Command completed",
-    );
+    perform(async () => setOutput(await localAction(name, connection)), "Command completed");
   const tabs = (
     <Tabs className="segmented" selectedKey={tab} onSelectionChange={(key) => setTab(key as typeof tab)}>
       <Tabs.ListContainer>
@@ -51,23 +44,13 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
       <PoolSettings data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
       {local && (
         <>
-          <Panel
-            title="Coding tools"
-            detail="Provider and MCP settings for Claude Code, Codex, and T3 Code."
-          >
+          <Panel title="Coding tools" detail="Provider and MCP settings for Claude Code, Codex, and T3 Code.">
             <div className="item">
               <span className="labelled">
                 Configure coding tools
-                <small>
-                  Creates dedicated Claude and Codex config folders and prints
-                  their paths.
-                </small>
+                <small>Creates dedicated Claude and Codex config folders and prints their paths.</small>
               </span>
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => void action("setup")}
-              >
+              <Button size="sm" variant="tertiary" onPress={() => void action("setup")}>
                 <Terminal size={14} />
                 Configure
               </Button>
@@ -76,23 +59,14 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
               <span className="labelled">
                 Route existing CLI logins
                 <small>
-                  Updates your existing Claude Code and Codex settings to use
-                  the pool. Claude Desktop isn't affected; see Claude Desktop
-                  in the sidebar.
+                  Updates your existing Claude Code and Codex settings to use the pool. Claude Desktop isn't affected;
+                  see Claude Desktop in the sidebar.
                 </small>
               </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                onPress={() => void action("primary-off")}
-              >
+              <Button size="sm" variant="ghost" onPress={() => void action("primary-off")}>
                 Undo
               </Button>
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => void action("primary-on")}
-              >
+              <Button size="sm" variant="tertiary" onPress={() => void action("primary-on")}>
                 Route
               </Button>
             </div>
@@ -119,8 +93,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
             detail="Installed independently of the app in ~/.config/agentgate/bin."
             foot={
               <>
-                Add <code>~/.config/agentgate/bin</code> to your shell PATH to
-                use the bundled CLI.
+                Add <code>~/.config/agentgate/bin</code> to your shell PATH to use the bundled CLI.
               </>
             }
           >
@@ -144,41 +117,24 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
               >
                 Stop
               </Button>
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => void action("start")}
-              >
+              <Button size="sm" variant="tertiary" onPress={() => void action("start")}>
                 Start
               </Button>
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => void action("install")}
-              >
+              <Button size="sm" variant="tertiary" onPress={() => void action("install")}>
                 Install / update
               </Button>
             </div>
             <div className="item">
               <span className="labelled">
                 Admin token
-                <small>
-                  Needed to connect to this daemon from another machine.
-                </small>
+                <small>Needed to connect to this daemon from another machine.</small>
               </span>
-              <Button
-                size="sm"
-                variant="tertiary"
-                onPress={() => void action("admin-token")}
-              >
+              <Button size="sm" variant="tertiary" onPress={() => void action("admin-token")}>
                 Show token
               </Button>
             </div>
           </Panel>
-          <Panel
-            title="Backup & restore"
-            detail="Backups are written to the file you choose."
-          >
+          <Panel title="Backup & restore" detail="Backups are written to the file you choose.">
             <Toggle
               label="Include credentials"
               description={
@@ -242,12 +198,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
           <Button
             size="sm"
             variant="tertiary"
-            onPress={() =>
-              void perform(
-                () => navigator.clipboard.writeText(output),
-                "Copied",
-              )
-            }
+            onPress={() => void perform(() => navigator.clipboard.writeText(output), "Copied")}
           >
             <Copy size={15} />
             Copy

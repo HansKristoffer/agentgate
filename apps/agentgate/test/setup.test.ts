@@ -3,63 +3,116 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
-import { agentEnvironment, codexConfig, cursorMcp, cursorMcpEnabled, mcp, primary, primaryCodex, setup, stableBinary } from "../src/setup.ts";
+import {
+  agentEnvironment,
+  codexConfig,
+  cursorMcp,
+  cursorMcpEnabled,
+  mcp,
+  primary,
+  primaryCodex,
+  setup,
+  stableBinary,
+} from "../src/setup.ts";
 import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-")); const paths = { claude: join(dir, "claude"), codex: join(dir, "codex") };
-  mkdirSync(paths.codex); mkdirSync(paths.claude);
-  writeFileSync(join(paths.codex, "config.toml"), 'model = "gpt-5"\nmodel_provider = "old"\n[features]\nfoo = true\n[mcp_servers.other]\ncommand = "other"\n');
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-"));
+  const paths = { claude: join(dir, "claude"), codex: join(dir, "codex") };
+  mkdirSync(paths.codex);
+  mkdirSync(paths.claude);
+  writeFileSync(
+    join(paths.codex, "config.toml"),
+    'model = "gpt-5"\nmodel_provider = "old"\n[features]\nfoo = true\n[mcp_servers.other]\ncommand = "other"\n',
+  );
   writeFileSync(join(paths.claude, "settings.json"), '{"theme":"dark","env":{"OTHER":"keep"}}');
-  await setup(paths); await setup(paths);
+  await setup(paths);
+  await setup(paths);
   const config = Bun.TOML.parse(readFileSync(join(paths.codex, "config.toml"), "utf8")) as any;
-  expect(config.model).toBe("gpt-5"); expect(config.features.foo).toBe(true); expect(config.mcp_servers.other.command).toBe("other"); expect(config.mcp_servers.agentgate.env).toEqual(agentEnvironment());
+  expect(config.model).toBe("gpt-5");
+  expect(config.features.foo).toBe(true);
+  expect(config.mcp_servers.other.command).toBe("other");
+  expect(config.mcp_servers.agentgate.env).toEqual(agentEnvironment());
   expect(JSON.parse(readFileSync(join(paths.claude, "settings.json"), "utf8")).env.OTHER).toBe("keep");
-  expect(statSync(join(paths.codex, "config.toml")).mode & 0o777).toBe(0o600); rmSync(dir, { recursive: true });
+  expect(statSync(join(paths.codex, "config.toml")).mode & 0o777).toBe(0o600);
+  rmSync(dir, { recursive: true });
 });
 
 test("primary undo restores the previous URL without reverting subsequent settings", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-")), file = join(dir, "settings.json");
-  writeFileSync(file, '{"env":{"ANTHROPIC_BASE_URL":"https://original"}}'); await primary(true, dir); await primary(true, dir);
-  const config = JSON.parse(readFileSync(file, "utf8")); config.theme = "new"; writeFileSync(file, JSON.stringify(config));
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-")),
+    file = join(dir, "settings.json");
+  writeFileSync(file, '{"env":{"ANTHROPIC_BASE_URL":"https://original"}}');
+  await primary(true, dir);
+  await primary(true, dir);
+  const config = JSON.parse(readFileSync(file, "utf8"));
+  config.theme = "new";
+  writeFileSync(file, JSON.stringify(config));
   expect(JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")).mcpServers.agentgate.args.at(-1)).toBe("mcp");
-  await primary(false, dir); expect(JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")).mcpServers.agentgate).toBeUndefined();
-  const restored = JSON.parse(readFileSync(file, "utf8")); expect(restored.env.ANTHROPIC_BASE_URL).toBe("https://original"); expect(restored.theme).toBe("new");
+  await primary(false, dir);
+  expect(JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8")).mcpServers.agentgate).toBeUndefined();
+  const restored = JSON.parse(readFileSync(file, "utf8"));
+  expect(restored.env.ANTHROPIC_BASE_URL).toBe("https://original");
+  expect(restored.theme).toBe("new");
   rmSync(dir, { recursive: true });
 });
 
 test("primary gives Claude Code a placeholder login only where it has none of its own, and undo removes it", async () => {
-  const fresh = mkdtempSync(join(tmpdir(), "agentgate-primary-")), signedIn = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
+  const fresh = mkdtempSync(join(tmpdir(), "agentgate-primary-")),
+    signedIn = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
   writeFileSync(join(signedIn, ".claude.json"), '{"oauthAccount":{"emailAddress":"me@example.com"}}');
   const env = (dir: string) => JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).env;
-  await primary(true, fresh); await primary(true, signedIn);
+  await primary(true, fresh);
+  await primary(true, signedIn);
   expect(env(fresh).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
   expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
-  await primary(false, fresh); expect(env(fresh)).toBeUndefined();
-  rmSync(fresh, { recursive: true }); rmSync(signedIn, { recursive: true });
+  await primary(false, fresh);
+  expect(env(fresh)).toBeUndefined();
+  rmSync(fresh, { recursive: true });
+  rmSync(signedIn, { recursive: true });
 });
 
 test("generated service definitions propagate custom configuration and quote executable arguments", () => {
-  expect(plist()).toContain("AGENTGATE_HOME"); expect(plist()).toContain("AGENTGATE_PORT");
-  expect(unit()).toContain("AGENTGATE_HOME="); expect(unit()).toContain("AGENTGATE_PORT=");
-  const config = Bun.TOML.parse(codexConfig("", ["/path with space/bun", "/code/main.ts"], { AGENTGATE_HOME: "/custom home", AGENTGATE_PORT: "9876" })) as any;
-  expect(config.mcp_servers.agentgate.command).toBe("/path with space/bun"); expect(config.mcp_servers.agentgate.env.AGENTGATE_PORT).toBe("9876");
+  expect(plist()).toContain("AGENTGATE_HOME");
+  expect(plist()).toContain("AGENTGATE_PORT");
+  expect(unit()).toContain("AGENTGATE_HOME=");
+  expect(unit()).toContain("AGENTGATE_PORT=");
+  const config = Bun.TOML.parse(
+    codexConfig("", ["/path with space/bun", "/code/main.ts"], {
+      AGENTGATE_HOME: "/custom home",
+      AGENTGATE_PORT: "9876",
+    }),
+  ) as any;
+  expect(config.mcp_servers.agentgate.command).toBe("/path with space/bun");
+  expect(config.mcp_servers.agentgate.env.AGENTGATE_PORT).toBe("9876");
 });
 
 test("launchd logs are rotated with bounded archives without replacing the open inode", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-log-")), file = join(dir, "agentgate.log"); writeFileSync(file, "12345"); const inode = statSync(file).ino;
-  rotateLogs(dir, 1); expect(readFileSync(`${file}.1`, "utf8")).toBe("12345"); expect(statSync(file).size).toBe(0); expect(statSync(file).ino).toBe(inode); rmSync(dir, { recursive: true });
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-log-")),
+    file = join(dir, "agentgate.log");
+  writeFileSync(file, "12345");
+  const inode = statSync(file).ino;
+  rotateLogs(dir, 1);
+  expect(readFileSync(`${file}.1`, "utf8")).toBe("12345");
+  expect(statSync(file).size).toBe(0);
+  expect(statSync(file).ino).toBe(inode);
+  rmSync(dir, { recursive: true });
 });
 
 test("service readiness retries startup and reports an unhealthy daemon", async () => {
   let requests = 0;
-  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("", { status: ++requests === 1 ? 503 : 200 }) });
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response("", { status: ++requests === 1 ? 503 : 200 }),
+  });
   try {
     await waitForService(`http://127.0.0.1:${server.port}`, 2000);
     expect(requests).toBe(2);
     server.reload({ fetch: () => new Response("", { status: 503 }) });
     await expect(waitForService(`http://127.0.0.1:${server.port}`, 50)).rejects.toThrow("did not become ready");
-  } finally { server.stop(true); }
+  } finally {
+    server.stop(true);
+  }
 });
 
 test("service readiness reports a refused connection with recovery instructions", async () => {
@@ -70,9 +123,13 @@ test("service readiness reports a refused connection with recovery instructions"
 });
 
 test("setup preserves multiline values and quoted/array tables outside managed configuration", () => {
-  const source = 'description = """\n[mcp_servers.agentgate]\nordinary text\n"""\n[model_providers."agentgate"]\nname = "replace me"\n[[plugins]]\nname = "keep me"\n';
-  const before = Bun.TOML.parse(source) as any, after = Bun.TOML.parse(codexConfig(source)) as any;
-  expect(after.description).toBe(before.description); expect(after.plugins).toEqual(before.plugins); expect(after.model_providers.agentgate.name).toBe("agentgate");
+  const source =
+    'description = """\n[mcp_servers.agentgate]\nordinary text\n"""\n[model_providers."agentgate"]\nname = "replace me"\n[[plugins]]\nname = "keep me"\n';
+  const before = Bun.TOML.parse(source) as any,
+    after = Bun.TOML.parse(codexConfig(source)) as any;
+  expect(after.description).toBe(before.description);
+  expect(after.plugins).toEqual(before.plugins);
+  expect(after.model_providers.agentgate.name).toBe("agentgate");
 });
 
 test("setup ignores triple quotes in comments and single-line strings", () => {
@@ -81,40 +138,58 @@ test("setup ignores triple quotes in comments and single-line strings", () => {
 });
 
 test("systemd escapes executable dollar/percent signs while preserving literal environment dollars", () => {
-  const definition = unit(["/path$literal/%binary"], { PATH: "/bin", AGENTGATE_HOME: "/home/$literal", AGENTGATE_PORT: "9876" });
-  expect(definition).toContain('ExecStart="/path$$literal/%%binary"'); expect(definition).toContain('Environment="AGENTGATE_HOME=/home/$literal"');
+  const definition = unit(["/path$literal/%binary"], {
+    PATH: "/bin",
+    AGENTGATE_HOME: "/home/$literal",
+    AGENTGATE_PORT: "9876",
+  });
+  expect(definition).toContain('ExecStart="/path$$literal/%%binary"');
+  expect(definition).toContain('Environment="AGENTGATE_HOME=/home/$literal"');
 });
 
 test("binaries run from an npx/dlx/bunx cache are copied to a stable path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-stable-")), cached = join(dir, "_npx", "abc", "agentgate");
-  mkdirSync(join(dir, "_npx", "abc"), { recursive: true }); writeFileSync(cached, "binary");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-stable-")),
+    cached = join(dir, "_npx", "abc", "agentgate");
+  mkdirSync(join(dir, "_npx", "abc"), { recursive: true });
+  writeFileSync(cached, "binary");
   expect(stableBinary(join(dir, "agentgate"), join(dir, "bin"))).toBe(join(dir, "agentgate"));
   const stable = stableBinary(cached, join(dir, "bin"));
-  expect(stable).toBe(join(dir, "bin", "agentgate")); expect(readFileSync(stable, "utf8")).toBe("binary"); expect(statSync(stable).mode & 0o111).toBeTruthy();
+  expect(stable).toBe(join(dir, "bin", "agentgate"));
+  expect(readFileSync(stable, "utf8")).toBe("binary");
+  expect(statSync(stable).mode & 0o111).toBeTruthy();
   rmSync(dir, { recursive: true, force: true });
 });
 
 test("primary Codex keeps a real Codex login untouched", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")), auth = join(dir, "auth.json");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")),
+    auth = join(dir, "auth.json");
   writeFileSync(auth, '{"tokens":{}}');
-  await primaryCodex(true, dir); await primaryCodex(false, dir);
+  await primaryCodex(true, dir);
+  await primaryCodex(false, dir);
   expect(readFileSync(auth, "utf8")).toBe('{"tokens":{}}');
   rmSync(dir, { recursive: true, force: true });
 });
 
 test("primary Codex sends its own login through agentgate and undoes cleanly", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")), file = join(dir, "config.toml");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-codex-")),
+    file = join(dir, "config.toml");
   writeFileSync(file, 'model = "gpt-5"\nmodel_provider = "openai"\n[mcp_servers.mine]\ncommand = "mine"\n');
-  await primaryCodex(true, dir); await primaryCodex(true, dir);
+  await primaryCodex(true, dir);
+  await primaryCodex(true, dir);
   const on = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
-  expect(on.model_provider).toBe("agentgate"); expect(on.model_providers.agentgate.requires_openai_auth).toBe(true);
-  expect(on.mcp_servers.agentgate.args.at(-1)).toBe("mcp"); expect(on.mcp_servers.mine.command).toBe("mine"); expect(on.model).toBe("gpt-5");
+  expect(on.model_provider).toBe("agentgate");
+  expect(on.model_providers.agentgate.requires_openai_auth).toBe(true);
+  expect(on.mcp_servers.agentgate.args.at(-1)).toBe("mcp");
+  expect(on.mcp_servers.mine.command).toBe("mine");
+  expect(on.model).toBe("gpt-5");
   // No login of its own: a placeholder key keeps `codex login status` happy, and goes away with the setup.
   expect(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "agentgate" });
   await primaryCodex(false, dir);
   expect(existsSync(join(dir, "auth.json"))).toBe(false);
   const off = Bun.TOML.parse(readFileSync(file, "utf8")) as any;
-  expect(off.model_provider).toBe("openai"); expect(off.model_providers).toBeUndefined(); expect(off.mcp_servers.mine.command).toBe("mine");
+  expect(off.model_provider).toBe("openai");
+  expect(off.model_providers).toBeUndefined();
+  expect(off.mcp_servers.mine.command).toBe("mine");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -125,27 +200,35 @@ test("setup --mcp adds only the MCP server; claudeStatus reports routing and MCP
   expect(claudeStatus(dir)).toEqual({ routing: false, mcp: false });
   await mcp(true, dir);
   const cfg = JSON.parse(readFileSync(join(dir, ".claude.json"), "utf8"));
-  expect(Object.keys(cfg.mcpServers)).toEqual(["other", "agentgate"]); expect(cfg.keep).toBe(1);
+  expect(Object.keys(cfg.mcpServers)).toEqual(["other", "agentgate"]);
+  expect(cfg.keep).toBe(1);
   expect(claudeStatus(dir)).toEqual({ routing: false, mcp: true });
-  await primary(true, dir); expect(claudeStatus(dir)).toEqual({ routing: true, mcp: true });
-  await mcp(false, dir); expect(claudeStatus(dir)).toEqual({ routing: true, mcp: false });
+  await primary(true, dir);
+  expect(claudeStatus(dir)).toEqual({ routing: true, mcp: true });
+  await mcp(false, dir);
+  expect(claudeStatus(dir)).toEqual({ routing: true, mcp: false });
   expect(await mcp(false, dir)).toContain("No agentgate MCP server");
   rmSync(dir, { recursive: true });
 });
 
-test.skipIf(!!process.env.AGENTGATE_HOME)("a checkout keeps its own state and refuses to change the machine's real setup", async () => {
-  expect(DEV).toBe(true);
-  expect(CONFIG_DIR).toBe(join(import.meta.dir, "../../../.agentgate"));
-  expect(PORT).toBe(devPort(join(import.meta.dir, "../../..")));
-  expect(PORT).toBeGreaterThanOrEqual(17000); expect(PORT).toBeLessThan(18000);
-  await expect(service("install")).rejects.toThrow("real setup");
-  await expect(mcp(true)).rejects.toThrow("real setup");
-  await expect(cursorMcp(true)).rejects.toThrow("real setup");
-  await expect(primaryCodex(true)).rejects.toThrow("real setup");
-});
+test.skipIf(!!process.env.AGENTGATE_HOME)(
+  "a checkout keeps its own state and refuses to change the machine's real setup",
+  async () => {
+    expect(DEV).toBe(true);
+    expect(CONFIG_DIR).toBe(join(import.meta.dir, "../../../.agentgate"));
+    expect(PORT).toBe(devPort(join(import.meta.dir, "../../..")));
+    expect(PORT).toBeGreaterThanOrEqual(17000);
+    expect(PORT).toBeLessThan(18000);
+    await expect(service("install")).rejects.toThrow("real setup");
+    await expect(mcp(true)).rejects.toThrow("real setup");
+    await expect(cursorMcp(true)).rejects.toThrow("real setup");
+    await expect(primaryCodex(true)).rejects.toThrow("real setup");
+  },
+);
 
 test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-cursor-mcp-")), file = join(dir, "mcp.json");
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-cursor-mcp-")),
+    file = join(dir, "mcp.json");
   writeFileSync(file, '{"keep":true,"mcpServers":{"grafana":{"command":"grafana"}}}\n');
   expect(cursorMcpEnabled(file)).toBe(false);
   expect(await cursorMcp(true, file)).toContain("Cursor");
@@ -170,8 +253,17 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
 
 test("daemon log lines start with an ISO 8601 timestamp", () => {
   const lines: unknown[][] = [];
-  const out = { log: (...a: unknown[]) => lines.push(a), info: (...a: unknown[]) => lines.push(a), warn: (...a: unknown[]) => lines.push(a), error: (...a: unknown[]) => lines.push(a) };
+  const out = {
+    log: (...a: unknown[]) => lines.push(a),
+    info: (...a: unknown[]) => lines.push(a),
+    warn: (...a: unknown[]) => lines.push(a),
+    error: (...a: unknown[]) => lines.push(a),
+  };
   stampLogs(out, () => new Date("2026-10-16T08:30:00.000Z"));
-  out.log("agentgate 0.21.1 n: http://127.0.0.1:7878"); out.error("request failed:", "x");
-  expect(lines).toEqual([["2026-10-16T08:30:00.000Z", "agentgate 0.21.1 n: http://127.0.0.1:7878"], ["2026-10-16T08:30:00.000Z", "request failed:", "x"]]);
+  out.log("agentgate 0.21.1 n: http://127.0.0.1:7878");
+  out.error("request failed:", "x");
+  expect(lines).toEqual([
+    ["2026-10-16T08:30:00.000Z", "agentgate 0.21.1 n: http://127.0.0.1:7878"],
+    ["2026-10-16T08:30:00.000Z", "request failed:", "x"],
+  ]);
 });

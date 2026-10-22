@@ -3,15 +3,35 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkS
 import { join } from "node:path";
 import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
-import { addWorktree, createBundle, describe, fetchBundle, moveToSource, snapshot, stashIfUnchanged } from "../src/handoff/code.ts";
+import {
+  addWorktree,
+  createBundle,
+  describe,
+  fetchBundle,
+  moveToSource,
+  snapshot,
+  stashIfUnchanged,
+} from "../src/handoff/code.ts";
 import { claudeProjectKey, claudeSessions, rewriteCwd, safeRelative } from "../src/handoff/session.ts";
-import { claudeInstance, connectT3, connectWith, createPairingLink, host as t3Host, parsePairing, projection, t3Client, t3State } from "../src/handoff/t3.ts";
+import {
+  claudeInstance,
+  connectT3,
+  connectWith,
+  createPairingLink,
+  host as t3Host,
+  parsePairing,
+  projection,
+  t3Client,
+  t3State,
+} from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 
 afterAll(removeTmp);
 
 const stops: (() => unknown)[] = [];
-afterEach(() => { for (const stop of stops.splice(0)) stop(); });
+afterEach(() => {
+  for (const stop of stops.splice(0)) stop();
+});
 
 test("claudeProjectKey matches Claude Code's directory names, hashing paths past 200 characters", () => {
   expect(claudeProjectKey("/Users/me/My Repo.git")).toBe("-Users-me-My-Repo-git");
@@ -27,16 +47,20 @@ test("rewriteCwd changes only recorded cwd values and keeps every other byte", (
     `{"text":"{\\"cwd\\":\\"/a/wt\\"}"}`,
     `not json`,
   ].join("\n");
-  expect(rewriteCwd(lines, ["/a/wt", "/a/main"], "/b/wt")).toBe([
-    `{"type":"user","cwd":"/b/wt","message":{"content":"cd /a/wt"}}`,
-    `{"cwd" : "/b/wt","tool":{"input":{"cwd":"/elsewhere"}}}`,
-    `{"text":"{\\"cwd\\":\\"/a/wt\\"}"}`,
-    `not json`,
-  ].join("\n"));
+  expect(rewriteCwd(lines, ["/a/wt", "/a/main"], "/b/wt")).toBe(
+    [
+      `{"type":"user","cwd":"/b/wt","message":{"content":"cd /a/wt"}}`,
+      `{"cwd" : "/b/wt","tool":{"input":{"cwd":"/elsewhere"}}}`,
+      `{"text":"{\\"cwd\\":\\"/a/wt\\"}"}`,
+      `not json`,
+    ].join("\n"),
+  );
 });
 
 test("a Claude session is found with its subagent transcripts and placed under another checkout", () => {
-  const home = tmp(), cwd = tmp(), sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
+  const home = tmp(),
+    cwd = tmp(),
+    sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
   const elsewhere = join(home, "projects", "-somewhere-else");
   mkdirSync(join(elsewhere, sid, "subagents"), { recursive: true });
   writeFileSync(join(elsewhere, `${sid}.jsonl`), `{"cwd":"/a/wt"}\n`);
@@ -46,11 +70,14 @@ test("a Claude session is found with its subagent transcripts and placed under a
   expect(found).toEqual({ root: elsewhere, files: [`${sid}.jsonl`, `${sid}/subagents/agent-1.jsonl`] });
   expect(claudeSessions.locate(home, "../escape", cwd)).toBeUndefined();
 
-  const dest = tmp(), target = tmp();
+  const dest = tmp(),
+    target = tmp();
   claudeSessions.place(dest, sid, found.root, found.files, target, ["/a/wt"]);
   const root = join(dest, "projects", claudeProjectKey(target));
   expect(readFileSync(join(root, `${sid}.jsonl`), "utf8")).toBe(`{"cwd":${JSON.stringify(target)}}\n`);
-  expect(readFileSync(join(root, sid, "subagents", "agent-1.jsonl"), "utf8")).toBe(`{"cwd":${JSON.stringify(target)}}\n`);
+  expect(readFileSync(join(root, sid, "subagents", "agent-1.jsonl"), "utf8")).toBe(
+    `{"cwd":${JSON.stringify(target)}}\n`,
+  );
 
   // Received paths never leave the session's own files, and placing never passes through a symlink.
   expect(claudeSessions.accepts(sid, "../settings.json")).toBe(false);
@@ -58,14 +85,18 @@ test("a Claude session is found with its subagent transcripts and placed under a
   expect(safeRelative("/abs") || safeRelative("a//b") || safeRelative("a\\b")).toBe(false);
   const elsewhereTarget = tmp();
   symlinkSync(tmp(), join(dest, "projects", claudeProjectKey(elsewhereTarget)));
-  expect(() => claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).toThrow("not a directory");
+  expect(() => claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).toThrow(
+    "not a directory",
+  );
 });
 
 test("code travels as a bundle: unpushed commits and uncommitted, untracked and deleted files arrive; the source stays untouched until it stashes", async () => {
   const r = repos("a", "b");
   const wtA = join(r.root, "wt-a");
   sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
-  writeFileSync(join(wtA, "feature.txt"), "committed\n"); sh(wtA, "add", "-A"); sh(wtA, "commit", "-m", "unpushed");
+  writeFileSync(join(wtA, "feature.txt"), "committed\n");
+  sh(wtA, "add", "-A");
+  sh(wtA, "commit", "-m", "unpushed");
   writeFileSync(join(wtA, "README.md"), "edited\n");
   writeFileSync(join(wtA, "new.txt"), "untracked\n");
   unlinkSync(join(wtA, "old.txt"));
@@ -99,7 +130,8 @@ test("code travels as a bundle: unpushed commits and uncommitted, untracked and 
   expect(sh(wtA, "status", "--porcelain")).toBe("");
 
   // Round trip: B commits; A, clean and behind, takes B's code.
-  sh(wtB, "add", "-A"); sh(wtB, "commit", "-m", "on b");
+  sh(wtB, "add", "-A");
+  sh(wtB, "commit", "-m", "on b");
   writeFileSync(join(wtB, "b.txt"), "dirty on b\n");
   const back = await describe(wtB);
   const snapB = await snapshot(wtB, "h2", back.headSha);
@@ -113,7 +145,10 @@ test("code travels as a bundle: unpushed commits and uncommitted, untracked and 
 
 test("ignored files travel except rebuilt folders; the destination's own versions go to a stash, a stale copy does not", async () => {
   const r = repos("a", "b");
-  const write = (dir: string, file: string, text: string) => { mkdirSync(join(dir, file, ".."), { recursive: true }); writeFileSync(join(dir, file), text); };
+  const write = (dir: string, file: string, text: string) => {
+    mkdirSync(join(dir, file, ".."), { recursive: true });
+    writeFileSync(join(dir, file), text);
+  };
   write(r.a, ".plans/plan.md", "v1\n");
   write(r.a, ".env", "from a\n");
   write(r.a, "node_modules/dep.js", "a's dependency\n");
@@ -157,7 +192,9 @@ test("ignored files the file store carries stay out of the snapshot", async () =
 
 test("a destination with its own changes or commits keeps its code", async () => {
   const r = repos("a", "b");
-  writeFileSync(join(r.a, "a.txt"), "a\n"); sh(r.a, "add", "-A"); sh(r.a, "commit", "-m", "a");
+  writeFileSync(join(r.a, "a.txt"), "a\n");
+  sh(r.a, "add", "-A");
+  sh(r.a, "commit", "-m", "a");
   const head = sh(r.a, "rev-parse", "HEAD");
   const bundle = join(r.root, "a.bundle");
   expect(await createBundle(r.a, "x", head, bundle)).toBe(true);
@@ -173,8 +210,10 @@ test("a destination with its own changes or commits keeps its code", async () =>
 
 test("the T3 client pairs, reads over HTTP, calls RPC methods and decodes failures", async () => {
   const claudeDir = tmp();
-  const t3 = fakeT3({ claudeDir, label: "laptop" }); stops.push(t3.stop);
-  const s = new Store(":memory:"); s.setLocal("node", "a");
+  const t3 = fakeT3({ claudeDir, label: "laptop" });
+  stops.push(t3.stop);
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
   expect(t3State(s)).toEqual({ connected: false });
   expect(() => t3Client(s)).toThrow("not connected");
   const token = t3.pairingToken();
@@ -195,10 +234,16 @@ test("the T3 client pairs, reads over HTTP, calls RPC methods and decodes failur
   await client.rpc(async (call) => {
     expect((await projection(call, thread.id)).thread.title).toBe("Fix the bug");
     await expect(projection(call, "missing")).rejects.toThrow("thread not found");
-    expect(await claudeInstance(call, "claudeAgent", "/unused")).toEqual({ instanceId: "claudeAgent", home: realpathSync(claudeDir) });
+    expect(await claudeInstance(call, "claudeAgent", "/unused")).toEqual({
+      instanceId: "claudeAgent",
+      home: realpathSync(claudeDir),
+    });
     // Another machine's instance id falls back to the default instance; without a home it uses Claude's default.
     t3.homePath = undefined;
-    expect(await claudeInstance(call, "claude-work", claudeDir)).toEqual({ instanceId: "claudeAgent", home: realpathSync(claudeDir) });
+    expect(await claudeInstance(call, "claude-work", claudeDir)).toEqual({
+      instanceId: "claudeAgent",
+      home: realpathSync(claudeDir),
+    });
   });
 
   // The token never shows in state, and an expired one asks for a new pairing.
@@ -209,18 +254,32 @@ test("the T3 client pairs, reads over HTTP, calls RPC methods and decodes failur
 });
 
 test("T3 Code's own t3 pair creates the link: shown to the user, or redeemed to connect", async () => {
-  const t3 = fakeT3({ claudeDir: tmp() }); stops.push(t3.stop);
-  const s = new Store(":memory:"); s.setLocal("node", "a");
+  const t3 = fakeT3({ claudeDir: tmp() });
+  stops.push(t3.stop);
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
   // A stand-in for `t3 pair`, printing what upstream prints around a fresh token.
-  const dir = tmp(), bin = join(dir, "t3"), args = join(dir, "args");
-  const fake = (body: string) => { writeFileSync(bin, `#!/bin/sh\necho "$@" > ${args}\n${body}`, { mode: 0o755 }); };
+  const dir = tmp(),
+    bin = join(dir, "t3"),
+    args = join(dir, "args");
+  const fake = (body: string) => {
+    writeFileSync(bin, `#!/bin/sh\necho "$@" > ${args}\n${body}`, { mode: 0o755 });
+  };
   const real = t3Host.t3;
   t3Host.t3 = () => bin;
-  stops.push(() => { t3Host.t3 = real; });
+  stops.push(() => {
+    t3Host.t3 = real;
+  });
 
-  fake(`echo "Pairing URL: ${t3.url}/pair#token=${t3.pairingToken()}"\necho "Expires: 2026-10-14T12:05:00.000Z"\necho ""\necho "Note: This URL is only reachable from this machine."`);
+  fake(
+    `echo "Pairing URL: ${t3.url}/pair#token=${t3.pairingToken()}"\necho "Expires: 2026-10-14T12:05:00.000Z"\necho ""\necho "Note: This URL is only reachable from this machine."`,
+  );
   const link = await createPairingLink(s, { tailscale: true });
-  expect(link).toEqual({ url: expect.stringContaining("/pair#token="), expiresAt: "2026-10-14T12:05:00.000Z", notes: ["This URL is only reachable from this machine."] });
+  expect(link).toEqual({
+    url: expect.stringContaining("/pair#token="),
+    expiresAt: "2026-10-14T12:05:00.000Z",
+    notes: ["This URL is only reachable from this machine."],
+  });
   expect(readFileSync(args, "utf8").trim()).toBe("pair --log-level error --tailscale");
 
   fake(`echo "Pairing URL: ${t3.url}/pair#token=${t3.pairingToken()}"`);
@@ -236,7 +295,11 @@ test("T3 Code's own t3 pair creates the link: shown to the user, or redeemed to 
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {
-  const t3 = fakeT3({ claudeDir: tmp(), protocol: 3 }); stops.push(t3.stop);
-  const s = new Store(":memory:"); s.setLocal("node", "a");
-  await expect(connectT3(s, { url: t3.url, token: t3.pairingToken() })).rejects.toThrow("T3 Code on a uses a newer protocol; update agentgate");
+  const t3 = fakeT3({ claudeDir: tmp(), protocol: 3 });
+  stops.push(t3.stop);
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  await expect(connectT3(s, { url: t3.url, token: t3.pairingToken() })).rejects.toThrow(
+    "T3 Code on a uses a newer protocol; update agentgate",
+  );
 });

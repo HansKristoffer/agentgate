@@ -34,12 +34,10 @@ description: What this skill does, and when the agent should use it.
 
 Instructions for the agent.
 `;
-const size = (bytes: number) =>
-  bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
+const size = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`);
 const places = (ids: string[]) =>
   ids.includes("*") ? "Every session" : ids.length ? ids.join(", ") : "Not linked to any project yet";
-const where = (data: Status, id: string) =>
-  places(data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id));
+const where = (data: Status, id: string) => places(data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id));
 type Editor = { id?: string; skillMd: string; revision?: string | null };
 const repoName = (url: string) => url.replace("https://github.com/", "");
 /** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
@@ -67,12 +65,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
   const load = (source: string, skill?: string) =>
     perform(async () => {
-      const fetched = await request<SkillPreviewResponse>(
-        connection,
-        "/skills/fetch",
-        "POST",
-        { source, skill },
-      );
+      const fetched = await request<SkillPreviewResponse>(connection, "/skills/fetch", "POST", { source, skill });
       setAdd(undefined);
       setPreview({ source, skill, ...fetched });
     });
@@ -87,8 +80,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         if (!draft.id && skillMd.startsWith("---")) skillMd = skillMd.replace(/^name:.*$/m, `name: ${id}`);
         void perform(async () => {
           if (!id) throw new Error("Use at least one letter or digit in the name");
-          if (!draft.id && data.skills.some((k) => k.id === id))
-            throw new Error(`${id} already exists`);
+          if (!draft.id && data.skills.some((k) => k.id === id)) throw new Error(`${id} already exists`);
           await request(connection, `/skills/${idPath(id)}`, "PUT", {
             skillMd,
             revision: draft.revision ?? null,
@@ -106,7 +98,11 @@ export function Skills({ data, connection, perform }: ViewProps) {
           value={skillName}
           onChange={setSkillName}
           placeholder="e.g. Release checklist"
-          description={slugify(skillName) ? `Agents see it as ${slugify(skillName)}.` : "Any name. Agents see a short version of it."}
+          description={
+            slugify(skillName)
+              ? `Agents see it as ${slugify(skillName)}.`
+              : "Any name. Agents see a short version of it."
+          }
         />
       )}
       <Field
@@ -144,8 +140,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
             <Sparkles size={22} />
             <strong>Install your first skill.</strong>
             <p>
-              Browse skills.sh, add one from a GitHub repository or folder, or
-              write your own. Then choose which projects use it.
+              Browse skills.sh, add one from a GitHub repository or folder, or write your own. Then choose which
+              projects use it.
             </p>
           </Empty>
         )}
@@ -198,24 +194,25 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 !!skill.source && {
                   label: "Update from source",
                   onAction: () =>
-                    void perform(async () => {
-                      const { updated } = await request<{ updated: boolean }>(
-                        connection,
-                        `/skills/${idPath(skill.id)}/update`,
-                        "POST",
-                      );
-                      toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
-                    }, undefined, `update:${skill.id}`),
+                    void perform(
+                      async () => {
+                        const { updated } = await request<{ updated: boolean }>(
+                          connection,
+                          `/skills/${idPath(skill.id)}/update`,
+                          "POST",
+                        );
+                        toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
+                      },
+                      undefined,
+                      `update:${skill.id}`,
+                    ),
                 },
                 !fromRepo(skill.source) && {
                   label: "Delete",
                   danger: true,
                   onAction: async () => {
                     if (await confirmDelete(skill.id))
-                      void perform(
-                        () => request(connection, `/skills/${idPath(skill.id)}`, "DELETE"),
-                        "Skill deleted",
-                      );
+                      void perform(() => request(connection, `/skills/${idPath(skill.id)}`, "DELETE"), "Skill deleted");
                   },
                 },
               ]}
@@ -236,7 +233,11 @@ export function Skills({ data, connection, perform }: ViewProps) {
               <div className="grow">
                 <div className="row">
                   <strong>{repoName(repo.url)}</strong>
-                  {pending.has(`sync:${repo.url}`) ? <Working>Syncing</Working> : repo.error && <Badge>Sync failed</Badge>}
+                  {pending.has(`sync:${repo.url}`) ? (
+                    <Working>Syncing</Working>
+                  ) : (
+                    repo.error && <Badge>Sync failed</Badge>
+                  )}
                 </div>
                 <small>
                   {places(repo.projects)} · {repo.skills.length} {repo.skills.length === 1 ? "skill" : "skills"} ·{" "}
@@ -244,7 +245,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 </small>
                 {repo.error && <small className="danger">{repo.error}</small>}
                 {repo.skipped.map((reason) => (
-                  <small key={reason} className="danger">Skipped {reason}</small>
+                  <small key={reason} className="danger">
+                    Skipped {reason}
+                  </small>
                 ))}
               </div>
               <RowMenu
@@ -253,17 +256,31 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   {
                     label: "Sync now",
                     onAction: () =>
-                      void perform(async () => {
-                        const { updated } = await request<{ updated: boolean }>(connection, "/skill-repos/sync", "POST", { url: repo.url });
-                        toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
-                      }, undefined, `sync:${repo.url}`),
+                      void perform(
+                        async () => {
+                          const { updated } = await request<{ updated: boolean }>(
+                            connection,
+                            "/skill-repos/sync",
+                            "POST",
+                            { url: repo.url },
+                          );
+                          toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
+                        },
+                        undefined,
+                        `sync:${repo.url}`,
+                      ),
                   },
                   { label: "Choose projects", onAction: () => setRepoAssign(repo.url) },
                   {
                     label: "Disconnect",
                     danger: true,
                     onAction: async () => {
-                      if (await confirmDialog(`Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`, { destructive: true, okLabel: "Disconnect" }))
+                      if (
+                        await confirmDialog(
+                          `Disconnect ${repoName(repo.url)}? Its skills are removed from every paired machine.`,
+                          { destructive: true, okLabel: "Disconnect" },
+                        )
+                      )
                         void perform(
                           () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
                           "Repository disconnected",
@@ -278,13 +295,26 @@ export function Skills({ data, connection, perform }: ViewProps) {
       )}
       {(data.skillHealth.errors.length > 0 || data.skillConflicts.length > 0) && (
         <Panel title="Skills need attention" detail="Agentgate retries these automatically.">
-          {data.skillHealth.errors.map((error, index) => <div className="item" key={`${error.path}:${index}`}>
-            <span className="grow"><strong>{error.path}</strong><small className="danger">{error.message}</small></span>
-          </div>)}
+          {data.skillHealth.errors.map((error, index) => (
+            <div className="item" key={`${error.path}:${index}`}>
+              <span className="grow">
+                <strong>{error.path}</strong>
+                <small className="danger">{error.message}</small>
+              </span>
+            </div>
+          ))}
           {/* A folder we didn't create already holds a skill by this name, so we never overwrite it. */}
-          {data.skillConflicts.map((path) => <div className="item" key={path}>
-            <span className="grow"><strong>{path}</strong><small className="danger">Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one of them.</small></span>
-          </div>)}
+          {data.skillConflicts.map((path) => (
+            <div className="item" key={path}>
+              <span className="grow">
+                <strong>{path}</strong>
+                <small className="danger">
+                  Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one
+                  of them.
+                </small>
+              </span>
+            </div>
+          ))}
         </Panel>
       )}
       {add && (
@@ -318,10 +348,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                     const q = field(new FormData(e.currentTarget), "q");
                     void perform(async () =>
                       setResults(
-                        await request<SkillSearchResult[]>(
-                          connection,
-                          `/skills/search?q=${encodeURIComponent(q)}`,
-                        ),
+                        await request<SkillSearchResult[]>(connection, `/skills/search?q=${encodeURIComponent(q)}`),
                       ),
                     );
                   }}
@@ -398,9 +425,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   placeholder="https://github.com/owner/repo"
                 />
                 <p className="note">
-                  Skills can run scripts in your sessions and are copied to every
-                  paired machine. New commits are installed automatically, so
-                  connect only repositories you trust.
+                  Skills can run scripts in your sessions and are copied to every paired machine. New commits are
+                  installed automatically, so connect only repositories you trust.
                 </p>
                 <ProjectChecks data={data} selected={[]} />
                 <Button type="submit" size="sm">
@@ -432,8 +458,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
             />
             <p className="note">
-              All of the repository's skills are linked to the projects you add
-              and unlinked from the ones you remove.
+              All of the repository's skills are linked to the projects you add and unlinked from the ones you remove.
             </p>
             <Button type="submit" size="sm">
               Save
@@ -448,20 +473,23 @@ export function Skills({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               const ids = f.getAll("skill") as string[];
-              void perform(async () => {
-                if (!ids.length) throw new Error("Choose at least one skill");
-                await request(connection, "/skills", "POST", {
-                  token: preview.token,
-                  ids,
-                  projects: f.getAll("project") as string[],
-                });
-                setPreview(undefined);
-              }, ids.length === 1 ? "Skill installed" : `${ids.length} skills installed`);
+              void perform(
+                async () => {
+                  if (!ids.length) throw new Error("Choose at least one skill");
+                  await request(connection, "/skills", "POST", {
+                    token: preview.token,
+                    ids,
+                    projects: f.getAll("project") as string[],
+                  });
+                  setPreview(undefined);
+                },
+                ids.length === 1 ? "Skill installed" : `${ids.length} skills installed`,
+              );
             }}
           >
             <p className="note">
-              Skills can run scripts in your sessions and are copied to every
-              paired machine. Install only sources you trust.
+              Skills can run scripts in your sessions and are copied to every paired machine. Install only sources you
+              trust.
             </p>
             <fieldset className="checklist">
               <legend>Skills</legend>
@@ -523,8 +551,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
             />
             <p className="note">
-              Repositories appear here once a session starts in them, or after
-              you add or scan them in Projects.
+              Repositories appear here once a session starts in them, or after you add or scan them in Projects.
             </p>
             <Button type="submit" size="sm">
               Save

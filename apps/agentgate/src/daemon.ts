@@ -15,7 +15,17 @@ import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
-import { PULL_INTERVAL, drainPulls, noteSyncRound, noteSyncTurn, peerRoutes, peers, poke, pullAll, tailscale } from "./sync.ts";
+import {
+  PULL_INTERVAL,
+  drainPulls,
+  noteSyncRound,
+  noteSyncTurn,
+  peerRoutes,
+  peers,
+  poke,
+  pullAll,
+  tailscale,
+} from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { z } from "zod";
@@ -62,16 +72,27 @@ export function handoffOptions(s: Store): HandoffOptions {
   const home = DEV ? CONFIG_DIR : homedir();
   return {
     claudeDir: PRIMARY_CLAUDE_DIR,
-    get worktreesDir() { return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees"); },
-    get cloneDir() { return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub"); },
+    get worktreesDir() {
+      return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees");
+    },
+    get cloneDir() {
+      return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub");
+    },
     tempDir: join(CONFIG_DIR, "handoffs"),
     t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),
     filesRoot: FILES_ROOT,
   };
 }
 
-export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {}): Ctx {
-  const creds = new Credentials(s, (p, rt) => providers[p].refresh(rt), () => syncAll(s));
+export function makeCtx(
+  s: Store,
+  options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {},
+): Ctx {
+  const creds = new Credentials(
+    s,
+    (p, rt) => providers[p].refresh(rt),
+    () => syncAll(s),
+  );
   const quotas = new Quotas(s, creds, providers);
   const gateway = new Gateway(s);
   const memory = s.db.filename === ":memory:";
@@ -79,19 +100,39 @@ export function makeCtx(s: Store, options: { skills?: SkillLinks; files?: Checko
   const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
   gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return { channel, s, creds, quotas, proxyOperations: new ProxyOperations(s, creds, quotas, providers), gateway, remote: new RemoteEndpoints(s, gateway), skills: options.skills ?? new SkillLinks(s, memory ? null : undefined), files, imports: options.imports ?? new SkillImports(), abort: new AbortController(), pending: new Set(), handoffs, health: new HealthDashboard(s) };
+  return {
+    channel,
+    s,
+    creds,
+    quotas,
+    proxyOperations: new ProxyOperations(s, creds, quotas, providers),
+    gateway,
+    remote: new RemoteEndpoints(s, gateway),
+    skills: options.skills ?? new SkillLinks(s, memory ? null : undefined),
+    files,
+    imports: options.imports ?? new SkillImports(),
+    abort: new AbortController(),
+    pending: new Set(),
+    handoffs,
+    health: new HealthDashboard(s),
+  };
 }
 
 export function app(ctx: Ctx) {
   const { s } = ctx;
   const app = new Hono<Env>();
-  const loopbackOnly: MiddlewareHandler<Env> = async (c, next) => (c.env.listener === "loopback" ? next() : c.notFound());
+  const loopbackOnly: MiddlewareHandler<Env> = async (c, next) =>
+    c.env.listener === "loopback" ? next() : c.notFound();
 
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message || "Request failed" }, error.status);
     if (error instanceof SkillConflict) return c.json({ error: error.message }, 409);
     if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
-    if (error instanceof ZodError) return c.json({ error: "invalid input", issues: error.issues.map(i => ({ path: i.path, message: i.message })) }, 400);
+    if (error instanceof ZodError)
+      return c.json(
+        { error: "invalid input", issues: error.issues.map((i) => ({ path: i.path, message: i.message })) },
+        400,
+      );
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
     // The path, never the query, and for SQLite the free space; the client only learns that it failed.
     const detail = sqliteDetail(error, s.db.filename);
@@ -100,14 +141,23 @@ export function app(ctx: Ctx) {
   });
   app.use("*", async (_, next) => {
     let finish!: () => void;
-    const pending = new Promise<void>(resolve => { finish = resolve; }); ctx.pending.add(pending);
-    try { await next(); } finally { finish(); ctx.pending.delete(pending); }
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    ctx.pending.add(pending);
+    try {
+      await next();
+    } finally {
+      finish();
+      ctx.pending.delete(pending);
+    }
   });
   const cancellable = (req: Request) => new Request(req, { signal: AbortSignal.any([req.signal, ctx.abort.signal]) });
   // Loopback needs no token, so a web page must not reach it: reject foreign Host headers (DNS rebinding).
   app.use("*", async (c, next) => {
     const host = c.req.header("host")?.replace(/:\d+$/, "");
-    if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost") return c.text("forbidden host", 403);
+    if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost")
+      return c.text("forbidden host", 403);
     await next();
   });
 
@@ -117,17 +167,26 @@ export function app(ctx: Ctx) {
     if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
-      if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`)) return c.json({ error: "unauthorized" }, 401);
+      if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`))
+        return c.json({ error: "unauthorized" }, 401);
     }
     await next();
   });
 
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.
-  app.all("/anthropic/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")));
-  app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
-  app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
+  app.all("/anthropic/*", loopbackOnly, (c) =>
+    proxy(s, ctx.creds, providers.claude, cancellable(c.req.raw), pathAfter(c.req.url, "/anthropic")),
+  );
+  app.all("/codex/*", loopbackOnly, (c) =>
+    proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")),
+  );
+  app.all("/cursor/*", loopbackOnly, (c) =>
+    proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")),
+  );
   // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
-  app.all("/mcp", loopbackOnly, async (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
+  app.all("/mcp", loopbackOnly, async (c) =>
+    fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw),
+  );
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))
@@ -138,7 +197,10 @@ export function app(ctx: Ctx) {
 
   // The shim reports its checkout, so that repo's worktrees get their project skills before the next session starts.
   app.post("/api/checkout", loopbackOnly, async (c) => {
-    const f = z.object({ path: z.string().min(1).max(4096), project: projectIdSchema.optional() }).strict().parse(await jsonInput(c.req.raw));
+    const f = z
+      .object({ path: z.string().min(1).max(4096), project: projectIdSchema.optional() })
+      .strict()
+      .parse(await jsonInput(c.req.raw));
     const checkout = ctx.skills.register(f.path, f.project) ?? null;
     return c.json({ checkout, errors: ctx.skills.health().errors });
   });
@@ -162,28 +224,49 @@ function pathAfter(url: string, prefix: string) {
 }
 
 /** `agentgate serve`: both listeners and the background timers. */
-export async function serve(s: Store, options: { port?: number; discover?: typeof tailscale; logs?: typeof LOG_DIRS } = {}) {
+export async function serve(
+  s: Store,
+  options: { port?: number; discover?: typeof tailscale; logs?: typeof LOG_DIRS } = {},
+) {
   const ctx = makeCtx(s);
   const a = app(ctx);
   let stopped = false;
   const timers: ReturnType<typeof setInterval>[] = [];
   const jobs = new Set<Promise<unknown>>();
   const listen = (hostname: string, listener: Listener, port: number) =>
-    Bun.serve({ hostname, port, idleTimeout: 0, maxRequestBodySize: MAX_BODY, fetch: req => a.fetch(req, { listener }) });
+    Bun.serve({
+      hostname,
+      port,
+      idleTimeout: 0,
+      maxRequestBodySize: MAX_BODY,
+      fetch: (req) => a.fetch(req, { listener }),
+    });
   const loopback = listen("127.0.0.1", "loopback", options.port ?? PORT);
   // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate), and which
   // release it runs, so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);
   if (me && ((me.protocol ?? 0) < NODE_PROTOCOL || me.version !== packageInfo.version))
-    s.put("node", s.nodeId, { ...me, protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL), version: packageInfo.version });
+    s.put("node", s.nodeId, {
+      ...me,
+      protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL),
+      version: packageInfo.version,
+    });
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
   ctx.health.reconcile();
   const schedule = (task: () => Promise<unknown>, interval: number) => {
-    const serial = serialTask(async () => { if (!stopped) await task(); });
-    const run = () => { if (stopped) return; const job = serial().catch(e => console.error(`background task: ${e?.name ?? "failed"}`)); jobs.add(job); void job.finally(() => jobs.delete(job)); };
-    timers.push(setInterval(run, interval)); run();
+    const serial = serialTask(async () => {
+      if (!stopped) await task();
+    });
+    const run = () => {
+      if (stopped) return;
+      const job = serial().catch((e) => console.error(`background task: ${e?.name ?? "failed"}`));
+      jobs.add(job);
+      void job.finally(() => jobs.delete(job));
+    };
+    timers.push(setInterval(run, interval));
+    run();
   };
   // The CLI or a hand edit can change routing behind the daemon; a minute late is fine for a status badge.
   if (!DEV) schedule(async () => publishRouting(s), 60_000);
@@ -192,61 +275,109 @@ export async function serve(s: Store, options: { port?: number; discover?: typeo
     const ts = await (options.discover ?? tailscale)();
     if (stopped) return;
     if (ts?.ip === address && tailnet) return;
-    if (tailnet) { tailnet.stop(true); tailnet = undefined; }
+    if (tailnet) {
+      tailnet.stop(true);
+      tailnet = undefined;
+    }
     address = undefined;
     if (!ts) return;
-    tailnet = listen(ts.ip, "tailnet", loopback.port!); address = ts.ip;
+    tailnet = listen(ts.ip, "tailnet", loopback.port!);
+    address = ts.ip;
     const self = s.get("node", s.nodeId);
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
   }, 30000);
   // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
-  const logins = DEV ? async () => { } : serialTask(() => syncLogins(s));
+  const logins = DEV ? async () => {} : serialTask(() => syncLogins(s));
   let lastSeq = s.seq();
   schedule(async () => {
     const snapshot = s.changes(lastSeq);
     if (snapshot.seq === lastSeq) return;
-    lastSeq = snapshot.seq; poke(s); void relaySync(s, { pull: false });
-    if (snapshot.records.some(r => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
-    if (snapshot.records.some(r => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
-    if (snapshot.records.some(r => r.kind === "project")) ctx.remote.reconcile();
+    lastSeq = snapshot.seq;
+    poke(s);
+    void relaySync(s, { pull: false });
+    if (snapshot.records.some((r) => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
+    if (snapshot.records.some((r) => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
+    if (snapshot.records.some((r) => r.kind === "project")) ctx.remote.reconcile();
     // A store arrived from another machine, or the last old node updated so stores may sync.
-    if (snapshot.records.some(r => r.kind === "project" || r.kind === "node")) ctx.files.soon();
-    if (snapshot.records.some(r => r.kind === "node")) ctx.health.reconcile();
+    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "node")) ctx.files.soon();
+    if (snapshot.records.some((r) => r.kind === "node")) ctx.health.reconcile();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
-    if (snapshot.records.some(r => r.kind === "project" || r.kind === "setting")) void ctx.handoffs.syncProjects().catch(() => { });
-    if (snapshot.records.some(r => r.kind === "login")) void logins().catch(() => { });
+    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "setting"))
+      void ctx.handoffs.syncProjects().catch(() => {});
+    if (snapshot.records.some((r) => r.kind === "login")) void logins().catch(() => {});
   }, 1000);
   schedule(logins, 10 * 60_000);
-  schedule(async () => { ctx.remote.reconcile(); }, 30000);
-  schedule(async () => { ctx.skills.sync(); }, 30000);
-  schedule(async () => { ctx.files.sync(); }, 30000);
+  schedule(async () => {
+    ctx.remote.reconcile();
+  }, 30000);
+  schedule(async () => {
+    ctx.skills.sync();
+  }, 30000);
+  schedule(async () => {
+    ctx.files.sync();
+  }, 30000);
   const skillBackoff = new SkillBackoff(s);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => { noteSyncTurn(s); return Promise.all([pullAll(s), relaySync(s)]).finally(() => { if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s); }); }, PULL_INTERVAL);
-  schedule(async () => { await ctx.creds.tick(ctx.abort.signal); await tickMcp(s, ctx.abort.signal); }, 60000);
+  schedule(() => {
+    noteSyncTurn(s);
+    return Promise.all([pullAll(s), relaySync(s)]).finally(() => {
+      if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s);
+    });
+  }, PULL_INTERVAL);
+  schedule(async () => {
+    await ctx.creds.tick(ctx.abort.signal);
+    await tickMcp(s, ctx.abort.signal);
+  }, 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);
-  const backfill = backfillTokens(s, options.logs, ctx.abort.signal).catch(() => console.error("background task: token history backfill failed"));
-  schedule(async () => { await backfill; publishTokens(s); }, 15 * 60_000);
-  schedule(async () => { if (process.platform === "darwin") await pollDesktopLogin(s); }, 2000);
-  schedule(async () => { s.trimLog(); expireLogins(s); rotateLogs(); }, 3600000);
-  schedule(async () => { ctx.handoffs.tick(); }, 5000);
+  const backfill = backfillTokens(s, options.logs, ctx.abort.signal).catch(() =>
+    console.error("background task: token history backfill failed"),
+  );
+  schedule(async () => {
+    await backfill;
+    publishTokens(s);
+  }, 15 * 60_000);
+  schedule(async () => {
+    if (process.platform === "darwin") await pollDesktopLogin(s);
+  }, 2000);
+  schedule(async () => {
+    s.trimLog();
+    expireLogins(s);
+    rotateLogs();
+  }, 3600000);
+  schedule(async () => {
+    ctx.handoffs.tick();
+  }, 5000);
   schedule(() => ctx.handoffs.syncProjects(), 30_000);
   schedule(() => ctx.channel.reconcile(), 30_000);
   let stopping: Promise<void> | undefined;
   return {
-    ctx, loopback, stop: () => stopping ??= (async () => {
-      stopped = true; ctx.abort.abort(); timers.forEach(clearInterval); ctx.skills.close(); ctx.files.close(); ctx.imports.close();
-      // Abort active streams and MCP sessions; finite background requests finish before the store closes.
-      loopback.stop(true); tailnet?.stop(true);
-      ctx.remote.close(); ctx.channel.close(); ctx.health.stop();
-      await ctx.gateway.close();
-      await ctx.handoffs.close();
-      await stopRelay(s);
-      await Promise.allSettled([...jobs, ...ctx.pending]); await ctx.imports.drain(); await drainRefresh(s); await drainPulls(s);
-    })()
+    ctx,
+    loopback,
+    stop: () =>
+      (stopping ??= (async () => {
+        stopped = true;
+        ctx.abort.abort();
+        timers.forEach(clearInterval);
+        ctx.skills.close();
+        ctx.files.close();
+        ctx.imports.close();
+        // Abort active streams and MCP sessions; finite background requests finish before the store closes.
+        loopback.stop(true);
+        tailnet?.stop(true);
+        ctx.remote.close();
+        ctx.channel.close();
+        ctx.health.stop();
+        await ctx.gateway.close();
+        await ctx.handoffs.close();
+        await stopRelay(s);
+        await Promise.allSettled([...jobs, ...ctx.pending]);
+        await ctx.imports.drain();
+        await drainRefresh(s);
+        await drainPulls(s);
+      })()),
   };
 }

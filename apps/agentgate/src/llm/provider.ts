@@ -6,7 +6,12 @@ export type Window = QuotaWindow;
 export type Observation = { windows: Window[]; status: Usage["status"] };
 export interface Provider {
   name: ProviderName;
-  prepare(path: string, headers: Headers, body: Uint8Array | undefined, cred: Credential): { url: string; headers: Headers; body?: Uint8Array };
+  prepare(
+    path: string,
+    headers: Headers,
+    body: Uint8Array | undefined,
+    cred: Credential,
+  ): { url: string; headers: Headers; body?: Uint8Array };
   usage(headers: Headers): Observation | undefined;
   classify429(headers: Headers, body: string): "quota" | "rate";
   classifyFailure?(status: number, headers: Headers, body: string): Failure;
@@ -26,7 +31,12 @@ export interface Provider {
   headerQuota?: boolean;
 }
 export function capabilities(provider: Provider): ProviderCapabilities {
-  return { quota: !!provider.fetchQuota, models: !!provider.discoverModels, session: !!provider.session, probe: !!provider.probe };
+  return {
+    quota: !!provider.fetchQuota,
+    models: !!provider.discoverModels,
+    session: !!provider.session,
+    probe: !!provider.probe,
+  };
 }
 export function classify(provider: Provider, status: number, headers: Headers, body: string): Failure {
   if (status === 429) return provider.classify429(headers, body);

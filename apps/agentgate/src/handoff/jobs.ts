@@ -15,7 +15,11 @@ import { syncT3Projects } from "./projects.ts";
  * step they reached. Steps are idempotent. The source drives; the destination answers peer requests. */
 
 type Role = "source" | "destination";
-export interface Timing { step: string; node: string; ms: number }
+export interface Timing {
+  step: string;
+  node: string;
+  ms: number;
+}
 export interface Job<S> {
   id: string;
   role: Role;
@@ -60,7 +64,13 @@ export const sessionNote = {
 const ABANDONED = 10 * 60_000;
 
 export class PeerError extends Error {
-  constructor(readonly status: number, message: string, readonly body: Record<string, unknown> = {}) { super(message); }
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly body: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
 }
 
 /** How this node reaches `node`: a direct Tailscale peer, else the relay group both are in. */
@@ -70,7 +80,12 @@ export function transport(s: Store, node: string): "tailnet" | "relay" | undefin
 }
 
 /** A daemon-to-daemon call to `node`'s `/peer` routes: over Tailscale with the peer token, or sealed through the relay. */
-export async function peerCall<T>(s: Store, node: string, path: string, init: { method?: string; json?: unknown; body?: Uint8Array; timeout?: number } = {}): Promise<T> {
+export async function peerCall<T>(
+  s: Store,
+  node: string,
+  path: string,
+  init: { method?: string; json?: unknown; body?: Uint8Array; timeout?: number } = {},
+): Promise<T> {
   const timeout = init.timeout ?? 30_000;
   const method = init.method ?? (init.json === undefined && !init.body ? "GET" : "POST");
   const type = init.json !== undefined ? "application/json" : init.body ? "application/gzip" : undefined;
@@ -78,10 +93,18 @@ export async function peerCall<T>(s: Store, node: string, path: string, init: { 
   const p = peers(s).find((peer) => peer.node === node);
   let res: Response;
   if (p) {
-    res = await fetchHeaders(`${p.url}/peer${path}`, {
-      method, body, signal: AbortSignal.timeout(timeout),
-      headers: { authorization: `Bearer ${p.token}`, ...(type && { "content-type": type }) },
-    }, timeout).catch(() => { throw new Error(`${node} is not reachable`); });
+    res = await fetchHeaders(
+      `${p.url}/peer${path}`,
+      {
+        method,
+        body,
+        signal: AbortSignal.timeout(timeout),
+        headers: { authorization: `Bearer ${p.token}`, ...(type && { "content-type": type }) },
+      },
+      timeout,
+    ).catch(() => {
+      throw new Error(`${node} is not reachable`);
+    });
   } else if (transport(s, node) === "relay") {
     res = await relayCall(s, node, path, { method, body, type, timeout });
   } else throw new Error(`${node} is not paired with ${s.nodeId} over Tailscale or a relay`);
@@ -100,9 +123,19 @@ export async function peerCall<T>(s: Store, node: string, path: string, init: { 
   return data as T;
 }
 
-type Row = Omit<Job<unknown>, "state" | "error" | "createdAt" | "updatedAt"> & { state: string; error: string | null; created_at: number; updated_at: number };
-const fromRow = <S>({ state, error, created_at, updated_at, ...rest }: Row): Job<S> =>
-  ({ ...rest, state: JSON.parse(state), error: error ?? undefined, createdAt: created_at, updatedAt: updated_at });
+type Row = Omit<Job<unknown>, "state" | "error" | "createdAt" | "updatedAt"> & {
+  state: string;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+};
+const fromRow = <S>({ state, error, created_at, updated_at, ...rest }: Row): Job<S> => ({
+  ...rest,
+  state: JSON.parse(state),
+  error: error ?? undefined,
+  createdAt: created_at,
+  updatedAt: updated_at,
+});
 
 export class Handoffs {
   private loops = new Map<string, () => Promise<void>>();
@@ -120,22 +153,39 @@ export class Handoffs {
   /** One T3 project sync at a time: the timer, record changes and the app's T3 Code page all ask for it. */
   syncProjects = serialTask(() => syncT3Projects(this));
 
-  constructor(readonly s: Store, readonly options: HandoffOptions) { }
+  constructor(
+    readonly s: Store,
+    readonly options: HandoffOptions,
+  ) {}
 
-  get pollMs() { return this.options.pollMs ?? 1000; }
-  dir(id: string) { return join(this.options.tempDir, id); }
+  get pollMs() {
+    return this.options.pollMs ?? 1000;
+  }
+  dir(id: string) {
+    return join(this.options.tempDir, id);
+  }
 
   load<S = SourceState | DestState>(role: Role, id: string): Job<S> | undefined {
     const row = this.s.db.query("select * from handoffs where role = ? and id = ?").get(role, id) as Row | null;
     return row ? fromRow<S>(row) : undefined;
   }
   list<S = SourceState | DestState>(role?: Role): Job<S>[] {
-    const rows = this.s.db.query("select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200").all(role ?? null) as Row[];
+    const rows = this.s.db
+      .query("select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200")
+      .all(role ?? null) as Row[];
     return rows.map((r) => fromRow<S>(r));
   }
   create<S>(job: Omit<Job<S>, "createdAt" | "updatedAt">) {
     this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
-      job.id, job.role, job.thread, job.target, job.step, JSON.stringify(job.state), job.error ?? null, this.s.now(), this.s.now(),
+      job.id,
+      job.role,
+      job.thread,
+      job.target,
+      job.step,
+      JSON.stringify(job.state),
+      job.error ?? null,
+      this.s.now(),
+      this.s.now(),
     ]);
     return this.load<S>(job.role, job.id)!;
   }
@@ -154,7 +204,7 @@ export class Handoffs {
     const key = `${role}:${id}`;
     let loop = this.loops.get(key);
     if (!loop) {
-      loop = serialTask(() => role === "source" ? runSource(this, id) : runDestination(this, id));
+      loop = serialTask(() => (role === "source" ? runSource(this, id) : runDestination(this, id)));
       this.loops.set(key, loop);
     }
     const running = loop().catch((e) => console.error(`handoff ${id}: ${e?.name ?? "failed"}`));
@@ -167,7 +217,10 @@ export class Handoffs {
   tick() {
     for (const job of this.list()) {
       if (TERMINAL_STEPS.has(job.step)) continue;
-      const waiting = job.role === "destination" && (job.step === "prepare" || job.step === "prepared") && !existsSync(manifestFile(this, job.id));
+      const waiting =
+        job.role === "destination" &&
+        (job.step === "prepare" || job.step === "prepared") &&
+        !existsSync(manifestFile(this, job.id));
       if (waiting && this.s.now() - job.updatedAt > ABANDONED) {
         this.fail(job, "abandoned: the source never sent the thread");
         continue;
@@ -206,10 +259,28 @@ export class Handoffs {
     if (job.role === "destination") return destinationView(this, job as Job<DestState>);
     const st = job.state as SourceState;
     return {
-      id: job.id, role: "source", node: this.s.nodeId, from: this.s.nodeId, to: job.target, thread: job.thread, title: st.title, step: job.step,
-      status: job.step === "failed" ? "failed" : job.step === "done" ? "done" : job.step === "finish" ? "imported" : "running",
-      destThreadId: st.destThreadId, warnings: st.warnings, error: job.error,
-      timings: [...st.timings, ...(st.remoteTimings ?? [])], createdAt: job.createdAt, updatedAt: job.updatedAt,
+      id: job.id,
+      role: "source",
+      node: this.s.nodeId,
+      from: this.s.nodeId,
+      to: job.target,
+      thread: job.thread,
+      title: st.title,
+      step: job.step,
+      status:
+        job.step === "failed"
+          ? "failed"
+          : job.step === "done"
+            ? "done"
+            : job.step === "finish"
+              ? "imported"
+              : "running",
+      destThreadId: st.destThreadId,
+      warnings: st.warnings,
+      error: job.error,
+      timings: [...st.timings, ...(st.remoteTimings ?? [])],
+      createdAt: job.createdAt,
+      updatedAt: job.updatedAt,
     };
   }
 }
