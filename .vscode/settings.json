@@ -1,0 +1,14 @@
+{
+  // Bun has no editor extension yet; this runs `bun fmt` on save with the repo's bunfig.toml and .prettierignore.
+  "customLocalFormatters.formatters": [
+    {
+      "command": "bun fmt --no-script --stdin-filepath '${file}'",
+      "languages": ["typescript", "typescriptreact", "javascript", "javascriptreact"]
+    }
+  ],
+  "[typescript]": { "editor.defaultFormatter": "jkillian.custom-local-formatters" },
+  "[typescriptreact]": { "editor.defaultFormatter": "jkillian.custom-local-formatters" },
+  "[javascript]": { "editor.defaultFormatter": "jkillian.custom-local-formatters" },
+  "[javascriptreact]": { "editor.defaultFormatter": "jkillian.custom-local-formatters" },
+  "editor.formatOnSave": true
+}

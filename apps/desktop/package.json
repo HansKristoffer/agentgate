@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tsc --noEmit && vite build",
+    "build": "bun check && vite build",
     "bundle": "tauri build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun check",
     "tauri": "tauri"
   },
   "dependencies": {

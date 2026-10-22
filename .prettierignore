@@ -1,0 +1,4 @@
+# Written by release-please, in its own layout.
+CHANGELOG.md
+.release-please-manifest.json
+apps/desktop/src-tauri/tauri.conf.json

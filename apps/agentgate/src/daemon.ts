@@ -127,7 +127,7 @@ export function app(ctx: Ctx) {
   app.all("/codex/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.codex, cancellable(c.req.raw), pathAfter(c.req.url, "/codex")));
   app.all("/cursor/*", loopbackOnly, (c) => proxy(s, ctx.creds, providers.cursor, cancellable(c.req.raw), pathAfter(c.req.url, "/cursor")));
   // MCP clients are programs, never web pages: a page could otherwise record projects or run tools here.
-  app.all("/mcp", loopbackOnly, (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
+  app.all("/mcp", loopbackOnly, async (c) => fromBrowser(c.req.raw) ? c.json({ error: "Use an MCP client" }, 403) : ctx.gateway.handle(c.req.raw));
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
     const out = Object.entries(aliasesFor(s, project))

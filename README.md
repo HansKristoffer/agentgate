@@ -279,10 +279,11 @@ Network partitions can still cause separate machines to compete for a rotating u
 
 ## Development checks
 
-Use Bun 1.4.2 and the committed lockfile:
+Use Bun 1.4.4 and the committed lockfile:
 
 ```sh
 bun install --frozen-lockfile
+bun fmt --no-script --check .
 bun run typecheck
 bun test
 bun run build

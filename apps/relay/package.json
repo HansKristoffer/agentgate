@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "bun check && bun check -p tsconfig.test.json",
     "test:workers": "vitest run"
   },
   "dependencies": {

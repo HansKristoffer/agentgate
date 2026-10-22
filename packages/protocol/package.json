@@ -8,7 +8,7 @@
     "./remote": "./src/remote.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "hanzio": "^3.3.0",
