@@ -1,5 +1,5 @@
 import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { sumBy } from "hanzio";
+import { getErrorMessage, getUniqueValues, startTimer, sumBy } from "hanzio";
 import { gzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { sleep } from "../runtime.ts";
@@ -46,7 +46,7 @@ export async function startHandoff(h: Handoffs, threadId: string, target: string
   try {
     await resolve(h, job);
   } catch (e) {
-    h.fail(job, `resolve on ${h.s.nodeId}: ${(e as Error).message}`);
+    h.fail(job, `resolve on ${h.s.nodeId}: ${getErrorMessage(e)}`);
     throw e;
   }
   void h.drive("source", id);
@@ -104,7 +104,7 @@ export async function runSource(h: Handoffs, id: string) {
         default: return;
       }
     } catch (e) {
-      const message = `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`;
+      const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       if (!BEFORE_IMPORT.has(job.step)) { st.warnings.push(message); h.save(job); return; }
       await peerCall(h.s, job.target, `/handoff/${id}`, { method: "DELETE" }).catch(() => { });
       h.fail(job, message);
@@ -245,7 +245,7 @@ async function carriedFiles(h: Handoffs, job: Job<SourceState>): Promise<string[
     }
     return paths;
   } catch (e) {
-    st.warnings.push(`Changes to gitignored files stayed on ${h.s.nodeId}: ${(e as Error).message}`);
+    st.warnings.push(`Changes to gitignored files stayed on ${h.s.nodeId}: ${getErrorMessage(e)}`);
     return [];
   }
 }
@@ -281,7 +281,7 @@ async function send(h: Handoffs, job: Job<SourceState>) {
       // Sent only when there is some, so a destination on the previous version still accepts ordinary handoffs.
       ...(st.background?.length ? { background: st.background } : {}),
       ...(st.queued?.length ? { queued: st.queued } : {}),
-      oldPaths: [...new Set([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)]))], files: st.files!,
+      oldPaths: getUniqueValues([st.cwd!, st.workspaceRoot!].flatMap((p) => [p, realPath(p)])), files: st.files!,
     };
     st.started = true;
     h.save(job);
@@ -298,7 +298,7 @@ async function send(h: Handoffs, job: Job<SourceState>) {
 /** Poll B until it imported. Returns false to stop the loop for now (B unreachable; the tick retries). */
 async function wait(h: Handoffs, job: Job<SourceState>): Promise<boolean> {
   const st = job.state;
-  const started = performance.now();
+  const elapsed = startTimer();
   for (; ;) {
     if (h.closed) return false;
     let r: { status: string; threadId?: string; codeTaken?: boolean; warnings?: string[]; timings?: Timing[]; error?: string };
@@ -320,7 +320,7 @@ async function wait(h: Handoffs, job: Job<SourceState>): Promise<boolean> {
 
     if (r.status === "failed") throw new Error(r.error ?? `${job.target} failed`);
     if (r.status === "imported") {
-      st.timings.push({ step: `await ${job.target}`, node: h.s.nodeId, ms: Math.round(performance.now() - started) });
+      st.timings.push({ step: `await ${job.target}`, node: h.s.nodeId, ms: Math.round(elapsed()) });
       Object.assign(st, { destThreadId: r.threadId, codeTaken: r.codeTaken, remoteTimings: r.timings, warnings: [...st.warnings, ...(r.warnings ?? [])] });
       h.advance(job, "finish");
       return true;
@@ -349,7 +349,7 @@ async function finish(h: Handoffs, job: Job<SourceState>) {
     rmSync(h.dir(job.id), { recursive: true, force: true });
     h.advance(job, "done");
   } catch (e) {
-    if (!st.finishAt) st.warnings.push(`Could not archive the thread on ${h.s.nodeId} yet (${(e as Error).message}); retrying`);
+    if (!st.finishAt) st.warnings.push(`Could not archive the thread on ${h.s.nodeId} yet (${getErrorMessage(e)}); retrying`);
     st.finishAt = h.s.now() + 30_000; h.save(job);
   }
 }

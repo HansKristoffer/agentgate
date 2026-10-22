@@ -1,4 +1,5 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
+import { getUniqueValues } from "hanzio";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
 import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
 import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
@@ -123,7 +124,7 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   }
   for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);
   // Virtual projects list their servers explicitly; `*` defaults never leak into a public endpoint.
-  return s.put("project", id, { ...prev, ...patch, ...(patch.skills && { skills: [...new Set(patch.skills)] }), ...(virtual && { inheritDefaults: false }), id });
+  return s.put("project", id, { ...prev, ...patch, ...(patch.skills && { skills: getUniqueValues(patch.skills) }), ...(virtual && { inheritDefaults: false }), id });
 }
 
 /** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a

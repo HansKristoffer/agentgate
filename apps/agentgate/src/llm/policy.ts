@@ -1,4 +1,5 @@
 import { cooldownSchema, type Cooldown, type Failure } from "@agentgate/protocol";
+import { parseRetryAfter } from "hanzio";
 import type { Store } from "../store.ts";
 
 const state = new WeakMap<Store, Map<string, Cooldown>>();
@@ -17,14 +18,7 @@ export function cool(s: Store, accountId: string, reason: Failure, retryAt: numb
 }
 export function resetCooldown(s: Store, accountId: string) { for (const [key, c] of timers(s)) if (c.accountId === accountId) timers(s).delete(key); }
 
-export function retryAfterMs(headers: Headers, now = Date.now()): number {
-  const value = headers.get("retry-after");
-  if (value === null) return 2000;
-  const seconds = Number(value);
-  if (value.trim() && Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, Number.MAX_SAFE_INTEGER);
-  const instant = Date.parse(value);
-  return Number.isFinite(instant) ? Math.max(0, instant - now) : 2000;
-}
+export const retryAfterMs = (headers: Headers, now = Date.now()) => parseRetryAfter(headers.get("retry-after"), now) ?? 2000;
 /** One wall-clock bootstrap deadline, independent of the provider's stream lifetime. */
 export class Budget {
   private controller = new AbortController();

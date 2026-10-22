@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { sumBy } from "hanzio";
+import { sortBy, sumBy } from "hanzio";
 
 export const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 /** Any name a person types as an id: "PostHog Work" → "posthog-work", "Café" → "cafe". Empty when nothing usable is left. */
@@ -61,7 +61,7 @@ export const skillSchema = z.object({
   if (new TextEncoder().encode(JSON.stringify(skill)).byteLength > MAX_RECORD) ctx.addIssue({ code: "custom", message: "skill record exceeds 4 MiB" });
 }).transform(skill => ({
   ...skill,
-  files: skill.files.map(file => ({ ...file, executable: file.executable || undefined }) as z.infer<typeof skillFileSchema>).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
+  files: sortBy(skill.files.map(file => ({ ...file, executable: file.executable || undefined }) as z.infer<typeof skillFileSchema>), "path"),
   size: sumBy(skill.files, (file) => decodedSize(file.data)),
 }));
 

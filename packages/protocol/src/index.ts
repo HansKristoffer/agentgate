@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { isTruthy } from "hanzio";
+import { getUniqueValues, isTruthy } from "hanzio";
 import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
@@ -45,9 +45,9 @@ export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
   /** Skill ids linked into this repo's checkouts; on `*`, linked for every session. */
-  skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => [...new Set(ids)]),
+  skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => getUniqueValues(ids)),
   /** GitHub repositories whose skills the daemon keeps installed and linked here. Older daemons drop this field. */
-  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => [...new Set(urls)]),
+  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => getUniqueValues(urls)),
   inheritDefaults: z.boolean().default(true),
   /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
   remote: remoteSchema.optional(),

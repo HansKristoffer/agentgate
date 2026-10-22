@@ -1,4 +1,5 @@
 import { existsSync, rmSync } from "node:fs";
+import { createCache, startTimer } from "hanzio";
 import { join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
 import { fetchHeaders, killGroup, readBody, serialTask } from "../runtime.ts";
@@ -111,7 +112,7 @@ export class Handoffs {
   /** Their processes, stopped on close: a restart runs an unfinished setup again. */
   setupProcesses = new Set<{ pid: number; kill(signal?: number | NodeJS.Signals): void }>();
   /** Short-lived listing cache: T3's Claude provider instances. */
-  cache = new Map<string, { at: number; value: unknown }>();
+  cache = createCache({ now: () => this.s.now() });
   closed = false;
   private stopped = Promise.withResolvers<void>();
   /** Resolves on close, so a step waiting on setup lets shutdown go; the step resumes on restart. */
@@ -215,8 +216,8 @@ export class Handoffs {
 
 /** Record how long a step took, for finding the next thing to make faster. */
 export async function timed<T>(s: Store, timings: Timing[], step: string, fn: () => Promise<T>): Promise<T> {
-  const start = performance.now();
+  const elapsed = startTimer();
   const result = await fn();
-  timings.push({ step, node: s.nodeId, ms: Math.round(performance.now() - start) });
+  timings.push({ step, node: s.nodeId, ms: Math.round(elapsed()) });
   return result;
 }

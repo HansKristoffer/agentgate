@@ -1,4 +1,5 @@
 import { closeSync, ftruncateSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
+import { getErrorMessage } from "hanzio";
 import { dirname, join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { Hono, type Context } from "hono";
@@ -44,7 +45,7 @@ export function handoffRoutes(h: Handoffs) {
     try {
       return c.json(await updateHere(h.s));
     } catch (e) {
-      return c.json({ error: (e as Error).message }, 409);
+      return c.json({ error: getErrorMessage(e) }, 409);
     }
   });
 
@@ -53,7 +54,7 @@ export function handoffRoutes(h: Handoffs) {
     try {
       return c.json(await routeHere(h.s, on));
     } catch (e) {
-      return c.json({ error: (e as Error).message }, 409);
+      return c.json({ error: getErrorMessage(e) }, 409);
     }
   });
 

@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { sumBy } from "hanzio";
+import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
@@ -188,7 +188,7 @@ export async function runDestination(h: Handoffs, id: string) {
         default: return;
       }
     } catch (e) {
-      const message = `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`;
+      const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       // Imported: the thread lives here now, and a failure must not make the source take it back.
       if (job.step === "continue") {
         job.state.warnings.push(`${message}; the thread is here, continue it in T3 Code`);
@@ -298,7 +298,7 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
 
   const previous = h.setups.get(job.id) ?? Promise.resolve({ warnings: [], timings: [] });
   h.setups.set(job.id, previous.then(async (notes) => {
-    const started = performance.now();
+    const elapsed = startTimer();
     try {
       const child = Bun.spawn([process.env.SHELL || "/bin/sh", "-lc", command], {
         cwd, stdin: "ignore", stdout: "ignore", stderr: "pipe", detached: true,
@@ -317,9 +317,9 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
         notes.warnings.push(`Setup in ${cwd} failed (exit ${code})${last ? `: ${last}` : ""}`);
       }
     } catch (e) {
-      notes.warnings.push(`Setup in ${cwd} could not start: ${(e as Error).message}`);
+      notes.warnings.push(`Setup in ${cwd} could not start: ${getErrorMessage(e)}`);
     }
-    notes.timings.push({ step: "setup", node: h.s.nodeId, ms: Math.round(performance.now() - started) });
+    notes.timings.push({ step: "setup", node: h.s.nodeId, ms: Math.round(elapsed()) });
     return notes;
   }));
 }
@@ -471,7 +471,7 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
     if (!messages) throw new HistoryError("the session was rewritten there");
     appendToThread(t3Database(h.options.t3StateDir, t3State(h.s).url), threadId, job.id, messages, now);
   } catch (e) {
-    st.warnings.push(`The messages from ${st.source} are not in this thread's history in T3 Code (${(e as Error).message}); the agent still has them. agentgate t3 history off stops copying them.`);
+    st.warnings.push(`The messages from ${st.source} are not in this thread's history in T3 Code (${getErrorMessage(e)}); the agent still has them. agentgate t3 history off stops copying them.`);
   }
 }
 
@@ -541,7 +541,7 @@ async function fillFiles(h: Handoffs, job: Job<DestState>) {
     if (st.created) rememberCheckout(h.s, st.cwd!, key);
     await fillCheckout(root, st.cwd!, key);
   } catch (e) {
-    st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${(e as Error).message}`);
+    st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${getErrorMessage(e)}`);
   }
   st.filled = true;
   h.save(job);

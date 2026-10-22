@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { trimTrailingSlash } from "hanzio";
 import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
 import { fetchHeaders, readBody } from "./runtime.ts";
@@ -43,7 +44,7 @@ export function pairCode(s: Store): string {
 
 /** `agentgate join <url> <code>` on node B. */
 export async function join(s: Store, url: string, code: string, selfUrl: string) {
-  url = url.replace(/\/$/, "");
+  url = trimTrailingSlash(url);
   peerUrl.parse(url); peerUrl.parse(selfUrl);
   const res = await fetchHeaders(`${url}/peer/join`, {
     method: "POST",

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { clamp } from "hanzio";
+import { clamp, isRecord, safeJsonParse } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -40,7 +40,7 @@ function dashboard(method: string, accessToken: string, signal: AbortSignal) {
 }
 
 const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
-const record = (value: unknown) => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+const record = (value: unknown) => isRecord(value) ? value : undefined;
 
 /** Model ids from `GetUsableModels`. Display-only rows are skipped. */
 export function parseModels(payload: unknown): string[] {
@@ -109,7 +109,7 @@ export const cursor: Provider = {
       signal: AbortSignal.timeout(30_000),
     });
     const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30_000)));
-    const body = (() => { try { return JSON.parse(text) as { access_token?: unknown; shouldLogout?: unknown }; } catch { return {}; } })();
+    const body = safeJsonParse<{ access_token?: unknown; shouldLogout?: unknown }>(text).data ?? {};
     if (body.shouldLogout === true) throw new InvalidGrant("Cursor ended this login");
     if (!res.ok || typeof body.access_token !== "string" || !body.access_token) throw new Error(`Cursor token endpoint returned ${res.status}`);
     // The IDE keeps the new access token as its refresh token too.

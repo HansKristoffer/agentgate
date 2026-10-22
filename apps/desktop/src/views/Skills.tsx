@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { typedSwitch } from "hanzio";
+import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import {
@@ -34,8 +34,6 @@ description: What this skill does, and when the agent should use it.
 
 Instructions for the agent.
 `;
-const short = (text: string, max = 180) =>
-  text.length > max ? `${text.slice(0, max - 1)}…` : text;
 const size = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`;
 const places = (ids: string[]) =>
@@ -175,7 +173,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 <Badge good={!!skill.source}>{sourceLabel(skill.source)}</Badge>
                 {pending.has(`update:${skill.id}`) && <Working>Updating</Working>}
               </div>
-              {skill.description && <small>{short(skill.description)}</small>}
+              {skill.description && <small>{truncate(skill.description, 180)}</small>}
               <small>
                 {where(data, skill.id)}
                 {sourceLabel(skill.source) === "skills.sh" && ` · ${skill.source}`} · {size(skill.size)}
@@ -490,7 +488,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                               </Badge>
                             ))}
                       </span>
-                      {k.description && <small>{short(k.description)}</small>}
+                      {k.description && <small>{truncate(k.description, 180)}</small>}
                       <small>
                         {k.files} {k.files === 1 ? "file" : "files"} · {size(k.size)}
                       </small>

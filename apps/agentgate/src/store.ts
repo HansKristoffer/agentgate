@@ -1,5 +1,5 @@
 import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, providerSchema, MAX_RECORD } from "@agentgate/protocol";
-import { nonEmpty, typedKeys } from "hanzio";
+import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
@@ -40,7 +40,7 @@ export function sqliteDetail(e: unknown, file: string) {
       return `${dir} unreadable`;
     }
   };
-  return `${(e as Error).message} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`;
+  return `${getErrorMessage(e)} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`;
 }
 
 const id = z.string().min(1).max(512);

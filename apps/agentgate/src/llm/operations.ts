@@ -1,5 +1,5 @@
 import { modelSnapshotSchema, type BatchResult, type Check, type Verification } from "@agentgate/protocol";
-import { pMap, raceAbort, typedKeys, typedSwitch } from "hanzio";
+import { getUniqueValues, pMap, raceAbort, typedKeys, typedSwitch } from "hanzio";
 import type { Credentials } from "../credentials.ts";
 import type { Store } from "../store.ts";
 import { revision } from "../configuration.ts";
@@ -22,7 +22,7 @@ export class ProxyOperations {
       const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
       const token = await raceAbort(this.creds.token(id), combined), before = revision(this.s, "credential", id);
       try {
-        const models = [...new Set(await adapter.discoverModels(token, combined))]; combined.throwIfAborted();
+        const models = getUniqueValues(await adapter.discoverModels(token, combined)); combined.throwIfAborted();
         const snapshot = modelSnapshotSchema.parse({ at: this.s.now(), models });
         if (this.s.closed || !this.s.get("account", id) || revision(this.s, "credential", id) !== before) throw new Error("Account changed during discovery");
         this.s.setLocal(`models:${id}`, JSON.stringify(snapshot)); this.s.setLocal(`modelError:${id}`, undefined); return snapshot.models;
@@ -60,7 +60,7 @@ export class ProxyOperations {
     return { accountId: id, at: this.s.now(), node: this.s.nodeId, checks };
   }
   async batch(ids: string[], action: "quota" | "verify" | "enable" | "disable" | "refresh" | "models" | "reset-cooldown", signal: AbortSignal): Promise<BatchResult[]> {
-    return pMap([...new Set(ids)], async id => {
+    return pMap(getUniqueValues(ids), async id => {
       try {
         signal.throwIfAborted(); if (!this.s.get("account", id)) throw new Error("Account does not exist");
         const toggle = (enabled: boolean) => { setAccount(this.s, id, { enabled }); return { enabled }; };

@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { typedSwitch } from "hanzio";
+import { getErrorMessage, typedSwitch } from "hanzio";
 import { atomicWrite } from "./files.ts";
 import { liveOnly, type Data, type Store } from "./store.ts";
 
@@ -197,7 +197,7 @@ export async function syncLogins(s: Store) {
       setState(s, l.id, { hash: hash(l) });
       s.log(l.id, l.account, "", 0, 0, `signed in with the login shared from ${l.from}`);
     } catch (e) {
-      setState(s, l.id, { error: (e as Error).message });
+      setState(s, l.id, { error: getErrorMessage(e) });
     }
   }
   // A forgotten machine identity must stop being used here too, or tools keep authenticating with it.

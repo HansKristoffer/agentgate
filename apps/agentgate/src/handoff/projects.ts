@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
+import { getErrorMessage, safeJsonParse } from "hanzio";
 import { join } from "node:path";
 import { projectIdSchema, projectSchema } from "@agentgate/protocol";
 import { canonicalProject, parseRemote, scanRepos } from "../mcp/gateway.ts";
@@ -92,7 +93,7 @@ export async function syncT3Projects(h: Handoffs) {
       }
     } catch (e) {
       if (e instanceof T3PermissionError) denied = e.message;
-      else errors.set((e as Error).message, [...errors.get((e as Error).message) ?? [], p.id]);
+      else { const message = getErrorMessage(e); errors.set(message, [...errors.get(message) ?? [], p.id]); }
     }
   }
   report([...denied ? [denied] : [], ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
@@ -102,8 +103,7 @@ export async function syncT3Projects(h: Handoffs) {
 function localCheckouts(h: Handoffs) {
   const found = new Map<string, string>();
   const add = (repo: string, path: string) => { if (existsSync(join(path, ".git")) && !found.has(repo.toLowerCase())) found.set(repo.toLowerCase(), path); };
-  let registered: Record<string, string> = {};
-  try { registered = JSON.parse(h.s.local("checkouts") ?? "{}"); } catch { } // SkillLinks.checkouts()
+  const registered = safeJsonParse<Record<string, string>>(h.s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
   for (const [path, repo] of Object.entries(registered)) add(repo, path);
   if (existsSync(h.options.cloneDir)) for (const { repo, path } of scanRepos(h.options.cloneDir)) add(repo, path);
   return found;
