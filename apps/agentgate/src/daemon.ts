@@ -1,4 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono";
+import { safeEqual } from "hanzio/crypto";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { Credentials, drainRefresh } from "./credentials.ts";
@@ -116,7 +117,7 @@ export function app(ctx: Ctx) {
     if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
-      if (!token || c.req.header("authorization") !== `Bearer ${token}`) return c.json({ error: "unauthorized" }, 401);
+      if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`)) return c.json({ error: "unauthorized" }, 401);
     }
     await next();
   });

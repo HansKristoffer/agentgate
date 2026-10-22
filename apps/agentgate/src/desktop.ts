@@ -1,4 +1,5 @@
 import type { DesktopLogin, DesktopMode, DesktopStatus } from "@agentgate/protocol";
+import { isRecord, mapValues, pick } from "hanzio";
 import { Database } from "bun:sqlite";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -69,7 +70,7 @@ const gatewayUrl = () => `${LOCAL_URL}/anthropic`;
 function readJson(file: string): Record<string, any> {
   if (!existsSync(file)) return {};
   const value = JSON.parse(readFileSync(file, "utf8"));
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${file}: expected an object`);
+  if (!isRecord(value)) throw new Error(`${file}: expected an object`);
   return value;
 }
 /** File writes, replaced in tests to simulate a failing disk. */
@@ -104,10 +105,10 @@ export function readLogin(): Login | undefined {
     // No session cookie yet: Chromium flushes cookies to disk up to ~30 s after a sign-in.
     const session = raw.find((r) => r.name === "sessionKey") ?? raw.find((r) => String(r.name).startsWith("sessionKey"));
     if (!session) return undefined;
-    const cookies = raw.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v instanceof Uint8Array ? { b64: Buffer.from(v).toString("base64") } : v as string | number | null])));
+    const cookies = raw.map((r) => mapValues(r, (v) => v instanceof Uint8Array ? { b64: Buffer.from(v).toString("base64") } : v as string | number | null));
     return {
       accountUuid, capturedAt: Date.now(), desktopVersion: host.version(), cookieSchema: schemaOf(db), sessionExpiresAt: chromeTime(session.expires_utc), cookies,
-      config: Object.fromEntries(DESKTOP.keys.filter((k) => k in config).map((k) => [k, config[k]])),
+      config: pick(config, DESKTOP.keys),
     };
   } finally { db.close(); }
 }

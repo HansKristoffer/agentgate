@@ -2,6 +2,8 @@ import {
   RELAY_LIMITS, RELAY_PROTOCOL, changesResponse, createRequest, pushRequest, relayGeneration, relayNode,
   type ChangesResponse, type RelayEntry,
 } from "@agentgate/protocol/relay";
+import { typedFromEntries } from "hanzio";
+import { bytesToHex, randomBytes, safeEqual } from "hanzio/crypto";
 
 /** The relay never decrypts anything: a group is an upsert-only mailbox of sealed entries. */
 
@@ -66,15 +68,6 @@ export interface Admission {
 
 const fail = (status: number, error: string, extra: Record<string, unknown> = {}): Reply => ({ status, body: { error, ...extra } });
 const ok = (body: unknown): Reply => ({ status: 200, body });
-const randomHex = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
-
-/** Constant-time comparison of two hex digests. */
-export function sameHash(a: string, b: string) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
 
 export class Window {
   private start = 0;
@@ -121,7 +114,7 @@ export class GroupCore {
     if (!this.sql.all("select 1 from sqlite_master where type = 'table' and name = 'meta'").length) return undefined;
     const rows = this.sql.all<{ k: string; v: SqlValue }>("select k, v from meta");
     if (!rows.length) return undefined;
-    const m = Object.fromEntries(rows.map((r) => [r.k, r.v])) as Record<string, SqlValue>;
+    const m = typedFromEntries(rows.map((r) => [r.k, r.v] as const));
     return {
       groupId: String(m.groupId ?? ""), authHash: String(m.authHash ?? ""), generation: String(m.generation ?? ""),
       head: Number(m.head ?? 0), bytes: Number(m.bytes ?? 0), lastActive: Number(m.lastActive ?? 0), alarmAt: Number(m.alarmAt ?? 0), deleting: Number(m.deleting ?? 0), admitted: Number(m.admitted ?? 0),
@@ -160,13 +153,13 @@ export class GroupCore {
 
     if (req.op === "create") {
       if (!createRequest.safeParse(req.body).success) return fail(400, "unsupported relay protocol", { code: "protocol" });
-      if (m && !sameHash(m.authHash, req.authHash)) return this.unauthorized(now);
+      if (m && !safeEqual(m.authHash, req.authHash)) return this.unauthorized(now);
       if (!m?.admitted) {
         // Record first, with an alarm, then reserve: a crash at any point leaves storage the alarm
         // deletes, releasing a slot the reservation may already hold. A retry resumes the record.
         await this.deps.setAlarm(now + PENDING_MS);
         this.init();
-        this.sql.tx(() => this.set({ groupId: req.groupId, authHash: req.authHash, generation: m?.generation ?? randomHex(), head: 0, bytes: 0, lastActive: now, alarmAt: now + PENDING_MS, deleting: 0, admitted: 0 }));
+        this.sql.tx(() => this.set({ groupId: req.groupId, authHash: req.authHash, generation: m?.generation ?? bytesToHex(randomBytes(16)), head: 0, bytes: 0, lastActive: now, alarmAt: now + PENDING_MS, deleting: 0, admitted: 0 }));
         const refused = await this.deps.admission.reserve(req.groupId, req.ipHash);
         if (refused) { await this.deps.deleteAll(); return refused; }
         this.set({ admitted: 1, alarmAt: 0 }); // touch() below moves the alarm to retention
@@ -177,7 +170,7 @@ export class GroupCore {
     }
 
     if (!m?.admitted) return fail(404, "no such group", { code: "missing" });
-    if (!sameHash(m.authHash, req.authHash)) return this.unauthorized(now);
+    if (!safeEqual(m.authHash, req.authHash)) return this.unauthorized(now);
 
     if (req.op === "delete") {
       await this.destroy(m.groupId);

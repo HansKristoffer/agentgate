@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, toast } from "@heroui/react";
+import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
 import { ArrowLeftRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
 import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
 import {
@@ -248,7 +249,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
 
       if (!live.current) return;
       setNodes(next);
-      const found = tracked.filter((j): j is HandoffJob => !!j);
+      const found = tracked.filter(isTruthy);
       setJobs((old) => ({ ...old, ...Object.fromEntries(found.map((j) => [j.id, j])) }));
       const finished = new Set(found.filter((j) => j.status !== "running").map((j) => j.id));
       if (finished.size) setStarted((old) => old.filter((s) => !finished.has(s.handoffId)));
@@ -338,7 +339,11 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
                 {j.status !== "running" && j.status !== "failed" && <small>{timings(j)}</small>}
                 {j.warnings.map((w) => <small key={w}>{w}</small>)}
               </div>
-              <Badge good={j.status === "imported" || j.status === "done"}>{j.status === "running" ? "Moving" : j.status === "failed" ? "Failed" : "Done"}</Badge>
+              <Badge good={j.status === "imported" || j.status === "done"}>{typedSwitch(j.status, {
+                running: () => "Moving",
+                failed: () => "Failed",
+                ...typedSwitchGroup(j.status, ["imported", "done"], () => "Done"),
+              })}</Badge>
             </div>
           ))}
         </Panel>

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { typedKeys } from "hanzio";
 import { Button } from "@heroui/react";
 import {
   settingsSchema,
@@ -6,7 +7,6 @@ import {
   type Settings,
   type RouteExplanation,
   type SettingsUpdateResult,
-  type Provider,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
@@ -111,7 +111,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
         }
       >
         {data.daemon &&
-          (Object.keys(data.daemon.providers) as Provider[]).map((provider) => (
+          typedKeys(data.daemon.providers).map((provider) => (
             <div className="item" key={provider}>
               <div className={`provider-icon ${provider}`}>
                 {providerIcon(provider)}

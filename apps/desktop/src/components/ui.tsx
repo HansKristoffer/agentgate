@@ -1,4 +1,5 @@
 import { createPortal } from "react-dom";
+import { isTruthy } from "hanzio";
 import { Ellipsis } from "lucide-react";
 import {
   createContext,
@@ -296,7 +297,7 @@ export function Check({
 type MenuAction = { label: string; onAction: () => void; danger?: boolean };
 /** A row's secondary actions behind "⋯"; falsy entries are skipped. */
 export function RowMenu({ label, items }: { label: string; items: (MenuAction | false | undefined)[] }) {
-  const list = items.filter((i): i is MenuAction => !!i);
+  const list = items.filter(isTruthy);
   if (!list.length) return null;
   return (
     <Dropdown>

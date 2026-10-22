@@ -1,9 +1,10 @@
 import type { AccountStatus, Failure } from "@agentgate/protocol";
+import { clamp, raceAbort, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin } from "../credentials.ts";
 import { revision } from "../configuration.ts";
 import { BodyTooLarge, MAX_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import { Budget, abortable } from "./policy.ts";
+import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
 import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
@@ -16,7 +17,10 @@ const HOP_HEADERS = ["host", "connection", "content-length", "transfer-encoding"
 export function exhaustedResponse(provider: ProviderName, resetAt: number | undefined, now: number): Response {
   const secs = resetAt ? Math.max(1, Math.ceil((resetAt - now) / 1000)) : 3600;
   const message = `agentgate: every ${provider} account has reached its usage limit; resets in ${Math.ceil(secs / 60)} min`;
-  const body = provider === "claude" ? { type: "error", error: { type: "rate_limit_error", message } } : { error: { type: "usage_limit_reached", message, resets_in_seconds: secs } };
+  const body = typedSwitch(provider, {
+    claude: () => ({ type: "error", error: { type: "rate_limit_error", message } }),
+    ...typedSwitchGroup(provider, ["codex", "cursor"], () => ({ error: { type: "usage_limit_reached", message, resets_in_seconds: secs } })),
+  });
   return Response.json(body, { status: 429, headers: { "retry-after": String(secs) } });
 }
 function cleanHeaders(h: Headers): Headers {
@@ -97,7 +101,8 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
     }
     accountCount++;
     let credential: import("../store.ts").Credential;
-    try { credential = await abortable(creds.token(account.id), budget.signal); }
+    // Cancelling stops only this wait; coordinated credential work stays owned and drained by Credentials.
+    try { credential = await raceAbort(creds.token(account.id), budget.signal); }
     catch (e) { if (budget.signal.aborted) continue; if (!(e instanceof NeedsLogin)) s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "credential unavailable"); tried.add(account.id); unavailable = true; continue; }
     let authRetried = false, rateRetries = 0;
     for (;;) {
@@ -121,7 +126,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
         catch { release(); return error(502, "upstream rejection response too large or timed out", "transient"); }
         release(); const failure = classify(provider, res.status, res.headers, text); attempt.failure = failure; telemetry.saveAttempt(attempt);
         if (res.status === 401) {
-          if (!authRetried) { authRetried = true; try { const next = await abortable(creds.refresh(account.id), budget.signal); if (next.accessToken !== credential.accessToken) { credential = next; continue; } } catch {} }
+          if (!authRetried) { authRetried = true; try { const next = await raceAbort(creds.refresh(account.id), budget.signal); if (next.accessToken !== credential.accessToken) { credential = next; continue; } } catch {} }
           tried.add(account.id); unavailable = true; break;
         }
         if (failure === "quota") {
@@ -135,7 +140,7 @@ export async function proxy(s: Store, creds: Credentials, provider: Provider, re
         if (failure === "rate") {
           const delay = retryAfterMs(res.headers, s.now()); cool(s, account.id, "rate", s.now() + delay);
           if (rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) && delay < budget.remaining()) {
-            try { await sleep(delay + Math.min(250, Math.max(0, budget.remaining() - delay - 1)) * Math.random(), budget.signal); } catch { break; }
+            try { await sleep(delay + clamp(budget.remaining() - delay - 1, 0, 250) * Math.random(), budget.signal); } catch { break; }
             continue;
           }
         }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { clamp, timeoutSignal } from "hanzio";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
@@ -112,15 +113,14 @@ export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exha
     if (typeof w?.utilization !== "number") continue;
     const reset = Date.parse(w.resets_at ?? "");
     // A locked window counts as full, so the pool skips the account (for that window's models) until it resets.
-    windows.push({ name, usedPct: w.locked_reason ? 100 : Math.min(100, Math.max(0, w.utilization)), resetsAt: Number.isFinite(reset) ? reset : undefined });
+    windows.push({ name, usedPct: w.locked_reason ? 100 : clamp(w.utilization, 0, 100), resetsAt: Number.isFinite(reset) ? reset : undefined });
   }
   if (!windows.length) return undefined;
   return { windows, status: windows.some((w) => w.usedPct >= 100) ? "exhausted" : "ok" };
 }
 
 export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
-  const timeout = AbortSignal.timeout(10_000);
-  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout }, 10_000);
+  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: timeoutSignal(10_000, signal) }, 10_000);
   if (!res.ok) { await res.body?.cancel(); throw new Error(`usage request failed (${res.status})`); }
   return parseUsage(JSON.parse(new TextDecoder().decode(await readBody(res.body, 256 * 1024, signal))));
 }

@@ -1,4 +1,5 @@
 import type { SkillHealth } from "@agentgate/protocol";
+import { getErrorMessage } from "hanzio";
 import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, unlinkSync, watch, writeFileSync, type FSWatcher } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
@@ -142,7 +143,7 @@ export class SkillLinks {
 
   private attempt(path: string, action: () => void) {
     try { action(); } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       this.errors.push({ path, message });
       console.error(`skills: ${path}: ${message}`);
     }

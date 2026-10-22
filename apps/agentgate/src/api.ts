@@ -11,6 +11,7 @@ import {
   type Status,
   type ToolPreview,
 } from "@agentgate/protocol";
+import { recordFromKeys, sumBy } from "hanzio";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { homedir } from "node:os";
@@ -225,12 +226,7 @@ export function management(ctx: Ctx) {
         cursor: p.cursor,
         error: s.local(`syncError:${p.node}`) ? "Sync failed" : undefined,
       })),
-      unknownQuota: Object.fromEntries(
-        (["claude", "codex"] as const).map((p) => [
-          p,
-          s.local(`quotaUnknown:${p}`),
-        ]),
-      ),
+      unknownQuota: recordFromKeys(["claude", "codex"], (p) => s.local(`quotaUnknown:${p}`)),
       activity: s.db
         .query(
           "select at, provider, account, model, status, ms, note from request_log order by at desc limit 50",
@@ -433,7 +429,7 @@ export function management(ctx: Ctx) {
         const existing = s.get("skill", k.id);
         return {
           id: k.id, description: k.description, files: k.files.length,
-          size: k.files.reduce((n, file) => n + decodedSize(file.data), 0),
+          size: sumBy(k.files, (file) => decodedSize(file.data)),
           hash: k.hash, security: k.security, installed: !!existing,
           conflict: existing && existing.source !== f.source ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}` : undefined,
         };

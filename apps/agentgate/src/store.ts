@@ -1,4 +1,5 @@
 import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, providerSchema, MAX_RECORD } from "@agentgate/protocol";
+import { nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { Database } from "bun:sqlite";
@@ -145,7 +146,7 @@ export interface Rec {
 }
 
 export const recordSchema = z.object({
-  kind: z.enum(Object.keys(schemas) as [Kind, ...Kind[]]), id,
+  kind: z.enum(nonEmpty(typedKeys(schemas))), id,
   rev: z.number().int().nonnegative(), node: id, updated_at: timestamp,
   deleted: z.union([z.literal(0), z.literal(1)]), data: z.string().max(MAX_RECORD), seq: timestamp.optional(),
 });

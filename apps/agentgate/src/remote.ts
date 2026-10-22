@@ -1,7 +1,9 @@
 import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
+import { randomToken } from "hanzio/crypto";
+import { getErrorMessage } from "hanzio";
 import { REMOTE_LIMITS, relayFrame, sha256Hex, type RemoteResponseFrame } from "@agentgate/protocol/remote";
 import type { Gateway } from "./mcp/gateway.ts";
-import { b64url, checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
+import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
@@ -17,8 +19,7 @@ export const NODE_PROTOCOL = 7;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
-const random = (bytes: number) => b64url(crypto.getRandomValues(new Uint8Array(bytes)));
-const fresh = (relay: string, servedBy: string, enabled: boolean): Remote => ({ key: random(16), secret: random(32), token: random(32), enabled, servedBy, relay });
+const fresh = (relay: string, servedBy: string, enabled: boolean): Remote => ({ key: randomToken(16), secret: randomToken(32), token: randomToken(32), enabled, servedBy, relay });
 export const endpointUrl = (r: Remote) => `${r.relay}/mcp/${r.key}`;
 
 function virtualProject(s: Store, id: string): Project {
@@ -67,7 +68,7 @@ export function disableRemote(s: Store, id: string) {
 export function rotateSecret(s: Store, id: string): { url: string; secret: string } {
   const p = virtualProject(s, id);
   if (!p.remote) throw new Error(`${id} has no remote endpoint; enable it first`);
-  const remote = { ...p.remote, secret: random(32) };
+  const remote = { ...p.remote, secret: randomToken(32) };
   s.put("project", id, { ...p, remote });
   return { url: endpointUrl(remote), secret: remote.secret };
 }
@@ -128,7 +129,7 @@ interface Conn {
   inflight: Map<string, AbortController>;
 }
 
-const describe = (e: unknown) => String((e as Error)?.message ?? e).slice(0, 200);
+const describe = (e: unknown) => getErrorMessage(e).slice(0, 200);
 
 /** Keeps one socket per endpoint this node serves and pushes the secret hash the relay checks. */
 export class RemoteEndpoints {

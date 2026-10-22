@@ -1,4 +1,5 @@
 import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { sumBy } from "hanzio";
 import { gzipSync } from "node:zlib";
 import { dirname, join } from "node:path";
 import { sleep } from "../runtime.ts";
@@ -259,7 +260,7 @@ async function send(h: Handoffs, job: Job<SourceState>) {
     await peerCall(h.s, job.target, `/handoff/${job.id}/prepare`, { json: prepareInput(st) });
 
     // One chunk size for Tailscale and the relay, each gzipped on its own. A retry restarts a file at offset 0.
-    if (transport(h.s, job.target) === "relay" && st.files!.reduce((n, f) => n + f.size, 0) > RELAY_MAX) {
+    if (transport(h.s, job.target) === "relay" && sumBy(st.files!, "size") > RELAY_MAX) {
       throw new T3Error("the thread's code and session are larger than the relay takes (512 MiB); pair the machines over Tailscale");
     }
     for (const f of st.files!) {

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { typedSwitch } from "hanzio";
 import { Button, Tabs } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
@@ -25,6 +26,7 @@ import {
   idPath,
   providerIcon,
   providerName,
+  toolName,
   confirmDelete,
   planName,
 } from "./utils.ts";
@@ -32,22 +34,19 @@ import {
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
 function poolSummary(accounts: AccountStatus[], provider: Provider, app?: DesktopStatus) {
-  const tool = provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor";
+  const tool = toolName(provider);
   const pinned = accounts.find((a) => a.account.pinned);
   if (pinned) {
     const desktop = app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
     return `Pinned: ${tool} uses ${pinned.account.label} while it has room.${desktop} Unpin it to go back to automatic.`;
   }
-  const current = app?.mode === "signed-in" ? app.current : undefined;
   const desktop = !app
     ? ""
-    : app.mode === "pool"
-      ? " Claude Desktop shares your subscriptions in its Code tab."
-      : app.mode === "other-gateway"
-        ? " Claude Desktop uses another gateway."
-        : current
-          ? ` Claude Desktop stays on ${nameOf(current)}.`
-          : " Claude Desktop isn't signed in.";
+    : typedSwitch(app.mode, {
+        pool: () => " Claude Desktop shares your subscriptions in its Code tab.",
+        "other-gateway": () => " Claude Desktop uses another gateway.",
+        "signed-in": () => (app.current ? ` Claude Desktop stays on ${nameOf(app.current)}.` : " Claude Desktop isn't signed in."),
+      });
   return `Automatic: ${tool} uses the account with the most room left. Pin an account to prefer it.${desktop}`;
 }
 
@@ -146,11 +145,11 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           detail={
             data.accounts.some((a) => a.account.provider === provider)
               ? poolSummary(data.accounts.filter((a) => a.account.provider === provider), provider, provider === "claude" ? app : undefined)
-              : provider === "claude"
-                ? "Claude subscriptions, shared across your sessions."
-                : provider === "codex"
-                  ? "ChatGPT subscriptions for your Codex sessions."
-                  : "Cursor subscriptions, shared across sessions pointed at this daemon."
+              : typedSwitch(provider, {
+                  claude: () => "Claude subscriptions, shared across your sessions.",
+                  codex: () => "ChatGPT subscriptions for your Codex sessions.",
+                  cursor: () => "Cursor subscriptions, shared across sessions pointed at this daemon.",
+                })
           }
           action={
             provider === "claude" &&
@@ -190,7 +189,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           .join(" · ")}
                       </small>
                     </div>
-                    {a.active && a.account.enabled && <Badge good>In {provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor"}</Badge>}
+                    {a.active && a.account.enabled && <Badge good>In {toolName(provider)}</Badge>}
                     {app?.mode === "signed-in" && app.current?.accountId === a.account.id && <Badge good>In Claude Desktop</Badge>}
                     {problem(a) && <Badge>{problem(a)}</Badge>}
                     {unsaved?.accountId === a.account.id && (

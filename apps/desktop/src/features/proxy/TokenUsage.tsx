@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Tabs } from "@heroui/react";
+import { sumBy, typedSwitch } from "hanzio";
 import type { Connection, ModelTokens } from "@agentgate/protocol";
 import { request } from "../../api.ts";
 import { Empty, Panel } from "../../components/ui.tsx";
@@ -13,9 +14,12 @@ const RANGES = [
 ] as const;
 type Range = (typeof RANGES)[number]["id"];
 const since = (range: Range) =>
-  range === "all" ? 0
-  : range === "today" ? new Date().setHours(0, 0, 0, 0)
-  : Date.now() - (range === "7d" ? 7 : 30) * 86400000;
+  typedSwitch(range, {
+    all: () => 0,
+    today: () => new Date().setHours(0, 0, 0, 0),
+    "7d": () => Date.now() - 7 * 86400000,
+    "30d": () => Date.now() - 30 * 86400000,
+  });
 /** Slices past this fold into "Other", so a slot's colour always means the same rank. */
 const SLICES = 6;
 const total = (t: ModelTokens) => t.input + t.output + t.cacheRead + t.cacheWrite;
@@ -40,9 +44,9 @@ export function TokenUsage({ connection }: { connection: Connection }) {
 
   // Rows are per provider and model, so the same model name can appear for Cursor and for its own provider.
   const top = (rows ?? []).slice(0, SLICES).map((r) => ({ key: `${r.provider}:${r.model}`, label: r.provider === "cursor" ? `${r.model} (Cursor)` : r.model, value: total(r), detail: r }));
-  const rest = (rows ?? []).slice(SLICES).reduce((sum, r) => sum + total(r), 0);
+  const rest = sumBy((rows ?? []).slice(SLICES), total);
   const slices = rest ? [...top, { key: "other", label: "Other", value: rest, detail: undefined }] : top;
-  const sum = slices.reduce((s, x) => s + x.value, 0);
+  const sum = sumBy(slices, "value");
   let angle = 0;
 
   return (

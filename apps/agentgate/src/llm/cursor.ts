@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { clamp } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -73,7 +74,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
   const used = body?.planUsage?.totalPercentUsed;
   if (typeof used !== "number" || !Number.isFinite(used)) return undefined;
   const reset = Number(body?.billingCycleEnd);
-  const usedPct = Math.min(100, Math.max(0, used));
+  const usedPct = clamp(used, 0, 100);
   return { windows: [{ name: "month", usedPct, resetsAt: Number.isFinite(reset) && reset > 0 ? reset : undefined, scope: { kind: "account" } }], status: usedPct >= 100 ? "exhausted" : "ok" };
 }
 
@@ -135,7 +136,7 @@ export async function finish(s: Store, uuid: string, verifier: string, label: st
     await res.body?.cancel();
     // 404 means not signed in yet; Cursor's CLI retries server errors the same way.
     if (res.status !== 404 && res.status < 500) throw new Error(`Cursor sign-in failed (${res.status})`);
-    await sleep(Math.min(CURSOR.pollMs, Math.max(0, deadline - Date.now())), signal);
+    await sleep(clamp(deadline - Date.now(), 0, CURSOR.pollMs), signal);
   }
   return undefined;
 }

@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { typedSwitch } from "hanzio";
 import { TriangleAlert } from "lucide-react";
 import { Spinner } from "@heroui/react";
 import type { AccountStatus } from "@agentgate/protocol";
@@ -80,11 +81,7 @@ export function QuotaNotes({ account }: { account: AccountStatus }) {
       {cooldowns.map((c) => (
         <div className="row" key={`${c.scope}:${c.model ?? ""}`}>
           <Badge>
-            {c.reason === "rate"
-              ? "Rate limited"
-              : c.reason === "model"
-                ? "Model unavailable"
-                : "Upstream backoff"}
+            {typedSwitch(c.reason, { rate: () => "Rate limited", model: () => "Model unavailable" }, () => "Upstream backoff")}
           </Badge>
           <small>
             {c.model ?? "All models"} · retry in{" "}

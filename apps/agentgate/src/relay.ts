@@ -2,6 +2,8 @@ import {
   RELAY_LIMITS, RELAY_PROTOCOL, changesResponse, checkPage, errorResponse, groupState, nodesResponse,
   type ChangesResponse, type RelayEnvelope,
 } from "@agentgate/protocol/relay";
+import { randomToken } from "hanzio/crypto";
+import { isTruthy } from "hanzio";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, type Rec, type Store } from "./store.ts";
 import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
@@ -50,7 +52,7 @@ export function parseInvite(text: string): Invite {
 }
 
 export function makeInvite(url: string): string {
-  return `agr1.${b64url(new TextEncoder().encode(checkRelayUrl(url)))}.${b64url(crypto.getRandomValues(new Uint8Array(32)))}`;
+  return `agr1.${b64url(new TextEncoder().encode(checkRelayUrl(url)))}.${randomToken(32)}`;
 }
 
 export interface Keys { groupId: string; authToken: string; enc: CryptoKey; mac: CryptoKey }
@@ -614,7 +616,7 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
 /** Stop using the relay here. `wipe` queues deletion of the group; a failure never re-enables sync. */
 export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: boolean }> {
   return withRelay(s, async (signal) => {
-    const groups = await Promise.all((["active", "rot"] as const).map((t) => get(s, t, "invite")).filter(Boolean).map(async (i) => ({ invite: i!, grp: (await conn(s, i!)).keys.groupId })));
+    const groups = await Promise.all((["active", "rot"] as const).map((t) => get(s, t, "invite")).filter(isTruthy).map(async (i) => ({ invite: i, grp: (await conn(s, i)).keys.groupId })));
     s.transaction(() => {
       if (wipe) setCleanups(s, [...cleanups(s).filter((j) => !groups.some((g) => g.invite === j.invite)), ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 }))]);
       for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);

@@ -1,6 +1,7 @@
 // The machine health dashboard at HEALTH_PATH, sampled while this node's healthDashboard setting is on. It reads /proc,
 // /sys and pressure stall files as the daemon's own user, so it runs on Linux only.
 import { existsSync, readdirSync, readFileSync, statfsSync } from "node:fs";
+import { sumBy } from "hanzio";
 import os from "node:os";
 import { t3State } from "./handoff/t3.ts";
 import { HEALTH_PAGE } from "./health-page.ts";
@@ -39,7 +40,7 @@ function cpuTimes() {
   const fields = read("/proc/stat").split("\n")[0]!.trim().split(/\s+/).slice(1).map(Number);
   return {
     idle: fields[3]! + fields[4]!,
-    total: fields.reduce((sum, value) => sum + value, 0),
+    total: sumBy(fields, (value) => value),
   };
 }
 

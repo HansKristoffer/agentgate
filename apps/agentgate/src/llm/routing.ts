@@ -3,6 +3,7 @@ import {
   type QuotaWindow,
   type RouteExplanation,
 } from "@agentgate/protocol";
+import { once } from "hanzio";
 import type { Account, Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 import { exhausted, relevant } from "./quota.ts";
@@ -289,15 +290,11 @@ export function beginRoute(
       expires: s.now() + s.settings().affinityTtlMs,
     });
   }
-  let done = false;
-  return () => {
-    if (!done) {
-      done = true;
-      const count = Math.max(0, (node.counts.get(id) ?? 1) - 1);
-      if (count) node.counts.set(id, count);
-      else node.counts.delete(id);
-    }
-  };
+  return once(() => {
+    const count = Math.max(0, (node.counts.get(id) ?? 1) - 1);
+    if (count) node.counts.set(id, count);
+    else node.counts.delete(id);
+  });
 }
 export function continuationAccount(s: Store, id: string) {
   const node = state(s);

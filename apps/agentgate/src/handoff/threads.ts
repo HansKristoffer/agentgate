@@ -1,4 +1,5 @@
 import { firstServer, handoffTargets, type HandoffJob, type NodeThreads, type T3NodeState, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
+import { isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { startHandoff, type SourceState } from "./source.ts";
@@ -51,7 +52,7 @@ type ProjectShell = { title: string; repositoryIdentity?: { canonicalKey?: strin
 function projectLabel(project: ProjectShell, all: ProjectShell[]) {
   const key = project.repositoryIdentity?.canonicalKey;
   const members = key ? all.filter((p) => p.repositoryIdentity?.canonicalKey === key) : [project];
-  const unique = (values: (string | undefined)[]) => [...new Set(values.filter((v): v is string => !!v))];
+  const unique = (values: (string | undefined)[]) => [...new Set(values.filter(isTruthy))];
   const titles = unique(members.map((m) => m.title));
   const displayNames = unique(members.map((m) => m.repositoryIdentity?.displayName));
   const names = unique(members.map((m) => m.repositoryIdentity?.name));
@@ -76,9 +77,11 @@ const byCode = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 
 /** Threads the user dragged into place, in key order, and the others newest first by `anchor`. */
 function arranged<T extends Ordered>(threads: T[], key: (t: T) => string | null | undefined, anchor: (t: T) => number) {
-  const keyed = threads.filter((t) => key(t) != null).sort((a, b) => byCode(key(a)!, key(b)!) || a.id.localeCompare(b.id));
-  const loose = threads.filter((t) => key(t) == null).sort((a, b) => anchor(b) - anchor(a) || a.id.localeCompare(b.id));
-  return { keyed, loose };
+  const [keyed, loose] = partition(threads, (t) => key(t) != null);
+  return {
+    keyed: keyed.sort((a, b) => byCode(key(a)!, key(b)!) || a.id.localeCompare(b.id)),
+    loose: loose.sort((a, b) => anchor(b) - anchor(a) || a.id.localeCompare(b.id)),
+  };
 }
 
 /** T3's default sidebar order (client-runtime threadSort.ts): pinned threads first, arranged ones before the rest;

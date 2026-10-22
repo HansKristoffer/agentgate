@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { encodeBase64Url, randomToken, sha256 } from "hanzio/crypto";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
 import type { Credential, Data, Store } from "./store.ts";
 import { awakeFor, lastSeen, listeningFor } from "./sync.ts";
@@ -171,12 +172,10 @@ export class Credentials {
   }
 }
 
-const b64url = (b: ArrayBuffer | Uint8Array) => Buffer.from(b instanceof Uint8Array ? b : new Uint8Array(b)).toString("base64url");
-
 export async function pkce() {
-  const verifier = b64url(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-  return { verifier, challenge, state: b64url(crypto.getRandomValues(new Uint8Array(32))) };
+  const verifier = randomToken(32);
+  const challenge = encodeBase64Url(await sha256(verifier));
+  return { verifier, challenge, state: randomToken(32) };
 }
 
 export function jwtClaims(jwt: string): Record<string, any> {

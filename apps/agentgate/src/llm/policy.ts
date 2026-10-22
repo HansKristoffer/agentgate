@@ -40,11 +40,3 @@ export class Budget {
   remaining() { return Math.max(0, this.deadline - performance.now()); }
   close() { clearTimeout(this.timer); }
 }
-/** Cancellation stops the caller's wait; coordinated credential work remains owned and drained by Credentials. */
-export async function abortable<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  let abort!: () => void;
-  const cancelled = new Promise<never>((_, reject) => { abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true }); });
-  try { return await Promise.race([task, cancelled]); }
-  finally { signal.removeEventListener("abort", abort); }
-}

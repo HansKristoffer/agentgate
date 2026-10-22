@@ -1,4 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, truncateSync } from "node:fs";
+import { clamp } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
@@ -56,7 +57,7 @@ export async function waitForService(url = `${LOCAL_URL}/api/status`, timeout = 
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))), redirect: "error" });
+      const response = await fetch(url, { signal: AbortSignal.timeout(clamp(deadline - Date.now(), 1, 1000)), redirect: "error" });
       await response.body?.cancel();
       if (response.ok) return;
     } catch { /* The listener may not have started yet. */ }

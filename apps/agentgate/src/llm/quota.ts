@@ -4,10 +4,10 @@ import {
   matchesQuotaWindow as matchesWindow,
   type QuotaWindow,
 } from "@agentgate/protocol";
+import { pMap, raceAbort } from "hanzio";
 import type { Credentials } from "../credentials.ts";
 import type { Store, Usage } from "../store.ts";
 import { revision } from "../configuration.ts";
-import { abortable } from "./policy.ts";
 import type { Observation, Provider, ProviderName } from "./provider.ts";
 
 export const QUOTA_STALE = 10 * 60_000;
@@ -105,7 +105,7 @@ export class Quotas {
     let map = flights.get(this.s);
     if (!map) flights.set(this.s, (map = new Map()));
     const running = map.get(id);
-    if (running) return abortable(running, signal);
+    if (running) return raceAbort(running, signal);
     const task = this.fetch(id, signal, force);
     map.set(id, task);
     void task.finally(() => map!.delete(id)).catch(() => {});
@@ -137,7 +137,7 @@ export class Quotas {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
     let credentialRev = revision(s, "credential", id);
     try {
-      const token = await abortable(this.creds.token(id), combined);
+      const token = await raceAbort(this.creds.token(id), combined);
       credentialRev = revision(s, "credential", id);
       const result = await provider.fetchQuota(token, combined);
       combined.throwIfAborted();
@@ -179,26 +179,8 @@ export class Quotas {
       .list("account")
       .filter((a) => a.enabled)
       .map((a) => a.id);
-    await bounded(ids, async (id) => {
+    await pMap(ids, async (id) => {
       if (!signal.aborted) await this.refresh(id, signal).catch(() => {});
-    });
+    }, { concurrency: 4 });
   }
-}
-export async function bounded<T, R>(
-  items: T[],
-  run: (item: T) => Promise<R>,
-  concurrency = 4,
-): Promise<R[]> {
-  const result = new Array<R>(items.length);
-  let cursor = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-      for (;;) {
-        const i = cursor++;
-        if (i >= items.length) return;
-        result[i] = await run(items[i]!);
-      }
-    }),
-  );
-  return result;
 }

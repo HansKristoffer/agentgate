@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isTruthy } from "hanzio";
 import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
 export * from "./skills.ts";
@@ -101,7 +102,7 @@ export const HEALTH_PATH = "/health";
  * version reporting, so it is older too once any node reports one. */
 export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {
   const compare = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
-  const newest = nodes.map((n) => n.version).filter((v): v is string => !!v).sort(compare).at(-1);
+  const newest = nodes.map((n) => n.version).filter(isTruthy).sort(compare).at(-1);
   return newest ? nodes.filter((n) => !n.version || compare(n.version, newest) < 0) : [];
 }
 export const settingsSchema = z.object({

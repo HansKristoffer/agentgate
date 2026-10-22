@@ -9,6 +9,7 @@ import {
   type RequestDetail,
   type RequestPage,
 } from "@agentgate/protocol";
+import { clamp } from "hanzio";
 import type { Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
@@ -197,7 +198,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     where.push("seq < ?");
     args.push(cursor);
   }
-  const limit = Math.max(1, Math.min(100, filter.limit ?? 50));
+  const limit = clamp(filter.limit ?? 50, 1, 100);
   const rows = s.db
     .query(
       `select seq,data from proxy_requests ${where.length ? `where ${where.join(" and ")}` : ""} order by seq desc limit ?`,

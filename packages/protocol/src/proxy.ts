@@ -1,3 +1,4 @@
+import { typedSwitch } from "hanzio";
 import { z } from "zod";
 
 export const providerSchema = z.enum(["claude", "codex", "cursor"]);
@@ -97,15 +98,17 @@ export function matchesQuotaWindow(
   window: QuotaWindow,
   model?: string,
 ): boolean {
-  const scope = normalizeQuotaWindow(window).scope!;
-  if (scope.kind === "account") return true;
-  if (!model) return false;
-  if (scope.kind === "model") return model === scope.model;
-  // A family is a whole identifier segment: "notopus" does not match "opus".
-  return model
-    .toLowerCase()
-    .split(/[-._/]/)
-    .includes(scope.family.toLowerCase());
+  return typedSwitch(normalizeQuotaWindow(window).scope!, "kind", {
+    account: () => true,
+    model: (scope) => model === scope.model,
+    // A family is a whole identifier segment: "notopus" does not match "opus".
+    family: (scope) =>
+      !!model &&
+      model
+        .toLowerCase()
+        .split(/[-._/]/)
+        .includes(scope.family.toLowerCase()),
+  });
 }
 export const failureSchema = z.enum([
   "quota",

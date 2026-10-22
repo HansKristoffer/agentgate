@@ -1,4 +1,5 @@
 import { SkillConflict, projectIdSchema, skillSchema, type SkillRepoSummary, type SkillSummary } from "@agentgate/protocol";
+import { getErrorMessage } from "hanzio";
 import type { z } from "zod";
 import { canonicalProject } from "./mcp/gateway.ts";
 import { description, fetchRepo, fetchSkills, repoUrl, validateFetched, type FetchedSkill, type RepoFetcher, type SkillFetcher } from "./skill-import.ts";
@@ -156,7 +157,7 @@ export async function updateSkills(s: Store, fetch: SkillFetcher = fetchSkills, 
     if (backoff && !backoff.due(k.id)) continue;
     const outcome = await updateSkill(s, k.id, fetch, signal).then(
       (changed) => (changed ? "updated" : "up to date"),
-      (error) => `failed: ${error instanceof Error ? error.message : error}`,
+      (error) => `failed: ${getErrorMessage(error)}`,
     );
     if (!signal?.aborted) backoff?.record(k.id, outcome.startsWith("failed") ? outcome : undefined);
     results.push({ id: k.id, outcome });
@@ -246,7 +247,7 @@ export function syncSkillRepo(s: Store, input: string, fetch: RepoFetcher = fetc
       if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, syncedAt: s.now(), error: undefined }));
       return false;
     } catch (error) {
-      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: error instanceof Error ? error.message : String(error) }));
+      if (repoProjects(s, url).length) s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: getErrorMessage(error) }));
       throw error;
     }
   })().finally(() => flights!.delete(url));
@@ -259,7 +260,7 @@ export async function syncSkillRepos(s: Store, fetch: RepoFetcher = fetchRepo, s
   for (const { url } of skillRepoSummaries(s)) {
     if (signal?.aborted) return;
     if (!backoff.due(url)) continue;
-    const error = await syncSkillRepo(s, url, fetch, signal).then(() => undefined, (e) => e instanceof Error ? e.message : String(e));
+    const error = await syncSkillRepo(s, url, fetch, signal).then(() => undefined, getErrorMessage);
     if (!signal?.aborted) backoff.record(url, error);
   }
 }

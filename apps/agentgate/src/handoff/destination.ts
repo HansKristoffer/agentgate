@@ -1,4 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
@@ -44,7 +45,7 @@ export const manifestSchema = prepareSchema.extend({
   background: z.array(z.string().min(1).max(2000)).max(20).optional(),
   /** The user's queued messages, in order, queued again here behind the continued turn. */
   queued: z.array(z.string().min(1)).max(QUEUED_MAX.count)
-    .refine((q) => q.reduce((n, t) => n + t.length, 0) <= QUEUED_MAX.chars).optional(),
+    .refine((q) => sumBy(q, (t) => t.length) <= QUEUED_MAX.chars).optional(),
   oldPaths: z.array(z.string().min(1).max(4096)).max(16),
   files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
 }).strict();

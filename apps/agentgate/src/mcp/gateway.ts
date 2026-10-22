@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { anySignal, getErrorMessage, isTruthy } from "hanzio";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -171,7 +172,7 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
         // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
-        signal: signal ? AbortSignal.any([extra.signal, signal]) : extra.signal, timeout: 5 * 60_000, maxTotalTimeout: CALL_LIMIT, resetTimeoutOnProgress: true,
+        signal: anySignal(extra.signal, signal), timeout: 5 * 60_000, maxTotalTimeout: CALL_LIMIT, resetTimeoutOnProgress: true,
         onprogress: progressToken === undefined ? undefined : p => { void extra.sendNotification({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
       };
       const params = { ...req.params, name: route.tool };
@@ -263,7 +264,7 @@ export class Gateway {
       const source = this.source(project, alias).catch((e) => { this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`); return undefined; });
       return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
     }));
-    return out.filter((source): source is Source => !!source);
+    return out.filter(isTruthy);
   }
 
   private builtinTools(): Promise<Source | undefined> {
@@ -330,7 +331,7 @@ export class Gateway {
         try { return await this.source(project, alias); }
         catch (e) { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`); return undefined; }
       }));
-      return [...out.filter((source): source is Source => !!source), skills];
+      return [...out.filter(isTruthy), skills];
     };
     // A connect error carries the server's stderr and local details: logged here, never sent to the public client.
     const resolveSource = (alias: string) => alias === skills.alias ? Promise.resolve(skills) : this.source(project, alias).catch((e) => {
@@ -400,7 +401,7 @@ export class Gateway {
 
 /** A connect error that a login would fix. */
 export const needsLogin = (e: unknown) =>
-  e instanceof NeedsLogin || (e as { code?: number })?.code === 401 || /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(String((e as Error)?.message ?? e));
+  e instanceof NeedsLogin || (e as { code?: number })?.code === 401 || /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(getErrorMessage(e));
 
 /** Git repos directly inside `dir` whose origin parses as owner/repo. */
 export function scanRepos(dir: string): { repo: string; path: string }[] {

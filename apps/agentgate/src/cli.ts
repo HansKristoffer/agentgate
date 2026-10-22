@@ -3,6 +3,7 @@ import { homedir, hostname } from "node:os";
 import { relative as relativePath, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { typedSwitch } from "hanzio";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
@@ -568,7 +569,12 @@ async function main() {
       const outdated = new Set(outdatedNodes(s.list("node")).map((n) => n.id));
       for (const n of s.list("node")) {
         const u = (await import("./update.ts")).nodeUpdate(s, n.id);
-        if (u) console.log(`${n.id}: ${u.state === "installing" ? "installing an update" : u.state === "restarting" ? `restarting on agentgate ${u.version}` : u.state === "installed" ? `installed agentgate ${u.version}; restart agentgate there to use it` : `update failed: ${u.error}`}`);
+        if (u) console.log(`${n.id}: ${typedSwitch(u.state, {
+          installing: () => "installing an update",
+          restarting: () => `restarting on agentgate ${u.version}`,
+          installed: () => `installed agentgate ${u.version}; restart agentgate there to use it`,
+          failed: () => `update failed: ${u.error}`,
+        })}`);
         else if (outdated.has(n.id)) console.log(`${n.id} runs ${n.version ? `agentgate ${n.version}` : "an older agentgate"}; update it with agentgate update ${n.id}`);
       }
       return;
@@ -687,7 +693,11 @@ async function main() {
       };
       if (!sub) {
         console.log(`Claude Desktop ${st.version ?? ""}${st.running ? "" : " (not running)"}`);
-        console.log(st.mode === "pool" ? "mode: Code tab uses the pool (gateway mode)" : st.mode === "other-gateway" ? "mode: another company gateway" : `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`);
+        console.log(typedSwitch(st.mode, {
+          pool: () => "mode: Code tab uses the pool (gateway mode)",
+          "other-gateway": () => "mode: another company gateway",
+          "signed-in": () => `mode: signed in${st.current ? ` as ${name(st.current)}${st.current.saved ? "" : " (not saved: agentgate desktop capture)"}` : st.signedOut ? ", but signed out in Desktop" : " (no account)"}`,
+        }));
         for (const l of st.logins) {
           const pct = l.accountId ? Math.max(0, ...relevant(s.get("usage", l.accountId), undefined, Date.now()).map((w) => w.usedPct)) : undefined; // windows that have reset count as 0
           console.log(`  ${st.current?.accountUuid === l.accountUuid ? "*" : " "} ${name(l).padEnd(28)} ${pct === undefined ? "not in the pool" : `${Math.round(pct)}% used`}${l.expired ? "  LOGIN EXPIRED" : l.sessionExpiresAt ? `  login valid ${Math.round((l.sessionExpiresAt - Date.now()) / 86_400_000)} days` : ""}${l.problem ? `  ${l.problem}` : ""}`);

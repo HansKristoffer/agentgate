@@ -1,4 +1,5 @@
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import { sortBy } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
@@ -192,9 +193,8 @@ export function writeStore(dir: string, put: { path: string; data: Buffer; updat
 
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
 const digest = (f: CheckoutFile) => f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64"));
-const byPath = (x: CheckoutFile, y: CheckoutFile) => x.path < y.path ? -1 : x.path > y.path ? 1 : 0;
 const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
-  const plain = (fs: CheckoutFile[]) => JSON.stringify([...fs].sort(byPath).map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })));
+  const plain = (fs: CheckoutFile[]) => JSON.stringify(sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })));
   return plain(a) === plain(b);
 };
 
@@ -206,7 +206,7 @@ function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
     const newer = !mine || time(f) > time(mine) || (time(f) === time(mine) && digest(f) > digest(mine));
     if (newer) out.set(f.path, f);
   }
-  return [...out.values()].sort(byPath);
+  return sortBy([...out.values()], "path");
 }
 
 /** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */

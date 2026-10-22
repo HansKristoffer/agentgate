@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { isTruthy } from "hanzio";
 import { relayApp } from "./app.ts";
 import { AdmissionCore, GroupCore, config, type GroupRequest, type Sql, type SqlValue } from "./group.ts";
 import { EndpointCore } from "./remote.ts";
@@ -74,7 +75,7 @@ export class RelayChannel extends DurableObject<Env> {
     // Keepalives never wake a hibernated channel.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.core = new ChannelCore({
-      sockets: () => ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN).map((ws) => this.wrap(ws)).filter((s): s is ChannelSocket => !!s),
+      sockets: () => ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN).map((ws) => this.wrap(ws)).filter(isTruthy),
       // Any authenticated read proves group membership; the answer is remembered in memory.
       checkAuth: async (authHash, ipHash) => {
         const group = env.GROUPS.get(env.GROUPS.idFromName(this.groupId));

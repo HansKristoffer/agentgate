@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { typedSwitch } from "hanzio";
 import { atomicWrite } from "./files.ts";
 import { liveOnly, type Data, type Store } from "./store.ts";
 
@@ -91,31 +92,32 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
 
 /** Sign this machine in with a login another machine shared. */
 async function apply(l: Login) {
-  if (l.id === IDENTITY) {
-    atomicWrite(infisical().identity, JSON.stringify({ clientId: l.account, clientSecret: l.clientSecret, siteUrl: l.siteUrl }, null, 2));
-    return;
-  }
-  if (l.id === "github") {
-    const current = await host.gh(["auth", "token", "--hostname", "github.com"]);
-    if (!current) throw new Error("install gh to sign in to GitHub");
-    if (!current.ok || current.out !== l.token) {
-      const login = await host.gh(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"], l.token);
-      if (!login?.ok) throw new Error("gh auth login failed");
-    }
-    // git itself uses gh's login over HTTPS, which is how T3 Code clones synced projects.
-    const git = await host.gh(["auth", "setup-git", "--hostname", "github.com"]);
-    if (!git?.ok) throw new Error("gh auth setup-git failed");
-    return;
-  }
-
-  const files = infisical();
-  const entry = join(files.keyring, l.account);
-  for (const file of [files.config, entry]) {
-    const backup = `${file}.before-agentgate`;
-    if (existsSync(file) && !existsSync(backup)) copyFileSync(file, backup);
-  }
-  atomicWrite(entry, l.keyring);
-  atomicWrite(files.config, l.config);
+  await typedSwitch(l, "id", {
+    [IDENTITY]: (l) => {
+      atomicWrite(infisical().identity, JSON.stringify({ clientId: l.account, clientSecret: l.clientSecret, siteUrl: l.siteUrl }, null, 2));
+    },
+    github: async (l) => {
+      const current = await host.gh(["auth", "token", "--hostname", "github.com"]);
+      if (!current) throw new Error("install gh to sign in to GitHub");
+      if (!current.ok || current.out !== l.token) {
+        const login = await host.gh(["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--with-token"], l.token);
+        if (!login?.ok) throw new Error("gh auth login failed");
+      }
+      // git itself uses gh's login over HTTPS, which is how T3 Code clones synced projects.
+      const git = await host.gh(["auth", "setup-git", "--hostname", "github.com"]);
+      if (!git?.ok) throw new Error("gh auth setup-git failed");
+    },
+    infisical: (l) => {
+      const files = infisical();
+      const entry = join(files.keyring, l.account);
+      for (const file of [files.config, entry]) {
+        const backup = `${file}.before-agentgate`;
+        if (existsSync(file) && !existsSync(backup)) copyFileSync(file, backup);
+      }
+      atomicWrite(entry, l.keyring);
+      atomicWrite(files.config, l.config);
+    },
+  });
 }
 
 const state = (s: Store, id: LoginId): { hash?: string; error?: string } => JSON.parse(s.local(`login:${id}`) ?? "{}");

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { sumBy } from "hanzio";
 
 export const SKILL_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 /** Any name a person types as an id: "PostHog Work" → "posthog-work", "Café" → "cafe". Empty when nothing usable is left. */
@@ -61,7 +62,7 @@ export const skillSchema = z.object({
 }).transform(skill => ({
   ...skill,
   files: skill.files.map(file => ({ ...file, executable: file.executable || undefined }) as z.infer<typeof skillFileSchema>).sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0),
-  size: skill.files.reduce((sum, file) => sum + decodedSize(file.data), 0),
+  size: sumBy(skill.files, (file) => decodedSize(file.data)),
 }));
 
 export class SkillConflict extends Error {
