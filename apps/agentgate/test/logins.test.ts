@@ -7,9 +7,19 @@ import { forgetLogin, host, listLogins, setInfisicalIdentity, shareLogins, syncL
 
 const temp = mkdtempSync(join(tmpdir(), "agentgate-logins-"));
 const original = { ...host };
-afterAll(() => { Object.assign(host, original); rmSync(temp, { recursive: true, force: true }); });
-const node = (name: string) => { const s = new Store(":memory:"); s.setLocal("node", name); for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 4 }); return s; };
-const sync = (from: Store, to: Store) => { for (const r of from.changes(0).records) to.merge(r); };
+afterAll(() => {
+  Object.assign(host, original);
+  rmSync(temp, { recursive: true, force: true });
+});
+const node = (name: string) => {
+  const s = new Store(":memory:");
+  s.setLocal("node", name);
+  for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 4 });
+  return s;
+};
+const sync = (from: Store, to: Store) => {
+  for (const r of from.changes(0).records) to.merge(r);
+};
 
 /** A fake gh per home: its github.com token, and every command it ran. */
 const gh = new Map<string, { token?: string; calls: string[][] }>();
@@ -27,13 +37,23 @@ const on = (home: string) => {
   return me;
 };
 const infisical = (home: string, email: string, session: string) => {
-  mkdirSync(join(home, ".infisical"), { recursive: true }); mkdirSync(join(home, "infisical-keyring"), { recursive: true });
-  writeFileSync(join(home, ".infisical/infisical-config.json"), JSON.stringify({ loggedInUserEmail: email, loggedInUsers: [{ email }, { email: "other@example.com" }], vaultBackendType: "file", vaultBackendPassphrase: "cGFzcw==" }));
+  mkdirSync(join(home, ".infisical"), { recursive: true });
+  mkdirSync(join(home, "infisical-keyring"), { recursive: true });
+  writeFileSync(
+    join(home, ".infisical/infisical-config.json"),
+    JSON.stringify({
+      loggedInUserEmail: email,
+      loggedInUsers: [{ email }, { email: "other@example.com" }],
+      vaultBackendType: "file",
+      vaultBackendPassphrase: "cGFzcw==",
+    }),
+  );
   writeFileSync(join(home, "infisical-keyring", email), session);
 };
 
 test("a machine without gh or Infisical shares nothing", async () => {
-  const a = node("a"), home = join(temp, "empty");
+  const a = node("a"),
+    home = join(temp, "empty");
   on(home);
   expect(await shareLogins(a)).toEqual([
     { id: "github", skipped: "gh is not logged in to github.com (gh auth login)" },
@@ -42,12 +62,18 @@ test("a machine without gh or Infisical shares nothing", async () => {
   expect(a.list("login")).toEqual([]);
   // Infisical in the system keychain cannot be read; the user is told how to move it.
   mkdirSync(join(home, ".infisical"), { recursive: true });
-  writeFileSync(join(home, ".infisical/infisical-config.json"), JSON.stringify({ loggedInUserEmail: "me@example.com", vaultBackendType: "auto" }));
+  writeFileSync(
+    join(home, ".infisical/infisical-config.json"),
+    JSON.stringify({ loggedInUserEmail: "me@example.com", vaultBackendType: "auto" }),
+  );
   expect((await shareLogins(a, "infisical"))[0]!.skipped).toContain("infisical vault set file");
 });
 
 test("other machines sign in with a shared login once, and again when the sharing machine's login changes", async () => {
-  const a = node("a"), b = node("b"), homeA = join(temp, "a"), homeB = join(temp, "b");
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "a"),
+    homeB = join(temp, "b");
   on(homeA).token = "gho_shared";
   infisical(homeA, "me@example.com", "session-1");
   expect((await shareLogins(a)).map((r) => r.account)).toEqual(["octocat", "me@example.com"]);
@@ -59,8 +85,13 @@ test("other machines sign in with a shared login once, and again when the sharin
   expect(ghB.token).toBe("gho_shared");
   expect(ghB.calls.some((c) => c.join(" ") === "auth setup-git --hostname github.com")).toBe(true);
   expect(readFileSync(join(homeB, "infisical-keyring/me@example.com"), "utf8")).toBe("session-1");
-  expect(JSON.parse(readFileSync(join(homeB, ".infisical/infisical-config.json"), "utf8")).loggedInUsers).toEqual([{ email: "me@example.com" }]);
-  expect(listLogins(b).map((l) => [l.id, l.signedIn])).toEqual([["github", true], ["infisical", true]]);
+  expect(JSON.parse(readFileSync(join(homeB, ".infisical/infisical-config.json"), "utf8")).loggedInUsers).toEqual([
+    { email: "me@example.com" },
+  ]);
+  expect(listLogins(b).map((l) => [l.id, l.signedIn])).toEqual([
+    ["github", true],
+    ["infisical", true],
+  ]);
 
   // Unchanged: nothing is run or written again, so a session Infisical refreshed here is kept.
   ghB.calls.length = 0;
@@ -85,7 +116,8 @@ test("other machines sign in with a shared login once, and again when the sharin
 });
 
 test("a machine without gh reports it and signs in once gh is installed", async () => {
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   on(join(temp, "c")).token = "gho_x";
   await shareLogins(a, "github");
   sync(a, b);
@@ -106,7 +138,10 @@ test("sharing waits until every machine understands shared logins", async () => 
 });
 
 test("an Infisical machine identity is checked, written on every machine, and removed everywhere when forgotten", async () => {
-  const a = node("a"), b = node("b"), homeA = join(temp, "id-a"), homeB = join(temp, "id-b");
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "id-a"),
+    homeB = join(temp, "id-b");
   const file = (home: string) => join(home, ".infisical", "universal-auth.json");
   const identity = { clientId: "client-1", clientSecret: "secret-1", siteUrl: "https://eu.infisical.com/api" };
   const original = globalThis.fetch;
@@ -123,7 +158,10 @@ test("an Infisical machine identity is checked, written on every machine, and re
     expect(a.list("login")).toEqual([]);
 
     await setInfisicalIdentity(a, identity);
-    expect(logins.at(-1)).toEqual(["https://eu.infisical.com/api/v1/auth/universal-auth/login", { clientId: "client-1", clientSecret: "secret-1" }]);
+    expect(logins.at(-1)).toEqual([
+      "https://eu.infisical.com/api/v1/auth/universal-auth/login",
+      { clientId: "client-1", clientSecret: "secret-1" },
+    ]);
     // The machine it was set on uses it too; the secret never shows in the listing.
     const written = { clientId: "client-1", clientSecret: "secret-1", siteUrl: "https://eu.infisical.com" };
     expect(JSON.parse(readFileSync(file(homeA), "utf8"))).toEqual(written);
@@ -133,7 +171,9 @@ test("an Infisical machine identity is checked, written on every machine, and re
     on(homeB);
     await syncLogins(b);
     expect(JSON.parse(readFileSync(file(homeB), "utf8"))).toEqual(written);
-    expect(listLogins(b)).toEqual([{ id: "infisical-identity", account: "client-1", from: "a", signedIn: true, error: undefined }]);
+    expect(listLogins(b)).toEqual([
+      { id: "infisical-identity", account: "client-1", from: "a", signedIn: true, error: undefined },
+    ]);
 
     on(homeA);
     forgetLogin(a, "infisical-identity");

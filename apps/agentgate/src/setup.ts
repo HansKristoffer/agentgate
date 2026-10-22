@@ -17,13 +17,22 @@ export function selfCommand(): string[] {
  * service written from there. Copy the binary under AGENTGATE_HOME and point at that copy instead. */
 export function stableBinary(path: string, dir = join(CONFIG_DIR, "bin")): string {
   if (!/\/(_npx|dlx)\/|\/bunx-/.test(path)) return path;
-  const target = join(dir, "agentgate"), temp = `${target}.${crypto.randomUUID()}.tmp`;
+  const target = join(dir, "agentgate"),
+    temp = `${target}.${crypto.randomUUID()}.tmp`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Rename rather than overwrite: the installed service may be running the current copy.
-  try { copyFileSync(path, temp); chmodSync(temp, 0o755); renameSync(temp, target); } finally { rmSync(temp, { force: true }); }
+  try {
+    copyFileSync(path, temp);
+    chmodSync(temp, 0o755);
+    renameSync(temp, target);
+  } finally {
+    rmSync(temp, { force: true });
+  }
   return target;
 }
-export function agentEnvironment() { return { AGENTGATE_HOME: CONFIG_DIR, AGENTGATE_PORT: String(PORT) }; }
+export function agentEnvironment() {
+  return { AGENTGATE_HOME: CONFIG_DIR, AGENTGATE_PORT: String(PORT) };
+}
 const quote = (s: string) => JSON.stringify(s);
 
 function multilineState(line: string, state: string): string {
@@ -31,8 +40,10 @@ function multilineState(line: string, state: string): string {
   for (let i = 0; i < line.length; i++) {
     const char = line[i]!;
     if (state) {
-      if (line.startsWith(state, i)) { state = ""; i += 2; }
-      else if (state === '"""' && char === "\\") i++;
+      if (line.startsWith(state, i)) {
+        state = "";
+        i += 2;
+      } else if (state === '"""' && char === "\\") i++;
     } else if (single) {
       if (single === '"' && char === "\\") i++;
       else if (char === single) single = "";
@@ -40,8 +51,10 @@ function multilineState(line: string, state: string): string {
       if (char === "#") break;
       if (char === '"' || char === "'") {
         const triple = char.repeat(3);
-        if (line.startsWith(triple, i)) { state = triple; i += 2; }
-        else single = char;
+        if (line.startsWith(triple, i)) {
+          state = triple;
+          i += 2;
+        } else single = char;
       }
     }
   }
@@ -52,14 +65,21 @@ function multilineState(line: string, state: string): string {
 function withoutAgentgate(existing: string): string {
   Bun.TOML.parse(existing);
   const lines = existing.split("\n");
-  const kept: string[] = []; let table = "", multiline = "";
+  const kept: string[] = [];
+  let table = "",
+    multiline = "";
   for (const line of lines) {
     if (!multiline) {
       const header = line.match(/^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/);
       if (header) {
         // Parse quoted table names with the same parser that will read the resulting config.
         const shape = Bun.TOML.parse(`${header[1]}\n__agentgate_probe = 1`) as Record<string, unknown>;
-        table = Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate") ? "model_providers.agentgate" : Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate") ? "mcp_servers.agentgate" : "other";
+        table =
+          Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate")
+            ? "model_providers.agentgate"
+            : Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate")
+              ? "mcp_servers.agentgate"
+              : "other";
       }
     }
     const wasMultiline = !!multiline;
@@ -78,16 +98,24 @@ export function codexConfig(existing = "", command = selfCommand(), env = agentE
   const kept = withoutAgentgate(existing);
   const [executable, ...args] = [...command, "mcp"];
   const provider = `[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n${primary ? "requires_openai_auth = true\n" : ""}`;
-  const mcp = `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(env).map(([k, v]) => `${k} = ${quote(v)}`).join(", ")} }\n`;
+  const mcp = `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(
+    env,
+  )
+    .map(([k, v]) => `${k} = ${quote(v)}`)
+    .join(", ")} }\n`;
   const text = `model_provider = "agentgate"\n${kept}\n\n${provider}${mcp}`;
-  Bun.TOML.parse(text); return text;
+  Bun.TOML.parse(text);
+  return text;
 }
 const json = (file: string) => {
   const value = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${file}: expected a configuration object`);
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${file}: expected a configuration object`);
   return value;
 };
-const backup = (file: string) => { if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`); };
+const backup = (file: string) => {
+  if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`);
+};
 
 /** The token Claude Code sends when it has no login of its own; the proxy replaces it with a pool account's. */
 const PLACEHOLDER_TOKEN = "agentgate";
@@ -98,13 +126,20 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   const settingsFile = join(paths.claude, "settings.json");
   // Read and validate all files before changing any of them.
   const toml = codexConfig(existsSync(codexFile) ? readFileSync(codexFile, "utf8") : "");
-  const cfg = json(claudeFile), settings = json(settingsFile);
+  const cfg = json(claudeFile),
+    settings = json(settingsFile);
   const [command, ...args] = [...selfCommand(), "mcp"];
   cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   cfg.hasCompletedOnboarding = true;
-  settings.env = { ...settings.env, ANTHROPIC_BASE_URL: `${LOCAL_URL}/anthropic`, ANTHROPIC_AUTH_TOKEN: PLACEHOLDER_TOKEN };
+  settings.env = {
+    ...settings.env,
+    ANTHROPIC_BASE_URL: `${LOCAL_URL}/anthropic`,
+    ANTHROPIC_AUTH_TOKEN: PLACEHOLDER_TOKEN,
+  };
   for (const file of [codexFile, claudeFile, settingsFile]) backup(file);
-  atomicWrite(codexFile, toml); atomicWrite(claudeFile, JSON.stringify(cfg, null, 2)); atomicWrite(settingsFile, JSON.stringify(settings, null, 2));
+  atomicWrite(codexFile, toml);
+  atomicWrite(claudeFile, JSON.stringify(cfg, null, 2));
+  atomicWrite(settingsFile, JSON.stringify(settings, null, 2));
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
 }
 
@@ -118,28 +153,43 @@ export async function routeHere(s: Store, on: boolean) {
 
 /** Keep this node's record in step with its own config, which the CLI or a hand edit may change behind the daemon. */
 export function publishRouting(s: Store) {
-  const me = s.get("node", s.nodeId), routing = primaryState();
-  if (me && (me.routing?.claude !== routing.claude || me.routing?.codex !== routing.codex)) s.put("node", s.nodeId, { ...me, routing });
+  const me = s.get("node", s.nodeId),
+    routing = primaryState();
+  if (me && (me.routing?.claude !== routing.claude || me.routing?.codex !== routing.codex))
+    s.put("node", s.nodeId, { ...me, routing });
 }
 
 /** Whether `setup --primary` currently routes your own ~/.claude and ~/.codex through this daemon. */
 export function primaryState(claudeDir = PRIMARY_CLAUDE_DIR, codexDir = PRIMARY_CODEX_DIR) {
-  const read = <T>(fn: () => T) => { try { return fn(); } catch { return undefined; } };
+  const read = <T>(fn: () => T) => {
+    try {
+      return fn();
+    } catch {
+      return undefined;
+    }
+  };
   return {
     claude: read(() => json(join(claudeDir, "settings.json")).env?.ANTHROPIC_BASE_URL) === `${LOCAL_URL}/anthropic`,
-    codex: read(() => (Bun.TOML.parse(readFileSync(join(codexDir, "config.toml"), "utf8")) as { model_provider?: string }).model_provider) === "agentgate",
+    codex:
+      read(
+        () =>
+          (Bun.TOML.parse(readFileSync(join(codexDir, "config.toml"), "utf8")) as { model_provider?: string })
+            .model_provider,
+      ) === "agentgate",
   };
 }
 
 // Claude Code keeps MCP servers in ~/.claude.json by default, or inside CLAUDE_CONFIG_DIR when set.
-const claudeJsonIn = (dir: string) => dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
+const claudeJsonIn = (dir: string) =>
+  dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
 
 function mcpFile(file: string): { root: Record<string, unknown>; servers: Record<string, unknown> } {
   if (!existsSync(file)) return { root: {}, servers: {} };
   const root = json(file) as Record<string, unknown>;
   if (root.mcpServers === undefined) return { root, servers: {} };
-  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers)) throw new Error(`${file}: mcpServers must be an object`);
-  return { root, servers: { ...root.mcpServers as Record<string, unknown> } };
+  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers))
+    throw new Error(`${file}: mcpServers must be an object`);
+  return { root, servers: { ...(root.mcpServers as Record<string, unknown>) } };
 }
 
 /** The stdio server Cursor stores in `mcp.json`: command, args, and env, with no Claude-only `type`. */
@@ -157,28 +207,44 @@ export async function cursorMcp(on: boolean, file = CURSOR_MCP_FILE): Promise<st
   else return `No agentgate MCP server in ${file}.`;
   if (existsSync(file)) backup(file);
   atomicWrite(file, JSON.stringify({ ...root, mcpServers: servers }, null, 2) + "\n");
-  return on ? `New Cursor sessions get agentgate's MCP servers. Undo: agentgate setup --mcp off.` : `Removed the agentgate MCP server from ${file}.`;
+  return on
+    ? `New Cursor sessions get agentgate's MCP servers. Undo: agentgate setup --mcp off.`
+    : `Removed the agentgate MCP server from ${file}.`;
 }
 
 export function cursorMcpEnabled(file = CURSOR_MCP_FILE): boolean {
-  try { return !!mcpFile(file).servers.agentgate; } catch { return false; }
+  try {
+    return !!mcpFile(file).servers.agentgate;
+  } catch {
+    return false;
+  }
 }
 
 /** Just the agentgate MCP server in Claude Code's user config. Claude Desktop's Code tab loads the same file. */
 export async function mcp(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
   if (dir === PRIMARY_CLAUDE_DIR) liveOnly("Changing your own Claude Code config");
   const claudeJson = claudeJsonIn(dir);
-  const cfg = json(claudeJson), [command, ...args] = [...selfCommand(), "mcp"];
+  const cfg = json(claudeJson),
+    [command, ...args] = [...selfCommand(), "mcp"];
   if (on) cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   else if (cfg.mcpServers?.agentgate) delete cfg.mcpServers.agentgate;
   else return `No agentgate MCP server in ${claudeJson}.`;
-  backup(claudeJson); atomicWrite(claudeJson, JSON.stringify(cfg, null, 2));
-  return on ? `New Claude Code sessions, including Claude Desktop's Code tab, get agentgate's MCP servers. Undo: agentgate setup --mcp off.` : `Removed the agentgate MCP server from ${claudeJson}.`;
+  backup(claudeJson);
+  atomicWrite(claudeJson, JSON.stringify(cfg, null, 2));
+  return on
+    ? `New Claude Code sessions, including Claude Desktop's Code tab, get agentgate's MCP servers. Undo: agentgate setup --mcp off.`
+    : `Removed the agentgate MCP server from ${claudeJson}.`;
 }
 
 /** What `setup --primary` / `--mcp` left in the user's own Claude Code config; edits by hand or by older versions show up here. */
 export function claudeStatus(dir = PRIMARY_CLAUDE_DIR): { routing: boolean; mcp: boolean } {
-  const read = (file: string) => { try { return json(file); } catch { return {}; } };
+  const read = (file: string) => {
+    try {
+      return json(file);
+    } catch {
+      return {};
+    }
+  };
   return {
     routing: read(join(dir, "settings.json")).env?.ANTHROPIC_BASE_URL === `${LOCAL_URL}/anthropic`,
     mcp: !!read(claudeJsonIn(dir)).mcpServers?.agentgate,
@@ -187,29 +253,51 @@ export function claudeStatus(dir = PRIMARY_CLAUDE_DIR): { routing: boolean; mcp:
 
 /** Whether Claude Code is signed in itself: it saves the account in .claude.json, and the token in .credentials.json or the Keychain. */
 const ownClaudeLogin = (dir: string) => {
-  try { return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount; } catch { return false; }
+  try {
+    return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount;
+  } catch {
+    return false;
+  }
 };
 
 export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
-  const file = join(dir, "settings.json"), undo = `${file}.agentgate-undo`;
+  const file = join(dir, "settings.json"),
+    undo = `${file}.agentgate-undo`;
   await mcp(on, dir);
-  const settings = json(file); const env = { ...settings.env }; const url = `${LOCAL_URL}/anthropic`;
+  const settings = json(file);
+  const env = { ...settings.env };
+  const url = `${LOCAL_URL}/anthropic`;
   if (on) {
-    if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }));
-    backup(file); env.ANTHROPIC_BASE_URL = url;
+    if (!existsSync(undo))
+      atomicWrite(
+        undo,
+        JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }),
+      );
+    backup(file);
+    env.ANTHROPIC_BASE_URL = url;
     // Claude Code will not start without a login, though the proxy never uses it. Keep the user's own where there is
     // one; a server set up from scratch has none and would answer every turn with "Not logged in".
-    if (!ownClaudeLogin(dir) && !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY) env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
+    if (!ownClaudeLogin(dir) && !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY)
+      env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
   } else {
     if (!existsSync(undo) && env.ANTHROPIC_BASE_URL !== url) return `No agentgate setup change to undo in ${file}.`;
-    const original = existsSync(`${file}.before-agentgate`) ? json(`${file}.before-agentgate`).env ?? {} : {};
-    const previous = existsSync(undo) ? json(undo) : { hadValue: Object.hasOwn(original, "ANTHROPIC_BASE_URL"), value: original.ANTHROPIC_BASE_URL };
-    if (env.ANTHROPIC_BASE_URL === url) { if (previous.hadValue) env.ANTHROPIC_BASE_URL = previous.value; else delete env.ANTHROPIC_BASE_URL; }
+    const original = existsSync(`${file}.before-agentgate`) ? (json(`${file}.before-agentgate`).env ?? {}) : {};
+    const previous = existsSync(undo)
+      ? json(undo)
+      : { hadValue: Object.hasOwn(original, "ANTHROPIC_BASE_URL"), value: original.ANTHROPIC_BASE_URL };
+    if (env.ANTHROPIC_BASE_URL === url) {
+      if (previous.hadValue) env.ANTHROPIC_BASE_URL = previous.value;
+      else delete env.ANTHROPIC_BASE_URL;
+    }
     if (env.ANTHROPIC_AUTH_TOKEN === PLACEHOLDER_TOKEN) delete env.ANTHROPIC_AUTH_TOKEN;
   }
-  settings.env = env; if (!Object.keys(env).length) delete settings.env;
-  atomicWrite(file, JSON.stringify(settings, null, 2) + "\n"); if (!on && existsSync(undo)) unlinkSync(undo);
-  return on ? `New Claude sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.\nKeep the daemon running.` : `Restored the previous base URL in ${file}; other settings are preserved.`;
+  settings.env = env;
+  if (!Object.keys(env).length) delete settings.env;
+  atomicWrite(file, JSON.stringify(settings, null, 2) + "\n");
+  if (!on && existsSync(undo)) unlinkSync(undo);
+  return on
+    ? `New Claude sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.\nKeep the daemon running.`
+    : `Restored the previous base URL in ${file}; other settings are preserved.`;
 }
 
 const PLACEHOLDER_AUTH = JSON.stringify({ OPENAI_API_KEY: PLACEHOLDER_TOKEN }) + "\n";
@@ -217,19 +305,27 @@ const PLACEHOLDER_AUTH = JSON.stringify({ OPENAI_API_KEY: PLACEHOLDER_TOKEN }) +
 /** The Codex half of `setup --primary`: point the user's own ~/.codex at the daemon, keeping its login as last resort. */
 export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promise<string> {
   if (dir === PRIMARY_CODEX_DIR) liveOnly("Changing your own Codex config");
-  const file = join(dir, "config.toml"), undo = `${file}.agentgate-undo`, auth = join(dir, "auth.json");
+  const file = join(dir, "config.toml"),
+    undo = `${file}.agentgate-undo`,
+    auth = join(dir, "auth.json");
   if (!existsSync(dir)) return `No Codex home at ${dir}; skipped Codex.`;
   const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
   const current = (Bun.TOML.parse(existing) as { model_provider?: string }).model_provider;
   if (on) {
-    if (!existsSync(undo)) atomicWrite(undo, JSON.stringify({ hadValue: current !== undefined && current !== "agentgate", value: current }));
-    backup(file); atomicWrite(file, codexConfig(existing, undefined, undefined, true));
+    if (!existsSync(undo))
+      atomicWrite(undo, JSON.stringify({ hadValue: current !== undefined && current !== "agentgate", value: current }));
+    backup(file);
+    atomicWrite(file, codexConfig(existing, undefined, undefined, true));
     // Like Claude above: a server set up from scratch has no Codex login, so `codex login status` (which T3 Code
     // checks before offering Codex) says "Not logged in". The proxy swaps this placeholder key for a pool account.
-    if (!existsSync(auth) && !/^\s*cli_auth_credentials_store\s*=\s*"keyring"/m.test(existing)) atomicWrite(auth, PLACEHOLDER_AUTH);
+    if (!existsSync(auth) && !/^\s*cli_auth_credentials_store\s*=\s*"keyring"/m.test(existing))
+      atomicWrite(auth, PLACEHOLDER_AUTH);
     return `New Codex sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.`;
   }
-  if (current !== "agentgate") { if (existsSync(undo)) unlinkSync(undo); return `No agentgate setup change to undo in ${file}.`; }
+  if (current !== "agentgate") {
+    if (existsSync(undo)) unlinkSync(undo);
+    return `No agentgate setup change to undo in ${file}.`;
+  }
   const previous = existsSync(undo) ? json(undo) : { hadValue: false };
   const kept = withoutAgentgate(existing);
   if (existsSync(auth) && readFileSync(auth, "utf8") === PLACEHOLDER_AUTH) unlinkSync(auth);

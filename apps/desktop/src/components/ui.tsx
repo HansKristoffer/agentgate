@@ -1,14 +1,7 @@
 import { createPortal } from "react-dom";
 import { isTruthy } from "hanzio";
 import { Ellipsis } from "lucide-react";
-import {
-  createContext,
-  useContext,
-  useOptimistic,
-  useTransition,
-  type ComponentProps,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useOptimistic, useTransition, type ComponentProps, type ReactNode } from "react";
 import {
   Button,
   Spinner,
@@ -39,7 +32,11 @@ export const BusyContext = createContext(false);
 export const PendingContext = createContext<ReadonlySet<string>>(new Set());
 export const usePending = () => useContext(PendingContext);
 /** A button for an action that can take a while: a spinner while `perform` runs it under `pendingKey`. */
-export function ActionButton({ pendingKey, children, ...props }: ComponentProps<typeof Button> & { pendingKey: string; children: ReactNode }) {
+export function ActionButton({
+  pendingKey,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { pendingKey: string; children: ReactNode }) {
   const pending = usePending().has(pendingKey);
   return (
     <Button {...props} isPending={pending}>
@@ -89,13 +86,7 @@ export function Panel({
 export function Empty({ children }: { children: ReactNode }) {
   return <EmptyState className="empty">{children}</EmptyState>;
 }
-export function Badge({
-  children,
-  good = false,
-}: {
-  children: ReactNode;
-  good?: boolean;
-}) {
+export function Badge({ children, good = false }: { children: ReactNode; good?: boolean }) {
   return (
     <Chip size="sm" variant="soft" color={good ? "success" : "default"}>
       {children}
@@ -120,15 +111,7 @@ export function Quota({ value }: { value: number }) {
     </ProgressBar>
   );
 }
-export function Modal({
-  title,
-  children,
-  close,
-}: {
-  title: string;
-  children: ReactNode;
-  close: () => void;
-}) {
+export function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
   const busy = useContext(BusyContext);
   return (
     <HeroModal.Backdrop isOpen onOpenChange={(open) => !open && close()}>
@@ -148,13 +131,7 @@ export function Modal({
     </HeroModal.Backdrop>
   );
 }
-const Labelled = ({
-  label,
-  description,
-}: {
-  label: ReactNode;
-  description?: ReactNode;
-}) => (
+const Labelled = ({ label, description }: { label: ReactNode; description?: ReactNode }) => (
   <span className="labelled">
     <Label>{label}</Label>
     {description && <Description>{description}</Description>}
@@ -177,11 +154,7 @@ export function Field({
   return (
     <TextField className={className} {...props}>
       <Labelled label={label} description={description} />
-      {multiline ? (
-        <TextArea placeholder={placeholder} />
-      ) : (
-        <Input placeholder={placeholder} />
-      )}
+      {multiline ? <TextArea placeholder={placeholder} /> : <Input placeholder={placeholder} />}
       <FieldError />
     </TextField>
   );
@@ -243,7 +216,11 @@ export function Choice({
 /** A labelled switch, label first as in System Settings. */
 /** A switch that moves when clicked. When `onChange` returns a promise (a `perform`), it shows the new value while the
  * change is saved, and whatever the daemon reports afterwards. */
-export function LiveSwitch({ isSelected, onChange, ...props }: Omit<ComponentProps<typeof Switch>, "onChange"> & {
+export function LiveSwitch({
+  isSelected,
+  onChange,
+  ...props
+}: Omit<ComponentProps<typeof Switch>, "onChange"> & {
   onChange?: (on: boolean) => unknown;
 }) {
   const [shown, show] = useOptimistic(!!isSelected);
@@ -252,7 +229,12 @@ export function LiveSwitch({ isSelected, onChange, ...props }: Omit<ComponentPro
     <Switch
       {...props}
       isSelected={shown}
-      onChange={(on) => start(async () => { show(on); await onChange?.(on); })}
+      onChange={(on) =>
+        start(async () => {
+          show(on);
+          await onChange?.(on);
+        })
+      }
     />
   );
 }
@@ -302,7 +284,10 @@ export function RowMenu({ label, items }: { label: string; items: (MenuAction | 
   return (
     <Dropdown>
       {/* The trigger's own display: inline-block would undo the button's centering. */}
-      <Dropdown.Trigger aria-label={label} className={`${buttonVariants({ variant: "ghost", size: "sm", isIconOnly: true })} inline-flex!`}>
+      <Dropdown.Trigger
+        aria-label={label}
+        className={`${buttonVariants({ variant: "ghost", size: "sm", isIconOnly: true })} inline-flex!`}
+      >
         <Ellipsis size={16} />
       </Dropdown.Trigger>
       <Dropdown.Popover placement="bottom end">

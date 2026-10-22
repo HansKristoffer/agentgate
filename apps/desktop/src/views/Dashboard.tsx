@@ -37,11 +37,7 @@ export function Dashboard({
             view: "nodes" as const,
           },
         ].map((stat) => (
-          <button
-            key={stat.label}
-            className="stat"
-            onClick={() => navigate(stat.view)}
-          >
+          <button key={stat.label} className="stat" onClick={() => navigate(stat.view)}>
             <div className="stat-top">
               <stat.icon size={16} />
               <ArrowRight size={14} />
@@ -76,39 +72,31 @@ export function Dashboard({
           ))}
         </Panel>
       )}
-      <Panel
-        title="Subscription pool"
-        detail="Your sessions use the next available account automatically."
-      >
+      <Panel title="Subscription pool" detail="Your sessions use the next available account automatically.">
         {!data.accounts.length ? (
           <Empty>
             <Users size={22} />
             {data.detected.length ? (
               <>
                 <strong>
-                  You're signed in to{" "}
-                  {data.detected.map((d) => providerName(d.provider)).join(" and ")}{" "}
-                  on this machine.
+                  You're signed in to {data.detected.map((d) => providerName(d.provider)).join(" and ")} on this
+                  machine.
                 </strong>
                 <p>
-                  {data.detected.map((d) => d.email).filter((e, i, all) => all.indexOf(e) === i).join(", ")}. Add{" "}
-                  {data.detected.length === 1 ? "it" : "them"} to the pool with one browser confirmation each.
+                  {data.detected
+                    .map((d) => d.email)
+                    .filter((e, i, all) => all.indexOf(e) === i)
+                    .join(", ")}
+                  . Add {data.detected.length === 1 ? "it" : "them"} to the pool with one browser confirmation each.
                 </p>
               </>
             ) : (
               <>
                 <strong>Your pool starts with one account.</strong>
-                <p>
-                  Add a Claude or Codex login to route your sessions through
-                  Agentgate.
-                </p>
+                <p>Add a Claude or Codex login to route your sessions through Agentgate.</p>
               </>
             )}
-            <Button
-              size="sm"
-              variant="tertiary"
-              onPress={() => navigate("accounts")}
-            >
+            <Button size="sm" variant="tertiary" onPress={() => navigate("accounts")}>
               {data.detected.length ? "Add to pool" : "Add an account"}
               <ArrowRight size={14} />
             </Button>
@@ -116,14 +104,11 @@ export function Dashboard({
         ) : (
           data.accounts.map((a) => (
             <div className="item" key={a.account.id}>
-              <div className={`provider-icon ${a.account.provider}`}>
-                {providerIcon(a.account.provider)}
-              </div>
+              <div className={`provider-icon ${a.account.provider}`}>{providerIcon(a.account.provider)}</div>
               <div className="grow">
                 <strong>{a.account.label}</strong>
                 <small>
-                  {providerName(a.account.provider)} ·{" "}
-                  {a.account.email ?? a.account.plan ?? "Subscription"}
+                  {providerName(a.account.provider)} · {a.account.email ?? a.account.plan ?? "Subscription"}
                 </small>
               </div>
               <Badge good={a.active && !a.needsLogin && !a.expired}>
@@ -132,16 +117,16 @@ export function Dashboard({
                   : a.waitingFor
                     ? `Waiting for ${a.waitingFor}`
                     : a.expired
-                    ? "Token expired"
-                    : a.refreshError
-                      ? "Refresh failed"
-                      : a.exhausted
-                        ? "Exhausted"
-                        : a.active
-                          ? "Active"
-                          : a.account.enabled
-                            ? "Ready"
-                            : "Disabled"}
+                      ? "Token expired"
+                      : a.refreshError
+                        ? "Refresh failed"
+                        : a.exhausted
+                          ? "Exhausted"
+                          : a.active
+                            ? "Active"
+                            : a.account.enabled
+                              ? "Ready"
+                              : "Disabled"}
               </Badge>
               <AccountQuota account={a} />
             </div>

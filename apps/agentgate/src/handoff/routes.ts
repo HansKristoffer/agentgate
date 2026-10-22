@@ -8,7 +8,16 @@ import { CHANNEL_CHUNK } from "../channel.ts";
 import { jsonInput } from "../http.ts";
 import { MAX_BODY, readBody } from "../runtime.ts";
 import type { Peer } from "../sync.ts";
-import { abort, checkoutFile, manifestSchema, peerStatus, prepare, prepareSchema, start, type DestState } from "./destination.ts";
+import {
+  abort,
+  checkoutFile,
+  manifestSchema,
+  peerStatus,
+  prepare,
+  prepareSchema,
+  start,
+  type DestState,
+} from "./destination.ts";
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
 import { startHandoff } from "./source.ts";
@@ -50,7 +59,10 @@ export function handoffRoutes(h: Handoffs) {
   });
 
   app.post("/setup/primary", async (c) => {
-    const { on } = z.object({ on: z.boolean() }).strict().parse(await jsonInput(c.req.raw));
+    const { on } = z
+      .object({ on: z.boolean() })
+      .strict()
+      .parse(await jsonInput(c.req.raw));
     try {
       return c.json(await routeHere(h.s, on));
     } catch (e) {
@@ -60,14 +72,19 @@ export function handoffRoutes(h: Handoffs) {
 
   // Set up from another machine: it forwards the pairing link created in this machine's T3 Code, or asks for one.
   app.post("/t3/connect", async (c) => c.json(await connectWith(h.s, connectInput.parse(await jsonInput(c.req.raw)))));
-  app.post("/t3/pairing-link", async (c) => c.json(await createPairingLink(h.s, pairingLinkInput.parse(await jsonInput(c.req.raw)))));
+  app.post("/t3/pairing-link", async (c) =>
+    c.json(await createPairingLink(h.s, pairingLinkInput.parse(await jsonInput(c.req.raw)))),
+  );
   app.post("/t3/disconnect", (c) => {
     disconnectT3(h.s);
     return c.json({ ok: true });
   });
 
   app.post("/handoff/request", async (c) => {
-    const f = z.object({ threadId: z.string().min(1).max(512), to: z.string().min(1).max(512) }).strict().parse(await jsonInput(c.req.raw));
+    const f = z
+      .object({ threadId: z.string().min(1).max(512), to: z.string().min(1).max(512) })
+      .strict()
+      .parse(await jsonInput(c.req.raw));
     // Resolve again with this node's view: it drives the handoff, so it must reach the target itself.
     const handoffId = await startHandoff(h, f.threadId, await resolveTarget(h, h.s.nodeId, f.to));
     return c.json({ handoffId });
@@ -84,14 +101,18 @@ export function handoffRoutes(h: Handoffs) {
   app.put("/handoff/:id/files", async (c) => {
     const job = own(c);
     if (!job) return c.json(missing, 404);
-    if (job.step !== "prepare" && job.step !== "prepared") return c.json({ error: "the handoff no longer takes files" }, 409);
+    if (job.step !== "prepare" && job.step !== "prepared")
+      return c.json({ error: "the handoff no longer takes files" }, 409);
 
     const path = c.req.query("path") ?? "";
     const offset = Number(c.req.query("offset"));
-    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/") || checkoutFile(path))) return c.json({ error: "invalid path" }, 400);
+    if (!safeRelative(path) || !(path === "bundle" || path.startsWith("session/") || checkoutFile(path)))
+      return c.json({ error: "invalid path" }, 400);
     if (!Number.isInteger(offset) || offset < 0) return c.json({ error: "invalid offset" }, 400);
 
-    const chunk = gunzipSync(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), { maxOutputLength: CHANNEL_CHUNK });
+    const chunk = gunzipSync(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), {
+      maxOutputLength: CHANNEL_CHUNK,
+    });
     const file = join(h.dir(job.id), "files", path);
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
     const fd = openSync(file, "a+", 0o600);
@@ -99,7 +120,8 @@ export function handoffRoutes(h: Handoffs) {
       // A retry restarts a file: cut it back to this chunk's offset before writing.
       if (offset > statSync(file).size) return c.json({ error: "offset past the end of the file" }, 409);
       ftruncateSync(fd, offset);
-      if (totalSize(h, job.id) + chunk.byteLength > MAX_TOTAL) return c.json({ error: "the handoff is larger than 1 GiB" }, 413);
+      if (totalSize(h, job.id) + chunk.byteLength > MAX_TOTAL)
+        return c.json({ error: "the handoff is larger than 1 GiB" }, 413);
       writeSync(fd, chunk, 0, chunk.byteLength, offset);
     } finally {
       closeSync(fd);
@@ -127,7 +149,10 @@ export function handoffRoutes(h: Handoffs) {
 /** The same routes for calls through the relay: the sender is the node the sealed call authenticates. */
 export function relayedRoutes(h: Handoffs) {
   const app = new Hono<{ Bindings: { from: string }; Variables: { peer: Peer } }>()
-    .use("*", async (c, next) => { c.set("peer", { node: c.env.from } as Peer); await next(); })
+    .use("*", async (c, next) => {
+      c.set("peer", { node: c.env.from } as Peer);
+      await next();
+    })
     .route("/", handoffRoutes(h));
   return async (from: string, req: Request) => app.fetch(req, { from });
 }
@@ -135,6 +160,7 @@ export function relayedRoutes(h: Handoffs) {
 function totalSize(h: Handoffs, jobId: string): number {
   const dir = join(h.dir(jobId), "files");
   let total = 0;
-  for (const f of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true })) total += statSync(join(dir, f)).size;
+  for (const f of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true }))
+    total += statSync(join(dir, f)).size;
   return total;
 }

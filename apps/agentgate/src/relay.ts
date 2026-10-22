@@ -1,6 +1,13 @@
 import {
-  RELAY_LIMITS, RELAY_PROTOCOL, changesResponse, checkPage, errorResponse, groupState, nodesResponse,
-  type ChangesResponse, type RelayEnvelope,
+  RELAY_LIMITS,
+  RELAY_PROTOCOL,
+  changesResponse,
+  checkPage,
+  errorResponse,
+  groupState,
+  nodesResponse,
+  type ChangesResponse,
+  type RelayEnvelope,
 } from "@agentgate/protocol/relay";
 import { bytesToHex, encodeBase64Url, randomToken } from "hanzio/crypto";
 import { exponentialBackoff, isTruthy, trimTrailingSlash } from "hanzio";
@@ -17,7 +24,10 @@ import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.t
 export const DEFAULT_RELAY_URL: string = "https://agentgate-relay.hanskristoffer.dk";
 export function relayUrlDefault() {
   const url = process.env.AGENTGATE_RELAY_URL || DEFAULT_RELAY_URL;
-  if (!url) throw new RelayError("No hosted relay is configured yet. Pass --relay-url <url> or set AGENTGATE_RELAY_URL to your own relay.");
+  if (!url)
+    throw new RelayError(
+      "No hosted relay is configured yet. Pass --relay-url <url> or set AGENTGATE_RELAY_URL to your own relay.",
+    );
   return url;
 }
 
@@ -25,27 +35,49 @@ export function relayUrlDefault() {
 
 const SALT = new TextEncoder().encode("agentgate-relay-v1");
 const INVITE = /^agr1\.([A-Za-z0-9_-]{1,2800})\.([A-Za-z0-9_-]{43})$/;
-export class RelayError extends Error { constructor(message: string, readonly status = 0, readonly code?: string, readonly retryAfter?: number) { super(message); } }
+export class RelayError extends Error {
+  constructor(
+    message: string,
+    readonly status = 0,
+    readonly code?: string,
+    readonly retryAfter?: number,
+  ) {
+    super(message);
+  }
+}
 
 const unb64url = (text: string): Uint8Array<ArrayBuffer> => new Uint8Array(Buffer.from(text, "base64url"));
 
 /** HTTPS only, no credentials, query or fragment; plain HTTP is a local-development opt-in. */
 export function checkRelayUrl(input: string): string {
   let u: URL;
-  try { u = new URL(input); } catch { throw new RelayError("The relay URL is not a valid URL"); }
+  try {
+    u = new URL(input);
+  } catch {
+    throw new RelayError("The relay URL is not a valid URL");
+  }
   const http = u.protocol === "http:" && process.env.AGENTGATE_RELAY_ALLOW_HTTP === "1";
   if (u.protocol !== "https:" && !http) throw new RelayError("The relay URL must use HTTPS");
-  if (u.username || u.password || u.search || u.hash) throw new RelayError("The relay URL must not contain credentials, a query or a fragment");
+  if (u.username || u.password || u.search || u.hash)
+    throw new RelayError("The relay URL must not contain credentials, a query or a fragment");
   return trimTrailingSlash(u.toString());
 }
 
-export interface Invite { text: string; url: string; secret: Uint8Array<ArrayBuffer> }
+export interface Invite {
+  text: string;
+  url: string;
+  secret: Uint8Array<ArrayBuffer>;
+}
 /** Never echoes the input: an invite is a master key. */
 export function parseInvite(text: string): Invite {
   const m = text.trim().match(INVITE);
   if (!m) throw new RelayError("That is not a valid relay invite (it should start with agr1.)");
   let url: string;
-  try { url = new TextDecoder("utf-8", { fatal: true }).decode(unb64url(m[1]!)); } catch { throw new RelayError("That is not a valid relay invite"); }
+  try {
+    url = new TextDecoder("utf-8", { fatal: true }).decode(unb64url(m[1]!));
+  } catch {
+    throw new RelayError("That is not a valid relay invite");
+  }
   return { text: text.trim(), url: checkRelayUrl(url), secret: unb64url(m[2]!) };
 }
 
@@ -53,7 +85,12 @@ export function makeInvite(url: string): string {
   return `agr1.${encodeBase64Url(new TextEncoder().encode(checkRelayUrl(url)))}.${randomToken(32)}`;
 }
 
-export interface Keys { groupId: string; authToken: string; enc: CryptoKey; mac: CryptoKey }
+export interface Keys {
+  groupId: string;
+  authToken: string;
+  enc: CryptoKey;
+  mac: CryptoKey;
+}
 const keyCache = new Map<string, Promise<Keys>>();
 
 export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
@@ -62,13 +99,26 @@ export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
   if (!keys) {
     keys = (async () => {
       const base = await crypto.subtle.importKey("raw", secret, "HKDF", false, ["deriveBits"]);
-      const bits = async (label: string, bytes: number) => new Uint8Array(await crypto.subtle.deriveBits(
-        { name: "HKDF", hash: "SHA-256", salt: SALT, info: new TextEncoder().encode(`agentgate-relay-v1/${label}`) }, base, bytes * 8));
+      const bits = async (label: string, bytes: number) =>
+        new Uint8Array(
+          await crypto.subtle.deriveBits(
+            {
+              name: "HKDF",
+              hash: "SHA-256",
+              salt: SALT,
+              info: new TextEncoder().encode(`agentgate-relay-v1/${label}`),
+            },
+            base,
+            bytes * 8,
+          ),
+        );
       return {
         groupId: bytesToHex(await bits("group", 16)),
         authToken: encodeBase64Url(await bits("auth", 32)),
         enc: await crypto.subtle.importKey("raw", await bits("enc", 32), "AES-GCM", false, ["encrypt", "decrypt"]),
-        mac: await crypto.subtle.importKey("raw", await bits("mac", 32), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]),
+        mac: await crypto.subtle.importKey("raw", await bits("mac", 32), { name: "HMAC", hash: "SHA-256" }, false, [
+          "sign",
+        ]),
       };
     })();
     keyCache.set(cacheKey, keys);
@@ -77,23 +127,48 @@ export function deriveKeys(secret: Uint8Array<ArrayBuffer>): Promise<Keys> {
 }
 
 export async function entryKey(keys: Keys, kind: string, id: string): Promise<string> {
-  return encodeBase64Url(new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, new TextEncoder().encode(`${kind}\0${id}`))));
+  return encodeBase64Url(
+    new Uint8Array(await crypto.subtle.sign("HMAC", keys.mac, new TextEncoder().encode(`${kind}\0${id}`))),
+  );
 }
 
-export interface Aad { groupId: string; generation: string; node: string; key: string; pusherSeq: number }
-const aad = (a: Aad) => new TextEncoder().encode(JSON.stringify([1, a.groupId, a.generation, a.node, a.key, a.pusherSeq]));
+export interface Aad {
+  groupId: string;
+  generation: string;
+  node: string;
+  key: string;
+  pusherSeq: number;
+}
+const aad = (a: Aad) =>
+  new TextEncoder().encode(JSON.stringify([1, a.groupId, a.generation, a.node, a.key, a.pusherSeq]));
 
-export async function seal(keys: Keys, a: Aad, plaintext: string, nonce = crypto.getRandomValues(new Uint8Array(12))): Promise<string> {
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, additionalData: aad(a) }, keys.enc, new TextEncoder().encode(plaintext)));
+export async function seal(
+  keys: Keys,
+  a: Aad,
+  plaintext: string,
+  nonce = crypto.getRandomValues(new Uint8Array(12)),
+): Promise<string> {
+  const ct = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, additionalData: aad(a) },
+      keys.enc,
+      new TextEncoder().encode(plaintext),
+    ),
+  );
   const out = new Uint8Array(12 + ct.length);
-  out.set(nonce); out.set(ct, 12);
+  out.set(nonce);
+  out.set(ct, 12);
   return encodeBase64Url(out);
 }
 
 export async function open(keys: Keys, a: Aad, blob: string): Promise<string> {
   const bytes = unb64url(blob);
   if (bytes.length < 28) throw new RelayError("sealed entry too short");
-  const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.subarray(0, 12), additionalData: aad(a) }, keys.enc, bytes.subarray(12));
+  const pt = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: bytes.subarray(0, 12), additionalData: aad(a) },
+    keys.enc,
+    bytes.subarray(12),
+  );
   return new TextDecoder().decode(pt);
 }
 
@@ -101,42 +176,111 @@ export async function open(keys: Keys, a: Aad, blob: string): Promise<string> {
 
 /** "active" is the group in use; "rot" is a replacement group being seeded by a rotation. */
 type Target = "active" | "rot";
-type Field = "invite" | "generation" | "pushed" | "cursor" | "phase" | "readCursor" | "pushError" | "pullError" | "skipped" | "oversize";
-const k = (t: Target, f: Field) => t === "active" ? `relay:${f}` : `relay:rot:${f}`;
+type Field =
+  | "invite"
+  | "generation"
+  | "pushed"
+  | "cursor"
+  | "phase"
+  | "readCursor"
+  | "pushError"
+  | "pullError"
+  | "skipped"
+  | "oversize";
+const k = (t: Target, f: Field) => (t === "active" ? `relay:${f}` : `relay:rot:${f}`);
 const get = (s: Store, t: Target, f: Field) => s.local(k(t, f));
 const num = (s: Store, t: Target, f: Field) => Number(get(s, t, f) ?? 0);
-const put = (s: Store, t: Target, f: Field, v: string | number | undefined) => s.setLocal(k(t, f), v === undefined ? undefined : String(v));
-const FIELDS: Field[] = ["invite", "generation", "pushed", "cursor", "phase", "readCursor", "pushError", "pullError", "skipped", "oversize"];
+const put = (s: Store, t: Target, f: Field, v: string | number | undefined) =>
+  s.setLocal(k(t, f), v === undefined ? undefined : String(v));
+const FIELDS: Field[] = [
+  "invite",
+  "generation",
+  "pushed",
+  "cursor",
+  "phase",
+  "readCursor",
+  "pushError",
+  "pullError",
+  "skipped",
+  "oversize",
+];
 
-interface Cleanup { invite: string; serviceKey?: string; attempts: number; nextAt: number }
+interface Cleanup {
+  invite: string;
+  serviceKey?: string;
+  attempts: number;
+  nextAt: number;
+}
 const cleanups = (s: Store): Cleanup[] => JSON.parse(s.local("relay:cleanup") ?? "[]");
-const setCleanups = (s: Store, list: Cleanup[]) => s.setLocal("relay:cleanup", list.length ? JSON.stringify(list.slice(-20)) : undefined);
+const setCleanups = (s: Store, list: Cleanup[]) =>
+  s.setLocal("relay:cleanup", list.length ? JSON.stringify(list.slice(-20)) : undefined);
 export const serviceKey = (s: Store) => process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey") || undefined;
 
 function tables(s: Store) {
-  s.db.run("create table if not exists relay_counters (grp text not null, generation text not null, node text not null, key text not null, counter integer not null, primary key (grp, generation, node, key))");
+  s.db.run(
+    "create table if not exists relay_counters (grp text not null, generation text not null, node text not null, key text not null, counter integer not null, primary key (grp, generation, node, key))",
+  );
   // At most one unacknowledged chunk per group: its exact request body, resent byte for byte.
-  s.db.run("create table if not exists relay_pending (grp text primary key, generation text not null, checkpoint integer not null, body text not null)");
+  s.db.run(
+    "create table if not exists relay_pending (grp text primary key, generation text not null, checkpoint integer not null, body text not null)",
+  );
 }
 
 const counter = (s: Store, grp: string, gen: string, node: string, key: string) =>
-  (s.db.query("select counter from relay_counters where grp = ? and generation = ? and node = ? and key = ?").get(grp, gen, node, key) as { counter: number } | null)?.counter ?? 0;
+  (
+    s.db
+      .query("select counter from relay_counters where grp = ? and generation = ? and node = ? and key = ?")
+      .get(grp, gen, node, key) as { counter: number } | null
+  )?.counter ?? 0;
 const setCounter = (s: Store, grp: string, gen: string, node: string, key: string, value: number) =>
-  s.db.run("insert into relay_counters values (?, ?, ?, ?, ?) on conflict (grp, generation, node, key) do update set counter = max(counter, excluded.counter)", [grp, gen, node, key, value]);
-const pending = (s: Store, grp: string) => s.db.query("select * from relay_pending where grp = ?").get(grp) as { generation: string; checkpoint: number; body: string } | null;
-const dropGroup = (s: Store, grp: string) => { s.db.run("delete from relay_pending where grp = ?", [grp]); s.db.run("delete from relay_counters where grp = ?", [grp]); };
+  s.db.run(
+    "insert into relay_counters values (?, ?, ?, ?, ?) on conflict (grp, generation, node, key) do update set counter = max(counter, excluded.counter)",
+    [grp, gen, node, key, value],
+  );
+const pending = (s: Store, grp: string) =>
+  s.db.query("select * from relay_pending where grp = ?").get(grp) as {
+    generation: string;
+    checkpoint: number;
+    body: string;
+  } | null;
+const dropGroup = (s: Store, grp: string) => {
+  s.db.run("delete from relay_pending where grp = ?", [grp]);
+  s.db.run("delete from relay_counters where grp = ?", [grp]);
+};
 
 // ---------------------------------------------------------------- coordination
 
-interface Runtime { queue: Promise<unknown>; abort: AbortController; owner: string; started: Set<string>; backoff: Map<string, { until: number; failures: number }>; lastTurn: number; wanted?: { push: boolean; pull: boolean; force: boolean }; running?: Promise<void> }
+interface Runtime {
+  queue: Promise<unknown>;
+  abort: AbortController;
+  owner: string;
+  started: Set<string>;
+  backoff: Map<string, { until: number; failures: number }>;
+  lastTurn: number;
+  wanted?: { push: boolean; pull: boolean; force: boolean };
+  running?: Promise<void>;
+}
 const runtimes = new WeakMap<Store, Runtime>();
 function rt(s: Store): Runtime {
   let r = runtimes.get(s);
-  if (!r) { tables(s); runtimes.set(s, r = { queue: Promise.resolve(), abort: new AbortController(), owner: crypto.randomUUID(), started: new Set(), backoff: new Map(), lastTurn: 0 }); }
+  if (!r) {
+    tables(s);
+    runtimes.set(
+      s,
+      (r = {
+        queue: Promise.resolve(),
+        abort: new AbortController(),
+        owner: crypto.randomUUID(),
+        started: new Set(),
+        backoff: new Map(),
+        lastTurn: 0,
+      }),
+    );
+  }
   return r;
 }
 
-export class RelayBusy extends Error { }
+export class RelayBusy extends Error {}
 
 /**
  * Every relay mutation, from the daemon, API or CLI, runs here: serialized in this process and
@@ -147,15 +291,20 @@ export function withRelay<T>(s: Store, fn: (signal: AbortSignal) => Promise<T>, 
   const run = r.queue.then(async () => {
     const deadline = Date.now() + wait;
     while (!s.acquireLease("relay-lease", r.owner, 60_000)) {
-      if (Date.now() >= deadline) throw new RelayBusy("Another agentgate process is syncing with the relay; try again shortly");
+      if (Date.now() >= deadline)
+        throw new RelayBusy("Another agentgate process is syncing with the relay; try again shortly");
       await Bun.sleep(200);
     }
     const renew = setInterval(() => s.acquireLease("relay-lease", r.owner, 60_000), 10_000);
     renew.unref?.();
-    try { return await fn(r.abort.signal); }
-    finally { clearInterval(renew); s.releaseLease("relay-lease", r.owner); }
+    try {
+      return await fn(r.abort.signal);
+    } finally {
+      clearInterval(renew);
+      s.releaseLease("relay-lease", r.owner);
+    }
   });
-  r.queue = run.catch(() => { });
+  r.queue = run.catch(() => {});
   return run;
 }
 
@@ -164,19 +313,29 @@ export async function stopRelay(s: Store) {
   const r = runtimes.get(s);
   if (!r) return;
   r.abort.abort();
-  await r.running?.catch(() => { });
-  await r.queue.catch(() => { });
+  await r.running?.catch(() => {});
+  await r.queue.catch(() => {});
 }
 
 // ---------------------------------------------------------------- transport
 
-interface Conn { invite: Invite; keys: Keys; serviceKey?: string }
+interface Conn {
+  invite: Invite;
+  keys: Keys;
+  serviceKey?: string;
+}
 async function conn(s: Store, invite: string, key = serviceKey(s)): Promise<Conn> {
   const parsed = parseInvite(invite);
   return { invite: parsed, keys: await deriveKeys(parsed.secret), serviceKey: key };
 }
 
-async function call(c: Conn, method: string, path: string, body: unknown, signal: AbortSignal): Promise<{ status: number; json: any }> {
+async function call(
+  c: Conn,
+  method: string,
+  path: string,
+  body: unknown,
+  signal: AbortSignal,
+): Promise<{ status: number; json: any }> {
   const headers: Record<string, string> = { authorization: `Bearer ${c.keys.authToken}` };
   if (c.serviceKey) headers["x-relay-key"] = c.serviceKey;
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -184,21 +343,43 @@ async function call(c: Conn, method: string, path: string, body: unknown, signal
   const both = AbortSignal.any([signal, timeout]);
   let res: Response;
   try {
-    res = await fetchHeaders(`${c.invite.url}/g/${c.keys.groupId}${path}`, { method, headers, body: typeof body === "string" ? body : body === undefined ? undefined : JSON.stringify(body), redirect: "manual", signal: both }, 15_000);
+    res = await fetchHeaders(
+      `${c.invite.url}/g/${c.keys.groupId}${path}`,
+      {
+        method,
+        headers,
+        body: typeof body === "string" ? body : body === undefined ? undefined : JSON.stringify(body),
+        redirect: "manual",
+        signal: both,
+      },
+      15_000,
+    );
   } catch (e) {
     if (signal.aborted) throw e;
     throw new RelayError("Could not reach the relay");
   }
-  if (res.status >= 300 && res.status < 400) { await res.body?.cancel(); throw new RelayError("The relay answered with a redirect; refusing to follow it", res.status); }
+  if (res.status >= 300 && res.status < 400) {
+    await res.body?.cancel();
+    throw new RelayError("The relay answered with a redirect; refusing to follow it", res.status);
+  }
   let json: any;
-  try { json = JSON.parse(new TextDecoder().decode(await readBody(res.body, RELAY_LIMITS.messageBytes + 64 * 1024, both))); }
-  catch (e) { if (signal.aborted) throw e; throw new RelayError(`The relay returned an unreadable response (${res.status})`, res.status); }
+  try {
+    json = JSON.parse(new TextDecoder().decode(await readBody(res.body, RELAY_LIMITS.messageBytes + 64 * 1024, both)));
+  } catch (e) {
+    if (signal.aborted) throw e;
+    throw new RelayError(`The relay returned an unreadable response (${res.status})`, res.status);
+  }
   if (res.status >= 400) {
     const err = errorResponse.safeParse(json);
     const retry = Number(res.headers.get("retry-after"));
     // Sanitized: status and a known code only, never a raw body.
     const code = err.success ? err.data.code : undefined;
-    throw new RelayError(describe(res.status, code), res.status, err.success && err.data.resetRequired ? "reset" : code, Number.isFinite(retry) && retry > 0 ? retry : undefined);
+    throw new RelayError(
+      describe(res.status, code),
+      res.status,
+      err.success && err.data.resetRequired ? "reset" : code,
+      Number.isFinite(retry) && retry > 0 ? retry : undefined,
+    );
   }
   return { status: res.status, json };
 }
@@ -233,18 +414,36 @@ function resetTarget(s: Store, t: Target, grp: string) {
   });
 }
 
-interface Decoded { node: string; key: string; pusherSeq: number; rec?: Rec }
-async function decode(c: Conn, generation: string, page: ChangesResponse): Promise<{ decoded: Decoded[]; skipped: number }> {
+interface Decoded {
+  node: string;
+  key: string;
+  pusherSeq: number;
+  rec?: Rec;
+}
+async function decode(
+  c: Conn,
+  generation: string,
+  page: ChangesResponse,
+): Promise<{ decoded: Decoded[]; skipped: number }> {
   const decoded: Decoded[] = [];
   let skipped = 0;
   for (const e of page.entries) {
     try {
-      const payload = JSON.parse(await open(c.keys, { groupId: c.keys.groupId, generation, node: e.node, key: e.key, pusherSeq: e.pusherSeq }, e.blob));
-      if (payload.protocol !== SYNC_PROTOCOL || !payload.record) throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
+      const payload = JSON.parse(
+        await open(
+          c.keys,
+          { groupId: c.keys.groupId, generation, node: e.node, key: e.key, pusherSeq: e.pusherSeq },
+          e.blob,
+        ),
+      );
+      if (payload.protocol !== SYNC_PROTOCOL || !payload.record)
+        throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
       const rec = parseRecord(payload.record);
-      if (await entryKey(c.keys, rec.kind, rec.id) !== e.key) throw new Error("entry key mismatch");
+      if ((await entryKey(c.keys, rec.kind, rec.id)) !== e.key) throw new Error("entry key mismatch");
       decoded.push({ node: e.node, key: e.key, pusherSeq: e.pusherSeq, rec });
-    } catch { skipped++; }
+    } catch {
+      skipped++;
+    }
   }
   return { decoded, skipped };
 }
@@ -305,14 +504,20 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
   const grp = c.keys.groupId;
   // Stop at what exists now, so constant local writes cannot keep this loop from reaching the pull.
   const target = s.seq();
-  for (; ;) {
+  for (;;) {
     signal.throwIfAborted();
     const generation = get(s, t, "generation")!;
     let chunk = pending(s, grp);
-    if (chunk && chunk.generation !== generation) { s.db.run("delete from relay_pending where grp = ?", [grp]); chunk = null; }
+    if (chunk && chunk.generation !== generation) {
+      s.db.run("delete from relay_pending where grp = ?", [grp]);
+      chunk = null;
+    }
     if (!chunk) {
       const pushed = num(s, t, "pushed");
-      if (pushed > s.seq()) { put(s, t, "phase", "read"); throw new RelayError("Local history moved backwards; reconciling with the relay"); }
+      if (pushed > s.seq()) {
+        put(s, t, "phase", "read");
+        throw new RelayError("Local history moved backwards; reconciling with the relay");
+      }
       if (pushed >= target) return;
       const snapshot = s.changes(pushed);
       if (snapshot.seq === pushed) return;
@@ -320,20 +525,36 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
       const entries: RelayEnvelope[] = [];
       const counters: [string, number][] = [];
       const oversize = new Set<string>(JSON.parse(get(s, t, "oversize") ?? "[]"));
-      let bytes = 256 + s.nodeId.length * 6, taken = 0;
+      let bytes = 256 + s.nodeId.length * 6,
+        taken = 0;
       for (const r of snapshot.records) {
         const key = await entryKey(c.keys, r.kind, r.id);
         const pusherSeq = counter(s, grp, generation, s.nodeId, key) + 1;
         const { seq: _, ...plain } = r;
-        const blob = await seal(c.keys, { groupId: grp, generation, node: s.nodeId, key, pusherSeq }, JSON.stringify({ protocol: SYNC_PROTOCOL, record: plain }));
+        const blob = await seal(
+          c.keys,
+          { groupId: grp, generation, node: s.nodeId, key, pusherSeq },
+          JSON.stringify({ protocol: SYNC_PROTOCOL, record: plain }),
+        );
         const name = `${r.kind} ${r.id}`;
         // Too large for the relay. Holding the feed at it would stop every later record for every relay machine,
         // refreshed credentials included, so it is left out and reported until it changes.
-        if (Math.floor(blob.length * 3 / 4) > RELAY_LIMITS.blobBytes) { oversize.add(name); taken++; continue; }
+        if (Math.floor((blob.length * 3) / 4) > RELAY_LIMITS.blobBytes) {
+          oversize.add(name);
+          taken++;
+          continue;
+        }
         const length = JSON.stringify({ key, pusherSeq, blob }).length + 1;
-        if (entries.length && (entries.length === RELAY_LIMITS.pushEntries || bytes + length > RELAY_LIMITS.messageBytes)) break;
+        if (
+          entries.length &&
+          (entries.length === RELAY_LIMITS.pushEntries || bytes + length > RELAY_LIMITS.messageBytes)
+        )
+          break;
         oversize.delete(name);
-        entries.push({ key, pusherSeq, blob }); counters.push([key, pusherSeq]); bytes += length; taken++;
+        entries.push({ key, pusherSeq, blob });
+        counters.push([key, pusherSeq]);
+        bytes += length;
+        taken++;
       }
       const checkpoint = taken === snapshot.records.length ? snapshot.seq : snapshot.records[taken - 1]!.seq!;
       const body = JSON.stringify({ protocol: RELAY_PROTOCOL, generation, node: s.nodeId, entries });
@@ -348,14 +569,20 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
       chunk = { generation, checkpoint, body };
     }
     const sent = identity(s, t);
-    try { await call(c, "POST", "/push", chunk.body, signal); }
-    catch (e) {
+    try {
+      await call(c, "POST", "/push", chunk.body, signal);
+    } catch (e) {
       // A counter this node no longer knows about is on the relay (e.g. after a restore): re-read first.
-      if (e instanceof RelayError && e.code === "counter") s.transaction(() => { s.db.run("delete from relay_pending where grp = ?", [grp]); put(s, t, "phase", "read"); });
+      if (e instanceof RelayError && e.code === "counter")
+        s.transaction(() => {
+          s.db.run("delete from relay_pending where grp = ?", [grp]);
+          put(s, t, "phase", "read");
+        });
       throw e;
     }
     s.transaction(() => {
-      if (identity(s, t) !== sent || pending(s, grp)?.body !== chunk!.body) throw new RelayError("relay configuration changed");
+      if (identity(s, t) !== sent || pending(s, grp)?.body !== chunk!.body)
+        throw new RelayError("relay configuration changed");
       put(s, t, "pushed", chunk!.checkpoint);
       s.db.run("delete from relay_pending where grp = ?", [grp]);
     });
@@ -371,11 +598,12 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
   if (get(s, t, "phase") !== "upload") {
     const { json } = await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal);
     const state = groupState.parse(json);
-    if (state.generation !== get(s, t, "generation")) s.transaction(() => {
-      put(s, t, "generation", state.generation);
-      for (const f of ["pushed", "cursor", "readCursor"] as const) put(s, t, f, 0);
-      s.db.run("delete from relay_pending where grp = ?", [c.keys.groupId]);
-    });
+    if (state.generation !== get(s, t, "generation"))
+      s.transaction(() => {
+        put(s, t, "generation", state.generation);
+        for (const f of ["pushed", "cursor", "readCursor"] as const) put(s, t, f, 0);
+        s.db.run("delete from relay_pending where grp = ?", [c.keys.groupId]);
+      });
     if (!num(s, t, "readCursor")) put(s, t, "skipped", undefined); // a full re-read retries skipped entries
     for (let more = true; more;) {
       if (budget-- <= 0) return false;
@@ -390,20 +618,27 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
     });
   }
   await pushLoop(s, t, c, signal);
-  s.transaction(() => { put(s, t, "phase", "done"); put(s, t, "pushError", undefined); });
+  s.transaction(() => {
+    put(s, t, "phase", "done");
+    put(s, t, "pushError", undefined);
+  });
   return true;
 }
 
 function backoff(s: Store, r: Runtime, slot: string, e: unknown) {
   const b = r.backoff.get(slot) ?? { until: 0, failures: 0 };
   b.failures++;
-  const base = e instanceof RelayError && e.retryAfter ? e.retryAfter * 1000 : exponentialBackoff(b.failures, { baseMs: 15_000, maxMs: 10 * 60_000, jitter: false });
+  const base =
+    e instanceof RelayError && e.retryAfter
+      ? e.retryAfter * 1000
+      : exponentialBackoff(b.failures, { baseMs: 15_000, maxMs: 10 * 60_000, jitter: false });
   b.until = s.now() + base * (0.75 + Math.random() * 0.5);
   r.backoff.set(slot, b);
 }
-const ready = (s: Store, r: Runtime, slot: string, force: boolean) => force || (r.backoff.get(slot)?.until ?? 0) <= s.now();
+const ready = (s: Store, r: Runtime, slot: string, force: boolean) =>
+  force || (r.backoff.get(slot)?.until ?? 0) <= s.now();
 const succeeded = (r: Runtime, slot: string) => r.backoff.delete(slot);
-const message = (e: unknown) => e instanceof RelayError || e instanceof RelayBusy ? e.message : "Relay sync failed";
+const message = (e: unknown) => (e instanceof RelayError || e instanceof RelayBusy ? e.message : "Relay sync failed");
 
 /** Why uploads to the active group wait: a pending rotation sends nothing new to the old secret's group. */
 function rotationBlocks(s: Store, t: Target) {
@@ -412,7 +647,12 @@ function rotationBlocks(s: Store, t: Target) {
 }
 
 /** Reconcile if needed, then push and pull independently. Errors are kept per direction. */
-async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push: boolean; pull: boolean; force: boolean }) {
+async function syncTarget(
+  s: Store,
+  t: Target,
+  signal: AbortSignal,
+  want: { push: boolean; pull: boolean; force: boolean },
+) {
   const r = rt(s);
   const invite = get(s, t, "invite");
   if (!invite) return;
@@ -420,13 +660,17 @@ async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push
   // A new process (or configuration) always re-reads everything before uploading: a restored
   // database cannot be detected by comparing values stored inside it.
   if (!r.started.has(`${t}|${invite}`)) {
-    s.transaction(() => { put(s, t, "phase", "read"); put(s, t, "readCursor", 0); });
+    s.transaction(() => {
+      put(s, t, "phase", "read");
+      put(s, t, "readCursor", 0);
+    });
     r.started.add(`${t}|${invite}`);
   }
   const slot = (d: string) => `${t}|${d}`;
   if (get(s, t, "phase") !== "done" && ready(s, r, slot("reconcile"), want.force)) {
-    try { if (await reconcile(s, t, c, signal)) succeeded(r, slot("reconcile")); }
-    catch (e) {
+    try {
+      if (await reconcile(s, t, c, signal)) succeeded(r, slot("reconcile"));
+    } catch (e) {
       if (signal.aborted) throw e;
       backoff(s, r, slot("reconcile"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
@@ -434,8 +678,11 @@ async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push
     }
   }
   if (want.push && get(s, t, "phase") === "done" && ready(s, r, slot("push"), want.force)) {
-    try { await pushLoop(s, t, c, signal); put(s, t, "pushError", rotationBlocks(s, t)); succeeded(r, slot("push")); }
-    catch (e) {
+    try {
+      await pushLoop(s, t, c, signal);
+      put(s, t, "pushError", rotationBlocks(s, t));
+      succeeded(r, slot("push"));
+    } catch (e) {
       if (signal.aborted) throw e;
       backoff(s, r, slot("push"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
@@ -459,18 +706,31 @@ async function syncTarget(s: Store, t: Target, signal: AbortSignal, want: { push
 async function runCleanups(s: Store, signal: AbortSignal, force = false) {
   // A group rejoined after its wipe was queued is in use again: drop the job instead of deleting it.
   const live = [get(s, "active", "invite"), get(s, "rot", "invite")];
-  if (cleanups(s).some((j) => live.includes(j.invite))) setCleanups(s, cleanups(s).filter((j) => !live.includes(j.invite)));
+  if (cleanups(s).some((j) => live.includes(j.invite)))
+    setCleanups(
+      s,
+      cleanups(s).filter((j) => !live.includes(j.invite)),
+    );
   for (const job of cleanups(s)) {
     if (!force && job.nextAt > s.now()) continue;
     let done = false;
-    try { await call(await conn(s, job.invite, job.serviceKey), "DELETE", "", undefined, signal); done = true; }
-    catch (e) { if (signal.aborted) throw e; done = e instanceof RelayError && e.status === 404; }
+    try {
+      await call(await conn(s, job.invite, job.serviceKey), "DELETE", "", undefined, signal);
+      done = true;
+    } catch (e) {
+      if (signal.aborted) throw e;
+      done = e instanceof RelayError && e.status === 404;
+    }
     s.transaction(() => {
       const list = cleanups(s);
       const i = list.findIndex((j) => j.invite === job.invite);
       if (i < 0) return;
       if (done) list.splice(i, 1);
-      else { list[i]!.attempts++; list[i]!.nextAt = s.now() + exponentialBackoff(list[i]!.attempts, { baseMs: 2 * 60_000, maxMs: 6 * 3_600_000, jitter: false }); }
+      else {
+        list[i]!.attempts++;
+        list[i]!.nextAt =
+          s.now() + exponentialBackoff(list[i]!.attempts, { baseMs: 2 * 60_000, maxMs: 6 * 3_600_000, jitter: false });
+      }
       setCleanups(s, list);
     });
   }
@@ -483,14 +743,24 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false) {
   const newInvite = (JSON.parse(rotation) as { invite: string }).invite;
   if (get(s, "rot", "invite") !== newInvite) put(s, "rot", "invite", newInvite);
   await syncTarget(s, "rot", signal, { push: false, pull: false, force });
-  if (get(s, "rot", "phase") !== "done") throw new RelayError(get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "The new relay group is not ready yet");
+  if (get(s, "rot", "phase") !== "done")
+    throw new RelayError(
+      get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "The new relay group is not ready yet",
+    );
   const active = get(s, "active", "invite");
   const oldGroup = active ? (await conn(s, active)).keys.groupId : undefined;
   s.transaction(() => {
     const old = get(s, "active", "invite");
-    for (const f of FIELDS) { put(s, "active", f, get(s, "rot", f)); put(s, "rot", f, undefined); }
+    for (const f of FIELDS) {
+      put(s, "active", f, get(s, "rot", f));
+      put(s, "rot", f, undefined);
+    }
     s.setLocal("relay:rotation", undefined);
-    if (old) setCleanups(s, [...cleanups(s).filter((j) => j.invite !== old), { invite: old, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 }]);
+    if (old)
+      setCleanups(s, [
+        ...cleanups(s).filter((j) => j.invite !== old),
+        { invite: old, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 },
+      ]);
     clearSeen(s);
     if (oldGroup) dropGroup(s, oldGroup);
   });
@@ -498,7 +768,8 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false) {
 }
 
 function clearSeen(s: Store) {
-  for (const row of s.db.query("select key from local where key like 'relaySeen:%'").all() as { key: string }[]) s.setLocal(row.key, undefined);
+  for (const row of s.db.query("select key from local where key like 'relaySeen:%'").all() as { key: string }[])
+    s.setLocal(row.key, undefined);
 }
 
 // ---------------------------------------------------------------- public operations
@@ -510,23 +781,38 @@ function clearSeen(s: Store) {
 export function relaySync(s: Store, want: { push?: boolean; pull?: boolean; force?: boolean } = {}): Promise<void> {
   const r = rt(s);
   const w = { push: want.push ?? true, pull: want.pull ?? true, force: !!want.force };
-  r.wanted = r.wanted ? { push: r.wanted.push || w.push, pull: r.wanted.pull || w.pull, force: r.wanted.force || w.force } : w;
+  r.wanted = r.wanted
+    ? { push: r.wanted.push || w.push, pull: r.wanted.pull || w.pull, force: r.wanted.force || w.force }
+    : w;
   if (r.running) return r.running;
   r.running = (async () => {
     while (r.wanted && !r.abort.signal.aborted) {
-      const run = r.wanted; r.wanted = undefined;
+      const run = r.wanted;
+      r.wanted = undefined;
       // Turns come every PULL_INTERVAL; a longer gap means the machine slept. Failures from before, or from the brief
       // dark wakes while it slept, say nothing about the network now, and would otherwise hold sync off for minutes.
       if (s.now() - r.lastTurn > 60_000) r.backoff.clear();
       r.lastTurn = s.now();
       if (!s.local("relay:invite") && !s.local("relay:cleanup") && !s.local("relay:rotation")) continue;
-      await withRelay(s, async (signal) => {
-        try { await rotationStep(s, signal, run.force); } catch (e) { if (signal.aborted) throw e; }
-        await syncTarget(s, "active", signal, run);
-        await runCleanups(s, signal);
-      }, 0).catch((e) => { if (!(e instanceof RelayBusy) && !r.abort.signal.aborted) console.error(`relay: ${message(e)}`); });
+      await withRelay(
+        s,
+        async (signal) => {
+          try {
+            await rotationStep(s, signal, run.force);
+          } catch (e) {
+            if (signal.aborted) throw e;
+          }
+          await syncTarget(s, "active", signal, run);
+          await runCleanups(s, signal);
+        },
+        0,
+      ).catch((e) => {
+        if (!(e instanceof RelayBusy) && !r.abort.signal.aborted) console.error(`relay: ${message(e)}`);
+      });
     }
-  })().finally(() => { r.running = undefined; });
+  })().finally(() => {
+    r.running = undefined;
+  });
   return r.running;
 }
 
@@ -546,13 +832,27 @@ export function createRelay(s: Store, url?: string): Promise<string> {
     const existing = get(s, "active", "invite");
     if (existing) return existing;
     const invite = makeInvite(url ?? relayUrlDefault());
-    s.transaction(() => { for (const f of FIELDS) put(s, "active", f, undefined); put(s, "active", "invite", invite); put(s, "active", "phase", "read"); });
+    s.transaction(() => {
+      for (const f of FIELDS) put(s, "active", f, undefined);
+      put(s, "active", "invite", invite);
+      put(s, "active", "phase", "read");
+    });
     const c = await conn(s, invite);
-    try { await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal); }
-    catch (e) { s.transaction(() => { for (const f of FIELDS) put(s, "active", f, undefined); }); throw e; }
+    try {
+      await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal);
+    } catch (e) {
+      s.transaction(() => {
+        for (const f of FIELDS) put(s, "active", f, undefined);
+      });
+      throw e;
+    }
     rt(s).started.add(`active|${invite}`);
-    try { await reconcile(s, "active", c, signal); }
-    catch (e) { if (signal.aborted) throw e; put(s, "active", "pushError", message(e)); }
+    try {
+      await reconcile(s, "active", c, signal);
+    } catch (e) {
+      if (signal.aborted) throw e;
+      put(s, "active", "pushError", message(e));
+    }
     return invite;
   });
 }
@@ -568,12 +868,25 @@ export function joinRelay(s: Store, text: string, force = false): Promise<{ node
     try {
       const { json } = await call(c, "GET", "/nodes", undefined, signal);
       if (!force && nodesResponse.parse(json).nodes.some((n) => n.node === s.nodeId))
-        throw new RelayError(`A machine named ${s.nodeId} already uses this relay. Rename this machine (\`agentgate init --name <other>\`), or pass --force if it is this same machine rejoining.`);
-    } catch (e) { if (!(e instanceof RelayError && e.status === 404)) throw e; }
-    s.transaction(() => { for (const f of FIELDS) put(s, "active", f, undefined); put(s, "active", "invite", invite.text); put(s, "active", "phase", "read"); });
+        throw new RelayError(
+          `A machine named ${s.nodeId} already uses this relay. Rename this machine (\`agentgate init --name <other>\`), or pass --force if it is this same machine rejoining.`,
+        );
+    } catch (e) {
+      if (!(e instanceof RelayError && e.status === 404)) throw e;
+    }
+    s.transaction(() => {
+      for (const f of FIELDS) put(s, "active", f, undefined);
+      put(s, "active", "invite", invite.text);
+      put(s, "active", "phase", "read");
+    });
     rt(s).started.add(`active|${invite.text}`);
-    try { await reconcile(s, "active", c, signal); }
-    catch (e) { if (signal.aborted) throw e; put(s, "active", "pushError", message(e)); throw e; }
+    try {
+      await reconcile(s, "active", c, signal);
+    } catch (e) {
+      if (signal.aborted) throw e;
+      put(s, "active", "pushError", message(e));
+      throw e;
+    }
     return { node: s.nodeId };
   });
 }
@@ -583,7 +896,10 @@ export function reconcileRelay(s: Store): Promise<void> {
   return withRelay(s, async (signal) => {
     const invite = get(s, "active", "invite");
     if (!invite) throw new RelayError("This machine does not use a relay");
-    s.transaction(() => { put(s, "active", "phase", "read"); put(s, "active", "readCursor", 0); });
+    s.transaction(() => {
+      put(s, "active", "phase", "read");
+      put(s, "active", "readCursor", 0);
+    });
     rt(s).started.add(`active|${invite}`);
     while (!(await reconcile(s, "active", await conn(s, invite), signal)));
   });
@@ -601,7 +917,8 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
       const invite = makeInvite(parseInvite(active).url);
       s.transaction(() => {
         for (const f of FIELDS) put(s, "rot", f, undefined);
-        put(s, "rot", "invite", invite); put(s, "rot", "phase", "read");
+        put(s, "rot", "invite", invite);
+        put(s, "rot", "phase", "read");
         s.setLocal("relay:rotation", JSON.stringify({ invite, startedAt: s.now() }));
       });
     }
@@ -614,9 +931,18 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
 /** Stop using the relay here. `wipe` queues deletion of the group; a failure never re-enables sync. */
 export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: boolean }> {
   return withRelay(s, async (signal) => {
-    const groups = await Promise.all((["active", "rot"] as const).map((t) => get(s, t, "invite")).filter(isTruthy).map(async (i) => ({ invite: i, grp: (await conn(s, i)).keys.groupId })));
+    const groups = await Promise.all(
+      (["active", "rot"] as const)
+        .map((t) => get(s, t, "invite"))
+        .filter(isTruthy)
+        .map(async (i) => ({ invite: i, grp: (await conn(s, i)).keys.groupId })),
+    );
     s.transaction(() => {
-      if (wipe) setCleanups(s, [...cleanups(s).filter((j) => !groups.some((g) => g.invite === j.invite)), ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 }))]);
+      if (wipe)
+        setCleanups(s, [
+          ...cleanups(s).filter((j) => !groups.some((g) => g.invite === j.invite)),
+          ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 })),
+        ]);
       for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);
       s.setLocal("relay:rotation", undefined);
       for (const g of groups) dropGroup(s, g.grp);
@@ -648,7 +974,9 @@ export function relayUrl(s: Store) {
 /** A service key is for a self-hosted relay: it never goes to the hosted one, which an older endpoint may point at,
  * unless that is the relay this node uses. */
 export const serviceKeyFor = (s: Store, url: string) =>
-  trimTrailingSlash(url) !== DEFAULT_RELAY_URL || trimTrailingSlash(relayUrl(s)) === DEFAULT_RELAY_URL ? serviceKey(s) : undefined;
+  trimTrailingSlash(url) !== DEFAULT_RELAY_URL || trimTrailingSlash(relayUrl(s)) === DEFAULT_RELAY_URL
+    ? serviceKey(s)
+    : undefined;
 export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!s.local("relay:rotation");
 
 /** Sanitized status: never the invite, the service key or a raw relay response. */
@@ -656,7 +984,9 @@ export function relayStatus(s: Store) {
   const invite = get(s, "active", "invite");
   if (!invite && !s.local("relay:cleanup")) return undefined;
   let url = "";
-  try { url = invite ? parseInvite(invite).url : ""; } catch { }
+  try {
+    url = invite ? parseInvite(invite).url : "";
+  } catch {}
   const skipped = get(s, "active", "skipped");
   const oversize: string[] = JSON.parse(get(s, "active", "oversize") ?? "[]");
   return {
@@ -668,8 +998,11 @@ export function relayStatus(s: Store) {
     reconciling: !!invite && get(s, "active", "phase") !== "done",
     rotating: !!s.local("relay:rotation"),
     cleanupPending: cleanups(s).length > 0,
-    pushError: get(s, "active", "pushError")
-      ?? (oversize.length ? `${oversize.slice(0, 3).join(", ")}${oversize.length > 3 ? ` and ${oversize.length - 3} more` : ""}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay` : undefined),
+    pushError:
+      get(s, "active", "pushError") ??
+      (oversize.length
+        ? `${oversize.slice(0, 3).join(", ")}${oversize.length > 3 ? ` and ${oversize.length - 3} more` : ""}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay`
+        : undefined),
     pullError: get(s, "active", "pullError"),
     skipped: skipped ? (JSON.parse(skipped) as { count: number }).count : undefined,
   };
@@ -685,11 +1018,14 @@ export function via(s: Store, node: string): ("tailnet" | "relay")[] {
 
 /** Nodes seen through the relay; used to tell relay unpairs from Tailscale ones. */
 export const relayNodes = (s: Store) =>
-  (s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
+  (
+    s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]
+  ).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
 
 /** The name a pairing command gives the other machine: shell-safe, and not an existing node's (two machines would share records). */
 export function newNodeName(s: Store, name: string) {
-  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) throw new RelayError("Use lowercase letters, digits and dashes for the machine name");
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
+    throw new RelayError("Use lowercase letters, digits and dashes for the machine name");
   if (s.get("node", name)) throw new RelayError(`A machine named ${name} already exists`);
   return name;
 }
@@ -704,14 +1040,17 @@ export const installAndJoin = (args: string, name?: string) =>
  */
 export function parseJoin(text: string): { invite: string; force: boolean } | { url: string; code: string } {
   if (text.length > 4096) throw new RelayError("That pairing command is too long");
-  const all = text.trim().split(/\s+/).filter(Boolean), at = all.indexOf("join");
+  const all = text.trim().split(/\s+/).filter(Boolean),
+    at = all.indexOf("join");
   const tokens = at < 0 ? all : all.slice(at + 1);
   const force = tokens.includes("--force");
   const rest = tokens.filter((t) => t !== "--force");
   if (rest.length === 1 && rest[0]!.startsWith("agr1.")) return { invite: parseInvite(rest[0]!).text, force };
   if (rest.length === 2 && !force && /^[a-z]+(-[a-z]+){6}$/.test(rest[1]!)) {
     let u: URL | undefined;
-    try { u = new URL(rest[0]!); } catch { }
+    try {
+      u = new URL(rest[0]!);
+    } catch {}
     if (u && (u.protocol === "http:" || u.protocol === "https:")) return { url: rest[0]!, code: rest[1]! };
   }
   throw new RelayError("Paste the whole `agentgate join …` command from the other machine");

@@ -152,7 +152,10 @@ function runningContainers() {
 function dockerDisk(text: string) {
   if (!text) return null;
   try {
-    const rows = text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as { Type: string; Size: string; Reclaimable: string });
+    const rows = text
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { Type: string; Size: string; Reclaimable: string });
     const size = (type: string) => rows.find((row) => row.Type === type);
     return {
       images: size("Images")?.Size ?? null,
@@ -274,11 +277,19 @@ export class HealthDashboard {
   respond(request: Request, listener: "loopback" | "tailnet") {
     const node = this.s.get("node", this.s.nodeId);
     if (!node?.healthDashboard) return new Response("Not found", { status: 404 });
-    if (listener === "tailnet" && !ownHost(request.headers.get("host"), node.url)) return new Response("forbidden host", { status: 403 });
-    if (process.platform !== "linux") return new Response("The health dashboard reads Linux's /proc, so it runs on Linux machines only.", { status: 501 });
-    if (request.headers.get("accept")?.includes("text/html")) return new Response(HEALTH_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
-    if (!this.latest) return Response.json({ status: "starting" }, { status: 503, headers: { "cache-control": "no-store" } });
-    const body = new URL(request.url).searchParams.has("history") ? { ...this.latest, sample_seconds: SAMPLE_MS / 1000, history: this.history } : this.latest;
+    if (listener === "tailnet" && !ownHost(request.headers.get("host"), node.url))
+      return new Response("forbidden host", { status: 403 });
+    if (process.platform !== "linux")
+      return new Response("The health dashboard reads Linux's /proc, so it runs on Linux machines only.", {
+        status: 501,
+      });
+    if (request.headers.get("accept")?.includes("text/html"))
+      return new Response(HEALTH_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
+    if (!this.latest)
+      return Response.json({ status: "starting" }, { status: 503, headers: { "cache-control": "no-store" } });
+    const body = new URL(request.url).searchParams.has("history")
+      ? { ...this.latest, sample_seconds: SAMPLE_MS / 1000, history: this.history }
+      : this.latest;
     return Response.json(body, { headers: { "cache-control": "no-store" } });
   }
 
@@ -337,7 +348,12 @@ export class HealthDashboard {
   async measure() {
     const previous = this.previous;
     if (!previous) throw new Error("not sampling");
-    const now = { at: performance.now(), cpu: cpuTimes(), disk: diskCounters(this.disks), network: networkCounters(this.iface) };
+    const now = {
+      at: performance.now(),
+      cpu: cpuTimes(),
+      disk: diskCounters(this.disks),
+      network: networkCounters(this.iface),
+    };
     const seconds = (now.at - previous.at) / 1000;
     const list = processes();
 
@@ -358,7 +374,8 @@ export class HealthDashboard {
     // as its parent (Codex's app-server).
     const programByPid = new Map(list.map((proc) => [proc.pid, proc.program]));
     const agents = (program: string) =>
-      list.filter((proc) => proc.program === program && proc.ppid !== 1 && programByPid.get(proc.ppid) !== program).length;
+      list.filter((proc) => proc.program === program && proc.ppid !== 1 && programByPid.get(proc.ppid) !== program)
+        .length;
 
     const cpus = os.cpus().length;
     const [one = 0, five = 0, fifteen = 0] = os.loadavg();

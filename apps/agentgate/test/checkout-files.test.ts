@@ -3,7 +3,21 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } 
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { sh, tmp, removeTmp } from "./fixtures/git.ts";
-import { CheckoutFiles, StoreBusy, fileContent, fillCheckout, keyForProject, localEdits, lockStore, placeEdit, readStore, reconcile, repoKey, setFileContent, writeStore } from "../src/checkout-files.ts";
+import {
+  CheckoutFiles,
+  StoreBusy,
+  fileContent,
+  fillCheckout,
+  keyForProject,
+  localEdits,
+  lockStore,
+  placeEdit,
+  readStore,
+  reconcile,
+  repoKey,
+  setFileContent,
+  writeStore,
+} from "../src/checkout-files.ts";
 import { Store, exportBackup } from "../src/store.ts";
 import { publicProject } from "../src/remote.ts";
 
@@ -11,20 +25,40 @@ afterAll(removeTmp);
 
 /** Fixture stores in buncargo's format (docs/internals/checkout-files.md). */
 const sha = (data: string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
-function fixtureStore(dir: string, files: Record<string, { data: string; updatedAt: string; machine?: boolean }>, version = 1) {
+function fixtureStore(
+  dir: string,
+  files: Record<string, { data: string; updatedAt: string; machine?: boolean }>,
+  version = 1,
+) {
   mkdirSync(dir, { recursive: true });
   for (const [path, f] of Object.entries(files)) {
     mkdirSync(join(dir, "data", path, ".."), { recursive: true });
     writeFileSync(join(dir, "data", path), f.data);
   }
-  const entries = Object.fromEntries(Object.entries(files).map(([path, f]) => [path, { sha256: sha(f.data), updatedAt: f.updatedAt, machine: !!f.machine }]));
+  const entries = Object.fromEntries(
+    Object.entries(files).map(([path, f]) => [
+      path,
+      { sha256: sha(f.data), updatedAt: f.updatedAt, machine: !!f.machine },
+    ]),
+  );
   writeFileSync(join(dir, "manifest.json"), JSON.stringify({ version, files: entries }));
 }
-const contents = (dir: string) => Object.fromEntries([...readStore(dir).files].map(([path, f]) => [path, f.machine ? "(machine)" : f.data!.toString()]));
+const contents = (dir: string) =>
+  Object.fromEntries(
+    [...readStore(dir).files].map(([path, f]) => [path, f.machine ? "(machine)" : f.data!.toString()]),
+  );
 
-const stores: Store[] = [], watchers: CheckoutFiles[] = [];
-afterEach(() => { for (const w of watchers.splice(0)) w.close(); for (const s of stores.splice(0)) s.close(); });
-const files = (n: { s: Store; root: string }) => { const f = new CheckoutFiles(n.s, n.root); watchers.push(f); return f; };
+const stores: Store[] = [],
+  watchers: CheckoutFiles[] = [];
+afterEach(() => {
+  for (const w of watchers.splice(0)) w.close();
+  for (const s of stores.splice(0)) s.close();
+});
+const files = (n: { s: Store; root: string }) => {
+  const f = new CheckoutFiles(n.s, n.root);
+  watchers.push(f);
+  return f;
+};
 function node(name: string, protocol = 6) {
   const s = new Store(":memory:");
   s.setLocal("node", name);
@@ -35,7 +69,9 @@ function node(name: string, protocol = 6) {
 function pair(...nodes: ReturnType<typeof node>[]) {
   for (const n of nodes) for (const m of nodes) n.s.put("node", m.s.nodeId, { id: m.s.nodeId, protocol: m.protocol });
 }
-const copy = (from: Store, to: Store) => { for (const r of from.changes(0).records) to.merge(r); };
+const copy = (from: Store, to: Store) => {
+  for (const r of from.changes(0).records) to.merge(r);
+};
 
 const KEY = "github.com/bliss-budget/budget-app";
 
@@ -43,12 +79,18 @@ const KEY = "github.com/bliss-budget/budget-app";
 function fakeBuncargo(cwd: string, status: unknown = {}) {
   writeFileSync(join(cwd, "dev.config.ts"), "");
   mkdirSync(join(cwd, "node_modules", "buncargo"), { recursive: true });
-  writeFileSync(join(cwd, "node_modules", "buncargo", "package.json"), JSON.stringify({ bin: { buncargo: "./cli.js" } }));
-  writeFileSync(join(cwd, "node_modules", "buncargo", "cli.js"), `const { appendFileSync } = require("node:fs");
+  writeFileSync(
+    join(cwd, "node_modules", "buncargo", "package.json"),
+    JSON.stringify({ bin: { buncargo: "./cli.js" } }),
+  );
+  writeFileSync(
+    join(cwd, "node_modules", "buncargo", "cli.js"),
+    `const { appendFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync("calls.log", process.env.HOME + " " + args.join(" ") + "\\n");
 if (args[1] === "status") console.log(${JSON.stringify(JSON.stringify(status))});
-`);
+`,
+  );
 }
 
 test("repository keys follow the contract", () => {
@@ -73,7 +115,8 @@ test("a lock is taken atomically and a stale one (dead process, or over 30 secon
     mkdirSync(join(dir, ".lock"), { recursive: true });
     writeFileSync(join(dir, ".lock", "owner.json"), JSON.stringify({ pid, host, createdAt }));
   };
-  const now = Date.now(), recent = new Date(now - 1000).toISOString();
+  const now = Date.now(),
+    recent = new Date(now - 1000).toISOString();
   owner(2 ** 22 + 17, recent); // no such process here
   lockStore(dir, now)();
   owner(process.pid, new Date(now - 31_000).toISOString());
@@ -91,23 +134,32 @@ test("readers trust the manifest: a mismatched data file is a write in progress,
   expect(readStore(dir).state).toBe("pending");
 
   // Writing follows the protocol: data and manifest replaced, removed data files gone, permissions private.
-  writeStore(dir, [{ path: "apps/x/.env", data: Buffer.from("B=1\n"), updatedAt: "2026-10-02T00:00:00.000Z" }], [".env"]);
+  writeStore(
+    dir,
+    [{ path: "apps/x/.env", data: Buffer.from("B=1\n"), updatedAt: "2026-10-02T00:00:00.000Z" }],
+    [".env"],
+  );
   expect(contents(dir)).toEqual({ "apps/x/.env": "B=1\n" });
   expect(existsSync(join(dir, "data", ".env"))).toBe(false);
   expect(statSync(join(dir, "data", "apps/x/.env")).mode & 0o777).toBe(0o600);
   expect(statSync(join(dir, "data", "apps")).mode & 0o777).toBe(0o700);
-  expect(() => writeStore(dir, [{ path: "../escape", data: Buffer.from(""), updatedAt: "2026-10-02T00:00:00.000Z" }], [])).toThrow();
+  expect(() =>
+    writeStore(dir, [{ path: "../escape", data: Buffer.from(""), updatedAt: "2026-10-02T00:00:00.000Z" }], []),
+  ).toThrow();
 });
 
 test("stores sync through the project record, without machine files or machine-bound stores", () => {
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   pair(a, b);
   fixtureStore(join(a.root, KEY), {
     ".env.local": { data: "TOKEN=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
     "apps/expo-app/.env": { data: "EXPO=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
     ".env.machine": { data: "HOST=laptop\n", updatedAt: "2026-10-01T00:00:00.000Z", machine: true },
   });
-  fixtureStore(join(a.root, "local", "0123456789abcdef"), { ".env": { data: "LOCAL=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
+  fixtureStore(join(a.root, "local", "0123456789abcdef"), {
+    ".env": { data: "LOCAL=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+  });
   files(a).sync();
   const record = a.s.get("project", "bliss-budget/budget-app")!;
   expect(record.files!.map((f) => f.path)).toEqual([".env.local", "apps/expo-app/.env"]);
@@ -123,7 +175,11 @@ test("stores sync through the project record, without machine files or machine-b
   const manifest = JSON.parse(readFileSync(join(b.root, KEY, "manifest.json"), "utf8"));
   manifest.files[".env.server"] = { sha256: sha("x"), updatedAt: "2026-10-01T00:00:00.000Z", machine: true };
   writeFileSync(join(b.root, KEY, "manifest.json"), JSON.stringify(manifest));
-  writeStore(join(a.root, KEY), [{ path: ".env.local", data: Buffer.from("TOKEN=2\n"), updatedAt: "2026-10-03T00:00:00.000Z" }], ["apps/expo-app/.env"]);
+  writeStore(
+    join(a.root, KEY),
+    [{ path: ".env.local", data: Buffer.from("TOKEN=2\n"), updatedAt: "2026-10-03T00:00:00.000Z" }],
+    ["apps/expo-app/.env"],
+  );
   reconcile(a.s, a.root, KEY);
   copy(a.s, b.s);
   reconcile(b.s, b.root, KEY);
@@ -131,9 +187,13 @@ test("stores sync through the project record, without machine files or machine-b
 });
 
 test("concurrent edits on two machines: each file goes to its newer save, and a deletion survives losing the record", () => {
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   pair(a, b);
-  fixtureStore(join(a.root, KEY), { ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" }, "old.env": { data: "O\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
+  fixtureStore(join(a.root, KEY), {
+    ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+    "old.env": { data: "O\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+  });
   reconcile(a.s, a.root, KEY);
   copy(a.s, b.s);
   reconcile(b.s, b.root, KEY);
@@ -141,7 +201,14 @@ test("concurrent edits on two machines: each file goes to its newer save, and a 
   // Offline from each other: A deletes old.env, B saves a newer .env and a new file.
   writeStore(join(a.root, KEY), [], ["old.env"]);
   reconcile(a.s, a.root, KEY);
-  writeStore(join(b.root, KEY), [{ path: ".env", data: Buffer.from("V=2\n"), updatedAt: "2026-10-05T00:00:00.000Z" }, { path: "b.env", data: Buffer.from("B\n"), updatedAt: "2026-10-05T00:00:00.000Z" }], []);
+  writeStore(
+    join(b.root, KEY),
+    [
+      { path: ".env", data: Buffer.from("V=2\n"), updatedAt: "2026-10-05T00:00:00.000Z" },
+      { path: "b.env", data: Buffer.from("B\n"), updatedAt: "2026-10-05T00:00:00.000Z" },
+    ],
+    [],
+  );
   reconcile(b.s, b.root, KEY);
   // B's record wins the record-level merge on A (it has more edits); A's deletion is still kept.
   b.s.put("project", "bliss-budget/budget-app", b.s.get("project", "bliss-budget/budget-app")!);
@@ -155,27 +222,35 @@ test("concurrent edits on two machines: each file goes to its newer save, and a 
 });
 
 test("a store in a format this agentgate does not know is left alone, and old nodes hold the record back", () => {
-  const a = node("a"), old = node("old", 5);
+  const a = node("a"),
+    old = node("old", 5);
   pair(a, old);
   fixtureStore(join(a.root, KEY), { ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } }, 2);
   const before = readFileSync(join(a.root, KEY, "manifest.json"), "utf8");
-  a.s.put("project", "bliss-budget/budget-app", { id: "bliss-budget/budget-app", files: [{ path: "x.env", data: btoa("X"), updatedAt: "2026-10-09T00:00:00.000Z" }] });
+  a.s.put("project", "bliss-budget/budget-app", {
+    id: "bliss-budget/budget-app",
+    files: [{ path: "x.env", data: btoa("X"), updatedAt: "2026-10-09T00:00:00.000Z" }],
+  });
   reconcile(a.s, a.root, KEY);
   expect(readFileSync(join(a.root, KEY, "manifest.json"), "utf8")).toBe(before);
   expect(JSON.parse(a.s.local("checkoutFiles:errors")!)["bliss-budget/budget-app"]).toContain("newer format");
 
-  const c = node("c"), other = node("other", 5);
+  const c = node("c"),
+    other = node("other", 5);
   pair(c, other);
   fixtureStore(join(c.root, KEY), { ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   reconcile(c.s, c.root, KEY);
   expect(c.s.get("project", "bliss-budget/budget-app")).toBeUndefined();
-  expect(JSON.parse(c.s.local("checkoutFiles:errors")!)["bliss-budget/budget-app"]).toContain("Update agentgate on other");
+  expect(JSON.parse(c.s.local("checkoutFiles:errors")!)["bliss-budget/budget-app"]).toContain(
+    "Update agentgate on other",
+  );
   // Errors name files and machines, never their values.
   expect(c.s.local("checkoutFiles:errors")).not.toContain("V=1");
 });
 
 test("a checkout without buncargo gets missing store files and keeps its own", async () => {
-  const root = tmp(), cwd = tmp();
+  const root = tmp(),
+    cwd = tmp();
   fixtureStore(join(root, KEY), {
     ".env": { data: "STORE=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
     "apps/expo-app/.env": { data: "EXPO=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
@@ -191,16 +266,25 @@ test("a checkout without buncargo gets missing store files and keeps its own", a
 });
 
 test("in a buncargo checkout, buncargo's status picks what a handoff carries and its pull fills the checkout", async () => {
-  const home = tmp(), root = join(home, ".buncargo", "files"), cwd = tmp();
-  const status = { version: 1, repoKey: KEY, files: [
-    { path: ".env.local", state: "local-edits", machine: false },
-    { path: "apps/api/.env", state: "conflict", machine: false },
-    { path: ".env.host", state: "local-edits", machine: true },
-    { path: ".env", state: "in-sync", machine: false },
-    { path: ".env.gone", state: "local-edits", machine: false },
-  ] };
+  const home = tmp(),
+    root = join(home, ".buncargo", "files"),
+    cwd = tmp();
+  const status = {
+    version: 1,
+    repoKey: KEY,
+    files: [
+      { path: ".env.local", state: "local-edits", machine: false },
+      { path: "apps/api/.env", state: "conflict", machine: false },
+      { path: ".env.host", state: "local-edits", machine: true },
+      { path: ".env", state: "in-sync", machine: false },
+      { path: ".env.gone", state: "local-edits", machine: false },
+    ],
+  };
   fakeBuncargo(cwd, status);
-  for (const f of [".env.local", "apps/api/.env", ".env.host", ".env"]) { mkdirSync(join(cwd, f, ".."), { recursive: true }); writeFileSync(join(cwd, f), "x"); }
+  for (const f of [".env.local", "apps/api/.env", ".env.host", ".env"]) {
+    mkdirSync(join(cwd, f, ".."), { recursive: true });
+    writeFileSync(join(cwd, f), "x");
+  }
 
   expect(await localEdits(root, cwd, [])).toEqual([".env.local", "apps/api/.env"]);
   await fillCheckout(root, cwd, KEY);
@@ -208,7 +292,8 @@ test("in a buncargo checkout, buncargo's status picks what a handoff carries and
 });
 
 test("a handed-off file replaces the checkout's copy only when that copy has no edits of its own", () => {
-  const root = tmp(), cwd = tmp();
+  const root = tmp(),
+    cwd = tmp();
   fixtureStore(join(root, KEY), { ".env": { data: "STORE\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   writeFileSync(join(cwd, ".env"), "STORE\n");
   expect(placeEdit(root, KEY, cwd, ".env", Buffer.from("ARRIVED\n"))).toBe(true);
@@ -227,13 +312,21 @@ test("editing a file in the app saves it for every machine and updates this mach
     ".env.machine": { data: "HOST=laptop\n", updatedAt: "2026-10-01T00:00:00.000Z", machine: true },
   });
   files(a).sync();
-  const clean = tmp(), edited = tmp();
+  const clean = tmp(),
+    edited = tmp();
   writeFileSync(join(clean, ".env"), "OLD=1\n");
   writeFileSync(join(edited, ".env"), "MINE=1\n");
   const withBuncargo = tmp();
   fakeBuncargo(withBuncargo);
   writeFileSync(join(withBuncargo, ".env"), "OLD=1\n");
-  a.s.setLocal("checkouts", JSON.stringify({ [clean]: "Bliss-Budget/budget-app", [edited]: "bliss-budget/budget-app", [withBuncargo]: "bliss-budget/budget-app" }));
+  a.s.setLocal(
+    "checkouts",
+    JSON.stringify({
+      [clean]: "Bliss-Budget/budget-app",
+      [edited]: "bliss-budget/budget-app",
+      [withBuncargo]: "bliss-budget/budget-app",
+    }),
+  );
 
   const opened = fileContent(a.s, a.root, "bliss-budget/budget-app", ".env");
   expect(opened.content).toBe("OLD=1\n");
@@ -242,7 +335,9 @@ test("editing a file in the app saves it for every machine and updates this mach
 
   await setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "NEW=2\n", opened.sha256);
   expect(contents(join(a.root, KEY))[".env"]).toBe("NEW=2\n");
-  expect(a.s.get("project", "bliss-budget/budget-app")!.files!.find((f) => f.path === ".env")!.data).toBe(btoa("NEW=2\n"));
+  expect(a.s.get("project", "bliss-budget/budget-app")!.files!.find((f) => f.path === ".env")!.data).toBe(
+    btoa("NEW=2\n"),
+  );
   expect(readFileSync(join(clean, ".env"), "utf8")).toBe("NEW=2\n");
   expect(readFileSync(join(edited, ".env"), "utf8")).toBe("MINE=1\n");
   // Buncargo's pull decides for its checkouts, by its own record of each checkout's copy.
@@ -250,13 +345,22 @@ test("editing a file in the app saves it for every machine and updates this mach
   expect(readFileSync(join(withBuncargo, "calls.log"), "utf8")).toEndWith(" files pull .env\n");
   await expect(setFileContent(a.s, a.root, "bliss-budget/budget-app", "../.env", "x")).rejects.toThrow("plain path");
   // An editor still open on the old version cannot replace the new one.
-  await expect(setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "STALE=1\n", opened.sha256)).rejects.toThrow("changed since you opened it");
+  await expect(
+    setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "STALE=1\n", opened.sha256),
+  ).rejects.toThrow("changed since you opened it");
   expect(contents(join(a.root, KEY))[".env"]).toBe("NEW=2\n");
 });
 
 test("file contents stay out of the API's project view and backups without secrets", () => {
   const { s } = node("a");
-  const project = s.put("project", "o/r", { id: "o/r", fileList: [".env"], files: [{ path: ".env", data: btoa("SECRET=1"), updatedAt: "2026-10-01T00:00:00.000Z" }, { path: "old", updatedAt: "2026-10-02T00:00:00.000Z", deleted: true }] });
+  const project = s.put("project", "o/r", {
+    id: "o/r",
+    fileList: [".env"],
+    files: [
+      { path: ".env", data: btoa("SECRET=1"), updatedAt: "2026-10-01T00:00:00.000Z" },
+      { path: "old", updatedAt: "2026-10-02T00:00:00.000Z", deleted: true },
+    ],
+  });
   const shown = JSON.stringify(publicProject(project, { summary: () => undefined } as never));
   expect(shown).not.toContain(btoa("SECRET=1"));
   expect(JSON.parse(shown).files).toEqual([{ path: ".env", updatedAt: "2026-10-01T00:00:00.000Z" }]);
@@ -270,7 +374,8 @@ test("a save follows into every worktree of a registered checkout, and logs what
   fixtureStore(join(a.root, KEY), { ".env": { data: "OLD=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   files(a).sync();
   // SkillLinks registers only the main checkout; its worktrees live elsewhere, as T3 Code's do.
-  const main = tmp(), trees = tmp();
+  const main = tmp(),
+    trees = tmp();
   sh(main, "init", "-b", "main");
   writeFileSync(join(main, ".gitignore"), ".env\nnode_modules\ncalls.log\ndev.config.ts\n");
   sh(main, "add", "-A");
@@ -283,11 +388,13 @@ test("a save follows into every worktree of a registered checkout, and logs what
   writeFileSync(join(main, ".env"), "MINE=1\n");
   a.s.setLocal("checkouts", JSON.stringify({ [main]: "bliss-budget/budget-app" }));
 
-  const log = spyOn(console, "log").mockImplementation(() => { });
+  const log = spyOn(console, "log").mockImplementation(() => {});
   try {
     const saved = await setFileContent(a.s, a.root, "bliss-budget/budget-app", ".env", "NEW=2\n", sha("OLD=1\n"));
     expect(saved.checkouts).toEqual({ updated: 1, kept: 1, pulled: 1, failed: 0 });
-    expect(log.mock.calls.flat()).toContain("checkout files: bliss-budget/budget-app .env saved; followed 3 checkouts (1 updated, 1 kept, 1 pulled)");
+    expect(log.mock.calls.flat()).toContain(
+      "checkout files: bliss-budget/budget-app .env saved; followed 3 checkouts (1 updated, 1 kept, 1 pulled)",
+    );
     expect(JSON.stringify(log.mock.calls)).not.toContain("NEW=2");
   } finally {
     log.mockRestore();
@@ -299,7 +406,8 @@ test("a save follows into every worktree of a registered checkout, and logs what
 });
 
 test("a SQLite write that fails says which write, which database and what the disks have free", () => {
-  const dir = tmp(), s = new Store(join(dir, "agentgate.db"));
+  const dir = tmp(),
+    s = new Store(join(dir, "agentgate.db"));
   stores.push(s);
   s.setLocal("node", "a");
   s.put("node", "a", { id: "a", protocol: 6 });
@@ -309,7 +417,11 @@ test("a SQLite write that fails says which write, which database and what the di
   const pages = (s.db.query("pragma page_count").get() as { page_count: number }).page_count;
   s.db.run(`pragma max_page_count = ${pages}`);
   let error: Error | undefined;
-  try { reconcile(s, root, KEY); } catch (e) { error = e as Error; }
+  try {
+    reconcile(s, root, KEY);
+  } catch (e) {
+    error = e as Error;
+  }
   expect(error?.message).toContain(`in ${join(dir, "agentgate.db")} failed: database or disk is full (SQLITE_FULL; `);
   expect(error?.message).toMatch(/GiB free in .*GiB free in /);
   expect(error?.message).not.toContain("xxxx");

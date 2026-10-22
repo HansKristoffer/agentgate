@@ -1,7 +1,17 @@
 import { z } from "zod";
 import { getUniqueValues, isTruthy } from "hanzio";
 import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
-import { aliasesSchema, modelPolicySchema, quotaWindowSchema, cooldownSchema, quotaHealthSchema, modelSnapshotSchema, capabilitiesSchema, providerSchema, type Provider } from "./proxy.ts";
+import {
+  aliasesSchema,
+  modelPolicySchema,
+  quotaWindowSchema,
+  cooldownSchema,
+  quotaHealthSchema,
+  modelSnapshotSchema,
+  capabilitiesSchema,
+  providerSchema,
+  type Provider,
+} from "./proxy.ts";
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
@@ -18,7 +28,11 @@ export const accountSchema = z.object({
   pinned: z.boolean().optional(),
   policy: modelPolicySchema.optional(),
 });
-const b64url = (bytes: number) => z.string().length(Math.ceil(bytes * 4 / 3)).regex(/^[A-Za-z0-9_-]+$/);
+const b64url = (bytes: number) =>
+  z
+    .string()
+    .length(Math.ceil((bytes * 4) / 3))
+    .regex(/^[A-Za-z0-9_-]+$/);
 export const remoteSchema = z.object({
   /** Names the relay endpoint: `/mcp/<key>`. */
   key: b64url(16),
@@ -45,9 +59,17 @@ export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
   /** Skill ids linked into this repo's checkouts; on `*`, linked for every session. */
-  skills: z.array(skillIdSchema).max(5000).default([]).transform(ids => getUniqueValues(ids)),
+  skills: z
+    .array(skillIdSchema)
+    .max(5000)
+    .default([])
+    .transform((ids) => getUniqueValues(ids)),
   /** GitHub repositories whose skills the daemon keeps installed and linked here. Older daemons drop this field. */
-  skillRepos: z.array(skillRepoSchema).max(100).default([]).transform(urls => getUniqueValues(urls)),
+  skillRepos: z
+    .array(skillRepoSchema)
+    .max(100)
+    .default([])
+    .transform((urls) => getUniqueValues(urls)),
   inheritDefaults: z.boolean().default(true),
   /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
   remote: remoteSchema.optional(),
@@ -58,7 +80,11 @@ export const projectSchema = z.object({
   t3Title: z.string().max(500).optional(),
   /** The repository's file store (gitignored files), synced to every machine. Written only once every node runs node
    * protocol 6, since older daemons drop it when they save the project. */
-  files: z.array(checkoutFileSchema).max(1000).refine((fs) => new Set(fs.map((f) => f.path)).size === fs.length, "duplicate checkout file path").optional(),
+  files: z
+    .array(checkoutFileSchema)
+    .max(1000)
+    .refine((fs) => new Set(fs.map((f) => f.path)).size === fs.length, "duplicate checkout file path")
+    .optional(),
   /** Paths `agentgate project files add` keeps in the file store, for repositories without buncargo. */
   fileList: z.array(checkoutPath).max(200).optional(),
 });
@@ -102,7 +128,11 @@ export const HEALTH_PATH = "/health";
  * version reporting, so it is older too once any node reports one. */
 export function outdatedNodes<T extends { id: string; version?: string }>(nodes: T[]): T[] {
   const compare = (a: string, b: string) => a.localeCompare(b, "en", { numeric: true });
-  const newest = nodes.map((n) => n.version).filter(isTruthy).sort(compare).at(-1);
+  const newest = nodes
+    .map((n) => n.version)
+    .filter(isTruthy)
+    .sort(compare)
+    .at(-1);
   return newest ? nodes.filter((n) => !n.version || compare(n.version, newest) < 0) : [];
 }
 export const settingsSchema = z.object({
@@ -110,7 +140,12 @@ export const settingsSchema = z.object({
   whenExhausted: z.enum(["fail", "wait"]).default("fail"),
   retryLimit: z.number().int().min(0).max(10).default(3),
   logRetention: z.number().int().min(100).max(100000).default(5000),
-  logRetentionBytes: z.number().int().min(65536).max(256 * 1024 * 1024).default(16 * 1024 * 1024),
+  logRetentionBytes: z
+    .number()
+    .int()
+    .min(65536)
+    .max(256 * 1024 * 1024)
+    .default(16 * 1024 * 1024),
   strategy: z.enum(["automatic", "priority", "round-robin"]).default("automatic"),
   sessionAffinity: z.boolean().default(false),
   affinityTtlMs: z.number().int().min(1000).max(86400000).default(1800000),
@@ -124,20 +159,33 @@ export const settingsSchema = z.object({
   t3HandoffHistory: z.boolean().default(true),
 });
 /** Remove defaults before making patches optional: omission must never reset a field. */
-export const accountPatchSchema = z.object({
-  label: accountSchema.shape.label.optional(), enabled: accountSchema.shape.enabled.removeDefault().optional(),
-  priority: accountSchema.shape.priority.removeDefault().optional(), pinned: accountSchema.shape.pinned, policy: accountSchema.shape.policy,
-}).strict();
-export const settingsPatchSchema = z.object({
-  threshold: settingsSchema.shape.threshold.removeDefault().optional(), whenExhausted: settingsSchema.shape.whenExhausted.removeDefault().optional(),
-  retryLimit: settingsSchema.shape.retryLimit.removeDefault().optional(), logRetention: settingsSchema.shape.logRetention.removeDefault().optional(),
-  logRetentionBytes: settingsSchema.shape.logRetentionBytes.removeDefault().optional(), strategy: settingsSchema.shape.strategy.removeDefault().optional(),
-  sessionAffinity: settingsSchema.shape.sessionAffinity.removeDefault().optional(), affinityTtlMs: settingsSchema.shape.affinityTtlMs.removeDefault().optional(),
-  maxAccounts: settingsSchema.shape.maxAccounts.removeDefault().optional(), bootstrapTimeoutMs: settingsSchema.shape.bootstrapTimeoutMs.removeDefault().optional(),
-  aliases: settingsSchema.shape.aliases.removeDefault().optional(), codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
-  t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
-  t3HandoffHistory: settingsSchema.shape.t3HandoffHistory.removeDefault().optional(),
-}).strict();
+export const accountPatchSchema = z
+  .object({
+    label: accountSchema.shape.label.optional(),
+    enabled: accountSchema.shape.enabled.removeDefault().optional(),
+    priority: accountSchema.shape.priority.removeDefault().optional(),
+    pinned: accountSchema.shape.pinned,
+    policy: accountSchema.shape.policy,
+  })
+  .strict();
+export const settingsPatchSchema = z
+  .object({
+    threshold: settingsSchema.shape.threshold.removeDefault().optional(),
+    whenExhausted: settingsSchema.shape.whenExhausted.removeDefault().optional(),
+    retryLimit: settingsSchema.shape.retryLimit.removeDefault().optional(),
+    logRetention: settingsSchema.shape.logRetention.removeDefault().optional(),
+    logRetentionBytes: settingsSchema.shape.logRetentionBytes.removeDefault().optional(),
+    strategy: settingsSchema.shape.strategy.removeDefault().optional(),
+    sessionAffinity: settingsSchema.shape.sessionAffinity.removeDefault().optional(),
+    affinityTtlMs: settingsSchema.shape.affinityTtlMs.removeDefault().optional(),
+    maxAccounts: settingsSchema.shape.maxAccounts.removeDefault().optional(),
+    bootstrapTimeoutMs: settingsSchema.shape.bootstrapTimeoutMs.removeDefault().optional(),
+    aliases: settingsSchema.shape.aliases.removeDefault().optional(),
+    codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
+    t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
+    t3HandoffHistory: settingsSchema.shape.t3HandoffHistory.removeDefault().optional(),
+  })
+  .strict();
 export type Account = z.infer<typeof accountSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
@@ -204,7 +252,10 @@ export interface SkillPreview {
   installed: boolean;
   conflict?: string;
 }
-export interface SkillPreviewResponse { token: string; skills: SkillPreview[]; }
+export interface SkillPreviewResponse {
+  token: string;
+  skills: SkillPreview[];
+}
 /** A connected GitHub repository; `projects` are where its skills are linked when they first appear. */
 export interface SkillRepoSummary {
   url: string;
@@ -235,18 +286,34 @@ export interface Preset {
   note?: string;
 }
 export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
-export const sharedLoginSchema = z.object({ id: loginIdSchema, account: z.string(), from: z.string(), signedIn: z.boolean(), error: z.string().optional() });
+export const sharedLoginSchema = z.object({
+  id: loginIdSchema,
+  account: z.string(),
+  from: z.string(),
+  signedIn: z.boolean(),
+  error: z.string().optional(),
+});
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
 /** An update this node started on another one (or itself), until that node runs the new release. */
 export const nodeUpdateSchema = z.object({
   /** `installed`: the node has the release but its service does not run that binary; restart agentgate there. */
   state: z.enum(["installing", "restarting", "installed", "failed"]),
-  version: z.string().optional(), error: z.string().optional(), since: z.number(),
+  version: z.string().optional(),
+  error: z.string().optional(),
+  since: z.number(),
 });
 export type NodeUpdate = z.infer<typeof nodeUpdateSchema>;
 export const relayStatusSchema = z.object({
-  url: z.string(), hosted: z.boolean(), generation: z.string().optional(), cursor: z.number(), pushed: z.number(),
-  reconciling: z.boolean(), rotating: z.boolean(), cleanupPending: z.boolean(), pushError: z.string().optional(), pullError: z.string().optional(),
+  url: z.string(),
+  hosted: z.boolean(),
+  generation: z.string().optional(),
+  cursor: z.number(),
+  pushed: z.number(),
+  reconciling: z.boolean(),
+  rotating: z.boolean(),
+  cleanupPending: z.boolean(),
+  pushError: z.string().optional(),
+  pullError: z.string().optional(),
   /** Entries that could not be decrypted or validated since the last full read. */
   skipped: z.number().optional(),
 });
@@ -306,33 +373,107 @@ export interface DesktopStatus {
 /** Validate native status before views access required fields from a remote daemon. */
 /** What `/status` returns. The app validates a remote daemon's answer with it and keeps only the fields named here. */
 export const statusSchema = z.object({
-  apiVersion: z.literal(API_VERSION), node: z.string(),
+  apiVersion: z.literal(API_VERSION),
+  node: z.string(),
   accounts: z.array(accountStatusSchema),
   /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
-  detected: z.array(z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() })),
-  servers: z.array(z.object({ id: z.string(), label: z.string().optional(), template: z.string(), transport: z.enum(["http", "stdio"]), mode: z.enum(["shared", "perSession"]), endpoint: z.string(), loggedIn: z.boolean(), needsLogin: z.boolean(), available: z.boolean().optional(), checkedAt: z.number().optional(), refreshError: z.string().optional() })),
+  detected: z.array(
+    z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() }),
+  ),
+  servers: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string().optional(),
+      template: z.string(),
+      transport: z.enum(["http", "stdio"]),
+      mode: z.enum(["shared", "perSession"]),
+      endpoint: z.string(),
+      loggedIn: z.boolean(),
+      needsLogin: z.boolean(),
+      available: z.boolean().optional(),
+      checkedAt: z.number().optional(),
+      refreshError: z.string().optional(),
+    }),
+  ),
   projects: z.array(publicProjectSchema),
-  skills: z.array(z.object({ id: skillIdSchema, description: z.string(), source: z.string().optional(), hash: z.string().optional(), contentHash: z.string().optional(), updatedAt: z.number(), size: z.number().int().nonnegative() })),
+  skills: z.array(
+    z.object({
+      id: skillIdSchema,
+      description: z.string(),
+      source: z.string().optional(),
+      hash: z.string().optional(),
+      contentHash: z.string().optional(),
+      updatedAt: z.number(),
+      size: z.number().int().nonnegative(),
+    }),
+  ),
   /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: z.array(z.string()),
-  skillRepos: z.array(z.object({ url: z.string(), projects: z.array(z.string()), skills: z.array(z.string()), commit: z.string().optional(), syncedAt: z.number().optional(), error: z.string().optional(), skipped: z.array(z.string()) })).default([]),
-  skillHealth: z.object({ attemptedAt: z.number().optional(), succeededAt: z.number().optional(), errors: z.array(z.object({ path: z.string(), message: z.string() })) }),
+  skillRepos: z
+    .array(
+      z.object({
+        url: z.string(),
+        projects: z.array(z.string()),
+        skills: z.array(z.string()),
+        commit: z.string().optional(),
+        syncedAt: z.number().optional(),
+        error: z.string().optional(),
+        skipped: z.array(z.string()),
+      }),
+    )
+    .default([]),
+  skillHealth: z.object({
+    attemptedAt: z.number().optional(),
+    succeededAt: z.number().optional(),
+    errors: z.array(z.object({ path: z.string(), message: z.string() })),
+  }),
   /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
   fileErrors: z.record(z.string(), z.string()).default({}),
   /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
-  checkouts: z.array(z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() })),
-  nodes: z.array(nodeSchema.extend({
-    lastSeen: z.number(), online: z.boolean(), syncError: z.string().optional(),
-    /** Observed paths to this node; not proof of membership. */
-    via: z.array(z.enum(["tailnet", "relay"])).optional(),
-    update: nodeUpdateSchema.optional(),
-  })),
+  checkouts: z.array(
+    z.object({ path: z.string(), project: z.string(), skills: z.array(z.string()), mirror: z.boolean() }),
+  ),
+  nodes: z.array(
+    nodeSchema.extend({
+      lastSeen: z.number(),
+      online: z.boolean(),
+      syncError: z.string().optional(),
+      /** Observed paths to this node; not proof of membership. */
+      via: z.array(z.enum(["tailnet", "relay"])).optional(),
+      update: nodeUpdateSchema.optional(),
+    }),
+  ),
   relay: relayStatusSchema.optional(),
-  peers: z.array(z.object({ node: z.string(), url: z.string(), lastSeen: z.number(), cursor: z.number(), error: z.string().optional() })),
-  unknownQuota: z.record(z.string(), z.string().optional()), settings: settingsSchema,
-  activity: z.array(z.object({ at: z.number(), provider: z.string(), account: z.string(), model: z.string(), status: z.number(), ms: z.number(), note: z.string() })),
+  peers: z.array(
+    z.object({
+      node: z.string(),
+      url: z.string(),
+      lastSeen: z.number(),
+      cursor: z.number(),
+      error: z.string().optional(),
+    }),
+  ),
+  unknownQuota: z.record(z.string(), z.string().optional()),
+  settings: settingsSchema,
+  activity: z.array(
+    z.object({
+      at: z.number(),
+      provider: z.string(),
+      account: z.string(),
+      model: z.string(),
+      status: z.number(),
+      ms: z.number(),
+      note: z.string(),
+    }),
+  ),
   settingsRevision: z.string().optional(),
-  daemon: z.object({ version: z.string(), build: z.string(), providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }) }).optional(),
+  daemon: z
+    .object({
+      version: z.string(),
+      build: z.string(),
+      providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }),
+    })
+    .optional(),
   /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */
   logins: z.array(sharedLoginSchema).default([]),
 });

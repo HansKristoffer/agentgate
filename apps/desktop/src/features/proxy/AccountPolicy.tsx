@@ -1,10 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@heroui/react";
-import {
-  accountPatchSchema,
-  type AccountStatus,
-  type Connection,
-} from "@agentgate/protocol";
+import { accountPatchSchema, type AccountStatus, type Connection } from "@agentgate/protocol";
 import type { Perform } from "../../types.ts";
 import { request } from "../../api.ts";
 import { Changes, Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
@@ -25,8 +21,7 @@ export function AccountPolicy({
   perform: Perform;
   close: () => void;
 }) {
-  const [patch, setPatch] =
-      useState<ReturnType<typeof accountPatchSchema.parse>>(),
+  const [patch, setPatch] = useState<ReturnType<typeof accountPatchSchema.parse>>(),
     [error, setError] = useState("");
   const capture = useGeneration(connection);
   const current = account.account;
@@ -37,10 +32,7 @@ export function AccountPolicy({
       label: form.get("label"),
       priority: Number(form.get("priority")),
       policy: {
-        retryLimit:
-          form.get("retryMode") === "inherit"
-            ? undefined
-            : Number(form.get("retryLimit")),
+        retryLimit: form.get("retryMode") === "inherit" ? undefined : Number(form.get("retryLimit")),
         allowModels: list(form.get("allowModels")),
         excludeModels: list(form.get("excludeModels")),
       },
@@ -55,22 +47,16 @@ export function AccountPolicy({
   const saveChanges = () =>
     perform(async () => {
       const isCurrent = capture();
-      await request(
-        connection,
-        `/accounts/${encodeURIComponent(current.id)}`,
-        "PATCH",
-        { ...patch, revision: account.revision },
-      );
+      await request(connection, `/accounts/${encodeURIComponent(current.id)}`, "PATCH", {
+        ...patch,
+        revision: account.revision,
+      });
       if (isCurrent()) close();
     }, "Account policy saved");
   const changes: [string, ReactNode, ReactNode][] | undefined = patch && [
     ["Label", current.label, patch.label],
     ["Priority", current.priority, patch.priority],
-    [
-      "Retries",
-      current.policy?.retryLimit ?? "Inherit",
-      patch.policy?.retryLimit ?? "Inherit",
-    ],
+    ["Retries", current.policy?.retryLimit ?? "Inherit", patch.policy?.retryLimit ?? "Inherit"],
     [
       "Allowed models",
       current.policy?.allowModels?.join(", ") || "Automatic",
@@ -84,28 +70,14 @@ export function AccountPolicy({
   ];
   return (
     <Modal title={`Edit ${current.label}`} close={close}>
-      <p>
-        These choices sync to paired machines. Empty model lists keep automatic
-        eligibility.
-      </p>
+      <p>These choices sync to paired machines. Empty model lists keep automatic eligibility.</p>
       <form onChange={() => setPatch(undefined)} onSubmit={previewChanges}>
-        <Field
-          label="Label"
-          name="label"
-          isRequired
-          defaultValue={current.label}
-        />
-        <NumberInput
-          label="Priority"
-          name="priority"
-          defaultValue={current.priority}
-        />
+        <Field label="Label" name="label" isRequired defaultValue={current.label} />
+        <NumberInput label="Priority" name="priority" defaultValue={current.priority} />
         <Choice
           label="Rate-limit retries"
           name="retryMode"
-          defaultValue={
-            current.policy?.retryLimit === undefined ? "inherit" : "custom"
-          }
+          defaultValue={current.policy?.retryLimit === undefined ? "inherit" : "custom"}
           options={[
             { id: "inherit", label: "Inherit pool default" },
             { id: "custom", label: "Use account override" },
@@ -135,8 +107,8 @@ export function AccountPolicy({
         />
         {account.models && (
           <p className="note">
-            Discovered models: {account.models.models.join(", ") || "none"}.
-            Checked {new Date(account.models.at).toLocaleString()}.
+            Discovered models: {account.models.models.join(", ") || "none"}. Checked{" "}
+            {new Date(account.models.at).toLocaleString()}.
           </p>
         )}
         {error && <p role="alert">{error}</p>}
@@ -146,9 +118,7 @@ export function AccountPolicy({
         <div className="policy-preview">
           <h3>Review changes</h3>
           <Changes rows={changes!} />
-          <Button onPress={() => void saveChanges()}>
-            Save reviewed changes
-          </Button>
+          <Button onPress={() => void saveChanges()}>Save reviewed changes</Button>
         </div>
       )}
     </Modal>

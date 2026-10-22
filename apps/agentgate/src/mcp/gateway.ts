@@ -5,7 +5,13 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, ToolListChangedNotificationSchema, type CallToolRequest, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ToolListChangedNotificationSchema,
+  type CallToolRequest,
+  type Tool,
+} from "@modelcontextprotocol/sdk/types.js";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
@@ -34,7 +40,7 @@ export function toolName(alias: string, tool: string): string {
 export function canonicalProject(s: Store, project: string): string {
   if (project === "*" || s.get("project", project)) return project;
   const lower = project.toLowerCase();
-  return s.list("project").find(p => p.id.toLowerCase() === lower)?.id ?? project;
+  return s.list("project").find((p) => p.id.toLowerCase() === lower)?.id ?? project;
 }
 
 /** alias → instance id for a repo: the `*` defaults (unless turned off), overridden by the repo's own. */
@@ -82,29 +88,47 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
     if (!r.url) throw new Error(`${inst.id}: no url`);
     transport = new StreamableHTTPClientTransport(new URL(r.url), {
       requestInit: { headers: r.headers },
-      fetch: s ? authenticatedFetch(s, inst.id) : (url, init) => fetchHeaders(url, init, headerWait(init?.method, 10000)),
+      fetch: s
+        ? authenticatedFetch(s, inst.id)
+        : (url, init) => fetchHeaders(url, init, headerWait(init?.method, 10000)),
     });
   } else {
     if (!r.command) throw new Error(`${inst.id}: no command`);
-    if (!Bun.which(r.command)) throw new Error(`${inst.id}: '${r.command}' is not installed (install Node for npx or uv for uvx)`);
-    transport = new StdioClientTransport({ command: r.command, args: r.args, env: { ...(process.env as Record<string, string>), ...r.env }, cwd, stderr: "pipe" });
+    if (!Bun.which(r.command))
+      throw new Error(`${inst.id}: '${r.command}' is not installed (install Node for npx or uv for uvx)`);
+    transport = new StdioClientTransport({
+      command: r.command,
+      args: r.args,
+      env: { ...(process.env as Record<string, string>), ...r.env },
+      cwd,
+      stderr: "pipe",
+    });
   }
   try {
     const pending = client.connect(transport, { timeout: 10000 });
-    if (transport instanceof StdioClientTransport) transport.stderr?.on("data", chunk => { stderr = (stderr + String(chunk)).slice(-2048); });
+    if (transport instanceof StdioClientTransport)
+      transport.stderr?.on("data", (chunk) => {
+        stderr = (stderr + String(chunk)).slice(-2048);
+      });
     await pending;
     const close = client.close.bind(client);
     client.close = async () => {
-      try { if (transport instanceof StreamableHTTPClientTransport && transport.sessionId) await transport.terminateSession(); }
-      catch { /* disconnected or server does not support DELETE */ }
-      finally { await close(); }
+      try {
+        if (transport instanceof StreamableHTTPClientTransport && transport.sessionId)
+          await transport.terminateSession();
+      } catch {
+        /* disconnected or server does not support DELETE */
+      } finally {
+        await close();
+      }
     };
     return client;
   } catch (e) {
-    await transport.close().catch(() => { });
-    await client.close().catch(() => { });
+    await transport.close().catch(() => {});
+    await client.close().catch(() => {});
     let error = `${e}${stderr ? `; stderr: ${stderr.trim()}` : ""}`;
-    for (const value of Object.values({ ...process.env, ...r.env, ...r.headers, ...inst.secrets })) if (value && value.length >= 4) error = error.replaceAll(value, "[redacted]");
+    for (const value of Object.values({ ...process.env, ...r.env, ...r.headers, ...inst.secrets }))
+      if (value && value.length >= 4) error = error.replaceAll(value, "[redacted]");
     throw new Error(`${inst.id}: ${error}`);
   }
 }
@@ -141,22 +165,40 @@ export function mergeInstructions(sources: Source[]): string {
 }
 
 /** One MCP server in front of many: the tools of every source under their aliases. */
-export function mergedServer(instructions: string, sources: () => Promise<Source[]>, onError: (alias: string, e: unknown) => void = () => { }, resolveSource?: (alias: string) => Promise<Source | undefined>, activity?: (change: number) => void, signal?: AbortSignal): Server {
-  const server = new Server({ name: "agentgate", version: VERSION }, { capabilities: { tools: { listChanged: true } }, instructions });
+export function mergedServer(
+  instructions: string,
+  sources: () => Promise<Source[]>,
+  onError: (alias: string, e: unknown) => void = () => {},
+  resolveSource?: (alias: string) => Promise<Source | undefined>,
+  activity?: (change: number) => void,
+  signal?: AbortSignal,
+): Server {
+  const server = new Server(
+    { name: "agentgate", version: VERSION },
+    { capabilities: { tools: { listChanged: true } }, instructions },
+  );
   let routes = new Map<string, { alias: string; tool: string }>();
 
   async function list(): Promise<Tool[]> {
     const next = new Map<string, { alias: string; tool: string }>();
     const all: Tool[] = [];
-    const pages = await Promise.all((await sources()).map(async src => {
-      try { return { src, tools: await listAllTools(src.client) }; }
-      catch (e) { onError(src.alias, e); return { src, tools: [] }; }
-    }));
-    for (const { src, tools } of pages) for (const t of tools) {
-      const name = toolName(src.alias, t.name);
-      if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
-      next.set(name, { alias: src.alias, tool: t.name }); all.push({ ...t, name });
-    }
+    const pages = await Promise.all(
+      (await sources()).map(async (src) => {
+        try {
+          return { src, tools: await listAllTools(src.client) };
+        } catch (e) {
+          onError(src.alias, e);
+          return { src, tools: [] };
+        }
+      }),
+    );
+    for (const { src, tools } of pages)
+      for (const t of tools) {
+        const name = toolName(src.alias, t.name);
+        if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
+        next.set(name, { alias: src.alias, tool: t.name });
+        all.push({ ...t, name });
+      }
     routes = next;
     return all.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -167,17 +209,34 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
     activity?.(1);
     try {
       const route = routes.get(req.params.name);
-      const source = route && (resolveSource ? await resolveSource(route.alias) : (await sources()).find(s => s.alias === route.alias));
-      if (!route || !source) return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
+      const source =
+        route &&
+        (resolveSource ? await resolveSource(route.alias) : (await sources()).find((s) => s.alias === route.alias));
+      if (!route || !source)
+        return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
         // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
-        signal: anySignal(extra.signal, signal), timeout: 5 * 60_000, maxTotalTimeout: CALL_LIMIT, resetTimeoutOnProgress: true,
-        onprogress: progressToken === undefined ? undefined : p => { void extra.sendNotification({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
+        signal: anySignal(extra.signal, signal),
+        timeout: 5 * 60_000,
+        maxTotalTimeout: CALL_LIMIT,
+        resetTimeoutOnProgress: true,
+        onprogress:
+          progressToken === undefined
+            ? undefined
+            : (p) => {
+                void extra
+                  .sendNotification({ method: "notifications/progress", params: { ...p, progressToken } })
+                  .catch(() => {});
+              },
       };
       const params = { ...req.params, name: route.tool };
-      return await (source.invoke ? source.invoke(params, options) : source.client.callTool(params, undefined, options));
-    } finally { activity?.(-1); }
+      return await (source.invoke
+        ? source.invoke(params, options)
+        : source.client.callTool(params, undefined, options));
+    } finally {
+      activity?.(-1);
+    }
   });
 
   return server;
@@ -195,15 +254,28 @@ interface Upstream {
 /** The daemon side: shared upstream connections, and one merged server per shim session. */
 export class Gateway {
   upstreams = new Map<string, Upstream>();
-  private sessions = new Map<string, { transport: WebStandardStreamableHTTPServerTransport; server: Server; project: string; lastUsed: number; calls: number }>();
-  private timer = setInterval(() => { void this.closeIdle(); }, 60_000);
+  private sessions = new Map<
+    string,
+    {
+      transport: WebStandardStreamableHTTPServerTransport;
+      server: Server;
+      project: string;
+      lastUsed: number;
+      calls: number;
+    }
+  >();
+  private timer = setInterval(() => {
+    void this.closeIdle();
+  }, 60_000);
   private closed = false;
   private retired = new Set<Upstream>();
   /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
   builtin?: () => Promise<Source>;
   private builtinSource?: Promise<Source>;
 
-  constructor(private s: Store) { this.timer.unref(); }
+  constructor(private s: Store) {
+    this.timer.unref();
+  }
 
   /** One connection per shared instance, opened on first use and reopened when its config changes. */
   async shared(inst: McpInstance): Promise<Client> {
@@ -211,8 +283,12 @@ export class Gateway {
     const config = JSON.stringify({ ...inst, loggedIn: !!this.s.get("mcpCredential", inst.id)?.tokens });
     let u = this.upstreams.get(inst.id);
     if (u && u.config !== config) {
-      u.retired = true; this.retired.add(u);
-      if (!u.calls) { await u.client?.close().catch(() => { }); this.retired.delete(u); }
+      u.retired = true;
+      this.retired.add(u);
+      if (!u.calls) {
+        await u.client?.close().catch(() => {});
+        this.retired.delete(u);
+      }
       u = undefined;
     }
     if (!u) this.upstreams.set(inst.id, (u = { config, lastUsed: this.s.now(), calls: 0 }));
@@ -221,7 +297,10 @@ export class Gateway {
     const entry = u;
     entry.connecting ??= connect(inst, undefined, this.s).then(
       async (c) => {
-        if (this.closed || entry.retired || this.upstreams.get(inst.id) !== entry) { await c.close(); throw new Error("MCP configuration changed during connection"); }
+        if (this.closed || entry.retired || this.upstreams.get(inst.id) !== entry) {
+          await c.close();
+          throw new Error("MCP configuration changed during connection");
+        }
         entry.client = c;
         entry.connecting = undefined;
         c.setNotificationHandler(ToolListChangedNotificationSchema, () => this.toolsChanged());
@@ -244,7 +323,9 @@ export class Gateway {
     if (!inst || inst.mode !== "shared") return;
     const client = await this.shared(inst);
     return {
-      alias, client, invoke: async (params, options) => {
+      alias,
+      client,
+      invoke: async (params, options) => {
         // Recheck immediately before sending. A notification is not an authorization check.
         const currentId = aliasesFor(this.s, project)[alias];
         if (currentId !== inst.id) throw new Error("project mapping changed; list tools again");
@@ -252,24 +333,41 @@ export class Gateway {
         if (!current || current.mode !== "shared") throw new Error("MCP server removed");
         const active = await this.shared(current);
         const entry = this.upstreams.get(currentId)!;
-        entry.calls++; entry.lastUsed = this.s.now();
-        try { return await active.callTool(params, undefined, options); }
-        finally { entry.calls--; entry.lastUsed = this.s.now(); if (entry.retired && !entry.calls) { await active.close().catch(() => { }); this.retired.delete(entry); } }
-      }
+        entry.calls++;
+        entry.lastUsed = this.s.now();
+        try {
+          return await active.callTool(params, undefined, options);
+        } finally {
+          entry.calls--;
+          entry.lastUsed = this.s.now();
+          if (entry.retired && !entry.calls) {
+            await active.close().catch(() => {});
+            this.retired.delete(entry);
+          }
+        }
+      },
     };
   }
   /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. */
   private async sources(project: string, wait?: number): Promise<Source[]> {
-    const out = await Promise.all(Object.keys(aliasesFor(this.s, project)).map(alias => {
-      const source = this.source(project, alias).catch((e) => { this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`); return undefined; });
-      return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
-    }));
+    const out = await Promise.all(
+      Object.keys(aliasesFor(this.s, project)).map((alias) => {
+        const source = this.source(project, alias).catch((e) => {
+          this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
+          return undefined;
+        });
+        return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
+      }),
+    );
     return out.filter(isTruthy);
   }
 
   private builtinTools(): Promise<Source | undefined> {
     if (!this.builtin || this.closed) return Promise.resolve(undefined);
-    return this.builtinSource ??= this.builtin().catch((e) => { this.builtinSource = undefined; throw e; });
+    return (this.builtinSource ??= this.builtin().catch((e) => {
+      this.builtinSource = undefined;
+      throw e;
+    }));
   }
   private async localSources(project: string, wait?: number): Promise<Source[]> {
     const builtin = await this.builtinTools().catch(() => undefined);
@@ -284,24 +382,59 @@ export class Gateway {
       const sess = this.sessions.get(sid);
       if (sess) {
         sess.lastUsed = this.s.now();
-        const active = req.method !== "GET"; if (active) sess.calls++;
-        try { return await sess.transport.handleRequest(req); } finally { if (active) sess.calls--; sess.lastUsed = this.s.now(); }
+        const active = req.method !== "GET";
+        if (active) sess.calls++;
+        try {
+          return await sess.transport.handleRequest(req);
+        } finally {
+          if (active) sess.calls--;
+          sess.lastUsed = this.s.now();
+        }
       }
-      return Response.json({ jsonrpc: "2.0", error: { code: -32001, message: "session not found" }, id: null }, { status: 404 });
+      return Response.json(
+        { jsonrpc: "2.0", error: { code: -32001, message: "session not found" }, id: null },
+        { status: 404 },
+      );
     }
     if (this.closed) return new Response("gateway stopped", { status: 503 });
     if (this.sessions.size >= 256) return new Response("too many MCP sessions", { status: 503 });
     const project = new URL(req.url).searchParams.get("project") || "*";
-    if (project !== "*" && !projectIdSchema.safeParse(project).success) return new Response("invalid project", { status: 400 });
+    if (project !== "*" && !projectIdSchema.safeParse(project).success)
+      return new Response("invalid project", { status: 400 });
     // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
     const instructions = mergeInstructions(await this.localSources(project, 3000));
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(instructions, () => this.localSources(project), (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`), async alias => alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias), delta => { usage.calls += delta; usage.lastUsed = this.s.now(); });
+    const server = mergedServer(
+      instructions,
+      () => this.localSources(project),
+      (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
+      async (alias) => (alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias)),
+      (delta) => {
+        usage.calls += delta;
+        usage.lastUsed = this.s.now();
+      },
+    );
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
         this.seen(project);
-        this.sessions.set(id, { transport, server, project, get lastUsed() { return usage.lastUsed; }, set lastUsed(value) { usage.lastUsed = value; }, get calls() { return usage.calls; }, set calls(value) { usage.calls = value; } });
+        this.sessions.set(id, {
+          transport,
+          server,
+          project,
+          get lastUsed() {
+            return usage.lastUsed;
+          },
+          set lastUsed(value) {
+            usage.lastUsed = value;
+          },
+          get calls() {
+            return usage.calls;
+          },
+          set calls(value) {
+            usage.calls = value;
+          },
+        });
       },
       onsessionclosed: (id) => void this.sessions.delete(id),
     });
@@ -311,62 +444,113 @@ export class Gateway {
       const response = await transport.handleRequest(req);
       if (response.status >= 400 && !transport.sessionId) await server.close();
       return response;
-    } catch (e) { await server.close().catch(() => { }); throw e; }
+    } catch (e) {
+      await server.close().catch(() => {});
+      throw e;
+    }
   }
 
   /**
    * The endpoint of a virtual project, for remote clients through the relay: stateless JSON, one server and
    * transport per POST, shared instances plus the built-in skill tools. Never reachable through an HTTP listener.
    */
-  async handleRemote(project: string, body: string, headers: Record<string, string>, signal: AbortSignal): Promise<{ response: Response; failed: string[] }> {
-    const error = (status: number, code: number, message: string) => ({ response: Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status }), failed: [] });
+  async handleRemote(
+    project: string,
+    body: string,
+    headers: Record<string, string>,
+    signal: AbortSignal,
+  ): Promise<{ response: Response; failed: string[] }> {
+    const error = (status: number, code: number, message: string) => ({
+      response: Response.json({ jsonrpc: "2.0", error: { code, message }, id: null }, { status }),
+      failed: [],
+    });
     if (this.closed) return error(503, -32000, "agentgate is stopping");
     let message: unknown;
-    try { message = JSON.parse(body); } catch { return error(400, -32700, "Parse error"); }
+    try {
+      message = JSON.parse(body);
+    } catch {
+      return error(400, -32700, "Parse error");
+    }
     if (Array.isArray(message)) return error(400, -32600, "JSON-RPC batches are not supported");
     const failed = new Set<string>();
     const skills = await skillsSource(this.s, project);
     const sources = async (): Promise<Source[]> => {
-      const out = await Promise.all(Object.keys(aliasesFor(this.s, project)).filter(alias => alias !== skills.alias).map(async alias => {
-        try { return await this.source(project, alias); }
-        catch (e) { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`); return undefined; }
-      }));
+      const out = await Promise.all(
+        Object.keys(aliasesFor(this.s, project))
+          .filter((alias) => alias !== skills.alias)
+          .map(async (alias) => {
+            try {
+              return await this.source(project, alias);
+            } catch (e) {
+              failed.add(alias);
+              this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
+              return undefined;
+            }
+          }),
+      );
       return [...out.filter(isTruthy), skills];
     };
     // A connect error carries the server's stderr and local details: logged here, never sent to the public client.
-    const resolveSource = (alias: string) => alias === skills.alias ? Promise.resolve(skills) : this.source(project, alias).catch((e) => {
-      failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
-      throw new Error(`${alias} is unavailable`);
-    });
+    const resolveSource = (alias: string) =>
+      alias === skills.alias
+        ? Promise.resolve(skills)
+        : this.source(project, alias).catch((e) => {
+            failed.add(alias);
+            this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
+            throw new Error(`${alias} is unavailable`);
+          });
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
-    const instructions = (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
-    const server = mergedServer(instructions, sources, (alias, e) => { failed.add(alias); this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`); }, resolveSource, undefined, signal);
-    const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+    const instructions =
+      (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
+    const server = mergedServer(
+      instructions,
+      sources,
+      (alias, e) => {
+        failed.add(alias);
+        this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`);
+      },
+      resolveSource,
+      undefined,
+      signal,
+    );
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
     try {
       await server.connect(transport);
       // We always answer with JSON, so a client that only accepts JSON is fine; the SDK insists on both types.
       const request = new Request("http://agentgate.invalid/mcp", {
-        method: "POST", body, signal,
-        headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...(headers["mcp-protocol-version"] && { "mcp-protocol-version": headers["mcp-protocol-version"] }) },
+        method: "POST",
+        body,
+        signal,
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          ...(headers["mcp-protocol-version"] && { "mcp-protocol-version": headers["mcp-protocol-version"] }),
+        },
       });
       const aborted = new Promise<never>((_, reject) => {
         if (signal.aborted) reject(signal.reason);
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
-      aborted.catch(() => { });
+      aborted.catch(() => {});
       const response = await Promise.race([transport.handleRequest(request), aborted]);
       // Read the body before closing the server, which would cut a JSON response short.
       const text = await response.text();
-      return { response: new Response(text || null, { status: response.status, headers: response.headers }), failed: [...failed] };
+      return {
+        response: new Response(text || null, { status: response.status, headers: response.headers }),
+        failed: [...failed],
+      };
     } finally {
-      await server.close().catch(() => { });
-      await skills.client.close().catch(() => { });
+      await server.close().catch(() => {});
+      await skills.client.close().catch(() => {});
     }
   }
 
   /** Tell every running session to re-list its tools (a mapping or instance changed). */
   toolsChanged() {
-    for (const { server } of this.sessions.values()) server.sendToolListChanged().catch(() => { });
+    for (const { server } of this.sessions.values()) server.sendToolListChanged().catch(() => {});
   }
 
   /** Auto-discovered repos for the native app; written at most every 5 minutes per repo to keep sync quiet. */
@@ -380,28 +564,42 @@ export class Gateway {
 
   async closeIdle() {
     const tasks: Promise<unknown>[] = [];
-    for (const [id, u] of this.upstreams) if (!u.calls && !u.connecting && this.s.now() - u.lastUsed > IDLE_CLOSE) {
-      u.retired = true; this.upstreams.delete(id); if (u.client) tasks.push(u.client.close().catch(() => { }));
-    }
-    for (const [id, session] of this.sessions) if (!session.calls && this.s.now() - session.lastUsed > 30 * 60_000) {
-      this.sessions.delete(id); tasks.push(session.server.close().catch(() => { }));
-    }
+    for (const [id, u] of this.upstreams)
+      if (!u.calls && !u.connecting && this.s.now() - u.lastUsed > IDLE_CLOSE) {
+        u.retired = true;
+        this.upstreams.delete(id);
+        if (u.client) tasks.push(u.client.close().catch(() => {}));
+      }
+    for (const [id, session] of this.sessions)
+      if (!session.calls && this.s.now() - session.lastUsed > 30 * 60_000) {
+        this.sessions.delete(id);
+        tasks.push(session.server.close().catch(() => {}));
+      }
     await Promise.allSettled(tasks);
   }
   async close() {
-    this.closed = true; clearInterval(this.timer);
+    this.closed = true;
+    clearInterval(this.timer);
     const tasks: Promise<unknown>[] = [];
-    for (const u of new Set([...this.upstreams.values(), ...this.retired])) { u.retired = true; if (u.client) tasks.push(u.client.close()); if (u.connecting) tasks.push(u.connecting.catch(() => { })); }
+    for (const u of new Set([...this.upstreams.values(), ...this.retired])) {
+      u.retired = true;
+      if (u.client) tasks.push(u.client.close());
+      if (u.connecting) tasks.push(u.connecting.catch(() => {}));
+    }
     for (const { server } of this.sessions.values()) tasks.push(server.close());
     if (this.builtinSource) tasks.push(this.builtinSource.then((src) => src.client.close()));
-    await Promise.allSettled(tasks); this.upstreams.clear(); this.retired.clear(); this.sessions.clear();
+    await Promise.allSettled(tasks);
+    this.upstreams.clear();
+    this.retired.clear();
+    this.sessions.clear();
   }
-
 }
 
 /** A connect error that a login would fix. */
 export const needsLogin = (e: unknown) =>
-  e instanceof NeedsLogin || (e as { code?: number })?.code === 401 || /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(getErrorMessage(e));
+  e instanceof NeedsLogin ||
+  (e as { code?: number })?.code === 401 ||
+  /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(getErrorMessage(e));
 
 /** Git repos directly inside `dir` whose origin parses as owner/repo. */
 export function scanRepos(dir: string): { repo: string; path: string }[] {

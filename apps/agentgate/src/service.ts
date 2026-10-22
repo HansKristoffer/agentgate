@@ -23,7 +23,9 @@ export function plist() {
 <plist version="1.0"><dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key><array>${args}</array>
-  <key>EnvironmentVariables</key><dict>${Object.entries({ PATH: process.env.PATH ?? "", ...agentEnvironment() }).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join("")}</dict>
+  <key>EnvironmentVariables</key><dict>${Object.entries({ PATH: process.env.PATH ?? "", ...agentEnvironment() })
+    .map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`)
+    .join("")}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${xml(LOGS)}/agentgate.log</string>
@@ -33,7 +35,10 @@ export function plist() {
 }
 
 export function unit(command = selfCommand(), environment = { PATH: process.env.PATH ?? "", ...agentEnvironment() }) {
-  const systemd = (s: string) => JSON.stringify(s).replace(/%/g, "%%").replace(/\$/g, () => "$$");
+  const systemd = (s: string) =>
+    JSON.stringify(s)
+      .replace(/%/g, "%%")
+      .replace(/\$/g, () => "$$");
   const exec = [...command, "serve"].map(systemd).join(" ");
   return `[Unit]
 Description=agentgate
@@ -41,7 +46,9 @@ After=network-online.target
 
 [Service]
 ExecStart=${exec}
-${Object.entries(environment).map(([key, value]) => `Environment=${JSON.stringify(`${key}=${value}`).replace(/%/g, "%%")}`).join("\n")}
+${Object.entries(environment)
+  .map(([key, value]) => `Environment=${JSON.stringify(`${key}=${value}`).replace(/%/g, "%%")}`)
+  .join("\n")}
 Restart=always
 RestartSec=3
 
@@ -57,14 +64,21 @@ export async function waitForService(url = `${LOCAL_URL}/api/status`, timeout = 
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(clamp(deadline - Date.now(), 1, 1000)), redirect: "error" });
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(clamp(deadline - Date.now(), 1, 1000)),
+        redirect: "error",
+      });
       await response.body?.cancel();
       if (response.ok) return;
-    } catch { /* The listener may not have started yet. */ }
+    } catch {
+      /* The listener may not have started yet. */
+    }
     const remaining = deadline - Date.now();
     if (remaining > 0) await Bun.sleep(Math.min(100, remaining));
   }
-  throw new Error(`agentgate did not become ready at ${url}; check ${mac ? join(LOGS, "agentgate.log") : "journalctl --user -u agentgate"}. Claude/Codex cannot connect until the daemon is running.`);
+  throw new Error(
+    `agentgate did not become ready at ${url}; check ${mac ? join(LOGS, "agentgate.log") : "journalctl --user -u agentgate"}. Claude/Codex cannot connect until the daemon is running.`,
+  );
 }
 
 /** launchd can still be tearing the old job down right after bootout; bootstrap then fails with EIO. */
@@ -100,18 +114,27 @@ export async function service(action: string) {
       atomicWrite(UNIT, unit());
       if (run(["systemctl", "--user", "daemon-reload"]) !== 0) throw new Error("systemd reload failed");
       // Keeps the user service running with nobody logged in, and across reboots.
-      if (run(["loginctl", "enable-linger", process.env.USER ?? ""]) !== 0) throw new Error("could not enable lingering; run loginctl enable-linger for this user, then retry");
+      if (run(["loginctl", "enable-linger", process.env.USER ?? ""]) !== 0)
+        throw new Error("could not enable lingering; run loginctl enable-linger for this user, then retry");
       if (run(["systemctl", "--user", "enable", "agentgate"]) !== 0) throw new Error("systemd enable failed");
       // Reinstalling must apply the new executable/environment to an already running service.
       return ready(run(["systemctl", "--user", "restart", "agentgate"]));
     case "start":
       return ready(mac ? await bootstrap() : run(["systemctl", "--user", "start", "agentgate"]));
     case "restart":
-      return ready(mac ? run(["launchctl", "kickstart", "-k", `gui/${uid}/${LABEL}`]) : run(["systemctl", "--user", "restart", "agentgate"]));
+      return ready(
+        mac
+          ? run(["launchctl", "kickstart", "-k", `gui/${uid}/${LABEL}`])
+          : run(["systemctl", "--user", "restart", "agentgate"]),
+      );
     case "stop":
-      return mac ? run(["launchctl", "bootout", `gui/${uid}/${LABEL}`]) : run(["systemctl", "--user", "stop", "agentgate"]);
+      return mac
+        ? run(["launchctl", "bootout", `gui/${uid}/${LABEL}`])
+        : run(["systemctl", "--user", "stop", "agentgate"]);
     case "logs":
-      return mac ? run(["tail", "-n", "200", "-f", join(LOGS, "agentgate.log")]) : run(["journalctl", "--user", "-u", "agentgate", "-f"]);
+      return mac
+        ? run(["tail", "-n", "200", "-f", join(LOGS, "agentgate.log")])
+        : run(["journalctl", "--user", "-u", "agentgate", "-f"]);
     default:
       throw new Error("service install|start|restart|stop|logs");
   }
@@ -128,7 +151,8 @@ export function rotateLogs(dir = LOGS, maxBytes = 5 * 1024 * 1024) {
   const file = join(dir, "agentgate.log");
   if (!existsSync(file) || statSync(file).size < maxBytes) return;
   for (let i = 4; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
-  copyFileSync(file, `${file}.1`); truncateSync(file, 0);
+  copyFileSync(file, `${file}.1`);
+  truncateSync(file, 0);
 }
 
 /** Start every daemon log line with an ISO 8601 timestamp: launchd's log file has none of its own. */

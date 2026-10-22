@@ -6,23 +6,15 @@ const binary = resolve(Bun.argv[2] ?? "dist/agentgate");
 const home = mkdtempSync(join(tmpdir(), "agentgate-smoke-"));
 let daemon: ReturnType<typeof Bun.spawn> | undefined;
 try {
-  for (const args of [
-    ["--help"],
-    ["init", "--name", "smoke"],
-    ["setup"],
-    ["export", "--no-secrets"],
-  ]) {
+  for (const args of [["--help"], ["init", "--name", "smoke"], ["setup"], ["export", "--no-secrets"]]) {
     const child = Bun.spawnSync([binary, ...args], {
       env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
       stdout: "pipe",
       stderr: "pipe",
     });
-    if (child.exitCode !== 0)
-      throw new Error(`${args.join(" ")}: ${child.stderr}`);
+    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
   }
-  const config = Bun.TOML.parse(
-    await Bun.file(join(home, "codex", "config.toml")).text(),
-  ) as {
+  const config = Bun.TOML.parse(await Bun.file(join(home, "codex", "config.toml")).text()) as {
     mcp_servers: {
       agentgate: {
         command: string;
@@ -32,8 +24,7 @@ try {
     };
   };
   if (
-    realpathSync(config.mcp_servers.agentgate.command) !==
-      realpathSync(binary) ||
+    realpathSync(config.mcp_servers.agentgate.command) !== realpathSync(binary) ||
     config.mcp_servers.agentgate.env.AGENTGATE_PORT !== "19878"
   )
     throw new Error("compiled shim command/config mismatch");
@@ -53,12 +44,7 @@ try {
         apiVersion: number;
         html?: string;
       };
-      if (
-        !response.ok ||
-        status.node !== "smoke" ||
-        status.apiVersion !== API_VERSION ||
-        status.html !== undefined
-      )
+      if (!response.ok || status.node !== "smoke" || status.apiVersion !== API_VERSION || status.html !== undefined)
         throw new Error("invalid native status");
       ready = true;
       break;
@@ -79,15 +65,22 @@ try {
   ]) {
     const child = Bun.spawnSync([binary, ...args], {
       env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
-      stdout: "pipe", stderr: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
     });
     if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
   }
-  const configured = await (await fetch("http://127.0.0.1:19878/api/status")).json() as { settings: { strategy: string; sessionAffinity: boolean; retryLimit: number; threshold: number } };
-  if (configured.settings.strategy !== "round-robin" || !configured.settings.sessionAffinity || configured.settings.retryLimit !== 0 || configured.settings.threshold !== 98)
+  const configured = (await (await fetch("http://127.0.0.1:19878/api/status")).json()) as {
+    settings: { strategy: string; sessionAffinity: boolean; retryLimit: number; threshold: number };
+  };
+  if (
+    configured.settings.strategy !== "round-robin" ||
+    !configured.settings.sessionAffinity ||
+    configured.settings.retryLimit !== 0 ||
+    configured.settings.threshold !== 98
+  )
     throw new Error("compiled proxy configuration patch changed omitted settings");
-  if ((await fetch("http://127.0.0.1:19878/")).status !== 404)
-    throw new Error("web UI is still present");
+  if ((await fetch("http://127.0.0.1:19878/")).status !== 404) throw new Error("web UI is still present");
   if (
     (
       await fetch("http://127.0.0.1:19878/api/status", {
@@ -101,7 +94,10 @@ try {
   if (Bun.spawnSync(["git", "init", checkout], { stdout: "pipe", stderr: "pipe" }).exitCode !== 0)
     throw new Error("could not initialize smoke checkout");
   const markdown = join(home, "SKILL.md");
-  await Bun.write(markdown, "---\nname: smoke-skill\ndescription: Compiled CLI skill smoke test.\n---\n\nUse this skill for the smoke test.\n");
+  await Bun.write(
+    markdown,
+    "---\nname: smoke-skill\ndescription: Compiled CLI skill smoke test.\n---\n\nUse this skill for the smoke test.\n",
+  );
   for (const args of [
     ["skills", "new", "smoke-skill", "--file", markdown],
     ["skills", "projects", "smoke-skill", "smoke/repo"],
@@ -109,13 +105,17 @@ try {
   ]) {
     const child = Bun.spawnSync([binary, ...args], {
       env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
-      stdout: "pipe", stderr: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
     });
     if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
   }
   for (const folder of [".agents", ".claude"]) {
     const link = join(checkout, folder, "skills", "smoke-skill");
-    if (!readlinkSync(link) || !(await Bun.file(join(link, "SKILL.md")).text()).includes("Compiled CLI skill smoke test."))
+    if (
+      !readlinkSync(link) ||
+      !(await Bun.file(join(link, "SKILL.md")).text()).includes("Compiled CLI skill smoke test.")
+    )
       throw new Error("compiled skills prepare did not publish skill links");
   }
   daemon.kill("SIGTERM");

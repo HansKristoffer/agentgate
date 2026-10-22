@@ -1,4 +1,19 @@
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, watch, writeFileSync, type FSWatcher } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from "node:fs";
 import { getErrorMessage, getUniqueValues, safeJsonParse, sortBy, trimTrailingSlash } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -37,7 +52,9 @@ export function repoKey(url: string): string | undefined {
   const m = urlForm ?? scpForm;
   if (!m) return undefined;
 
-  const key = trimTrailingSlash(`${m[1]}/${m[2]}`).replace(/\.git$/, "").toLowerCase();
+  const key = trimTrailingSlash(`${m[1]}/${m[2]}`)
+    .replace(/\.git$/, "")
+    .toLowerCase();
   return KEY.test(key) ? key : undefined;
 }
 
@@ -64,8 +81,12 @@ export function keyForProject(id: string) {
 
 // ---------------------------------------------------------------- the store on disk (buncargo's format)
 
-const entrySchema = z.object({ sha256: z.string(), updatedAt: z.string(), machine: z.boolean().default(false) }).passthrough();
-const manifestSchema = z.object({ version: z.number(), files: z.record(z.string(), z.unknown()).default({}) }).passthrough();
+const entrySchema = z
+  .object({ sha256: z.string(), updatedAt: z.string(), machine: z.boolean().default(false) })
+  .passthrough();
+const manifestSchema = z
+  .object({ version: z.number(), files: z.record(z.string(), z.unknown()).default({}) })
+  .passthrough();
 
 /** The store's files as its manifest has them, with the data of every file that may leave this machine. `pending`: a
  * data file does not match its entry yet (a write in progress), so read again shortly. */
@@ -102,10 +123,10 @@ export function readStore(dir: string) {
     }
     files.set(path, { sha256: hash, updatedAt, machine, data });
   }
-  return { state: pending ? "pending" as const : "ok" as const, files };
+  return { state: pending ? ("pending" as const) : ("ok" as const), files };
 }
 
-export class StoreBusy extends Error { }
+export class StoreBusy extends Error {}
 
 /** `mkdir <dir>/.lock` with an owner file; a lock whose process is gone or that is older than 30 seconds is stale. */
 export function lockStore(dir: string, now = Date.now()): () => void {
@@ -165,7 +186,12 @@ function replace(file: string, data: Uint8Array | string) {
 
 /** Write and remove files under the lock: data first, then the manifest, then removed data files. Other entries, machine
  * ones included, stay as they are. */
-export function writeStore(dir: string, put: { path: string; data: Buffer; updatedAt: string }[], remove: string[], now = Date.now()) {
+export function writeStore(
+  dir: string,
+  put: { path: string; data: Buffer; updatedAt: string }[],
+  remove: string[],
+  now = Date.now(),
+) {
   const release = lockStore(dir, now);
   try {
     let manifest: z.infer<typeof manifestSchema> = { version: 1, files: {} };
@@ -192,9 +218,12 @@ export function writeStore(dir: string, put: { path: string; data: Buffer; updat
 // ---------------------------------------------------------------- merging the store with the record
 
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
-const digest = (f: CheckoutFile) => f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64"));
+const digest = (f: CheckoutFile) => (f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64")));
 const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
-  const plain = (fs: CheckoutFile[]) => JSON.stringify(sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })));
+  const plain = (fs: CheckoutFile[]) =>
+    JSON.stringify(
+      sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })),
+    );
   return plain(a) === plain(b);
 };
 
@@ -211,7 +240,15 @@ function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
 
 /** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */
 function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
-  const record = { kind: "project", id: project.id, rev: Number.MAX_SAFE_INTEGER, node: s.nodeId, updated_at: Number.MAX_SAFE_INTEGER, deleted: 0, data: JSON.stringify(project) };
+  const record = {
+    kind: "project",
+    id: project.id,
+    rev: Number.MAX_SAFE_INTEGER,
+    node: s.nodeId,
+    updated_at: Number.MAX_SAFE_INTEGER,
+    deleted: 0,
+    data: JSON.stringify(project),
+  };
   const NONCE_AND_TAG = 28;
   return Buffer.byteLength(JSON.stringify({ protocol: 999, record })) + NONCE_AND_TAG <= RELAY_LIMITS.blobBytes;
 }
@@ -219,8 +256,13 @@ function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
 /** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project.
  * FILES_PROTOCOL arrived in 0.20.0, so nodes on 0.20.0 or later keep them. */
 function oldNodesError(s: Store) {
-  const old = s.list("node").filter((n) => (n.protocol ?? 0) < FILES_PROTOCOL).map((n) => n.id);
-  return old.length ? `Update agentgate on ${old.join(", ")} to 0.20.0 or later: older versions drop env files when they save a project, so none are saved until then` : undefined;
+  const old = s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < FILES_PROTOCOL)
+    .map((n) => n.id);
+  return old.length
+    ? `Update agentgate on ${old.join(", ")} to 0.20.0 or later: older versions drop env files when they save a project, so none are saved until then`
+    : undefined;
 }
 
 const errorsKey = "checkoutFiles:errors";
@@ -234,7 +276,8 @@ function storedErrors(s: Store): Record<string, string> {
 /** Why each project's env files are not syncing. An old node blocks every project with files, whether or not a pass
  * has had something to send since. */
 export function filesErrors(s: Store): Record<string, string> {
-  const errors = storedErrors(s), old = oldNodesError(s);
+  const errors = storedErrors(s),
+    old = oldNodesError(s);
   if (old) for (const p of s.list("project")) if (p.files?.length || p.fileList?.length) errors[p.id] ??= old;
   return errors;
 }
@@ -289,7 +332,8 @@ export function reconcile(s: Store, root: string, key: string): boolean {
 
   // This store as entries, plus a deletion for each file that left it since the last pass.
   const local: CheckoutFile[] = [];
-  for (const [path, f] of store.files) if (!f.machine) local.push({ path, updatedAt: f.updatedAt, data: f.data!.toString("base64") });
+  for (const [path, f] of store.files)
+    if (!f.machine) local.push({ path, updatedAt: f.updatedAt, data: f.data!.toString("base64") });
   for (const b of base) {
     if (store.files.has(b.path)) continue;
     local.push(b.deleted ? b : { path: b.path, updatedAt: iso(s.now()), deleted: true });
@@ -304,15 +348,20 @@ export function reconcile(s: Store, root: string, key: string): boolean {
   if (put.length || remove.length) {
     const writes = put.map((f) => ({ path: f.path, data: Buffer.from(f.data!, "base64"), updatedAt: f.updatedAt }));
     writeStore(dir, writes, remove, s.now());
-    console.log(`checkout files: ${project}: this machine's store took ${[...put.map((f) => f.path), ...remove.map((path) => `${path} (removed)`)].join(", ")} from the synced record`);
+    console.log(
+      `checkout files: ${project}: this machine's store took ${[...put.map((f) => f.path), ...remove.map((path) => `${path} (removed)`)].join(", ")} from the synced record`,
+    );
   }
-  dbWrite(s, "saving what this pass reconciled", () => s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f))));
+  dbWrite(s, "saving what this pass reconciled", () =>
+    s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f))),
+  );
 
   let error: string | undefined;
   if (merged.length && !same(merged, remote)) {
     const next = { ...(record ?? projectSchema.parse({ id: project })), files: merged };
     error = oldNodesError(s);
-    if (!error && !fitsRelay(s, next)) error = "the files are larger than one synced record can carry (about 700 KiB in all); they stay on this machine";
+    if (!error && !fitsRelay(s, next))
+      error = "the files are larger than one synced record can carry (about 700 KiB in all); they stay on this machine";
     if (!error) dbWrite(s, `saving ${project}'s project record`, () => s.put("project", project, next));
   }
   dbWrite(s, "saving the sync error", () => report(s, project, error));
@@ -323,7 +372,9 @@ export function reconcile(s: Store, root: string, key: string): boolean {
 function storeKeys(root: string): string[] {
   const dirs = (path: string) => {
     try {
-      return readdirSync(path, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name);
+      return readdirSync(path, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
     } catch {
       return [];
     }
@@ -347,7 +398,10 @@ export class CheckoutFiles {
   private closed = false;
 
   /** `root` null turns the store off (in-memory stores, tests). */
-  constructor(private s: Store, readonly root: string | null = FILES_ROOT) { }
+  constructor(
+    private s: Store,
+    readonly root: string | null = FILES_ROOT,
+  ) {}
 
   soon() {
     if (this.closed || !this.root) return;
@@ -386,7 +440,9 @@ export class CheckoutFiles {
         delete all[path];
         this.s.setLocal(createdKey, JSON.stringify(all));
       } else if (k === key) {
-        void fillCheckout(this.root!, path, key).catch((e) => console.error(`checkout files: ${path}: ${getErrorMessage(e)}`));
+        void fillCheckout(this.root!, path, key).catch((e) =>
+          console.error(`checkout files: ${path}: ${getErrorMessage(e)}`),
+        );
       }
     }
   }
@@ -421,7 +477,8 @@ function createdCheckouts(s: Store): Record<string, string> {
   }
 }
 /** Remember a checkout agentgate made, so later store updates reach it too. */
-export const rememberCheckout = (s: Store, path: string, key: string) => s.setLocal(createdKey, JSON.stringify({ ...createdCheckouts(s), [path]: key }));
+export const rememberCheckout = (s: Store, path: string, key: string) =>
+  s.setLocal(createdKey, JSON.stringify({ ...createdCheckouts(s), [path]: key }));
 
 // ---------------------------------------------------------------- inside a checkout
 
@@ -446,7 +503,10 @@ async function buncargo(root: string, cwd: string, args: string[]): Promise<stri
   const bin = buncargoBin(cwd);
   if (!bin) throw new Error("buncargo is not installed in this checkout");
   const child = Bun.spawn(["bun", bin, ...args], {
-    cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore",
+    cwd,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
     env: { ...process.env, HOME: dirname(dirname(root)) },
   });
   const timer = setTimeout(() => child.kill(), 120_000);
@@ -471,10 +531,14 @@ export async function fillCheckout(root: string, cwd: string, key: string) {
   }
 }
 
-const statusSchema = z.object({
-  version: z.literal(1),
-  files: z.array(z.object({ path: z.string(), state: z.string(), machine: z.boolean().default(false) }).passthrough()),
-}).passthrough();
+const statusSchema = z
+  .object({
+    version: z.literal(1),
+    files: z.array(
+      z.object({ path: z.string(), state: z.string(), machine: z.boolean().default(false) }).passthrough(),
+    ),
+  })
+  .passthrough();
 
 /** A regular file's bytes, or undefined. */
 function regularFile(path: string): Buffer | undefined {
@@ -556,7 +620,7 @@ export async function addFiles(s: Store, root: string, top: string, paths: strin
   writeStore(join(root, key), put, [], s.now());
 
   const p = s.get("project", project) ?? projectSchema.parse({ id: project });
-  s.put("project", project, { ...p, fileList: getUniqueValues([...p.fileList ?? [], ...paths]).sort() });
+  s.put("project", project, { ...p, fileList: getUniqueValues([...(p.fileList ?? []), ...paths]).sort() });
   reconcile(s, root, key);
   return project;
 }
@@ -569,7 +633,8 @@ export async function addFileAt(s: Store, root: string, project: string, file: s
   const top = realpathSync(found);
 
   const owner = (await checkoutProject(s, top)).project;
-  if (owner.toLowerCase() !== project.toLowerCase()) throw new Error(`That file is in a checkout of ${owner}, not ${project}`);
+  if (owner.toLowerCase() !== project.toLowerCase())
+    throw new Error(`That file is in a checkout of ${owner}, not ${project}`);
   return addFiles(s, root, top, [relative(top, file)]);
 }
 
@@ -605,7 +670,10 @@ function storeFile(s: Store, root: string, project: string, path: string) {
 export function fileContent(s: Store, root: string, project: string, path: string) {
   const { f } = storeFile(s, root, project, path);
   try {
-    return { content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(f?.data ?? new Uint8Array()), sha256: f?.sha256 ?? sha256("") };
+    return {
+      content: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(f?.data ?? new Uint8Array()),
+      sha256: f?.sha256 ?? sha256(""),
+    };
   } catch {
     throw new Error(`${path} is not text, so it cannot be edited here`);
   }
@@ -616,8 +684,12 @@ export function fileContent(s: Store, root: string, project: string, path: strin
 async function checkoutsOf(s: Store, project: string, key: string): Promise<string[]> {
   const registered = safeJsonParse<Record<string, string>>(s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
   const known = [
-    ...Object.entries(registered).filter(([, p]) => p.toLowerCase() === project.toLowerCase()).map(([cwd]) => cwd),
-    ...Object.entries(createdCheckouts(s)).filter(([, k]) => k === key).map(([cwd]) => cwd),
+    ...Object.entries(registered)
+      .filter(([, p]) => p.toLowerCase() === project.toLowerCase())
+      .map(([cwd]) => cwd),
+    ...Object.entries(createdCheckouts(s))
+      .filter(([, k]) => k === key)
+      .map(([cwd]) => cwd),
   ];
   const found = new Set<string>();
   for (const cwd of known) {
@@ -634,9 +706,17 @@ type Followed = "updated" | "kept" | "pulled" | "failed";
  * hold the previous version, or none, get the new one (through buncargo's pull where they use it); a checkout with its
  * own edits keeps them. With `expected` (fileContent's sha256), it refuses to replace a version saved in the meantime.
  * Logs one line with what each checkout did, never the contents. */
-export async function setFileContent(s: Store, root: string, project: string, path: string, content: string, expected?: string) {
+export async function setFileContent(
+  s: Store,
+  root: string,
+  project: string,
+  path: string,
+  content: string,
+  expected?: string,
+) {
   const { project: id, key, f } = storeFile(s, root, project, path);
-  if (expected !== undefined && expected !== (f?.sha256 ?? sha256(""))) throw new Error(`${path} changed since you opened it; open it again to see the new version`);
+  if (expected !== undefined && expected !== (f?.sha256 ?? sha256("")))
+    throw new Error(`${path} changed since you opened it; open it again to see the new version`);
   const old = oldNodesError(s);
   if (old) throw new Error(old);
   const data = Buffer.from(content);
@@ -663,13 +743,20 @@ export async function setFileContent(s: Store, root: string, project: string, pa
   // Buncargo keeps its own record of each checkout's copy, so its pull decides whether a checkout takes the new one.
   for (const cwd of checkouts) {
     if (!usesBuncargo(cwd)) continue;
-    await buncargo(root, cwd, ["files", "pull", path]).then(() => followed.set(cwd, "pulled"), (e) => fail(cwd, e));
+    await buncargo(root, cwd, ["files", "pull", path]).then(
+      () => followed.set(cwd, "pulled"),
+      (e) => fail(cwd, e),
+    );
   }
 
   const counts = { updated: 0, kept: 0, pulled: 0, failed: 0 };
   for (const outcome of followed.values()) counts[outcome]++;
-  const parts = Object.entries(counts).filter(([, n]) => n).map(([outcome, n]) => `${n} ${outcome}`);
-  console.log(`checkout files: ${id} ${path} saved; followed ${checkouts.length} ${checkouts.length === 1 ? "checkout" : "checkouts"}${parts.length ? ` (${parts.join(", ")})` : ""}`);
+  const parts = Object.entries(counts)
+    .filter(([, n]) => n)
+    .map(([outcome, n]) => `${n} ${outcome}`);
+  console.log(
+    `checkout files: ${id} ${path} saved; followed ${checkouts.length} ${checkouts.length === 1 ? "checkout" : "checkouts"}${parts.length ? ` (${parts.join(", ")})` : ""}`,
+  );
   return { project: id, checkouts: counts };
 }
 
@@ -678,10 +765,12 @@ export async function listFiles(s: Store, root: string, top: string) {
   const { key, project } = await checkoutProject(s, top);
   const store = readStore(join(root, key));
   const listed = new Set(s.get("project", project)?.fileList ?? []);
-  const files = getUniqueValues([...store.files.keys(), ...listed]).sort().map((path) => {
-    const f = store.files.get(path);
-    return { path, updatedAt: f?.updatedAt, machine: !!f?.machine, listed: listed.has(path), stored: !!f };
-  });
+  const files = getUniqueValues([...store.files.keys(), ...listed])
+    .sort()
+    .map((path) => {
+      const f = store.files.get(path);
+      return { path, updatedAt: f?.updatedAt, machine: !!f?.machine, listed: listed.has(path), stored: !!f };
+    });
   const error = store.state === "unsupported" ? "the store has a newer format" : filesErrors(s)[project];
   return { project, files, error };
 }

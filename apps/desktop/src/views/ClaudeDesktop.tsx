@@ -8,8 +8,7 @@ import type { Perform, ViewProps } from "../types.ts";
 const DAY = 86_400_000;
 
 /** The window closest to its limit. */
-export const tightest = (a?: AccountStatus) =>
-  a?.windows.slice().sort((x, y) => y.usedPct - x.usedPct)[0];
+export const tightest = (a?: AccountStatus) => a?.windows.slice().sort((x, y) => y.usedPct - x.usedPct)[0];
 export const nameOf = (l: { label?: string; email?: string; accountUuid: string }) =>
   l.label ?? l.email ?? `Account ${l.accountUuid.slice(0, 8)}`;
 
@@ -30,13 +29,25 @@ export function desktopActions(connection: Connection, perform: Perform) {
     if (await confirmRestart()) await perform(() => request(connection, path, "POST", body), message);
   };
   return {
-    use: (l: DesktopLogin) => run("/desktop/use", { accountUuid: l.accountUuid }, `Claude Desktop is restarting with ${nameOf(l)}`),
+    use: (l: DesktopLogin) =>
+      run("/desktop/use", { accountUuid: l.accountUuid }, `Claude Desktop is restarting with ${nameOf(l)}`),
     connect: (email?: string) =>
-      run("/desktop/add", { expected: email }, `Claude Desktop restarted. Sign in${email ? ` with ${email}` : ""} there; Agentgate saves it automatically.`),
+      run(
+        "/desktop/add",
+        { expected: email },
+        `Claude Desktop restarted. Sign in${email ? ` with ${email}` : ""} there; Agentgate saves it automatically.`,
+      ),
     /** Keep the login Desktop runs now, so switching back to it later needs no sign-in. */
-    save: () => perform(() => request(connection, "/desktop/capture", "POST"), "Login saved; you can switch back to it any time"),
+    save: () =>
+      perform(() => request(connection, "/desktop/capture", "POST"), "Login saved; you can switch back to it any time"),
     pool: (on: boolean) =>
-      run("/desktop/gateway", { on }, on ? "Claude Desktop is restarting; its Code tab now shares your subscriptions" : "Claude Desktop is restarting with its own sign-in"),
+      run(
+        "/desktop/gateway",
+        { on },
+        on
+          ? "Claude Desktop is restarting; its Code tab now shares your subscriptions"
+          : "Claude Desktop is restarting with its own sign-in",
+      ),
   };
 }
 
@@ -65,18 +76,32 @@ export function desktopNote(desktop: DesktopStatus, l?: DesktopLogin) {
   if (l.expired) return "Claude Desktop login expired";
   if (l.problem) return l.problem;
   const days = l.sessionExpiresAt && Math.ceil((l.sessionExpiresAt - Date.now()) / DAY);
-  if (days && days > 0 && days <= 5 && !isCurrent(desktop, l)) return `Open it in Claude Desktop within ${days} day${days === 1 ? "" : "s"} to stay connected`;
+  if (days && days > 0 && days <= 5 && !isCurrent(desktop, l))
+    return `Open it in Claude Desktop within ${days} day${days === 1 ? "" : "s"} to stay connected`;
 }
 
 export function forgetLogin(connection: Connection, perform: Perform, l: DesktopLogin) {
   return async () => {
-    if (await confirmDialog(`Forget the saved Claude Desktop login for ${nameOf(l)}? You can connect it again later.`, { okLabel: "Forget" }))
-      void perform(() => request(connection, `/desktop/logins/${encodeURIComponent(l.accountUuid)}`, "DELETE"), "Login forgotten");
+    if (
+      await confirmDialog(`Forget the saved Claude Desktop login for ${nameOf(l)}? You can connect it again later.`, {
+        okLabel: "Forget",
+      })
+    )
+      void perform(
+        () => request(connection, `/desktop/logins/${encodeURIComponent(l.accountUuid)}`, "DELETE"),
+        "Login forgotten",
+      );
   };
 }
 
 /** Sign-in progress and problems, shown above the accounts. */
-export function DesktopAlerts({ data, connection, perform, desktop, act }: ViewProps & { desktop: DesktopStatus; act: Actions }) {
+export function DesktopAlerts({
+  data,
+  connection,
+  perform,
+  desktop,
+  act,
+}: ViewProps & { desktop: DesktopStatus; act: Actions }) {
   const suggest = suggestion(data, desktop);
   const dismiss = () => void perform(() => request(connection, "/desktop/add", "DELETE"));
   return (
@@ -84,37 +109,59 @@ export function DesktopAlerts({ data, connection, perform, desktop, act }: ViewP
       {desktop.pendingAdd && (
         <Alert status="accent" className="callout">
           <Alert.Content>
-            <Alert.Title>Waiting for you to sign in to Claude Desktop{desktop.pendingAdd.expected ? ` with ${desktop.pendingAdd.expected}` : ""}</Alert.Title>
-            <Alert.Description>Agentgate saves the login as soon as you're in. Don't use Log out in Claude Desktop: it ends saved logins.</Alert.Description>
+            <Alert.Title>
+              Waiting for you to sign in to Claude Desktop
+              {desktop.pendingAdd.expected ? ` with ${desktop.pendingAdd.expected}` : ""}
+            </Alert.Title>
+            <Alert.Description>
+              Agentgate saves the login as soon as you're in. Don't use Log out in Claude Desktop: it ends saved logins.
+            </Alert.Description>
           </Alert.Content>
-          <Button size="sm" variant="tertiary" onPress={dismiss}>Cancel</Button>
+          <Button size="sm" variant="tertiary" onPress={dismiss}>
+            Cancel
+          </Button>
         </Alert>
       )}
       {desktop.addMismatch && (
         <Alert status="warning" className="callout">
           <Alert.Content>
-            <Alert.Title>You signed in as {nameOf(desktop.addMismatch)}, not {desktop.addMismatch.expected}</Alert.Title>
-            <Alert.Description>That login was saved. {desktop.addMismatch.expected} is still not connected.</Alert.Description>
+            <Alert.Title>
+              You signed in as {nameOf(desktop.addMismatch)}, not {desktop.addMismatch.expected}
+            </Alert.Title>
+            <Alert.Description>
+              That login was saved. {desktop.addMismatch.expected} is still not connected.
+            </Alert.Description>
           </Alert.Content>
-          <Button size="sm" onPress={() => void act.connect(desktop.addMismatch!.expected)}>Connect {desktop.addMismatch.expected}</Button>
-          <Button size="sm" variant="tertiary" onPress={dismiss}>Dismiss</Button>
+          <Button size="sm" onPress={() => void act.connect(desktop.addMismatch!.expected)}>
+            Connect {desktop.addMismatch.expected}
+          </Button>
+          <Button size="sm" variant="tertiary" onPress={dismiss}>
+            Dismiss
+          </Button>
         </Alert>
       )}
       {desktop.signedOut && !desktop.pendingAdd && (
         <Alert status="warning" className="callout">
           <Alert.Content>
             <Alert.Title>Claude Desktop was signed out</Alert.Title>
-            <Alert.Description>Signing out in Claude Desktop ends that saved login. Use Connect to Desktop instead; it keeps your other logins working.</Alert.Description>
+            <Alert.Description>
+              Signing out in Claude Desktop ends that saved login. Use Connect to Desktop instead; it keeps your other
+              logins working.
+            </Alert.Description>
           </Alert.Content>
         </Alert>
       )}
       {suggest && (
         <Alert status="warning" className="callout">
           <Alert.Content>
-            <Alert.Title>{nameOf(suggest.from)} is at {Math.round(suggest.used.usedPct)}% of its {suggest.used.name} limit</Alert.Title>
+            <Alert.Title>
+              {nameOf(suggest.from)} is at {Math.round(suggest.used.usedPct)}% of its {suggest.used.name} limit
+            </Alert.Title>
             <Alert.Description>{nameOf(suggest.to)} has room. Switch Claude Desktop to it?</Alert.Description>
           </Alert.Content>
-          <Button size="sm" onPress={() => void act.use(suggest.to)}>Switch</Button>
+          <Button size="sm" onPress={() => void act.use(suggest.to)}>
+            Switch
+          </Button>
         </Alert>
       )}
     </>
@@ -127,25 +174,79 @@ export function DesktopHelp({ close }: { close: () => void }) {
       <p>Claude Desktop can use your subscriptions in two ways:</p>
       <table className="compare">
         <thead>
-          <tr><th /><th>Switch accounts</th><th>Share automatically</th></tr>
+          <tr>
+            <th />
+            <th>Switch accounts</th>
+            <th>Share automatically</th>
+          </tr>
         </thead>
         <tbody>
-          <tr><td>Chat</td><td>Yes</td><td>Not available</td></tr>
-          <tr><td>Cowork</td><td>Yes</td><td>Not yet verified</td></tr>
-          <tr><td>Code tab</td><td>Yes</td><td>Yes</td></tr>
-          <tr><td>Your claude.ai history and projects</td><td>Yes</td><td>No, a separate local profile</td></tr>
-          <tr><td>When a subscription runs out</td><td>You switch (one click, Desktop restarts)</td><td>Moves on by itself</td></tr>
-          <tr><td>Needs Agentgate running</td><td>Only to switch</td><td>Yes</td></tr>
+          <tr>
+            <td>Chat</td>
+            <td>Yes</td>
+            <td>Not available</td>
+          </tr>
+          <tr>
+            <td>Cowork</td>
+            <td>Yes</td>
+            <td>Not yet verified</td>
+          </tr>
+          <tr>
+            <td>Code tab</td>
+            <td>Yes</td>
+            <td>Yes</td>
+          </tr>
+          <tr>
+            <td>Your claude.ai history and projects</td>
+            <td>Yes</td>
+            <td>No, a separate local profile</td>
+          </tr>
+          <tr>
+            <td>When a subscription runs out</td>
+            <td>You switch (one click, Desktop restarts)</td>
+            <td>Moves on by itself</td>
+          </tr>
+          <tr>
+            <td>Needs Agentgate running</td>
+            <td>Only to switch</td>
+            <td>Yes</td>
+          </tr>
         </tbody>
       </table>
       <ol className="steps">
-        <li><strong>Why does Claude Desktop restart?</strong><p>It only reads its sign-in when it starts.</p></li>
-        <li><strong>What happens to my chats?</strong><p>They stay in your claude.ai account. The shared mode keeps its own local history next to it.</p></li>
-        <li><strong>Why not just sign out and in?</strong><p>Signing out in Claude Desktop ends that login for good. Agentgate keeps each login saved on this Mac, so switching back needs no password.</p></li>
-        <li><strong>What if I remove Agentgate?</strong><p>Claude Desktop keeps the account it was last switched to. Switch back to your own sign-in first if you use the shared mode.</p></li>
-        <li><strong>Which rules apply?</strong><p>Agentgate only uses accounts you sign in to yourself, and only sends Claude Code requests with subscription logins. The terms of each plan still apply.</p></li>
+        <li>
+          <strong>Why does Claude Desktop restart?</strong>
+          <p>It only reads its sign-in when it starts.</p>
+        </li>
+        <li>
+          <strong>What happens to my chats?</strong>
+          <p>They stay in your claude.ai account. The shared mode keeps its own local history next to it.</p>
+        </li>
+        <li>
+          <strong>Why not just sign out and in?</strong>
+          <p>
+            Signing out in Claude Desktop ends that login for good. Agentgate keeps each login saved on this Mac, so
+            switching back needs no password.
+          </p>
+        </li>
+        <li>
+          <strong>What if I remove Agentgate?</strong>
+          <p>
+            Claude Desktop keeps the account it was last switched to. Switch back to your own sign-in first if you use
+            the shared mode.
+          </p>
+        </li>
+        <li>
+          <strong>Which rules apply?</strong>
+          <p>
+            Agentgate only uses accounts you sign in to yourself, and only sends Claude Code requests with subscription
+            logins. The terms of each plan still apply.
+          </p>
+        </li>
       </ol>
-      <p className="note">Saved logins stay on this Mac. They're encrypted with its keychain and never synced to your other machines.</p>
+      <p className="note">
+        Saved logins stay on this Mac. They're encrypted with its keychain and never synced to your other machines.
+      </p>
     </Modal>
   );
 }

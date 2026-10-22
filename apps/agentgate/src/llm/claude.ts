@@ -16,13 +16,21 @@ export const CLAUDE = {
   authorizeUrl: "https://claude.com/cai/oauth/authorize",
   redirectUri: "https://platform.claude.com/oauth/code/callback",
   clientId: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-  scopes: "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins",
+  scopes:
+    "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload user:plugins",
   oauthBeta: "oauth-2025-04-20",
   quotaPrefix: "anthropic-ratelimit-unified-",
 };
 
-export function toTokens(t: { access_token: string; refresh_token?: string; expires_in?: number }, previousRefresh = ""): Tokens {
-  return { accessToken: t.access_token, refreshToken: t.refresh_token ?? previousRefresh, expiresAt: Date.now() + (t.expires_in ?? 3600) * 1000 };
+export function toTokens(
+  t: { access_token: string; refresh_token?: string; expires_in?: number },
+  previousRefresh = "",
+): Tokens {
+  return {
+    accessToken: t.access_token,
+    refreshToken: t.refresh_token ?? previousRefresh,
+    expiresAt: Date.now() + (t.expires_in ?? 3600) * 1000,
+  };
 }
 
 /** Claude Code puts the account uuid in metadata.user_id, either as JSON or as `user_…_account_<uuid>_session_…`. */
@@ -30,34 +38,59 @@ export function rewriteUserId(userId: string, uuid: string): string {
   try {
     const o = JSON.parse(userId);
     if (o && typeof o === "object" && "account_uuid" in o) return JSON.stringify({ ...o, account_uuid: uuid });
-  } catch { }
+  } catch {}
   return userId.replace(/account_[0-9a-f-]*_/, `account_${uuid}_`);
 }
 
 export const claude: Provider = {
   name: "claude",
-  modelList: path => /^\/v1\/models(?:\?|$)/.test(path) ? { collection: "data", id: "id" } : undefined,
+  modelList: (path) => (/^\/v1\/models(?:\?|$)/.test(path) ? { collection: "data", id: "id" } : undefined),
   fetchQuota: (credential, signal) => fetchUsage(credential.accessToken, signal),
   discoverModels: async (credential, signal) => {
-    const result = await fetchHeaders(`${CLAUDE.api}/v1/models?limit=1000`, { headers: { authorization: `Bearer ${credential.accessToken}`, "anthropic-beta": CLAUDE.oauthBeta, "anthropic-version": "2023-06-01" }, signal }, 10000);
-    if (!result.ok) { await result.body?.cancel(); throw new Error("Model discovery failed"); }
+    const result = await fetchHeaders(
+      `${CLAUDE.api}/v1/models?limit=1000`,
+      {
+        headers: {
+          authorization: `Bearer ${credential.accessToken}`,
+          "anthropic-beta": CLAUDE.oauthBeta,
+          "anthropic-version": "2023-06-01",
+        },
+        signal,
+      },
+      10000,
+    );
+    if (!result.ok) {
+      await result.body?.cancel();
+      throw new Error("Model discovery failed");
+    }
     const payload = JSON.parse(new TextDecoder().decode(await readBody(result.body, 256 * 1024, signal)));
     if (!Array.isArray(payload.data)) throw new Error("Unrecognized model response");
-    return payload.data.flatMap((m: { id?: unknown }) => typeof m.id === "string" ? [m.id] : []);
+    return payload.data.flatMap((m: { id?: unknown }) => (typeof m.id === "string" ? [m.id] : []));
   },
   session: (_headers, body) => {
     const metadata = body?.metadata as { user_id?: string } | undefined;
     if (typeof metadata?.user_id !== "string") return undefined;
-    try { const parsed = JSON.parse(metadata.user_id); if (typeof parsed.session_id === "string") return new Bun.CryptoHasher("sha256").update(parsed.session_id).digest("hex"); } catch {}
+    try {
+      const parsed = JSON.parse(metadata.user_id);
+      if (typeof parsed.session_id === "string")
+        return new Bun.CryptoHasher("sha256").update(parsed.session_id).digest("hex");
+    } catch {}
     const id = metadata.user_id.match(/_session_([\w-]{1,128})$/)?.[1];
     return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
   },
-  classifyFailure: (status, _headers, body) => status === 404 && /model/i.test(body) ? "model" : status >= 500 ? "transient" : "request",
-  probe: { path: "/v1/messages", body: model => ({ model, max_tokens: 1, messages: [{ role: "user", content: "Reply OK" }], stream: true }) },
+  classifyFailure: (status, _headers, body) =>
+    status === 404 && /model/i.test(body) ? "model" : status >= 500 ? "transient" : "request",
+  probe: {
+    path: "/v1/messages",
+    body: (model) => ({ model, max_tokens: 1, messages: [{ role: "user", content: "Reply OK" }], stream: true }),
+  },
 
   prepare(path, headers, body, cred) {
     headers.set("authorization", `Bearer ${cred.accessToken}`);
-    const betas = (headers.get("anthropic-beta") ?? "").split(",").map((b) => b.trim()).filter(Boolean);
+    const betas = (headers.get("anthropic-beta") ?? "")
+      .split(",")
+      .map((b) => b.trim())
+      .filter(Boolean);
     if (!betas.includes(CLAUDE.oauthBeta)) headers.set("anthropic-beta", [...betas, CLAUDE.oauthBeta].join(","));
     if (body?.length && cred.accountUuid && headers.get("content-type")?.includes("json")) {
       try {
@@ -66,7 +99,7 @@ export const claude: Provider = {
           json.metadata.user_id = rewriteUserId(json.metadata.user_id, cred.accountUuid);
           body = new TextEncoder().encode(JSON.stringify(json));
         }
-      } catch { }
+      } catch {}
     }
     return { url: CLAUDE.api + path, headers, body };
   },
@@ -98,13 +131,22 @@ export const claude: Provider = {
   },
 
   async refresh(refreshToken) {
-    const t = await tokenRequest(CLAUDE.tokenUrl, { grant_type: "refresh_token", refresh_token: refreshToken, client_id: CLAUDE.clientId });
+    const t = await tokenRequest(CLAUDE.tokenUrl, {
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+      client_id: CLAUDE.clientId,
+    });
     return toTokens(t, refreshToken);
   },
 };
 
 /** Claude Code's `/usage` endpoint: the same windows as the quota headers, without spending quota. */
-const USAGE_WINDOWS: Record<string, string> = { five_hour: "5h", seven_day: "7d", seven_day_opus: "7d:opus", seven_day_sonnet: "7d:sonnet" };
+const USAGE_WINDOWS: Record<string, string> = {
+  five_hour: "5h",
+  seven_day: "7d",
+  seven_day_opus: "7d:opus",
+  seven_day_sonnet: "7d:sonnet",
+};
 
 export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exhausted" } | undefined {
   const windows: Window[] = [];
@@ -113,23 +155,44 @@ export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exha
     if (typeof w?.utilization !== "number") continue;
     const reset = Date.parse(w.resets_at ?? "");
     // A locked window counts as full, so the pool skips the account (for that window's models) until it resets.
-    windows.push({ name, usedPct: w.locked_reason ? 100 : clamp(w.utilization, 0, 100), resetsAt: Number.isFinite(reset) ? reset : undefined });
+    windows.push({
+      name,
+      usedPct: w.locked_reason ? 100 : clamp(w.utilization, 0, 100),
+      resetsAt: Number.isFinite(reset) ? reset : undefined,
+    });
   }
   if (!windows.length) return undefined;
   return { windows, status: windows.some((w) => w.usedPct >= 100) ? "exhausted" : "ok" };
 }
 
 export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
-  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/usage`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: timeoutSignal(10_000, signal) }, 10_000);
-  if (!res.ok) { await res.body?.cancel(); throw new Error(`usage request failed (${res.status})`); }
+  const res = await fetchHeaders(
+    `${CLAUDE.api}/api/oauth/usage`,
+    {
+      headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta },
+      signal: timeoutSignal(10_000, signal),
+    },
+    10_000,
+  );
+  if (!res.ok) {
+    await res.body?.cancel();
+    throw new Error(`usage request failed (${res.status})`);
+  }
   return parseUsage(JSON.parse(new TextDecoder().decode(await readBody(res.body, 256 * 1024, signal))));
 }
 
 /** `email` pre-selects that account on the login page (OAuth login_hint). */
 export function authorizeUrl(challenge: string, state: string, email?: string) {
   const q = new URLSearchParams({
-    code: "true", client_id: CLAUDE.clientId, response_type: "code", redirect_uri: CLAUDE.redirectUri,
-    scope: CLAUDE.scopes, code_challenge: challenge, code_challenge_method: "S256", state, ...(email && { login_hint: email }),
+    code: "true",
+    client_id: CLAUDE.clientId,
+    response_type: "code",
+    redirect_uri: CLAUDE.redirectUri,
+    scope: CLAUDE.scopes,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state,
+    ...(email && { login_hint: email }),
   });
   return `${CLAUDE.authorizeUrl}?${q}`;
 }
@@ -139,7 +202,12 @@ export async function exchange(s: Store, pasted: string, verifier: string, label
   const [code, state] = pasted.trim().split("#");
   if (!code || (expectedState && state !== expectedState)) throw new Error("login state does not match; start again");
   const t = await tokenRequest(CLAUDE.tokenUrl, {
-    grant_type: "authorization_code", code: code!, state: state ?? "", client_id: CLAUDE.clientId, redirect_uri: CLAUDE.redirectUri, code_verifier: verifier,
+    grant_type: "authorization_code",
+    code: code!,
+    state: state ?? "",
+    client_id: CLAUDE.clientId,
+    redirect_uri: CLAUDE.redirectUri,
+    code_verifier: verifier,
   });
   const id = save(s, toTokens(t), { uuid: t.account?.uuid, email: t.account?.email_address }, label);
   await enrich(s, id);
@@ -150,11 +218,27 @@ function save(s: Store, tokens: Tokens, who: { uuid?: string; email?: string; pl
   // Same Claude account logged in twice → same record, fresh tokens.
   const id = `claude-${(who.uuid ?? crypto.randomUUID()).slice(0, 8)}`;
   const prev = s.get("account", id);
-  return saveAccount(s, { ...prev, id, provider: "claude", enabled: prev?.enabled ?? true, priority: prev?.priority ?? 0, label: label ?? prev?.label ?? who.email ?? id, email: who.email, plan: who.plan ?? prev?.plan }, { accountId: id, ...tokens, accountUuid: who.uuid, holder: s.nodeId });
+  return saveAccount(
+    s,
+    {
+      ...prev,
+      id,
+      provider: "claude",
+      enabled: prev?.enabled ?? true,
+      priority: prev?.priority ?? 0,
+      label: label ?? prev?.label ?? who.email ?? id,
+      email: who.email,
+      plan: who.plan ?? prev?.plan,
+    },
+    { accountId: id, ...tokens, accountUuid: who.uuid, holder: s.nodeId },
+  );
 }
 
 async function profile(accessToken: string): Promise<{ uuid?: string; email?: string; plan?: string }> {
-  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/profile`, { headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta }, signal: AbortSignal.timeout(5000) });
+  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/profile`, {
+    headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta },
+    signal: AbortSignal.timeout(5000),
+  });
   if (!res.ok) return {};
   const p = (await res.json()) as any;
   return { uuid: p.account?.uuid, email: p.account?.email, plan: p.organization?.organization_type };
@@ -163,16 +247,22 @@ async function profile(accessToken: string): Promise<{ uuid?: string; email?: st
 async function enrich(s: Store, id: string) {
   const credential = s.get("credential", id);
   if (!credential) return;
-  const who = await profile(credential.accessToken).catch(() => ({} as { uuid?: string; email?: string; plan?: string }));
+  const who = await profile(credential.accessToken).catch(
+    () => ({}) as { uuid?: string; email?: string; plan?: string },
+  );
   s.transaction(() => {
-    const current = s.get("credential", id), account = s.get("account", id);
+    const current = s.get("credential", id),
+      account = s.get("account", id);
     if (!current || !account || current.accessToken !== credential.accessToken) return;
     s.put("credential", id, { ...current, accountUuid: who.uuid ?? current.accountUuid });
     s.put("account", id, { ...account, email: who.email ?? account.email, plan: who.plan ?? account.plan });
   });
 }
 
-const keychainNames = (dir: string) => [`Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`, "Claude Code-credentials"];
+const keychainNames = (dir: string) => [
+  `Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`,
+  "Claude Code-credentials",
+];
 
 /** Take over a Claude Code login from a config dir (`.credentials.json`, or the macOS Keychain). */
 /** Who Claude Code itself is signed in as on this machine. Reads only ~/.claude.json, never the keychain or tokens. */
@@ -180,8 +270,12 @@ export function detect(dir = join(homedir(), ".claude")): { email: string; plan?
   const file = dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
   try {
     const a = JSON.parse(readFileSync(file, "utf8")).oauthAccount;
-    return typeof a?.emailAddress === "string" ? { email: a.emailAddress, plan: typeof a.organizationType === "string" ? a.organizationType : undefined } : undefined;
-  } catch { return undefined; }
+    return typeof a?.emailAddress === "string"
+      ? { email: a.emailAddress, plan: typeof a.organizationType === "string" ? a.organizationType : undefined }
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function importFrom(s: Store, dir: string, label?: string, cleanupKeychain = false) {
@@ -192,7 +286,9 @@ export async function importFrom(s: Store, dir: string, label?: string, cleanupK
   else if (process.platform === "darwin") {
     const isDefault = dir === join(homedir(), ".claude");
     for (const name of isDefault ? keychainNames(dir).slice(1) : keychainNames(dir).slice(0, 1)) {
-      const r = Bun.spawnSync(["security", "find-generic-password", "-a", userInfo().username, "-s", name, "-w"], { timeout: 10000 });
+      const r = Bun.spawnSync(["security", "find-generic-password", "-a", userInfo().username, "-s", name, "-w"], {
+        timeout: 10000,
+      });
       if (r.exitCode === 0) {
         raw = r.stdout.toString().trim();
         if (cleanupKeychain) cleanupName = name;
@@ -214,7 +310,10 @@ export async function importFrom(s: Store, dir: string, label?: string, cleanupK
     }
   }
   const id = save(s, tokens, who, label);
-  if (cleanupName) Bun.spawnSync(["security", "delete-generic-password", "-a", userInfo().username, "-s", cleanupName], { timeout: 10000 });
+  if (cleanupName)
+    Bun.spawnSync(["security", "delete-generic-password", "-a", userInfo().username, "-s", cleanupName], {
+      timeout: 10000,
+    });
   if (!who.uuid) await enrich(s, id);
   return id;
 }
@@ -224,9 +323,14 @@ export async function login(s: Store, label?: string) {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-claude-"));
   let imported = false;
   try {
-    const p = Bun.spawn(["claude", "auth", "login"], { env: { ...process.env, CLAUDE_CONFIG_DIR: dir }, stdio: ["inherit", "inherit", "inherit"] });
+    const p = Bun.spawn(["claude", "auth", "login"], {
+      env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
+      stdio: ["inherit", "inherit", "inherit"],
+    });
     if ((await p.exited) !== 0) throw new Error("claude login failed");
-    const id = await importFrom(s, dir, label, true); imported = true; return id;
+    const id = await importFrom(s, dir, label, true);
+    imported = true;
+    return id;
   } catch (e) {
     throw new Error(`Login was not imported: ${e}. Temporary login retained at ${dir}; retry import from that folder.`);
   } finally {

@@ -15,58 +15,107 @@ const PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 /** Bearer tokens live 30 days with no refresh token; ask for a new pairing a few days ahead. */
 const REPAIR_AHEAD = 3 * 86_400_000;
 
-export class T3Error extends Error { }
+export class T3Error extends Error {}
 /** T3 Code refused a call because agentgate's token lacks a permission. Newer T3 Code splits permissions finer (in
  * October 2026 cloning moved to `source-control:write`) and never widens a token it issued, so only a new pairing helps. */
-export class T3PermissionError extends T3Error { }
+export class T3PermissionError extends T3Error {}
 
-const run = z.object({
-  id: z.string(), status: z.string(), userMessageId: z.string().optional(),
-  ordinal: z.number().optional(), queuePosition: z.number().nullable().optional(),
-}).passthrough();
-const threadShell = z.object({
-  id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
-  branch: z.string().nullable(), worktreePath: z.string().nullable(), status: z.string(),
-  archivedAt: z.string().nullable(), updatedAt: z.string(),
-  /** "settled" moves a thread to T3's Settled section; absent on older servers. */
-  settledOverride: z.enum(["settled", "active"]).nullable().optional(),
-  latestUserMessageAt: z.string().nullable().optional(),
-  activityRunStartedAt: z.string().nullable().optional(),
-  /** Sidebar order (pins and drag order); optional on older servers. */
-  createdAt: z.string(),
-  unsettledAt: z.string().nullable().optional(),
-  pinnedAt: z.string().nullable().optional(),
-  pinOrderKey: z.string().nullable().optional(),
-  activeOrderKey: z.string().nullable().optional(),
-  /** A subagent thread is a delegated child of another thread; T3 nests it under its parent. */
-  lineage: z.object({ relationshipToParent: z.string().nullable().optional() }).passthrough().optional(),
-}).passthrough();
-const projectShell = z.object({
-  id: z.string(), title: z.string(), workspaceRoot: z.string(),
-  scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean() }).passthrough()).default([]),
-  repositoryIdentity: z.object({ canonicalKey: z.string().optional(), displayName: z.string().optional(), name: z.string().optional() }).passthrough().nullable().optional(),
-}).passthrough();
-const shellSchema = z.object({ threads: z.array(threadShell), projects: z.array(projectShell) }).passthrough();
-const projectionSchema = z.object({
-  thread: z.object({
-    id: z.string(), projectId: z.string(), title: z.string(), providerInstanceId: z.string(),
-    modelSelection: z.record(z.string(), z.unknown()), runtimeMode: z.string(), interactionMode: z.string(),
-    branch: z.string().nullable(), worktreePath: z.string().nullable(), activeProviderThreadId: z.string().nullable(), archivedAt: z.string().nullable(),
+const run = z
+  .object({
+    id: z.string(),
+    status: z.string(),
+    userMessageId: z.string().optional(),
+    ordinal: z.number().optional(),
+    queuePosition: z.number().nullable().optional(),
+  })
+  .passthrough();
+const threadShell = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    title: z.string(),
+    providerInstanceId: z.string(),
+    branch: z.string().nullable(),
+    worktreePath: z.string().nullable(),
+    status: z.string(),
+    archivedAt: z.string().nullable(),
+    updatedAt: z.string(),
+    /** "settled" moves a thread to T3's Settled section; absent on older servers. */
     settledOverride: z.enum(["settled", "active"]).nullable().optional(),
-  }).passthrough(),
-  runs: z.array(run),
-  /** Server-made messages (notifications, delegated results) carry `notification` or `delegatedCompletion`. */
-  messages: z.array(z.object({
-    id: z.string(), text: z.string(), attachments: z.array(z.unknown()).default([]),
-    notification: z.unknown().optional(), delegatedCompletion: z.unknown().optional(),
-  }).passthrough()).default([]),
-  providerThreads: z.array(z.object({
-    id: z.string(), driver: z.string(),
-    nativeThreadRef: z.object({ nativeId: z.string().nullable(), strength: z.string() }).nullable(),
-    /** Claude's background commands, monitors and agents, which outlive the turn that started them. */
-    pendingBackgroundTasks: z.array(z.object({ kind: z.string().optional(), description: z.string().optional() }).passthrough()).optional(),
-  }).passthrough()),
-}).passthrough();
+    latestUserMessageAt: z.string().nullable().optional(),
+    activityRunStartedAt: z.string().nullable().optional(),
+    /** Sidebar order (pins and drag order); optional on older servers. */
+    createdAt: z.string(),
+    unsettledAt: z.string().nullable().optional(),
+    pinnedAt: z.string().nullable().optional(),
+    pinOrderKey: z.string().nullable().optional(),
+    activeOrderKey: z.string().nullable().optional(),
+    /** A subagent thread is a delegated child of another thread; T3 nests it under its parent. */
+    lineage: z.object({ relationshipToParent: z.string().nullable().optional() }).passthrough().optional(),
+  })
+  .passthrough();
+const projectShell = z
+  .object({
+    id: z.string(),
+    title: z.string(),
+    workspaceRoot: z.string(),
+    scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean() }).passthrough()).default([]),
+    repositoryIdentity: z
+      .object({ canonicalKey: z.string().optional(), displayName: z.string().optional(), name: z.string().optional() })
+      .passthrough()
+      .nullable()
+      .optional(),
+  })
+  .passthrough();
+const shellSchema = z.object({ threads: z.array(threadShell), projects: z.array(projectShell) }).passthrough();
+const projectionSchema = z
+  .object({
+    thread: z
+      .object({
+        id: z.string(),
+        projectId: z.string(),
+        title: z.string(),
+        providerInstanceId: z.string(),
+        modelSelection: z.record(z.string(), z.unknown()),
+        runtimeMode: z.string(),
+        interactionMode: z.string(),
+        branch: z.string().nullable(),
+        worktreePath: z.string().nullable(),
+        activeProviderThreadId: z.string().nullable(),
+        archivedAt: z.string().nullable(),
+        settledOverride: z.enum(["settled", "active"]).nullable().optional(),
+      })
+      .passthrough(),
+    runs: z.array(run),
+    /** Server-made messages (notifications, delegated results) carry `notification` or `delegatedCompletion`. */
+    messages: z
+      .array(
+        z
+          .object({
+            id: z.string(),
+            text: z.string(),
+            attachments: z.array(z.unknown()).default([]),
+            notification: z.unknown().optional(),
+            delegatedCompletion: z.unknown().optional(),
+          })
+          .passthrough(),
+      )
+      .default([]),
+    providerThreads: z.array(
+      z
+        .object({
+          id: z.string(),
+          driver: z.string(),
+          nativeThreadRef: z.object({ nativeId: z.string().nullable(), strength: z.string() }).nullable(),
+          /** Claude's background commands, monitors and agents, which outlive the turn that started them. */
+          pendingBackgroundTasks: z
+            .array(z.object({ kind: z.string().optional(), description: z.string().optional() }).passthrough())
+            .optional(),
+        })
+        .passthrough(),
+    ),
+  })
+  .passthrough();
 export type Call = <T = unknown>(method: string, payload: unknown) => Promise<T>;
 
 /** Run states that still hold the thread. */
@@ -74,20 +123,29 @@ export const ACTIVE = new Set(["preparing", "starting", "running", "waiting"]);
 export const TERMINAL = new Set(["completed", "interrupted", "failed", "cancelled", "rolled_back"]);
 
 export class T3 {
-  constructor(readonly url: string, private token: string, readonly node: string) { }
+  constructor(
+    readonly url: string,
+    private token: string,
+    readonly node: string,
+  ) {}
 
   private async request(path: string, init: RequestInit = {}): Promise<unknown> {
     const signal = AbortSignal.timeout(30_000);
     const res = await fetchHeaders(`${this.url}${path}`, {
-      ...init, signal, redirect: "manual",
+      ...init,
+      signal,
+      redirect: "manual",
       headers: { authorization: `Bearer ${this.token}`, [PROTOCOL_HEADER]: String(T3_PROTOCOL), ...init.headers },
-    }).catch(() => { throw new T3Error(`T3 Code on ${this.node} is not reachable at ${this.url}`); });
+    }).catch(() => {
+      throw new T3Error(`T3 Code on ${this.node} is not reachable at ${this.url}`);
+    });
     const text = new TextDecoder().decode(await readBody(res.body, 64 * 1024 * 1024, signal));
 
     if (res.status === 426 || text.includes("orchestration_protocol_incompatible")) {
       throw new T3Error(`T3 Code on ${this.node} uses a newer protocol; update agentgate`);
     }
-    if (res.status === 401 || res.status === 403) throw new T3Error(`T3 Code on ${this.node} rejected agentgate's token; pair it again`);
+    if (res.status === 401 || res.status === 403)
+      throw new T3Error(`T3 Code on ${this.node} rejected agentgate's token; pair it again`);
     if (!res.ok) throw new T3Error(`T3 Code on ${this.node} answered ${res.status} for ${path}`);
     try {
       return JSON.parse(text);
@@ -102,7 +160,9 @@ export class T3 {
 
   /** One short-lived WebSocket for a batch of RPC calls. */
   async rpc<T>(fn: (call: Call) => Promise<T>): Promise<T> {
-    const { ticket } = z.object({ ticket: z.string() }).parse(await this.request("/api/auth/websocket-ticket", { method: "POST" }));
+    const { ticket } = z
+      .object({ ticket: z.string() })
+      .parse(await this.request("/api/auth/websocket-ticket", { method: "POST" }));
     const query = new URLSearchParams({ wsTicket: ticket, orchestrationProtocol: String(T3_PROTOCOL) });
     const ws = new WebSocket(`${this.url.replace(/^http/, "ws")}/ws?${query}`);
     const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -145,18 +205,25 @@ export class T3 {
       };
 
       let next = 0;
-      const call: Call = <R>(method: string, payload: unknown) => new Promise<R>((resolve, reject) => {
-        const id = String(++next);
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new T3Error(`T3 Code on ${this.node} did not answer ${method}`));
-        }, 120_000);
-        pending.set(id, {
-          resolve: (v) => { clearTimeout(timer); resolve(v as R); },
-          reject: (e) => { clearTimeout(timer); reject(e); },
+      const call: Call = <R>(method: string, payload: unknown) =>
+        new Promise<R>((resolve, reject) => {
+          const id = String(++next);
+          const timer = setTimeout(() => {
+            pending.delete(id);
+            reject(new T3Error(`T3 Code on ${this.node} did not answer ${method}`));
+          }, 120_000);
+          pending.set(id, {
+            resolve: (v) => {
+              clearTimeout(timer);
+              resolve(v as R);
+            },
+            reject: (e) => {
+              clearTimeout(timer);
+              reject(e);
+            },
+          });
+          ws.send(JSON.stringify({ _tag: "Request", id, tag: method, payload, headers: [] }));
         });
-        ws.send(JSON.stringify({ _tag: "Request", id, tag: method, payload, headers: [] }));
-      });
       return await fn(call);
     } finally {
       ws.close();
@@ -170,7 +237,9 @@ function failure(node: string, cause: unknown) {
     .find((e) => e?._tag === "EnvironmentAuthorizationError");
   if (denied) {
     const permission = String(denied.requiredPermission ?? denied.requiredScope);
-    return new T3PermissionError(`T3 Code on ${node} has not given agentgate the ${permission} permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on ${node}`);
+    return new T3PermissionError(
+      `T3 Code on ${node} has not given agentgate the ${permission} permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on ${node}`,
+    );
   }
   return new T3Error(`T3 Code on ${node}: ${causeText(cause)}`);
 }
@@ -200,7 +269,8 @@ export const connectInput = z.union([
   z.object({ create: z.literal(true) }).strict(),
 ]);
 export async function connectWith(s: Store, input: z.infer<typeof connectInput>) {
-  if ("create" in input) return connectT3(s, parsePairing((await createPairingLink(s, { label: `agentgate ${s.nodeId}` })).url));
+  if ("create" in input)
+    return connectT3(s, parsePairing((await createPairingLink(s, { label: `agentgate ${s.nodeId}` })).url));
   return connectT3(s, "pairingUrl" in input ? parsePairing(input.pairingUrl) : input);
 }
 
@@ -215,17 +285,41 @@ export const pairingLinkInput = z.object({ tailscale: z.boolean().optional() }).
  * straight into T3's own state: no token of ours is needed, so it also works when agentgate's token expired. With
  * `tailscale`, T3 Code publishes itself over Tailscale Serve (a lasting change T3 reports in the notes) so the link
  * works from other machines. */
-export async function createPairingLink(s: Store, options: { label?: string; tailscale?: boolean } = {}): Promise<T3PairingLink> {
+export async function createPairingLink(
+  s: Store,
+  options: { label?: string; tailscale?: boolean } = {},
+): Promise<T3PairingLink> {
   const bin = host.t3();
-  if (!bin) throw new T3Error(`T3 Code's t3 command is not installed on ${s.nodeId}; open T3 Code there once, or create a pairing link in its Settings → Connections`);
-  const child = Bun.spawn([bin, "pair", "--log-level", "error", ...options.label ? ["--label", options.label] : [], ...options.tailscale ? ["--tailscale"] : []], {
-    stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60_000,
-  });
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  if (!bin)
+    throw new T3Error(
+      `T3 Code's t3 command is not installed on ${s.nodeId}; open T3 Code there once, or create a pairing link in its Settings → Connections`,
+    );
+  const child = Bun.spawn(
+    [
+      bin,
+      "pair",
+      "--log-level",
+      "error",
+      ...(options.label ? ["--label", options.label] : []),
+      ...(options.tailscale ? ["--tailscale"] : []),
+    ],
+    {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 60_000,
+    },
+  );
+  const [out, err, code] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
   const line = (key: string) => out.match(new RegExp(`^${key}: (.+)$`, "m"))?.[1]?.trim();
   const url = line("Pairing URL");
   // stdout holds the token; only stderr may go into an error.
-  if (code !== 0 || !url) throw new T3Error(`t3 pair failed on ${s.nodeId}: ${err.trim().split("\n").at(-1) || `exit ${code}`}`);
+  if (code !== 0 || !url)
+    throw new T3Error(`t3 pair failed on ${s.nodeId}: ${err.trim().split("\n").at(-1) || `exit ${code}`}`);
   return { url, expiresAt: line("Expires"), notes: [...out.matchAll(/^Note: (.+)$/gm)].map((m) => m[1]!.trim()) };
 }
 
@@ -248,7 +342,10 @@ export function parsePairing(link: string): { url: string; token: string } {
 function loopback(link: string): string {
   const u = new URL(link);
   if (["127.0.0.1", "localhost", "[::1]"].includes(u.hostname)) return u.origin;
-  if (u.protocol !== "http:" || !u.port) throw new T3Error("connect agentgate to the T3 Code server on this machine: use its pairing link, or --url http://127.0.0.1:<port>");
+  if (u.protocol !== "http:" || !u.port)
+    throw new T3Error(
+      "connect agentgate to the T3 Code server on this machine: use its pairing link, or --url http://127.0.0.1:<port>",
+    );
   return `http://127.0.0.1:${u.port}`;
 }
 
@@ -257,7 +354,8 @@ export async function connectT3(s: Store, input: { url: string; token: string })
   const url = loopback(input.url);
 
   const res = await fetchHeaders(`${url}/oauth/token`, {
-    method: "POST", signal: AbortSignal.timeout(15_000),
+    method: "POST",
+    signal: AbortSignal.timeout(15_000),
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -266,14 +364,27 @@ export async function connectT3(s: Store, input: { url: string; token: string })
       requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
       client_label: `agentgate ${s.nodeId}`,
     }),
-  }).catch(() => { throw new T3Error(`T3 Code is not reachable at ${url}`); });
+  }).catch(() => {
+    throw new T3Error(`T3 Code is not reachable at ${url}`);
+  });
   const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(15_000)));
-  if (res.status === 400 || res.status === 401) throw new T3Error("T3 Code rejected the pairing token; it is single-use and expires, so create a new pairing link");
+  if (res.status === 400 || res.status === 401)
+    throw new T3Error("T3 Code rejected the pairing token; it is single-use and expires, so create a new pairing link");
   if (!res.ok) throw new T3Error(`T3 Code answered ${res.status} to the pairing`);
 
-  const token = z.object({ access_token: z.string().min(1), expires_in: z.number().positive() }).parse(JSON.parse(text));
-  const label = await fetchHeaders(`${url}/.well-known/t3/environment`, { signal: AbortSignal.timeout(5000) })
-    .then(async (r) => r.ok ? z.object({ label: z.string() }).passthrough().parse(await r.json()).label : undefined, () => undefined);
+  const token = z
+    .object({ access_token: z.string().min(1), expires_in: z.number().positive() })
+    .parse(JSON.parse(text));
+  const label = await fetchHeaders(`${url}/.well-known/t3/environment`, { signal: AbortSignal.timeout(5000) }).then(
+    async (r) =>
+      r.ok
+        ? z
+            .object({ label: z.string() })
+            .passthrough()
+            .parse(await r.json()).label
+        : undefined,
+    () => undefined,
+  );
   s.transaction(() => {
     s.setLocal("t3:url", url);
     s.setLocal("t3:token", token.access_token);
@@ -297,7 +408,14 @@ export function t3State(s: Store): T3NodeState {
   if (!url || !s.local("t3:token")) return { connected: false };
   const expiresAt = Number(s.local("t3:expiresAt") ?? 0);
   const projectSyncError = s.local("t3:projectSyncError");
-  return { connected: s.now() < expiresAt, url, label: s.local("t3:label"), expiresAt, repair: s.now() > expiresAt - REPAIR_AHEAD, ...(projectSyncError && { projectSyncError }) };
+  return {
+    connected: s.now() < expiresAt,
+    url,
+    label: s.local("t3:label"),
+    expiresAt,
+    repair: s.now() > expiresAt - REPAIR_AHEAD,
+    ...(projectSyncError && { projectSyncError }),
+  };
 }
 
 /** This node's T3 client, or an error that says how to connect. */
@@ -321,21 +439,32 @@ function real(path: string) {
  * default instance `claudeAgent`. The home is `homePath`, a CLAUDE_CONFIG_DIR environment variable, or else Claude's
  * default home (`defaultHome`, normally ~/.claude). */
 export async function claudeHomes(call: Call, defaultHome: string): Promise<[string, string][]> {
-  const instance = z.object({
-    driver: z.string(),
-    config: z.object({ homePath: z.string().optional() }).passthrough().optional(),
-    environment: z.array(z.object({ name: z.string(), value: z.string().optional() })).optional(),
-  }).passthrough();
-  const settings = z.object({
-    providerInstances: z.record(z.string(), instance).optional(),
-    providers: z.object({ claudeAgent: z.object({ homePath: z.string().optional() }).passthrough().optional() }).passthrough().optional(),
-  }).passthrough();
-  const config = z.object({ settings }).passthrough().parse(await call("server.getConfig", {}));
+  const instance = z
+    .object({
+      driver: z.string(),
+      config: z.object({ homePath: z.string().optional() }).passthrough().optional(),
+      environment: z.array(z.object({ name: z.string(), value: z.string().optional() })).optional(),
+    })
+    .passthrough();
+  const settings = z
+    .object({
+      providerInstances: z.record(z.string(), instance).optional(),
+      providers: z
+        .object({ claudeAgent: z.object({ homePath: z.string().optional() }).passthrough().optional() })
+        .passthrough()
+        .optional(),
+    })
+    .passthrough();
+  const config = z
+    .object({ settings })
+    .passthrough()
+    .parse(await call("server.getConfig", {}));
 
   const homes: [string, string | undefined][] = Object.entries(config.settings.providerInstances ?? {})
     .filter(([, i]) => i.driver === "claudeAgent")
     .map(([id, i]) => [id, i.config?.homePath || i.environment?.find((v) => v.name === "CLAUDE_CONFIG_DIR")?.value]);
-  if (!homes.some(([id]) => id === "claudeAgent")) homes.push(["claudeAgent", config.settings.providers?.claudeAgent?.homePath]);
+  if (!homes.some(([id]) => id === "claudeAgent"))
+    homes.push(["claudeAgent", config.settings.providers?.claudeAgent?.homePath]);
   return homes.map(([id, home]) => [id, real(home || defaultHome)]);
 }
 

@@ -16,17 +16,28 @@ const id = z.string().min(1).max(64);
 const headers = z.record(z.string().max(64), z.string().max(1024));
 
 /** relay → node */
-export const remoteRequestFrame = z.object({ t: z.literal("req"), id, headers, body: z.string().max(REMOTE_LIMITS.requestBytes) }).strict();
+export const remoteRequestFrame = z
+  .object({ t: z.literal("req"), id, headers, body: z.string().max(REMOTE_LIMITS.requestBytes) })
+  .strict();
 export const remoteCancelFrame = z.object({ t: z.literal("cancel"), id }).strict();
 export const relayFrame = z.discriminatedUnion("t", [remoteRequestFrame, remoteCancelFrame]);
 
 /** node → relay. `retry` means the node did not start the request (it was at capacity). */
-export const remoteResponseFrame = z.object({
-  t: z.literal("res"), id, status: z.number().int().min(100).max(599), headers, body: z.string().max(REMOTE_LIMITS.responseBytes), retry: z.boolean().optional(),
-}).strict();
+export const remoteResponseFrame = z
+  .object({
+    t: z.literal("res"),
+    id,
+    status: z.number().int().min(100).max(599),
+    headers,
+    body: z.string().max(REMOTE_LIMITS.responseBytes),
+    retry: z.boolean().optional(),
+  })
+  .strict();
 export type RemoteResponseFrame = z.infer<typeof remoteResponseFrame>;
 
 /** `PUT /e/:key`: the serving node sets the hashes the relay checks. */
-export const endpointUpdate = z.object({ secretHash: z.string().regex(/^[0-9a-f]{64}$/), enabled: z.boolean() }).strict();
+export const endpointUpdate = z
+  .object({ secretHash: z.string().regex(/^[0-9a-f]{64}$/), enabled: z.boolean() })
+  .strict();
 
 export { sha256Hex } from "hanzio/crypto";

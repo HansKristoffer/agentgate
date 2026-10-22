@@ -30,11 +30,16 @@ const server = Bun.serve({
         return Response.json({ resource: `${base}/mcp`, authorization_servers: [base] });
       case "/.well-known/oauth-authorization-server":
         return Response.json({
-          issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token`, registration_endpoint: `${base}/register`,
-          response_types_supported: ["code"], code_challenge_methods_supported: ["S256"], grant_types_supported: ["authorization_code", "refresh_token"],
+          issuer: base,
+          authorization_endpoint: `${base}/authorize`,
+          token_endpoint: `${base}/token`,
+          registration_endpoint: `${base}/register`,
+          response_types_supported: ["code"],
+          code_challenge_methods_supported: ["S256"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
         });
       case "/register":
-        return Response.json({ ...(await req.json() as object), client_id: "client-1" }, { status: 201 });
+        return Response.json({ ...((await req.json()) as object), client_id: "client-1" }, { status: 201 });
       case "/authorize": {
         // The user "logs in" at once and is sent back with a code.
         const code = `code-${++n}`;
@@ -52,14 +57,23 @@ const server = Bun.serve({
           const got = createHash("sha256").update(f.get("code_verifier")!).digest("base64url");
           return want === got ? issue() : Response.json({ error: "invalid_grant" }, { status: 400 });
         }
-        return refresh.delete(f.get("refresh_token")!) ? issue() : Response.json({ error: "invalid_grant" }, { status: 400 });
+        return refresh.delete(f.get("refresh_token")!)
+          ? issue()
+          : Response.json({ error: "invalid_grant" }, { status: 400 });
       }
       case "/mcp": {
         const token = req.headers.get("authorization")?.replace("Bearer ", "");
         if (!token || !access.has(token))
-          return new Response("unauthorized", { status: 401, headers: { "www-authenticate": `Bearer error="invalid_token", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` } });
+          return new Response("unauthorized", {
+            status: 401,
+            headers: {
+              "www-authenticate": `Bearer error="invalid_token", resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`,
+            },
+          });
         const mcp = new McpServer({ name: "fake", version: "0" });
-        mcp.registerTool("whoami", { description: "who" }, async () => ({ content: [{ type: "text", text: `token ${token}` }] }));
+        mcp.registerTool("whoami", { description: "who" }, async () => ({
+          content: [{ type: "text", text: `token ${token}` }],
+        }));
         const t = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
         await mcp.connect(t);
         return t.handleRequest(req);
@@ -83,7 +97,12 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
 
   // Without a login the connect fails with something the UI treats as "needs login".
-  expect(await connect(s.get("mcp", "fake")!, undefined, s).then(() => "ok", (e) => needsLogin(e))).toBe(true);
+  expect(
+    await connect(s.get("mcp", "fake")!, undefined, s).then(
+      () => "ok",
+      (e) => needsLogin(e),
+    ),
+  ).toBe(true);
   expect(serverHealth(s, "fake")).toMatchObject({ ok: false, needsLogin: true });
 
   const authUrl = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback");
@@ -112,7 +131,10 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
 });
 
 test("headers parse from lines or pairs; ids and URLs are validated", () => {
-  expect(parseHeaders("x-posthog-project-id: 12345\nAuthorization: Bearer a:b")).toEqual({ "x-posthog-project-id": "12345", Authorization: "Bearer a:b" });
+  expect(parseHeaders("x-posthog-project-id: 12345\nAuthorization: Bearer a:b")).toEqual({
+    "x-posthog-project-id": "12345",
+    Authorization: "Bearer a:b",
+  });
   expect(parseHeaders(["x=1"])).toEqual({ x: "1" });
   expect(() => newInstance({ id: "bad name", url: "https://x.dev" })).toThrow();
   expect(() => newInstance({ id: "ok", url: "http://example.com/mcp" })).toThrow();
@@ -120,45 +142,82 @@ test("headers parse from lines or pairs; ids and URLs are validated", () => {
 });
 
 test("MCP refresh uses holder coordination and concurrent callers rotate once", async () => {
-  const holder = new Store(":memory:"); holder.setLocal("node", "holder"); holder.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
-  const url = await startLogin(holder, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
+  const holder = new Store(":memory:");
+  holder.setLocal("node", "holder");
+  holder.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(holder, "fake", "http://localhost/oauth/callback");
+  const response = await fetch(url!, { redirect: "manual" });
+  const back = new URL(response.headers.get("location")!);
   await finishLogin(holder, back.searchParams.get("state")!, back.searchParams.get("code")!);
-  const remote = new Store(":memory:"); remote.setLocal("node", "remote"); for (const r of holder.changes(0).records) remote.merge(r);
+  const remote = new Store(":memory:");
+  remote.setLocal("node", "remote");
+  for (const r of holder.changes(0).records) remote.merge(r);
   remote.db.run("insert into peers values ('holder', 'http://127.0.0.1:1', 'fake', 0, ?)", [remote.now()]);
-  const { refreshMcp } = await import("../src/mcp/oauth.ts"); const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;
-  await expect(refreshMcp(remote, "fake", true)).rejects.toThrow("holder"); expect(remote.get("mcpCredential", "fake")?.tokens?.access_token).toBe(first);
+  const { refreshMcp } = await import("../src/mcp/oauth.ts");
+  const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;
+  await expect(refreshMcp(remote, "fake", true)).rejects.toThrow("holder");
+  expect(remote.get("mcpCredential", "fake")?.tokens?.access_token).toBe(first);
   expect(remote.get("refreshRequest", "mcpCredential:fake")).toBeDefined();
-  const [a, b] = await Promise.all([refreshMcp(holder, "fake", true), refreshMcp(holder, "fake", true)]); expect(a.tokens?.access_token).toBe(b.tokens?.access_token); expect(a.tokens?.access_token).not.toBe(first);
-  holder.close(); remote.close();
+  const [a, b] = await Promise.all([refreshMcp(holder, "fake", true), refreshMcp(holder, "fake", true)]);
+  expect(a.tokens?.access_token).toBe(b.tokens?.access_token);
+  expect(a.tokens?.access_token).not.toBe(first);
+  holder.close();
+  remote.close();
 });
 
 test("an MCP token endpoint that is briefly down keeps the valid token instead of asking for a login", async () => {
-  const s = new Store(":memory:"); s.setLocal("node", "n"); s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
-  const url = await startLogin(s, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(s, "fake", "http://localhost/oauth/callback");
+  const response = await fetch(url!, { redirect: "manual" });
+  const back = new URL(response.headers.get("location")!);
   await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!);
-  const { refreshMcp } = await import("../src/mcp/oauth.ts"); const current = s.get("mcpCredential", "fake")!;
+  const { refreshMcp } = await import("../src/mcp/oauth.ts");
+  const current = s.get("mcpCredential", "fake")!;
   s.put("mcpCredential", "fake", { ...current, expiresAt: s.now() + 60_000 }); // close to expiry, so it refreshes
   tokenEndpointDown = true;
-  try { expect((await refreshMcp(s, "fake")).tokens?.access_token).toBe(current.tokens!.access_token); }
-  finally { tokenEndpointDown = false; }
+  try {
+    expect((await refreshMcp(s, "fake")).tokens?.access_token).toBe(current.tokens!.access_token);
+  } finally {
+    tokenEndpointDown = false;
+  }
   expect(s.get("mcpCredential", "fake")!.needsLogin).toBeFalsy();
   expect(s.local("refreshError:mcpCredential:fake")).toBeDefined();
   s.close();
 });
 
 test("expired MCP OAuth state is refused before token exchange", async () => {
-  const s = new Store(":memory:"); s.setLocal("node", "n"); s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
-  const url = await startLogin(s, "fake", "http://localhost/oauth/callback"); const response = await fetch(url!, { redirect: "manual" }); const back = new URL(response.headers.get("location")!);
-  s.now = () => Date.now() + 11 * 60000; await expect(finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!)).rejects.toThrow("expired"); expect(s.get("mcpCredential", "fake")?.tokens).toBeUndefined(); s.close();
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const url = await startLogin(s, "fake", "http://localhost/oauth/callback");
+  const response = await fetch(url!, { redirect: "manual" });
+  const back = new URL(response.headers.get("location")!);
+  s.now = () => Date.now() + 11 * 60000;
+  await expect(finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!)).rejects.toThrow(
+    "expired",
+  );
+  expect(s.get("mcpCredential", "fake")?.tokens).toBeUndefined();
+  s.close();
 });
 
 test("tailnet OAuth callback completes with one-time state without an admin bearer token", async () => {
   const { app, makeCtx } = await import("../src/daemon.ts");
-  const s = new Store(":memory:"); s.setLocal("node", "tailnet"); s.setLocal("adminToken", "admin-token");
-  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` })); const ctx = makeCtx(s);
+  const s = new Store(":memory:");
+  s.setLocal("node", "tailnet");
+  s.setLocal("adminToken", "admin-token");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const ctx = makeCtx(s);
   try {
-    const url = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback"); const response = await fetch(url!, { redirect: "manual" });
+    const url = await startLogin(s, "fake", "http://127.0.0.1:7878/oauth/callback");
+    const response = await fetch(url!, { redirect: "manual" });
     const result = await app(ctx).fetch(new Request(response.headers.get("location")!), { listener: "tailnet" });
-    expect(result.status).toBe(200); expect(s.get("mcpCredential", "fake")?.tokens?.access_token).toBeDefined(); expect(await result.text()).toContain("Logged in");
-  } finally { await ctx.gateway.close(); s.close(); }
+    expect(result.status).toBe(200);
+    expect(s.get("mcpCredential", "fake")?.tokens?.access_token).toBeDefined();
+    expect(await result.text()).toContain("Logged in");
+  } finally {
+    await ctx.gateway.close();
+    s.close();
+  }
 });

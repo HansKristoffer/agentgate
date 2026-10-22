@@ -9,10 +9,7 @@ export const modelIdSchema = z
   .trim()
   .min(1)
   .max(128)
-  .regex(
-    /^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/,
-    "Use a model identifier, not a URL or arbitrary text",
-  )
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$/, "Use a model identifier, not a URL or arbitrary text")
   .refine((value) => !value.includes("://"), "URLs are not model identifiers");
 export const modelPolicySchema = z
   .object({
@@ -89,15 +86,10 @@ export function normalizeQuotaWindow(window: QuotaWindow): QuotaWindow {
   return {
     ...window,
     durationMs: window.durationMs ?? durationMs,
-    scope:
-      window.scope ??
-      (family ? { kind: "family", family } : { kind: "account" }),
+    scope: window.scope ?? (family ? { kind: "family", family } : { kind: "account" }),
   };
 }
-export function matchesQuotaWindow(
-  window: QuotaWindow,
-  model?: string,
-): boolean {
+export function matchesQuotaWindow(window: QuotaWindow, model?: string): boolean {
   return typedSwitch(normalizeQuotaWindow(window).scope!, "kind", {
     account: () => true,
     model: (scope) => model === scope.model,
@@ -138,13 +130,7 @@ export const capabilitiesSchema = z.object({
   probe: z.boolean(),
 });
 export type ProviderCapabilities = z.infer<typeof capabilitiesSchema>;
-export const requestOutcomeSchema = z.enum([
-  "pending",
-  "success",
-  "failed",
-  "interrupted",
-  "cancelled",
-]);
+export const requestOutcomeSchema = z.enum(["pending", "success", "failed", "interrupted", "cancelled"]);
 export const proxyRequestSchema = z.object({
   id: z.string(),
   at: z.number(),
@@ -161,15 +147,7 @@ export const proxyRequestSchema = z.object({
   firstByteMs: z.number().optional(),
   durationMs: z.number().optional(),
   stream: z
-    .enum([
-      "none",
-      "eof",
-      "completed",
-      "provider-error",
-      "idle-timeout",
-      "upstream-error",
-      "cancelled",
-    ])
+    .enum(["none", "eof", "completed", "provider-error", "idle-timeout", "upstream-error", "cancelled"])
     .optional(),
 });
 export type ProxyRequest = z.infer<typeof proxyRequestSchema>;

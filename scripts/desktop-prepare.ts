@@ -14,8 +14,7 @@ const targets: Record<string, string> = {
   "aarch64-unknown-linux-gnu": "linux-arm64",
 };
 const universal = target === "universal-apple-darwin";
-if (!target || (!universal && !targets[target]))
-  throw new Error(`Unsupported Agentgate daemon target: ${target}`);
+if (!target || (!universal && !targets[target])) throw new Error(`Unsupported Agentgate daemon target: ${target}`);
 const dir = resolve(root, "apps/desktop/src-tauri/binaries");
 mkdirSync(dir, { recursive: true });
 

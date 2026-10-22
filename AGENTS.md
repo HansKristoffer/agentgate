@@ -72,6 +72,7 @@ An empty store is a bad test. With your dev daemon stopped, run `bun run seed-de
 ## Verifying
 
 - Use the smallest proof that the change works: `bun test apps/agentgate/test/<file>.test.ts` for the tests you touched, and `bun run --filter <workspace> typecheck` for the workspace you changed.
+- Format what you changed with `bun fmt --no-script <files>` (or `bun run fmt` for the repo). CI fails on unformatted files.
 - **Do not run repo-wide checks** (`bun test` for everything, `bun run typecheck`, `bun run build`, `build:desktop`) unless asked. CI owns the full suite.
 - Daemon behavior changes ship with focused tests for that behavior. Test meaningful logic and observable behavior, not wiring or a mirror of the implementation.
 - Fake time through `store.now`, and stub processes and files through the seams modules already export (`host`, `files`). Prefer awaiting the event that marks a milestone over sleeping; a new test that needs a generous timeout to pass is usually wrong.

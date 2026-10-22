@@ -10,15 +10,7 @@ import {
 } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
-import {
-  Badge,
-  Changes,
-  Choice,
-  Field,
-  NumberInput,
-  Panel,
-  Toggle,
-} from "../../components/ui.tsx";
+import { Badge, Changes, Choice, Field, NumberInput, Panel, Toggle } from "../../components/ui.tsx";
 import { providerIcon, providerName } from "../../views/utils.ts";
 import { ModelAliases } from "./ModelAliases.tsx";
 import { useGeneration } from "./useGeneration.ts";
@@ -60,9 +52,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
       return;
     }
     const changed = Object.entries(result.data).filter(
-      ([key, value]) =>
-        JSON.stringify(value) !==
-        JSON.stringify(base.settings[key as keyof Settings]),
+      ([key, value]) => JSON.stringify(value) !== JSON.stringify(base.settings[key as keyof Settings]),
     );
     setPreview(settingsPatchSchema.parse(Object.fromEntries(changed)));
     setError("");
@@ -70,12 +60,10 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
   const saveChanges = () =>
     perform(async () => {
       const current = capture();
-      const { revision, ...settings } = await request<SettingsUpdateResult>(
-        connection,
-        "/settings",
-        "PATCH",
-        { revision: base.revision, patch: preview },
-      );
+      const { revision, ...settings } = await request<SettingsUpdateResult>(connection, "/settings", "PATCH", {
+        revision: base.revision,
+        patch: preview,
+      });
       if (!current()) return;
       setBase({ settings, revision });
       setDraft(settings);
@@ -90,15 +78,11 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
     });
     void perform(async () => {
       const current = capture();
-      const result = await request<RouteExplanation>(
-        connection,
-        `/proxy/route?${query}`,
-      );
+      const result = await request<RouteExplanation>(connection, `/proxy/route?${query}`);
       if (current()) setExplanation(result);
     });
   };
-  const label = (id?: string) =>
-    data.accounts.find((a) => a.account.id === id)?.account.label ?? id;
+  const label = (id?: string) => data.accounts.find((a) => a.account.id === id)?.account.label ?? id;
   return (
     <>
       <Panel
@@ -112,18 +96,14 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
         {data.daemon &&
           typedKeys(data.daemon.providers).map((provider) => (
             <div className="item" key={provider}>
-              <div className={`provider-icon ${provider}`}>
-                {providerIcon(provider)}
-              </div>
+              <div className={`provider-icon ${provider}`}>{providerIcon(provider)}</div>
               <strong className="grow">{providerName(provider)}</strong>
               <div className="row wrap">
-                {Object.entries(data.daemon!.providers[provider]).map(
-                  ([name, supported]) => (
-                    <Badge key={name} good={supported}>
-                      {supported ? name : `${name} unsupported`}
-                    </Badge>
-                  ),
-                )}
+                {Object.entries(data.daemon!.providers[provider]).map(([name, supported]) => (
+                  <Badge key={name} good={supported}>
+                    {supported ? name : `${name} unsupported`}
+                  </Badge>
+                ))}
               </div>
             </div>
           ))}
@@ -136,9 +116,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
           <div className="item" role="status">
             <span className="grow">
               <strong>Settings changed elsewhere</strong>
-              <small>
-                Your draft is preserved. Reload to review the latest settings.
-              </small>
+              <small>Your draft is preserved. Reload to review the latest settings.</small>
             </span>
             <Button variant="tertiary" size="sm" onPress={reload}>
               Reload
@@ -150,9 +128,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             className="item"
             label="Selection strategy"
             value={draft.strategy}
-            onChange={(v) =>
-              change("strategy", String(v) as Settings["strategy"])
-            }
+            onChange={(v) => change("strategy", String(v) as Settings["strategy"])}
             options={[
               {
                 id: "automatic",
@@ -166,9 +142,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             className="item"
             label="When capacity is exhausted"
             value={draft.whenExhausted}
-            onChange={(v) =>
-              change("whenExhausted", String(v) as Settings["whenExhausted"])
-            }
+            onChange={(v) => change("whenExhausted", String(v) as Settings["whenExhausted"])}
             options={[
               { id: "fail", label: "Return a retry time" },
               { id: "wait", label: "Wait within the startup budget" },
@@ -197,10 +171,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             isSelected={draft.codexQuotaPolling}
             onChange={(v) => change("codexQuotaPolling", v)}
           />
-          <ModelAliases
-            aliases={draft.aliases}
-            change={(rows) => change("aliases", rows)}
-          />
+          <ModelAliases aliases={draft.aliases} change={(rows) => change("aliases", rows)} />
           {error && (
             <div className="item danger" role="alert">
               {error}
@@ -227,11 +198,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
                     JSON.stringify(value),
                   ])}
                 />
-                <Button
-                  size="sm"
-                  className="self-end"
-                  onPress={() => void saveChanges()}
-                >
+                <Button size="sm" className="self-end" onPress={() => void saveChanges()}>
                   Save reviewed changes
                 </Button>
               </>
@@ -241,10 +208,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
           </div>
         )}
       </Panel>
-      <Panel
-        title="Explain routing"
-        detail={`Inspect the current policy on ${data.node} without sending inference.`}
-      >
+      <Panel title="Explain routing" detail={`Inspect the current policy on ${data.node} without sending inference.`}>
         <form onSubmit={explainRouting}>
           <Choice
             className="item"
@@ -275,13 +239,10 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             <div className="item">
               <span className="grow">
                 <strong>
-                  {explanation.account
-                    ? `Routes to ${label(explanation.account)}`
-                    : "No account selected"}
+                  {explanation.account ? `Routes to ${label(explanation.account)}` : "No account selected"}
                 </strong>
                 <small>
-                  {explanation.routedModel || "Any model"} ·{" "}
-                  {explanation.reason}
+                  {explanation.routedModel || "Any model"} · {explanation.reason}
                 </small>
               </span>
             </div>
@@ -289,13 +250,9 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
               <div className="item" key={c.id}>
                 <span className="grow">
                   <strong>{label(c.id)}</strong>
-                  <small>
-                    {[...(c.eligible ? [] : c.reasons), `${c.inFlight} in flight`].join(" · ")}
-                  </small>
+                  <small>{[...(c.eligible ? [] : c.reasons), `${c.inFlight} in flight`].join(" · ")}</small>
                 </span>
-                <Badge good={c.eligible}>
-                  {c.eligible ? "Eligible" : "Skipped"}
-                </Badge>
+                <Badge good={c.eligible}>{c.eligible ? "Eligible" : "Skipped"}</Badge>
               </div>
             ))}
           </>

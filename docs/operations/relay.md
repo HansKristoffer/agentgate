@@ -35,15 +35,15 @@ agentgate pair --relay --relay-url https://agentgate-relay.<account>.workers.dev
 
 Settings are `[vars]` in `apps/relay/wrangler.toml`:
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RELAY_MAX_GROUPS` | 1000 | Live groups in total (reserved atomically on creation) |
-| `RELAY_GROUP_MAX_BYTES` | 52428800 | Storage per group |
-| `RELAY_RETENTION_DAYS` | 180 | Delete a group after this long without an authenticated request |
-| `RELAY_GROUPS_PER_IP_PER_DAY` | 5 | New groups per source address per day |
-| `RELAY_GROUP_REQUESTS_PER_MINUTE` | 600 | Requests per group |
-| `RELAY_FAILED_AUTH_PER_MINUTE` | 20 | Failed authentications per group |
-| `RELAY_DISABLE_NEW_GROUPS` | 0 | Operator switch: `1` refuses new groups; existing groups keep working |
+| Variable                          | Default  | Meaning                                                               |
+| --------------------------------- | -------- | --------------------------------------------------------------------- |
+| `RELAY_MAX_GROUPS`                | 1000     | Live groups in total (reserved atomically on creation)                |
+| `RELAY_GROUP_MAX_BYTES`           | 52428800 | Storage per group                                                     |
+| `RELAY_RETENTION_DAYS`            | 180      | Delete a group after this long without an authenticated request       |
+| `RELAY_GROUPS_PER_IP_PER_DAY`     | 5        | New groups per source address per day                                 |
+| `RELAY_GROUP_REQUESTS_PER_MINUTE` | 600      | Requests per group                                                    |
+| `RELAY_FAILED_AUTH_PER_MINUTE`    | 20       | Failed authentications per group                                      |
+| `RELAY_DISABLE_NEW_GROUPS`        | 0        | Operator switch: `1` refuses new groups; existing groups keep working |
 
 - The `IP_LIMITER` rate-limit binding throttles each address to 1200 requests per minute.
 - Set usage alerts on the Cloudflare account as well; the caps above bound storage, not every request cost.
@@ -64,11 +64,11 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 - One machine serves each endpoint (always-on machines by default). Its MCP servers must work on that machine; servers that start per worktree are not offered.
 - Limits: 256 KiB per request, 4 MiB per response, 4 requests in flight, 10 minutes per request, no JSON-RPC batches. An endpoint is deleted after `RELAY_RETENTION_DAYS` with neither a request nor a connected machine.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RELAY_MAX_ENDPOINTS` | 5000 | Live endpoints in total |
-| `RELAY_ENDPOINTS_PER_IP_PER_DAY` | 20 | New endpoints per source address per day |
-| `RELAY_ENDPOINT_REQUESTS_PER_MINUTE` | 600 | Public requests per endpoint |
+| Variable                             | Default | Meaning                                  |
+| ------------------------------------ | ------- | ---------------------------------------- |
+| `RELAY_MAX_ENDPOINTS`                | 5000    | Live endpoints in total                  |
+| `RELAY_ENDPOINTS_PER_IP_PER_DAY`     | 20      | New endpoints per source address per day |
+| `RELAY_ENDPOINT_REQUESTS_PER_MINUTE` | 600     | Public requests per endpoint             |
 
 The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
 
@@ -81,21 +81,20 @@ Thread handoff between machines that share only a relay group goes through the n
 - Limits: 2 MiB per call or answer (uploads go in 1 MiB chunks), 8 calls in flight per machine, 2 minutes per call, 512 MiB per handoff (enforced by the sending machine).
 - An older relay answers 404, and machines report "the relay does not support handoffs yet; update it". Tailscale handoffs keep working.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `RELAY_CHANNEL_REQUESTS_PER_MINUTE` | 1200 | Calls per group |
-| `RELAY_CHANNEL_MIB_PER_MINUTE` | 256 | Data forwarded per group, both directions |
+| Variable                            | Default | Meaning                                   |
+| ----------------------------------- | ------- | ----------------------------------------- |
+| `RELAY_CHANNEL_REQUESTS_PER_MINUTE` | 1200    | Calls per group                           |
+| `RELAY_CHANNEL_MIB_PER_MINUTE`      | 256     | Data forwarded per group, both directions |
 
 ## Crypto test vectors
 
 Secret bytes `00 01 … 1f`, HKDF-SHA256, salt `agentgate-relay-v1`, info `agentgate-relay-v1/<label>`:
 
-| Value | Result |
-|---|---|
-| `groupId` (`group`, 16 bytes, hex) | `8f6ba714a69c73f1fbdcd8efe342493a` |
-| `authToken` (`auth`, 32 bytes, base64url) | `ZxB1Uo3DlItacW62HpLUewhYoxYs8G2M_1fl8d29AnE` |
-| entry key for `account` / `acc` (HMAC with `mac`) | `NNCRaladXbAr90_nFfOrCIEaQCc_oJCok1Y_XxZsqY0` |
+| Value                                                                      | Result                                            |
+| -------------------------------------------------------------------------- | ------------------------------------------------- |
+| `groupId` (`group`, 16 bytes, hex)                                         | `8f6ba714a69c73f1fbdcd8efe342493a`                |
+| `authToken` (`auth`, 32 bytes, base64url)                                  | `ZxB1Uo3DlItacW62HpLUewhYoxYs8G2M_1fl8d29AnE`     |
+| entry key for `account` / `acc` (HMAC with `mac`)                          | `NNCRaladXbAr90_nFfOrCIEaQCc_oJCok1Y_XxZsqY0`     |
 | `{"x":1}` sealed with a zero nonce, generation `0`×32, node `a`, counter 1 | `AAAAAAAAAAAAAAAAKBuJeHcyQw_EGr_uWJywDTfraf7zwOQ` |
 
 The AAD is the UTF-8 JSON array `[1, groupId, generation, node, key, pusherSeq]`.
-

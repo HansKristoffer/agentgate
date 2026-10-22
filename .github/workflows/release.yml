@@ -55,7 +55,7 @@ jobs:
           ref: ${{ env.TAG }}
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
       - run: node -e 'if (require("./package.json").version !== process.env.TAG.slice(1)) process.exit(1)'
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
@@ -85,7 +85,7 @@ jobs:
       - run: bun scripts/smoke.ts dist/agentgate-darwin-arm64
       - uses: actions/setup-node@v5
         with:
-          node-version: '24'
+          node-version: "24"
       # The script skips versions already on npm, so a failed run can be rerun.
       - run: bun "$RUNNER_TEMP/agentgate-npm.ts" "$TAG" --publish
       - run: gh release upload "$TAG" dist/agentgate-* dist/SHA256SUMS --clobber

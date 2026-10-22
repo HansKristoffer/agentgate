@@ -7,7 +7,16 @@ export function atomicWrite(file: string, content: string) {
   const temp = `${file}.${crypto.randomUUID()}.tmp`;
   let fd: number | undefined;
   try {
-    fd = openSync(temp, "wx", 0o600); writeFileSync(fd, content); fsyncSync(fd); closeSync(fd); fd = undefined;
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, content);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
     renameSync(temp, file);
-  } finally { if (fd !== undefined) closeSync(fd); try { unlinkSync(temp); } catch { } }
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch {}
+  }
 }
