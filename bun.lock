@@ -19,6 +19,7 @@
         "@modelcontextprotocol/sdk": "^1.31.0",
         "hanzio": "^3.3.0",
         "hono": "^4.13.12",
+        "llm-usage-extraction": "^0.2.0",
         "zod": "^4.6.5",
       },
     },
@@ -930,6 +931,8 @@
     "lightningcss-win32-arm64-msvc": ["lightningcss-win32-arm64-msvc@1.33.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-1K+MPfLSFVpphzpdbfkhlWk6wBrTObBzS2T6db10PNOZgR9GoVsAWzwNyuhUYYbTp23j+4RrncfujZ4uAzXvwA=="],
 
     "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
+
+    "llm-usage-extraction": ["llm-usage-extraction@0.2.0", "", {}, "sha512-MyLHZhvu4uRE5QBbjm6g4CYVSh5odx2Cmojpuh2apeHUvsiOEdQ5ZNTsUgHqfGRIv7NehuyL8QlLtgG9Ni4Mxg=="],
 
     "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" }, "bin": { "loose-envify": "cli.js" } }, "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q=="],
 
