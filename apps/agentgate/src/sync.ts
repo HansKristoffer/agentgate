@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { trimTrailingSlash } from "hanzio";
 import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
-import { fetchHeaders, readBody } from "./runtime.ts";
+import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
 
 export const PULL_INTERVAL = 15_000;
@@ -222,7 +222,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
   app.post("/join", async (c) => {
     let body: unknown;
     try {
-      body = await c.req.json();
+      body = JSON.parse(new TextDecoder().decode(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal)));
     } catch {
       return c.json({ error: "invalid JSON" }, 400);
     }

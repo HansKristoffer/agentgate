@@ -11,7 +11,7 @@ import { Quotas } from "./llm/quota.ts";
 import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
-import { BodyTooLarge, MAX_BODY, serialTask } from "./runtime.ts";
+import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
 import { rotateLogs } from "./service.ts";
 import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
@@ -238,7 +238,9 @@ export async function serve(
       hostname,
       port,
       idleTimeout: 0,
-      maxRequestBodySize: MAX_BODY,
+      // Above the proxy's own limit so an oversized model request fails in the pool, with a message the coding tool
+      // shows and an activity entry, instead of Bun's empty 413. Other routes cap their bodies when they read them.
+      maxRequestBodySize: 2 * MAX_PROXY_BODY,
       fetch: (req) => a.fetch(req, { listener }),
     });
   const loopback = listen("127.0.0.1", "loopback", options.port ?? PORT);
