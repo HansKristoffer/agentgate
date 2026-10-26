@@ -273,7 +273,7 @@ Nodes use **sync protocol 5** (update every paired machine together) and the app
 
 `setup` preserves unrelated Claude/Codex settings and first-run backups. Generated shims/services include `AGENTGATE_HOME` and `AGENTGATE_PORT`; rerun setup and reinstall the service if you change either value or move the binary. An unsuccessful temporary CLI login/import keeps its folder for recovery instead of deleting the only credential copy.
 
-The proxy bounds request bodies to 16 MiB, waits at most 30 seconds for upstream headers, and cancels a response stream after five minutes without data. MCP tool calls allow five minutes without progress, with a 30-minute total limit. Status reports expired logins, refresh failures, sync errors, and quota headers that could not be recognized.
+The proxy bounds model request bodies to 128 MiB, waits at most 30 seconds for upstream headers, and cancels a response stream after five minutes without data. MCP tool calls allow five minutes without progress, with a 30-minute total limit. Status reports expired logins, refresh failures, sync errors, and quota headers that could not be recognized.
 
 Network partitions can still cause separate machines to compete for a rotating upstream token. Reconnect and sync the newer credential first; if the provider revoked it, log in again. Live subscription traffic, T3 provider sessions, physical Tailscale failover, and installed service reboot/logout behavior remain release checks.
 

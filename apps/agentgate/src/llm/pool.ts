@@ -2,7 +2,7 @@ import type { AccountStatus, Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin } from "../credentials.ts";
 import { revision } from "../configuration.ts";
-import { BodyTooLarge, MAX_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
+import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
@@ -55,7 +55,7 @@ export async function proxy(
   provider: Provider,
   req: Request,
   path: string,
-  limits = { headerTimeout: 30000, streamIdle: 300000, maxBody: MAX_BODY },
+  limits = { headerTimeout: 30000, streamIdle: 300000, maxBody: MAX_PROXY_BODY },
   options: { accountId?: string } = {},
 ): Promise<Response> {
   const settings = s.settings(),

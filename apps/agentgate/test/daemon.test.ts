@@ -162,6 +162,47 @@ test("shutdown waits for an already-issued refresh to persist before the store c
   }
 });
 
+test("a model request over the control API body limit still reaches the provider", async () => {
+  const { CLAUDE } = await import("../src/llm/claude.ts");
+  const originalApi = CLAUDE.api,
+    s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("account", "a", { id: "a", provider: "claude", label: "a" });
+  s.put("credential", "a", {
+    accountId: "a",
+    accessToken: "t",
+    refreshToken: "r",
+    expiresAt: Date.now() + 3600000,
+    holder: "n",
+  });
+  let received = 0;
+  const upstream = Bun.serve({
+    port: 0,
+    maxRequestBodySize: 64 * 1024 * 1024,
+    fetch: async (req) => {
+      received = (await req.arrayBuffer()).byteLength;
+      return Response.json({});
+    },
+  });
+  CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    // A long Codex session full of screenshots outgrew the old 16 MiB limit.
+    const body = JSON.stringify({ model: "sonnet", padding: "x".repeat(20 * 1024 * 1024) });
+    const response = await fetch(`http://127.0.0.1:${daemon.loopback.port}/anthropic/v1/messages`, {
+      method: "POST",
+      body,
+    });
+    expect(response.status).toBe(200);
+    expect(received).toBe(body.length);
+  } finally {
+    await daemon.stop();
+    CLAUDE.api = originalApi;
+    upstream.stop(true);
+    s.close();
+  }
+});
+
 test("a SQLite error in a request logs its code, message and free space, and the client gets a generic error", async () => {
   const s = new Store(":memory:"),
     handler = app(makeCtx(s));

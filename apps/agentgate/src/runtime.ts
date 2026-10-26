@@ -2,6 +2,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { anySignal } from "hanzio";
 
 export const MAX_BODY = 16 * 1024 * 1024;
+// Model requests resend the whole conversation, screenshots included, so they get far more room than control traffic.
+export const MAX_PROXY_BODY = 128 * 1024 * 1024;
 export class BodyTooLarge extends Error {}
 export class Unavailable extends Error {}
 export const sleep = (ms: number, signal?: AbortSignal) => delay(Math.max(0, ms), undefined, { signal });
