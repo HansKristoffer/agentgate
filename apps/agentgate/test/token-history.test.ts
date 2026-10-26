@@ -26,20 +26,26 @@ test("history before the proxy counted comes from Claude Code and Codex logs, on
     home = join(temp, "claude"),
     other = join(temp, "claude-agentgate"),
     codex = join(temp, "codex");
-  const message = (id: string, h: number, input: number) => ({
+  const message = (id: string, h: number, input: number, output = 2) => ({
     type: "assistant",
     timestamp: at(h),
     requestId: `r-${id}`,
     message: {
       id,
       model: "opus",
-      usage: { input_tokens: input, output_tokens: 2, cache_read_input_tokens: 30, cache_creation_input_tokens: 4 },
+      usage: {
+        input_tokens: input,
+        output_tokens: output,
+        cache_read_input_tokens: 30,
+        cache_creation_input_tokens: 4,
+      },
     },
   });
-  // One line per content block repeats the message; the same session can sit in two homes.
+  // One line per content block repeats the message, and the last has its final output; the same session can sit in
+  // two homes.
   jsonl(join(home, "projects/p/s.jsonl"), [
     message("m1", 9, 10),
-    message("m1", 9, 10),
+    message("m1", 9, 10, 5),
     { type: "user", timestamp: at(9), message: { content: "usage" } },
     message("m2", 10, 1),
     message("m3", 11, 99),
@@ -77,7 +83,7 @@ test("history before the proxy counted comes from Claude Code and Codex logs, on
   await backfillTokens(s, dirs);
   expect(tokenUsage(s)).toEqual([
     { provider: "codex", model: "gpt-6", input: 150, output: 21, cacheRead: 240, cacheWrite: 0 },
-    { provider: "claude", model: "opus", input: 16, output: 4, cacheRead: 60, cacheWrite: 8 },
+    { provider: "claude", model: "opus", input: 16, output: 7, cacheRead: 60, cacheWrite: 8 },
   ]);
 });
 
