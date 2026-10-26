@@ -81,6 +81,29 @@ test("history before the proxy counted comes from Claude Code and Codex logs, on
   ]);
 });
 
+test("a Codex rollout that logs only its running total counts each request's share of it", async () => {
+  const s = node("a"),
+    codex = join(temp, "codex-total");
+  const total = (h: number, input: number, cached: number, output: number, ms = 0) => ({
+    timestamp: at(h, ms),
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: { total_token_usage: { input_tokens: input, cached_input_tokens: cached, output_tokens: output } },
+    },
+  });
+  jsonl(join(codex, "sessions/2026/10/01/rollout-c.jsonl"), [
+    { timestamp: at(9), type: "turn_context", payload: { model: "gpt-6" } },
+    total(9, 100, 40, 5),
+    total(10, 250, 100, 12),
+    total(10, 250, 100, 12, 500), // a replay
+  ]);
+  await backfillTokens(s, { claude: [], codex: [codex] });
+  expect(tokenUsage(s)).toEqual([
+    { provider: "codex", model: "gpt-6", input: 150, output: 12, cacheRead: 100, cacheWrite: 0 },
+  ]);
+});
+
 test("each machine's totals reach the others, and Cursor's account-wide history counts once", () => {
   const a = node("a"),
     b = node("b");
