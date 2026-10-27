@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.26.0](https://github.com/HansKristoffer/agentgate/compare/v0.25.1...v0.26.0) (2026-10-27)
+
+
+### Features
+
+* **mcp:** add an Infisical server preset ([#92](https://github.com/HansKristoffer/agentgate/issues/92)) ([d704038](https://github.com/HansKristoffer/agentgate/commit/d70403825d653337a139bbbe5ad71c7774dbcec1))
+* new MCP servers sign in on their own, and usage refreshes in the background ([#93](https://github.com/HansKristoffer/agentgate/issues/93)) ([bee338d](https://github.com/HansKristoffer/agentgate/commit/bee338d2d4a51f0dfa9c692ca5025d2db390bc1c))
+
+
+### Bug Fixes
+
+* **proxy:** raise the model request body limit ([#91](https://github.com/HansKristoffer/agentgate/issues/91)) ([9f86d59](https://github.com/HansKristoffer/agentgate/commit/9f86d591c666fcdd400060049168e5f08ad8a4e3))
+* **tokens:** count final Claude output in history ([#89](https://github.com/HansKristoffer/agentgate/issues/89)) ([5d21622](https://github.com/HansKristoffer/agentgate/commit/5d216228c3b4543da7f6e2aee9c5d116d2b97479))
+
 ## [0.25.1](https://github.com/HansKristoffer/agentgate/compare/v0.25.0...v0.25.1) (2026-10-22)
 
 
