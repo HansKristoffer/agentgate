@@ -191,6 +191,20 @@ export async function setInfisicalIdentity(
   await syncLogins(s);
 }
 
+/** What the Infisical MCP server preset signs in with: the machine identity, which is on every node. */
+export function infisicalMcpEnv(s: Store) {
+  const l = s.get("login", IDENTITY);
+  if (l?.id !== IDENTITY)
+    throw new Error(
+      "Infisical: set an Infisical machine identity first (agentgate logins identity, or Shared logins in the app)",
+    );
+  return {
+    INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: l.account,
+    INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: l.clientSecret,
+    INFISICAL_HOST_URL: l.siteUrl,
+  };
+}
+
 /** Stop sharing a login. Machines already signed in stay signed in; the machine identity leaves every machine. */
 export function forgetLogin(s: Store, id: LoginId) {
   if (!s.get("login", id)) throw new Error(`${id} is not shared`);
