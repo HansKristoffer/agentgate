@@ -35,4 +35,10 @@ test("every-session skills report repositories that carry a skill with the same 
   const global = projectSkillChoices(data, "*", ["x"]);
   expect(global.find((c) => c.id === "x")!.detail).toContain("Claude Code runs this one");
   expect(global.find((c) => c.id === "y")!.detail).toBe("");
+  // A project's form leads with its own skills and folds away the every-session ones it does not list itself.
+  const project = projectSkillChoices(data, "owner/other", ["y"]);
+  expect(project.map((c) => [c.id, c.redundant])).toEqual([
+    ["y", false],
+    ["x", true],
+  ]);
 });

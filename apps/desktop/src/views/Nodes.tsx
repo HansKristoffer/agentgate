@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { trimTrailingSlash } from "hanzio";
-import { Copy, ExternalLink, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
-import { Button, Spinner, Switch, toast } from "@heroui/react";
+import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
+import { Button, Spinner, toast } from "@heroui/react";
 import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import { Badge, Field, Modal, Panel, HeaderActions, LiveSwitch, RowMenu, usePending } from "../components/ui.tsx";
+import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
@@ -104,24 +104,39 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               <div className="grow">
                 <div className="row">
                   <strong>{n.id}</strong>
-                  {n.id === data.node && <Badge>This node</Badge>}
+                  {n.id === data.node && <Badge>This machine</Badge>}
                   <Badge good={n.online}>{n.online ? "Online" : "Offline"}</Badge>
-                  {n.via?.includes("tailnet") && <Badge>Tailscale</Badge>}
-                  {viaRelay && <Badge>Relay</Badge>}
+                  {n.alwaysOn && <Badge good>Always on</Badge>}
+                  {(pending.has(`alwaysOn:${n.id}`) || pending.has(`dashboard:${n.id}`)) && <Working>Saving</Working>}
                 </div>
-                <small>{n.url ?? (viaRelay ? "Connected through the relay" : "Tailscale address not available")}</small>
                 <small>
-                  {n.syncError ?? (n.id === data.node ? "Local daemon" : `Last seen ${relative(n.lastSeen)}`)}
-                  {n.version && ` · Agentgate ${n.version}`}
+                  {[
+                    n.via?.includes("tailnet") && n.via.includes("relay")
+                      ? "Tailscale and relay"
+                      : n.via?.includes("tailnet")
+                        ? "Tailscale"
+                        : viaRelay && "Relay",
+                    n.url ?? (viaRelay ? undefined : "Tailscale address not available"),
+                    n.version && `Agentgate ${n.version}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </small>
-                {n.update?.state === "failed" && <small>Update failed: {n.update.error}</small>}
-                {n.routing && <small>{routingText(n.routing)}</small>}
+                <small className={n.syncError ? "danger" : ""}>
+                  {[
+                    n.syncError ?? (n.id === data.node ? "This daemon" : `Last seen ${relative(n.lastSeen)}`),
+                    n.routing && routingText(n.routing),
+                    n.healthDashboard && "Health dashboard on",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </small>
+                {n.update?.state === "failed" && <small className="danger">Update failed: {n.update.error}</small>}
               </div>
               {n.update?.state === "installing" || n.update?.state === "restarting" || pending.has(`update:${n.id}`) ? (
-                <Badge>
-                  <Spinner size="sm" color="current" />
+                <Working>
                   {n.update?.state === "restarting" ? `Restarting on ${n.update.version}` : "Installing update"}
-                </Badge>
+                </Working>
               ) : n.update?.state === "installed" ? (
                 <small>
                   Restart Agentgate on {n.id} to use {n.update.version}
@@ -133,59 +148,36 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   </Button>
                 )
               )}
-              {n.healthDashboard && origin && (n.online || n.id === data.node) && (
-                <Button
-                  size="sm"
-                  variant="tertiary"
-                  onPress={() => void perform(() => openExternal(`${origin}${HEALTH_PATH}`), undefined, `open:${n.id}`)}
-                >
-                  <ExternalLink size={15} />
-                  Open dashboard
-                </Button>
-              )}
-              <LiveSwitch
-                isSelected={!!n.healthDashboard}
-                onChange={(on) =>
-                  perform(
-                    () =>
-                      request(connection, `/nodes/${idPath(n.id)}/dashboard`, "POST", {
-                        on,
-                      }),
-                    undefined,
-                    `dashboard:${n.id}`,
-                  )
-                }
-              >
-                <Switch.Content className="check muted">
-                  Dashboard
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Content>
-              </LiveSwitch>
-              <LiveSwitch
-                isSelected={!!n.alwaysOn}
-                onChange={(on) =>
-                  perform(
-                    () =>
-                      request(connection, `/nodes/${idPath(n.id)}`, "PATCH", {
-                        alwaysOn: on,
-                      }),
-                    undefined,
-                    `alwaysOn:${n.id}`,
-                  )
-                }
-              >
-                <Switch.Content className="check muted">
-                  Always on
-                  <Switch.Control>
-                    <Switch.Thumb />
-                  </Switch.Control>
-                </Switch.Content>
-              </LiveSwitch>
               <RowMenu
                 label={`More for ${n.id}`}
                 items={[
+                  n.healthDashboard &&
+                    !!origin &&
+                    (n.online || n.id === data.node) && {
+                      label: "Open health dashboard",
+                      onAction: () => void perform(() => openExternal(`${origin}${HEALTH_PATH}`)),
+                    },
+                  {
+                    label: n.healthDashboard ? "Turn off health dashboard" : "Turn on health dashboard",
+                    onAction: () =>
+                      void perform(
+                        () =>
+                          request(connection, `/nodes/${idPath(n.id)}/dashboard`, "POST", { on: !n.healthDashboard }),
+                        `Health dashboard ${n.healthDashboard ? "off" : "on"} for ${n.id}`,
+                        `dashboard:${n.id}`,
+                      ),
+                  },
+                  {
+                    label: n.alwaysOn ? "No longer always on" : "Mark as always on",
+                    onAction: () =>
+                      void perform(
+                        () => request(connection, `/nodes/${idPath(n.id)}`, "PATCH", { alwaysOn: !n.alwaysOn }),
+                        n.alwaysOn
+                          ? `${n.id} is no longer always on`
+                          : `${n.id} is always on: it takes care of token refreshes while your other machines are away`,
+                        `alwaysOn:${n.id}`,
+                      ),
+                  },
                   (n.online || n.id === data.node) && {
                     label:
                       n.routing?.claude && n.routing.codex

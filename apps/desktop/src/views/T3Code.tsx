@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { Button, toast } from "@heroui/react";
 import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
-import { ArrowLeftRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
 import {
   firstServer,
   handoffJobSchema,
@@ -424,8 +424,18 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
             )
           }
         >
-          <ArrowLeftRight size={14} />
-          {toHere ? "To here" : "To server"}
+          {/* The arrow points where the thread goes: back to this machine, or off to the server. */}
+          {toHere ? (
+            <>
+              <ArrowLeft size={14} />
+              To <u>here</u>
+            </>
+          ) : (
+            <>
+              To <u>server</u>
+              <ArrowRight size={14} />
+            </>
+          )}
         </ActionButton>
       </span>
     );
@@ -451,7 +461,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
         />
       )}
       {recent.length > 0 && (
-        <Panel title="Handoffs">
+        <Panel title="Recent handoffs">
           {recent.map((j) => (
             <div className="item" key={j.id}>
               <div className="grow">
@@ -477,9 +487,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       )}
       <Panel
         title="Active threads"
-        foot={
-          !servers.length ? "Mark a machine as a server (Always on, on the Machines page) to use To server." : undefined
-        }
+        foot={!servers.length ? "Mark a machine as always on (in its ⋯ menu on Machines) to use To server." : undefined}
       >
         {error && (
           <div className="item">
@@ -508,7 +516,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
             )
         )}
       </Panel>
-      <Panel title="Projects">
+      <Panel title="Options">
         <Toggle
           label="Keep projects in sync"
           description="Every machine with T3 Code connected adds the GitHub projects your other machines have, cloning them into its clone folder. Removing a project stays on that machine."
@@ -531,8 +539,6 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
               </small>
             </div>
           ))}
-      </Panel>
-      <Panel title="Handoffs">
         <Toggle
           label="Show messages from other machines"
           description="A thread that comes back shows the messages it got on your other machines. agentgate writes them into T3 Code's own database, which T3 Code does not support; turn this off if T3 Code misbehaves after a handoff."

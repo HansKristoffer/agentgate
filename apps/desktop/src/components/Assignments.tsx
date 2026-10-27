@@ -1,7 +1,7 @@
-import type { Status } from "@agentgate/protocol";
+import { isVirtual, type Project, type ServerSummary, type Status } from "@agentgate/protocol";
 import { getUniqueValues } from "hanzio";
 import { Check, Empty } from "./ui.tsx";
-import { projectSkillChoices, repoClashes } from "../skill-assignment.ts";
+import { repoClashes } from "../skill-assignment.ts";
 
 function AssignmentChecks({
   title,
@@ -62,12 +62,38 @@ export function ProjectChecks({
   );
 }
 
-export function ProjectSkillChecks({ data, project, selected }: { data: Status; project: string; selected: string[] }) {
+/** The tool prefix a project gives a server, if it uses it. */
+export const aliasOf = (p: Pick<Project, "mcp">, server: string) =>
+  Object.entries(p.mcp).find(([, id]) => id === server)?.[0];
+
+/** Where a server is used, as the skills' "Use in" is. A per-session server starts in a session's worktree, which a
+ * virtual project's remote client does not have. */
+export function ServerProjectChecks({ data, server }: { data: Status; server: ServerSummary }) {
+  const global = data.projects.find((p) => p.id === "*");
+  const without = data.projects.filter((p) => p.id !== "*" && !isVirtual(p.id) && !p.inheritDefaults).length;
   return (
     <AssignmentChecks
-      title="Skills assigned to this project"
-      name="skill"
-      choices={projectSkillChoices(data, project, selected)}
+      title="Use in"
+      name="project"
+      choices={[
+        {
+          id: "*",
+          label: "Global defaults",
+          selected: !!global && !!aliasOf(global, server.id),
+          detail: `Every repository${without ? `, except ${without} that ${without === 1 ? "leaves" : "leave"} out global servers` : ""}`,
+        },
+        ...data.projects
+          .filter((p) => p.id !== "*" && (server.mode === "shared" || !isVirtual(p.id)))
+          .map((p) => {
+            const alias = aliasOf(p, server.id);
+            return {
+              id: p.id,
+              selected: !!alias,
+              detail:
+                alias && alias !== server.id ? `Tool prefix ${alias}` : isVirtual(p.id) ? "Virtual project" : undefined,
+            };
+          }),
+      ]}
     />
   );
 }

@@ -10,7 +10,10 @@ import type { Store, Usage } from "../store.ts";
 import { revision } from "../configuration.ts";
 import type { Observation, Provider, ProviderName } from "./provider.ts";
 
-export const QUOTA_STALE = 10 * 60_000;
+/** How often the credential's holder reads an account's usage. */
+export const QUOTA_POLL = 10 * 60_000;
+/** Usage counts as out of date once a poll round was missed: the holder is asleep or offline, or its poll failed. */
+export const QUOTA_STALE = 2 * QUOTA_POLL;
 export { normalizedWindow, matchesWindow };
 export function relevant(u: Usage | undefined, model: string | undefined, now: number): QuotaWindow[] {
   return (u?.windows ?? [])
@@ -85,16 +88,18 @@ export class Quotas {
       throw new Error("Account has no usable login or is disabled");
     const provider = this.providers[account.provider];
     if (!provider?.fetchQuota) throw new Error("Usage refresh is unsupported");
-    if (!force && (credential.holder !== s.nodeId || (account.provider === "codex" && !s.settings().codexQuotaPolling)))
-      return false;
+    if (!force && account.provider === "codex" && !s.settings().codexQuotaPolling) return false;
     const prior = quotaHealth(s, id),
-      usageRev = revision(s, "usage", id);
-    if (
-      !force &&
-      (s.now() - (s.get("usage", id)?.observedAt ?? 0) < QUOTA_STALE ||
-        s.now() - (prior.attemptedAt ?? 0) < QUOTA_STALE)
-    )
-      return false;
+      usageRev = revision(s, "usage", id),
+      usage = s.get("usage", id),
+      age = s.now() - (usage?.observedAt ?? 0);
+    // The holder polls, and again as soon as a window has reset. Another machine steps in once the holder has missed a
+    // round, so usage never waits for a click; only with a token that has long to live, so it never starts a refresh.
+    const due =
+      credential.holder === s.nodeId
+        ? age >= QUOTA_POLL || !!usage?.windows.some((w) => w.resetsAt && w.resetsAt <= s.now())
+        : age >= QUOTA_STALE && credential.expiresAt - s.now() > 15 * 60_000;
+    if (!force && (!due || s.now() - (prior.attemptedAt ?? 0) < QUOTA_POLL)) return false;
     const attemptedAt = s.now();
     const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
     let credentialRev = revision(s, "credential", id);

@@ -1,6 +1,8 @@
 import type { Status } from "@agentgate/protocol";
 import { getUniqueValues } from "hanzio";
 
+/** The skills a project's form offers, the ones it already has first. `redundant`: in every session already and not
+ * the project's own, so the form folds it into a note instead of a checkbox that would change nothing. */
 export function projectSkillChoices(
   data: Pick<Status, "skills" | "projects" | "checkouts">,
   project: string,
@@ -13,9 +15,10 @@ export function projectSkillChoices(
       .flatMap((c) => c.skills),
   );
   const ids = getUniqueValues([...data.skills.map((k) => k.id), ...selected]);
-  return ids.map((id) => ({
+  const choices = ids.map((id) => ({
     id,
     selected: selected.includes(id),
+    redundant: global.has(id) && !selected.includes(id),
     detail: [
       global.has(id) ? "Also available in every session" : undefined,
       repository.has(id)
@@ -30,6 +33,7 @@ export function projectSkillChoices(
       .filter(Boolean)
       .join(" · "),
   }));
+  return [...choices.filter((c) => c.selected), ...choices.filter((c) => !c.selected)];
 }
 
 /** Local checkouts that carry their own skill under one of these names. A skill for every session is

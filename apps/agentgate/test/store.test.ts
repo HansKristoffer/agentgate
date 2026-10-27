@@ -9,8 +9,26 @@ import {
   parseCommand,
   renameInstance,
   setAccount,
+  setServerProjects,
 } from "../src/operations.ts";
 import { Store, exportBackup, importBackup } from "../src/store.ts";
+
+test("choosing a server's projects keeps existing tool prefixes and refuses a prefix another server has", () => {
+  const s = new Store(":memory:");
+  for (const id of ["posthog", "other"]) createInstance(s, { name: id, target: "https://example.com/mcp" });
+  s.put("project", "acme/web", { id: "acme/web", mcp: { ph: "posthog" } });
+  s.put("project", "acme/api", { id: "acme/api", mcp: { posthog: "other" } });
+  s.put("project", "acme/docs", { id: "acme/docs" });
+  setServerProjects(s, "posthog", ["*", "acme/web"]);
+  expect(s.get("project", "*")?.mcp).toEqual({ posthog: "posthog" });
+  expect(s.get("project", "acme/web")?.mcp).toEqual({ ph: "posthog" });
+  setServerProjects(s, "posthog", ["acme/docs"]);
+  expect([s.get("project", "*")?.mcp, s.get("project", "acme/web")?.mcp]).toEqual([{}, {}]);
+  expect(s.get("project", "acme/docs")?.mcp).toEqual({ posthog: "posthog" });
+  expect(() => setServerProjects(s, "posthog", ["acme/api"])).toThrow("already uses the tool prefix posthog for other");
+  expect(s.get("project", "acme/docs")?.mcp).toEqual({ posthog: "posthog" });
+  s.close();
+});
 
 test("public inventories omit OAuth, headers, environment, arguments, and URL credentials", () => {
   const s = new Store(":memory:");

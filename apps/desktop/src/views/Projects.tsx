@@ -1,20 +1,16 @@
 import { useState } from "react";
-import { Bot, FileKey, FolderGit2, FolderOpen, Pencil, Plus } from "lucide-react";
+import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { PublicProject, ToolPreview } from "@agentgate/protocol";
+import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
 import { Button, Input, Tabs, TextField } from "@heroui/react";
-import { Check, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../components/ui.tsx";
-import { ProjectSkillChecks } from "../components/SkillAssignments.tsx";
+import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../components/ui.tsx";
+import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
-import { ago, field, idPath, confirmDelete } from "./utils.ts";
+import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
 
 const FILES_GUIDE = "https://github.com/HansKristoffer/agentgate#env-files-between-machines";
-
-type Editing = Omit<PublicProject, "remote" | "skillRepos"> & { virtual?: boolean };
-const isVirtual = (id: string) => id.startsWith("@");
-const aliasOf = (p: Editing, server: string) => Object.entries(p.mcp).find(([, id]) => id === server)?.[0];
 
 export function Projects(props: ViewProps) {
   const { data, connection, perform, local } = props;
@@ -61,6 +57,8 @@ export function Projects(props: ViewProps) {
         );
     })();
   const defaults = data.projects.find((p) => p.id === "*");
+  const repositories = data.projects.filter((p) => p.id !== "*" && !isVirtual(p.id));
+  const serverName = (id: string) => data.servers.find((s) => s.id === id)?.label ?? id;
   /** Links a repository's own skills between .claude/skills and .agents/skills, so Claude and Codex both see them.
    * Local only: it writes into this machine's checkouts of the repository. */
   const mirrorItem = (id: string) => {
@@ -86,13 +84,6 @@ export function Projects(props: ViewProps) {
         <Button
           size="sm"
           variant="tertiary"
-          onPress={() => setEdit(defaults ?? { id: "*", mcp: {}, skills: [], inheritDefaults: true })}
-        >
-          Global defaults
-        </Button>
-        <Button
-          size="sm"
-          variant="tertiary"
           onPress={() => setEdit({ id: "", mcp: {}, skills: [], inheritDefaults: false, virtual: true })}
         >
           <Bot size={15} />
@@ -110,60 +101,80 @@ export function Projects(props: ViewProps) {
           Add project
         </Button>
       </HeaderActions>
-      <Panel title="Project tools" detail="Aliases become tool prefixes. Changes reach running sessions automatically.">
-        {data.projects.filter((p) => p.id !== "*" && !isVirtual(p.id)).length ? (
-          data.projects
-            .filter((p) => p.id !== "*" && !isVirtual(p.id))
-            .map((p) => (
-              <div className="item" key={p.id}>
-                <div className="machine-icon">
-                  <FolderGit2 size={16} />
-                </div>
-                <div className="grow">
-                  <strong>{p.id}</strong>
-                  <small>
-                    {Object.entries(p.mcp)
-                      .map(([alias, id]) => `${alias} → ${id}`)
-                      .join(" · ") || "No project-specific tools"}
-                  </small>
-                  {p.skills.length > 0 && <small>Skills: {p.skills.join(", ")}</small>}
-                  <small>{p.inheritDefaults ? "Includes global MCP servers" : "Project tools only"}</small>
-                  {p.files?.length ? <small>Env files: {p.files.map((f) => f.path).join(" · ")}</small> : null}
-                  {data.fileErrors[p.id] && (
-                    <small className="danger">Env files not syncing: {data.fileErrors[p.id]}</small>
-                  )}
-                </div>
-                <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
-                  <Pencil size={15} />
-                </Button>
-                <RowMenu
-                  label={`More for ${p.id}`}
-                  items={[
-                    {
-                      label: "Preview tools",
-                      onAction: () =>
-                        void perform(async () =>
-                          setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
-                        ),
-                    },
-                    { label: "Env files", onAction: () => setFiles(p.id) },
-                    mirrorItem(p.id),
-                    {
-                      label: "Delete",
-                      danger: true,
-                      onAction: async () => {
-                        if (await confirmDelete(p.id))
-                          void perform(
-                            () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
-                            "Project removed",
-                          );
-                      },
-                    },
-                  ]}
-                />
+      <Panel
+        title="Repositories"
+        detail="Each repository's MCP servers and skills. Changes reach running sessions automatically."
+      >
+        <div className="item">
+          <div className="machine-icon">
+            <Globe size={16} />
+          </div>
+          <div className="grow">
+            <strong>Global defaults</strong>
+            <small>Servers every repository includes unless it leaves them out, and skills for every session.</small>
+            <Uses project={defaults} servers={serverName} />
+          </div>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label="Edit Global defaults"
+            onPress={() => setEdit(defaults ?? { id: "*", mcp: {}, skills: [], inheritDefaults: true })}
+          >
+            <Pencil size={15} />
+          </Button>
+        </div>
+        {repositories.map((p) => (
+          <div className="item" key={p.id}>
+            <div className="machine-icon">
+              <FolderGit2 size={16} />
+            </div>
+            <div className="grow">
+              <div className="row">
+                <strong>{p.id}</strong>
+                {!p.inheritDefaults && <Badge>Without global servers</Badge>}
               </div>
-            ))
-        ) : (
+              <Uses project={p} servers={serverName} />
+              {p.files?.length ? (
+                <small>
+                  {p.files.length === 1 ? "Env file" : "Env files"} {p.files.map((f) => f.path).join(", ")}
+                </small>
+              ) : null}
+              {data.fileErrors[p.id] && (
+                <small className="danger">Env files not syncing: {data.fileErrors[p.id]}</small>
+              )}
+            </div>
+            <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
+              <Pencil size={15} />
+            </Button>
+            <RowMenu
+              label={`More for ${p.id}`}
+              items={[
+                {
+                  label: "Preview tools",
+                  onAction: () =>
+                    void perform(async () =>
+                      setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
+                    ),
+                },
+                { label: "Env files", onAction: () => setFiles(p.id) },
+                mirrorItem(p.id),
+                {
+                  label: "Delete",
+                  danger: true,
+                  onAction: async () => {
+                    if (await confirmDelete(p.id))
+                      void perform(
+                        () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
+                        "Project removed",
+                      );
+                  },
+                },
+              ]}
+            />
+          </div>
+        ))}
+        {!repositories.length && (
           <Empty>
             <FolderGit2 size={22} />
             <strong>Give your repositories their own tools.</strong>
@@ -188,8 +199,7 @@ export function Projects(props: ViewProps) {
                   </div>
                   <div className="grow">
                     <strong>{p.id}</strong>
-                    <small>{Object.keys(p.mcp).join(" · ") || "No MCP servers"}</small>
-                    {p.skills.length > 0 && <small>Skills: {p.skills.join(", ")}</small>}
+                    <Uses project={p} servers={serverName} />
                   </div>
                   <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
                     <Pencil size={15} />
@@ -225,16 +235,9 @@ export function Projects(props: ViewProps) {
       {edit && (
         <Modal
           title={
-            edit.id === "*"
-              ? "Global defaults"
-              : edit.virtual || isVirtual(edit.id)
-                ? edit.id
-                  ? "Edit virtual project"
-                  : "New virtual project"
-                : edit.id
-                  ? "Edit project"
-                  : "Add project"
+            edit.id === "*" ? "Global defaults" : edit.id || (edit.virtual ? "New virtual project" : "Add project")
           }
+          size="lg"
           close={() => setEdit(undefined)}
         >
           {local && !edit.id && !edit.virtual && (
@@ -336,84 +339,17 @@ export function Projects(props: ViewProps) {
               )}
             </>
           ) : (
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
+            <ProjectForm
+              data={data}
+              edit={edit}
+              picked={picked}
+              save={(project) =>
                 void perform(async () => {
-                  // Keep an existing custom alias; new picks use the server id.
-                  const mcp: Record<string, string> = {};
-                  for (const id of f.getAll("server") as string[]) mcp[aliasOf(edit, id) ?? id] = id;
-                  const virtual = edit.virtual || isVirtual(edit.id);
-                  await request(connection, "/projects", "PUT", {
-                    id: virtual && !edit.id ? `@${field(f, "id")}` : field(f, "id"),
-                    mcp,
-                    skills: f.getAll("skill") as string[],
-                    inheritDefaults: !virtual && (edit.id === "*" || f.get("inherit") === "on"),
-                  });
+                  await request(connection, "/projects", "PUT", project);
                   setEdit(undefined);
-                }, "Project saved");
-              }}
-            >
-              {edit.virtual || isVirtual(edit.id) ? (
-                <Field
-                  label="Name"
-                  description="Lowercase letters, digits and dashes."
-                  name="id"
-                  isRequired
-                  isReadOnly={!!edit.id}
-                  defaultValue={edit.id}
-                  pattern={edit.id ? undefined : "[a-z0-9][a-z0-9\\-]{0,63}"}
-                  placeholder="grok"
-                />
-              ) : (
-                <Field
-                  label="Repository"
-                  name="id"
-                  isRequired
-                  isReadOnly={!!edit.id}
-                  key={picked}
-                  defaultValue={edit.id || picked}
-                  pattern={edit.id === "*" ? undefined : "[^\\/\\s@][^\\/\\s]*\\/[^\\/\\s]+"}
-                  placeholder="owner/repo"
-                />
-              )}
-              <fieldset className="checklist">
-                <legend>MCP servers</legend>
-                <div className="rows">
-                  {edit.id !== "*" && !edit.virtual && !isVirtual(edit.id) && (
-                    <Check className="item" name="inherit" defaultSelected={edit.inheritDefaults}>
-                      <span className="grow">
-                        <strong>Global MCP servers</strong>
-                        <small>The servers in Global defaults</small>
-                      </span>
-                    </Check>
-                  )}
-                  {data.servers.length ? (
-                    // Per-session servers start inside a worktree, which a remote client doesn't have.
-                    data.servers
-                      .filter((s) => !(edit.virtual || isVirtual(edit.id)) || s.mode === "shared")
-                      .map((s) => {
-                        const alias = aliasOf(edit, s.id);
-                        return (
-                          <Check className="item" key={s.id} name="server" value={s.id} defaultSelected={!!alias}>
-                            <span className="grow">
-                              <strong>{s.label ?? s.id}</strong>
-                              {alias && alias !== s.id && <small>Tool prefix: {alias}</small>}
-                            </span>
-                          </Check>
-                        );
-                      })
-                  ) : (
-                    <Empty>Connect a server first.</Empty>
-                  )}
-                </div>
-              </fieldset>
-              <ProjectSkillChecks data={data} project={edit.id} selected={edit.skills} />
-              <Button type="submit" size="sm">
-                Save project
-              </Button>
-            </form>
+                }, "Project saved")
+              }
+            />
           )}
         </Modal>
       )}
@@ -546,5 +482,38 @@ export function Projects(props: ViewProps) {
         </Modal>
       )}
     </>
+  );
+}
+
+/** A project's servers and skills as tags: servers by the name the app shows, with the tool prefix when it differs. */
+function Uses({
+  project,
+  servers,
+}: {
+  project?: Pick<PublicProject, "mcp" | "skills">;
+  servers: (id: string) => string;
+}) {
+  const mcp = Object.entries(project?.mcp ?? {});
+  const skills = project?.skills ?? [];
+  if (!mcp.length && !skills.length) return <small>No MCP servers or skills of its own</small>;
+  return (
+    <div className="uses">
+      {mcp.length > 0 && (
+        <span title="MCP servers">
+          <Boxes size={13} aria-label="MCP servers" />
+          {mcp.map(([alias, id]) => (
+            <Badge key={alias}>{alias === id ? servers(id) : `${servers(id)} as ${alias}`}</Badge>
+          ))}
+        </span>
+      )}
+      {skills.length > 0 && (
+        <span title="Skills">
+          <Sparkles size={13} aria-label="Skills" />
+          {skills.map((id) => (
+            <Badge key={id}>{id}</Badge>
+          ))}
+        </span>
+      )}
+    </div>
   );
 }

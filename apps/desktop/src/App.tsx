@@ -19,8 +19,19 @@ import {
 } from "lucide-react";
 import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
 import { desktopStatus, loadConnection, localAction, localConnection, native, saveConnection, status } from "./api.ts";
-import { Accounts, Dashboard, Nodes, Projects, Servers, Settings, Skills, T3Code } from "./views/index.ts";
+import {
+  Accounts,
+  ActivityView,
+  Dashboard,
+  Nodes,
+  Projects,
+  Servers,
+  Settings,
+  Skills,
+  T3Code,
+} from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
+import { problems } from "./attention.ts";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 
 import type { Perform } from "./types.ts";
@@ -34,6 +45,7 @@ const navigation = [
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "t3", title: "T3 Code", icon: SquareTerminal },
+  { id: "activity", title: "Activity", icon: Activity },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
 type View = (typeof navigation)[number]["id"];
@@ -45,6 +57,7 @@ const descriptions: Record<View, string> = {
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   t3: "Hand a thread to another machine and back, with its session and code.",
+  activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
 
@@ -196,6 +209,7 @@ export function App() {
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
+    activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
   const counts: Partial<Record<View, number>> = data
@@ -207,6 +221,8 @@ export function App() {
         nodes: data.nodes.length,
       }
     : {};
+  // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
+  const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
   return (
     <BusyContext value={busy}>
       <PendingContext value={pending}>
@@ -230,6 +246,9 @@ export function App() {
                           className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
                         />
                         {n.title}
+                        {attention.has(n.id) && (
+                          <span className="dot warning" role="img" aria-label="Needs attention" />
+                        )}
                         {counts[n.id] !== undefined && (
                           <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
                         )}

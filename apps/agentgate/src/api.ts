@@ -34,11 +34,12 @@ import {
 } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
 import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
-import { aliasesFor, connect, listAllTools, needsLogin, serverHealth, scanRepos, toolName } from "./mcp/gateway.ts";
+import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
   createInstance,
+  setServerProjects,
   labelInstance,
   deleteAccount,
   deleteInstance,
@@ -159,12 +160,7 @@ export function management(ctx: Ctx) {
   const tools = async (id: string) => {
     const inst = s.get("mcp", id);
     required(inst, "server");
-    const client = await connect(inst!, process.cwd(), s);
-    try {
-      return await listAllTools(client);
-    } finally {
-      await client.close();
-    }
+    return serverTools(s, inst!);
   };
   // Operational input errors are safe to show to a signed-in administrator.
   const input = <T>(fn: () => T): T => {
@@ -421,7 +417,9 @@ export function management(ctx: Ctx) {
       .parse(await json(c.req.raw));
     const { id: name, ...rest } = f;
     const inst = input(() => createInstance(s, { name, ...rest }));
-    return c.json({ id: inst.id }, 201);
+    // Connect a hosted server right away: it shows as available, or the app goes straight on to its sign-in.
+    const login = inst.url ? await serverTools(s, inst).then(() => false, needsLogin) : false;
+    return c.json({ id: inst.id, needsLogin: login }, 201);
   });
   app.patch("/servers/:id", async (c) => {
     const f = z
@@ -452,6 +450,14 @@ export function management(ctx: Ctx) {
     required(s.get("mcp", c.req.param("id")), "server");
     const url = await startLogin(s, c.req.param("id"), `${new URL(c.req.url).origin}/oauth/callback`);
     return c.json({ url: url?.href, ok: !url });
+  });
+  app.put("/servers/:id/projects", async (c) => {
+    const f = z
+      .object({ projects: z.array(projectIdSchema).max(5000) })
+      .strict()
+      .parse(await json(c.req.raw));
+    input(() => setServerProjects(s, c.req.param("id"), f.projects));
+    return c.json({ ok: true });
   });
   app.delete("/servers/:id", (c) => {
     required(s.get("mcp", c.req.param("id")), "server");
@@ -973,7 +979,17 @@ export function oauthCallback(ctx: Ctx) {
     const { code, state, error } = c.req.query();
     if (error || !code || !state) return c.text("Login failed. Return to Agentgate and start again.", 400);
     try {
-      await finishLogin(ctx.s, state, code);
+      const inst = ctx.s.get("mcp", await finishLogin(ctx.s, state, code));
+      // Connect once signed in, so the server shows as available without a test; in the background, so this page
+      // answers at once, and tracked, so the daemon stops after it.
+      if (inst) {
+        const check = serverTools(ctx.s, inst).then(
+          () => {},
+          () => {},
+        );
+        ctx.pending.add(check);
+        void check.finally(() => ctx.pending.delete(check));
+      }
       return c.text("Logged in. You can close this window and return to Agentgate.");
     } catch {
       return c.text("Login failed or expired. Return to Agentgate and start again.", 400);

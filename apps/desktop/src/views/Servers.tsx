@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Boxes, Plus } from "lucide-react";
 import { slugify, type Preset, type ServerSummary, type ToolPreview } from "@agentgate/protocol";
-import { Button } from "@heroui/react";
+import { Button, toast } from "@heroui/react";
 import {
   Badge,
   Check,
@@ -15,12 +15,14 @@ import {
   Working,
   usePending,
 } from "../components/ui.tsx";
+import { ServerProjectChecks } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 // The preset select's "no preset" entry; a list item cannot have an empty id.
 const custom = "__custom";
+const SIGN_IN = "Complete the sign-in in your browser. The server connects on its own afterwards.";
 
 export function Servers({ data, connection, perform }: ViewProps) {
   const pending = usePending();
@@ -31,6 +33,9 @@ export function Servers({ data, connection, perform }: ViewProps) {
   const [tools, setTools] = useState<{ id: string; tools: ToolPreview[] }>();
   const [rename, setRename] = useState<ServerSummary>();
   const [name, setName] = useState("");
+  /** The server whose projects are being chosen. */
+  const [assign, setAssign] = useState<string>();
+  const assigning = data.servers.find((s) => s.id === assign);
   useEffect(() => {
     let cancelled = false;
     void request<Preset[]>(connection, "/presets")
@@ -42,15 +47,15 @@ export function Servers({ data, connection, perform }: ViewProps) {
       cancelled = true;
     };
   }, [connection]);
-  const signIn = (id: string) =>
-    perform(
-      async () => {
-        const result = await request<{ url?: string }>(connection, `/servers/${idPath(id)}/login`, "POST");
-        if (result.url) await openExternal(result.url);
-      },
-      "Login started. Complete it in your browser; the server updates automatically.",
-      `login:${id}`,
-    );
+  const startLogin = async (id: string) => {
+    const result = await request<{ url?: string }>(connection, `/servers/${idPath(id)}/login`, "POST");
+    if (result.url) await openExternal(result.url);
+  };
+  const signIn = (id: string) => perform(() => startLogin(id), SIGN_IN, `login:${id}`);
+  const projectNames = (id: string) =>
+    data.projects
+      .filter((p) => Object.values(p.mcp).includes(id))
+      .map((p) => (p.id === "*" ? "Global defaults" : p.id));
   return (
     <>
       <HeaderActions>
@@ -74,7 +79,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
           </Empty>
         )}
         {data.servers.map((server) => {
-          const mappings = data.projects.filter((p) => Object.values(p.mcp).includes(server.id)).length;
+          const used = projectNames(server.id);
           const checked = server.checkedAt ? ` · checked ${ago(server.checkedAt)}` : "";
           const health =
             server.available === undefined
@@ -124,7 +129,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 </div>
                 <small>{server.label ? `Tool prefix ${server.id} · ${server.endpoint}` : server.endpoint}</small>
                 <small className={server.refreshError ? "danger" : ""}>
-                  {server.refreshError ?? `${mappings} ${mappings === 1 ? "project" : "projects"}`}
+                  {server.refreshError ?? (used.length ? `Used in ${used.join(", ")}` : "Not used in a project yet")}
                 </small>
               </div>
               {server.needsLogin && server.transport === "http" && (
@@ -135,6 +140,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
               <RowMenu
                 label={`More for ${server.id}`}
                 items={[
+                  { label: "Choose projects", onAction: () => setAssign(server.id) },
                   {
                     label: "Test",
                     onAction: () =>
@@ -178,8 +184,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
-                // The daemon turns the name into the id and tool prefix.
-                await request(connection, "/servers", "POST", {
+                // The daemon turns the name into the id and tool prefix, and connects to a hosted server right away.
+                const added = await request<{ id: string; needsLogin?: boolean }>(connection, "/servers", "POST", {
                   id: name,
                   target: preset || (mode === "http" ? field(f, "url") : undefined),
                   command: !preset && mode === "stdio" ? field(f, "command") : undefined,
@@ -187,7 +193,12 @@ export function Servers({ data, connection, perform }: ViewProps) {
                   headers: field(f, "headers"),
                 });
                 setAdd(false);
-              }, "Server added. Test the connection or sign in, then map it to a project.");
+                setAssign(added.id);
+                if (added.needsLogin) {
+                  await startLogin(added.id);
+                  toast(SIGN_IN);
+                } else toast("Server added. Choose where to use it.");
+              });
             }}
           >
             <Field
@@ -263,6 +274,28 @@ export function Servers({ data, connection, perform }: ViewProps) {
               </div>
             ))}
           </div>
+        </Modal>
+      )}
+      {assigning && (
+        <Modal title={`Where ${assigning.label ?? assigning.id} is used`} close={() => setAssign(undefined)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const projects = new FormData(e.currentTarget).getAll("project") as string[];
+              void perform(async () => {
+                await request(connection, `/servers/${idPath(assigning.id)}/projects`, "PUT", { projects });
+                setAssign(undefined);
+              }, "Saved. Running sessions pick up the change.");
+            }}
+          >
+            <ServerProjectChecks data={data} server={assigning} />
+            <p className="note">
+              Repositories appear here once a session starts in them, or after you add or scan them in Projects.
+            </p>
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
         </Modal>
       )}
       {rename && (

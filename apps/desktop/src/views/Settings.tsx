@@ -1,46 +1,20 @@
 import { useState } from "react";
 import { Copy, Terminal } from "lucide-react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Button, Tabs } from "@heroui/react";
+import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Modal, Panel, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, restoreFile } from "../api.ts";
-import { PoolSettings } from "../features/proxy/PoolSettings.tsx";
-import { ActivityView } from "./Activity.tsx";
+import { DaemonCapabilities, PoolSettings } from "../features/proxy/PoolSettings.tsx";
 
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
   const [secrets, setSecrets] = useState(false);
-  const [tab, setTab] = useState<"general" | "activity">("general");
   const action = (name: string) =>
     perform(async () => setOutput(await localAction(name, connection)), "Command completed");
-  const tabs = (
-    <Tabs className="segmented" selectedKey={tab} onSelectionChange={(key) => setTab(key as typeof tab)}>
-      <Tabs.ListContainer>
-        <Tabs.List aria-label="Settings sections">
-          <Tabs.Tab id="general">
-            General
-            <Tabs.Indicator />
-          </Tabs.Tab>
-          <Tabs.Tab id="activity">
-            Activity
-            <Tabs.Indicator />
-          </Tabs.Tab>
-        </Tabs.List>
-      </Tabs.ListContainer>
-    </Tabs>
-  );
-  if (tab === "activity")
-    return (
-      <>
-        {tabs}
-        <ActivityView data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
-      </>
-    );
   return (
     <>
-      {tabs}
       <PoolSettings data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
       {local && (
         <>
@@ -60,7 +34,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 Route existing CLI logins
                 <small>
                   Updates your existing Claude Code and Codex settings to use the pool. Claude Desktop isn't affected;
-                  see Claude Desktop in the sidebar.
+                  it is on Accounts.
                 </small>
               </span>
               <Button size="sm" variant="ghost" onPress={() => void action("primary-off")}>
@@ -102,6 +76,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 Service
                 <small>Starts the daemon at login and keeps it running.</small>
               </span>
+              {/* This page only opens while the daemon answers. When it stops, the banner above every page offers Start. */}
               <Button
                 size="sm"
                 variant="ghost"
@@ -116,9 +91,6 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
                 }}
               >
                 Stop
-              </Button>
-              <Button size="sm" variant="tertiary" onPress={() => void action("start")}>
-                Start
               </Button>
               <Button size="sm" variant="tertiary" onPress={() => void action("install")}>
                 Install / update
@@ -192,6 +164,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
           </Panel>
         </>
       )}
+      <DaemonCapabilities data={data} />
       {output && (
         <Modal title="Agentgate output" close={() => setOutput("")}>
           <pre className="output">{output}</pre>

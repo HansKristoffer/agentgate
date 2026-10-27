@@ -35,6 +35,7 @@ import {
   createInstance,
   deleteAccount,
   deleteInstance,
+  setServerProjects,
   labelInstance,
   removeNode,
   renameInstance,
@@ -76,6 +77,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   mcp add <name> --command "npx -y …" [--per-session]
   mcp label <id> <name>                                      change the name shown in the app
   mcp login <name> | rename <name> <new> | ls | presets | test <name> | rm <name>
+  mcp projects <name> [<owner/repo|*> ...]   the projects that use the server (* = Global defaults)
   skills find <query>                         search skills.sh
   skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...]
   skills new|edit <name> --file SKILL.md      write a skill by hand
@@ -460,6 +462,12 @@ async function main() {
 
     case "mcp": {
       initialized(s);
+      const mcpLogin = async (id: string) => {
+        const url = await startLogin(s, id, `${LOCAL_URL}/oauth/callback`);
+        if (!url) return console.log(`${id}: logged in`);
+        console.log(`Open this to log in (the daemon must be running to receive the callback):\n\n  ${url.href}\n`);
+        if (process.platform === "darwin") Bun.spawn(["open", url.href]);
+      };
       if (sub === "presets") {
         for (const p of presets)
           console.log(
@@ -491,23 +499,18 @@ async function main() {
           headers: opts.header as string[] | undefined,
         });
         const id = inst.id;
-        if (inst.url) {
-          const ok = await connect(inst, process.cwd(), s).then(
+        const ok =
+          !inst.url ||
+          (await connect(inst, process.cwd(), s).then(
             (c) => c.close().then(() => true),
             (e) => (needsLogin(e) ? false : die(`${id}: ${e}`)),
-          );
-          if (!ok) console.log(`${id} needs a login: agentgate mcp login ${id}`);
-        }
-        return console.log(`added ${id}; use it with: agentgate project set <owner/repo|*> ${id}=${id}`);
+          ));
+        console.log(`added ${id}`);
+        // A server that needs a login goes straight on to it, as in the app.
+        if (!ok) await mcpLogin(id);
+        return console.log(`use it with: agentgate mcp projects ${id} <owner/repo|*>`);
       }
-      if (sub === "login") {
-        const id = rest[0] ?? die("mcp login <name>");
-        const url = await startLogin(s, id, `${LOCAL_URL}/oauth/callback`);
-        if (!url) return console.log(`${id}: logged in`);
-        console.log(`Open this to log in (the daemon must be running to receive the callback):\n\n  ${url.href}\n`);
-        if (process.platform === "darwin") Bun.spawn(["open", url.href]);
-        return;
-      }
+      if (sub === "login") return mcpLogin(rest[0] ?? die("mcp login <name>"));
       if (sub === "test") {
         const inst = s.get("mcp", rest[0] ?? "") ?? die(`no instance ${rest[0]}`);
         const client = await connect(inst, process.cwd(), s).catch((e) =>
@@ -534,6 +537,14 @@ async function main() {
         if (!from || !to) die("mcp rename <name> <new-name>");
         renameInstance(s, from!, to!);
         return console.log(`renamed ${from} to ${to}`);
+      }
+      if (sub === "projects") {
+        const id = rest[0] ?? die("mcp projects <name> [<owner/repo|*> ...]");
+        setServerProjects(s, id, rest.slice(1));
+        const used = s.list("project").filter((p) => Object.values(p.mcp).includes(id));
+        return console.log(
+          used.length ? `${id} is used in ${used.map((p) => p.id).join(", ")}` : `${id} is in no project`,
+        );
       }
       if (sub === "rm") return deleteInstance(s, rest[0] ?? die("mcp rm <id>"));
       return die(HELP);

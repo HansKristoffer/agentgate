@@ -17,6 +17,7 @@ import {
   usable,
 } from "./ClaudeDesktop.tsx";
 import { request } from "../api.ts";
+import { accountProblem } from "../attention.ts";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
 import { field, idPath, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
@@ -71,18 +72,10 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead.
    * An expired copy of a login another machine holds is not missing: that machine refreshes it and sync brings it here. */
-  const problem = (a: AccountStatus) =>
-    a.waitingFor
-      ? `Waiting for ${a.waitingFor}`
-      : a.needsLogin || a.expired
-        ? undefined
-        : a.refreshError
-          ? "Refresh failed"
-          : !a.account.enabled
-            ? "Disabled"
-            : a.exhausted
-              ? "Limit reached"
-              : undefined;
+  const problem = (a: AccountStatus) => {
+    const p = accountProblem(a);
+    return p === "Needs sign-in" ? undefined : p;
+  };
   const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
   const pinTitle = (a: AccountStatus) =>
     a.account.pinned
@@ -106,6 +99,11 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
     const current = app?.mode === "signed-in" ? app.current : undefined;
     if (usable(login) && current?.accountUuid !== login!.accountUuid) await act.use(login!);
   };
+  // A provider gets a panel once it has an account, and Claude whenever Claude Desktop is here; the others are a
+  // choice in Add account.
+  const providers = (["claude", "codex", "cursor"] as const).filter(
+    (p) => data.accounts.some((a) => a.account.provider === p) || (p === "claude" && !!app),
+  );
   const start = (provider: Provider, label: string, email?: string) => {
     setAdd(false);
     return begin(provider, label, email);
@@ -150,7 +148,15 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           ))}
         </Panel>
       )}
-      {(["claude", "codex", "cursor"] as const).map((provider) => (
+      {!providers.length && (
+        <Panel>
+          <Empty>
+            <strong>No accounts yet.</strong>
+            <p>Add a Claude, Codex or Cursor subscription to share it across your sessions.</p>
+          </Empty>
+        </Panel>
+      )}
+      {providers.map((provider) => (
         <Panel
           key={provider}
           title={providerName(provider)}
@@ -241,10 +247,6 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        (a.account.pinned || pinnable(a)) && {
-                          label: a.account.pinned ? "Unpin (back to automatic)" : "Pin this account",
-                          onAction: () => void setPin(a, !a.account.pinned),
-                        },
                         { label: "Edit policy", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
