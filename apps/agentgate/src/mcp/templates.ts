@@ -32,6 +32,14 @@ export const presets: Preset[] = [
     args: ["-y", "@shopify/dev-mcp@latest"],
     note: "Shopify docs and API schemas",
   },
+  // Signs in with the Infisical machine identity set under Shared logins (infisicalMcpEnv in logins.ts).
+  {
+    id: "infisical",
+    label: "Infisical",
+    command: "npx",
+    args: ["-y", "@infisical/mcp"],
+    note: "uses the Infisical machine identity from Shared logins",
+  },
   {
     id: "filesystem",
     label: "Filesystem",

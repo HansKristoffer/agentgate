@@ -16,6 +16,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { NeedsLogin } from "../credentials.ts";
+import { infisicalMcpEnv } from "../logins.ts";
 import { fetchHeaders, sleep } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
 import { CALL_LIMIT, authenticatedFetch, headerWait } from "./oauth.ts";
@@ -81,6 +82,7 @@ export async function connect(inst: McpInstance, cwd?: string, s?: Store): Promi
 
 async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
   const r = resolve(inst);
+  if (inst.template === "infisical" && s) r.env = { ...infisicalMcpEnv(s), ...r.env };
   const client = new Client({ name: "agentgate", version: VERSION });
   let transport: StdioClientTransport | StreamableHTTPClientTransport;
   let stderr = "";
