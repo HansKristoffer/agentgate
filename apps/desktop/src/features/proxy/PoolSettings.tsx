@@ -24,6 +24,35 @@ const numbers = [
   ["logRetention", "Retained requests", 100, 100000],
   ["logRetentionBytes", "Activity storage budget (bytes)", 65536, 268435456],
 ] as const;
+/** What each provider adapter on this daemon supports. For troubleshooting, so Settings shows it last. */
+export function DaemonCapabilities({ data }: Pick<ViewProps, "data">) {
+  return (
+    <Panel
+      title="Daemon capabilities"
+      detail={
+        data.daemon
+          ? `Version ${data.daemon.version} · Build ${data.daemon.build} · ${data.node}`
+          : "This daemon does not advertise optional capabilities."
+      }
+    >
+      {data.daemon &&
+        typedKeys(data.daemon.providers).map((provider) => (
+          <div className="item" key={provider}>
+            <div className={`provider-icon ${provider}`}>{providerIcon(provider)}</div>
+            <strong className="grow">{providerName(provider)}</strong>
+            <div className="row wrap">
+              {Object.entries(data.daemon!.providers[provider]).map(([name, supported]) => (
+                <Badge key={name} good={supported}>
+                  {supported ? name : `${name} unsupported`}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ))}
+    </Panel>
+  );
+}
+
 export function PoolSettings({ data, connection, perform }: ViewProps) {
   const [base, setBase] = useState(() => ({
     settings: data.settings,
@@ -85,29 +114,6 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
   const label = (id?: string) => data.accounts.find((a) => a.account.id === id)?.account.label ?? id;
   return (
     <>
-      <Panel
-        title="Daemon capabilities"
-        detail={
-          data.daemon
-            ? `Version ${data.daemon.version} · Build ${data.daemon.build} · ${data.node}`
-            : "This daemon does not advertise optional capabilities."
-        }
-      >
-        {data.daemon &&
-          typedKeys(data.daemon.providers).map((provider) => (
-            <div className="item" key={provider}>
-              <div className={`provider-icon ${provider}`}>{providerIcon(provider)}</div>
-              <strong className="grow">{providerName(provider)}</strong>
-              <div className="row wrap">
-                {Object.entries(data.daemon!.providers[provider]).map(([name, supported]) => (
-                  <Badge key={name} good={supported}>
-                    {supported ? name : `${name} unsupported`}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          ))}
-      </Panel>
       <Panel
         title="Pool behavior"
         detail="Policy syncs to paired machines. Activity and backoff remain local to each daemon."

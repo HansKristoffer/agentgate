@@ -2,13 +2,7 @@ import { useState } from "react";
 import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import {
-  slugify,
-  type SkillPreview,
-  type SkillPreviewResponse,
-  type SkillSearchResult,
-  type Status,
-} from "@agentgate/protocol";
+import { slugify, type SkillPreview, type SkillPreviewResponse, type SkillSearchResult } from "@agentgate/protocol";
 import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
 import {
   Badge,
@@ -22,7 +16,7 @@ import {
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ProjectChecks } from "../components/SkillAssignments.tsx";
+import { ProjectChecks } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -37,7 +31,18 @@ Instructions for the agent.
 const size = (bytes: number) => (bytes < 1024 ? `${bytes} B` : `${Math.round(bytes / 1024)} KB`);
 const places = (ids: string[]) =>
   ids.includes("*") ? "Every session" : ids.length ? ids.join(", ") : "Not linked to any project yet";
-const where = (data: Status, id: string) => places(data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id));
+/** The projects a skill is linked into, as tags; Global defaults puts it in every session. */
+function Where({ ids }: { ids: string[] }) {
+  if (!ids.length) return <small>Not linked to any project yet</small>;
+  return (
+    <div className="uses">
+      <span title="Projects">
+        <FolderGit2 size={13} aria-label="Projects" />
+        {ids.includes("*") ? <Badge>Every session</Badge> : ids.map((id) => <Badge key={id}>{id}</Badge>)}
+      </span>
+    </div>
+  );
+}
 type Editor = { id?: string; skillMd: string; revision?: string | null };
 const repoName = (url: string) => url.replace("https://github.com/", "");
 /** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
@@ -62,6 +67,10 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const [skillName, setSkillName] = useState("");
   const [assign, setAssign] = useState<string>();
   const [repoAssign, setRepoAssign] = useState<string>();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const shown = data.skills.filter((k) => `${k.id} ${k.description}`.toLowerCase().includes(needle));
+  const usedBy = (id: string) => data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id);
   const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
   const load = (source: string, skill?: string) =>
     perform(async () => {
@@ -132,9 +141,41 @@ export function Skills({ data, connection, perform }: ViewProps) {
           Add skills
         </Button>
       </HeaderActions>
+      {(data.skillHealth.errors.length > 0 || data.skillConflicts.length > 0) && (
+        <Panel title="Skills need attention" detail="Agentgate retries these automatically.">
+          {data.skillHealth.errors.map((error, index) => (
+            <div className="item" key={`${error.path}:${index}`}>
+              <span className="grow">
+                <strong>{error.path}</strong>
+                <small className="danger">{error.message}</small>
+              </span>
+            </div>
+          ))}
+          {/* A folder we didn't create already holds a skill by this name, so we never overwrite it. */}
+          {data.skillConflicts.map((path) => (
+            <div className="item" key={path}>
+              <span className="grow">
+                <strong>{path}</strong>
+                <small className="danger">
+                  Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one
+                  of them.
+                </small>
+              </span>
+            </div>
+          ))}
+        </Panel>
+      )}
       <Panel
         foot={`Project skills are linked into ${data.checkouts.length} local ${data.checkouts.length === 1 ? "checkout" : "checkouts"} on this machine. A repository is added when a session starts in it, or when you scan a folder in Projects. New sessions pick up changes.`}
       >
+        {data.skills.length > 6 && (
+          <div className="item">
+            <TextField aria-label="Search skills" value={query} onChange={setQuery} className="field grow">
+              <Input type="search" placeholder={`Search ${data.skills.length} skills`} />
+            </TextField>
+          </div>
+        )}
+        {needle && !shown.length && <Empty>Nothing matches "{query}".</Empty>}
         {!data.skills.length && (
           <Empty>
             <Sparkles size={22} />
@@ -145,35 +186,34 @@ export function Skills({ data, connection, perform }: ViewProps) {
             </p>
           </Empty>
         )}
-        {data.skills.map((skill) => (
+        {shown.map((skill) => (
           <div className="item" key={skill.id}>
             <div className="machine-icon">
               <Sparkles size={16} />
             </div>
             <div className="grow">
               <div className="row group">
-                {/* The copy button floats over the badge on hover, so it takes no room in the row. */}
-                <span className="relative">
-                  <strong>{skill.id}</strong>
-                  <Button
-                    isIconOnly
-                    size="sm"
-                    variant="tertiary"
-                    aria-label={`Copy ${skill.id}`}
-                    className="absolute top-1/2 left-full z-10 ml-1.5 size-6 min-w-0 -translate-y-1/2 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onPress={() => void navigator.clipboard.writeText(skill.id).then(() => toast(`Copied ${skill.id}`))}
-                  >
-                    <Copy size={13} />
-                  </Button>
-                </span>
-                <Badge good={!!skill.source}>{sourceLabel(skill.source)}</Badge>
+                <strong>{skill.id}</strong>
+                {/* Sits right after the name in its own room, so nothing shifts or hides when it appears on hover. */}
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`Copy ${skill.id}`}
+                  className="-ml-1.5 size-5 min-w-0 rounded-md text-(--muted) opacity-0 group-hover:opacity-100 hover:text-(--foreground) focus-visible:opacity-100"
+                  onPress={() => void navigator.clipboard.writeText(skill.id).then(() => toast(`Copied ${skill.id}`))}
+                >
+                  <Copy size={12} />
+                </Button>
+                <Badge>{sourceLabel(skill.source)}</Badge>
                 {pending.has(`update:${skill.id}`) && <Working>Updating</Working>}
               </div>
               {skill.description && <small>{truncate(skill.description, 180)}</small>}
               <small>
-                {where(data, skill.id)}
-                {sourceLabel(skill.source) === "skills.sh" && ` · ${skill.source}`} · {size(skill.size)}
+                {sourceLabel(skill.source) === "skills.sh" && `${skill.source} · `}
+                {size(skill.size)}
               </small>
+              <Where ids={usedBy(skill.id)} />
             </div>
             <RowMenu
               label={`More for ${skill.id}`}
@@ -289,30 +329,6 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   },
                 ]}
               />
-            </div>
-          ))}
-        </Panel>
-      )}
-      {(data.skillHealth.errors.length > 0 || data.skillConflicts.length > 0) && (
-        <Panel title="Skills need attention" detail="Agentgate retries these automatically.">
-          {data.skillHealth.errors.map((error, index) => (
-            <div className="item" key={`${error.path}:${index}`}>
-              <span className="grow">
-                <strong>{error.path}</strong>
-                <small className="danger">{error.message}</small>
-              </span>
-            </div>
-          ))}
-          {/* A folder we didn't create already holds a skill by this name, so we never overwrite it. */}
-          {data.skillConflicts.map((path) => (
-            <div className="item" key={path}>
-              <span className="grow">
-                <strong>{path}</strong>
-                <small className="danger">
-                  Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one
-                  of them.
-                </small>
-              </span>
             </div>
           ))}
         </Panel>

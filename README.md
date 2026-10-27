@@ -31,7 +31,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
-Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service, and also updates a global npm or bun install of agentgate that your PATH finds first. The CLI warns when it is not the release the daemon runs. `agentgate update <node>` does the same on a paired machine. Both wait until the machine reports the new release, and say so if it is still restarting after 90 seconds. The app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service, and also updates a global npm or bun install of agentgate that your PATH finds first. The CLI warns when it is not the release the daemon runs. `agentgate update <node>` does the same on a paired machine. Both wait until the machine reports the new release, and say so if it is still restarting after 90 seconds. The app lists machines on an older release under **Needs attention** on the overview, with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
@@ -47,7 +47,7 @@ agentgate service install           # launchd (macOS) or systemd --user (Linux)
 
 You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, and starts a launchd service. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
 
-The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, and Settings screens; request activity is a tab in Settings. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
+The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
 
 ## A second machine (e.g. an always-on server)
 
@@ -62,7 +62,7 @@ On the first machine, run `agentgate pair` or use **Pair a machine** in the app.
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_NAME=srv sh -s -- join agr1.…
 ```
 
-If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or the **Always on** switch.
+If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or **Mark as always on** in its ⋯ menu on Machines.
 
 The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
 
@@ -76,7 +76,7 @@ To control the server from the native app over Tailscale, open the connection se
 
 ## Machine dashboard
 
-Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and the last hour as charts. In **Machines**, turn on **Dashboard** for a machine, then **Open dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
+Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and the last hour as charts. In **Machines**, choose **Turn on health dashboard** in a machine's ⋯ menu, then **Open health dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
 
 - It runs on Linux machines only, since it reads `/proc`. On a Mac, opening it only says so.
 - Anyone on your tailnet can open it without signing in, as they could the server health page before. It shows program names and resource use, never command lines, credentials or accounts. Turn it off on machines you don't want it on.
@@ -138,19 +138,20 @@ The proxy now provides quota freshness and reset visibility, searchable **Activi
 
 ## MCP servers per repo
 
-In the native app (MCP servers), paste a server's URL and a name and click **Connect**. If the server uses MCP OAuth, click **Sign in** to open the browser; its callback completes in the daemon and the app updates automatically; agentgate keeps the login, refreshes it, and syncs it to your other machines. Presets cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7), a per-worktree filesystem server, and Infisical, which signs in with the [Infisical machine identity](#a-second-machine-eg-an-always-on-server) set under **Shared logins**. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
+In the native app (MCP servers), paste a server's URL and a name and click **Connect**, then choose the projects that use it (**Global defaults** puts it in every repository). If the server uses MCP OAuth, the browser opens to sign in; its callback completes in the daemon, which connects to the server and shows it as available. agentgate keeps the login, refreshes it, and syncs it to your other machines. **Choose projects** in a server's ⋯ menu changes where it is used later. Presets cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7), a per-worktree filesystem server, and Infisical, which signs in with the [Infisical machine identity](#a-second-machine-eg-an-always-on-server) set under **Shared logins**. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
 
 From the CLI:
 
 ```sh
-agentgate mcp add geysier https://app.geysier.com/api/mcp
-agentgate mcp login geysier                   # opens the login page; the daemon receives the callback
+agentgate mcp add geysier https://app.geysier.com/api/mcp   # opens the login page when the server needs one
+agentgate mcp login geysier                   # sign in again; the daemon receives the callback
 agentgate mcp add posthog-lullu posthog --header "x-posthog-project-id: 12345"
 agentgate mcp add fs filesystem               # presets: agentgate mcp presets
 agentgate mcp add mytool --command "npx -y @some/mcp-server" [--per-session]
 
-agentgate project set '*' fs=fs
-agentgate project set Lullu-ai/lullu posthog=posthog-lullu
+agentgate mcp projects fs '*'                 # * = Global defaults, in every repository
+agentgate mcp projects geysier Geysier/gey-mono Geysier/gey-fw
+agentgate project set Lullu-ai/lullu posthog=posthog-lullu   # under a tool prefix of your own
 agentgate mcp test posthog-lullu
 ```
 

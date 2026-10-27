@@ -19,7 +19,7 @@ import {
   route,
 } from "../src/llm/routing.ts";
 import { Telemetry, metrics, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
-import { proxy } from "../src/llm/pool.ts";
+import { accountStatus, proxy } from "../src/llm/pool.ts";
 import { ProxyOperations } from "../src/llm/operations.ts";
 import { parseQuota } from "../src/llm/codex.ts";
 import { capabilities, type Provider } from "../src/llm/provider.ts";
@@ -234,6 +234,43 @@ test("Codex quota polling is opt-in, holder-owned, and manual refresh works", as
   s.put("setting", "settings", { codexQuotaPolling: true });
   await quotas.poll(signal);
   expect(count).toBe(2);
+});
+
+test("usage refreshes itself: on the holder once a window resets, elsewhere once the holder misses a round", async () => {
+  const { s, creds } = fixture();
+  let now = s.now();
+  s.now = () => now;
+  const credential = s.get("credential", "b")!;
+  s.put("credential", "b", { ...credential, holder: "laptop" });
+  for (const id of ["a", "b"])
+    recordUsage(s, id, { windows: [{ name: "5h", usedPct: 70, resetsAt: now + 2 * 60_000 }], status: "ok" });
+  const polled: string[] = [];
+  const quotas = new Quotas(s, creds, {
+    claude: {
+      ...adapter,
+      fetchQuota: async (c) => {
+        polled.push(c.accountId);
+        return { windows: [{ name: "5h", usedPct: 0, resetsAt: now + 5 * 3600_000 }], status: "ok" };
+      },
+    },
+  });
+  const signal = new AbortController().signal;
+  await quotas.poll(signal);
+  expect(polled).toEqual([]);
+  now += 3 * 60_000;
+  await quotas.poll(signal);
+  expect(polled).toEqual(["a"]);
+  expect(accountStatus(s, s.get("account", "b")!).quotaState).toBe("fresh");
+  // The laptop holding b is asleep: its usage goes a full round without news, and this machine reads it instead.
+  now += 18 * 60_000;
+  expect(accountStatus(s, s.get("account", "b")!).quotaState).toBe("stale");
+  await quotas.poll(signal);
+  expect(polled.toSorted()).toEqual(["a", "a", "b"]);
+  // Not with a token close to expiry: reading usage must never be what makes this machine refresh someone else's login.
+  now += 21 * 60_000;
+  s.put("credential", "b", { ...s.get("credential", "b")!, expiresAt: now + 5 * 60_000 });
+  await quotas.poll(signal);
+  expect(polled.filter((id) => id === "b")).toHaveLength(1);
 });
 
 test("Codex fixtures normalize read-only windows and reject malformed data", () => {

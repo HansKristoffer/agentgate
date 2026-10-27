@@ -135,6 +135,16 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
   }
 }
 
+/** Connects, lists the tools and disconnects, recording the outcome as the server's health. */
+export async function serverTools(s: Store, inst: McpInstance): Promise<Tool[]> {
+  const client = await connect(inst, process.cwd(), s);
+  try {
+    return await listAllTools(client);
+  } finally {
+    await client.close();
+  }
+}
+
 export async function listAllTools(c: Client): Promise<Tool[]> {
   const tools: Tool[] = [];
   let cursor: string | undefined;

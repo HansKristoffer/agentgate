@@ -1,19 +1,23 @@
-import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
+import { ArrowRight, Boxes, Monitor, TriangleAlert, Users } from "lucide-react";
 import { Button } from "@heroui/react";
 import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import { TokenCalendar } from "../features/proxy/TokenCalendar.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
-import { outdatedNodes } from "@agentgate/protocol";
-import { providerIcon, providerName } from "./utils.ts";
+import { accountProblem, problems, type Page } from "../attention.ts";
+import { providerIcon, providerName, toolName } from "./utils.ts";
 
-export function Dashboard({
-  data,
-  connection,
-  navigate,
-}: ViewProps & { navigate: (view: "accounts" | "servers" | "nodes") => void }) {
-  const outdated = outdatedNodes(data.nodes);
+const pageTitle: Record<Page, string> = {
+  accounts: "Accounts",
+  servers: "MCP servers",
+  skills: "Skills",
+  projects: "Projects",
+  nodes: "Machines",
+};
+
+export function Dashboard({ data, connection, navigate }: ViewProps & { navigate: (view: Page) => void }) {
+  const issues = problems(data);
   return (
     <>
       <div className="stats">
@@ -47,27 +51,19 @@ export function Dashboard({
           </button>
         ))}
       </div>
-      {outdated.length > 0 && (
-        <Panel
-          title="Machines on an older version"
-          detail="Paired machines work best on the same release."
-          action={
-            <Button size="sm" variant="tertiary" onPress={() => navigate("nodes")}>
-              Update on Machines
-              <ArrowRight size={14} />
-            </Button>
-          }
-        >
-          {outdated.map((n) => (
-            <div className="item" key={n.id}>
-              <div className="machine-icon">
-                <Monitor size={16} />
-              </div>
+      {issues.length > 0 && (
+        <Panel title="Needs attention" detail="Agentgate can't fix these on its own.">
+          {issues.map((p) => (
+            <div className="item" key={p.key}>
+              <TriangleAlert size={16} className="attention-icon" />
               <div className="grow">
-                <strong>{n.id}</strong>
-                <small>{n.version ? `Agentgate ${n.version}` : "An older Agentgate release"}</small>
+                <strong>{p.title}</strong>
+                {p.detail && <small>{p.detail}</small>}
               </div>
-              {!n.online && <Badge>Offline</Badge>}
+              <Button size="sm" variant="tertiary" onPress={() => navigate(p.page)}>
+                {pageTitle[p.page]}
+                <ArrowRight size={14} />
+              </Button>
             </div>
           ))}
         </Panel>
@@ -111,22 +107,8 @@ export function Dashboard({
                   {providerName(a.account.provider)} · {a.account.email ?? a.account.plan ?? "Subscription"}
                 </small>
               </div>
-              <Badge good={a.active && !a.needsLogin && !a.expired}>
-                {a.needsLogin
-                  ? "Needs login"
-                  : a.waitingFor
-                    ? `Waiting for ${a.waitingFor}`
-                    : a.expired
-                      ? "Token expired"
-                      : a.refreshError
-                        ? "Refresh failed"
-                        : a.exhausted
-                          ? "Exhausted"
-                          : a.active
-                            ? "Active"
-                            : a.account.enabled
-                              ? "Ready"
-                              : "Disabled"}
+              <Badge good={!accountProblem(a)}>
+                {accountProblem(a) ?? (a.active ? `In ${toolName(a.account.provider)}` : "Ready")}
               </Badge>
               <AccountQuota account={a} />
             </div>

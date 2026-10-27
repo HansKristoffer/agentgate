@@ -8,7 +8,7 @@ Accounts and Overview share measured quota windows, reset countdowns, and local 
 
 The app offers **Refresh usage** in an account's ⋯ menu. The other checks run from the CLI below, on one account or a batch: up to 100 accounts run with four concurrent workers and per-account results. Verification checks coordinated credentials, read-only quota, and model discovery. `--probe` sends a small request through the proxy using the selected account and consumes quota. It requires an explicit model and never silently switches to another account.
 
-Claude background usage checks prefer the credential holder. Codex background polling defaults off: `/backend-api/wham/usage` and `/backend-api/codex/models?client_version=0.149.1` are isolated candidate integrations covered by fixtures, awaiting live-client validation. Manual checks are available. Failed polls retain previous observations and expose sanitized health. Live observations received during a poll take precedence; relogin and deletion invalidate old results.
+Claude background usage checks run on the credential holder every 10 minutes, and as soon as a limit window has reset. When the holder misses a round (asleep or offline), another machine reads the usage instead, so the app's usage never needs a manual refresh. Codex background polling defaults off: `/backend-api/wham/usage` and `/backend-api/codex/models?client_version=0.149.1` are isolated candidate integrations covered by fixtures, awaiting live-client validation. Manual checks are available. Failed polls retain previous observations and expose sanitized health. Live observations received during a poll take precedence; relogin and deletion invalidate old results.
 
 ```sh
 agentgate accounts quota account-a account-b
@@ -58,7 +58,7 @@ Example settings patch:
 
 ## Activity
 
-Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search. Follow refreshes the latest page every five seconds. Pause preserves the current page and enables loading older results; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy diagnostics** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
+Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search, and applies each filter as you change it. Follow refreshes the latest page every five seconds. Pause preserves the current page and enables loading older results; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy diagnostics** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
 
 ```sh
 agentgate requests --provider claude --outcome failed

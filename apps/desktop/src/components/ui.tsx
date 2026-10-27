@@ -111,11 +111,21 @@ export function Quota({ value }: { value: number }) {
     </ProgressBar>
   );
 }
-export function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
+export function Modal({
+  title,
+  children,
+  close,
+  size,
+}: {
+  title: string;
+  children: ReactNode;
+  close: () => void;
+  size?: ComponentProps<typeof HeroModal.Container>["size"];
+}) {
   const busy = useContext(BusyContext);
   return (
     <HeroModal.Backdrop isOpen onOpenChange={(open) => !open && close()}>
-      <HeroModal.Container>
+      <HeroModal.Container size={size}>
         <HeroModal.Dialog className="dialog">
           <HeroModal.CloseTrigger aria-label="Close dialog" />
           <HeroModal.Header>

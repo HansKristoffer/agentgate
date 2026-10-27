@@ -117,15 +117,35 @@ export function labelInstance(s: Store, id: string, label: string) {
   if (!name || name.length > 100) throw new Error("name: 1 to 100 characters");
   s.put("mcp", id, { ...inst, label: name === id ? undefined : name });
 }
+const unmap = (s: Store, p: Project, id: string) =>
+  s.put("project", p.id, { ...p, mcp: Object.fromEntries(Object.entries(p.mcp).filter(([, v]) => v !== id)) });
 export function deleteInstance(s: Store, id: string) {
   s.transaction(() => {
     s.del("mcp", id);
     s.del("mcpCredential", id);
     s.del("refreshRequest", `mcpCredential:${id}`);
     s.setLocal(`refreshError:mcpCredential:${id}`, undefined);
+    for (const p of s.list("project")) if (Object.values(p.mcp).includes(id)) unmap(s, p, id);
+  });
+}
+/** Maps a server into exactly these projects (`*` is Global defaults). A project that already has it keeps its tool
+ * prefix; a new mapping uses the server's id. */
+export function setServerProjects(s: Store, id: string, projects: string[]) {
+  s.transaction(() => {
+    const inst = s.get("mcp", id);
+    if (!inst) throw new Error(`no MCP server ${id}`);
+    const targets = getUniqueValues(projects.map((p) => canonicalProject(s, projectIdSchema.parse(p))));
     for (const p of s.list("project"))
-      if (Object.values(p.mcp).includes(id))
-        s.put("project", p.id, { ...p, mcp: Object.fromEntries(Object.entries(p.mcp).filter(([, v]) => v !== id)) });
+      if (!targets.includes(p.id) && Object.values(p.mcp).includes(id)) unmap(s, p, id);
+    for (const target of targets) {
+      const p = s.get("project", target);
+      if (p && Object.values(p.mcp).includes(id)) continue;
+      if (isVirtual(target) && inst.mode === "perSession")
+        throw new Error(`${id} starts in each session's worktree, which ${target} does not have`);
+      const taken = p?.mcp[id];
+      if (taken) throw new Error(`${target} already uses the tool prefix ${id} for ${taken}`);
+      saveProject(s, target, { mcp: { ...p?.mcp, [id]: id } });
+    }
   });
 }
 export function renameInstance(s: Store, from: string, to: string) {

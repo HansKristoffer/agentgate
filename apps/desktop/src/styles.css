@@ -317,6 +317,38 @@ pre {
 .checklist .item {
   min-height: 40px;
 }
+/* The project form's list of servers or skills: one scrolling group, under its tabs. */
+.picker {
+  max-height: 320px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+.picker .item {
+  min-height: 44px;
+}
+.project-form > .rows {
+  margin-bottom: 14px;
+}
+.project-form .tabs__tab {
+  gap: 6px;
+}
+/* A project's servers and skills as tags, each kind behind its icon. */
+.uses {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.uses > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.uses > span > svg {
+  color: var(--muted);
+  margin-right: 2px;
+}
 .inline-form {
   display: flex;
   gap: 8px;
@@ -600,6 +632,13 @@ pre {
 }
 .dot.offline {
   background: var(--danger);
+}
+.dot.warning {
+  background: var(--warning);
+}
+.attention-icon {
+  color: var(--warning);
+  flex: none;
 }
 .dot-button {
   display: flex;
@@ -935,7 +974,7 @@ h3 {
 
 .activity-filters {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px 16px;
 }
 .activity-filters > .field {

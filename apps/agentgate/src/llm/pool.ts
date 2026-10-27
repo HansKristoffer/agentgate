@@ -410,11 +410,7 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     waitingFor: c && !c.needsLogin && c.expiresAt <= now && c.holder !== s.nodeId ? c.holder : undefined,
     refreshError: s.local(`refreshError:credential:${account.id}`) ? "token refresh failed" : undefined,
     revision: revision(s, "account", account.id),
-    quotaState: !u
-      ? "unknown"
-      : now - u.observedAt >= QUOTA_STALE || u.windows.some((w) => w.resetsAt && w.resetsAt <= now)
-        ? "stale"
-        : "fresh",
+    quotaState: !u ? "unknown" : now - u.observedAt >= QUOTA_STALE ? "stale" : "fresh",
     quotaHealth: quotaHealth(s, account.id),
     cooldowns: cooldowns(s, account.id),
     models: modelsFor(s, account.id),
