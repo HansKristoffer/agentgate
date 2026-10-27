@@ -8,10 +8,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
-import { aliasesFor, parseRemote, toolName } from "../src/mcp/gateway.ts";
+import { aliasesFor, connect, parseRemote, toolName } from "../src/mcp/gateway.ts";
 import { renameInstance } from "../src/operations.ts";
 import { DAEMON_DOWN, buildShim } from "../src/mcp/shim.ts";
-import { newInstance } from "../src/mcp/templates.ts";
+import { fromPreset, newInstance, preset } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
 
 test("git remotes normalise to owner/repo", () => {
@@ -390,5 +390,33 @@ test("shared long tools stay open during idle sweeps and carry cancellation/prog
     daemon.stop(true);
     s.close();
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the Infisical preset signs in with the shared machine identity", async () => {
+  const s = new Store(":memory:");
+  // The preset's server, with the fixture standing in for `npx -y @infisical/mcp`.
+  const inst = {
+    ...fromPreset(preset("infisical")!),
+    command: process.execPath,
+    args: [join(import.meta.dir, "fixtures", "mcp.ts")],
+  };
+  await expect(connect(inst, undefined, s)).rejects.toThrow("set an Infisical machine identity first");
+  s.put("login", "infisical-identity", {
+    id: "infisical-identity",
+    from: "a",
+    account: "client-1",
+    clientSecret: "secret-1",
+    siteUrl: "https://eu.infisical.com",
+  });
+  const client = await connect(inst, undefined, s);
+  try {
+    const env = async (name: string) =>
+      ((await client.callTool({ name: "env", arguments: { name } })).content as { text: string }[])[0]!.text;
+    expect(await env("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID")).toBe("client-1");
+    expect(await env("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET")).toBe("secret-1");
+    expect(await env("INFISICAL_HOST_URL")).toBe("https://eu.infisical.com");
+  } finally {
+    await client.close();
   }
 });

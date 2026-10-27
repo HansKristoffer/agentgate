@@ -3,9 +3,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 const server = new Server({ name: "fixture", version: "1" }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: ["cwd", "slow"].map((name) => ({ name, inputSchema: { type: "object" as const } })),
+  tools: ["cwd", "slow", "env"].map((name) => ({ name, inputSchema: { type: "object" as const } })),
 }));
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  if (request.params.name === "env")
+    return { content: [{ type: "text", text: process.env[String(request.params.arguments?.name)] ?? "" }] };
   if (request.params.name === "slow") {
     const token = extra._meta?.progressToken;
     if (token !== undefined)
