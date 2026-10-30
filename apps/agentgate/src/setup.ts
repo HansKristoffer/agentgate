@@ -1,6 +1,7 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { getErrorMessage } from "hanzio";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { atomicWrite } from "./files.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL, PORT, type Store } from "./store.ts";
 
@@ -143,12 +144,55 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   return `Wrote Claude and Codex configuration. Existing settings and first-run backups are preserved.\n\nIn T3 Code → Settings → Providers:\n  Claude: CLAUDE_CONFIG_DIR = ${paths.claude}\n  Codex: CODEX_HOME = ${paths.codex}\n\nKeep the daemon running (agentgate service install). Pin an account in the native app or with agentgate accounts pin <id>.`;
 }
 
-/** `setup --primary [off]` on this machine: Claude Code, Codex and Cursor. Records the result on this node, so every
- * machine's Machines view shows it. */
-export async function routeHere(s: Store, on: boolean) {
-  const message = [await primary(on), await primaryCodex(on), await cursorMcp(on)].join("\n");
+/** This machine's own coding tools, which `setup --primary` routes. */
+const OWN = { claude: PRIMARY_CLAUDE_DIR, codex: PRIMARY_CODEX_DIR, cursor: CURSOR_MCP_FILE };
+
+/** `setup --primary [off]` on this machine: Claude Code, Codex and Cursor. Records the choice, so a later
+ * `service install` or the daemon never undoes it, and the result on this node, so every machine's Machines view shows it. */
+export async function routeHere(s: Store, on: boolean, dirs = OWN) {
+  const message = [
+    await primary(on, dirs.claude),
+    await primaryCodex(on, dirs.codex),
+    await cursorMcp(on, dirs.cursor),
+  ].join("\n");
+  s.setLocal("setup:routing", on ? "on" : "off");
+  s.setLocal("setup:mcp", on ? "on" : "off");
   publishRouting(s);
   return { node: s.nodeId, message };
+}
+
+/** `setup --mcp [off]`: only the MCP server, in Claude Code and Cursor. Recorded for `keepMcp`. */
+export async function mcpHere(s: Store, on: boolean, dirs = OWN) {
+  const message = `${await mcp(on, dirs.claude)}\n${await cursorMcp(on, dirs.cursor)}`;
+  s.setLocal("setup:mcp", on ? "on" : "off");
+  return message;
+}
+
+/** `init` marks a new store "pending"; its first `service install` then routes this machine's own tools, once the
+ * daemon answers, so Claude Code and Codex never point at a port nobody listens on. Stores from before, and users who
+ * chose either way with `setup --primary [off]` or `--no-routing`, are left alone. */
+export async function routeByDefault(s: Store, on = true, dirs = OWN): Promise<string | undefined> {
+  if (s.local("setup:routing") !== "pending") return;
+  if (!on) {
+    s.setLocal("setup:routing", "off");
+    return "Left Claude Code, Codex and Cursor as they were. Route them later with agentgate setup --primary.";
+  }
+  try {
+    return (await routeHere(s, true, dirs)).message;
+  } catch (e) {
+    return `Could not route Claude Code and Codex through agentgate: ${getErrorMessage(e)}\nFix that, then run agentgate setup --primary.`;
+  }
+}
+
+/** Claude Code can write ~/.claude.json back from a stale copy and drop agentgate's MCP server. Put it back while the
+ * user wants it: they turned it on, or, on stores from before the choice was recorded, routing is on. */
+export async function keepMcp(s: Store, dir = PRIMARY_CLAUDE_DIR): Promise<boolean> {
+  const choice = s.local("setup:mcp"),
+    { routing, mcp: present } = claudeStatus(dir);
+  // A missing file is Claude Code mid-rewrite or not set up at all; writing one from scratch would lose its state.
+  if (present || !existsSync(claudeJsonIn(dir)) || (choice ? choice !== "on" : !routing)) return false;
+  await mcp(true, dir);
+  return true;
 }
 
 /** Keep this node's record in step with its own config, which the CLI or a hand edit may change behind the daemon. */
@@ -201,6 +245,7 @@ export function cursorServer(command = selfCommand(), env = agentEnvironment()) 
 /** The agentgate MCP shim in Cursor's user config. Other servers in the file stay put. */
 export async function cursorMcp(on: boolean, file = CURSOR_MCP_FILE): Promise<string> {
   if (file === CURSOR_MCP_FILE) liveOnly("Changing your own Cursor config");
+  if (on && !existsSync(dirname(file))) return `No Cursor at ${dirname(file)}; skipped Cursor.`;
   const { root, servers } = mcpFile(file);
   if (on) servers.agentgate = cursorServer();
   else if (servers.agentgate) delete servers.agentgate;

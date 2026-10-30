@@ -39,7 +39,7 @@ test("installer verifies checksums and preserves the installed binary after corr
   }
 });
 
-test("installer with join arguments initializes, joins, starts the service, then routes the own tools", () => {
+test("installer with join arguments initializes, joins and starts the service", () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-installer-")),
     commands = join(dir, "commands"),
     dest = join(dir, "bin"),
@@ -69,7 +69,7 @@ test("installer with join arguments initializes, joins, starts the service, then
         stderr: "pipe",
       }).exitCode;
     expect(install()).toBe(0);
-    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nservice install\nsetup --primary\n");
+    expect(readFileSync(log, "utf8")).toBe("init\njoin agr1.invite\nservice install\n");
     rmSync(log);
     expect(install("mac-mini")).toBe(0);
     expect(readFileSync(log, "utf8")).toStartWith("init --name mac-mini\njoin agr1.invite\n");

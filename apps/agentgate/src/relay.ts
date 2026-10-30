@@ -1030,7 +1030,7 @@ export function newNodeName(s: Store, name: string) {
   return name;
 }
 
-/** One line for a fresh machine: install.sh installs agentgate, then runs init (named `name`, else the hostname), `join <args>`, the service and `setup --primary`. */
+/** One line for a fresh machine: install.sh installs agentgate, then runs init (named `name`, else the hostname), `join <args>` and `service install`, which routes its own tools. */
 export const installAndJoin = (args: string, name?: string) =>
   `curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | ${name ? `AGENTGATE_NAME=${name} ` : ""}sh -s -- join ${args}`;
 

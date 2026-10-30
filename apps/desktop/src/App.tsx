@@ -366,7 +366,7 @@ export function App() {
                         onPress={() =>
                           void perform(async () => {
                             await localAction("install", connection);
-                          }, "Agentgate installed and running. Add an account to get started.")
+                          }, "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.")
                         }
                       >
                         {busy ? "Starting Agentgate…" : "Set up this machine"}
@@ -503,7 +503,10 @@ export function App() {
                 </li>
                 <li>
                   <strong>Connect your coding tools</strong>
-                  <p>Open Settings → Configure coding tools. Add the generated Claude and Codex paths to T3 Code.</p>
+                  <p>
+                    Setting up this machine routes your own Claude Code, Codex and Cursor through Agentgate, so T3 Code
+                    needs no settings. Settings → Coding tools undoes it.
+                  </p>
                 </li>
                 <li>
                   <strong>Using the Claude Desktop app?</strong>

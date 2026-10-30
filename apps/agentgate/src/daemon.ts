@@ -38,7 +38,7 @@ import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 import { syncLogins } from "./logins.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
+import { keepMcp, PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
@@ -271,7 +271,11 @@ export async function serve(
     run();
   };
   // The CLI or a hand edit can change routing behind the daemon; a minute late is fine for a status badge.
-  if (!DEV) schedule(async () => publishRouting(s), 60_000);
+  if (!DEV)
+    schedule(async () => {
+      publishRouting(s);
+      if (await keepMcp(s)) console.log("put agentgate's MCP server back in Claude Code's ~/.claude.json");
+    }, 60_000);
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {
     const ts = await (options.discover ?? tailscale)();
