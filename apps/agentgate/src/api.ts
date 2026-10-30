@@ -915,7 +915,7 @@ export function management(ctx: Ctx) {
   // The browser login answers on this machine's loopback, so it signs in where the app's browser is: loopback only.
   app.post("/logins/infisical/signin", async (c) => {
     local(c.env.listener);
-    const url = await inputAsync(() => startInfisicalSignIn(s));
+    const url = await inputAsync(() => startInfisicalSignIn(s, ctx.abort.signal));
     // On macOS the Infisical CLI opens the browser itself.
     return c.json({ url, opened: process.platform === "darwin" });
   });

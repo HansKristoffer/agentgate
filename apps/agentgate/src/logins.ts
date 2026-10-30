@@ -33,7 +33,7 @@ export const host = {
   /** Runs the Infisical CLI on `home`. `terminal` hands it this process's terminal; otherwise `stderr` sees its output. */
   async infisical(
     args: string[],
-    o: { terminal?: boolean; timeout?: number; stderr?: (text: string) => void } = {},
+    o: { terminal?: boolean; timeout?: number; signal?: AbortSignal; stderr?: (text: string) => void } = {},
   ): Promise<{ ok: boolean; out: string } | undefined> {
     if (!Bun.which("infisical")) return undefined;
     const io = o.terminal ? "inherit" : "pipe";
@@ -43,6 +43,7 @@ export const host = {
       stderr: io,
       env: { ...process.env, HOME: host.home },
       timeout: o.timeout ?? 15_000,
+      signal: o.signal,
     });
     const stderr = async () => {
       if (!child.stderr || typeof child.stderr === "number") return;
@@ -345,7 +346,10 @@ function profileFor(account: string) {
  * machine, where the CLI opens the browser on macOS and `url` gets the address to open elsewhere, or in a `terminal`
  * on any machine, where the CLI also takes the token the browser shows when it cannot reach a headless server.
  */
-export async function signInInfisical(s: Store, o: { terminal?: boolean; url?: (url: string) => void } = {}) {
+export async function signInInfisical(
+  s: Store,
+  o: { terminal?: boolean; signal?: AbortSignal; url?: (url: string) => void } = {},
+) {
   realHome("Signing in to Infisical");
   const shared = s.get("login", "infisical");
   if (!shared) throw new Error("Infisical is not shared; run infisical login, then agentgate logins share infisical");
@@ -353,6 +357,7 @@ export async function signInInfisical(s: Store, o: { terminal?: boolean; url?: (
   let report = o.url;
   const login = await host.infisical(["login", "--profile", profileFor(shared.account)], {
     terminal: o.terminal,
+    signal: o.signal,
     timeout: 11 * 60_000, // the CLI gives the browser 10 minutes
     stderr: (text) => {
       const url = (printed += text).match(/https?:\/\/\S+callback_port=\d+/)?.[0];
@@ -370,10 +375,11 @@ export async function signInInfisical(s: Store, o: { terminal?: boolean; url?: (
 }
 
 let signingIn: Promise<string | undefined> | undefined;
-/** Starts signInInfisical in the daemon and answers with the browser address once the CLI prints it. */
-export function startInfisicalSignIn(s: Store) {
+/** Starts signInInfisical in the daemon and answers with the browser address once the CLI prints it. The login waits
+ * for the browser after the request ends, so `signal` (the daemon stopping) is what ends it early. */
+export function startInfisicalSignIn(s: Store, signal?: AbortSignal) {
   return (signingIn ??= new Promise<string | undefined>((resolve, reject) => {
-    signInInfisical(s, { url: resolve })
+    signInInfisical(s, { url: resolve, signal })
       .then(
         (account) => {
           s.log("infisical", account ?? "", "", 0, 0, "signed in to Infisical again and shared it with every machine");
