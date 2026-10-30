@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.27.0](https://github.com/HansKristoffer/agentgate/compare/v0.26.0...v0.27.0) (2026-10-30)
+
+
+### Features
+
+* **setup:** installing the service routes your own Claude Code, Codex and Cursor ([#97](https://github.com/HansKristoffer/agentgate/issues/97)) ([61d2b42](https://github.com/HansKristoffer/agentgate/commit/61d2b422b189a2ed706817484170276dc2f159ac))
+* **skills:** a repo's first session on another machine gets its skills, and MCP entries follow a moved binary ([#98](https://github.com/HansKristoffer/agentgate/issues/98)) ([916c6be](https://github.com/HansKristoffer/agentgate/commit/916c6be05d15788986a193099df101aa0185e1c9))
+* **skills:** settle a skill name clash with one click ([#95](https://github.com/HansKristoffer/agentgate/issues/95)) ([8593787](https://github.com/HansKristoffer/agentgate/commit/85937874504b375402f6b8d01d1540849f465999))
+
+
+### Bug Fixes
+
+* **logins:** an expired Infisical login shows where it fails, with a button to sign in again ([#94](https://github.com/HansKristoffer/agentgate/issues/94)) ([b042334](https://github.com/HansKristoffer/agentgate/commit/b0423343ca292e8bb131a8add40092258901c77c))
+
 ## [0.26.0](https://github.com/HansKristoffer/agentgate/compare/v0.25.1...v0.26.0) (2026-10-27)
 
 
