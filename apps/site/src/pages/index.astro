@@ -167,8 +167,8 @@ const mac =
             <span class="num">3</span>
             <h3>Point your coding tools at it</h3>
             <p>
-              Agentgate writes the settings for Claude Code and Codex, and gives you the two paths
-              to paste into T3 Code. Every session from then on goes through the pool.
+              Installing the service routes the Claude Code, Codex and Cursor you already use through
+              agentgate, so T3 Code needs no settings. Every session from then on goes through the pool.
             </p>
           </li>
         </ol>
@@ -178,10 +178,9 @@ const mac =
           <pre><code>{`npm install -g @hanskristoffer/agentpool
 
 agentgate init
+agentgate service install
 agentgate login claude --label work
-agentgate login codex --label personal
-agentgate setup
-agentgate service install`}</code></pre>
+agentgate login codex --label personal`}</code></pre>
         </div>
 
         <p class="fineprint">

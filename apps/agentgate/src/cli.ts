@@ -115,13 +115,14 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   logins forget github|infisical              stop sharing (machines stay signed in)
   logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
   logins forget infisical-identity            remove it from every machine
-  setup                                       write Claude/Codex config, print the T3 settings
-  setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex through agentgate, here or on a paired node
-  setup --mcp [off]                           add agentgate's MCP servers to Claude Code, Claude Desktop's Code tab, and Cursor
+  setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex (and Cursor's MCP) through agentgate,
+                                              here or on a paired node; the first service install does this for you
+  setup --mcp [off]                           only agentgate's MCP servers, in Claude Code, Claude Desktop's Code tab, and Cursor
+  setup                                       separate Claude/Codex folders for T3 Code instead, and print their T3 settings
   desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
   desktop add [email] | use <account> | capture | forget <account>
   desktop gateway on|off                      Desktop's Code tab uses the pool (no Chat, separate profile)
-  service install|start|restart|stop|logs
+  service install [--no-routing] | start | restart | stop | logs   the first install also routes your own tools
   update [node]                               install the latest release and restart the service, here or on a paired node
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for native app control over the tailnet`;
@@ -176,6 +177,7 @@ const { values: opts, positionals: pos } = parseArgs({
     url: { type: "string" },
     token: { type: "string" },
     "no-wait": { type: "boolean" },
+    "no-routing": { type: "boolean" },
     worktrees: { type: "string" },
     clones: { type: "string" },
     help: { type: "boolean", short: "h" },
@@ -234,6 +236,8 @@ async function main() {
         s.del("node", old);
       }
       s.setLocal("node", name);
+      // A new store: the first `service install` routes this machine's own Claude Code, Codex and Cursor.
+      if (!old && !s.local("setup:routing")) s.setLocal("setup:routing", "pending");
       if (!s.local("adminToken")) s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
       const ts = await tailscale();
       const prev = s.get("node", name);
@@ -324,6 +328,14 @@ async function main() {
         (r) => r.ok,
         () => false,
       );
+      const setupMod = await import("./setup.ts"),
+        claude = setupMod.claudeStatus(),
+        codex = setupMod.primaryState().codex;
+      const uses = (on: boolean) => (on ? "uses agentgate" : "does not use agentgate");
+      console.log(
+        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}\nCursor MCP servers ${setupMod.cursorMcpEnabled() ? "on" : "off"}`,
+      );
+      if (!claude.routing || !codex) console.log("  to route them: agentgate setup --primary");
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }
@@ -1292,16 +1304,18 @@ async function main() {
           ).message,
         );
       }
-      if (opts.primary)
-        return console.log(
-          `${await setupMod.primary(sub !== "off")}\n${await setupMod.primaryCodex(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`,
-        );
-      if (opts.mcp)
-        return console.log(`${await setupMod.mcp(sub !== "off")}\n${await setupMod.cursorMcp(sub !== "off")}`);
+      if (opts.primary) return console.log((await setupMod.routeHere(s, sub !== "off")).message);
+      if (opts.mcp) return console.log(await setupMod.mcpHere(s, sub !== "off"));
       return console.log(await setupMod.setup());
     }
-    case "service":
-      return process.exit(await (await import("./service.ts")).service(sub ?? ""));
+    case "service": {
+      const code = await (await import("./service.ts")).service(sub ?? "");
+      if (sub === "install" && code === 0) {
+        const routed = await (await import("./setup.ts")).routeByDefault(s, !opts["no-routing"]);
+        if (routed) console.log(routed);
+      }
+      return process.exit(code);
+    }
     case "update": {
       if (sub) {
         initialized(s);

@@ -8,13 +8,17 @@ import {
   codexConfig,
   cursorMcp,
   cursorMcpEnabled,
+  keepMcp,
   mcp,
+  mcpHere,
   primary,
   primaryCodex,
+  routeByDefault,
+  routeHere,
   setup,
   stableBinary,
 } from "../src/setup.ts";
-import { CONFIG_DIR, DEV, devPort, PORT } from "../src/store.ts";
+import { CONFIG_DIR, DEV, devPort, PORT, Store } from "../src/store.ts";
 
 test("setup preserves unrelated Codex/Claude configuration and is repeatable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-setup-"));
@@ -266,4 +270,87 @@ test("daemon log lines start with an ISO 8601 timestamp", () => {
     ["2026-10-16T08:30:00.000Z", "agentgate 0.21.1 n: http://127.0.0.1:7878"],
     ["2026-10-16T08:30:00.000Z", "request failed:", "x"],
   ]);
+});
+
+/** Temporary stand-ins for ~/.claude, ~/.codex and ~/.cursor/mcp.json; Codex and Cursor exist only when asked. */
+function ownTools(installed: { codex?: boolean; cursor?: boolean } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-own-")),
+    dirs = { claude: join(dir, "claude"), codex: join(dir, "codex"), cursor: join(dir, "cursor", "mcp.json") };
+  mkdirSync(dirs.claude);
+  if (installed.codex) mkdirSync(dirs.codex);
+  if (installed.cursor) mkdirSync(join(dir, "cursor"));
+  const read = (file: string) => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined);
+  return {
+    dir,
+    dirs,
+    baseUrl: () => read(join(dirs.claude, "settings.json"))?.env?.ANTHROPIC_BASE_URL,
+    claudeMcp: () => read(join(dirs.claude, ".claude.json"))?.mcpServers?.agentgate,
+  };
+}
+
+test("a new store's first service install routes the own tools once, skipping the ones not installed", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ codex: true });
+  s.setLocal("setup:routing", "pending");
+  const message = await routeByDefault(s, true, tools.dirs);
+  expect(message).toContain("skipped Cursor");
+  expect(tools.baseUrl()).toBe(`http://127.0.0.1:${PORT}/anthropic`);
+  expect(tools.claudeMcp().args.at(-1)).toBe("mcp");
+  expect((Bun.TOML.parse(readFileSync(join(tools.dirs.codex, "config.toml"), "utf8")) as any).model_provider).toBe(
+    "agentgate",
+  );
+  expect(existsSync(join(tools.dir, "cursor"))).toBe(false);
+  expect(s.local("setup:routing")).toBe("on");
+  // Reinstalling the service, as an app update does, never routes again: here after the user turned it off.
+  await routeHere(s, false, tools.dirs);
+  expect(await routeByDefault(s, true, tools.dirs)).toBeUndefined();
+  expect(tools.baseUrl()).toBeUndefined();
+  rmSync(tools.dir, { recursive: true });
+});
+
+test("service install --no-routing, and stores from before the default, leave the own tools alone", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ codex: true, cursor: true });
+  expect(await routeByDefault(s, true, tools.dirs)).toBeUndefined();
+  s.setLocal("setup:routing", "pending");
+  expect(await routeByDefault(s, false, tools.dirs)).toContain("agentgate setup --primary");
+  expect(await routeByDefault(s, true, tools.dirs)).toBeUndefined();
+  expect(s.local("setup:routing")).toBe("off");
+  expect(tools.baseUrl()).toBeUndefined();
+  expect(existsSync(tools.dirs.cursor)).toBe(false);
+  rmSync(tools.dir, { recursive: true });
+});
+
+test("the daemon puts back an MCP server Claude Code dropped, unless the user turned it off", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ cursor: true }),
+    file = join(tools.dirs.claude, ".claude.json");
+  const drop = () => {
+    const cfg = JSON.parse(readFileSync(file, "utf8"));
+    delete cfg.mcpServers.agentgate;
+    writeFileSync(file, JSON.stringify({ ...cfg, projects: { "/code": {} } }));
+  };
+  await routeHere(s, true, tools.dirs);
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  drop();
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(true);
+  expect(tools.claudeMcp().args.at(-1)).toBe("mcp");
+  expect(JSON.parse(readFileSync(file, "utf8")).projects).toEqual({ "/code": {} });
+  await mcpHere(s, false, tools.dirs);
+  expect(cursorMcpEnabled(tools.dirs.cursor)).toBe(false);
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(tools.claudeMcp()).toBeUndefined();
+  // Before the choice was recorded, routing being on is what counts.
+  await mcpHere(s, true, tools.dirs);
+  drop();
+  s.setLocal("setup:mcp", undefined);
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(true);
+  await primary(false, tools.dirs.claude);
+  s.setLocal("setup:mcp", undefined);
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  rmSync(file);
+  s.setLocal("setup:mcp", "on");
+  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(existsSync(file)).toBe(false);
+  rmSync(tools.dir, { recursive: true });
 });

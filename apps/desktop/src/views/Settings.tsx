@@ -21,8 +21,11 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
           <Panel title="Coding tools" detail="Provider and MCP settings for Claude Code, Codex, and T3 Code.">
             <div className="item">
               <span className="labelled">
-                Configure coding tools
-                <small>Creates dedicated Claude and Codex config folders and prints their paths.</small>
+                Separate folders for T3 Code
+                <small>
+                  Instead of routing your own logins: creates dedicated Claude and Codex config folders and prints their
+                  paths.
+                </small>
               </span>
               <Button size="sm" variant="tertiary" onPress={() => void action("setup")}>
                 <Terminal size={14} />
@@ -31,10 +34,10 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
             </div>
             <div className="item">
               <span className="labelled">
-                Route existing CLI logins
+                Route your own Claude Code and Codex
                 <small>
-                  Updates your existing Claude Code and Codex settings to use the pool. Claude Desktop isn't affected;
-                  it is on Accounts.
+                  Setting up a new machine turns this on. Points your existing Claude Code and Codex settings at the
+                  pool. Claude Desktop isn't affected; it is on Accounts.
                 </small>
               </span>
               <Button size="sm" variant="ghost" onPress={() => void action("primary-off")}>
