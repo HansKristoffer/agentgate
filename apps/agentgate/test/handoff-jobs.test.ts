@@ -80,15 +80,20 @@ async function node(
       : [],
   );
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, {
-    claudeDir,
-    worktreesDir: join(root, "worktrees"),
-    cloneDir: join(root, "clones"),
-    tempDir: join(root, "handoffs"),
-    filesRoot: join(root, ".buncargo", "files"),
-    pollMs: 20,
-    retryPauseMs: 100,
-  });
+  const registered: string[] = [];
+  const h = new Handoffs(
+    s,
+    {
+      claudeDir,
+      worktreesDir: join(root, "worktrees"),
+      cloneDir: join(root, "clones"),
+      tempDir: join(root, "handoffs"),
+      filesRoot: join(root, ".buncargo", "files"),
+      pollMs: 20,
+      retryPauseMs: 100,
+    },
+    (checkouts) => registered.push(...checkouts.map((c) => c.path)),
+  );
   const routes = new Hono().route("/peer", peerRoutes(s, () => {}).route("/", handoffRoutes(h)));
   const next = async (req: Request) => routes.fetch(req);
   const server = Bun.serve({ port: 0, fetch: (req) => (options.peer ? options.peer(req, next) : next(req)) });
@@ -98,7 +103,17 @@ async function node(
     t3.stop();
     s.close();
   });
-  return { name, s, t3, project, claudeDir, h, url: `http://127.0.0.1:${server.port}`, server: !!options.server };
+  return {
+    name,
+    s,
+    t3,
+    project,
+    claudeDir,
+    h,
+    registered,
+    url: `http://127.0.0.1:${server.port}`,
+    server: !!options.server,
+  };
 }
 type Node = Awaited<ReturnType<typeof node>>;
 
@@ -380,6 +395,8 @@ test("a repository the destination clones runs its setup script from t3.json", a
   expect((await done(b, handoffId, "destination")).error).toBeUndefined();
   expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath).toBeNull();
   expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
+  // The clone gets the repo's skills before the thread continues in it.
+  expect(b.registered).toContain(b.t3.projects.at(-1)!.workspaceRoot);
 });
 
 test("an idle thread's background work is stopped on the source and named on the destination", async () => {

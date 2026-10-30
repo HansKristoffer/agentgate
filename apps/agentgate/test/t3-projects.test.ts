@@ -2,9 +2,11 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
+import { realpathSync } from "node:fs";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { syncT3Projects } from "../src/handoff/projects.ts";
 import { connectT3, t3State } from "../src/handoff/t3.ts";
+import { SkillLinks } from "../src/skill-links.ts";
 import { Store } from "../src/store.ts";
 
 afterAll(removeTmp);
@@ -21,18 +23,25 @@ async function node(name: string) {
   s.put("setting", "settings", { ...s.settings(), t3ProjectSync: true });
   const t3 = fakeT3({ claudeDir: join(root, "claude") });
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, {
-    claudeDir: join(root, "claude"),
-    worktreesDir: join(root, "worktrees"),
-    cloneDir: join(root, "clones"),
-    tempDir: join(root, "handoffs"),
-  });
+  const skills = new SkillLinks(s, null);
+  const h = new Handoffs(
+    s,
+    {
+      claudeDir: join(root, "claude"),
+      worktreesDir: join(root, "worktrees"),
+      cloneDir: join(root, "clones"),
+      tempDir: join(root, "handoffs"),
+    },
+    (checkouts) => {
+      for (const c of checkouts) skills.register(c.path, c.project, false);
+    },
+  );
   cleanup.push(async () => {
     await h.close();
     t3.stop();
     s.close();
   });
-  return { s, t3, h, root };
+  return { s, t3, h, root, skills };
 }
 
 /** What sync would carry: the project records. */
@@ -160,11 +169,13 @@ test("a machine that already has a checkout of the repository gets a project for
   expect(b.t3.projects.map((p) => p.workspaceRoot)).toEqual([r.b]);
 });
 
-test("nothing moves with the setting off", async () => {
+test("nothing moves with the setting off, but T3 Code's checkouts still get their repo's skills", async () => {
   const r = repos("a");
+  const repo = r.url.match(/github\.com\/(.+)\.git$/)![1]!;
   const a = await node("a");
   a.s.put("setting", "settings", { ...a.s.settings(), t3ProjectSync: false });
   a.t3.addProject(r.a);
   await syncT3Projects(a.h);
   expect(a.s.list("project")).toHaveLength(0);
+  expect(a.skills.checkouts()).toEqual({ [realpathSync(r.a)]: repo });
 });

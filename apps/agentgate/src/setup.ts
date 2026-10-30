@@ -157,6 +157,7 @@ export async function routeHere(s: Store, on: boolean, dirs = OWN) {
   ].join("\n");
   s.setLocal("setup:routing", on ? "on" : "off");
   s.setLocal("setup:mcp", on ? "on" : "off");
+  s.setLocal(MCP_RESTORED, undefined);
   publishRouting(s);
   return { node: s.nodeId, message };
 }
@@ -165,6 +166,7 @@ export async function routeHere(s: Store, on: boolean, dirs = OWN) {
 export async function mcpHere(s: Store, on: boolean, dirs = OWN) {
   const message = `${await mcp(on, dirs.claude)}\n${await cursorMcp(on, dirs.cursor)}`;
   s.setLocal("setup:mcp", on ? "on" : "off");
+  s.setLocal(MCP_RESTORED, undefined);
   return message;
 }
 
@@ -184,15 +186,50 @@ export async function routeByDefault(s: Store, on = true, dirs = OWN): Promise<s
   }
 }
 
-/** Claude Code can write ~/.claude.json back from a stale copy and drop agentgate's MCP server. Put it back while the
- * user wants it: they turned it on, or, on stores from before the choice was recorded, routing is on. */
-export async function keepMcp(s: Store, dir = PRIMARY_CLAUDE_DIR): Promise<boolean> {
-  const choice = s.local("setup:mcp"),
-    { routing, mcp: present } = claudeStatus(dir);
+/** When `keepMcp` last put the Claude Code entry back, for `status`: `claude mcp remove agentgate` looks the same. */
+export const MCP_RESTORED = "setup:mcpRestoredAt";
+
+type McpEntry = { command?: unknown; args?: unknown; env?: Record<string, unknown> } | undefined;
+
+/** Keep this install's MCP entries working, from the daemon's routing tick. Claude Code can write ~/.claude.json back
+ * from a stale copy and drop agentgate's server: put it back while the user wants it (they turned it on, or, on stores
+ * from before the choice was recorded, routing is on). After the binary or port moved, point this install's entries at
+ * the current ones. An entry naming another AGENTGATE_HOME belongs to another install and stays. Returns what changed. */
+export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
+  const [command, ...args] = [...selfCommand(), "mcp"],
+    env = agentEnvironment();
+  const stale = (e: McpEntry) =>
+    e?.env?.AGENTGATE_HOME === env.AGENTGATE_HOME &&
+    (e.command !== command ||
+      JSON.stringify(e.args) !== JSON.stringify(args) ||
+      e.env.AGENTGATE_PORT !== env.AGENTGATE_PORT);
+  const changed: string[] = [];
+  const claudeJson = claudeJsonIn(dirs.claude);
   // A missing file is Claude Code mid-rewrite or not set up at all; writing one from scratch would lose its state.
-  if (present || !existsSync(claudeJsonIn(dir)) || (choice ? choice !== "on" : !routing)) return false;
-  await mcp(true, dir);
-  return true;
+  if (existsSync(claudeJson)) {
+    const entry: McpEntry = json(claudeJson).mcpServers?.agentgate,
+      choice = s.local("setup:mcp");
+    if (entry ? stale(entry) : choice ? choice === "on" : claudeStatus(dirs.claude).routing) {
+      await mcp(true, dirs.claude);
+      if (!entry) s.setLocal(MCP_RESTORED, String(s.now()));
+      changed.push(`${entry ? "Updated" : "Put back"} agentgate's MCP server in ${claudeJson}`);
+    }
+  }
+  const codexFile = join(dirs.codex, "config.toml");
+  if (existsSync(codexFile)) {
+    const existing = readFileSync(codexFile, "utf8"),
+      cfg = Bun.TOML.parse(existing) as { model_provider?: string; mcp_servers?: { agentgate?: McpEntry } };
+    // Only while `setup --primary` routes Codex: rewriting would otherwise switch the user's provider back.
+    if (cfg.model_provider === "agentgate" && stale(cfg.mcp_servers?.agentgate)) {
+      atomicWrite(codexFile, codexConfig(existing, undefined, undefined, true));
+      changed.push(`Updated agentgate's MCP server in ${codexFile}`);
+    }
+  }
+  if (stale(mcpFile(dirs.cursor).servers.agentgate as McpEntry)) {
+    await cursorMcp(true, dirs.cursor);
+    changed.push(`Updated agentgate's MCP server in ${dirs.cursor}`);
+  }
+  return changed;
 }
 
 /** Keep this node's record in step with its own config, which the CLI or a hand edit may change behind the daemon. */
