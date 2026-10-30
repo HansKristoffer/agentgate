@@ -1,7 +1,5 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { LOCAL_URL, schemas } from "../store.ts";
 import { VERSION, connect, mergeInstructions, mergedServer, parseRemote, type Source } from "./gateway.ts";
 
@@ -72,7 +70,7 @@ export async function buildShim(cwd: string, daemonUrl = LOCAL_URL, env = proces
         if (closed) { await client.close(); return; }
         daemon = client; transport = t;
         client.onclose = () => invalidate(client);
-        client.setNotificationHandler(ToolListChangedNotificationSchema, () => { void ensure().then(changed).catch(() => { }); });
+        client.setNotificationHandler("notifications/tools/list_changed", () => { void ensure().then(changed).catch(() => { }); });
         changed();
       }
       await reconcile();

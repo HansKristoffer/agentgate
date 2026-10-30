@@ -1,6 +1,6 @@
 import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, providerSchema, MAX_RECORD } from "@agentgate/protocol";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
-import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/core";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";

@@ -1,10 +1,6 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import type { RequestOptions } from "@modelcontextprotocol/sdk/shared/protocol.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, ToolListChangedNotificationSchema, type CallToolRequest, type Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Client, StreamableHTTPClientTransport, type CallToolRequest, type RequestOptions, type Tool } from "@modelcontextprotocol/client";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual } from "@agentgate/protocol";
@@ -108,18 +104,10 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
   }
 }
 
+/** Every page: the SDK walks them (at most 64) and caches the list it validates tool results against. */
 export async function listAllTools(c: Client): Promise<Tool[]> {
-  const tools: Tool[] = [];
-  let cursor: string | undefined;
-  const cursors = new Set<string>();
-  do {
-    const page = await c.listTools(cursor ? { cursor } : undefined);
-    tools.push(...page.tools);
-    cursor = page.nextCursor;
-    if (cursor && cursors.has(cursor)) throw new Error("MCP server repeated its pagination cursor");
-    if (cursor) cursors.add(cursor);
-    if (tools.length > 10000) throw new Error("MCP tool list exceeds 10000 tools");
-  } while (cursor);
+  const { tools } = await c.listTools();
+  if (tools.length > 10000) throw new Error("MCP tool list exceeds 10000 tools");
   return tools;
 }
 
@@ -160,8 +148,8 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
     return all.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: await list() }));
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+  server.setRequestHandler("tools/list", async () => ({ tools: await list() }));
+  server.setRequestHandler("tools/call", async (req, ctx) => {
     if (!routes.has(req.params.name)) await list();
     activity?.(1);
     try {
@@ -171,11 +159,11 @@ export function mergedServer(instructions: string, sources: () => Promise<Source
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
         // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
-        signal: signal ? AbortSignal.any([extra.signal, signal]) : extra.signal, timeout: 5 * 60_000, maxTotalTimeout: 30 * 60_000, resetTimeoutOnProgress: true,
-        onprogress: progressToken === undefined ? undefined : p => { void extra.sendNotification({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
+        signal: signal ? AbortSignal.any([ctx.mcpReq.signal, signal]) : ctx.mcpReq.signal, timeout: 5 * 60_000, maxTotalTimeout: 30 * 60_000, resetTimeoutOnProgress: true,
+        onprogress: progressToken === undefined ? undefined : p => { void ctx.mcpReq.notify({ method: "notifications/progress", params: { ...p, progressToken } }).catch(() => { }); },
       };
       const params = { ...req.params, name: route.tool };
-      return await (source.invoke ? source.invoke(params, options) : source.client.callTool(params, undefined, options));
+      return await (source.invoke ? source.invoke(params, options) : source.client.callTool(params, options));
     } finally { activity?.(-1); }
   });
 
@@ -225,7 +213,7 @@ export class Gateway {
         entry.client = c;
         entry.error = undefined;
         entry.connecting = undefined;
-        c.setNotificationHandler(ToolListChangedNotificationSchema, () => this.toolsChanged());
+        c.setNotificationHandler("notifications/tools/list_changed", () => this.toolsChanged());
         c.onclose = () => {
           if (entry.client === c) entry.client = undefined;
         };
@@ -261,7 +249,7 @@ export class Gateway {
         const active = await this.shared(current);
         const entry = this.upstreams.get(currentId)!;
         entry.calls++; entry.lastUsed = this.s.now();
-        try { return await active.callTool(params, undefined, options); }
+        try { return await active.callTool(params, options); }
         finally { entry.calls--; entry.lastUsed = this.s.now(); if (entry.retired && !entry.calls) { await active.close().catch(() => { }); this.retired.delete(entry); } }
       }
     };

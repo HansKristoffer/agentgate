@@ -824,11 +824,11 @@ export function management(ctx: Ctx) {
 export function oauthCallback(ctx: Ctx) {
   return async (c: import("hono").Context<Env>) => {
     c.header("Cache-Control", "no-store");
-    const { code, state, error } = c.req.query();
+    const { code, state, error, iss } = c.req.query();
     if (error || !code || !state)
       return c.text("Login failed. Return to Agentgate and start again.", 400);
     try {
-      await finishLogin(ctx.s, state, code);
+      await finishLogin(ctx.s, state, code, iss);
       return c.text(
         "Logged in. You can close this window and return to Agentgate.",
       );

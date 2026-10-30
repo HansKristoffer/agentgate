@@ -1,7 +1,5 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Server, type CallToolResult, type ListToolsResult } from "@modelcontextprotocol/server";
 import { safePath } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
 import type { Source } from "./gateway.ts";
@@ -27,7 +25,7 @@ export function skillsServer(s: Store, project: string): Server {
     capabilities: { tools: {} },
     instructions: "This server has skills: instructions for specific tasks. Call skills__list, then skills__read a relevant skill's SKILL.md and follow it. Read the files it references with skills__read.",
   });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => ({
     tools: [
       {
         name: "list", description: "List the skills available to you, with what each one is for.",
@@ -46,7 +44,7 @@ export function skillsServer(s: Store, project: string): Server {
       },
     ],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler("tools/call", async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     const ids = assigned(s, project);
     if (req.params.name === "list") {
