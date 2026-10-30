@@ -8,7 +8,9 @@ export function memorySql(db = new Database(":memory:")): Sql & { db: Database }
   return {
     db,
     all: <T>(query: string, ...params: (string | number | null)[]) => db.query(query).all(...params) as T[],
-    run: (query, ...params) => { db.query(query).run(...params); },
+    run: (query, ...params) => {
+      db.query(query).run(...params);
+    },
     tx: (fn) => db.transaction(fn)(),
   };
 }
@@ -25,15 +27,22 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
       const sql = memorySql();
       const entry: { core: GroupCore; sql: ReturnType<typeof memorySql>; alarm?: number } = { sql } as never;
       entry.core = new GroupCore(sql, {
-        admission, config: cfg, now,
-        setAlarm: (at) => { entry.alarm = at; },
+        admission,
+        config: cfg,
+        now,
+        setAlarm: (at) => {
+          entry.alarm = at;
+        },
         // Storage recreation: drop every table, as deleteAll() does in a Durable Object.
         deleteAll: () => {
-          for (const { name } of sql.db.query("select name from sqlite_master where type = 'table'").all() as { name: string }[]) sql.db.run(`drop table "${name}"`);
+          for (const { name } of sql.db.query("select name from sqlite_master where type = 'table'").all() as {
+            name: string;
+          }[])
+            sql.db.run(`drop table "${name}"`);
           entry.alarm = undefined;
         },
       });
-      groups.set(id, g = entry);
+      groups.set(id, (g = entry));
     }
     return g.core;
   };
@@ -45,22 +54,30 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
       const sockets = new Set<ChannelSocket>();
       const core = new ChannelCore({
         sockets: () => [...sockets],
-        checkAuth: async (authHash, ipHash) => (await group(groupId).handle({ op: "nodes", groupId, authHash, ipHash })).status === 200,
+        checkAuth: async (authHash, ipHash) =>
+          (await group(groupId).handle({ op: "nodes", groupId, authHash, ipHash })).status === 200,
         limits: { requestsPerMinute: 100_000, mibPerMinute: 100_000, failedAuthPerMinute: cfg.failedAuthPerMinute },
         now,
       });
-      channels.set(groupId, c = { core, sockets });
+      channels.set(groupId, (c = { core, sockets }));
     }
     return c;
   };
   const channel = (groupId: string) => ({
     async fetch(req: Request) {
       const c = channelOf(groupId);
-      const refused = await c.core.authorize(req.headers.get("x-agentgate-auth") ?? "", req.headers.get("x-agentgate-ip") ?? "");
+      const refused = await c.core.authorize(
+        req.headers.get("x-agentgate-auth") ?? "",
+        req.headers.get("x-agentgate-ip") ?? "",
+      );
       if (refused) return refused;
-      if (req.headers.get("x-agentgate-op") === "call") return c.core.call(req, req.headers.get("x-agentgate-node") ?? "");
+      if (req.headers.get("x-agentgate-op") === "call")
+        return c.core.call(req, req.headers.get("x-agentgate-node") ?? "");
       // A connect that passed the checks: serve() performs the upgrade.
-      return c.core.connect(req.headers.get("x-agentgate-node") ?? "") ?? new Response(null, { status: 204, headers: { "x-agentgate-upgrade": "1" } });
+      return (
+        c.core.connect(req.headers.get("x-agentgate-node") ?? "") ??
+        new Response(null, { status: 204, headers: { "x-agentgate-upgrade": "1" } })
+      );
     },
   });
   const app = relayApp({ group, channel, relayKey: overrides.relayKey });
@@ -70,9 +87,13 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
 
 type Data = { groupId: string; node: string; socket?: ChannelSocket };
 /** The in-process relay over real HTTP and WebSockets. `before` may answer a request itself (to fail it on purpose). */
-export function serveRelay(r: ReturnType<typeof memoryRelay>, before?: (req: Request) => Response | undefined | Promise<Response | undefined>) {
+export function serveRelay(
+  r: ReturnType<typeof memoryRelay>,
+  before?: (req: Request) => Response | undefined | Promise<Response | undefined>,
+) {
   return Bun.serve<Data>({
-    port: 0, idleTimeout: 0,
+    port: 0,
+    idleTimeout: 0,
     async fetch(req, server) {
       const early = await before?.(req);
       if (early) return early;
@@ -86,13 +107,21 @@ export function serveRelay(r: ReturnType<typeof memoryRelay>, before?: (req: Req
     },
     websocket: {
       open(ws) {
-        const socket: ChannelSocket = { node: ws.data.node, since: Date.now(), send: (text) => { ws.send(text); }, close: (code, reason) => ws.close(code, reason) };
+        const socket: ChannelSocket = {
+          node: ws.data.node,
+          since: Date.now(),
+          send: (text) => {
+            ws.send(text);
+          },
+          close: (code, reason) => ws.close(code, reason),
+        };
         ws.data.socket = socket;
         r.channelOf(ws.data.groupId).sockets.add(socket);
       },
       message(ws, message) {
         if (message === "ping") return void ws.send("pong");
-        if (!r.channelOf(ws.data.groupId).core.message(ws.data.socket!, String(message))) ws.close(1008, "invalid frame");
+        if (!r.channelOf(ws.data.groupId).core.message(ws.data.socket!, String(message)))
+          ws.close(1008, "invalid frame");
       },
       close(ws) {
         const c = r.channelOf(ws.data.groupId);

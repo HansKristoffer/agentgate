@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { isTruthy } from "hanzio";
 import { relayApp } from "./app.ts";
 import { AdmissionCore, GroupCore, config, type GroupRequest, type Sql, type SqlValue } from "./group.ts";
 import { EndpointCore } from "./remote.ts";
@@ -17,7 +18,9 @@ export interface Env {
 function doSql(storage: DurableObjectStorage): Sql {
   return {
     all: <T>(query: string, ...params: SqlValue[]) => storage.sql.exec(query, ...params).toArray() as T[],
-    run: (query, ...params) => { storage.sql.exec(query, ...params); },
+    run: (query, ...params) => {
+      storage.sql.exec(query, ...params);
+    },
     tx: (fn) => storage.transactionSync(fn),
   };
 }
@@ -31,14 +34,21 @@ export class RelayGroup extends DurableObject<Env> {
       admission: { reserve: (id, ip) => admission().reserve(id, ip), release: (id) => admission().release(id) },
       config: config(env),
       setAlarm: (at) => ctx.storage.setAlarm(at),
-      deleteAll: async () => { await ctx.storage.deleteAlarm(); await ctx.storage.deleteAll(); },
+      deleteAll: async () => {
+        await ctx.storage.deleteAlarm();
+        await ctx.storage.deleteAll();
+      },
     });
   }
-  handle(req: GroupRequest) { return this.core.handle(req); }
-  override alarm() { return this.core.alarm(); }
+  handle(req: GroupRequest) {
+    return this.core.handle(req);
+  }
+  override alarm() {
+    return this.core.alarm();
+  }
 }
 
-const positive = (value: unknown, fallback: number) => Number(value) > 0 ? Number(value) : fallback;
+const positive = (value: unknown, fallback: number) => (Number(value) > 0 ? Number(value) : fallback);
 
 export class RemoteEndpoint extends DurableObject<Env> {
   private core: EndpointCore;
@@ -47,7 +57,10 @@ export class RemoteEndpoint extends DurableObject<Env> {
     const admission = () => env.ADMISSION.get(env.ADMISSION.idFromName("global"));
     this.core = new EndpointCore(ctx, {
       config: config(env),
-      admission: { reserve: (id, ip, limits) => admission().reserve(id, ip, limits), release: (id) => admission().release(id) },
+      admission: {
+        reserve: (id, ip, limits) => admission().reserve(id, ip, limits),
+        release: (id) => admission().release(id),
+      },
       limits: {
         max: positive(env.RELAY_MAX_ENDPOINTS, 5000),
         perIpPerDay: positive(env.RELAY_ENDPOINTS_PER_IP_PER_DAY, 20),
@@ -55,14 +68,27 @@ export class RemoteEndpoint extends DurableObject<Env> {
       },
     });
   }
-  override fetch(req: Request) { return this.core.fetch(req); }
-  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) { this.core.webSocketMessage(ws, message); }
-  override webSocketClose(ws: WebSocket) { this.core.webSocketClose(ws); }
-  override webSocketError(ws: WebSocket) { this.core.webSocketError(ws); }
-  override alarm() { return this.core.alarm(); }
+  override fetch(req: Request) {
+    return this.core.fetch(req);
+  }
+  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
+    this.core.webSocketMessage(ws, message);
+  }
+  override webSocketClose(ws: WebSocket) {
+    this.core.webSocketClose(ws);
+  }
+  override webSocketError(ws: WebSocket) {
+    this.core.webSocketError(ws);
+  }
+  override alarm() {
+    return this.core.alarm();
+  }
 }
 
-interface ChannelAttachment { node: string; since: number }
+interface ChannelAttachment {
+  node: string;
+  since: number;
+}
 
 /** A group's node channel: the sockets its members keep open, as hibernatable WebSockets tagged with the node. */
 export class RelayChannel extends DurableObject<Env> {
@@ -74,12 +100,19 @@ export class RelayChannel extends DurableObject<Env> {
     // Keepalives never wake a hibernated channel.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     this.core = new ChannelCore({
-      sockets: () => ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN).map((ws) => this.wrap(ws)).filter((s): s is ChannelSocket => !!s),
+      sockets: () =>
+        ctx
+          .getWebSockets()
+          .filter((ws) => ws.readyState === WebSocket.OPEN)
+          .map((ws) => this.wrap(ws))
+          .filter(isTruthy),
       // Any authenticated read proves group membership; the answer is remembered in memory.
       checkAuth: async (authHash, ipHash) => {
         const group = env.GROUPS.get(env.GROUPS.idFromName(this.groupId));
         // The RPC stub types `Reply.body: unknown` as never; only the status is read.
-        const reply = await group.handle({ op: "nodes", groupId: this.groupId, authHash, ipHash }) as unknown as { status: number };
+        const reply = (await group.handle({ op: "nodes", groupId: this.groupId, authHash, ipHash })) as unknown as {
+          status: number;
+        };
         return reply.status === 200;
       },
       limits: {
@@ -94,17 +127,26 @@ export class RelayChannel extends DurableObject<Env> {
     if (s) return s;
     const a = ws.deserializeAttachment() as ChannelAttachment | null;
     if (!a) return undefined;
-    s = { node: a.node, since: a.since, send: (text) => ws.send(text), close: (code, reason) => ws.close(code, reason) };
+    s = {
+      node: a.node,
+      since: a.since,
+      send: (text) => ws.send(text),
+      close: (code, reason) => ws.close(code, reason),
+    };
     this.sockets.set(ws, s);
     return s;
   }
   override async fetch(req: Request): Promise<Response> {
     this.groupId = req.headers.get("x-agentgate-group") ?? "";
     const node = req.headers.get("x-agentgate-node") ?? "";
-    const refused = await this.core.authorize(req.headers.get("x-agentgate-auth") ?? "", req.headers.get("x-agentgate-ip") ?? "");
+    const refused = await this.core.authorize(
+      req.headers.get("x-agentgate-auth") ?? "",
+      req.headers.get("x-agentgate-ip") ?? "",
+    );
     if (refused) return refused;
     if (req.headers.get("x-agentgate-op") === "call") return this.core.call(req, node);
-    if (req.headers.get("upgrade") !== "websocket") return Response.json({ error: "expected a WebSocket upgrade" }, { status: 426 });
+    if (req.headers.get("upgrade") !== "websocket")
+      return Response.json({ error: "expected a WebSocket upgrade" }, { status: 426 });
     const bad = this.core.connect(node);
     if (bad) return bad;
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
@@ -116,8 +158,14 @@ export class RelayChannel extends DurableObject<Env> {
     const s = this.wrap(ws);
     if (!s || typeof message !== "string" || !this.core.message(s, message)) ws.close(1008, "invalid frame");
   }
-  override webSocketClose(ws: WebSocket) { const s = this.wrap(ws); if (s) this.core.closed(s); }
-  override webSocketError(ws: WebSocket) { const s = this.wrap(ws); if (s) this.core.closed(s); }
+  override webSocketClose(ws: WebSocket) {
+    const s = this.wrap(ws);
+    if (s) this.core.closed(s);
+  }
+  override webSocketError(ws: WebSocket) {
+    const s = this.wrap(ws);
+    if (s) this.core.closed(s);
+  }
 }
 
 export class RelayAdmission extends DurableObject<Env> {
@@ -126,9 +174,15 @@ export class RelayAdmission extends DurableObject<Env> {
     super(ctx, env);
     this.core = new AdmissionCore(doSql(ctx.storage), config(env));
   }
-  reserve(groupId: string, ipHash: string, limits?: { max: number; perIpPerDay: number }) { return this.core.reserve(groupId, ipHash, limits); }
-  release(groupId: string) { return this.core.release(groupId); }
-  count() { return this.core.count(); }
+  reserve(groupId: string, ipHash: string, limits?: { max: number; perIpPerDay: number }) {
+    return this.core.reserve(groupId, ipHash, limits);
+  }
+  release(groupId: string) {
+    return this.core.release(groupId);
+  }
+  count() {
+    return this.core.count();
+  }
 }
 
 export default {

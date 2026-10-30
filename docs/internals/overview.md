@@ -17,7 +17,7 @@ consensus: every node accepts writes and records converge by last-writer-wins.
   both Tailscale sync and the relay stay simple.
 - Every local write or merge gets a new local `seq`. A node's change feed therefore also carries what
   it learned from others, and peers pull everything after their cursor.
-- Deletions are tombstones and are never purged (`purgeTombstones` is a deliberate no-op). An offline
+- Deletions are tombstones and are never purged. An offline
   node can return after any amount of time without resurrecting deleted configuration.
 - Revision checks (`configuration.ts`, `skillRevision`) protect concurrent edits on one node. They do
   not serialize changes across disconnected replicas; the merge decides those.
@@ -37,7 +37,8 @@ Nodes upgrade independently, so a new field or kind must not break a node on the
 
 - An unknown record kind fails `recordSchema`, and a Tailscale pull parses a whole page before it
   commits its cursor. One such record stalls sync on old nodes. Prefer new fields on an existing kind.
-- Old nodes drop fields they do not know when they edit a record. If losing a field matters, gate
+- Old nodes drop fields they do not know when they edit a record, and when they merge one, so they also
+  pass the stripped copy on to other nodes. If losing a field matters, gate
   the feature: each daemon writes `protocol: NODE_PROTOCOL` into its own `node` record
   (`daemon.ts`), and the feature refuses to enable until every node has it (`enableRemote` in
   `remote.ts` is the example).
@@ -56,7 +57,10 @@ through a synced refresh request, and take over only when the holder has been un
 minutes and the token is close to expiry, and only after syncing for two minutes themselves: a laptop
 waking briefly from sleep (macOS dark wakes), or one whose relay pulls are failing, otherwise sees the holder as
 long gone and refreshes with a token the holder already rotated, which gets the login revoked everywhere. Only a
-pull that got an answer counts as syncing. A local lease stops the CLI and daemon on one machine from
+pull that got an answer counts as syncing. The holder itself pulls before refreshing when it has not been syncing (back
+from sleep, it may have been taken over and its refresh token rotated), and waits while nobody answers during its first
+two minutes awake (`awakeFor`). A refused refresh token is never sent again, and marks the login as needing a sign-in
+only once every machine answered or this one has been awake two minutes, since another may hold the newer copy. A local lease stops the CLI and daemon on one machine from
 refreshing at once. During a network partition two nodes can still race; that is accepted, not solved.
 
 ## Proxy
@@ -71,9 +75,9 @@ unknown owner returns 409 so the client starts over. User-facing controls are in
 ## Loopback trust
 
 Provider and MCP traffic, and the control API without a token, are served on loopback only. The daemon
-rejects foreign `Host` headers (DNS rebinding) and any request with `Origin` or Fetch Metadata headers,
-so a web page cannot reach it. On the tailnet listener the control API requires the admin bearer token
-and peer sync (`/peer`) its peer tokens; the proxy and MCP endpoints are never served there. Code that is reachable from the relay, such as remote MCP endpoints, must be called
+rejects foreign `Host` headers (DNS rebinding), and the control API and `/mcp` refuse any request with `Origin` or
+Fetch Metadata headers, so a web page cannot use them. The provider proxies do not check those headers yet. On the tailnet listener the control API requires the admin bearer token
+and peer sync (`/peer`) its peer tokens; the proxy and MCP endpoints are never served there. The one exception is the machine dashboard (`/health`, [health.ts](../../apps/agentgate/src/health.ts)): it needs no token and is read-only, so the tailnet listener answers it only for an address or this node's own name, since any other `Host` is a page on another site reaching it by DNS rebinding. Code that is reachable from the relay, such as remote MCP endpoints, must be called
 directly and never through a loopback listener, so it cannot borrow loopback trust.
 
 ## More

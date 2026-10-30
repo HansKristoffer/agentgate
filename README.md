@@ -31,7 +31,7 @@ Without npm:
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | sh
 ```
 
-Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service. `agentgate update <node>` does the same on a paired machine, and the app lists machines on an older release on the overview with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
+Update a machine installed this way with `agentgate update`: it installs the latest release and restarts the service, and also updates a global npm or bun install of agentgate that your PATH finds first. The CLI warns when it is not the release the daemon runs. `agentgate update <node>` does the same on a paired machine. Both wait until the machine reports the new release, and say so if it is still restarting after 90 seconds. The app lists machines on an older release under **Needs attention** on the overview, with an **Update** button under Machines. With npm, run `npm install -g @hanskristoffer/agentpool@latest` and `agentgate service restart`; the Mac app updates itself and its daemon.
 
 Or from source: `bun install && bun run build` (binaries land in `dist/`), or run `bun run cli -- …` directly.
 
@@ -39,15 +39,16 @@ Or from source: `bun install && bun run build` (binaries land in `dist/`), or ru
 
 ```sh
 agentgate init                      # names the node after the host; add --always-on on a server
+agentgate service install           # launchd (macOS) or systemd --user (Linux), and routes your coding tools
 agentgate login claude --label work # official login in a temp dir, imported, then deleted
 agentgate login codex --label personal
-agentgate setup                     # writes Claude Code / Codex config, prints the T3 settings
-agentgate service install           # launchd (macOS) or systemd --user (Linux)
 ```
 
-You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, and starts a launchd service. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
+The first `service install` points the Claude Code, Codex and Cursor you already use at agentgate, so they use the pool with nothing to set in T3 Code (see [your own Claude Code and Codex](#your-own-claude-code-and-codex)). Add `--no-routing` to leave them as they are; undo it any time with `agentgate setup --primary off`. `agentgate status` shows which of them use agentgate.
 
-The app has Accounts, Activity, MCP servers, Skills, Projects, Machines, T3 Code, and Settings screens. **Settings → Configure coding tools** generates the Claude/Codex folders and T3 settings. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine.
+You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, starts a launchd service, and routes your Claude Code, Codex and Cursor the same way. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
+
+The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it. **Settings → Coding tools** routes your own Claude Code and Codex or undoes it, and can generate [separate folders for T3 Code](#or-separate-folders-for-t3-code) instead. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
 
 ## A second machine (e.g. an always-on server)
 
@@ -56,44 +57,55 @@ There are two ways to connect machines, and a machine can use both:
 - **Same network (Tailscale):** both machines are on your tailnet. Pairing uses a code that expires after 10 minutes.
 - **Relay:** works across any network, without Tailscale. Every record is encrypted before it leaves the machine; the relay stores only ciphertext and can't read your credentials.
 
-On the first machine, run `agentgate pair` or use **Pair a machine** in the app. In a terminal it asks which method to use and what to name the other machine; `--tailnet`, `--relay` and `--name` skip the questions, and an empty name uses the other machine's hostname. It prints one command to run on the server, which installs agentgate, joins, installs the service (on Linux this also runs `loginctl enable-linger` so it survives logout/reboot), and runs `agentgate setup --primary` so that machine's own Claude Code and Codex go through agentgate with no further setup (undo with `agentgate setup --primary off`):
+On the first machine, run `agentgate pair` or use **Pair a machine** in the app. In a terminal it asks which method to use and what to name the other machine; `--tailnet`, `--relay` and `--name` skip the questions, and an empty name uses the other machine's hostname. It prints one command to run on the server, which installs agentgate, joins, and installs the service (on Linux this also runs `loginctl enable-linger` so it survives logout/reboot), which routes that machine's own Claude Code and Codex through agentgate with no further setup (undo with `agentgate setup --primary off`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_NAME=srv sh -s -- join agr1.…
 ```
 
-If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or the **Always on** switch.
+If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or **Mark as always on** in its ⋯ menu on Machines.
 
 The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
 
 To sign every machine in to GitHub and Infisical as you, run `agentgate logins share` on the machine where you are signed in, or use **Share** under **Shared logins** on the Machines screen. It shares the `gh` login for github.com and the Infisical CLI login, skipping either one this machine doesn't use. Every paired machine, including servers that join later, then runs `gh auth login` and `gh auth setup-git` with that token (so `gh` must be installed there) and gets the same Infisical session. The machine that shared re-reads its logins every ten minutes, so if you log in again there, the others follow. Infisical must keep its login in a file: if it uses the system keychain, run `infisical vault set file` and `infisical login` first. `agentgate logins` and the Machines screen show whether this machine is signed in with each login, and `agentgate logins forget github|infisical` stops sharing; machines already signed in stay signed in.
 
-An Infisical login expires after a few days and can't be renewed, so you have to log in again. For tools that run on their own, such as servers, set an Infisical machine identity once instead: create one with Universal Auth in Infisical and give it access to your projects, then choose **Set** next to **Infisical machine identity** under **Shared logins**, or run `agentgate logins identity --client-id <id>` (it asks for the secret; `--site` defaults to the Infisical instance your CLI uses). agentgate checks it with Infisical and writes it to `~/.infisical/universal-auth.json` on every machine, including servers that join later. hanzio uses that file when a process has no `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`. `agentgate logins forget infisical-identity` removes it from every machine.
+An Infisical login expires after a few days and can't be renewed, so you have to log in again. Every machine checks whether its shared logins still work, and the overview and `agentgate logins` name the machines where one doesn't, such as an expired Infisical session or a GitHub token that was revoked. Click **Sign in** on the overview to log in to Infisical again in your browser; agentgate then shares the new session with every machine. The browser login has to finish on the machine that runs it, so use the app on your laptop, or run `agentgate logins signin infisical` in a terminal on any machine, where the Infisical CLI also accepts the token its sign-in page shows when it can't reach a server. For tools that run on their own, such as servers, set an Infisical machine identity once instead: create one with Universal Auth in Infisical and give it access to your projects, then choose **Set** next to **Infisical machine identity** under **Shared logins**, or run `agentgate logins identity --client-id <id>` (it asks for the secret; `--site` defaults to the Infisical instance your CLI uses). agentgate checks it with Infisical and writes it to `~/.infisical/universal-auth.json` on every machine, including servers that join later. hanzio uses that file when a process has no `INFISICAL_CLIENT_ID` and `INFISICAL_CLIENT_SECRET`. `agentgate logins forget infisical-identity` removes it from every machine.
 
 **The relay invite never expires and is a master key.** Anyone who has it can read every account and MCP login, so share it privately. If it leaks, run `agentgate relay rotate` and have every relay machine join again with the new command. Removing a relay machine (`agentgate unpair <node>` or **Remove** in the app) rotates the same way. A rotation can't revoke Tailscale links, so also unpair the removed machine on every machine you keep. By default it uses the hosted relay at `https://agentgate-relay.hanskristoffer.dk`. To use your own instead, deploy `apps/relay` to your Cloudflare account (see [the relay](docs/operations/relay.md#deploying-and-self-hosting)) and pass `--relay-url`, or set `AGENTGATE_RELAY_URL`. `agentgate relay status` shows sync state and errors.
 
 To control the server from the native app over Tailscale, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale. The relay carries sync only, not remote management.
 
+## Machine dashboard
+
+Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and the last hour as charts. In **Machines**, choose **Turn on health dashboard** in a machine's ⋯ menu, then **Open health dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
+
+- It runs on Linux machines only, since it reads `/proc`. On a Mac, opening it only says so.
+- Anyone on your tailnet can open it without signing in, as they could the server health page before. It shows program names and resource use, never command lines, credentials or accounts. Turn it off on machines you don't want it on.
+- Turning it on waits until every machine runs this release, because older releases drop the setting when they save a machine's record.
+- The history is kept in memory for the last hour, so a restart starts the charts over.
+
 ## T3 Code
 
-`agentgate setup` writes a Claude config dir (whose `settings.json` points Claude Code at the daemon) and a Codex home. In T3 Code, add one provider instance per provider:
-
-| Provider | T3 setting |
-|---|---|
-| Claude | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
-| Codex | `CODEX_HOME path` = `~/.config/agentgate/codex` |
-
-One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, choose an **Active subscription** separately for Claude, Codex, and Cursor, or click **Use subscription** on an account. Your choice applies to the next request in every routed session and syncs to paired machines; if it is unavailable, the pool falls back to another account. Choose **Automatic** to clear the preference. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
+T3 Code's default Claude and Codex instances run your own Claude Code and Codex, which the first `agentgate service install` routes through agentgate, so there is nothing to set in T3 Code. One instance per provider covers every account; the daemon switches eligible accounts when quota is exhausted. Account-specific continuations require their original account; if it is unavailable, the client receives an explicit restart error. In the app's **Accounts** screen, click an account's pin to prefer it for its provider. The pin applies to the next request in every routed session and syncs to paired machines; while the pinned account has no room, the pool falls back to another one. Click the pin again to go back to automatic. The CLI equivalent is `agentgate accounts pin <id>` / `agentgate accounts unpin <id>`.
 
 **Cursor** accounts can be added too (`agentgate login cursor`, or **Add account** in the app). Agentgate keeps their logins, shows each account's monthly plan usage, counts their tokens in the overview chart (read from Cursor's usage history every 15 minutes), and syncs the accounts to paired machines. Agent runs are pooled like Claude and Codex: set `CURSOR_API_BASE_URL` to `http://127.0.0.1:<port>/cursor` (the address `agentgate status` prints, with `/cursor` on the end). Other Cursor calls keep the CLI's own login. A machine on an older agentgate stops syncing once a Cursor account exists, until it is updated.
 
-### Or: your normal Claude login
+### Your own Claude Code and Codex
 
-`agentgate setup --primary` adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Where Claude Code has never been signed in, such as on a new server, it also sets a placeholder `ANTHROPIC_AUTH_TOKEN`, because Claude Code won't start without a login; agentgate signs each request with a pooled account either way. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/user/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. That, and `setup --primary`, also write `~/.cursor/mcp.json`, so Cursor and the Cursor CLI get the same servers. Start a new session to pick them up. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Only do this with `agentgate service install`, or Claude Code and Codex can't reach their providers while the daemon is down.
+The first `agentgate service install` on a new machine routes them, and `agentgate setup --primary` does it any time. It adds `ANTHROPIC_BASE_URL` to `~/.claude/settings.json` and the agentgate MCP server to `~/.claude.json`, so the Claude Code you already use (and T3's default Claude instance) goes through agentgate while keeping its own login. Where Claude Code has never been signed in, such as on a new server, it also sets a placeholder `ANTHROPIC_AUTH_TOKEN`, because Claude Code won't start without a login; agentgate signs each request with a pooled account either way. Claude Desktop is not affected: it sets its own API address; see [Claude Desktop](docs/user/claude-desktop.md). For only the MCP servers, use `agentgate setup --mcp`. That, and `setup --primary`, also write `~/.cursor/mcp.json` where Cursor is installed, so Cursor and the Cursor CLI get the same servers. Claude Code sometimes saves `~/.claude.json` without the agentgate MCP server; while you have it on, the daemon puts it back within a minute, and `agentgate status` says when it did. Remove it with `agentgate setup --mcp off`, not `claude mcp remove`, which the daemon undoes. After agentgate's binary moves or its port changes, the daemon also updates these MCP entries. Start a new session to pick them up. Model requests use the pool; other requests keep your login, and your login is also the last resort when every pooled account is exhausted. Undo with `agentgate setup --primary off` (the previous base URL is restored, and later settings edits are preserved). It does the same for `~/.codex/config.toml` (or `$CODEX_HOME`): an `agentgate` model provider with `requires_openai_auth = true`, so Codex, the Codex app and T3's default Codex instance send their own ChatGPT login along as the last resort. Where Codex has never been signed in, it writes a placeholder API key to `~/.codex/auth.json`, so `codex login status` and T3 Code see Codex as signed in; undo removes it again. Add `--node <name>` to switch a paired machine from the one you are on. Keep the service installed: while the daemon is down, Claude Code and Codex can't reach their providers.
+
+### Or: separate folders for T3 Code
+
+To have only T3 Code use agentgate, turn routing off (`agentgate setup --primary off`) and run `agentgate setup`. It writes a Claude config dir (whose `settings.json` points Claude Code at the daemon) and a Codex home. In T3 Code, add one provider instance per provider:
+
+| Provider | T3 setting                                              |
+| -------- | ------------------------------------------------------- |
+| Claude   | `CLAUDE_CONFIG_DIR path` = `~/.config/agentgate/claude` |
+| Codex    | `CODEX_HOME path` = `~/.config/agentgate/codex`         |
 
 ### Hand threads between machines
 
-Start a thread on your laptop, hand it to an always-on server while you are away, and hand it back to test and push. A handed-off thread moves with its Claude session and its code: unpushed commits and uncommitted and untracked files (respecting `.gitignore`), plus your changes to the repository's [env files](#env-files-between-machines). Code travels directly between the two machines over Tailscale, or end-to-end encrypted through the relay; nothing is pushed to `origin`.
+Start a thread on your laptop, hand it to an always-on server while you are away, and hand it back to test and push. A handed-off thread moves with its Claude session and its code: unpushed commits and uncommitted, untracked and gitignored files, such as plans in `.plans`. Dependency and build folders such as `node_modules`, `.venv`, `target` and `dist` stay behind, and the other machine's setup script makes them again. [Env files](#env-files-between-machines) the repository saves for every machine travel through their own store instead, so each machine keeps its own. Code travels directly between the two machines over Tailscale, or end-to-end encrypted through the relay; nothing is pushed to `origin`.
 
 Connect agentgate to the T3 Code on each machine once: on the T3 Code page open **Machines** and choose **Connect T3 Code** in that machine's row, or run `agentgate t3 connect` there (`--node srv` sets up another machine from the one you are on). T3 Code must be running on that machine; its own `t3` command creates a pairing link that agentgate redeems right away, over that machine only. Pair again the same way when agentgate asks. If that machine has no `t3` command, create a link in T3 Code under **Settings → Connections** (turn on **Network access**, then **Create link** with **Standard** permissions) and paste it into **Connect with a pasted link**, or run `agentgate t3 connect <link>`. The machines must be paired over Tailscale or in the same relay group. A handoff moves the session between the Claude homes T3 Code's Claude provider uses on each machine, whether that is `~/.claude` or the agentgate home above.
 
@@ -110,9 +122,10 @@ In the app, the **T3 Code** page shows every machine's threads with **To server*
 
 What to expect:
 
-- A working thread is stopped, moved, and continued on the other machine. On the source it is archived, and the uncommitted changes that were sent are kept in a `git stash` so the worktree is clean for the return trip. That stash is dropped when the thread comes back, because its changes come back with it.
+- A working thread is stopped, moved, and continued on the other machine. On the source it is archived, and the uncommitted changes that were sent are kept in a `git stash` so the worktree is clean for the return trip. That stash is dropped when the thread comes back, because its changes come back with it. Gitignored files stay where they are, and the versions that come back replace them.
 - The other machine reuses a worktree already on the thread's branch, or creates one and runs the project's setup script. Later trips reuse it, so setup runs once per branch and machine.
 - If the other machine's checkout has its own changes or commits, it keeps them and the handoff reports a warning. Your uncommitted changes then stay where they were.
+- If the other machine has its own version of a gitignored file the thread brings, such as a plan edited there, that version goes to a `git stash` there and the handoff reports a warning.
 - The first time a thread arrives on a machine, T3 Code fails the first message sent to it there. agentgate sends that message for you, asking the agent to reply "Ready", and sends it again when it fails, so your own first message works. A thread that was working then gets "Continue where you left off.", and messages you had queued are queued again behind it, in order. Background tasks such as a command watching a PR are stopped on the machine the thread leaves, and the agent is told which ones were running so it can start them again. Later trips to the same machine reuse the thread and skip this.
 - A thread that comes back to a machine shows the messages it got on your other machines in the meantime. T3 Code cannot add them to a thread itself, so agentgate writes them into T3 Code's own database, which T3 Code does not support. If T3 Code misbehaves after a handoff, turn this off with `agentgate t3 history off` or **Show messages from other machines** on the T3 Code page: the thread then shows only what happened on that machine, and the agent still has the whole conversation. Threads that left a machine before this release come back without them.
 - The first time a thread arrives on a machine, T3 Code's import also picks up other recent Claude sessions run in that project's main checkout, so threads that ran there can show up twice. Threads in worktrees are not affected, and later trips skip the import.
@@ -128,23 +141,24 @@ The proxy now provides quota freshness and reset visibility, searchable **Activi
 
 ## MCP servers per repo
 
-In the native app (MCP servers), paste a server's URL and a name and click **Connect**. If the server uses MCP OAuth, click **Sign in** to open the browser; its callback completes in the daemon and the app updates automatically; agentgate keeps the login, refreshes it, and syncs it to your other machines. Presets cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7) and a per-worktree filesystem server. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
+In the native app (MCP servers), paste a server's URL and a name and click **Connect**, then choose the projects that use it (**Global defaults** puts it in every repository). If the server uses MCP OAuth, the browser opens to sign in; its callback completes in the daemon, which connects to the server and shows it as available. agentgate keeps the login, refreshes it, and syncs it to your other machines. **Choose projects** in a server's ⋯ menu changes where it is used later. Presets cover common hosted servers (PostHog, Linear, Sentry, Notion, Supabase, Stripe, Vercel, Cloudflare, Neon, Railway, Context7), a per-worktree filesystem server, and Infisical, which signs in with the [Infisical machine identity](#a-second-machine-eg-an-always-on-server) set under **Shared logins**. Servers that take an API key instead get it under **Extra headers** (`Authorization: Bearer …`); the same field pins a server to one project (`x-posthog-project-id: 12345`).
 
 From the CLI:
 
 ```sh
-agentgate mcp add geysier https://app.geysier.com/api/mcp
-agentgate mcp login geysier                   # opens the login page; the daemon receives the callback
+agentgate mcp add geysier https://app.geysier.com/api/mcp   # opens the login page when the server needs one
+agentgate mcp login geysier                   # sign in again; the daemon receives the callback
 agentgate mcp add posthog-lullu posthog --header "x-posthog-project-id: 12345"
 agentgate mcp add fs filesystem               # presets: agentgate mcp presets
 agentgate mcp add mytool --command "npx -y @some/mcp-server" [--per-session]
 
-agentgate project set '*' fs=fs
-agentgate project set Lullu-ai/lullu posthog=posthog-lullu
+agentgate mcp projects fs '*'                 # * = Global defaults, in every repository
+agentgate mcp projects geysier Geysier/gey-mono Geysier/gey-fw
+agentgate project set Lullu-ai/lullu posthog=posthog-lullu   # under a tool prefix of your own
 agentgate mcp test posthog-lullu
 ```
 
-A server can have any name, such as "PostHog Lullu"; its slug (`posthog-lullu`) becomes its id and the default tool prefix, and `agentgate mcp label <id> <name>` changes only the name shown in the app. The alias is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Mapping changes reach running sessions without a restart.
+A server can have any name, such as "PostHog Lullu"; its slug (`posthog-lullu`) becomes its id and the default tool prefix, and `agentgate mcp label <id> <name>` changes only the name shown in the app. The alias is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Running Claude Code sessions pick up new servers and mapping changes without a restart. Codex reads the tool list only when a session starts, so start a new Codex session to see them.
 
 ## Skills per repo
 
@@ -173,7 +187,9 @@ Fetching needs Node (`npx`) or Bun (`bunx`) on the daemon's machine, and connect
 - **Every session**: the Claude and Codex folders `agentgate setup` writes (`~/.config/agentgate/{claude,codex}/skills`), plus `~/.claude/skills` and `~/.codex/skills` while `setup --primary` is on.
 - **One repo**: `.claude/skills/<name>` in the main checkout (Claude Code falls back to it from worktrees) and `.agents/skills/<name>` in the main checkout and every worktree (Codex). The entries are added to `.git/info/exclude`.
 
-Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine after its first agentgate session there, or after a scan under Projects → **Add project** → **Find on this machine**; from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create: a name clash is listed under Skills → Skills need attention. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app shows the skills.sh audit before installing.
+Cursor also reads `~/.claude/skills`, `~/.codex/skills` and a repo's `.claude/skills` and `.agents/skills`, so it gets the same skills, except from the separate folders `agentgate setup` writes.
+
+Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine once it is a project in that machine's T3 Code (with T3 Code connected; this includes clones from [project sync](#keep-projects-in-sync) and handoffs), after its first agentgate session there, or after a scan under Projects → **Add project** → **Find on this machine**; from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Outside T3 Code, register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create on its own: a name clash is listed under Skills → Skills need attention, where **Use Agentgate's** moves the existing folder to `skill-backups` in agentgate's state folder and links agentgate's copy, and **Keep this one** leaves it and stops linking agentgate's copy there on that machine (`agentgate skills conflicts`, `agentgate skills resolve <path> agentgate|keep`). A folder the repository tracks is never moved. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app shows the skills.sh audit before installing.
 
 The app installs the exact files shown in a preview. Previews expire after ten minutes or cache eviction; preview again to continue. Skills installed from skills.sh, a source or a connected repository follow it and can't be edited; only hand-written skills can. Editing checks the saved revision and reports a conflict if another client or peer changed the skill. Skills → **Skills need attention** shows failed local materialization/link work, which the daemon retries automatically.
 
@@ -190,16 +206,17 @@ agentgate project files add .env.local apps/expo-app/.env   # save them for ever
 agentgate project files ls
 agentgate project files cat .env.local                      # print the saved contents
 agentgate project files set .env.local < new.env            # replace them on every machine
+agentgate project files set .env.local --if-sha <sha256> < new.env   # unless saved again since (cat | shasum -a 256)
 agentgate project files rm .env.local
 ```
 
-In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
+In the app, choose **Env files** in a repository's menu on the Projects page to see its files, add one from a checkout on that machine, edit one's contents, or stop syncing one; a repository's row lists its files and says when they are not syncing. Run `add` again to save a newer version; the newest save of each file wins. An edit in the app or with `set` also updates that machine's checkouts, and every worktree of them, that still hold the previous version; a checkout with its own changes to the file keeps them. A checkout agentgate creates, through a handoff or a clone, gets the files: buncargo's `files pull` where the repository uses buncargo, otherwise each file that is missing, never replacing one that is there. A handoff also carries the thread's own changes to those files. Files buncargo marks as machine-only stay on their machine.
 
-Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run this agentgate release first. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
+Only github.com repositories sync, and all of a repository's files together can be about 700 KiB. Every machine must run agentgate 0.20.0 or later, because older versions drop the files when they save a project: until then none are saved, and the app and `project files ls` name the machine to update. The files sync like MCP secrets: end-to-end encrypted through the relay, and stored unencrypted in each machine's `agentgate.db`. `agentgate export --no-secrets` leaves them out.
 
 ## Your MCP servers and skills in Grok
 
-Assistants such as Grok only accept an MCP server URL and an `Authorization` header. A **virtual project** gives them one: in Projects, choose **New virtual project**, pick its MCP servers and skills, then **Connect to Grok** and copy the URL and `Authorization` value into Grok. One of your machines (an always-on server by default) answers through the relay. Grok also gets `skills__list` and `skills__read` tools, so it can find a skill and follow its SKILL.md.
+Assistants such as Grok only accept an MCP server URL and an `Authorization` header. A **virtual project** gives them one: in Projects, choose **New virtual project**, pick its MCP servers and skills, then **Create endpoint for Grok** and copy the URL and `Authorization` value into Grok. One of your machines (an always-on server by default) answers through the relay. Grok also gets `skills__list` and `skills__read` tools, so it can find a skill and follow its SKILL.md.
 
 ```sh
 agentgate project set @grok linear=linear posthog=posthog-lullu
@@ -212,7 +229,7 @@ Unlike sync, this traffic is readable by the relay (your logins stay on your mac
 
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 
@@ -236,13 +253,13 @@ Running from a git checkout keeps its state in the checkout's gitignored `.agent
 
 ## Monorepo
 
-| Workspace | Role |
-|---|---|
-| `apps/agentgate` (`@agentgate/daemon`) | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway |
-| `apps/desktop` (`@agentgate/desktop`) | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
-| `apps/site` (`@agentgate/site`) | Static Astro landing page for Cloudflare Pages |
-| `apps/relay` (`@agentgate/relay`) | Cloudflare Worker and Durable Objects for the encrypted sync relay |
-| `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas |
+| Workspace                                   | Role                                                                                               |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `apps/agentgate` (`@agentgate/daemon`)      | Bun daemon, standalone CLI, provider proxies, SQLite, sync, and MCP gateway                        |
+| `apps/desktop` (`@agentgate/desktop`)       | Tauri 2 shell with React/Vite, system appearance, translucent sidebar, and remembered window state |
+| `apps/site` (`@agentgate/site`)             | Static Astro landing page for Cloudflare Pages                                                     |
+| `apps/relay` (`@agentgate/relay`)           | Cloudflare Worker and Durable Objects for the encrypted sync relay                                 |
+| `packages/protocol` (`@agentgate/protocol`) | Shared control API types and configuration schemas                                                 |
 
 The app uses Tauri commands to send HTTP requests from Rust. It has no browser HTTP fallback, server-rendered pages, cookies, or CORS management access. The daemon's `/api/*` management endpoints reject browser Origin/Fetch Metadata headers; remote requests require the node's admin bearer token. Status omits credentials, header values, command environments, and URL credentials/query strings. `/oauth/callback` is a small text response for MCP sign-in, including CLI sign-in. Provider and MCP traffic remains loopback-only. Backup export/restore and login-directory import require a local connection.
 
@@ -258,20 +275,21 @@ See [running agentgate](docs/operations/running.md) for backup, upgrade, and liv
 
 Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 4** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
-`export --no-secrets` / **Without secrets** produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
+`export --no-secrets` (or a backup with **Include credentials** off) produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
 
 `setup` preserves unrelated Claude/Codex settings and first-run backups. Generated shims/services include `AGENTGATE_HOME` and `AGENTGATE_PORT`; rerun setup and reinstall the service if you change either value or move the binary. An unsuccessful temporary CLI login/import keeps its folder for recovery instead of deleting the only credential copy.
 
-The proxy bounds request bodies to 16 MiB, waits at most 30 seconds for upstream headers, and cancels a response stream after five minutes without data. MCP tool calls allow five minutes without progress, with a 30-minute total limit. Status reports expired logins, refresh failures, sync errors, and quota headers that could not be recognized.
+The proxy bounds model request bodies to 128 MiB, waits at most 30 seconds for upstream headers, and cancels a response stream after five minutes without data. MCP tool calls allow five minutes without progress, with a 30-minute total limit. Status reports expired logins, refresh failures, sync errors, and quota headers that could not be recognized.
 
 Network partitions can still cause separate machines to compete for a rotating upstream token. Reconnect and sync the newer credential first; if the provider revoked it, log in again. Live subscription traffic, T3 provider sessions, physical Tailscale failover, and installed service reboot/logout behavior remain release checks.
 
 ## Development checks
 
-Use Bun 1.4.2 and the committed lockfile:
+Use Bun 1.4.4 and the committed lockfile:
 
 ```sh
 bun install --frozen-lockfile
+bun fmt --no-script --check .
 bun run typecheck
 bun test
 bun run build
@@ -286,17 +304,17 @@ bun scripts/codex-smoke.ts                    # optional: installed Codex CLI, f
 
 Builds produce four macOS/Linux binaries and `dist/SHA256SUMS`. Releases use [release-please](https://github.com/googleapis/release-please): conventional commits on `main` (`feat:`, `fix:`) keep a release PR open with the next version and changelog, and merging it publishes the binaries to npm (`@hanskristoffer/agentpool` plus one `agentpool-<os>-<cpu>` package per binary, via `scripts/npm.ts`; npm trusted publishing is configured for each generated package) and to a GitHub release. The installer verifies the checksum from the same resolved release before replacing an installed binary. CI runs tests, typechecking, frontend builds, and compiled CLI checks on macOS and Linux, plus Rust checks and app packaging on macOS. Releases also attach a universal macOS DMG, signed with a Developer ID certificate and notarized (`.github/workflows/build-macos.yml`; run it by hand with a tag to rebuild one). It needs these repository secrets:
 
-| Secret | Value |
-|---|---|
-| `APPLE_CERTIFICATE` | base64 of the Developer ID Application `.p12`, including the G2 intermediate |
-| `APPLE_CERTIFICATE_PASSWORD` | its password |
-| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
-| `APPLE_TEAM_ID` | ten-character team id |
-| `APPLE_API_KEY` | App Store Connect API key id |
-| `APPLE_API_ISSUER` | its issuer id |
-| `APPLE_API_KEY_CONTENT` | contents of the `.p8` |
-| `TAURI_SIGNING_PRIVATE_KEY` | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
-| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password |
+| Secret                               | Value                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `APPLE_CERTIFICATE`                  | base64 of the Developer ID Application `.p12`, including the G2 intermediate                 |
+| `APPLE_CERTIFICATE_PASSWORD`         | its password                                                                                 |
+| `APPLE_SIGNING_IDENTITY`             | `Developer ID Application: Name (TEAMID)`                                                    |
+| `APPLE_TEAM_ID`                      | ten-character team id                                                                        |
+| `APPLE_API_KEY`                      | App Store Connect API key id                                                                 |
+| `APPLE_API_ISSUER`                   | its issuer id                                                                                |
+| `APPLE_API_KEY_CONTENT`              | contents of the `.p8`                                                                        |
+| `TAURI_SIGNING_PRIVATE_KEY`          | contents of the updater key from `bun run --filter @agentgate/desktop tauri signer generate` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | its password                                                                                 |
 
 The release also carries a signed app archive and `latest.json`. Installed apps check that on launch and every four hours and offer a restart to update; the public key in `tauri.conf.json` rejects anything not signed with the updater key. Keep that key: without it, installed copies can never update again. On launch, an updated app also replaces the daemon copy the service runs when it differs from the bundled one, then restarts the service.
 

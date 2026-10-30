@@ -6,17 +6,19 @@ import { Credentials, NeedsLogin } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { accountStatus } from "../src/llm/pool.ts";
 import { Store } from "../src/store.ts";
-import { noteSyncRound } from "../src/sync.ts";
+import { noteSyncRound, noteSyncTurn } from "../src/sync.ts";
 
 // Fake OAuth endpoint that rotates refresh tokens: each one works exactly once.
 let valid = new Set<string>();
 let refreshes = 0;
+/** Refresh tokens sent again after they were used: a provider that detects reuse revokes the login. */
+let reused = 0;
 let n = 0;
 const oauth = Bun.serve({
   port: 0,
   async fetch(req) {
     const { refresh_token } = (await req.json()) as { refresh_token: string };
-    if (!valid.delete(refresh_token)) return Response.json({ error: "invalid_grant" }, { status: 400 });
+    if (!valid.delete(refresh_token)) return (reused++, Response.json({ error: "invalid_grant" }, { status: 400 }));
     refreshes++;
     const rt = `rt-${++n}`;
     valid.add(rt);
@@ -25,16 +27,24 @@ const oauth = Bun.serve({
 });
 const originalTokenUrl = CLAUDE.tokenUrl;
 CLAUDE.tokenUrl = `http://127.0.0.1:${oauth.port}`;
-afterAll(() => { oauth.stop(true); CLAUDE.tokenUrl = originalTokenUrl; });
+afterAll(() => {
+  oauth.stop(true);
+  CLAUDE.tokenUrl = originalTokenUrl;
+});
 
 const MIN = 60_000;
 let T = 1_000_000_000_000;
 let srv: Store, mac: Store;
 const tempDirs: string[] = [];
-afterEach(() => { srv?.close(); mac?.close(); for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => {
+  srv?.close();
+  mac?.close();
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function node(name: string) {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-test-")); tempDirs.push(dir);
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-test-"));
+  tempDirs.push(dir);
   const s = new Store(join(dir, "db"));
   s.setLocal("node", name);
   s.now = () => T;
@@ -46,19 +56,36 @@ const pull = (into: Store, from: Store) => {
   into.db.run("insert or replace into peers values (?, 'http://x', 't', 0, ?)", [from.nodeId, T]);
 };
 /** Let time pass while `s` keeps syncing every 15 s, as an awake daemon with a working network does, without hearing from the holder. */
-const syncFor = (s: Store, ms: number) => { for (const end = T + ms; T < end;) { T += 15_000; noteSyncRound(s); } };
-const credsFor = (s: Store, peer: () => Store) => new Credentials(s, (p, rt) => claude.refresh(rt), async () => pull(s, peer()));
+const syncFor = (s: Store, ms: number) => {
+  for (const end = T + ms; T < end;) {
+    T += 15_000;
+    noteSyncRound(s);
+  }
+};
+const credsFor = (s: Store, peer: () => Store) =>
+  new Credentials(
+    s,
+    (_p, rt) => claude.refresh(rt),
+    async () => pull(s, peer()),
+  );
 
 beforeEach(() => {
   valid = new Set(["rt-0"]);
   refreshes = 0;
+  reused = 0;
   n = 0;
   srv = node("srv");
   mac = node("mac");
   mac.put("node", "mac", { id: "mac" });
   mac.put("node", "srv", { id: "srv", alwaysOn: true });
   mac.put("account", "a", { id: "a", provider: "claude", label: "a" });
-  mac.put("credential", "a", { accountId: "a", accessToken: "at-0", refreshToken: "rt-0", expiresAt: T + 20 * MIN, holder: "mac" });
+  mac.put("credential", "a", {
+    accountId: "a",
+    accessToken: "at-0",
+    refreshToken: "rt-0",
+    expiresAt: T + 20 * MIN,
+    holder: "mac",
+  });
   pull(srv, mac);
   pull(mac, srv);
 });
@@ -84,7 +111,11 @@ test("a node back from sleep does not take over until it has synced for two minu
   // one the holder already rotated.
   syncFor(srv, 5 * MIN);
   T += 3 * 60 * MIN;
-  const creds = new Credentials(srv, (p, rt) => claude.refresh(rt), async () => { }); // the holder answers no pulls
+  const creds = new Credentials(
+    srv,
+    (_p, rt) => claude.refresh(rt),
+    async () => {},
+  ); // the holder answers no pulls
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
   syncFor(srv, 90_000);
   await expect(creds.token("a")).rejects.toThrow("waiting for the credential holder");
@@ -106,7 +137,11 @@ test("a node back from sleep fetches the holder's newer token for its expired co
 
 test("an expired copy of a login another machine holds shows what it waits for, not a sign-in", () => {
   T += 30 * MIN;
-  expect(accountStatus(srv, srv.get("account", "a")!)).toMatchObject({ expired: true, needsLogin: false, waitingFor: "mac" });
+  expect(accountStatus(srv, srv.get("account", "a")!)).toMatchObject({
+    expired: true,
+    needsLogin: false,
+    waitingFor: "mac",
+  });
   // The holder's own expired copy is its to refresh; nobody else will.
   expect(accountStatus(mac, mac.get("account", "a")!)).toMatchObject({ expired: true, waitingFor: undefined });
 });
@@ -137,60 +172,214 @@ test("invalid_grant pulls from peers and uses the newer copy", async () => {
 
 test("invalid_grant with no newer copy marks the account needsLogin", async () => {
   valid.clear();
-  expect(credsFor(mac, () => srv).refresh("a")).rejects.toBeInstanceOf(NeedsLogin);
-  await Bun.sleep(20);
+  await expect(credsFor(mac, () => srv).refresh("a")).rejects.toBeInstanceOf(NeedsLogin);
   expect(mac.get("credential", "a")!.needsLogin).toBe(true);
 });
 
+test("a holder back from sleep hears the others before refreshing, and never uses a token the taker rotated", async () => {
+  // mac sleeps; srv keeps syncing, never hears from it, and takes the login over as it nears expiry.
+  syncFor(srv, 12 * MIN);
+  expect((await credsFor(srv, () => mac).token("a")).holder).toBe("srv");
+  // mac wakes hours later, still holding rt-0 as the holder. Its first credential tick runs before any pull.
+  T += 3 * 60 * MIN;
+  await credsFor(mac, () => srv).tick();
+  expect(reused).toBe(0);
+  expect(mac.get("credential", "a")).toMatchObject({ holder: "srv", refreshToken: "rt-1" });
+});
+
+test("a holder that hears from nobody right after waking waits instead of refreshing", async () => {
+  syncFor(srv, 12 * MIN);
+  await credsFor(srv, () => mac).token("a");
+  T += 3 * 60 * MIN;
+  // mac's network is not up yet: its pull fails. It must not try rt-0, which srv rotated.
+  const offline = new Credentials(
+    mac,
+    (_p, rt) => claude.refresh(rt),
+    async () => ["srv is not reachable"],
+  );
+  await expect(offline.token("a")).rejects.toThrow("waiting to hear from the other machines");
+  expect(reused).toBe(0);
+  expect(mac.get("credential", "a")!.needsLogin).toBeFalsy();
+  // Once it hears from srv, srv's working copy wins.
+  pull(mac, srv);
+  expect(mac.get("credential", "a")).toMatchObject({ holder: "srv", refreshToken: "rt-1", needsLogin: false });
+});
+
+test("a refused refresh token is sent once, and the login needs a sign-in once the others had their chance", async () => {
+  valid.clear(); // the provider revoked mac's login
+  const unheard = new Credentials(
+    mac,
+    (_p, rt) => claude.refresh(rt),
+    async () => ["srv is not reachable"],
+  );
+  // mac keeps syncing through the relay until its token expires, but srv does not answer and mac's daemon only just started.
+  for (const end = mac.get("credential", "a")!.expiresAt + 1; T < end;) {
+    T += 15_000;
+    noteSyncRound(mac);
+  }
+  await expect(unheard.token("a")).rejects.toThrow("token refresh failed");
+  await expect(unheard.token("a")).rejects.toThrow("token refresh failed");
+  expect(reused).toBe(1);
+  expect(mac.get("credential", "a")!.needsLogin).toBeFalsy();
+  // Two minutes awake without a word from srv: srv is offline, and the login is dead.
+  for (const end = T + 2 * MIN + 15_000; T < end;) {
+    T += 15_000;
+    noteSyncRound(mac);
+    noteSyncTurn(mac);
+  }
+  await expect(unheard.token("a")).rejects.toBeInstanceOf(NeedsLogin);
+  expect(reused).toBe(1);
+  expect(mac.get("credential", "a")!.needsLogin).toBe(true);
+});
+
+test("a holder change that syncs in during a refresh keeps the freshly rotated tokens", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)),
+    started = new Promise<void>((r) => (entered = r));
+  const task = new Credentials(
+    mac,
+    async () => {
+      entered();
+      await gate;
+      return { accessToken: "at-1", refreshToken: "rt-1", expiresAt: T + 8 * 60 * MIN };
+    },
+    async () => {},
+  ).refresh("a");
+  await started;
+  // The always-on server reclaims the holder role, and that record arrives while the provider rotates rt-0.
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, holder: "srv" });
+  pull(mac, srv);
+  release();
+  expect((await task).refreshToken).toBe("rt-1");
+  expect(mac.get("credential", "a")!.refreshToken).toBe("rt-1");
+});
+
 test("simultaneous forced refreshes across independent stores rotate exactly once", async () => {
-  const second = new Store(mac.db.filename!); second.now = () => T;
+  const second = new Store(mac.db.filename!);
+  second.now = () => T;
   const [a, b] = await Promise.all([credsFor(mac, () => srv).refresh("a"), credsFor(second, () => srv).refresh("a")]);
-  expect(refreshes).toBe(1); expect(a.accessToken).toBe(b.accessToken); second.close();
+  expect(refreshes).toBe(1);
+  expect(a.accessToken).toBe(b.accessToken);
+  second.close();
 });
 
 test("forced 401 refresh on a non-holder requests its live holder instead of rotating", async () => {
   const c = credsFor(srv, () => mac);
   await expect(c.refresh("a")).rejects.toThrow("waiting for the credential holder");
-  expect(refreshes).toBe(0); expect(srv.get("refreshRequest", "credential:a")).toBeDefined();
-  pull(mac, srv); await credsFor(mac, () => srv).tick(); pull(srv, mac);
-  expect(refreshes).toBe(1); expect((await c.token("a")).accessToken).toBe(mac.get("credential", "a")!.accessToken);
+  expect(refreshes).toBe(0);
+  expect(srv.get("refreshRequest", "credential:a")).toBeDefined();
+  pull(mac, srv);
+  await credsFor(mac, () => srv).tick();
+  pull(srv, mac);
+  expect(refreshes).toBe(1);
+  expect((await c.token("a")).accessToken).toBe(mac.get("credential", "a")!.accessToken);
 });
 
 test("a late refresh cannot overwrite a new login or recreate deleted credentials", async () => {
-  let release!: () => void; let entered!: () => void;
-  const gate = new Promise<void>(r => release = r), started = new Promise<void>(r => entered = r);
-  const c = new Credentials(mac, async () => { entered(); await gate; return { accessToken: "late", refreshToken: "late-rt", expiresAt: T + MIN }; }, async () => { });
-  const task = c.refresh("a"); await started;
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)),
+    started = new Promise<void>((r) => (entered = r));
+  const c = new Credentials(
+    mac,
+    async () => {
+      entered();
+      await gate;
+      return { accessToken: "late", refreshToken: "late-rt", expiresAt: T + MIN };
+    },
+    async () => {},
+  );
+  const task = c.refresh("a");
+  await started;
   mac.put("credential", "a", { ...mac.get("credential", "a")!, accessToken: "new-login", refreshToken: "new-rt" });
-  release(); expect((await task).accessToken).toBe("new-login");
-  let resolve!: () => void; const wait = new Promise<void>(r => resolve = r);
-  const deleting = new Credentials(mac, async () => { await wait; return { accessToken: "lost", refreshToken: "lost", expiresAt: T + MIN }; }, async () => { });
-  const late = deleting.refresh("a"); mac.del("credential", "a"); resolve(); await expect(late).rejects.toBeInstanceOf(NeedsLogin);
+  release();
+  expect((await task).accessToken).toBe("new-login");
+  let resolve!: () => void;
+  const wait = new Promise<void>((r) => (resolve = r));
+  const deleting = new Credentials(
+    mac,
+    async () => {
+      await wait;
+      return { accessToken: "lost", refreshToken: "lost", expiresAt: T + MIN };
+    },
+    async () => {},
+  );
+  const late = deleting.refresh("a");
+  mac.del("credential", "a");
+  resolve();
+  await expect(late).rejects.toBeInstanceOf(NeedsLogin);
   expect(mac.get("credential", "a")).toBeUndefined();
 });
 
 test("a transient proactive refresh failure retains a valid token and reports health", async () => {
-  const c = new Credentials(mac, async () => { throw new Error("network failure with private details"); }, async () => { });
+  const c = new Credentials(
+    mac,
+    async () => {
+      throw new Error("network failure with private details");
+    },
+    async () => {},
+  );
   expect((await c.token("a")).accessToken).toBe("at-0");
-  expect(mac.get("credential", "a")?.needsLogin).toBeFalsy(); expect(mac.local("refreshError:credential:a")).not.toContain("private details");
+  expect(mac.get("credential", "a")?.needsLogin).toBeFalsy();
+  expect(mac.local("refreshError:credential:a")).not.toContain("private details");
   mac.put("credential", "a", { ...mac.get("credential", "a")!, expiresAt: T - 1 });
   await expect(c.token("a")).rejects.toThrow("token refresh failed");
 });
 
 test("offline takeover survives two complete token cycles and the returning node catches up", async () => {
-  syncFor(srv, 21 * MIN); const remote = new Credentials(srv, async (_, rt) => ({ ...await claude.refresh(rt), expiresAt: T + 8 * 60 * MIN }), async () => pull(srv, mac));
-  const first = await remote.token("a"); expect(first.holder).toBe("srv"); expect(refreshes).toBe(1);
-  T += 8 * 60 * MIN; const second = await remote.token("a"); expect(second.accessToken).not.toBe(first.accessToken); expect(refreshes).toBe(2);
-  pull(mac, srv); expect((await credsFor(mac, () => srv).token("a")).accessToken).toBe(second.accessToken); expect(refreshes).toBe(2); expect(mac.get("credential", "a")?.needsLogin).toBeFalsy();
+  syncFor(srv, 21 * MIN);
+  const remote = new Credentials(
+    srv,
+    async (_, rt) => ({ ...(await claude.refresh(rt)), expiresAt: T + 8 * 60 * MIN }),
+    async () => pull(srv, mac),
+  );
+  const first = await remote.token("a");
+  expect(first.holder).toBe("srv");
+  expect(refreshes).toBe(1);
+  T += 8 * 60 * MIN;
+  const second = await remote.token("a");
+  expect(second.accessToken).not.toBe(first.accessToken);
+  expect(refreshes).toBe(2);
+  pull(mac, srv);
+  expect((await credsFor(mac, () => srv).token("a")).accessToken).toBe(second.accessToken);
+  expect(refreshes).toBe(2);
+  expect(mac.get("credential", "a")?.needsLogin).toBeFalsy();
 });
 
 test("two Bun processes sharing a database cannot independently rotate the same token", async () => {
   let rotations = 0;
-  const endpoint = Bun.serve({ port: 0, async fetch() { rotations++; await Bun.sleep(150); return Response.json({ access_token: "process-access", refresh_token: "process-refresh", expires_in: 3600 }); } });
-  const worker = () => Bun.spawn([process.execPath, join(import.meta.dir, "fixtures", "refresh.ts"), mac.db.filename!, `http://127.0.0.1:${endpoint.port}`], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const endpoint = Bun.serve({
+    port: 0,
+    async fetch() {
+      rotations++;
+      await Bun.sleep(150);
+      return Response.json({ access_token: "process-access", refresh_token: "process-refresh", expires_in: 3600 });
+    },
+  });
+  const worker = () =>
+    Bun.spawn(
+      [
+        process.execPath,
+        join(import.meta.dir, "fixtures", "refresh.ts"),
+        mac.db.filename!,
+        `http://127.0.0.1:${endpoint.port}`,
+      ],
+      { stdin: "ignore", stdout: "pipe", stderr: "pipe" },
+    );
   const children = [worker(), worker()];
   try {
-    const results = await Promise.all(children.map(async child => ({ exit: await child.exited, stdout: await new Response(child.stdout).text(), stderr: await new Response(child.stderr).text() })));
-    expect(results.map(r => r.exit)).toEqual([0, 0]); expect(results.map(r => r.stdout.trim())).toEqual(["process-access", "process-access"]); expect(rotations).toBe(1);
-  } finally { children.forEach(c => c.kill()); endpoint.stop(true); }
+    const results = await Promise.all(
+      children.map(async (child) => ({
+        exit: await child.exited,
+        stdout: await new Response(child.stdout).text(),
+        stderr: await new Response(child.stderr).text(),
+      })),
+    );
+    expect(results.map((r) => r.exit)).toEqual([0, 0]);
+    expect(results.map((r) => r.stdout.trim())).toEqual(["process-access", "process-access"]);
+    expect(rotations).toBe(1);
+  } finally {
+    children.forEach((c) => c.kill());
+    endpoint.stop(true);
+  }
 });

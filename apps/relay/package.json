@@ -5,11 +5,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "typecheck": "bun check && bun check -p tsconfig.test.json",
     "test:workers": "vitest run"
   },
   "dependencies": {
     "@agentgate/protocol": "workspace:*",
+    "hanzio": "^3.3.0",
     "hono": "^4.13.12",
     "zod": "^4.6.5"
   },

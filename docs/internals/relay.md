@@ -21,7 +21,7 @@ the relay group. Do not remove it without tagging where records came from.
 
 - The AAD binds `[1, groupId, generation, node, key, pusherSeq]`, so a blob cannot be moved to another
   slot. The relay's `seq` and its `seen` heartbeats are not authenticated; treat them as hints.
-- Replay protection is a counter per key, not per node. `relay_counters` holds the highest
+- Replay protection is a counter per group, generation, node and key. `relay_counters` holds the highest
   authenticated `pusherSeq`, updated in the same transaction as the merge and the cursor.
 - The upload chunk (`relay_pending`, one per group) is saved before sending and resent byte for byte
   until acknowledged, so a crash never reuses a counter for different ciphertext.
@@ -40,9 +40,10 @@ the relay group. Do not remove it without tagging where records came from.
 - The CLI and daemon share the store, so every relay mutation goes through `withRelay`: serialized in
   the process and under the cross-process `relay-lease`. Completion handlers re-check `identity()`
   before committing, because a rotation may have happened meanwhile.
-- Pulling continues while uploads are blocked (quota, an oversized record), so newer credentials still
-  arrive. A record over the relay's 1 MiB limit (stricter than the store's 4 MiB) blocks uploads and is
-  named in the error; it is never silently skipped.
+- Pulling continues while uploads are blocked (quota), so newer credentials still arrive. A record over
+  the relay's 1 MiB limit (stricter than the store's 4 MiB) is left out and named in the upload error
+  until it changes. Holding the feed at it instead stopped every later record for every relay machine,
+  refreshed credentials included, and a connected skill repository can bring such a skill in unattended.
 - Rotation records the new invite before anything else, seeds the new group, then swaps the
   `relay:rot:*` keys into `relay:*` in one transaction. Deleting the old group is cleanup, not
   revocation: old members could recreate it.

@@ -1,5 +1,95 @@
 # Changelog
 
+## [0.27.0](https://github.com/HansKristoffer/agentgate/compare/v0.26.0...v0.27.0) (2026-10-30)
+
+
+### Features
+
+* **setup:** installing the service routes your own Claude Code, Codex and Cursor ([#97](https://github.com/HansKristoffer/agentgate/issues/97)) ([61d2b42](https://github.com/HansKristoffer/agentgate/commit/61d2b422b189a2ed706817484170276dc2f159ac))
+* **skills:** a repo's first session on another machine gets its skills, and MCP entries follow a moved binary ([#98](https://github.com/HansKristoffer/agentgate/issues/98)) ([916c6be](https://github.com/HansKristoffer/agentgate/commit/916c6be05d15788986a193099df101aa0185e1c9))
+* **skills:** settle a skill name clash with one click ([#95](https://github.com/HansKristoffer/agentgate/issues/95)) ([8593787](https://github.com/HansKristoffer/agentgate/commit/85937874504b375402f6b8d01d1540849f465999))
+
+
+### Bug Fixes
+
+* **logins:** an expired Infisical login shows where it fails, with a button to sign in again ([#94](https://github.com/HansKristoffer/agentgate/issues/94)) ([b042334](https://github.com/HansKristoffer/agentgate/commit/b0423343ca292e8bb131a8add40092258901c77c))
+
+## [0.26.0](https://github.com/HansKristoffer/agentgate/compare/v0.25.1...v0.26.0) (2026-10-27)
+
+
+### Features
+
+* **mcp:** add an Infisical server preset ([#92](https://github.com/HansKristoffer/agentgate/issues/92)) ([d704038](https://github.com/HansKristoffer/agentgate/commit/d70403825d653337a139bbbe5ad71c7774dbcec1))
+* new MCP servers sign in on their own, and usage refreshes in the background ([#93](https://github.com/HansKristoffer/agentgate/issues/93)) ([bee338d](https://github.com/HansKristoffer/agentgate/commit/bee338d2d4a51f0dfa9c692ca5025d2db390bc1c))
+
+
+### Bug Fixes
+
+* **proxy:** raise the model request body limit ([#91](https://github.com/HansKristoffer/agentgate/issues/91)) ([9f86d59](https://github.com/HansKristoffer/agentgate/commit/9f86d591c666fcdd400060049168e5f08ad8a4e3))
+* **tokens:** count final Claude output in history ([#89](https://github.com/HansKristoffer/agentgate/issues/89)) ([5d21622](https://github.com/HansKristoffer/agentgate/commit/5d216228c3b4543da7f6e2aee9c5d116d2b97479))
+
+## [0.25.1](https://github.com/HansKristoffer/agentgate/compare/v0.25.0...v0.25.1) (2026-10-22)
+
+
+### Build System
+
+* move to Bun 1.4.4, typecheck with bun check and format with bun fmt ([#87](https://github.com/HansKristoffer/agentgate/issues/87)) ([73ee1fc](https://github.com/HansKristoffer/agentgate/commit/73ee1fcb3e1ca23951621c54a559f54f98043f79))
+
+## [0.25.0](https://github.com/HansKristoffer/agentgate/compare/v0.24.0...v0.25.0) (2026-10-21)
+
+
+### Features
+
+* **handoff:** gitignored files such as plans move with a thread ([#84](https://github.com/HansKristoffer/agentgate/issues/84)) ([1dd65d7](https://github.com/HansKristoffer/agentgate/commit/1dd65d73d82ff14389ad3ea5784a9dd77fce78e4))
+
+## [0.24.0](https://github.com/HansKristoffer/agentgate/compare/v0.23.0...v0.24.0) (2026-10-19)
+
+
+### Features
+
+* **health:** machine health dashboard, switched on from Machines ([#82](https://github.com/HansKristoffer/agentgate/issues/82)) ([1210e1c](https://github.com/HansKristoffer/agentgate/commit/1210e1c7ad2e1318a7cf20d9e7c710abf3490130))
+
+## [0.23.0](https://github.com/HansKristoffer/agentgate/compare/v0.22.0...v0.23.0) (2026-10-17)
+
+
+### Features
+
+* **nodes:** see and switch each machine's Claude Code and Codex routing from Machines ([#79](https://github.com/HansKristoffer/agentgate/issues/79)) ([e8ef588](https://github.com/HansKristoffer/agentgate/commit/e8ef58873f5f1b59832af7f281bee63f9179c46f))
+
+## [0.22.0](https://github.com/HansKristoffer/agentgate/compare/v0.21.2...v0.22.0) (2026-10-17)
+
+
+### Features
+
+* **app:** actions no longer freeze the window, and machine updates show their progress ([#78](https://github.com/HansKristoffer/agentgate/issues/78)) ([d1f0058](https://github.com/HansKristoffer/agentgate/commit/d1f0058e835a6ae6a17bddcfb372f03b5d8c5192))
+
+
+### Bug Fixes
+
+* **handoff:** recognize clones of renamed repositories ([#75](https://github.com/HansKristoffer/agentgate/issues/75)) ([fdd4030](https://github.com/HansKristoffer/agentgate/commit/fdd403008f9962080b08a422cc8b5216f5d9e454))
+* **app:** the Machines page shows the relay and how each machine is reached ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **credentials:** a holder back from sleep can no longer revoke a login everywhere ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **daemon:** switching Claude Desktop, updating and status can no longer hang ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **daemon:** token refresh failures and MCP connect failures reach the daemon log ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **handoff:** a handoff never leaves the thread on both machines, and never hangs ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **mcp:** one slow server no longer empties a session, and pages cannot reach /mcp ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **proxy:** non-streaming requests are no longer cut off after 30 seconds ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+* **relay:** one large record no longer stops relay sync, and the service key stays off the hosted relay ([#77](https://github.com/HansKristoffer/agentgate/issues/77)) ([2e41cda](https://github.com/HansKristoffer/agentgate/commit/2e41cda1a6eaf9b620db2be7f11833538f8c4950))
+
+## [0.21.2](https://github.com/HansKristoffer/agentgate/compare/v0.21.1...v0.21.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* **daemon:** timestamped logs, detailed request errors, update waits for the node, quieter skill retries ([#73](https://github.com/HansKristoffer/agentgate/issues/73)) ([ceded96](https://github.com/HansKristoffer/agentgate/commit/ceded968a227734cda3c770ea40546730532b7a4))
+
+## [0.21.1](https://github.com/HansKristoffer/agentgate/compare/v0.21.0...v0.21.1) (2026-10-16)
+
+
+### Bug Fixes
+
+* **files:** a saved env file reaches every worktree, and saves are logged ([#71](https://github.com/HansKristoffer/agentgate/issues/71)) ([6748bae](https://github.com/HansKristoffer/agentgate/commit/6748baef7cc46309b04ba53d84b12402bffb1069))
+
 ## [0.21.0](https://github.com/HansKristoffer/agentgate/compare/v0.20.0...v0.21.0) (2026-10-16)
 
 

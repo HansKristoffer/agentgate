@@ -1,11 +1,23 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
 import type { HandoffJob } from "@agentgate/protocol";
 import { z } from "zod";
 import { parseRemote } from "../mcp/gateway.ts";
-import { sleep } from "../runtime.ts";
-import { addWorktree, dropRef, dropStash, ensureCommit, fetchBundle, git, manifestsChanged, moveToSource, run, worktrees } from "./code.ts";
+import { killGroup, sleep } from "../runtime.ts";
+import {
+  addWorktree,
+  dropRef,
+  dropStash,
+  ensureCommit,
+  fetchBundle,
+  git,
+  manifestsChanged,
+  moveToSource,
+  run,
+  worktrees,
+} from "./code.ts";
 import { sessionNote, timed, type Handoffs, type Job, type Timing } from "./jobs.ts";
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
 import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, t3State, type Call } from "./t3.ts";
@@ -20,40 +32,51 @@ import { checkoutKey, fillCheckout, placeEdit, rememberCheckout } from "../check
 const sha = z.string().regex(/^[0-9a-f]{40,64}$/);
 /** Queued messages a manifest carries; it must fit one relay call. */
 export const QUEUED_MAX = { count: 20, chars: 256_000 };
-export const prepareSchema = z.object({
-  remoteUrl: z.string().min(1).max(2048),
-  projectTitle: z.string().min(1).max(512),
-  branch: z.string().min(1).max(512).nullable(),
-  baseSha: sha.nullable(),
-  worktree: z.boolean(),
-}).strict();
-export const manifestSchema = prepareSchema.extend({
-  source: z.string().min(1).max(512),
-  sourceThreadId: z.string().min(1).max(512),
-  sessionId: z.string().regex(SAFE_ID),
-  driver: z.string().min(1).max(64),
-  title: z.string().min(1).max(1000),
-  modelSelection: z.record(z.string(), z.unknown()),
-  runtimeMode: z.string().min(1).max(64),
-  interactionMode: z.string().min(1).max(64),
-  headSha: sha,
-  snapshot: z.object({ sha, uncommitted: z.boolean() }),
-  bundle: z.boolean(),
-  wasWorking: z.boolean(),
-  /** Background tasks that were running on the source and stopped with the move. */
-  background: z.array(z.string().min(1).max(2000)).max(20).optional(),
-  /** The user's queued messages, in order, queued again here behind the continued turn. */
-  queued: z.array(z.string().min(1)).max(QUEUED_MAX.count)
-    .refine((q) => q.reduce((n, t) => n + t.length, 0) <= QUEUED_MAX.chars).optional(),
-  oldPaths: z.array(z.string().min(1).max(4096)).max(16),
-  files: z.array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() })).max(10_000),
-}).strict();
+export const prepareSchema = z
+  .object({
+    remoteUrl: z.string().min(1).max(2048),
+    projectTitle: z.string().min(1).max(512),
+    branch: z.string().min(1).max(512).nullable(),
+    baseSha: sha.nullable(),
+    worktree: z.boolean(),
+  })
+  .strict();
+export const manifestSchema = prepareSchema
+  .extend({
+    source: z.string().min(1).max(512),
+    sourceThreadId: z.string().min(1).max(512),
+    sessionId: z.string().regex(SAFE_ID),
+    driver: z.string().min(1).max(64),
+    title: z.string().min(1).max(1000),
+    modelSelection: z.record(z.string(), z.unknown()),
+    runtimeMode: z.string().min(1).max(64),
+    interactionMode: z.string().min(1).max(64),
+    headSha: sha,
+    snapshot: z.object({ sha, uncommitted: z.boolean() }),
+    bundle: z.boolean(),
+    wasWorking: z.boolean(),
+    /** Background tasks that were running on the source and stopped with the move. */
+    background: z.array(z.string().min(1).max(2000)).max(20).optional(),
+    /** The user's queued messages, in order, queued again here behind the continued turn. */
+    queued: z
+      .array(z.string().min(1))
+      .max(QUEUED_MAX.count)
+      .refine((q) => sumBy(q, (t) => t.length) <= QUEUED_MAX.chars)
+      .optional(),
+    oldPaths: z.array(z.string().min(1).max(4096)).max(16),
+    files: z
+      .array(z.object({ path: z.string().refine(safeRelative), size: z.number().int().nonnegative() }))
+      .max(10_000),
+  })
+  .strict();
 type Prepare = z.infer<typeof prepareSchema>;
 /** A gitignored file from the source checkout, such as `.env.local` (checkout-files.ts). */
 const CHECKOUT_FILES = "checkout-files/";
-export const checkoutFile = (path: string) => path.startsWith(CHECKOUT_FILES) && safePath(path.slice(CHECKOUT_FILES.length));
+export const checkoutFile = (path: string) =>
+  path.startsWith(CHECKOUT_FILES) && safePath(path.slice(CHECKOUT_FILES.length));
 /** The checkout file paths a manifest carries, relative to the checkout. */
-const carried = (m: Manifest) => m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
+const carried = (m: Manifest) =>
+  m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
 export type Manifest = z.infer<typeof manifestSchema>;
 
 export interface DestState {
@@ -78,6 +101,8 @@ export interface DestState {
   imported?: boolean;
   /** The checkout got the repository's file store. */
   filled?: boolean;
+  /** The setup script finished (or there was none to wait for); a restart runs an unfinished one again. */
+  setupDone?: boolean;
   /** Recorded before sending, so a restart never sends a message twice. */
   readied?: boolean;
   continued?: boolean;
@@ -98,9 +123,13 @@ const FIRST_TURN = 2 * 60_000;
 const RETRY_PAUSE = 10_000;
 /** What A sees of each step. */
 const STATUS: Record<string, "preparing" | "running" | "imported" | "failed"> = {
-  prepare: "preparing", prepared: "preparing",
-  apply: "running", place: "running", import: "running",
-  continue: "imported", done: "imported",
+  prepare: "preparing",
+  prepared: "preparing",
+  apply: "running",
+  place: "running",
+  import: "running",
+  continue: "imported",
+  done: "imported",
   failed: "failed",
 };
 
@@ -109,19 +138,35 @@ export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
   const shown = STATUS[job.step];
   const status = job.step === "done" ? "done" : shown === "imported" || shown === "failed" ? shown : "running";
   return {
-    id: job.id, role: "destination", node: h.s.nodeId, from: st.source, to: h.s.nodeId,
-    thread: st.manifest?.sourceThreadId ?? job.thread, title: st.manifest?.title, step: job.step, status,
-    destThreadId: st.threadId, warnings: st.warnings, error: job.error, timings: st.timings,
-    createdAt: job.createdAt, updatedAt: job.updatedAt,
+    id: job.id,
+    role: "destination",
+    node: h.s.nodeId,
+    from: st.source,
+    to: h.s.nodeId,
+    thread: st.manifest?.sourceThreadId ?? job.thread,
+    title: st.manifest?.title,
+    step: job.step,
+    status,
+    destThreadId: st.threadId,
+    warnings: st.warnings,
+    error: job.error,
+    timings: st.timings,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
   };
 }
 
 /** What A polls: the status, the imported thread, and B's warnings and timings. */
-export function peerStatus(h: Handoffs, job: Job<DestState>) {
+export function peerStatus(job: Job<DestState>) {
   const st = job.state;
   return {
-    step: job.step, status: STATUS[job.step] ?? "running", threadId: st.threadId,
-    codeTaken: st.codeTaken, warnings: st.warnings, timings: st.timings, error: job.error,
+    step: job.step,
+    status: STATUS[job.step] ?? "running",
+    threadId: st.threadId,
+    codeTaken: st.codeTaken,
+    warnings: st.warnings,
+    timings: st.timings,
+    error: job.error,
   };
 }
 
@@ -130,7 +175,14 @@ export const manifestFile = (h: Handoffs, id: string) => join(h.dir(id), "manife
 
 /** The job, created by whichever of prepare and start arrives first, and only ever driven for its own source. */
 function destinationJob(h: Handoffs, id: string, source: string, prepare: Prepare, thread = "") {
-  const job = h.create<DestState>({ id, role: "destination", thread, target: h.s.nodeId, step: "prepare", state: { source, prepare, warnings: [], timings: [] } });
+  const job = h.create<DestState>({
+    id,
+    role: "destination",
+    thread,
+    target: h.s.nodeId,
+    step: "prepare",
+    state: { source, prepare, warnings: [], timings: [] },
+  });
   if (job.state.source !== source) throw new T3Error("that handoff belongs to another node");
   return job;
 }
@@ -142,14 +194,21 @@ export function prepare(h: Handoffs, id: string, source: string, input: Prepare)
 
 export function start(h: Handoffs, id: string, source: string, manifest: Manifest) {
   const { remoteUrl, projectTitle, branch, baseSha, worktree } = manifest;
-  const job = destinationJob(h, id, source, { remoteUrl, projectTitle, branch, baseSha, worktree }, manifest.sourceThreadId);
+  const job = destinationJob(
+    h,
+    id,
+    source,
+    { remoteUrl, projectTitle, branch, baseSha, worktree },
+    manifest.sourceThreadId,
+  );
   if (job.step === "failed") throw new T3Error(job.error ?? "the handoff failed");
 
   if (job.step === "prepare" || job.step === "prepared") {
     for (const f of manifest.files) {
       const session = f.path.startsWith("session/");
       if (!session && f.path !== "bundle" && !checkoutFile(f.path)) throw new T3Error(`unexpected file ${f.path}`);
-      if (session && !sessionProviders[manifest.driver]?.accepts(manifest.sessionId, f.path.slice(8))) throw new T3Error(`unexpected session file ${f.path}`);
+      if (session && !sessionProviders[manifest.driver]?.accepts(manifest.sessionId, f.path.slice(8)))
+        throw new T3Error(`unexpected session file ${f.path}`);
       const path = join(h.dir(id), "files", f.path);
       if (!existsSync(path) || Bun.file(path).size !== f.size) throw new T3Error(`${f.path} has not fully arrived`);
     }
@@ -165,33 +224,52 @@ export function abort(h: Handoffs, job: Job<DestState>) {
 }
 
 export async function runDestination(h: Handoffs, id: string) {
-  for (; ;) {
+  for (;;) {
     const job = h.load<DestState>("destination", id);
     if (!job || h.closed) return;
     try {
       switch (job.step) {
-        case "prepare": await doPrepare(h, job); break;
+        case "prepare":
+          await doPrepare(h, job);
+          break;
         case "prepared": {
           if (!existsSync(manifestFile(h, id))) return;
           const manifest = manifestSchema.parse(JSON.parse(readFileSync(manifestFile(h, id), "utf8")));
           job.state.manifest = manifest;
-          job.thread = manifest.sourceThreadId; h.advance(job, "apply");
+          job.thread = manifest.sourceThreadId;
+          h.advance(job, "apply");
           break;
         }
-        case "apply": await apply(h, job); break;
-        case "place": await place(h, job); break;
-        case "import": await importThread(h, job); break;
-        case "continue": await carryOn(h, job); break;
-        default: return;
+        case "apply":
+          await apply(h, job);
+          break;
+        case "place":
+          await place(h, job);
+          break;
+        case "import":
+          await importThread(h, job);
+          break;
+        case "continue":
+          await carryOn(h, job);
+          break;
+        default:
+          return;
       }
     } catch (e) {
-      h.fail(job, `${job.step} on ${h.s.nodeId}: ${(e as Error).message}`);
+      const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
+      // Imported: the thread lives here now, and a failure must not make the source take it back.
+      if (job.step === "continue") {
+        job.state.warnings.push(`${message}; the thread is here, continue it in T3 Code`);
+        rmSync(h.dir(job.id), { recursive: true, force: true });
+        h.advance(job, "done");
+      } else h.fail(job, message);
       return;
     }
   }
 }
 
-const repoName = (remoteUrl: string) => parseRemote(remoteUrl)?.split("/")[1] ?? basename(remoteUrl).replace(/\.git$/, "");
+const repoName = (remoteUrl: string) =>
+  parseRemote(remoteUrl)?.split("/")[1] ?? basename(remoteUrl).replace(/\.git$/, "");
 
 async function doPrepare(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
@@ -213,6 +291,8 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
       h.save(job);
     }
     if (!st.cwd) await workspace(h, job, p.baseSha);
+    // A clone made here, or a project with no session here yet: link its skills before the thread continues.
+    if (st.cwd) h.register([{ path: st.cwd }]);
   });
 
   if (job.step === "prepare") h.advance(job, "prepared");
@@ -238,17 +318,32 @@ async function cloneProject(h: Handoffs, remoteUrl: string) {
   for (let n = 2; existsSync(dir); n++) dir = join(h.options.cloneDir, `${repo}-${n}`);
   await git(h.options.cloneDir, ["clone", remoteUrl, dir]);
 
-  const create = { type: "project.create", commandId: crypto.randomUUID(), projectId: crypto.randomUUID(), title: repo, workspaceRoot: dir };
-  const project = z.object({ id: z.string() }).passthrough().parse(await t3Client(h.s).rpc((call) => call("projects.mutate", create)));
+  const create = {
+    type: "project.create",
+    commandId: crypto.randomUUID(),
+    projectId: crypto.randomUUID(),
+    title: repo,
+    workspaceRoot: dir,
+  };
+  const project = z
+    .object({ id: z.string() })
+    .passthrough()
+    .parse(await t3Client(h.s).rpc((call) => call("projects.mutate", create)));
   return { projectId: project.id, main: dir, setupCommand: repoSetupCommand(dir) };
 }
 
 /** A new T3 project has no scripts of its own: the setup script of a fresh clone is the one the repository shares in
  * its `t3.json`. */
 function repoSetupCommand(dir: string) {
-  const t3json = z.object({ scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean().optional() }).passthrough()) }).passthrough();
+  const t3json = z
+    .object({
+      scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean().optional() }).passthrough()),
+    })
+    .passthrough();
   try {
-    return t3json.parse(JSON.parse(readFileSync(join(dir, "t3.json"), "utf8"))).scripts.find((s) => s.runOnWorktreeCreate)?.command;
+    return t3json
+      .parse(JSON.parse(readFileSync(join(dir, "t3.json"), "utf8")))
+      .scripts.find((s) => s.runOnWorktreeCreate)?.command;
   } catch {
     return undefined;
   }
@@ -288,26 +383,43 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
   if (!command) return;
 
   const previous = h.setups.get(job.id) ?? Promise.resolve({ warnings: [], timings: [] });
-  h.setups.set(job.id, previous.then(async (notes) => {
-    const started = performance.now();
-    try {
-      const child = Bun.spawn([process.env.SHELL || "/bin/sh", "-lc", command], {
-        cwd, stdin: "ignore", stdout: "pipe", stderr: "pipe",
-        env: { ...process.env, T3CODE_PROJECT_ROOT: st.main!, ...(cwd !== st.main && { T3CODE_WORKTREE_PATH: cwd }), COLORTERM: "" },
-      });
-      const timer = setTimeout(() => child.kill(), h.options.setupTimeoutMs ?? 15 * 60_000);
-      const [, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-      clearTimeout(timer);
-      if (code !== 0) {
-        const last = err.trim().split("\n").at(-1)?.slice(0, 300);
-        notes.warnings.push(`Setup in ${cwd} failed (exit ${code})${last ? `: ${last}` : ""}`);
+  h.setups.set(
+    job.id,
+    previous.then(async (notes) => {
+      const elapsed = startTimer();
+      try {
+        const child = Bun.spawn([process.env.SHELL || "/bin/sh", "-lc", command], {
+          cwd,
+          stdin: "ignore",
+          stdout: "ignore",
+          stderr: "pipe",
+          detached: true,
+          env: {
+            ...process.env,
+            T3CODE_PROJECT_ROOT: st.main!,
+            ...(cwd !== st.main && { T3CODE_WORKTREE_PATH: cwd }),
+            COLORTERM: "",
+          },
+        });
+        const timer = setTimeout(() => killGroup(child), h.options.setupTimeoutMs ?? 15 * 60_000);
+        h.setupProcesses.add(child);
+        const stderr = new Response(child.stderr).text();
+        const code = await child.exited;
+        clearTimeout(timer);
+        h.setupProcesses.delete(child);
+        // Done when the script exits: something it left running in the background may hold stderr open for good.
+        const err = await Promise.race([stderr, sleep(1000).then(() => "")]);
+        if (code !== 0) {
+          const last = err.trim().split("\n").at(-1)?.slice(0, 300);
+          notes.warnings.push(`Setup in ${cwd} failed (exit ${code})${last ? `: ${last}` : ""}`);
+        }
+      } catch (e) {
+        notes.warnings.push(`Setup in ${cwd} could not start: ${getErrorMessage(e)}`);
       }
-    } catch (e) {
-      notes.warnings.push(`Setup in ${cwd} could not start: ${(e as Error).message}`);
-    }
-    notes.timings.push({ step: "setup", node: h.s.nodeId, ms: Math.round(performance.now() - started) });
-    return notes;
-  }));
+      notes.timings.push({ step: "setup", node: h.s.nodeId, ms: Math.round(elapsed()) });
+      return notes;
+    }),
+  );
 }
 
 async function apply(h: Handoffs, job: Job<DestState>) {
@@ -321,20 +433,28 @@ async function apply(h: Handoffs, job: Job<DestState>) {
       : await ensureCommit(main, m.snapshot.sha);
     // The code builds on a commit origin no longer has (a force-push): nothing here can recover it.
     if (!present) {
-      throw new T3Error("the thread's code builds on a commit that is not on origin; push or fetch its branch on the source, then hand it off again");
+      throw new T3Error(
+        "the thread's code builds on a commit that is not on origin; push or fetch its branch on the source, then hand it off again",
+      );
     }
 
     if (!st.cwd) await workspace(h, job, m.headSha);
     if (!st.cwd) throw new T3Error("could not create a worktree for the thread");
 
     const before = await git(st.cwd, ["rev-parse", "HEAD"]);
-    const kept = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot);
+    const { kept, replaced } = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot);
     st.codeTaken = !kept;
     if (kept) {
       st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);
       const edits = carried(m);
       if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
+      if (replaced.length) {
+        const names = replaced.slice(0, 5).join(", ") + (replaced.length > 5 ? ` and ${replaced.length - 5} more` : "");
+        st.warnings.push(
+          `Replaced ${h.s.nodeId}'s own ${names} in ${st.cwd} with the versions from ${m.source}; ${h.s.nodeId}'s are in git stash`,
+        );
+      }
       // New dependencies in the arriving code: install them again once the first setup is done.
       if (await manifestsChanged(st.cwd, before, m.snapshot.sha)) startSetup(h, job);
 
@@ -359,8 +479,20 @@ async function placeEdits(h: Handoffs, job: Job<DestState>) {
   const edits = carried(st.manifest!);
   if (!edits.length) return;
   const key = await checkoutKey(st.cwd!);
-  const kept = edits.filter((path) => !placeEdit(h.options.filesRoot, key, st.cwd!, path, readFileSync(join(h.dir(job.id), "files", "checkout-files", path))));
-  if (kept.length) st.warnings.push(`Kept ${h.s.nodeId}'s own ${kept.join(", ")} in ${st.cwd}; the changes from ${st.source} to them are not there`);
+  const kept = edits.filter(
+    (path) =>
+      !placeEdit(
+        h.options.filesRoot,
+        key,
+        st.cwd!,
+        path,
+        readFileSync(join(h.dir(job.id), "files", "checkout-files", path)),
+      ),
+  );
+  if (kept.length)
+    st.warnings.push(
+      `Kept ${h.s.nodeId}'s own ${kept.join(", ")} in ${st.cwd}; the changes from ${st.source} to them are not there`,
+    );
 }
 
 /** The thread on this node that already holds the session: the one it had before the thread left (a round trip), or
@@ -368,7 +500,14 @@ async function placeEdits(h: Handoffs, job: Job<DestState>) {
  * thread this node created itself. */
 async function knownThread(h: Handoffs, call: Call, instanceId: string, sessionId: string) {
   for (const id of [h.s.local(sessionNote.thread(sessionId)), `import:${instanceId}:${sessionId}`]) {
-    if (id && await projection(call, id).then(() => true, () => false)) return id;
+    if (
+      id &&
+      (await projection(call, id).then(
+        () => true,
+        () => false,
+      ))
+    )
+      return id;
   }
   return undefined;
 }
@@ -410,27 +549,40 @@ async function place(h: Handoffs, job: Job<DestState>) {
 async function importThread(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
   const m = st.manifest!;
-  await timed(h.s, st.timings, "import", () => t3Client(h.s).rpc(async (call) => {
-    const instanceId = await instance(h, call, st);
-    if (st.imported) {
-      await call("agentSessions.scan", {});
-      await call("agentSessions.import", { projectId: st.projectId });
-      // Imported threads are named after the session.
-      st.threadId = await knownThread(h, call, instanceId, m.sessionId);
-      if (!st.threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
-    }
-    const threadId = st.threadId!;
-    if (!st.imported) copyHistory(h, job, threadId);
+  await timed(h.s, st.timings, "import", () =>
+    t3Client(h.s).rpc(async (call) => {
+      const instanceId = await instance(h, call, st);
+      if (st.imported) {
+        await call("agentSessions.scan", {});
+        await call("agentSessions.import", { projectId: st.projectId });
+        // Imported threads are named after the session.
+        st.threadId = await knownThread(h, call, instanceId, m.sessionId);
+        if (!st.threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
+      }
+      const threadId = st.threadId!;
+      if (!st.imported) copyHistory(h, job, threadId);
 
-    const p = await projection(call, threadId);
-    if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
-    // T3 files every imported session under Settled, out of the sidebar's active list.
-    if (p.thread.settledOverride === "settled") await dispatch(call, { type: "thread.unsettle", threadId, reason: "user" });
-    await dispatch(call, { type: "thread.metadata.update", threadId, worktreePath: st.cwd !== st.main ? st.cwd : null, branch: m.branch, title: m.title });
-    await dispatch(call, { type: "thread.runtime-mode.set", threadId, runtimeMode: m.runtimeMode });
-    await dispatch(call, { type: "thread.interaction-mode.set", threadId, interactionMode: m.interactionMode });
-    await dispatch(call, { type: "thread.model-selection.set", threadId, modelSelection: { ...m.modelSelection, instanceId } });
-  }));
+      const p = await projection(call, threadId);
+      if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
+      // T3 files every imported session under Settled, out of the sidebar's active list.
+      if (p.thread.settledOverride === "settled")
+        await dispatch(call, { type: "thread.unsettle", threadId, reason: "user" });
+      await dispatch(call, {
+        type: "thread.metadata.update",
+        threadId,
+        worktreePath: st.cwd !== st.main ? st.cwd : null,
+        branch: m.branch,
+        title: m.title,
+      });
+      await dispatch(call, { type: "thread.runtime-mode.set", threadId, runtimeMode: m.runtimeMode });
+      await dispatch(call, { type: "thread.interaction-mode.set", threadId, interactionMode: m.interactionMode });
+      await dispatch(call, {
+        type: "thread.model-selection.set",
+        threadId,
+        modelSelection: { ...m.modelSelection, instanceId },
+      });
+    }),
+  );
 
   // The main checkout's copy was only for the import; Claude resumes from the worktree's. Left behind, a later import
   // there could pick up the stale transcript.
@@ -453,7 +605,9 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
     if (!messages) throw new HistoryError("the session was rewritten there");
     appendToThread(t3Database(h.options.t3StateDir, t3State(h.s).url), threadId, job.id, messages, now);
   } catch (e) {
-    st.warnings.push(`The messages from ${st.source} are not in this thread's history in T3 Code (${(e as Error).message}); the agent still has them. agentgate t3 history off stops copying them.`);
+    st.warnings.push(
+      `The messages from ${st.source} are not in this thread's history in T3 Code (${getErrorMessage(e)}); the agent still has them. agentgate t3 history off stops copying them.`,
+    );
   }
 }
 
@@ -462,43 +616,58 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
  * bug); the next turn resumes. A short message takes that failure so the user's first message does not. */
 async function carryOn(h: Handoffs, job: Job<DestState>) {
   const st = job.state;
-  const setup = await h.setups.get(job.id);
+  // The daemon stopped during setup, which stopped it too: run it again before the agent goes on.
+  if (!h.setups.has(job.id) && st.created && !st.setupDone) startSetup(h, job);
+  const setup = await Promise.race([h.setups.get(job.id), h.closing.then(() => "closed" as const)]);
+  if (setup === "closed") return;
   h.setups.delete(job.id);
+  st.setupDone = true;
   if (setup) {
     st.warnings.push(...setup.warnings);
     st.timings.push(...setup.timings);
-    h.save(job);
   }
+  h.save(job);
 
   await fillFiles(h, job);
 
   if (st.imported && !st.readied) {
-    await timed(h.s, st.timings, "ready", () => t3Client(h.s).rpc(async (call) => {
-      st.readied = true;
-      h.save(job);
-      await turnOrRetry(h, call, st.threadId!, READY);
-    }));
+    await timed(h.s, st.timings, "ready", () =>
+      t3Client(h.s).rpc(async (call) => {
+        st.readied = true;
+        h.save(job);
+        await turnOrRetry(h, call, st.threadId!, READY);
+      }),
+    );
   }
+  // Shutting down mid-turn: the restart sends what follows, after READY ran.
+  if (h.closed) return;
   const m = st.manifest!;
-  const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""].filter(Boolean).join("\n\n");
+  const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""]
+    .filter(Boolean)
+    .join("\n\n");
   if (next && !st.continued) {
-    await timed(h.s, st.timings, "continue", () => t3Client(h.s).rpc(async (call) => {
-      st.continued = true;
-      h.save(job);
-      await turnOrRetry(h, call, st.threadId!, next);
-    }));
+    await timed(h.s, st.timings, "continue", () =>
+      t3Client(h.s).rpc(async (call) => {
+        st.continued = true;
+        h.save(job);
+        await turnOrRetry(h, call, st.threadId!, next);
+      }),
+    );
   }
+  if (h.closed) return;
 
   // Behind whatever runs now, in order, as the user queued them. T3 starts the first at once if the thread is idle.
   const queued = m.queued ?? [];
   if ((st.requeued ?? 0) < queued.length) {
-    await timed(h.s, st.timings, "queue", () => t3Client(h.s).rpc(async (call) => {
-      for (let i = st.requeued ?? 0; i < queued.length; i++) {
-        st.requeued = i + 1;
-        h.save(job);
-        await send(call, st.threadId!, queued[i]!, "queue_after_active");
-      }
-    }));
+    await timed(h.s, st.timings, "queue", () =>
+      t3Client(h.s).rpc(async (call) => {
+        for (let i = st.requeued ?? 0; i < queued.length; i++) {
+          st.requeued = i + 1;
+          h.save(job);
+          await send(call, st.threadId!, queued[i]!, "queue_after_active");
+        }
+      }),
+    );
   }
 
   rmSync(h.dir(job.id), { recursive: true, force: true });
@@ -516,7 +685,7 @@ async function fillFiles(h: Handoffs, job: Job<DestState>) {
     if (st.created) rememberCheckout(h.s, st.cwd!, key);
     await fillCheckout(root, st.cwd!, key);
   } catch (e) {
-    st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${(e as Error).message}`);
+    st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${getErrorMessage(e)}`);
   }
   st.filled = true;
   h.save(job);
@@ -525,14 +694,20 @@ async function fillFiles(h: Handoffs, job: Job<DestState>) {
 async function send(call: Call, threadId: string, text: string, mode: "start_immediately" | "queue_after_active") {
   const messageId = crypto.randomUUID();
   await dispatch(call, {
-    type: "message.dispatch", threadId, messageId, text, attachments: [],
-    dispatchMode: { type: mode }, createdBy: "user", creationSource: "web",
+    type: "message.dispatch",
+    threadId,
+    messageId,
+    text,
+    attachments: [],
+    dispatchMode: { type: mode },
+    createdBy: "user",
+    creationSource: "web",
   });
   return messageId;
 }
 
 async function turnOrRetry(h: Handoffs, call: Call, threadId: string, text: string) {
-  if (await turn(h, call, threadId, text) !== "failed") return;
+  if ((await turn(h, call, threadId, text)) !== "failed") return;
   await sleep(h.options.retryPauseMs ?? RETRY_PAUSE);
   await turn(h, call, threadId, text);
 }
@@ -540,7 +715,7 @@ async function turnOrRetry(h: Handoffs, call: Call, threadId: string, text: stri
 async function turn(h: Handoffs, call: Call, threadId: string, text: string): Promise<string> {
   const messageId = await send(call, threadId, text, "start_immediately");
   const deadline = h.s.now() + FIRST_TURN;
-  for (; ;) {
+  for (;;) {
     const r = (await projection(call, threadId)).runs.find((run) => run.userMessageId === messageId);
     if (r && TERMINAL.has(r.status)) return r.status;
     if (h.s.now() > deadline || h.closed) return r?.status ?? "unknown";

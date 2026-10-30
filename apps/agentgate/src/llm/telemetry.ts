@@ -9,12 +9,13 @@ import {
   type RequestDetail,
   type RequestPage,
 } from "@agentgate/protocol";
+import { clamp, startTimer } from "hanzio";
 import type { Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
 export class Telemetry {
   readonly request: ProxyRequest;
-  private started = performance.now();
+  private elapsed = startTimer();
   private ended = false;
   constructor(
     readonly s: Store,
@@ -45,9 +46,7 @@ export class Telemetry {
       this.s
         .list("credential")
         .some(
-          (c) =>
-            (c.accessToken && value.includes(c.accessToken)) ||
-            (c.refreshToken && value.includes(c.refreshToken)),
+          (c) => (c.accessToken && value.includes(c.accessToken)) || (c.refreshToken && value.includes(c.refreshToken)),
         )
     )
       return "[redacted]";
@@ -78,38 +77,30 @@ export class Telemetry {
   saveAttempt(attempt: ProxyAttempt) {
     if (this.s.closed) return;
     const data = JSON.stringify(attempt);
-    this.s.db.run(
-      "insert or replace into proxy_attempts values (?, ?, ?, ?, ?)",
-      [
-        attempt.id,
-        attempt.requestId,
-        attempt.number,
-        Buffer.byteLength(data),
-        data,
-      ],
-    );
+    this.s.db.run("insert or replace into proxy_attempts values (?, ?, ?, ?, ?)", [
+      attempt.id,
+      attempt.requestId,
+      attempt.number,
+      Buffer.byteLength(data),
+      data,
+    ]);
   }
   headers(status: number) {
     this.request.status = status;
-    this.request.headersMs = Math.round(performance.now() - this.started);
+    this.request.headersMs = Math.round(this.elapsed());
     this.save();
   }
   firstByte() {
-    if (this.request.firstByteMs === undefined)
-      this.request.firstByteMs = Math.round(performance.now() - this.started);
+    if (this.request.firstByteMs === undefined) this.request.firstByteMs = Math.round(this.elapsed());
   }
-  finish(
-    outcome: ProxyRequest["outcome"],
-    failure?: Failure,
-    stream?: ProxyRequest["stream"],
-  ) {
+  finish(outcome: ProxyRequest["outcome"], failure?: Failure, stream?: ProxyRequest["stream"]) {
     if (this.ended) return;
     this.ended = true;
     Object.assign(this.request, {
       outcome,
       failure,
       stream,
-      durationMs: Math.round(performance.now() - this.started),
+      durationMs: Math.round(this.elapsed()),
     });
     this.save();
     if (!this.s.closed) trimTelemetry(this.s);
@@ -130,17 +121,7 @@ export class Telemetry {
       data = JSON.stringify(r);
     this.s.db.run(
       "insert into proxy_requests (id,at,provider,account,model,outcome,failure,bytes,data) values (?,?,?,?,?,?,?,?,?) on conflict(id) do update set account=excluded.account, model=excluded.model, outcome=excluded.outcome, failure=excluded.failure, bytes=excluded.bytes, data=excluded.data",
-      [
-        r.id,
-        r.at,
-        r.provider,
-        r.account,
-        r.routedModel,
-        r.outcome,
-        r.failure ?? null,
-        Buffer.byteLength(data),
-        data,
-      ],
+      [r.id, r.at, r.provider, r.account, r.routedModel, r.outcome, r.failure ?? null, Buffer.byteLength(data), data],
     );
   }
 }
@@ -159,13 +140,7 @@ export interface RequestFilter {
 export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   const where: string[] = [],
     args: (string | number)[] = [];
-  for (const key of [
-    "provider",
-    "account",
-    "model",
-    "outcome",
-    "failure",
-  ] as const)
+  for (const key of ["provider", "account", "model", "outcome", "failure"] as const)
     if (filter[key]) {
       where.push(`${key} = ?`);
       args.push(filter[key]!);
@@ -179,9 +154,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     args.push(filter.until);
   }
   if (filter.search) {
-    where.push(
-      "(id like ? escape '\\' or model like ? escape '\\' or account like ? escape '\\')",
-    );
+    where.push("(id like ? escape '\\' or model like ? escape '\\' or account like ? escape '\\')");
     const search = `%${filter.search.replace(/[\\%_]/g, "\\$&")}%`;
     args.push(search, search, search);
   }
@@ -191,13 +164,12 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     }
   ).n;
   const cursor = filter.cursor ? Number(filter.cursor) : undefined;
-  if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1))
-    throw new Error("Invalid request cursor");
+  if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1)) throw new Error("Invalid request cursor");
   if (cursor !== undefined) {
     where.push("seq < ?");
     args.push(cursor);
   }
-  const limit = Math.max(1, Math.min(100, filter.limit ?? 50));
+  const limit = clamp(filter.limit ?? 50, 1, 100);
   const rows = s.db
     .query(
       `select seq,data from proxy_requests ${where.length ? `where ${where.join(" and ")}` : ""} order by seq desc limit ?`,
@@ -206,23 +178,16 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   return {
     requests: rows.slice(0, limit).map((r) => JSON.parse(r.data)),
     nextCursor: rows.length > limit ? String(rows[limit - 1]!.seq) : undefined,
-    cursorReset:
-      cursor !== undefined && (minimum === null || cursor <= minimum),
+    cursorReset: cursor !== undefined && (minimum === null || cursor <= minimum),
   };
 }
 export function requestDetail(s: Store, id: string): RequestDetail | undefined {
-  const row = s.db
-    .query("select data from proxy_requests where id=?")
-    .get(id) as { data: string } | null;
+  const row = s.db.query("select data from proxy_requests where id=?").get(id) as { data: string } | null;
   return row
     ? {
         request: JSON.parse(row.data),
         attempts: (
-          s.db
-            .query(
-              "select data from proxy_attempts where request_id=? order by number",
-            )
-            .all(id) as { data: string }[]
+          s.db.query("select data from proxy_attempts where request_id=? order by number").all(id) as { data: string }[]
         ).map((r) => JSON.parse(r.data)),
       }
     : undefined;
@@ -245,10 +210,10 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
     from proxy_requests as request where at >= ? and outcome != 'pending'
   `,
     )
-    .get(since) as Omit<
-    ProxyMetrics,
-    "since" | "averageHeadersMs" | "averageFirstByteMs"
-  > & { averageHeadersMs: number | null; averageFirstByteMs: number | null };
+    .get(since) as Omit<ProxyMetrics, "since" | "averageHeadersMs" | "averageFirstByteMs"> & {
+    averageHeadersMs: number | null;
+    averageFirstByteMs: number | null;
+  };
   return {
     ...row,
     since,
@@ -287,33 +252,37 @@ const tokenArgs = (s: Store, since: number) => {
 /** Token totals per model since a time, over every machine. */
 export function tokenUsage(s: Store, since = 0): ModelTokens[] {
   return s.db
-    .query(`${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
-      from rows group by provider, model order by sum(input + output + cache_read + cache_write) desc`)
+    .query(
+      `${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
+      from rows group by provider, model order by sum(input + output + cache_read + cache_write) desc`,
+    )
     .all(...tokenArgs(s, since)) as ModelTokens[];
 }
 
 /** Total tokens per hour since a time, over every machine; the app groups them into its own local days. */
 export function tokenHours(s: Store, since = 0): TokenHour[] {
   return s.db
-    .query(`${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`)
+    .query(
+      `${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`,
+    )
     .values(...tokenArgs(s, since)) as TokenHour[];
 }
 
 export function trimTelemetry(s: Store) {
   const settings = s.settings();
   s.transaction(() => {
-    const rows = s.db
-      .query(
-        "select seq,id,bytes,outcome from proxy_requests order by seq desc",
-      )
-      .all() as { seq: number; id: string; bytes: number; outcome: string }[];
+    const rows = s.db.query("select seq,id,bytes,outcome from proxy_requests order by seq desc").all() as {
+      seq: number;
+      id: string;
+      bytes: number;
+      outcome: string;
+    }[];
     const attemptBytes = new Map(
       (
-        s.db
-          .query(
-            "select request_id as id,sum(bytes) as bytes from proxy_attempts group by request_id",
-          )
-          .all() as { id: string; bytes: number }[]
+        s.db.query("select request_id as id,sum(bytes) as bytes from proxy_attempts group by request_id").all() as {
+          id: string;
+          bytes: number;
+        }[]
       ).map((r) => [r.id, r.bytes]),
     );
     let bytes = 0,
@@ -321,10 +290,7 @@ export function trimTelemetry(s: Store) {
     for (const r of rows) {
       bytes += r.bytes + (attemptBytes.get(r.id) ?? 0);
       count++;
-      if (
-        r.outcome !== "pending" &&
-        (count > settings.logRetention || bytes > settings.logRetentionBytes)
-      ) {
+      if (r.outcome !== "pending" && (count > settings.logRetention || bytes > settings.logRetentionBytes)) {
         s.db.run("delete from proxy_attempts where request_id=?", [r.id]);
         s.db.run("delete from proxy_requests where seq=?", [r.seq]);
       }
@@ -381,25 +347,13 @@ export function streamObserver(onResponse?: (id: string) => void) {
             .join("\n");
           try {
             const value = JSON.parse(data);
-            if (
-              ["response.completed", "message_stop"].includes(value.type) &&
-              terminal !== "provider-error"
-            )
+            if (["response.completed", "message_stop"].includes(value.type) && terminal !== "provider-error")
               terminal = "completed";
-            if (
-              ["response.failed", "response.incomplete", "error"].includes(
-                value.type,
-              )
-            )
-              terminal = "provider-error";
+            if (["response.failed", "response.incomplete", "error"].includes(value.type)) terminal = "provider-error";
             const id = value.response?.id;
             if (typeof id === "string") onResponse?.(id);
           } catch {}
-          if (
-            event.includes("event: message_stop") &&
-            terminal !== "provider-error"
-          )
-            terminal = "completed";
+          if (event.includes("event: message_stop") && terminal !== "provider-error") terminal = "completed";
         }
         if (buffer.length > 65536) {
           buffer = buffer.slice(-8192);

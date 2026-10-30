@@ -1,52 +1,45 @@
 import { useState } from "react";
 import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { typedSwitch } from "hanzio";
 import { Button, Tabs } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
-import {
-  Badge,
-  Choice,
-  Empty,
-  Field,
-  Modal,
-  Panel,
-  HeaderActions,
-  RowMenu,
-} from "../components/ui.tsx";
+import { Badge, Choice, Empty, Field, Modal, Panel, HeaderActions, RowMenu, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { DesktopAlerts, DesktopHelp, desktopActions, desktopNote, forgetLogin, nameOf, usable } from "./ClaudeDesktop.tsx";
+import {
+  DesktopAlerts,
+  DesktopHelp,
+  desktopActions,
+  desktopNote,
+  forgetLogin,
+  nameOf,
+  usable,
+} from "./ClaudeDesktop.tsx";
 import { request } from "../api.ts";
+import { accountProblem } from "../attention.ts";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
-import {
-  field,
-  idPath,
-  providerIcon,
-  providerName,
-  confirmDelete,
-  planName,
-} from "./utils.ts";
+import { field, idPath, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
 
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
 function poolSummary(accounts: AccountStatus[], provider: Provider, app?: DesktopStatus) {
-  const tool = provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor";
+  const tool = toolName(provider);
   const pinned = accounts.find((a) => a.account.pinned);
   if (pinned) {
-    const desktop = app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
+    const desktop =
+      app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
     return `Pinned: ${tool} uses ${pinned.account.label} while it has room.${desktop} Unpin it to go back to automatic.`;
   }
-  const current = app?.mode === "signed-in" ? app.current : undefined;
   const desktop = !app
     ? ""
-    : app.mode === "pool"
-      ? " Claude Desktop shares your subscriptions in its Code tab."
-      : app.mode === "other-gateway"
-        ? " Claude Desktop uses another gateway."
-        : current
-          ? ` Claude Desktop stays on ${nameOf(current)}.`
-          : " Claude Desktop isn't signed in.";
+    : typedSwitch(app.mode, {
+        pool: () => " Claude Desktop shares your subscriptions in its Code tab.",
+        "other-gateway": () => " Claude Desktop uses another gateway.",
+        "signed-in": () =>
+          app.current ? ` Claude Desktop stays on ${nameOf(app.current)}.` : " Claude Desktop isn't signed in.",
+      });
   return `Automatic: ${tool} uses the account with the most room left. Pin an account to prefer it.${desktop}`;
 }
 
@@ -55,11 +48,19 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const [mode, setMode] = useState<"login" | "import">("login");
   const [folder, setFolder] = useState("");
   const [edit, setEdit] = useState<AccountStatus>();
+  const pending = usePending();
   const refreshUsage = (id: string) =>
-    void perform(async () => {
-      const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", { ids: [id], action: "quota" });
-      if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
-    }, "Usage refreshed");
+    void perform(
+      async () => {
+        const [result] = await request<BatchResult[]>(connection, "/accounts/batch", "POST", {
+          ids: [id],
+          action: "quota",
+        });
+        if (!result?.ok) throw new Error(result?.error ?? "Couldn't refresh usage");
+      },
+      "Usage refreshed",
+      `quota:${id}`,
+    );
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
@@ -71,8 +72,10 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
   /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead.
    * An expired copy of a login another machine holds is not missing: that machine refreshes it and sync brings it here. */
-  const problem = (a: AccountStatus) =>
-    a.waitingFor ? `Waiting for ${a.waitingFor}` : a.needsLogin || a.expired ? undefined : a.refreshError ? "Refresh failed" : !a.account.enabled ? "Disabled" : a.exhausted ? "Limit reached" : undefined;
+  const problem = (a: AccountStatus) => {
+    const p = accountProblem(a);
+    return p === "Needs sign-in" ? undefined : p;
+  };
   const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
   const pinTitle = (a: AccountStatus) =>
     a.account.pinned
@@ -84,15 +87,23 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           : `Pin: ${a.account.provider === "claude" ? "Claude Code" : "Codex"} prefers this account while it has room`;
   const setPin = async (a: AccountStatus, pinned: boolean) => {
     let saved = false;
-    await perform(async () => {
-      await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned });
-      saved = true;
-    }, pinned ? `${a.account.label} pinned` : `${providerName(a.account.provider)} is back on automatic`);
+    await perform(
+      async () => {
+        await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned });
+        saved = true;
+      },
+      pinned ? `${a.account.label} pinned` : `${providerName(a.account.provider)} is back on automatic`,
+    );
     // Desktop follows once the pin is saved; its own confirmation covers the restart.
     const login = saved && pinned ? loginFor(a.account.id) : undefined;
     const current = app?.mode === "signed-in" ? app.current : undefined;
     if (usable(login) && current?.accountUuid !== login!.accountUuid) await act.use(login!);
   };
+  // A provider gets a panel once it has an account, and Claude whenever Claude Desktop is here; the others are a
+  // choice in Add account.
+  const providers = (["claude", "codex", "cursor"] as const).filter(
+    (p) => data.accounts.some((a) => a.account.provider === p) || (p === "claude" && !!app),
+  );
   const start = (provider: Provider, label: string, email?: string) => {
     setAdd(false);
     return begin(provider, label, email);
@@ -111,7 +122,9 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           Add account
         </Button>
       </HeaderActions>
-      {app && <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />}
+      {app && (
+        <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
+      )}
       {data.detected.length > 0 && (
         <Panel
           title={local ? "Signed in on this Mac" : `Signed in on ${data.node}`}
@@ -119,9 +132,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
         >
           {data.detected.map((d) => (
             <div className="item" key={d.provider}>
-              <div className={`provider-icon ${d.provider}`}>
-                {providerIcon(d.provider)}
-              </div>
+              <div className={`provider-icon ${d.provider}`}>{providerIcon(d.provider)}</div>
               <div className="grow">
                 <strong>{d.email}</strong>
                 <small>
@@ -137,18 +148,30 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           ))}
         </Panel>
       )}
-      {(["claude", "codex", "cursor"] as const).map((provider) => (
+      {!providers.length && (
+        <Panel>
+          <Empty>
+            <strong>No accounts yet.</strong>
+            <p>Add a Claude, Codex or Cursor subscription to share it across your sessions.</p>
+          </Empty>
+        </Panel>
+      )}
+      {providers.map((provider) => (
         <Panel
           key={provider}
           title={providerName(provider)}
           detail={
             data.accounts.some((a) => a.account.provider === provider)
-              ? poolSummary(data.accounts.filter((a) => a.account.provider === provider), provider, provider === "claude" ? app : undefined)
-              : provider === "claude"
-                ? "Claude subscriptions, shared across your sessions."
-                : provider === "codex"
-                  ? "ChatGPT subscriptions for your Codex sessions."
-                  : "Cursor subscriptions, shared across sessions pointed at this daemon."
+              ? poolSummary(
+                  data.accounts.filter((a) => a.account.provider === provider),
+                  provider,
+                  provider === "claude" ? app : undefined,
+                )
+              : typedSwitch(provider, {
+                  claude: () => "Claude subscriptions, shared across your sessions.",
+                  codex: () => "ChatGPT subscriptions for your Codex sessions.",
+                  cursor: () => "Cursor subscriptions, shared across sessions pointed at this daemon.",
+                })
           }
           action={
             provider === "claude" &&
@@ -172,9 +195,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               .map((a) => (
                 <div className="item stack account" key={a.account.id}>
                   <div className="row">
-                    <div className={`provider-icon ${provider}`}>
-                      {providerIcon(provider)}
-                    </div>
+                    <div className={`provider-icon ${provider}`}>{providerIcon(provider)}</div>
                     <div className="grow">
                       <strong>{a.account.label}</strong>
                       <small>
@@ -188,17 +209,27 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           .join(" · ")}
                       </small>
                     </div>
-                    {a.active && a.account.enabled && <Badge good>In {provider === "claude" ? "Claude Code" : provider === "codex" ? "Codex" : "Cursor"}</Badge>}
-                    {app?.mode === "signed-in" && app.current?.accountId === a.account.id && <Badge good>In Claude Desktop</Badge>}
+                    {a.active && a.account.enabled && <Badge good>In {toolName(provider)}</Badge>}
+                    {app?.mode === "signed-in" && app.current?.accountId === a.account.id && (
+                      <Badge good>In Claude Desktop</Badge>
+                    )}
                     {problem(a) && <Badge>{problem(a)}</Badge>}
                     {unsaved?.accountId === a.account.id && (
                       <Button size="sm" variant="tertiary" onPress={() => void act.save()}>
                         Save login
                       </Button>
                     )}
-                    <AccountQuota account={a} onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined} />
+                    <AccountQuota
+                      account={a}
+                      refreshing={pending.has(`quota:${a.account.id}`)}
+                      onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined}
+                    />
                     {(a.needsLogin || (a.expired && !a.waitingFor)) && (
-                      <Button size="sm" variant="tertiary" onPress={() => void start(provider, a.account.label, a.account.email)}>
+                      <Button
+                        size="sm"
+                        variant="tertiary"
+                        onPress={() => void start(provider, a.account.label, a.account.email)}
+                      >
                         Sign in again
                       </Button>
                     )}
@@ -216,29 +247,44 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        (a.account.pinned || pinnable(a)) && {
-                          label: a.account.pinned ? "Unpin (back to automatic)" : "Pin this account",
-                          onAction: () => void setPin(a, !a.account.pinned),
-                        },
                         { label: "Edit policy", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
                           label: "Refresh usage",
                           onAction: () => refreshUsage(a.account.id),
                         },
-                        !!app && provider === "claude" && !usable(loginFor(a.account.id)) && {
-                          label: loginFor(a.account.id) ? "Connect Claude Desktop again" : "Connect to Claude Desktop",
-                          onAction: () => void act.connect(a.account.email),
+                        !!app &&
+                          provider === "claude" &&
+                          !usable(loginFor(a.account.id)) && {
+                            label: loginFor(a.account.id)
+                              ? "Connect Claude Desktop again"
+                              : "Connect to Claude Desktop",
+                            onAction: () => void act.connect(a.account.email),
+                          },
+                        {
+                          label: a.account.enabled ? "Disable" : "Enable",
+                          onAction: () =>
+                            void perform(() =>
+                              request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", {
+                                enabled: !a.account.enabled,
+                              }),
+                            ),
                         },
-                        { label: a.account.enabled ? "Disable" : "Enable", onAction: () => void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { enabled: !a.account.enabled })) },
-                        !!app && !!loginFor(a.account.id) && !(app.mode === "signed-in" && app.current?.accountId === a.account.id) &&
-                          { label: "Forget Claude Desktop login", onAction: () => void forgetLogin(connection, perform, loginFor(a.account.id)!)() },
+                        !!app &&
+                          !!loginFor(a.account.id) &&
+                          !(app.mode === "signed-in" && app.current?.accountId === a.account.id) && {
+                            label: "Forget Claude Desktop login",
+                            onAction: () => void forgetLogin(connection, perform, loginFor(a.account.id)!)(),
+                          },
                         {
                           label: "Delete",
                           danger: true,
                           onAction: async () => {
                             if (await confirmDelete(a.account.label))
-                              void perform(() => request(connection, `/accounts/${idPath(a.account.id)}`, "DELETE"), "Account deleted");
+                              void perform(
+                                () => request(connection, `/accounts/${idPath(a.account.id)}`, "DELETE"),
+                                "Account deleted",
+                              );
                           },
                         },
                       ]}
@@ -260,7 +306,9 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     {desktopNote(app, l) ? ` · ${desktopNote(app, l)}` : ""}
                   </small>
                 </div>
-                {app.mode === "signed-in" && app.current?.accountUuid === l.accountUuid && <Badge good>In Claude Desktop</Badge>}
+                {app.mode === "signed-in" && app.current?.accountUuid === l.accountUuid && (
+                  <Badge good>In Claude Desktop</Badge>
+                )}
                 <RowMenu
                   label={`More for ${nameOf(l)}`}
                   items={[
@@ -343,11 +391,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                 { id: "cursor", label: "Cursor" },
               ]}
             />
-            <Field
-              label="Label"
-              name="label"
-              placeholder="e.g. Personal or Work"
-            />
+            <Field label="Label" name="label" placeholder="e.g. Personal or Work" />
             {mode === "import" && (
               <>
                 <div className="row items-end field-with-button">
@@ -372,8 +416,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                   </Button>
                 </div>
                 <p className="note">
-                  Agentgate takes ownership of this login. Stop using the
-                  original CLI login after importing it.
+                  Agentgate takes ownership of this login. Stop using the original CLI login after importing it.
                 </p>
               </>
             )}
@@ -386,7 +429,9 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       )}
       {login}
       {help && <DesktopHelp close={() => setHelp(false)} />}
-      {edit && <AccountPolicy account={edit} connection={connection} perform={perform} close={() => setEdit(undefined)} />}
+      {edit && (
+        <AccountPolicy account={edit} connection={connection} perform={perform} close={() => setEdit(undefined)} />
+      )}
     </>
   );
 }

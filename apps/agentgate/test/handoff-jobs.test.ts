@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
-import { repos, sh, tmp } from "./fixtures/git.ts";
+import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
@@ -10,7 +10,14 @@ import { handoffRoutes } from "../src/handoff/routes.ts";
 import { CONTINUE, READY, restartTasks } from "../src/handoff/destination.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
-import { connectNode, disconnectNode, localView, requestHandoff, resolveTarget, sidebarOrder } from "../src/handoff/threads.ts";
+import {
+  connectNode,
+  disconnectNode,
+  localView,
+  requestHandoff,
+  resolveTarget,
+  sidebarOrder,
+} from "../src/handoff/threads.ts";
 import { handoffSource } from "../src/handoff/tools.ts";
 import { Store } from "../src/store.ts";
 import { peerRoutes } from "../src/sync.ts";
@@ -28,60 +35,127 @@ import { checkoutFile } from "../src/handoff/destination.ts";
 import { parseRemote } from "../src/mcp/gateway.ts";
 import { keyForProject, writeStore } from "../src/checkout-files.ts";
 
+afterAll(removeTmp);
+
 const cleanup: (() => unknown)[] = [];
-afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
+afterEach(async () => {
+  for (const fn of cleanup.splice(0).reverse()) await fn();
+});
 
 const SID = "7d1f0c2e-9a7b-4c51-8e3d-2b6f4a9c0e11";
 
-async function until<T>(fn: () => T | undefined | false, what: string, ms = 20_000): Promise<T> {
+/** Gives up before bun's 5 second test timeout, so a stuck wait fails with what it was waiting for. */
+async function until<T>(fn: () => T | undefined | false, what: string | (() => string), ms = 4_000): Promise<T> {
   const deadline = Date.now() + ms;
-  for (; ;) {
+  for (;;) {
     const value = fn();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${typeof what === "string" ? what : what()}`);
     await Bun.sleep(20);
   }
 }
 
 /** One node: a store, a fake T3 Code with a project for its checkout, a Claude home, and its peer listener. */
-async function node(name: string, main: string, options: { server?: boolean; setup?: string } = {}) {
-  const root = tmp(), claudeDir = join(root, "claude");
+/** `peer` stands in front of the node's peer routes, to lose or delay answers. */
+async function node(
+  name: string,
+  main: string,
+  options: {
+    server?: boolean;
+    setup?: string;
+    peer?: (req: Request, next: (req: Request) => Promise<Response>) => Promise<Response>;
+  } = {},
+) {
+  const root = tmp(),
+    claudeDir = join(root, "claude");
   mkdirSync(claudeDir);
   const s = new Store(":memory:");
   s.setLocal("node", name);
   const t3 = fakeT3({ claudeDir });
-  const project = t3.addProject(main, options.setup ? [{ id: "setup", name: "Setup", command: options.setup, icon: "configure", runOnWorktreeCreate: true }] : []);
+  const project = t3.addProject(
+    main,
+    options.setup
+      ? [{ id: "setup", name: "Setup", command: options.setup, icon: "configure", runOnWorktreeCreate: true }]
+      : [],
+  );
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const h = new Handoffs(s, { claudeDir, worktreesDir: join(root, "worktrees"), cloneDir: join(root, "clones"), tempDir: join(root, "handoffs"), filesRoot: join(root, ".buncargo", "files"), pollMs: 20, retryPauseMs: 100 });
-  const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(s, () => { }).route("/", handoffRoutes(h))).fetch });
-  cleanup.push(async () => { await h.close(); server.stop(true); t3.stop(); s.close(); });
-  return { name, s, t3, project, claudeDir, h, url: `http://127.0.0.1:${server.port}`, server: !!options.server };
+  const registered: string[] = [];
+  const h = new Handoffs(
+    s,
+    {
+      claudeDir,
+      worktreesDir: join(root, "worktrees"),
+      cloneDir: join(root, "clones"),
+      tempDir: join(root, "handoffs"),
+      filesRoot: join(root, ".buncargo", "files"),
+      pollMs: 20,
+      retryPauseMs: 100,
+    },
+    (checkouts) => registered.push(...checkouts.map((c) => c.path)),
+  );
+  const routes = new Hono().route("/peer", peerRoutes(s, () => {}).route("/", handoffRoutes(h)));
+  const next = async (req: Request) => routes.fetch(req);
+  const server = Bun.serve({ port: 0, fetch: (req) => (options.peer ? options.peer(req, next) : next(req)) });
+  cleanup.push(async () => {
+    await h.close();
+    server.stop(true);
+    t3.stop();
+    s.close();
+  });
+  return {
+    name,
+    s,
+    t3,
+    project,
+    claudeDir,
+    h,
+    registered,
+    url: `http://127.0.0.1:${server.port}`,
+    server: !!options.server,
+  };
 }
 type Node = Awaited<ReturnType<typeof node>>;
 
 function pair(...nodes: Node[]) {
-  for (const n of nodes) for (const m of nodes) {
-    n.s.put("node", m.name, { id: m.name, alwaysOn: m.server, protocol: NODE_PROTOCOL });
-    if (n !== m) n.s.db.run("insert into peers values (?, ?, ?, 0, ?)", [m.name, m.url, [n.name, m.name].sort().join("-") + "-token-0123456789abcdef", Date.now()]);
-  }
+  for (const n of nodes)
+    for (const m of nodes) {
+      n.s.put("node", m.name, { id: m.name, alwaysOn: m.server, protocol: NODE_PROTOCOL });
+      if (n !== m)
+        n.s.db.run("insert into peers values (?, ?, ?, 0, ?)", [
+          m.name,
+          m.url,
+          [n.name, m.name].sort().join("-") + "-token-0123456789abcdef",
+          Date.now(),
+        ]);
+    }
 }
 
 /** A Claude session recorded in `cwd`, with a subagent transcript, under the node's Claude home. */
 function session(n: Node, cwd: string, words: string[]) {
   const dir = join(n.claudeDir, "projects", claudeProjectKey(cwd));
   mkdirSync(join(dir, SID, "subagents"), { recursive: true });
-  writeFileSync(join(dir, `${SID}.jsonl`), words.map((w) => JSON.stringify({ type: "user", cwd, message: w })).join("\n") + "\n");
+  writeFileSync(
+    join(dir, `${SID}.jsonl`),
+    words.map((w) => JSON.stringify({ type: "user", cwd, message: w })).join("\n") + "\n",
+  );
   writeFileSync(join(dir, SID, "subagents", "agent-1.jsonl"), JSON.stringify({ cwd }) + "\n");
 }
 
 async function done(n: Node, id: string, role: "source" | "destination" = "source") {
-  return until(() => { const j = n.h.load(role, id); return j && ["done", "failed"].includes(j.step) && j; }, `${role} job on ${n.name}`);
+  return until(
+    () => {
+      const j = n.h.load(role, id);
+      return j && ["done", "failed"].includes(j.step) && j;
+    },
+    () => `${role} job on ${n.name}, still at ${n.h.load(role, id)?.step ?? "no job"}`,
+  );
 }
 
 test("a working thread moves to the server with its session and code, continues there, and comes back and goes again", async () => {
   const r = repos("a", "b");
   const setupLog = join(r.root, "setup.log");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true, setup: `echo ran >> ${setupLog}` });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, setup: `echo ran >> ${setupLog}` });
   pair(a, b);
   // A's T3 Code leaves its Claude provider on Claude's default home; B's names one.
   a.t3.homePath = undefined;
@@ -89,10 +163,19 @@ test("a working thread moves to the server with its session and code, continues 
   // A thread in its own worktree, working, with an unpushed commit and uncommitted files.
   const wtA = join(r.root, "wt-a");
   sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
-  writeFileSync(join(wtA, "feature.txt"), "committed\n"); sh(wtA, "add", "-A"); sh(wtA, "commit", "-m", "unpushed");
+  writeFileSync(join(wtA, "feature.txt"), "committed\n");
+  sh(wtA, "add", "-A");
+  sh(wtA, "commit", "-m", "unpushed");
   writeFileSync(join(wtA, "notes.txt"), "uncommitted\n");
   session(a, wtA, ["code word: falcon"]);
-  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "feature", worktreePath: wtA, runs: [{ id: "run-1", status: "running" }], background: [{ kind: "command", description: "gh pr checks 72 --watch" }] });
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "feature",
+    worktreePath: wtA,
+    runs: [{ id: "run-1", status: "running" }],
+    background: [{ kind: "command", description: "gh pr checks 72 --watch" }],
+  });
   // A's T3 Code keeps its state where the history of a returning thread is written.
   a.h.options.t3StateDir = t3StateDir(new URL(a.t3.url).port, [thread.id]);
 
@@ -101,8 +184,16 @@ test("a working thread moves to the server with its session and code, continues 
   cleanup.push(() => tools.client.close());
   expect((await tools.client.listTools()).tools.map((t) => t.name)).toEqual(["handoff_targets", "handoff_thread"]);
   const listed = await tools.client.callTool({ name: "handoff_targets", arguments: {} });
-  expect(JSON.parse((listed.content as { text: string }[])[0]!.text)).toEqual([{ node: "b", server: true, available: true }]);
-  const started = JSON.parse(((await tools.client.callTool({ name: "handoff_thread", arguments: { threadId: thread.id } })).content as { text: string }[])[0]!.text);
+  expect(JSON.parse((listed.content as { text: string }[])[0]!.text)).toEqual([
+    { node: "b", server: true, available: true },
+  ]);
+  const started = JSON.parse(
+    (
+      (await tools.client.callTool({ name: "handoff_thread", arguments: { threadId: thread.id } })).content as {
+        text: string;
+      }[]
+    )[0]!.text,
+  );
   expect(started).toMatchObject({ status: "started", node: "a", to: "b" });
   expect(a.h.load("source", started.handoffId)!.step).not.toBe("done");
 
@@ -116,18 +207,33 @@ test("a working thread moves to the server with its session and code, continues 
   const wtB = imported.worktreePath!;
   expect(wtB.startsWith(join(b.h.options.worktreesDir, "b"))).toBe(true);
   // T3 imports into Settled; the handed-over thread is back in the active list.
-  expect(imported).toMatchObject({ archivedAt: null, settledOverride: "active", branch: "feature", title: "Fix the bug", runtimeMode: "full-access", modelSelection: { instanceId: "claudeAgent", model: "opus" } });
+  expect(imported).toMatchObject({
+    archivedAt: null,
+    settledOverride: "active",
+    branch: "feature",
+    title: "Fix the bug",
+    runtimeMode: "full-access",
+    modelSelection: { instanceId: "claudeAgent", model: "opus" },
+  });
   expect(readFileSync(join(wtB, "feature.txt"), "utf8")).toBe("committed\n");
   expect(readFileSync(join(wtB, "notes.txt"), "utf8")).toBe("uncommitted\n");
   // The session sits under the worktree's key with cwd rewritten, where Claude resumes it. The main checkout's copy
   // was only for T3's import and is gone.
   const resumed = join(b.claudeDir, "projects", claudeProjectKey(wtB));
-  expect(JSON.parse(readFileSync(join(resumed, `${SID}.jsonl`), "utf8").split("\n")[0]!)).toEqual({ type: "user", cwd: wtB, message: "code word: falcon" });
+  expect(JSON.parse(readFileSync(join(resumed, `${SID}.jsonl`), "utf8").split("\n")[0]!)).toEqual({
+    type: "user",
+    cwd: wtB,
+    message: "code word: falcon",
+  });
   expect(existsSync(join(resumed, SID, "subagents", "agent-1.jsonl"))).toBe(true);
   expect(existsSync(join(b.claudeDir, "projects", claudeProjectKey(r.b), `${SID}.jsonl`))).toBe(false);
   // B took T3's first-turn failure with the ready message, then continued the working agent and named the background
   // work that A stopped.
-  expect(imported.messages).toEqual([READY, READY, `${CONTINUE}\n\n${restartTasks(["command: gh pr checks 72 --watch"])}`]);
+  expect(imported.messages).toEqual([
+    READY,
+    READY,
+    `${CONTINUE}\n\n${restartTasks(["command: gh pr checks 72 --watch"])}`,
+  ]);
   // The retry waited for the failed turn's Claude process to go down; one started right after it finds no login.
   expect(imported.runs[1]!.dispatchedAt! - imported.runs[0]!.settledAt!).toBeGreaterThanOrEqual(100);
   expect(a.t3.threads.get(thread.id)!.background).toEqual([]);
@@ -140,22 +246,45 @@ test("a working thread moves to the server with its session and code, continues 
   expect(sh(wtA, "stash", "list")).toContain("agentgate: handed to b");
   const view = a.h.view(source);
   expect(view).toMatchObject({ status: "done", destThreadId: imported.id, from: "a", to: "b" });
-  expect(view.timings.map((t) => `${t.node}:${t.step}`)).toEqual(expect.arrayContaining(["a:resolve", "a:stop", "a:package", "a:send", "a:await b", "b:prepare", "b:apply", "b:place", "b:import"]));
+  expect(view.timings.map((t) => `${t.node}:${t.step}`)).toEqual(
+    expect.arrayContaining([
+      "a:resolve",
+      "a:stop",
+      "a:package",
+      "a:send",
+      "a:await b",
+      "b:prepare",
+      "b:apply",
+      "b:place",
+      "b:import",
+    ]),
+  );
   expect(existsSync(a.h.dir(started.handoffId)) || existsSync(b.h.dir(started.handoffId))).toBe(false);
 
   // Work on B, then hand it back: A reuses its original thread and its worktree takes B's code.
-  writeFileSync(join(wtB, "from-b.txt"), "b's work\n"); sh(wtB, "add", "-A"); sh(wtB, "commit", "-m", "b's work");
-  appendFileSync(join(resumed, `${SID}.jsonl`), [
-    { type: "user", cwd: wtB, message: { content: "what's next?" } },
-    { type: "assistant", cwd: wtB, message: { content: [{ type: "text", text: "Tests." }] } },
-  ].map((r) => JSON.stringify(r) + "\n").join(""));
+  writeFileSync(join(wtB, "from-b.txt"), "b's work\n");
+  sh(wtB, "add", "-A");
+  sh(wtB, "commit", "-m", "b's work");
+  appendFileSync(
+    join(resumed, `${SID}.jsonl`),
+    [
+      { type: "user", cwd: wtB, message: { content: "what's next?" } },
+      { type: "assistant", cwd: wtB, message: { content: [{ type: "text", text: "Tests." }] } },
+    ]
+      .map((r) => JSON.stringify(r) + "\n")
+      .join(""),
+  );
   const back = await requestHandoff(b.h, { threadId: imported.id, to: "a" });
   expect(back).toMatchObject({ node: "b", to: "a" });
   expect((await done(b, back.handoffId)).error).toBeUndefined();
   expect((await done(a, back.handoffId, "destination")).error).toBeUndefined();
   expect(a.t3.threads.get(thread.id)).toMatchObject({ archivedAt: null, worktreePath: wtA });
   // A's thread shows what was said on B, after what it already had.
-  expect(timeline(a.h.options.t3StateDir!, thread.id).map((i) => i.text)).toEqual(["earlier", "what's next?", "Tests."]);
+  expect(timeline(a.h.options.t3StateDir!, thread.id).map((i) => i.text)).toEqual([
+    "earlier",
+    "what's next?",
+    "Tests.",
+  ]);
   expect(a.h.view(a.h.load("destination", back.handoffId)!).warnings).toEqual([]);
   // A's own thread came back; T3's import, which would have duplicated it, was not asked.
   expect(a.t3.threads.has(`import:claudeAgent:${SID}`)).toBe(false);
@@ -175,7 +304,8 @@ test("a working thread moves to the server with its session and code, continues 
 
 test("when the destination keeps its own code, the source keeps its uncommitted changes in place", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   const wtA = join(r.root, "wt-a");
   sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
@@ -190,7 +320,9 @@ test("when the destination keeps its own code, the source keeps its uncommitted 
   const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
   const job = await done(a, handoffId);
   expect(job.step).toBe("done");
-  expect(a.h.view(job).warnings.some((w) => w.includes("Kept b's code") && w.includes("uncommitted changes"))).toBe(true);
+  expect(a.h.view(job).warnings.some((w) => w.includes("Kept b's code") && w.includes("uncommitted changes"))).toBe(
+    true,
+  );
   expect(readFileSync(join(wtA, "mine.txt"), "utf8")).toBe("only on a\n");
   expect(sh(wtA, "stash", "list")).toBe("");
   expect(existsSync(join(wtB, "mine.txt"))).toBe(false);
@@ -198,14 +330,24 @@ test("when the destination keeps its own code, the source keeps its uncommitted 
 
 test("gitignored files the thread changed travel with it; the store's other files fill the new worktree", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   for (const main of [r.a, r.b]) appendFileSync(join(main, ".git", "info", "exclude"), ".env*\n");
-  const project = parseRemote(r.url)!, key = keyForProject(project)!;
+  const project = parseRemote(r.url)!,
+    key = keyForProject(project)!;
   // A repository without buncargo: .env.local is on the project's file list, and A's copy differs from the store.
   a.s.put("project", project, { id: project, fileList: [".env.local"] });
-  writeStore(join(a.h.options.filesRoot!, key), [{ path: ".env.local", data: Buffer.from("API=old\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
-  writeStore(join(b.h.options.filesRoot!, key), [{ path: ".env.shared", data: Buffer.from("SHARED=1\n"), updatedAt: "2026-10-01T00:00:00.000Z" }], []);
+  writeStore(
+    join(a.h.options.filesRoot!, key),
+    [{ path: ".env.local", data: Buffer.from("API=old\n"), updatedAt: "2026-10-01T00:00:00.000Z" }],
+    [],
+  );
+  writeStore(
+    join(b.h.options.filesRoot!, key),
+    [{ path: ".env.shared", data: Buffer.from("SHARED=1\n"), updatedAt: "2026-10-01T00:00:00.000Z" }],
+    [],
+  );
   const wtA = join(r.root, "wt-a");
   sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
   writeFileSync(join(wtA, ".env.local"), "API=edited\n");
@@ -225,16 +367,24 @@ test("gitignored files the thread changed travel with it; the store's other file
 
 test("handed-off checkout files are plain paths inside the checkout", () => {
   expect(checkoutFile("checkout-files/apps/expo-app/.env")).toBe(true);
-  for (const path of ["checkout-files/../x", "checkout-files//x", "checkout-files/.git/config", "checkout-files/"]) expect(checkoutFile(path)).toBe(false);
+  for (const path of ["checkout-files/../x", "checkout-files//x", "checkout-files/.git/config", "checkout-files/"])
+    expect(checkoutFile(path)).toBe(false);
 });
 
 test("a repository the destination clones runs its setup script from t3.json", async () => {
-  const r = repos("a"), other = repos("b");
+  const r = repos("a"),
+    other = repos("b");
   const setupLog = join(r.root, "setup.log");
-  writeFileSync(join(r.a, "t3.json"), JSON.stringify({ scripts: [{ name: "Setup", command: `echo ran >> ${setupLog}`, runOnWorktreeCreate: true }] }));
-  sh(r.a, "add", "-A"); sh(r.a, "commit", "-m", "t3.json"); sh(r.a, "push", "origin", "main");
+  writeFileSync(
+    join(r.a, "t3.json"),
+    JSON.stringify({ scripts: [{ name: "Setup", command: `echo ran >> ${setupLog}`, runOnWorktreeCreate: true }] }),
+  );
+  sh(r.a, "add", "-A");
+  sh(r.a, "commit", "-m", "t3.json");
+  sh(r.a, "push", "origin", "main");
   // B's T3 Code has a project for another repository only, so it clones this one.
-  const a = await node("a", r.a), b = await node("b", other.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", other.b, { server: true });
   pair(a, b);
   session(a, r.a, ["hello"]);
   const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
@@ -244,29 +394,45 @@ test("a repository the destination clones runs its setup script from t3.json", a
   expect((await done(b, handoffId, "destination")).error).toBeUndefined();
   expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath).toBeNull();
   expect(readFileSync(setupLog, "utf8")).toBe("ran\n");
+  // The clone gets the repo's skills before the thread continues in it.
+  expect(b.registered).toContain(b.t3.projects.at(-1)!.workspaceRoot);
 });
 
 test("an idle thread's background work is stopped on the source and named on the destination", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   session(a, r.a, ["watch the PR"]);
-  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main", runs: [{ id: "run-1", status: "completed" }], background: [{ kind: "monitor", description: "CI checks on PR #72" }] });
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "main",
+    runs: [{ id: "run-1", status: "completed" }],
+    background: [{ kind: "monitor", description: "CI checks on PR #72" }],
+  });
 
   const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
   expect((await done(a, handoffId)).step).toBe("done");
   expect((await done(b, handoffId, "destination")).step).toBe("done");
   expect(a.t3.threads.get(thread.id)!.background).toEqual([]);
-  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([READY, READY, restartTasks(["monitor: CI checks on PR #72"])]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([
+    READY,
+    READY,
+    restartTasks(["monitor: CI checks on PR #72"]),
+  ]);
 });
 
 test("queued messages move with the thread and queue again behind the continued turn", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   session(a, r.a, ["build it"]);
   const thread = a.t3.addThread({
-    projectId: a.project.id, sessionId: SID, branch: "main",
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "main",
     runs: [
       { id: "run-1", status: "running", ordinal: 1 },
       { id: "q-later", status: "queued", userMessageId: "m-later", ordinal: 2, queuePosition: 3 },
@@ -285,16 +451,30 @@ test("queued messages move with the thread and queue again behind the continued 
   expect((await done(b, handoffId, "destination")).step).toBe("done");
 
   // Cancelled on A, queued on B in the user's order behind "Continue"; a child task's result stays with A's thread.
-  expect(a.t3.threads.get(thread.id)!.runs.filter((run) => run.id.startsWith("q-")).map((run) => run.status)).toEqual(["cancelled", "cancelled", "cancelled"]);
-  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([READY, READY, CONTINUE, "use the new API", "then add tests"]);
-  const queued = b.t3.commands.filter((c) => c.type === "message.dispatch" && (c.dispatchMode as { type: string }).type === "queue_after_active");
+  expect(
+    a.t3.threads
+      .get(thread.id)!
+      .runs.filter((run) => run.id.startsWith("q-"))
+      .map((run) => run.status),
+  ).toEqual(["cancelled", "cancelled", "cancelled"]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toEqual([
+    READY,
+    READY,
+    CONTINUE,
+    "use the new API",
+    "then add tests",
+  ]);
+  const queued = b.t3.commands.filter(
+    (c) => c.type === "message.dispatch" && (c.dispatchMode as { type: string }).type === "queue_after_active",
+  );
   expect(queued.map((c) => c.text)).toEqual(["use the new API", "then add tests"]);
   expect(source.state.warnings).toContain("1 attachment on queued messages stayed on a");
 });
 
 test("a failure on the destination before import aborts and leaves the source as it was", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   writeFileSync(join(r.a, "notes.txt"), "uncommitted\n");
   session(a, r.a, ["hello"]);
@@ -314,9 +494,121 @@ test("a failure on the destination before import aborts and leaves the source as
   expect(existsSync(b.h.dir(handoffId))).toBe(false);
 });
 
+test("a lost answer to start never leaves the thread on both machines: the source waits for the destination", async () => {
+  const r = repos("a", "b");
+  // B takes the manifest, but its answer is lost on the way back, and so is any abort that follows.
+  const lossy = async (req: Request, next: (req: Request) => Promise<Response>) => {
+    if (req.method === "DELETE") return new Response("bad gateway", { status: 502 });
+    const res = await next(req);
+    return new URL(req.url).pathname.endsWith("/start") ? new Response("bad gateway", { status: 502 }) : res;
+  };
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, peer: lossy });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.archivedAt).toBeNull();
+});
+
+test("a failure on the destination after import finishes there with a warning, so the source never aborts", async () => {
+  const r = repos("a", "b");
+  // A cannot see B's progress for now, so it misses the moment B reports the import.
+  let hidden = true;
+  const peer = async (req: Request, next: (req: Request) => Promise<Response>) =>
+    hidden && req.method === "GET" && /\/handoff\/[^/]+$/.test(new URL(req.url).pathname)
+      ? new Response("bad gateway", { status: 502 })
+      : next(req);
+  // A setup script that takes a moment keeps B in its last step until T3 Code goes away there.
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, setup: "sleep 1", peer });
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "feature",
+    worktreePath: wtA,
+    runs: [{ id: "run-1", status: "running" }],
+  });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => b.h.load("destination", handoffId)?.step === "continue", "B imported");
+  disconnectT3(b.s);
+  const dest = await done(b, handoffId, "destination");
+  expect(dest.step).toBe("done");
+  expect(dest.state.warnings.join("\n")).toContain("continue it in T3 Code");
+
+  hidden = false;
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+});
+
+test("a setup script past its deadline is stopped with what it started, and the thread carries on", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, setup: "(sleep 30 &); sleep 30" });
+  b.h.options.setupTimeoutMs = 300;
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "feature",
+    worktreePath: wtA,
+    runs: [{ id: "run-1", status: "running" }],
+  });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  const dest = await done(b, handoffId, "destination");
+  expect(dest.step).toBe("done");
+  expect(dest.state.warnings.join("\n")).toContain("Setup in");
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toContain(CONTINUE);
+});
+
+test("a daemon stopped during setup runs it again on restart before the agent goes on", async () => {
+  const r = repos("a", "b");
+  const log = join(r.root, "setup.log");
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, setup: `echo started >> ${log}; sleep 2; echo finished >> ${log}` });
+  pair(a, b);
+  const wtA = join(r.root, "wt-a");
+  sh(r.a, "worktree", "add", wtA, "-b", "feature", "main");
+  session(a, wtA, ["hello"]);
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "feature",
+    worktreePath: wtA,
+    runs: [{ id: "run-1", status: "running" }],
+  });
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => b.h.load("destination", handoffId)?.step === "continue", "B waiting for setup");
+  await b.h.close(); // the daemon stops; its setup with it
+  const restarted = new Handoffs(b.s, b.h.options);
+  cleanup.push(() => restarted.close());
+  restarted.tick();
+  const dest = await until(() => {
+    const j = restarted.load("destination", handoffId);
+    return j && ["done", "failed"].includes(j.step) && j;
+  }, "resumed destination");
+  expect(dest.step).toBe("done");
+  expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(["started", "started", "finished"]);
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.messages).toContain(CONTINUE);
+});
+
 test("a daemon restart resumes a handoff from the step it reached", async () => {
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   pair(a, b);
   session(a, r.a, ["hello"]);
   const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
@@ -326,14 +618,18 @@ test("a daemon restart resumes a handoff from the step it reached", async () => 
   const restarted = new Handoffs(a.s, a.h.options);
   cleanup.push(() => restarted.close());
   restarted.tick();
-  const job = await until(() => { const j = restarted.load("source", handoffId); return j && ["done", "failed"].includes(j.step) && j; }, "resumed job");
+  const job = await until(() => {
+    const j = restarted.load("source", handoffId);
+    return j && ["done", "failed"].includes(j.step) && j;
+  }, "resumed job");
   expect(job.error).toBeUndefined();
   expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.worktreePath).toBeNull();
   expect(restarted.list("source").filter((j) => j.thread === thread.id)).toHaveLength(1);
 });
 
 test("a server's T3 Code is connected from the main machine: the pairing link goes over the peer channel", async () => {
-  const a = await node("a", tmp()), b = await node("b", tmp(), { server: true });
+  const a = await node("a", tmp()),
+    b = await node("b", tmp(), { server: true });
   pair(a, b);
   disconnectT3(b.s);
   expect(t3State(b.s).connected).toBe(false);
@@ -360,17 +656,33 @@ test("the thread list matches T3's sidebar: settled and subagent threads are lef
 });
 
 test("threads keep T3's sidebar order: pinned by pin key, then dragged threads, unarranged ones newest first", () => {
-  const t = (id: string, createdAt: string, extra = {}) => ({ id, createdAt: `2026-10-0${createdAt}T00:00:00Z`, ...extra });
+  const t = (id: string, createdAt: string, extra = {}) => ({
+    id,
+    createdAt: `2026-10-0${createdAt}T00:00:00Z`,
+    ...extra,
+  });
   const order = sidebarOrder([
-    t("old", "1"), t("new", "3"), t("dragged-b", "2", { activeOrderKey: "b" }), t("dragged-a", "1", { activeOrderKey: "a" }),
-    t("pin-late", "3", { pinnedAt: "x", pinOrderKey: "z" }), t("pin-first", "1", { pinnedAt: "x", pinOrderKey: "a" }),
+    t("old", "1"),
+    t("new", "3"),
+    t("dragged-b", "2", { activeOrderKey: "b" }),
+    t("dragged-a", "1", { activeOrderKey: "a" }),
+    t("pin-late", "3", { pinnedAt: "x", pinOrderKey: "z" }),
+    t("pin-first", "1", { pinnedAt: "x", pinOrderKey: "a" }),
     t("revived", "1", { unsettledAt: "2026-10-04T00:00:00Z" }),
   ]);
   expect(order.map((x) => x.id)).toEqual(["pin-first", "pin-late", "revived", "new", "old", "dragged-a", "dragged-b"]);
 });
 
 test("target selection: the first available server by node id, here, or a node; with the reason when unavailable", async () => {
-  const view = (node: string, extra: Partial<NodeThreads> = {}): NodeThreads => ({ node, server: false, online: true, t3: { connected: true }, threads: [], jobs: [], ...extra });
+  const view = (node: string, extra: Partial<NodeThreads> = {}): NodeThreads => ({
+    node,
+    server: false,
+    online: true,
+    t3: { connected: true },
+    threads: [],
+    jobs: [],
+    ...extra,
+  });
   const views = [
     view("laptop"),
     view("srv-a", { server: true, error: "offline" }),
@@ -386,7 +698,8 @@ test("target selection: the first available server by node id, here, or a node; 
     { node: "srv-c", server: true, available: true },
     { node: "srv-d", server: true, available: true },
   ]);
-  const s = new Store(":memory:"); s.setLocal("node", "laptop");
+  const s = new Store(":memory:");
+  s.setLocal("node", "laptop");
   const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
   expect(await resolveTarget(h, "laptop", "server", views)).toBe("srv-c");
   // A server's own thread goes to another server.
@@ -394,8 +707,12 @@ test("target selection: the first available server by node id, here, or a node; 
   expect(await resolveTarget(h, "srv-c", "here", views)).toBe("laptop");
   await expect(resolveTarget(h, "laptop", "here", views)).rejects.toThrow("already runs on laptop");
   await expect(resolveTarget(h, "laptop", "desk", views)).rejects.toThrow("desk: T3 Code not connected");
-  await expect(resolveTarget(h, "laptop", "server", views.slice(0, 3))).rejects.toThrow("no server available: srv-a (offline), srv-b (T3 Code token expired");
-  await expect(resolveTarget(h, "laptop", "server", [view("laptop")])).rejects.toThrow("no server: mark an always-on node");
+  await expect(resolveTarget(h, "laptop", "server", views.slice(0, 3))).rejects.toThrow(
+    "no server available: srv-a (offline), srv-b (T3 Code token expired",
+  );
+  await expect(resolveTarget(h, "laptop", "server", [view("laptop")])).rejects.toThrow(
+    "no server: mark an always-on node",
+  );
 });
 
 test("the handoff tools reach local sessions once T3 Code is connected, never a virtual project's public endpoint", async () => {
@@ -405,13 +722,22 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
   cleanup.push(() => gateway.close());
   const session = async () => {
     const client = new Client({ name: "test", version: "1" });
-    await client.connect(new StreamableHTTPClientTransport(new URL("http://127.0.0.1/mcp?project=*"), { fetch: (url, init) => gateway.handle(new Request(String(url), init)) }));
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL("http://127.0.0.1/mcp?project=*"), {
+        fetch: (url, init) => gateway.handle(new Request(String(url), init)),
+      }),
+    );
     cleanup.push(() => client.close());
     return (await client.listTools()).tools.map((t) => t.name);
   };
   expect(await session()).toEqual(["agentgate__handoff_targets", "agentgate__handoff_thread"]);
   saveProject(a.s, "@grok", { mcp: {} });
-  const { response } = await gateway.handleRemote("@grok", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }), {}, new AbortController().signal);
+  const { response } = await gateway.handleRemote(
+    "@grok",
+    JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    {},
+    new AbortController().signal,
+  );
   expect(JSON.stringify(await response.json())).not.toContain("handoff");
   expect(() => saveProject(a.s, "o/r", { mcp: { agentgate: "x" } })).toThrow("reserved");
   disconnectT3(a.s);
@@ -420,15 +746,20 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
 
 test("a handoff works through the relay alone; the relay sees only sealed calls and cannot replay one", async () => {
   process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  cleanup.push(() => {
+    delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
+  });
   const relay = memoryRelay();
   const calls: { path: string; body: string }[] = [];
   const server = serveRelay(relay, async (req) => {
-    if (req.method === "POST" && new URL(req.url).pathname.endsWith("/call")) calls.push({ path: new URL(req.url).pathname, body: await req.clone().text() });
+    if (req.method === "POST" && new URL(req.url).pathname.endsWith("/call"))
+      calls.push({ path: new URL(req.url).pathname, body: await req.clone().text() });
     return undefined;
   });
   cleanup.push(() => server.stop(true));
   const r = repos("a", "b");
-  const a = await node("a", r.a), b = await node("b", r.b, { server: true });
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
   for (const n of [a, b]) for (const m of [a, b]) n.s.put("node", m.name, { id: m.name, alwaysOn: m.server });
   const invite = await createRelay(a.s, `http://127.0.0.1:${server.port}`);
   await joinRelay(b.s, invite);
@@ -456,7 +787,11 @@ test("a handoff works through the relay alone; the relay sees only sealed calls 
   expect(calls.every((c) => !c.body.includes("falcon") && !c.body.includes("/handoff/"))).toBe(true);
   // A call the relay replays gets an answer it can't open.
   const keys = await deriveKeys(parseInvite(invite).secret);
-  const replay = await fetch(`http://127.0.0.1:${server.port}${calls[0]!.path}`, { method: "POST", headers: { authorization: `Bearer ${keys.authToken}` }, body: calls[0]!.body });
+  const replay = await fetch(`http://127.0.0.1:${server.port}${calls[0]!.path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${keys.authToken}` },
+    body: calls[0]!.body,
+  });
   expect(replay.status).toBe(200);
   expect(await replay.text()).toBe("");
 });

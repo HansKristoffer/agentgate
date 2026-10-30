@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { proxy, recordUsage } from "../src/llm/pool.ts";
+import { route } from "../src/llm/routing.ts";
 import { Store } from "../src/store.ts";
 
 // Fake Anthropic: behaviour per bearer token.
@@ -28,21 +29,35 @@ const upstream = Bun.serve({
     if (mode === "quota")
       return new Response('{"type":"error"}', {
         status: 429,
-        headers: { ...quota, "anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-5h-status": "rejected", "anthropic-ratelimit-unified-5h-utilization": "1.0" },
+        headers: {
+          ...quota,
+          "anthropic-ratelimit-unified-status": "rejected",
+          "anthropic-ratelimit-unified-5h-status": "rejected",
+          "anthropic-ratelimit-unified-5h-utilization": "1.0",
+        },
       });
     if (mode === "rate-once") {
       modes[token] = "ok";
-      return new Response('{"type":"error","error":{"type":"rate_limit_error"}}', { status: 429, headers: { ...quota, "retry-after": "0" } });
+      return new Response('{"type":"error","error":{"type":"rate_limit_error"}}', {
+        status: 429,
+        headers: { ...quota, "retry-after": "0" },
+      });
     }
     const body = (await req.json()) as any;
-    return new Response(`event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta") })}\n\n`, {
-      headers: { ...quota, "content-type": "text/event-stream" },
-    });
+    return new Response(
+      `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta") })}\n\n`,
+      {
+        headers: { ...quota, "content-type": "text/event-stream" },
+      },
+    );
   },
 });
 const originalApi = CLAUDE.api;
 CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
-afterAll(() => { upstream.stop(true); CLAUDE.api = originalApi; });
+afterAll(() => {
+  upstream.stop(true);
+  CLAUDE.api = originalApi;
+});
 
 let s: Store;
 let creds: Credentials;
@@ -53,19 +68,46 @@ beforeEach(() => {
   seen = [];
   s = new Store(":memory:");
   s.setLocal("node", "n1");
-  for (const [id, prio] of [["a", 2], ["b", 1]] as const) {
+  for (const [id, prio] of [
+    ["a", 2],
+    ["b", 1],
+  ] as const) {
     s.put("account", id, { id, provider: "claude", label: id, priority: prio });
-    s.put("credential", id, { accountId: id, accessToken: `tok-${id}`, refreshToken: `rt-${id}`, expiresAt: Date.now() + 8 * 3600_000, accountUuid: `uuid-${id}`, holder: "n1" });
+    s.put("credential", id, {
+      accountId: id,
+      accessToken: `tok-${id}`,
+      refreshToken: `rt-${id}`,
+      expiresAt: Date.now() + 8 * 3600_000,
+      accountUuid: `uuid-${id}`,
+      holder: "n1",
+    });
   }
-  creds = new Credentials(s, () => Promise.reject(new Error("no refresh in this test")), async () => { });
+  creds = new Credentials(
+    s,
+    () => Promise.reject(new Error("no refresh in this test")),
+    async () => {},
+  );
 });
 
 const send = () =>
-  proxy(s, creds, claude, new Request("http://x/anthropic/v1/messages", {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer agentgate", "anthropic-beta": "claude-code-20250219" },
-    body: JSON.stringify({ model: "claude-sonnet-4-5", metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" } }),
-  }), "/v1/messages?beta=true");
+  proxy(
+    s,
+    creds,
+    claude,
+    new Request("http://x/anthropic/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer agentgate",
+        "anthropic-beta": "claude-code-20250219",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-5",
+        metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" },
+      }),
+    }),
+    "/v1/messages?beta=true",
+  );
 
 test("forwards with the account's token, oauth beta and account uuid; records quota", async () => {
   const res = await send();
@@ -117,11 +159,17 @@ test("pinned account wins while it is a candidate", async () => {
 });
 
 const sendOwn = (path: string) =>
-  proxy(s, creds, claude, new Request(`http://x/anthropic${path}`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer tok-own" },
-    body: JSON.stringify({ model: "claude-sonnet-4-5" }),
-  }), path);
+  proxy(
+    s,
+    creds,
+    claude,
+    new Request(`http://x/anthropic${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tok-own" },
+      body: JSON.stringify({ model: "claude-sonnet-4-5" }),
+    }),
+    path,
+  );
 
 test("a client with its own login keeps it for non-model paths and gets pooled tokens for model calls", async () => {
   await sendOwn("/api/oauth/profile");
@@ -145,90 +193,212 @@ test("a late success does not erase an exhaustion recorded meanwhile", async () 
 
 test("an unauthorized account with a failed refresh falls through to the second account", async () => {
   const original = claude.prepare;
-  const endpoint = Bun.serve({ port: 0, fetch(req) { return req.headers.get("authorization") === "Bearer tok-a" ? new Response("unauthorized", { status: 401 }) : new Response("second account"); } });
-  const provider = { ...claude, prepare: (...args: Parameters<typeof original>) => ({ ...original(...args), url: `http://127.0.0.1:${endpoint.port}` }) };
-  const res = await proxy(s, creds, provider, new Request("http://x", { method: "POST", body: '{"model":"sonnet"}' }), "/v1/messages");
-  expect(res.status).toBe(200); expect(await res.text()).toBe("second account"); endpoint.stop(true);
+  const endpoint = Bun.serve({
+    port: 0,
+    fetch(req) {
+      return req.headers.get("authorization") === "Bearer tok-a"
+        ? new Response("unauthorized", { status: 401 })
+        : new Response("second account");
+    },
+  });
+  const provider = {
+    ...claude,
+    prepare: (...args: Parameters<typeof original>) => ({
+      ...original(...args),
+      url: `http://127.0.0.1:${endpoint.port}`,
+    }),
+  };
+  const res = await proxy(
+    s,
+    creds,
+    provider,
+    new Request("http://x", { method: "POST", body: '{"model":"sonnet"}' }),
+    "/v1/messages",
+  );
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("second account");
+  endpoint.stop(true);
 });
 
 test("a model-specific quota does not exhaust other models", async () => {
   const original = claude.prepare;
-  const endpoint = Bun.serve({ port: 0, fetch() { return new Response("quota", { status: 429, headers: { "anthropic-ratelimit-unified-7d_opus-utilization": "1", "anthropic-ratelimit-unified-7d_opus-reset": String(soon), "anthropic-ratelimit-unified-7d_opus-status": "rejected" } }); } });
+  const endpoint = Bun.serve({
+    port: 0,
+    fetch() {
+      return new Response("quota", {
+        status: 429,
+        headers: {
+          "anthropic-ratelimit-unified-7d_opus-utilization": "1",
+          "anthropic-ratelimit-unified-7d_opus-reset": String(soon),
+          "anthropic-ratelimit-unified-7d_opus-status": "rejected",
+        },
+      });
+    },
+  });
   s.put("account", "b", { ...s.get("account", "b")!, enabled: false });
-  const provider = { ...claude, prepare: (...args: Parameters<typeof original>) => ({ ...original(...args), url: `http://127.0.0.1:${endpoint.port}` }), classify429: () => "quota" as const };
-  await proxy(s, creds, provider, new Request("http://x", { method: "POST", body: '{"model":"claude-opus"}' }), "/v1/messages");
+  const provider = {
+    ...claude,
+    prepare: (...args: Parameters<typeof original>) => ({
+      ...original(...args),
+      url: `http://127.0.0.1:${endpoint.port}`,
+    }),
+    classify429: () => "quota" as const,
+  };
+  await proxy(
+    s,
+    creds,
+    provider,
+    new Request("http://x", { method: "POST", body: '{"model":"claude-opus"}' }),
+    "/v1/messages",
+  );
   expect(s.get("usage", "a")?.exhaustedUntil).toBeUndefined();
-  const res = await send(); expect(res.status).toBe(200); await res.text(); endpoint.stop(true);
+  const res = await send();
+  expect(res.status).toBe(200);
+  await res.text();
+  endpoint.stop(true);
 });
 
 test("malformed quota headers are ignored; body size is bounded", async () => {
   expect(claude.usage(new Headers({ "anthropic-ratelimit-unified-5h-utilization": "NaN" }))).toBeUndefined();
-  const response = await proxy(s, creds, claude, new Request("http://x", { method: "POST", body: "a".repeat(100) }), "/v1/messages", { maxBody: 16, headerTimeout: 100, streamIdle: 100 });
+  const response = await proxy(
+    s,
+    creds,
+    claude,
+    new Request("http://x", { method: "POST", body: "a".repeat(100) }),
+    "/v1/messages",
+    { maxBody: 16, headerTimeout: 100, streamIdle: 100 },
+  );
   expect(response.status).toBe(413);
 });
 
 test("an exhausted quota window without a reset cannot permanently disable an account", async () => {
-  const now = s.now(); s.now = () => now;
+  const now = s.now();
+  s.now = () => now;
   recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 100 }], status: "exhausted" });
   expect(s.get("usage", "a")?.windows[0]?.resetsAt).toBe(now + 60000);
   s.now = () => now + 61000;
-  const { choose } = await import("../src/llm/pool.ts"); expect(choose(s, "claude", "sonnet")?.id).toBe("a");
+  expect(route(s, "claude", "sonnet").account).toBe("a");
 });
 
 test("usage endpoint maps onto the quota windows and is polled only for idle accounts", async () => {
-  const { parseUsage, pollUsage } = await import("../src/llm/claude.ts");
-  expect(parseUsage({ five_hour: { utilization: 18, resets_at: "2026-10-02T12:30:00Z" }, seven_day: { utilization: 100, resets_at: null }, seven_day_cowork: { utilization: 50 }, seven_day_opus: null })).toEqual({
-    windows: [{ name: "5h", usedPct: 18, resetsAt: Date.parse("2026-10-02T12:30:00Z") }, { name: "7d", usedPct: 100, resetsAt: undefined }],
+  const { parseUsage } = await import("../src/llm/claude.ts");
+  const { Quotas } = await import("../src/llm/quota.ts");
+  const pollUsage = (
+    s: Store,
+    token: (id: string) => Promise<{ accessToken: string }>,
+    signal = new AbortController().signal,
+  ) =>
+    new Quotas(s, { token: async (id) => ({ ...s.get("credential", id)!, ...(await token(id)) }) }, { claude }).poll(
+      signal,
+    );
+  expect(
+    parseUsage({
+      five_hour: { utilization: 18, resets_at: "2026-10-02T12:30:00Z" },
+      seven_day: { utilization: 100, resets_at: null },
+      seven_day_cowork: { utilization: 50 },
+      seven_day_opus: null,
+    }),
+  ).toEqual({
+    windows: [
+      { name: "5h", usedPct: 18, resetsAt: Date.parse("2026-10-02T12:30:00Z") },
+      { name: "7d", usedPct: 100, resetsAt: undefined },
+    ],
     status: "exhausted",
   });
-  expect(parseUsage({ five_hour: { utilization: 1, locked_reason: "x" } })).toMatchObject({ status: "exhausted", windows: [{ name: "5h", usedPct: 100 }] });
+  expect(parseUsage({ five_hour: { utilization: 1, locked_reason: "x" } })).toMatchObject({
+    status: "exhausted",
+    windows: [{ name: "5h", usedPct: 100 }],
+  });
   expect(parseUsage({})).toBeUndefined();
 
   // A locked account is skipped by the pool; a lock on the Opus window only affects Opus.
   const { Store: S } = await import("../src/store.ts");
-  const { choose, recordUsage } = await import("../src/llm/pool.ts");
-  const p = new S(":memory:"); p.setLocal("node", "n");
+  const { recordUsage } = await import("../src/llm/pool.ts");
+  const choose = (s: Store, provider: "claude", model: string) => route(s, provider, model).account;
+  const p = new S(":memory:");
+  p.setLocal("node", "n");
   for (const id of ["claude-a", "claude-b"]) {
     p.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: id === "claude-a" ? 1 : 0 });
-    p.put("credential", id, { accountId: id, accessToken: "t", refreshToken: "r", expiresAt: Date.now() + 3600_000, holder: "n" });
+    p.put("credential", id, {
+      accountId: id,
+      accessToken: "t",
+      refreshToken: "r",
+      expiresAt: Date.now() + 3600_000,
+      holder: "n",
+    });
   }
   const later = new Date(Date.now() + 3600_000).toISOString();
   recordUsage(p, "claude-a", parseUsage({ five_hour: { utilization: 1, locked_reason: "x", resets_at: later } })!);
-  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
-  recordUsage(p, "claude-b", parseUsage({ five_hour: { utilization: 1 }, seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: later } })!);
+  expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
+  recordUsage(
+    p,
+    "claude-b",
+    parseUsage({
+      five_hour: { utilization: 1 },
+      seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: later },
+    })!,
+  );
   expect(choose(p, "claude", "claude-opus-5")).toBeUndefined();
-  expect(choose(p, "claude", "claude-sonnet-5")?.id).toBe("claude-b");
+  expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
   p.close();
 
   const { Store } = await import("../src/store.ts");
-  const s = new Store(":memory:"); s.setLocal("node", "n");
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
   for (const id of ["claude-idle", "claude-busy"]) {
     s.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: 0 });
-    s.put("credential", id, { accountId: id, accessToken: "t", refreshToken: "r", expiresAt: Date.now() + 3600_000, holder: "n" });
+    s.put("credential", id, {
+      accountId: id,
+      accessToken: "t",
+      refreshToken: "r",
+      expiresAt: Date.now() + 3600_000,
+      holder: "n",
+    });
   }
-  s.put("usage", "claude-busy", { accountId: "claude-busy", observedAt: Date.now(), observedBy: "n", windows: [], status: "ok" });
+  s.put("usage", "claude-busy", {
+    accountId: "claude-busy",
+    observedAt: Date.now(),
+    observedBy: "n",
+    windows: [],
+    status: "ok",
+  });
   const asked: string[] = [];
   const realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ five_hour: { utilization: 42, resets_at: null } }))) as unknown as typeof fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ five_hour: { utilization: 42, resets_at: null } }))) as unknown as typeof fetch;
   try {
-    await pollUsage(s, async (id) => { asked.push(id); return { accessToken: "t" }; });
-    await pollUsage(s, async (id) => { asked.push(id); return { accessToken: "t" }; }); // not again within 10 minutes
-  } finally { globalThis.fetch = realFetch; }
+    await pollUsage(s, async (id) => {
+      asked.push(id);
+      return { accessToken: "t" };
+    });
+    await pollUsage(s, async (id) => {
+      asked.push(id);
+      return { accessToken: "t" };
+    }); // not again within 10 minutes
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   expect(asked).toEqual(["claude-idle"]);
   expect(s.get("usage", "claude-idle")?.windows[0]?.usedPct).toBe(42);
 
   // Live traffic records newer usage while a poll is out: the poll's older answer is dropped.
   s.setLocal("quotaHealth:claude-idle", undefined);
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
-  let answer!: () => void;
-  globalThis.fetch = (() => new Promise<Response>((r) => { answer = () => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } }))); })) as unknown as typeof fetch;
+  const asking = Promise.withResolvers<() => void>();
+  globalThis.fetch = (() =>
+    new Promise<Response>((r) =>
+      asking.resolve(() => r(new Response(JSON.stringify({ five_hour: { utilization: 10 } })))),
+    )) as unknown as typeof fetch;
   try {
     const poll = pollUsage(s, async () => ({ accessToken: "t" }));
-    await Bun.sleep(5);
+    const answer = await asking.promise;
     const { recordUsage } = await import("../src/llm/pool.ts");
     recordUsage(s, "claude-idle", { windows: [{ name: "5h", usedPct: 98 }], status: "ok" });
-    answer(); await poll;
-  } finally { globalThis.fetch = realFetch; }
+    answer();
+    await poll;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
 
   // Stopping the daemon aborts the request and records nothing.
@@ -236,11 +406,23 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   s.put("usage", "claude-idle", { ...s.get("usage", "claude-idle")!, observedAt: Date.now() - 11 * 60_000 });
   const stop = new AbortController();
   let sawAbort = false;
-  globalThis.fetch = ((_: unknown, init: RequestInit) => new Promise<Response>((_r, reject) => init.signal!.addEventListener("abort", () => { sawAbort = true; reject(new Error("aborted")); }))) as unknown as typeof fetch;
+  const asked2 = Promise.withResolvers<void>();
+  globalThis.fetch = ((_: unknown, init: RequestInit) =>
+    new Promise<Response>((_r, reject) => {
+      asked2.resolve();
+      init.signal!.addEventListener("abort", () => {
+        sawAbort = true;
+        reject(new Error("aborted"));
+      });
+    })) as unknown as typeof fetch;
   try {
     const poll = pollUsage(s, async () => ({ accessToken: "t" }), stop.signal);
-    await Bun.sleep(5); stop.abort(); await poll;
-  } finally { globalThis.fetch = realFetch; }
+    await asked2.promise;
+    stop.abort();
+    await poll;
+  } finally {
+    globalThis.fetch = realFetch;
+  }
   expect(sawAbort).toBe(true);
   expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
   s.close();

@@ -1,19 +1,30 @@
-import { ArrowRight, Boxes, Monitor, Users } from "lucide-react";
+import { ArrowRight, Boxes, Monitor, TriangleAlert, Users } from "lucide-react";
 import { Button } from "@heroui/react";
 import { Badge, Empty, Panel } from "../components/ui.tsx";
 import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import { TokenCalendar } from "../features/proxy/TokenCalendar.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
-import { outdatedNodes } from "@agentgate/protocol";
-import { providerIcon, providerName } from "./utils.ts";
+import { INFISICAL_SIGNIN_STARTED, signInToInfisical } from "../api.ts";
+import { accountProblem, problems, type Page } from "../attention.ts";
+import { providerIcon, providerName, toolName } from "./utils.ts";
+
+const pageTitle: Record<Page, string> = {
+  accounts: "Accounts",
+  servers: "MCP servers",
+  skills: "Skills",
+  projects: "Projects",
+  nodes: "Machines",
+};
 
 export function Dashboard({
   data,
   connection,
+  perform,
+  local,
   navigate,
-}: ViewProps & { navigate: (view: "accounts" | "servers" | "nodes") => void }) {
-  const outdated = outdatedNodes(data.nodes);
+}: ViewProps & { navigate: (view: Page) => void }) {
+  const issues = problems(data);
   return (
     <>
       <div className="stats">
@@ -37,11 +48,7 @@ export function Dashboard({
             view: "nodes" as const,
           },
         ].map((stat) => (
-          <button
-            key={stat.label}
-            className="stat"
-            onClick={() => navigate(stat.view)}
-          >
+          <button key={stat.label} className="stat" onClick={() => navigate(stat.view)}>
             <div className="stat-top">
               <stat.icon size={16} />
               <ArrowRight size={14} />
@@ -51,64 +58,58 @@ export function Dashboard({
           </button>
         ))}
       </div>
-      {outdated.length > 0 && (
-        <Panel
-          title="Machines on an older version"
-          detail="Paired machines work best on the same release."
-          action={
-            <Button size="sm" variant="tertiary" onPress={() => navigate("nodes")}>
-              Update on Machines
-              <ArrowRight size={14} />
-            </Button>
-          }
-        >
-          {outdated.map((n) => (
-            <div className="item" key={n.id}>
-              <div className="machine-icon">
-                <Monitor size={16} />
-              </div>
+      {issues.length > 0 && (
+        <Panel title="Needs attention" detail="Agentgate can't fix these on its own.">
+          {issues.map((p) => (
+            <div className="item" key={p.key}>
+              <TriangleAlert size={16} className="attention-icon" />
               <div className="grow">
-                <strong>{n.id}</strong>
-                <small>{n.version ? `Agentgate ${n.version}` : "An older Agentgate release"}</small>
+                <strong>{p.title}</strong>
+                {p.detail && <small>{p.detail}</small>}
               </div>
-              {!n.online && <Badge>Offline</Badge>}
+              {p.signIn && local ? (
+                // The CLI's browser login answers on the daemon's machine, which is this one.
+                <Button
+                  size="sm"
+                  onPress={() => void perform(() => signInToInfisical(connection), INFISICAL_SIGNIN_STARTED)}
+                >
+                  Sign in
+                </Button>
+              ) : (
+                <Button size="sm" variant="tertiary" onPress={() => navigate(p.page)}>
+                  {pageTitle[p.page]}
+                  <ArrowRight size={14} />
+                </Button>
+              )}
             </div>
           ))}
         </Panel>
       )}
-      <Panel
-        title="Subscription pool"
-        detail="Your sessions use the next available account automatically."
-      >
+      <Panel title="Subscription pool" detail="Your sessions use the next available account automatically.">
         {!data.accounts.length ? (
           <Empty>
             <Users size={22} />
             {data.detected.length ? (
               <>
                 <strong>
-                  You're signed in to{" "}
-                  {data.detected.map((d) => providerName(d.provider)).join(" and ")}{" "}
-                  on this machine.
+                  You're signed in to {data.detected.map((d) => providerName(d.provider)).join(" and ")} on this
+                  machine.
                 </strong>
                 <p>
-                  {data.detected.map((d) => d.email).filter((e, i, all) => all.indexOf(e) === i).join(", ")}. Add{" "}
-                  {data.detected.length === 1 ? "it" : "them"} to the pool with one browser confirmation each.
+                  {data.detected
+                    .map((d) => d.email)
+                    .filter((e, i, all) => all.indexOf(e) === i)
+                    .join(", ")}
+                  . Add {data.detected.length === 1 ? "it" : "them"} to the pool with one browser confirmation each.
                 </p>
               </>
             ) : (
               <>
                 <strong>Your pool starts with one account.</strong>
-                <p>
-                  Add a Claude or Codex login to route your sessions through
-                  Agentgate.
-                </p>
+                <p>Add a Claude or Codex login to route your sessions through Agentgate.</p>
               </>
             )}
-            <Button
-              size="sm"
-              variant="tertiary"
-              onPress={() => navigate("accounts")}
-            >
+            <Button size="sm" variant="tertiary" onPress={() => navigate("accounts")}>
               {data.detected.length ? "Add to pool" : "Add an account"}
               <ArrowRight size={14} />
             </Button>
@@ -116,32 +117,15 @@ export function Dashboard({
         ) : (
           data.accounts.map((a) => (
             <div className="item" key={a.account.id}>
-              <div className={`provider-icon ${a.account.provider}`}>
-                {providerIcon(a.account.provider)}
-              </div>
+              <div className={`provider-icon ${a.account.provider}`}>{providerIcon(a.account.provider)}</div>
               <div className="grow">
                 <strong>{a.account.label}</strong>
                 <small>
-                  {providerName(a.account.provider)} ·{" "}
-                  {a.account.email ?? a.account.plan ?? "Subscription"}
+                  {providerName(a.account.provider)} · {a.account.email ?? a.account.plan ?? "Subscription"}
                 </small>
               </div>
-              <Badge good={a.active && !a.needsLogin && !a.expired}>
-                {a.needsLogin
-                  ? "Needs login"
-                  : a.waitingFor
-                    ? `Waiting for ${a.waitingFor}`
-                    : a.expired
-                    ? "Token expired"
-                    : a.refreshError
-                      ? "Refresh failed"
-                      : a.exhausted
-                        ? "Exhausted"
-                        : a.active
-                          ? "Active"
-                          : a.account.enabled
-                            ? "Ready"
-                            : "Disabled"}
+              <Badge good={!accountProblem(a)}>
+                {accountProblem(a) ?? (a.active ? `In ${toolName(a.account.provider)}` : "Ready")}
               </Badge>
               <AccountQuota account={a} />
             </div>

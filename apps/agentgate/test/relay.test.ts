@@ -6,8 +6,28 @@ import { Hono } from "hono";
 import { memoryRelay } from "../../relay/test/memory.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import {
-  RelayBusy, cleanupRelay, createRelay, deriveKeys, entryKey, installAndJoin, joinRelay, leaveRelay, open, parseInvite, parseJoin,
-  reconcileRelay, relayInvite, relayStatus, relaySync, rotateRelay, seal, setServiceKey, stopRelay, syncAll, via, withRelay,
+  RelayBusy,
+  cleanupRelay,
+  createRelay,
+  deriveKeys,
+  entryKey,
+  installAndJoin,
+  joinRelay,
+  leaveRelay,
+  open,
+  parseInvite,
+  parseJoin,
+  reconcileRelay,
+  relayInvite,
+  relayStatus,
+  relaySync,
+  rotateRelay,
+  seal,
+  setServiceKey,
+  stopRelay,
+  syncAll,
+  via,
+  withRelay,
 } from "../src/relay.ts";
 import { Store } from "../src/store.ts";
 import { join, peerRoutes, peers, pullPeer } from "../src/sync.ts";
@@ -16,12 +36,22 @@ import { SYNC_PROTOCOL } from "../src/sync.ts";
 const dir = mkdtempSync(path(tmpdir(), "agentgate-relay-"));
 const stores: Store[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
-beforeAll(() => { process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1"; });
+beforeAll(() => {
+  process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+});
 afterEach(async () => {
-  for (const s of stores.splice(0)) { await stopRelay(s); try { s.close(); } catch { } }
+  for (const s of stores.splice(0)) {
+    await stopRelay(s);
+    try {
+      s.close();
+    } catch {}
+  }
   for (const x of servers.splice(0)) x.stop(true);
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => {
+  rmSync(dir, { recursive: true, force: true });
+  delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
+});
 
 function node(name: string, file?: string) {
   const s = new Store(file ?? ":memory:");
@@ -43,17 +73,31 @@ type Mode = "ok" | "down" | "drop" | "failDelete" | "hang";
 /** The in-process relay over real HTTP, behind a proxy that can fail in chosen ways. */
 function relay(overrides: Parameters<typeof memoryRelay>[0] = {}) {
   const r = memoryRelay(overrides);
-  const ctl = { mode: "ok" as Mode, beforePush: undefined as undefined | (() => void), pushes: 0, blocked: undefined as string | undefined };
+  const ctl = {
+    mode: "ok" as Mode,
+    beforePush: undefined as undefined | (() => void),
+    pushes: 0,
+    blocked: undefined as string | undefined,
+  };
   const server = Bun.serve({
-    port: 0, idleTimeout: 0,
+    port: 0,
+    idleTimeout: 0,
     async fetch(req) {
       const url = new URL(req.url);
-      if (ctl.mode === "down" || (ctl.blocked && url.pathname.includes(ctl.blocked))) return new Response("down", { status: 503 });
-      if (ctl.mode === "hang") return new Promise<Response>(() => { });
-      if (ctl.mode === "failDelete" && req.method === "DELETE") return Response.json({ error: "boom" }, { status: 500 });
-      if (url.pathname.endsWith("/push")) { ctl.pushes++; ctl.beforePush?.(); }
+      if (ctl.mode === "down" || (ctl.blocked && url.pathname.includes(ctl.blocked)))
+        return new Response("down", { status: 503 });
+      if (ctl.mode === "hang") return new Promise<Response>(() => {});
+      if (ctl.mode === "failDelete" && req.method === "DELETE")
+        return Response.json({ error: "boom" }, { status: 500 });
+      if (url.pathname.endsWith("/push")) {
+        ctl.pushes++;
+        ctl.beforePush?.();
+      }
       const res = await r.app.fetch(req);
-      if (ctl.mode === "drop" && url.pathname.endsWith("/push")) { ctl.mode = "ok"; return new Response("lost", { status: 502 }); }
+      if (ctl.mode === "drop" && url.pathname.endsWith("/push")) {
+        ctl.mode = "ok";
+        return new Response("lost", { status: 502 });
+      }
       return res;
     },
   });
@@ -62,12 +106,25 @@ function relay(overrides: Parameters<typeof memoryRelay>[0] = {}) {
 }
 const sync = (s: Store) => relaySync(s, { force: true });
 const groupOf = async (invite: string) => (await deriveKeys(parseInvite(invite).secret)).groupId;
-const head = (r: ReturnType<typeof relay>, grp: string) => Number((r.groups.get(grp)!.sql.db.query("select v from meta where k = 'head'").get() as { v: number }).v);
+const head = (r: ReturnType<typeof relay>, grp: string) =>
+  Number((r.groups.get(grp)!.sql.db.query("select v from meta where k = 'head'").get() as { v: number }).v);
 
 function seed(s: Store) {
   s.put("account", "acc", { id: "acc", provider: "claude", label: "work" });
-  s.put("credential", "acc", { accountId: "acc", accessToken: "sk-ant-secret-token", refreshToken: "rt-secret-refresh", expiresAt: Date.now() + 3_600_000, holder: s.nodeId });
-  s.put("mcp", "posthog", { id: "posthog", template: "custom-http", transport: "http", url: "https://mcp.example/mcp", headers: { authorization: "Bearer mcp-secret-header" } });
+  s.put("credential", "acc", {
+    accountId: "acc",
+    accessToken: "sk-ant-secret-token",
+    refreshToken: "rt-secret-refresh",
+    expiresAt: Date.now() + 3_600_000,
+    holder: s.nodeId,
+  });
+  s.put("mcp", "posthog", {
+    id: "posthog",
+    template: "custom-http",
+    transport: "http",
+    url: "https://mcp.example/mcp",
+    headers: { authorization: "Bearer mcp-secret-header" },
+  });
 }
 
 test("crypto vectors are pinned", async () => {
@@ -81,7 +138,7 @@ test("crypto vectors are pinned", async () => {
   expect(blob).toBe(VECTORS.blob);
   expect(await open(keys, aad, blob)).toBe('{"x":1}');
   for (const changed of [{ pusherSeq: 2 }, { node: "b" }, { generation: "1".repeat(32) }, { key: "x".repeat(43) }])
-    expect(open(keys, { ...aad, ...changed }, blob)).rejects.toThrow();
+    await expect(open(keys, { ...aad, ...changed }, blob)).rejects.toThrow();
 });
 
 test("invites and pairing commands are validated without echoing secrets", () => {
@@ -89,11 +146,29 @@ test("invites and pairing commands are validated without echoing secrets", () =>
   expect(parseInvite(invite).url).toBe("https://relay.example");
   expect(parseJoin(`agentgate join ${invite}`)).toEqual({ invite, force: false });
   expect(parseJoin(`agentpool join ${invite} --force`)).toEqual({ invite, force: true });
-  expect(parseJoin("agentgate join http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch")).toEqual({ url: "http://mac.tail.ts.net:7878", code: "amber-anchor-apple-arrow-basil-beacon-birch" });
+  expect(parseJoin("agentgate join http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch")).toEqual({
+    url: "http://mac.tail.ts.net:7878",
+    code: "amber-anchor-apple-arrow-basil-beacon-birch",
+  });
   expect(parseJoin(installAndJoin(invite))).toEqual({ invite, force: false });
-  expect(parseJoin(installAndJoin("http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch"))).toEqual({ url: "http://mac.tail.ts.net:7878", code: "amber-anchor-apple-arrow-basil-beacon-birch" });
-  for (const bad of [`${invite}; rm -rf /`, `agentgate join ${invite} extra`, "agentgate join", "join ftp://x a-b-c-d-e-f-g", `${invite.slice(0, -1)}!`]) {
-    const error = (() => { try { parseJoin(bad); } catch (e) { return String(e); } })();
+  expect(parseJoin(installAndJoin("http://mac.tail.ts.net:7878 amber-anchor-apple-arrow-basil-beacon-birch"))).toEqual({
+    url: "http://mac.tail.ts.net:7878",
+    code: "amber-anchor-apple-arrow-basil-beacon-birch",
+  });
+  for (const bad of [
+    `${invite}; rm -rf /`,
+    `agentgate join ${invite} extra`,
+    "agentgate join",
+    "join ftp://x a-b-c-d-e-f-g",
+    `${invite.slice(0, -1)}!`,
+  ]) {
+    const error = (() => {
+      try {
+        parseJoin(bad);
+      } catch (e) {
+        return String(e);
+      }
+    })();
     expect(error).toBeDefined();
     expect(error).not.toContain("AAAA");
   }
@@ -107,47 +182,87 @@ test("invites and pairing commands are validated without echoing secrets", () =>
 
 test("records, credentials and tombstones converge; the relay stores only ciphertext", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   const invite = await createRelay(a, r.url);
   expect(relayStatus(a)).toMatchObject({ reconciling: false, pushError: undefined });
   await joinRelay(b, invite);
-  for (const [kind, id] of [["account", "acc"], ["credential", "acc"], ["mcp", "posthog"]] as const) expect(b.get(kind, id)).toEqual(a.get(kind, id) as never);
+  for (const [kind, id] of [
+    ["account", "acc"],
+    ["credential", "acc"],
+    ["mcp", "posthog"],
+  ] as const)
+    expect(b.get(kind, id)).toEqual(a.get(kind, id) as never);
 
   b.del("mcp", "posthog");
-  await sync(b); await sync(a);
+  await sync(b);
+  await sync(a);
   expect(a.get("mcp", "posthog")).toBeUndefined();
   expect(a.record("mcp", "posthog")!.deleted).toBe(1);
 
   const grp = await groupOf(invite);
   const dump = JSON.stringify(r.groups.get(grp)!.sql.db.query("select * from entries").all());
-  for (const secret of ["sk-ant-secret-token", "rt-secret-refresh", "mcp-secret-header", "\"acc\"", "credential", "account", "posthog"]) expect(dump).not.toContain(secret);
+  for (const secret of [
+    "sk-ant-secret-token",
+    "rt-secret-refresh",
+    "mcp-secret-header",
+    '"acc"',
+    "credential",
+    "account",
+    "posthog",
+  ])
+    expect(dump).not.toContain(secret);
   expect(via(a, "b")).toEqual(["relay"]);
   expect(Number(a.local("seen:b"))).toBeGreaterThan(0);
 });
 
 test("relay policy payloads are versioned and incompatible encrypted records never merge", async () => {
-  const r = relay(), a = node("a"), b = node("b");
-  seed(a); a.put("account", "acc", { ...a.get("account", "acc")!, policy: { retryLimit: 0, excludeModels: ["opus"] } });
-  const invite = await createRelay(a, r.url), keys = await deriveKeys(parseInvite(invite).secret);
+  const r = relay(),
+    a = node("a"),
+    b = node("b");
+  seed(a);
+  a.put("account", "acc", { ...a.get("account", "acc")!, policy: { retryLimit: 0, excludeModels: ["opus"] } });
+  const invite = await createRelay(a, r.url),
+    keys = await deriveKeys(parseInvite(invite).secret);
   const db = r.groups.get(keys.groupId)!.sql.db;
-  const entry = db.query("select key,blob,pusher_seq from entries where node='a' and key=?").get(await entryKey(keys, "account", "acc")) as { key: string; blob: string; pusher_seq: number };
-  const aad = { groupId: keys.groupId, generation: relayStatus(a)!.generation!, node: "a", key: entry.key, pusherSeq: entry.pusher_seq };
-  const payload = JSON.parse(await open(keys, aad, entry.blob)); expect(payload.protocol).toBe(SYNC_PROTOCOL); expect(JSON.parse(payload.record.data).policy.retryLimit).toBe(0);
+  const entry = db
+    .query("select key,blob,pusher_seq from entries where node='a' and key=?")
+    .get(await entryKey(keys, "account", "acc")) as { key: string; blob: string; pusher_seq: number };
+  const aad = {
+    groupId: keys.groupId,
+    generation: relayStatus(a)!.generation!,
+    node: "a",
+    key: entry.key,
+    pusherSeq: entry.pusher_seq,
+  };
+  const payload = JSON.parse(await open(keys, aad, entry.blob));
+  expect(payload.protocol).toBe(SYNC_PROTOCOL);
+  expect(JSON.parse(payload.record.data).policy.retryLimit).toBe(0);
   db.run("update entries set blob=? where key=?", [await seal(keys, aad, JSON.stringify(payload.record)), entry.key]);
-  await joinRelay(b, invite); expect(b.get("account", "acc")).toBeUndefined(); expect(relayStatus(b)?.skipped).toBe(1);
-  db.run("update entries set blob=? where key=?", [entry.blob, entry.key]); await reconcileRelay(b); expect(b.get("account", "acc")?.policy?.retryLimit).toBe(0);
+  await joinRelay(b, invite);
+  expect(b.get("account", "acc")).toBeUndefined();
+  expect(relayStatus(b)?.skipped).toBe(1);
+  db.run("update entries set blob=? where key=?", [entry.blob, entry.key]);
+  await reconcileRelay(b);
+  expect(b.get("account", "acc")?.policy?.retryLimit).toBe(0);
 });
 
 test("echo terminates", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   await joinRelay(b, await createRelay(a, r.url));
   a.put("account", "acc", { id: "acc", provider: "claude", label: "renamed" });
-  for (let i = 0; i < 3; i++) { await sync(a); await sync(b); }
+  for (let i = 0; i < 3; i++) {
+    await sync(a);
+    await sync(b);
+  }
   const before = [a.seq(), b.seq()];
-  await sync(a); await sync(b); await sync(a);
+  await sync(a);
+  await sync(b);
+  await sync(a);
   expect([a.seq(), b.seq()]).toEqual(before);
   expect(b.get("account", "acc")!.label).toBe("renamed");
 });
@@ -168,13 +283,18 @@ test("authentication: a wrong token is rejected and a different invite reaches a
 
 test("tampered entries are skipped without advancing replay state, and the diagnostic persists", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   const invite = await createRelay(a, r.url);
   const grp = await groupOf(invite);
   const db = r.groups.get(grp)!.sql.db;
   // Swap two blobs between keys, and bump one counter: all three fail authentication.
-  const rows = db.query("select key, blob, pusher_seq from entries where node = 'a' order by seq").all() as { key: string; blob: string; pusher_seq: number }[];
+  const rows = db.query("select key, blob, pusher_seq from entries where node = 'a' order by seq").all() as {
+    key: string;
+    blob: string;
+    pusher_seq: number;
+  }[];
   db.run("update entries set blob = ? where key = ?", [rows[1]!.blob, rows[0]!.key]);
   db.run("update entries set blob = ? where key = ?", [rows[0]!.blob, rows[1]!.key]);
   db.run("update entries set pusher_seq = pusher_seq + 5 where key = ?", [rows[2]!.key]);
@@ -185,8 +305,7 @@ test("tampered entries are skipped without advancing replay state, and the diagn
   await sync(b);
   expect(relayStatus(b)!.skipped).toBe(3); // a later clean page does not clear it
   // A forged higher counter can't be recovered by its owner: that is a reported conflict, not silent loss.
-  expect(reconcileRelay(a)).rejects.toThrow("counter conflict");
-  await Bun.sleep(10);
+  await expect(reconcileRelay(a)).rejects.toThrow("counter conflict");
   db.run("update entries set pusher_seq = pusher_seq - 5 where key = ?", [rows[2]!.key]);
   // With an honest relay again, a re-uploads everything; a full re-read on b clears the diagnostic.
   await reconcileRelay(a);
@@ -198,13 +317,16 @@ test("tampered entries are skipped without advancing replay state, and the diagn
 test("restoring a whole database (and the clock) recovers newer records and counters from the relay", async () => {
   const r = relay();
   const aFile = file("a");
-  const a = node("a", aFile), b = node("b");
+  const a = node("a", aFile),
+    b = node("b");
   seed(a);
   await joinRelay(b, await createRelay(a, r.url));
   const backup = snapshot(a);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "after-backup" });
-  await sync(a); await sync(b);
-  await stopRelay(a); a.close();
+  await sync(a);
+  await sync(b);
+  await stopRelay(a);
+  a.close();
 
   // The restored database has older records and older counters; its own checkpoint looks fine.
   const restored = node("a", backup);
@@ -214,31 +336,44 @@ test("restoring a whole database (and the clock) recovers newer records and coun
   expect(restored.get("account", "acc")!.label).toBe("after-backup");
   expect(relayStatus(restored)).toMatchObject({ pushError: undefined, reconciling: false });
   restored.put("project", "o/r", { id: "o/r", mcp: {} });
-  await sync(restored); await sync(b);
+  await sync(restored);
+  await sync(b);
   expect(relayStatus(restored)!.pushError).toBeUndefined();
   expect(b.get("project", "o/r")).toBeDefined();
 });
 
 test("a wiped group is repopulated from surviving nodes, tombstones included", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   const invite = await createRelay(a, r.url);
   await joinRelay(b, invite);
   a.del("mcp", "posthog");
-  await sync(a); await sync(b);
+  await sync(a);
+  await sync(b);
   const grp = await groupOf(invite);
   const oldGen = relayStatus(a)!.generation;
   // Recreate the group and push past the old cursor, so only the generation tells them apart.
-  expect((await fetch(`${r.url}/g/${grp}`, { method: "DELETE", headers: { authorization: `Bearer ${(await deriveKeys(parseInvite(invite).secret)).authToken}` } })).status).toBe(200);
+  expect(
+    (
+      await fetch(`${r.url}/g/${grp}`, {
+        method: "DELETE",
+        headers: { authorization: `Bearer ${(await deriveKeys(parseInvite(invite).secret)).authToken}` },
+      })
+    ).status,
+  ).toBe(200);
   const c = node("c");
   c.put("setting", "settings", { threshold: 50 });
   await joinRelay(c, invite);
   for (let i = 0; i < 20; i++) c.put("project", `p/${i}`, { id: `p/${i}`, mcp: {} });
   await sync(c);
-  await sync(a); await sync(a);
+  await sync(a);
+  await sync(a);
   expect(relayStatus(a)!.generation).not.toBe(oldGen);
-  await sync(b); await sync(b); await sync(c);
+  await sync(b);
+  await sync(b);
+  await sync(c);
   expect(c.record("mcp", "posthog")!.deleted).toBe(1);
   expect(c.get("credential", "acc")).toEqual(a.get("credential", "acc")!);
   expect(b.get("project", "p/19")).toBeDefined();
@@ -246,15 +381,24 @@ test("a wiped group is repopulated from surviving nodes, tombstones included", a
 
 test("mixed group: a Tailscale pair and a relay pair converge through the middle node", async () => {
   const r = relay();
-  const a = node("a"), b = node("b"), c = node("c");
-  const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(a, () => { })).fetch });
+  const a = node("a"),
+    b = node("b"),
+    c = node("c");
+  const server = Bun.serve({
+    port: 0,
+    fetch: new Hono().route(
+      "/peer",
+      peerRoutes(a, () => {}),
+    ).fetch,
+  });
   servers.push(server);
   a.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
   b.db.run("insert into peers values ('a', ?, 'tok', 0, null)", [`http://127.0.0.1:${server.port}`]);
   await joinRelay(c, await createRelay(b, r.url));
   a.put("account", "from-a", { id: "from-a", provider: "codex", label: "a's" });
   await pullPeer(b, peers(b)[0]!);
-  await sync(b); await sync(c);
+  await sync(b);
+  await sync(c);
   expect(c.get("account", "from-a")!.label).toBe("a's");
   expect(via(b, "a")).toEqual(["tailnet"]);
   expect(via(b, "c")).toEqual(["relay"]);
@@ -262,9 +406,14 @@ test("mixed group: a Tailscale pair and a relay pair converge through the middle
 
 test("large stores page and chunk without omissions, including writes made during an upload", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
-  a.transaction(() => { for (let i = 0; i < 1300; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} }); });
-  r.ctl.beforePush = () => { if (r.ctl.pushes === 1) a.put("account", "late", { id: "late", provider: "claude", label: "written mid-upload" }); };
+  const a = node("a"),
+    b = node("b");
+  a.transaction(() => {
+    for (let i = 0; i < 1300; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} });
+  });
+  r.ctl.beforePush = () => {
+    if (r.ctl.pushes === 1) a.put("account", "late", { id: "late", provider: "claude", label: "written mid-upload" });
+  };
   const invite = await createRelay(a, r.url);
   expect(r.ctl.pushes).toBeGreaterThanOrEqual(3);
   await sync(a);
@@ -295,7 +444,8 @@ test("a lost push response is retried byte for byte without a second write", asy
 test("a crash after persisting a chunk resumes after restart without counter conflicts", async () => {
   const r = relay();
   const aFile = file("a");
-  const a = node("a", aFile), b = node("b");
+  const a = node("a", aFile),
+    b = node("b");
   const invite = await createRelay(a, r.url);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "x" });
   r.ctl.mode = "drop"; // accepted by the relay, response lost: then the process dies
@@ -311,13 +461,13 @@ test("a crash after persisting a chunk resumes after restart without counter con
 test("rotation resumes the same invite after interruption; failed cleanup stays visible", async () => {
   const r = relay();
   const aFile = file("a");
-  const a = node("a", aFile), b = node("b");
+  const a = node("a", aFile),
+    b = node("b");
   seed(a);
   const old = await createRelay(a, r.url);
   await joinRelay(b, old);
   r.ctl.mode = "down";
-  expect(rotateRelay(a)).rejects.toThrow();
-  await Bun.sleep(10);
+  await expect(rotateRelay(a)).rejects.toThrow();
   const pendingInvite = JSON.parse(a.local("relay:rotation")!).invite as string;
   expect(relayInvite(a)).toBe(old); // not switched before seeding succeeds
   expect(relayStatus(a)!.rotating).toBe(true);
@@ -339,18 +489,26 @@ test("rotation resumes the same invite after interruption; failed cleanup stays 
   await leaveRelay(b);
   await joinRelay(b, pendingInvite);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "after rotation" });
-  await sync(a); await sync(b);
+  await sync(a);
+  await sync(b);
   expect(b.get("account", "acc")!.label).toBe("after rotation");
 
   r.ctl.mode = "ok";
   expect((await cleanupRelay(a, false)).cleanupPending).toBe(false);
   const oldGroup = await groupOf(old);
-  expect((await fetch(`${r.url}/g/${oldGroup}/nodes`, { headers: { authorization: `Bearer ${(await deriveKeys(parseInvite(old).secret)).authToken}` } })).status).toBe(404);
+  expect(
+    (
+      await fetch(`${r.url}/g/${oldGroup}/nodes`, {
+        headers: { authorization: `Bearer ${(await deriveKeys(parseInvite(old).secret)).authToken}` },
+      })
+    ).status,
+  ).toBe(404);
 });
 
 test("a pending rotation never uploads to the old group, even after a restart", async () => {
   const r = relay();
-  const a = node("a", file("a")), b = node("b");
+  const a = node("a", file("a")),
+    b = node("b");
   const old = await createRelay(a, r.url);
   await joinRelay(b, old);
   r.ctl.mode = "down";
@@ -359,7 +517,13 @@ test("a pending rotation never uploads to the old group, even after a restart", 
   r.ctl.blocked = await groupOf(JSON.parse(a.local("relay:rotation")!).invite); // the new group stays unreachable
   b.put("account", "fromB", { id: "fromB", provider: "claude", label: "b" });
   await sync(b);
-  a.put("credential", "acc", { accountId: "acc", accessToken: "changed-during-rotation", refreshToken: "rt", expiresAt: Date.now() + 3_600_000, holder: "a" });
+  a.put("credential", "acc", {
+    accountId: "acc",
+    accessToken: "changed-during-rotation",
+    refreshToken: "rt",
+    expiresAt: Date.now() + 3_600_000,
+    holder: "a",
+  });
   const restarted = node("a", snapshot(a));
   const before = head(r, await groupOf(old));
   await sync(restarted);
@@ -370,13 +534,17 @@ test("a pending rotation never uploads to the old group, even after a restart", 
 
 test("constant local writes cannot keep the upload from reaching the download", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   const invite = await createRelay(a, r.url);
   await joinRelay(b, invite);
   b.put("account", "fromB", { id: "fromB", provider: "claude", label: "b" });
   await sync(b);
   let i = 0;
-  r.ctl.beforePush = () => { const id = `o/w${i++}`; a.put("project", id, { id, mcp: {} }); };
+  r.ctl.beforePush = () => {
+    const id = `o/w${i++}`;
+    a.put("project", id, { id, mcp: {} });
+  };
   a.put("project", "o/first", { id: "o/first", mcp: {} });
   const start = r.ctl.pushes;
   await sync(a);
@@ -395,7 +563,10 @@ test("a queued wipe does not delete a group that was rejoined", async () => {
   await joinRelay(a, invite, true);
   expect((await cleanupRelay(a, false)).cleanupPending).toBe(false);
   const { authToken } = await deriveKeys(parseInvite(invite).secret);
-  expect((await fetch(`${r.url}/g/${await groupOf(invite)}/nodes`, { headers: { authorization: `Bearer ${authToken}` } })).status).toBe(200);
+  expect(
+    (await fetch(`${r.url}/g/${await groupOf(invite)}/nodes`, { headers: { authorization: `Bearer ${authToken}` } }))
+      .status,
+  ).toBe(200);
   expect(relayInvite(a)).toBe(invite);
 });
 
@@ -416,31 +587,47 @@ test("a failed leave --wipe does not restore membership", async () => {
 
 test("rotation cannot revoke a removed machine's Tailscale path", async () => {
   const r = relay();
-  const a = node("a"), b = node("b"), c = node("c");
+  const a = node("a"),
+    b = node("b"),
+    c = node("c");
   seed(a);
   const invite = await createRelay(a, r.url);
   await joinRelay(b, invite);
   await joinRelay(c, invite);
-  const server = Bun.serve({ port: 0, fetch: new Hono().route("/peer", peerRoutes(b, () => { })).fetch });
+  const server = Bun.serve({
+    port: 0,
+    fetch: new Hono().route(
+      "/peer",
+      peerRoutes(b, () => {}),
+    ).fetch,
+  });
   servers.push(server);
   b.db.run("insert into peers values ('c', 'http://unused', 'tok', 0, null)");
   c.db.run("insert into peers values ('b', ?, 'tok', 0, null)", [`http://127.0.0.1:${server.port}`]);
   await sync(a); // a now sees c through the relay
 
   // Remove c through the API: the relay path forces a rotation, which is local-only.
-  const ctx = makeCtx(a); const handler = app(ctx);
+  const ctx = makeCtx(a);
+  const handler = app(ctx);
   a.setLocal("adminToken", "admin");
-  const remote = await handler.fetch(new Request("http://x/api/nodes/c", { method: "DELETE", headers: { authorization: "Bearer admin" } }), { listener: "tailnet" });
+  const remote = await handler.fetch(
+    new Request("http://x/api/nodes/c", { method: "DELETE", headers: { authorization: "Bearer admin" } }),
+    { listener: "tailnet" },
+  );
   expect(remote.status).toBe(403);
-  const removed = await handler.fetch(new Request("http://127.0.0.1/api/nodes/c", { method: "DELETE", headers: { host: "127.0.0.1" } }), { listener: "loopback" });
-  const body = await removed.json() as { rotated: boolean; command: string };
+  const removed = await handler.fetch(
+    new Request("http://127.0.0.1/api/nodes/c", { method: "DELETE", headers: { host: "127.0.0.1" } }),
+    { listener: "loopback" },
+  );
+  const body = (await removed.json()) as { rotated: boolean; command: string };
   expect(body.rotated).toBe(true);
   await ctx.gateway.close();
 
   await leaveRelay(b);
   await joinRelay(b, body.command.split(" ").at(-1)!);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "secret after rotation" });
-  await sync(a); await sync(b);
+  await sync(a);
+  await sync(b);
   await sync(c);
   expect(c.get("account", "acc")!.label).not.toBe("secret after rotation"); // the old group is cut off
   await pullPeer(c, peers(c)[0]!);
@@ -449,13 +636,21 @@ test("rotation cannot revoke a removed machine's Tailscale path", async () => {
 
 test("syncAll delivers newer credentials over the relay; a rejected upload does not block downloads", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   const invite = await createRelay(a, r.url);
   await joinRelay(b, invite);
   const grp = await groupOf(invite);
-  r.groups.get(grp)!.core["deps"].config.maxGroupBytes = Number((r.groups.get(grp)!.sql.db.query("select v from meta where k = 'bytes'").get() as { v: number }).v) + 20_000;
-  b.put("mcp", "huge", { id: "huge", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(60_000) } });
+  r.groups.get(grp)!.core["deps"].config.maxGroupBytes =
+    Number((r.groups.get(grp)!.sql.db.query("select v from meta where k = 'bytes'").get() as { v: number }).v) + 20_000;
+  b.put("mcp", "huge", {
+    id: "huge",
+    template: "custom-http",
+    transport: "http",
+    url: "https://x",
+    headers: { pad: "p".repeat(60_000) },
+  });
   await sync(b);
   expect(relayStatus(b)!.pushError).toContain("storage");
   a.put("credential", "acc", { ...a.get("credential", "acc")!, accessToken: "sk-ant-refreshed" });
@@ -467,14 +662,18 @@ test("syncAll delivers newer credentials over the relay; a rejected upload does 
 
 test("after a sleep, the relay is retried within seconds even if it failed for hours before", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   let T = Date.now();
   a.now = () => T;
   const invite = await createRelay(a, r.url);
   await joinRelay(b, invite);
   // Awake while the relay is unreachable for half an hour: retries back off to their ten-minute cap.
   r.ctl.mode = "down";
-  for (let i = 0; i < 120; i++) { T += 15_000; await relaySync(a); }
+  for (let i = 0; i < 120; i++) {
+    T += 15_000;
+    await relaySync(a);
+  }
   // Asleep overnight, and awake a moment before the network is: the first attempt fails too.
   T += 8 * 3_600_000;
   await relaySync(a);
@@ -486,29 +685,62 @@ test("after a sleep, the relay is retried within seconds even if it failed for h
   expect(a.get("account", "fresh")).toBeDefined();
 });
 
-test("an oversized record blocks the upload checkpoint and is reported", async () => {
+test("a rotation that cannot create its new group says why uploads wait", async () => {
   const r = relay();
-  const a = node("a");
-  await createRelay(a, r.url);
-  const before = relayStatus(a)!.pushed;
-  a.put("mcp", "big", { id: "big", template: "custom-http", transport: "http", url: "https://x", headers: { pad: "p".repeat(1_200_000) } });
+  const a = node("a"),
+    b = node("b");
+  await joinRelay(b, await createRelay(a, r.url));
+  r.config.newGroupsDisabled = true; // the operator stops new groups, then a machine is removed
+  await expect(rotateRelay(a)).rejects.toThrow();
   await sync(a);
+  expect(relayStatus(a)).toMatchObject({
+    rotating: true,
+    pushError: expect.stringContaining("Uploads wait for the new relay group"),
+  });
+});
+
+test("an oversized record is left out and reported, and the records after it still reach the group", async () => {
+  const r = relay();
+  const a = node("a"),
+    b = node("b");
+  const invite = await createRelay(a, r.url);
+  await joinRelay(b, invite);
+  a.put("mcp", "big", {
+    id: "big",
+    template: "custom-http",
+    transport: "http",
+    url: "https://x",
+    headers: { pad: "p".repeat(1_200_000) },
+  });
+  seed(a);
+  await sync(a);
+  await sync(b);
   expect(relayStatus(a)!.pushError).toContain("mcp big");
-  expect(relayStatus(a)!.pushed).toBe(before);
+  expect(b.get("credential", "acc")?.accessToken).toBe("sk-ant-secret-token");
+  expect(b.get("mcp", "big")).toBeUndefined();
+  // Once it fits again, it goes up and the report clears.
+  a.put("mcp", "big", { ...a.get("mcp", "big")!, headers: {} });
+  await sync(a);
+  await sync(b);
+  expect(relayStatus(a)!.pushError).toBeUndefined();
+  expect(b.get("mcp", "big")).toBeDefined();
 });
 
 test("a deployment key is required, configured separately, and never exposed", async () => {
   const r = relay({ relayKey: "deploy-secret" });
   const a = node("a");
-  expect(createRelay(a, r.url)).rejects.toThrow("service key");
-  await Bun.sleep(10);
+  await expect(createRelay(a, r.url)).rejects.toThrow("service key");
   expect(relayInvite(a)).toBeUndefined();
   setServiceKey(a, "deploy-secret");
   const invite = await createRelay(a, r.url);
   expect(invite).not.toContain("deploy-secret");
   expect(JSON.stringify(relayStatus(a))).not.toContain("deploy-secret");
   const ctx = makeCtx(a);
-  const status = await (await app(ctx).fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), { listener: "loopback" })).text();
+  const status = await (
+    await app(ctx).fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), {
+      listener: "loopback",
+    })
+  ).text();
   await ctx.gateway.close();
   expect(status).not.toContain("deploy-secret");
   expect(status).not.toContain(invite.split(".")[2]!);
@@ -516,18 +748,40 @@ test("a deployment key is required, configured separately, and never exposed", a
 
 test("API: pairing methods, single-field join, and loopback-only secrets", async () => {
   const r = relay();
-  const a = node("a"), b = node("b");
+  const a = node("a"),
+    b = node("b");
   seed(a);
   a.setLocal("adminToken", "admin");
-  const ctxA = makeCtx(a), ctxB = makeCtx(b);
-  const call = (handler: ReturnType<typeof app>, path: string, body?: unknown, listener: "loopback" | "tailnet" = "loopback") =>
-    handler.fetch(new Request(`http://127.0.0.1${path}`, { method: "POST", headers: { host: "127.0.0.1", authorization: "Bearer admin", ...(body ? { "content-type": "application/json" } : {}) }, body: body ? JSON.stringify(body) : undefined }), { listener });
-  const handlerA = app(ctxA), handlerB = app(ctxB);
+  const ctxA = makeCtx(a),
+    ctxB = makeCtx(b);
+  const call = (
+    handler: ReturnType<typeof app>,
+    path: string,
+    body?: unknown,
+    listener: "loopback" | "tailnet" = "loopback",
+  ) =>
+    handler.fetch(
+      new Request(`http://127.0.0.1${path}`, {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1",
+          authorization: "Bearer admin",
+          ...(body ? { "content-type": "application/json" } : {}),
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      }),
+      { listener },
+    );
+  const handlerA = app(ctxA),
+    handlerB = app(ctxB);
   expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
   expect(relayInvite(a)).toBeUndefined();
   // The name lands in a shell line the user pastes, and must not collide with an existing node.
-  for (const name of ["Mac Mini", "x;rm -rf ~", a.nodeId]) expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
-  const paired = await (await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })).json() as { command: string };
+  for (const name of ["Mac Mini", "x;rm -rf ~", a.nodeId])
+    expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
+  const paired = (await (
+    await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })
+  ).json()) as { command: string };
   expect(paired.command).toContain("| AGENTGATE_NAME=mac-mini sh -s -- join agr1.");
   const bad = await call(handlerB, "/api/nodes/join", { command: `${paired.command} && curl evil` });
   expect(bad.status).toBe(400);
@@ -536,13 +790,24 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
   expect(b.get("account", "acc")).toBeDefined();
   expect((await call(handlerA, "/api/relay/rotate", undefined, "tailnet")).status).toBe(403);
   // A Tailscale join URL is an origin: it cannot be aimed at this daemon's own routes.
-  for (const url of ["http://127.0.0.1:7878/api/relay/rotate?x=", "http://127.0.0.1:7878/api/relay/rotate#", "http://127.0.0.1:7878/api"])
-    expect(join(a, url, "amber-anchor-apple-arrow-basil-beacon-birch", "http://127.0.0.1:7879")).rejects.toThrow("origin");
+  for (const url of [
+    "http://127.0.0.1:7878/api/relay/rotate?x=",
+    "http://127.0.0.1:7878/api/relay/rotate#",
+    "http://127.0.0.1:7878/api",
+  ])
+    await expect(join(a, url, "amber-anchor-apple-arrow-basil-beacon-birch", "http://127.0.0.1:7879")).rejects.toThrow(
+      "origin",
+    );
   await sync(a);
-  const status = await (await handlerA.fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), { listener: "loopback" })).json() as any;
+  const status = (await (
+    await handlerA.fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), {
+      listener: "loopback",
+    })
+  ).json()) as any;
   expect(status.relay).toMatchObject({ url: r.url, hosted: false, reconciling: false });
   expect(status.nodes.find((n: any) => n.id === "b")?.via).toEqual(["relay"]);
-  await ctxA.gateway.close(); await ctxB.gateway.close();
+  await ctxA.gateway.close();
+  await ctxB.gateway.close();
 });
 
 test("relay work is serialized: leave waits for in-flight work, other processes hit the shared lease, shutdown cancels", async () => {
@@ -555,14 +820,24 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   const inFlight = relaySync(a, { force: true });
   await leaveRelay(a);
   await inFlight;
-  for (const key of ["relay:invite", "relay:pushed", "relay:cursor", "relay:generation"]) expect(a.local(key)).toBeUndefined();
+  for (const key of ["relay:invite", "relay:pushed", "relay:cursor", "relay:generation"])
+    expect(a.local(key)).toBeUndefined();
 
   const other = node("a", aFile); // a second process on the same database
   let release!: () => void;
-  const held = withRelay(a, () => new Promise<void>((resolve) => { release = resolve; }));
-  await Bun.sleep(20);
-  expect(withRelay(other, async () => 1, 0)).rejects.toBeInstanceOf(RelayBusy);
-  release(); await held;
+  const holding = Promise.withResolvers<void>();
+  const held = withRelay(
+    a,
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve;
+        holding.resolve();
+      }),
+  );
+  await holding.promise;
+  await expect(withRelay(other, async () => 1, 0)).rejects.toBeInstanceOf(RelayBusy);
+  release();
+  await held;
   expect(await withRelay(other, async () => 2, 1000)).toBe(2);
 
   const c = node("c");
@@ -576,7 +851,7 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   expect(Date.now() - started).toBeLessThan(2000);
 });
 
-/** Published in docs/operations.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
+/** Published in docs/operations/relay.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
 const VECTORS = {
   groupId: "8f6ba714a69c73f1fbdcd8efe342493a",
   authToken: "ZxB1Uo3DlItacW62HpLUewhYoxYs8G2M_1fl8d29AnE",

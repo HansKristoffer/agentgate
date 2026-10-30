@@ -1,13 +1,12 @@
 import type { Provider } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 
-export const field = (form: FormData, name: string) =>
-  String(form.get(name) ?? "").trim();
+export const field = (form: FormData, name: string) => String(form.get(name) ?? "").trim();
 export const idPath = (id: string) => encodeURIComponent(id);
-export const providerName = (p: Provider) =>
-  ({ claude: "Claude", codex: "Codex", cursor: "Cursor" })[p];
-export const providerIcon = (p: Provider) =>
-  ({ claude: "✳", codex: "◎", cursor: "◆" })[p];
+export const providerName = (p: Provider) => ({ claude: "Claude", codex: "Codex", cursor: "Cursor" })[p];
+/** The coding tool whose sessions use a provider's accounts. */
+export const toolName = (p: Provider) => ({ claude: "Claude Code", codex: "Codex", cursor: "Cursor" })[p];
+export const providerIcon = (p: Provider) => ({ claude: "✳", codex: "◎", cursor: "◆" })[p];
 export const relative = (at?: number) =>
   !at
     ? "Not yet"

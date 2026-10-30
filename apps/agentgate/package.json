@@ -7,7 +7,7 @@
   },
   "scripts": {
     "start": "bun src/cli.ts serve",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "bun check",
     "test": "bun test"
   },
   "dependencies": {
@@ -15,7 +15,9 @@
     "@modelcontextprotocol/client": "^2.4.0",
     "@modelcontextprotocol/core": "^2.4.0",
     "@modelcontextprotocol/server": "^2.4.0",
+    "hanzio": "^3.3.0",
     "hono": "^4.13.12",
+    "llm-usage-extraction": "^0.2.0",
     "zod": "^4.6.5"
   }
 }

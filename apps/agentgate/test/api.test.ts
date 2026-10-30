@@ -1,17 +1,19 @@
 import { revision } from "../src/configuration.ts";
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, test } from "bun:test";
 import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
-import { choose } from "../src/llm/pool.ts";
+import { route } from "../src/llm/routing.ts";
 import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
 import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
-import { repos, tmp } from "./fixtures/git.ts";
+import { repos, tmp, removeTmp } from "./fixtures/git.ts";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+
+afterAll(removeTmp);
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -24,7 +26,9 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
   const ctx = makeCtx(s, options),
     handler = app(ctx);
   cleanup.push(async () => {
-    ctx.abort.abort(); ctx.skills.close(); ctx.imports.close();
+    ctx.abort.abort();
+    ctx.skills.close();
+    ctx.imports.close();
     await ctx.imports.drain();
     await ctx.gateway.close();
     s.close();
@@ -54,32 +58,60 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
 test("proxy management returns validated capabilities, revision-safe patches, and filtered diagnostics", async () => {
   const { s, call } = fixture();
   s.put("account", "a", { id: "a", provider: "claude", label: "a", priority: 4 });
-  s.put("credential", "a", { accountId: "a", accessToken: "private-token", refreshToken: "private-refresh", holder: "test", expiresAt: s.now() + 3600000 });
-  const initial = await (await call("/api/status")).json() as Status;
+  s.put("credential", "a", {
+    accountId: "a",
+    accessToken: "private-token",
+    refreshToken: "private-refresh",
+    holder: "test",
+    expiresAt: s.now() + 3600000,
+  });
+  const initial = (await (await call("/api/status")).json()) as Status;
   expect(statusSchema.safeParse(initial).success).toBe(true);
   expect(initial.daemon?.providers.claude).toEqual({ quota: true, models: true, session: true, probe: true });
   expect(initial.daemon?.providers.codex).toEqual(initial.daemon?.providers.claude);
   expect(initial.daemon?.providers.cursor).toEqual(initial.daemon?.providers.claude);
-  const savedResponse = await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { strategy: "priority", retryLimit: 0 } });
+  const savedResponse = await call("/api/settings", "PATCH", {
+    revision: initial.settingsRevision,
+    patch: { strategy: "priority", retryLimit: 0 },
+  });
   expect(savedResponse.status).toBe(200);
-  const saved = await savedResponse.json() as { strategy: string; retryLimit: number; revision: string };
+  const saved = (await savedResponse.json()) as { strategy: string; retryLimit: number; revision: string };
   expect(saved).toMatchObject({ strategy: "priority", retryLimit: 0, revision: revision(s, "setting", "settings") });
   expect(s.get("setting", "settings")).not.toHaveProperty("revision");
-  expect((await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { threshold: 50 } })).status).toBe(409);
+  expect(
+    (await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { threshold: 50 } })).status,
+  ).toBe(409);
   expect((await call("/api/accounts/a", "PATCH", { label: "changed" })).status).toBe(409);
   const accountRevision = revision(s, "account", "a");
-  expect((await call("/api/accounts/a", "PATCH", { revision: accountRevision, policy: { retryLimit: 0, excludeModels: ["opus"] } })).status).toBe(200);
+  expect(
+    (
+      await call("/api/accounts/a", "PATCH", {
+        revision: accountRevision,
+        policy: { retryLimit: 0, excludeModels: ["opus"] },
+      })
+    ).status,
+  ).toBe(200);
   expect(s.get("account", "a")).toMatchObject({ label: "a", priority: 4, enabled: true });
   expect((await call("/api/accounts/a", "PATCH", { revision: accountRevision, label: "stale" })).status).toBe(409);
   expect((await call("/api/proxy/route?provider=claude&model=opus")).status).toBe(200);
-  const t = new Telemetry(s, "claude"); t.models("sonnet", "sonnet"); t.attempt("a", "priority"); t.headers(200); t.finish("success");
-  const page = await (await call("/api/requests?provider=claude&outcome=success&search=sonnet&limit=1")).json() as any;
+  const t = new Telemetry(s, "claude");
+  t.models("sonnet", "sonnet");
+  t.attempt("a", "priority");
+  t.headers(200);
+  t.finish("success");
+  const page = (await (
+    await call("/api/requests?provider=claude&outcome=success&search=sonnet&limit=1")
+  ).json()) as any;
   expect(page.requests.map((r: any) => r.id)).toEqual([t.request.id]);
-  const detail = await (await call(`/api/requests/${t.request.id}`)).json(); expect(JSON.stringify(detail)).not.toContain("private-token");
-  expect((await call("/api/requests?limit=1000")).status).toBe(400); expect((await call("/api/requests/missing")).status).toBe(404);
+  const detail = await (await call(`/api/requests/${t.request.id}`)).json();
+  expect(JSON.stringify(detail)).not.toContain("private-token");
+  expect((await call("/api/requests?limit=1000")).status).toBe(400);
+  expect((await call("/api/requests/missing")).status).toBe(404);
   expect((await call("/api/accounts/a/verify", "POST", { probe: true })).status).toBe(400);
-  const batch = await (await call("/api/accounts/batch", "POST", { ids: ["a", "missing"], action: "disable" })).json() as any[];
-  expect(batch.map(r => r.ok)).toEqual([true, false]);
+  const batch = (await (
+    await call("/api/accounts/batch", "POST", { ids: ["a", "missing"], action: "disable" })
+  ).json()) as any[];
+  expect(batch.map((r) => r.ok)).toEqual([true, false]);
 });
 
 test("proxy management retains authentication and browser-origin guards", async () => {
@@ -89,12 +121,18 @@ test("proxy management retains authentication and browser-origin guards", async 
     expect((await call(path, "GET", undefined, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(200);
     expect((await call(path, "GET", undefined, "loopback", { origin: "https://example.com" })).status).toBe(403);
   }
-  expect((await call("/api/accounts/batch", "POST", { ids: ["a"], action: "disable" }, "loopback", { origin: "https://example.com" })).status).toBe(403);
+  expect(
+    (
+      await call("/api/accounts/batch", "POST", { ids: ["a"], action: "disable" }, "loopback", {
+        origin: "https://example.com",
+      })
+    ).status,
+  ).toBe(403);
 });
 
 test("cancelled native OAuth attempts cannot finish later", async () => {
   const { call } = fixture();
-  const login = await (await call("/api/accounts/login", "POST", { provider: "claude" })).json() as { state: string };
+  const login = (await (await call("/api/accounts/login", "POST", { provider: "claude" })).json()) as { state: string };
   expect((await call(`/api/accounts/login/${login.state}`, "DELETE")).status).toBe(200);
   expect((await call("/api/accounts/login/finish", "POST", { state: login.state, code: "unused" })).status).toBe(400);
 });
@@ -106,49 +144,45 @@ test("subscription selection switches each provider independently and keeps quot
       const id = `${provider}-${label}`;
       s.put("account", id, { id, provider, label });
       s.put("credential", id, {
-        accountId: id, accessToken: id, refreshToken: id,
-        expiresAt: s.now() + 3600000, holder: "test",
+        accountId: id,
+        accessToken: id,
+        refreshToken: id,
+        expiresAt: s.now() + 3600000,
+        holder: "test",
       });
     }
     s.setLocal(`active:${provider}`, `${provider}-personal`);
     expect((await call(`/api/accounts/${provider}-work`, "PATCH", { pinned: true })).status).toBe(200);
-    expect(choose(s, provider, undefined)?.id).toBe(`${provider}-work`);
+    expect(route(s, provider).account).toBe(`${provider}-work`);
   }
   // Switching Claude leaves the Codex preference intact and replaces the old pin.
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: true })).status).toBe(200);
   expect(s.get("account", "claude-work")?.pinned).toBe(false);
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-work");
+  expect(route(s, "codex").account).toBe("codex-work");
   // A selected subscription at its limit falls back without clearing the preference.
   s.put("usage", "codex-work", {
-    accountId: "codex-work", windows: [], status: "exhausted",
-    exhaustedUntil: s.now() + 60000, observedAt: s.now(), observedBy: "test",
+    accountId: "codex-work",
+    windows: [],
+    status: "exhausted",
+    exhaustedUntil: s.now() + 60000,
+    observedAt: s.now(),
+    observedBy: "test",
   });
-  expect(choose(s, "codex", undefined)?.id).toBe("codex-personal");
+  expect(route(s, "codex").account).toBe("codex-personal");
   expect(s.get("account", "codex-work")?.pinned).toBe(true);
   // Automatic selection clears the pin and respects the account used most recently.
   s.setLocal("active:claude", "claude-work");
   expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: false })).status).toBe(200);
-  expect(choose(s, "claude", undefined)?.id).toBe("claude-work");
-  const status = await (await call("/api/status")).json() as Status;
-  expect(status.accounts.filter(a => a.account.pinned).map(a => a.account.id)).toEqual(["codex-work"]);
+  expect(route(s, "claude").account).toBe("claude-work");
+  const status = (await (await call("/api/status")).json()) as Status;
+  expect(status.accounts.filter((a) => a.account.pinned).map((a) => a.account.id)).toEqual(["codex-work"]);
 });
 
 test("web pages, assets, and cookie login are removed", async () => {
   const { call } = fixture();
-  for (const path of [
-    "/",
-    "/accounts",
-    "/servers",
-    "/projects",
-    "/nodes",
-    "/settings",
-    "/login",
-    "/style.css",
-  ])
+  for (const path of ["/", "/accounts", "/servers", "/projects", "/nodes", "/settings", "/login", "/style.css"])
     expect((await call(path)).status).toBe(404);
-  expect((await call("/login", "POST", { token: "admin-secret" })).status).toBe(
-    404,
-  );
+  expect((await call("/login", "POST", { token: "admin-secret" })).status).toBe(404);
   expect(
     (
       await call("/api/status", "GET", undefined, "tailnet", {
@@ -182,28 +216,12 @@ test("browser-origin reads, JSON writes and preflights are rejected before any s
     ];
     for (const headers of browserHeaders) {
       const extra = { ...headers, authorization: "Bearer admin-secret" };
+      expect((await call("/api/status", "GET", undefined, listener, extra)).status).toBe(403);
       expect(
-        (await call("/api/status", "GET", undefined, listener, extra)).status,
-      ).toBe(403);
-      expect(
-        (
-          await call(
-            "/api/servers",
-            "POST",
-            { id: "evil", command: "touch /tmp/evil" },
-            listener,
-            extra,
-          )
-        ).status,
+        (await call("/api/servers", "POST", { id: "evil", command: "touch /tmp/evil" }, listener, extra)).status,
       ).toBe(403);
     }
-    const preflight = await call(
-      "/api/servers",
-      "OPTIONS",
-      undefined,
-      listener,
-      { origin: "https://evil.test" },
-    );
+    const preflight = await call("/api/servers", "OPTIONS", undefined, listener, { origin: "https://evil.test" });
     expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
   }
   expect(s.list("mcp")).toEqual([]);
@@ -252,24 +270,16 @@ test("status contains native data and omits provider, peer and MCP secrets", asy
 
 test("native operations validate JSON and update accounts, projects and server references together", async () => {
   const { s, call } = fixture();
-  for (const id of ["a", "b"])
-    s.put("account", id, { id, label: id, provider: "codex" });
-  expect(
-    (await call("/api/accounts/a", "PATCH", { pinned: true })).status,
-  ).toBe(200);
+  for (const id of ["a", "b"]) s.put("account", id, { id, label: id, provider: "codex" });
+  expect((await call("/api/accounts/a", "PATCH", { pinned: true })).status).toBe(200);
   expect(
     (await call("/api/accounts/b", "PATCH", { pinned: true, priority: 10, revision: revision(s, "account", "b") }))
       .status,
   ).toBe(200);
   expect(s.get("account", "a")?.pinned).toBe(false);
-  expect(
-    (await call("/api/accounts/b", "PATCH", { provider: "claude" })).status,
-  ).toBe(400);
+  expect((await call("/api/accounts/b", "PATCH", { provider: "claude" })).status).toBe(400);
   expect(s.get("account", "b")?.provider).toBe("codex");
-  expect(
-    (await call("/api/servers", "POST", { id: "fs", target: "filesystem" }))
-      .status,
-  ).toBe(201);
+  expect((await call("/api/servers", "POST", { id: "fs", target: "filesystem" })).status).toBe(201);
   expect(
     (
       await call("/api/projects", "PUT", {
@@ -288,9 +298,7 @@ test("native operations validate JSON and update accounts, projects and server r
     ).status,
   ).toBe(400);
   expect(s.get("project", "other/repo")).toBeUndefined();
-  expect(
-    (await call("/api/servers/fs/rename", "POST", { id: "files" })).status,
-  ).toBe(200);
+  expect((await call("/api/servers/fs/rename", "POST", { id: "files" })).status).toBe(200);
   expect(s.get("project", "owner/repo")?.mcp).toEqual({ files: "files" });
   expect((await call("/api/servers/files", "DELETE")).status).toBe(200);
   expect(s.get("project", "owner/repo")?.mcp).toEqual({});
@@ -307,9 +315,7 @@ test("local backup round trips and remote clients cannot export secrets, restore
     expiresAt: Date.now() + 3600000,
     holder: "test",
   });
-  expect(await (await call("/api/backup")).text()).not.toContain(
-    "access-secret",
-  );
+  expect(await (await call("/api/backup")).text()).not.toContain("access-secret");
   const backup = await (await call("/api/backup?secrets=true")).json();
   s.del("account", "a");
   s.del("credential", "a");
@@ -347,7 +353,7 @@ test("malformed JSON and form submissions get clear errors without changing sett
   ] as const) {
     const response = await handler.fetch(
       new Request("http://127.0.0.1:7878/api/settings", {
-        method: "PUT",
+        method: "PATCH",
         body,
         headers: { host: "127.0.0.1:7878", "content-type": type },
       }),
@@ -363,10 +369,17 @@ test("Claude Desktop endpoints are local only", async () => {
   const { host } = await import("../src/desktop.ts");
   const installed = host.installed;
   host.installed = () => false; // never read this Mac's real Claude Desktop
-  cleanup.push(async () => { host.installed = installed; });
+  cleanup.push(async () => {
+    host.installed = installed;
+  });
   const { call } = fixture();
   const remote = { authorization: "Bearer admin-secret" };
-  for (const [path, method, body] of [["/api/desktop", "GET"], ["/api/desktop/use", "POST", { accountUuid: "x" }], ["/api/desktop/gateway", "POST", { on: true }], ["/api/desktop/add", "POST", {}]] as const)
+  for (const [path, method, body] of [
+    ["/api/desktop", "GET"],
+    ["/api/desktop/use", "POST", { accountUuid: "x" }],
+    ["/api/desktop/gateway", "POST", { on: true }],
+    ["/api/desktop/add", "POST", {}],
+  ] as const)
     expect((await call(path, method, body, "tailnet", remote)).status).toBe(403);
   const local = await call("/api/desktop");
   expect(local.status).toBe(200);
@@ -377,11 +390,20 @@ test("Claude Desktop endpoints are local only", async () => {
 test("signed-in Claude Code and Codex logins are detected by identity only, and pre-selected at sign-in", async () => {
   const { mkdtempSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const claude = await import("../src/llm/claude.ts"), codex = await import("../src/llm/codex.ts");
+  const claude = await import("../src/llm/claude.ts"),
+    codex = await import("../src/llm/codex.ts");
   const dir = mkdtempSync(join((await import("node:os")).tmpdir(), "agentgate-detect-"));
-  writeFileSync(join(dir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "a@b.dk", organizationType: "claude_max" } }));
-  const claims = Buffer.from(JSON.stringify({ email: "c@d.dk", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" } })).toString("base64url");
-  writeFileSync(join(dir, "auth.json"), JSON.stringify({ tokens: { id_token: `x.${claims}.y`, refresh_token: "secret" } }));
+  writeFileSync(
+    join(dir, ".claude.json"),
+    JSON.stringify({ oauthAccount: { emailAddress: "a@b.dk", organizationType: "claude_max" } }),
+  );
+  const claims = Buffer.from(
+    JSON.stringify({ email: "c@d.dk", "https://api.openai.com/auth": { chatgpt_plan_type: "pro" } }),
+  ).toString("base64url");
+  writeFileSync(
+    join(dir, "auth.json"),
+    JSON.stringify({ tokens: { id_token: `x.${claims}.y`, refresh_token: "secret" } }),
+  );
   expect(claude.detect(dir)).toEqual({ email: "a@b.dk", plan: "claude_max" });
   expect(codex.detect(dir)).toEqual({ email: "c@d.dk", plan: "pro" });
   expect(codex.detect(join(dir, "missing"))).toBeUndefined();
@@ -394,36 +416,60 @@ test("signed-in Claude Code and Codex logins are detected by identity only, and 
 test("checkout writes share the browser guard, JSON validation, and loopback restriction", async () => {
   const { call, ctx } = fixture();
   let registered = 0;
-  ctx.skills.register = () => { registered++; return "/repo"; };
+  ctx.skills.register = () => {
+    registered++;
+    return "/repo";
+  };
   const body = { path: "/repo", project: "owner/repo" };
-  for (const headers of [{ origin: "https://example.com" }, { "sec-fetch-site": "cross-site" }] as Record<string, string>[]) {
+  for (const headers of [{ origin: "https://example.com" }, { "sec-fetch-site": "cross-site" }] as Record<
+    string,
+    string
+  >[]) {
     expect((await call("/api/checkout", "POST", body, "loopback", headers)).status).toBe(403);
   }
   expect((await call("/api/checkout", "POST", body, "loopback", { "content-type": "text/plain" })).status).toBe(415);
   expect((await call("/api/checkout", "POST", { ...body, project: "invalid" })).status).toBe(400);
-  expect((await call("/api/checkout", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(404);
+  expect((await call("/api/checkout", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(
+    404,
+  );
   expect(registered).toBe(0);
   expect((await call("/api/checkout", "POST", body)).status).toBe(200);
   expect(registered).toBe(1);
 });
 
 test("installation uses the reviewed artifact and expired previews never refetch implicitly", async () => {
-  let now = 0, fetches = 0;
-  const imports = new SkillImports(async () => {
-    fetches++;
-    return [{ id: "x", description: "x", files: [{ path: "SKILL.md", data: Buffer.from(`version-${fetches}`).toString("base64") }] }];
-  }, () => now);
+  let now = 0,
+    fetches = 0;
+  const imports = new SkillImports(
+    async () => {
+      fetches++;
+      return [
+        {
+          id: "x",
+          description: "x",
+          files: [{ path: "SKILL.md", data: Buffer.from(`version-${fetches}`).toString("base64") }],
+        },
+      ];
+    },
+    () => now,
+  );
   const { call, s } = fixture({ imports });
-  const preview = await (await call("/api/skills/fetch", "POST", { source: "owner/pack" })).json() as SkillPreviewResponse;
+  const preview = (await (
+    await call("/api/skills/fetch", "POST", { source: "owner/pack" })
+  ).json()) as SkillPreviewResponse;
   expect(preview.skills[0]!.size).toBe(9);
-  expect((await call("/api/skills", "POST", { token: preview.token, ids: ["x"], projects: ["owner/repo"] })).status).toBe(201);
+  expect(
+    (await call("/api/skills", "POST", { token: preview.token, ids: ["x"], projects: ["owner/repo"] })).status,
+  ).toBe(201);
   expect(fetches).toBe(1);
   expect(Buffer.from(s.get("skill", "x")!.files[0]!.data, "base64").toString()).toBe("version-1");
   now = 10 * 60_000;
   expect((await call("/api/skills", "POST", { token: preview.token, ids: ["x"] })).status).toBe(409);
   expect(fetches).toBe(1);
   expect((await call("/api/skills", "POST", { source: "owner/pack", ids: ["x"] })).status).toBe(400);
-  const different = await (await call("/api/skills/fetch", "POST", { source: "different/pack" })).json() as SkillPreviewResponse;
+  const different = (await (
+    await call("/api/skills/fetch", "POST", { source: "different/pack" })
+  ).json()) as SkillPreviewResponse;
   expect(different.skills[0]!.conflict).toContain("owner/pack");
   expect((await call("/api/skills", "POST", { token: different.token, ids: ["x"] })).status).toBe(409);
 });
@@ -431,7 +477,7 @@ test("installation uses the reviewed artifact and expired previews never refetch
 test("skill editor requires revision preconditions and preserves newer content", async () => {
   const { call, s } = fixture();
   expect((await call("/api/skills/x", "PUT", { skillMd: "first", revision: null })).status).toBe(200);
-  const first = await (await call("/api/skills/x")).json() as { revision: string };
+  const first = (await (await call("/api/skills/x")).json()) as { revision: string };
   expect(typeof first.revision).toBe("string");
   expect((await call("/api/skills/x", "PUT", { skillMd: "unguarded" })).status).toBe(400);
   expect((await call("/api/skills/x", "PUT", { skillMd: "duplicate creation", revision: null })).status).toBe(409);
@@ -447,22 +493,39 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect((await call("/api/projects", "PUT", { id: "owner/repo", mcp: {}, inheritDefaults: false })).status).toBe(200);
   expect(s.get("project", "Owner/Repo")!.skills).toEqual(["x"]);
   expect(s.get("project", "owner/repo")).toBeUndefined();
-  const data = await (await call("/api/status")).json() as Status;
+  const data = (await (await call("/api/status")).json()) as Status;
   expect(statusSchema.safeParse(data).success).toBe(true);
   expect(statusSchema.safeParse({ ...data, apiVersion: API_VERSION - 1 }).success).toBe(false);
   const { skills, ...missing } = data;
   expect(statusSchema.safeParse(missing).success).toBe(false);
 });
 
+test("the app's status schema keeps the relay and how each machine is reached", async () => {
+  const { s, call } = fixture();
+  s.put("node", "test", { id: "test", alwaysOn: false });
+  s.put("node", "b", { id: "b", alwaysOn: false });
+  s.setLocal("relay:invite", "agentgate-relay.invalid");
+  s.setLocal("relaySeen:b", String(s.now()));
+  const parsed = statusSchema.parse(await (await call("/api/status")).json());
+  expect(parsed.relay).toMatchObject({ reconciling: true, rotating: false });
+  expect(parsed.nodes.find((n) => n.id === "b")?.via).toEqual(["relay"]);
+});
+
 test("thread handoff routes: T3 connection state, cross-node listing, and connect only from this machine", async () => {
   const { s, call } = fixture();
   s.put("node", "test", { id: "test", alwaysOn: false });
-  const status = (await (await call("/api/status")).json()) as Status;
-  expect(status.t3).toEqual({ connected: false });
   expect(await (await call("/api/t3")).json()).toEqual({ connected: false });
-  expect((await call("/api/t3/connect", "POST", { url: "http://127.0.0.1:1", token: "x" }, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect(
+    (
+      await call("/api/t3/connect", "POST", { url: "http://127.0.0.1:1", token: "x" }, "tailnet", {
+        authorization: "Bearer admin-secret",
+      })
+    ).status,
+  ).toBe(403);
   const nodes = await (await call("/api/threads")).json();
-  expect(nodes).toEqual([{ node: "test", server: false, online: true, t3: { connected: false }, threads: [], jobs: [] }]);
+  expect(nodes).toEqual([
+    { node: "test", server: false, online: true, t3: { connected: false }, threads: [], jobs: [] },
+  ]);
   const started = await call("/api/handoffs", "POST", { threadId: "nope" });
   expect(started.status).toBe(400);
   expect(((await started.json()) as { error: string }).error).toBe("no active thread nope on any node");
@@ -475,9 +538,12 @@ test("shared logins show in status without their secrets, share only locally and
   s.put("login", "github", { id: "github", from: "mac", account: "octocat", token: "gho_private" });
   const res = await call("/api/status");
   expect(await res.clone().text()).not.toContain("gho_private");
-  expect(((await res.json()) as Status).logins).toEqual([{ id: "github", account: "octocat", from: "mac", signedIn: false }]);
+  expect(((await res.json()) as Status).logins).toEqual([
+    { id: "github", account: "octocat", from: "mac", signedIn: false, problems: [] },
+  ]);
   const auth = { authorization: "Bearer admin-secret" };
   expect((await call("/api/logins/share", "POST", {}, "tailnet", auth)).status).toBe(403);
+  expect((await call("/api/logins/infisical/signin", "POST", {}, "tailnet", auth)).status).toBe(403);
   expect((await call("/api/logins/github", "DELETE", undefined, "tailnet", auth)).status).toBe(200);
   expect(s.list("login")).toEqual([]);
 });
@@ -487,36 +553,49 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
   const root = join(tmp(), ".buncargo", "files");
   ctx.files = new CheckoutFiles(ctx.s, root);
   cleanup.push(async () => ctx.files.close());
-  const r = repos("a"), other = repos("b");
+  const r = repos("a"),
+    other = repos("b");
   writeFileSync(join(r.a, ".env.local"), "API_KEY=private-value\n");
   writeFileSync(join(other.b, ".env"), "x\n");
-  const project = `test/${r.url.split("/").at(-1)!.replace(/\.git$/, "")}`;
+  const project = `test/${r.url
+    .split("/")
+    .at(-1)!
+    .replace(/\.git$/, "")}`;
 
   const body = { project, path: join(r.a, ".env.local") };
-  expect((await call("/api/projects/files", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect(
+    (await call("/api/projects/files", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status,
+  ).toBe(403);
   expect((await call("/api/projects/files", "POST", body)).status).toBe(200);
   const wrong = await call("/api/projects/files", "POST", { project, path: join(other.b, ".env") });
   expect(wrong.status).toBe(400);
   expect(((await wrong.json()) as { error: string }).error).toContain("not test/repo");
 
-  const status = await (await call("/api/status")).json() as Status;
+  const status = (await (await call("/api/status")).json()) as Status;
   expect(statusSchema.safeParse(status).success).toBe(true);
-  expect(status.projects.find((p) => p.id === project)!.files).toEqual([{ path: ".env.local", updatedAt: expect.any(String) }]);
+  expect(status.projects.find((p) => p.id === project)!.files).toEqual([
+    { path: ".env.local", updatedAt: expect.any(String) },
+  ]);
   expect(JSON.stringify(status)).not.toContain(btoa("API_KEY=private-value\n"));
   expect(status.fileErrors).toEqual({});
 
   const content = `/api/projects/files/content?id=${encodeURIComponent(project)}&path=.env.local`;
   expect((await call(content, "GET", undefined, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
-  const opened = await (await call(content)).json() as { content: string; sha256: string };
+  const opened = (await (await call(content)).json()) as { content: string; sha256: string };
   expect(opened.content).toBe("API_KEY=private-value\n");
   const edit = { project, path: ".env.local", content: "API_KEY=new-value\n", sha256: opened.sha256 };
-  expect((await call("/api/projects/files/content", "PUT", edit, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect(
+    (await call("/api/projects/files/content", "PUT", edit, "tailnet", { authorization: "Bearer admin-secret" }))
+      .status,
+  ).toBe(403);
   expect((await call("/api/projects/files/content", "PUT", edit)).status).toBe(200);
   expect(((await (await call(content)).json()) as { content: string }).content).toBe("API_KEY=new-value\n");
   expect((await call("/api/projects/files/content", "PUT", { ...edit, content: "STALE\n" })).status).toBe(400);
 
-  expect((await call(`/api/projects/files?id=${encodeURIComponent(project)}&path=.env.local`, "DELETE")).status).toBe(200);
+  expect((await call(`/api/projects/files?id=${encodeURIComponent(project)}&path=.env.local`, "DELETE")).status).toBe(
+    200,
+  );
   expect([...readStore(join(root, `github.com/${project}`)).files.keys()]).toEqual([]);
-  const after = await (await call("/api/status")).json() as Status;
+  const after = (await (await call("/api/status")).json()) as Status;
   expect(after.projects.find((p) => p.id === project)!.files).toEqual([]);
 });

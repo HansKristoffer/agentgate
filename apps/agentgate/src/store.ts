@@ -1,9 +1,19 @@
-import { accountSchema, projectSchema, nodeSchema, settingsSchema, skillSchema, quotaWindowSchema, providerSchema, MAX_RECORD } from "@agentgate/protocol";
+import {
+  accountSchema,
+  projectSchema,
+  nodeSchema,
+  settingsSchema,
+  skillSchema,
+  quotaWindowSchema,
+  providerSchema,
+  MAX_RECORD,
+} from "@agentgate/protocol";
+import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/core";
 import { Database } from "bun:sqlite";
-import { chmodSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, statfsSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
@@ -19,15 +29,41 @@ export const PORT = Number(process.env.AGENTGATE_PORT ?? (SANDBOX ? devPort(CHEC
 export const DEV = (SANDBOX !== undefined && CONFIG_DIR === SANDBOX) || process.env.AGENTGATE_DEV === "1";
 /** Guard for changes to this machine's real setup: the user service, ~/.claude, ~/.codex, Claude Desktop. */
 export function liveOnly(what: string) {
-  if (DEV) throw new Error(`${what} would change this machine's real setup, which a checkout's dev daemon must not do. Set AGENTGATE_HOME and AGENTGATE_PORT to target an install on purpose.`);
+  if (DEV)
+    throw new Error(
+      `${what} would change this machine's real setup, which a checkout's dev daemon must not do. Set AGENTGATE_HOME and AGENTGATE_PORT to target an install on purpose.`,
+    );
 }
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535)
+  throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
 export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
+
+/** SQLite says SQLITE_FULL ("database or disk is full") for a full disk, a short write and a full temporary folder
+ * (where large writes spill their journal) alike, and macOS counts purgeable space as free where statfs does not. For a
+ * SQLite error, its message, code and the free space statfs sees beside `file` and in the temporary folder, so the real
+ * cause shows; undefined for any other error. */
+export function sqliteDetail(e: unknown, file: string) {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code !== "string" || !code.startsWith("SQLITE_")) return undefined;
+  const free = (dir: string) => {
+    try {
+      const st = statfsSync(dir);
+      return `${((st.bavail * st.bsize) / 2 ** 30).toFixed(1)} GiB free in ${dir}`;
+    } catch {
+      return `${dir} unreadable`;
+    }
+  };
+  return `${getErrorMessage(e)} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`;
+}
 
 const id = z.string().min(1).max(512);
 const timestamp = z.number().int().nonnegative();
 const Window = quotaWindowSchema;
-const OAuth = z.object({ redirectUri: z.string().optional(), client: OAuthClientInformationSchema.passthrough().optional(), tokens: OAuthTokensSchema.passthrough().optional() });
+const OAuth = z.object({
+  redirectUri: z.string().optional(),
+  client: OAuthClientInformationSchema.passthrough().optional(),
+  tokens: OAuthTokensSchema.passthrough().optional(),
+});
 
 export const schemas = {
   account: accountSchema,
@@ -42,10 +78,17 @@ export const schemas = {
     needsLogin: z.boolean().optional(),
   }),
   mcpCredential: OAuth.extend({
-    instanceId: id, holder: id, expiresAt: timestamp.optional(), needsLogin: z.boolean().optional(), loginId: id.optional(),
+    instanceId: id,
+    holder: id,
+    expiresAt: timestamp.optional(),
+    needsLogin: z.boolean().optional(),
+    loginId: id.optional(),
   }),
   refreshRequest: z.object({
-    targetKind: z.enum(["credential", "mcpCredential"]), targetId: id, tokenHash: id, requestedAt: timestamp,
+    targetKind: z.enum(["credential", "mcpCredential"]),
+    targetId: id,
+    tokenHash: id,
+    requestedAt: timestamp,
   }),
   usage: z.object({
     accountId: z.string(),
@@ -81,26 +124,57 @@ export const schemas = {
   login: z.discriminatedUnion("id", [
     z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
     z.object({
-      id: z.literal("infisical"), from: id,
+      id: z.literal("infisical"),
+      from: id,
       // Names the keyring file the Infisical CLI keeps the session in, so it must stay a plain file name.
-      account: z.string().min(1).max(320).regex(/^[^/\\\0]+$/).refine((a) => a !== "." && a !== ".."),
-      config: z.string().max(64 * 1024).refine((c) => { try { return !!JSON.parse(c); } catch { return false; } }),
-      keyring: z.string().min(1).max(64 * 1024),
+      account: z
+        .string()
+        .min(1)
+        .max(320)
+        .regex(/^[^/\\\0]+$/)
+        .refine((a) => a !== "." && a !== ".."),
+      config: z
+        .string()
+        .max(64 * 1024)
+        .refine((c) => {
+          try {
+            return !!JSON.parse(c);
+          } catch {
+            return false;
+          }
+        }),
+      keyring: z
+        .string()
+        .min(1)
+        .max(64 * 1024),
     }),
     /** An Infisical machine identity (Universal Auth) set in agentgate; `account` is its client id. */
     z.object({
-      id: z.literal("infisical-identity"), from: id, account: z.string().max(512),
-      clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048),
+      id: z.literal("infisical-identity"),
+      from: id,
+      account: z.string().max(512),
+      clientSecret: z.string().min(1).max(4096),
+      siteUrl: z.string().url().max(2048),
     }),
   ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
   tokens: z.object({
     id,
     node: id,
-    rows: z.array(z.object({
-      hour: timestamp, provider: providerSchema, model: z.string().max(512), account: z.string().max(512).optional(),
-      input: timestamp, output: timestamp, cacheRead: timestamp, cacheWrite: timestamp,
-    })).max(20000),
+    rows: z
+      .array(
+        z.object({
+          hour: timestamp,
+          provider: providerSchema,
+          model: z.string().max(512),
+          account: z.string().max(512).optional(),
+          input: timestamp,
+          output: timestamp,
+          cacheRead: timestamp,
+          cacheWrite: timestamp,
+        }),
+      )
+      .max(20000),
   }),
 };
 
@@ -127,9 +201,14 @@ export interface Rec {
 }
 
 export const recordSchema = z.object({
-  kind: z.enum(Object.keys(schemas) as [Kind, ...Kind[]]), id,
-  rev: z.number().int().nonnegative(), node: id, updated_at: timestamp,
-  deleted: z.union([z.literal(0), z.literal(1)]), data: z.string().max(MAX_RECORD), seq: timestamp.optional(),
+  kind: z.enum(nonEmpty(typedKeys(schemas))),
+  id,
+  rev: z.number().int().nonnegative(),
+  node: id,
+  updated_at: timestamp,
+  deleted: z.union([z.literal(0), z.literal(1)]),
+  data: z.string().max(MAX_RECORD),
+  seq: timestamp.optional(),
 });
 
 export function parseData<K extends Kind>(kind: K, key: string, input: unknown): Data<K> {
@@ -139,7 +218,8 @@ export function parseData<K extends Kind>(kind: K, key: string, input: unknown):
   const payloadId = value.id ?? value.accountId ?? value.instanceId;
   if (payloadId !== undefined && payloadId !== key) throw new Error(`${kind}: record ID does not match its data`);
   if (kind === "setting" && key !== "settings") throw new Error("invalid settings ID");
-  if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`) throw new Error("invalid refresh request ID");
+  if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`)
+    throw new Error("invalid refresh request ID");
   if (kind === "tokens" && !key.startsWith(`${value.node}:`)) throw new Error("invalid token usage ID");
   return parsed;
 }
@@ -173,24 +253,41 @@ export class Store {
       seq integer not null, primary key (kind, id))`);
     this.db.run("create index if not exists records_seq on records(seq)");
     this.db.run("create table if not exists local_seq (value integer not null)");
-    this.db.transaction(() => {
-      if (!this.db.query("select 1 from local_seq").get()) this.db.run("insert into local_seq values (0)");
-    }).immediate();
-    this.db.run("create table if not exists peers (node text primary key, url text, token text, cursor integer default 0, last_seen integer)");
-    this.db.run("create table if not exists request_log (at integer, provider text, account text, model text, status integer, ms integer, note text)");
+    this.db
+      .transaction(() => {
+        if (!this.db.query("select 1 from local_seq").get()) this.db.run("insert into local_seq values (0)");
+      })
+      .immediate();
+    this.db.run(
+      "create table if not exists peers (node text primary key, url text, token text, cursor integer default 0, last_seen integer)",
+    );
+    this.db.run(
+      "create table if not exists request_log (at integer, provider text, account text, model text, status integer, ms integer, note text)",
+    );
     // Hourly token totals per model, node-local and never trimmed: a year is a few thousand rows.
-    this.db.run("create table if not exists token_usage (hour integer not null, provider text not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (hour, provider, model))");
+    this.db.run(
+      "create table if not exists token_usage (hour integer not null, provider text not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (hour, provider, model))",
+    );
     // Cursor's own usage history per account, replaced window by window when it is read again (llm/cursor.ts).
-    this.db.run("create table if not exists cursor_tokens (account text not null, hour integer not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (account, hour, model))");
+    this.db.run(
+      "create table if not exists cursor_tokens (account text not null, hour integer not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (account, hour, model))",
+    );
     // Node-local settings that are never synced (node name, admin token, pairing code, active account).
     this.db.run("create table if not exists local (key text primary key, value text)");
     // Thread handoff jobs this node drives or receives (handoff/jobs.ts). Node-local, never synced.
-    this.db.run("create table if not exists handoffs (id text not null, role text not null, thread text not null, target text not null, step text not null, state text not null, error text, created_at integer not null, updated_at integer not null, primary key (role, id))");
+    this.db.run(
+      "create table if not exists handoffs (id text not null, role text not null, thread text not null, target text not null, step text not null, state text not null, error text, created_at integer not null, updated_at integer not null, primary key (role, id))",
+    );
     this.migrate();
   }
 
-  transaction<T>(fn: () => T): T { return this.db.transaction(fn).immediate(); }
-  close() { this.closed = true; this.db.close(); }
+  transaction<T>(fn: () => T): T {
+    return this.db.transaction(fn).immediate();
+  }
+  close() {
+    this.closed = true;
+    this.db.close();
+  }
 
   private migrate() {
     this.transaction(() => {
@@ -208,13 +305,19 @@ export class Store {
         this.db.run("pragma user_version = 1");
       }
       if (version < 2) {
-        this.db.run("create table if not exists proxy_requests (seq integer primary key autoincrement, id text unique not null, at integer not null, provider text not null, account text not null, model text not null, outcome text not null, failure text, bytes integer not null, data text not null)");
-        this.db.run("create table if not exists proxy_attempts (id text primary key, request_id text not null, number integer not null, bytes integer not null, data text not null)");
+        this.db.run(
+          "create table if not exists proxy_requests (seq integer primary key autoincrement, id text unique not null, at integer not null, provider text not null, account text not null, model text not null, outcome text not null, failure text, bytes integer not null, data text not null)",
+        );
+        this.db.run(
+          "create table if not exists proxy_attempts (id text primary key, request_id text not null, number integer not null, bytes integer not null, data text not null)",
+        );
         this.db.run("create index if not exists proxy_requests_time on proxy_requests(at)");
         this.db.run("create index if not exists proxy_attempts_request on proxy_attempts(request_id)");
         // Re-publish existing relay records in the versioned encrypted payload format.
-        for (const [key] of this.localPrefixed("relay:")) if (key.endsWith(":pushed") || key === "relay:pushed") this.setLocal(key, undefined);
-        if (this.db.query("select name from sqlite_master where type='table' and name='relay_pending'").get()) this.db.run("delete from relay_pending");
+        for (const [key] of this.localPrefixed("relay:"))
+          if (key.endsWith(":pushed") || key === "relay:pushed") this.setLocal(key, undefined);
+        if (this.db.query("select name from sqlite_master where type='table' and name='relay_pending'").get())
+          this.db.run("delete from relay_pending");
         this.db.run("pragma user_version = 2");
       }
     });
@@ -230,7 +333,12 @@ export class Store {
 
   localPrefixed(prefix: string): [string, string][] {
     const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
-    return (this.db.query("select key, value from local where key like ? escape '\\' order by key").all(like) as { key: string; value: string }[]).map((r) => [r.key, r.value]);
+    return (
+      this.db.query("select key, value from local where key like ? escape '\\' order by key").all(like) as {
+        key: string;
+        value: string;
+      }[]
+    ).map((r) => [r.key, r.value]);
   }
 
   setLocal(key: string, value: string | undefined) {
@@ -256,7 +364,9 @@ export class Store {
   }
 
   list<K extends Kind>(kind: K): Data<K>[] {
-    const rows = this.db.query("select data from records where kind = ? and deleted = 0 order by id").all(kind) as { data: string }[];
+    const rows = this.db.query("select data from records where kind = ? and deleted = 0 order by id").all(kind) as {
+      data: string;
+    }[];
     return rows.map((r) => schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
   }
 
@@ -272,12 +382,21 @@ export class Store {
 
   private write(kind: Kind, id: string, data: string, deleted: number) {
     if (Buffer.byteLength(data) > MAX_RECORD) throw new Error("record exceeds 4 MiB");
-    this.db.transaction(() => {
-      const prev = this.record(kind, id);
-      this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
-        kind, id, (prev?.rev ?? 0) + 1, this.nodeId, this.now(), deleted, data, this.nextSeq(),
-      ]);
-    }).immediate();
+    this.db
+      .transaction(() => {
+        const prev = this.record(kind, id);
+        this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
+          kind,
+          id,
+          (prev?.rev ?? 0) + 1,
+          this.nodeId,
+          this.now(),
+          deleted,
+          data,
+          this.nextSeq(),
+        ]);
+      })
+      .immediate();
   }
 
   settings(): Settings {
@@ -289,7 +408,9 @@ export class Store {
     timestamp.parse(since);
     return this.db.transaction(() => {
       const seq = this.seq(); // establish the read snapshot before reading its records
-      const records = this.db.query("select * from records where seq > ? and seq <= ? order by seq").all(since, seq) as Rec[];
+      const records = this.db
+        .query("select * from records where seq > ? and seq <= ? order by seq")
+        .all(since, seq) as Rec[];
       return { records, seq };
     })();
   }
@@ -298,7 +419,8 @@ export class Store {
   changePage(since: number, maxBytes = 8 * 1024 * 1024): { records: Rec[]; seq: number; more: boolean } {
     timestamp.parse(since);
     return this.db.transaction(() => {
-      const high = this.seq(), records: Rec[] = [];
+      const high = this.seq(),
+        records: Rec[] = [];
       let bytes = 0;
       const statement = this.db.prepare("select * from records where seq > ? and seq <= ? order by seq");
       try {
@@ -308,9 +430,12 @@ export class Store {
             if (!records.length) throw new Error("one record exceeds the sync page limit");
             return { records, seq: records.at(-1)!.seq!, more: true };
           }
-          records.push(row); bytes += size;
+          records.push(row);
+          bytes += size;
         }
-      } finally { statement.finalize(); }
+      } finally {
+        statement.finalize();
+      }
       return { records, seq: high, more: false };
     })();
   }
@@ -318,25 +443,30 @@ export class Store {
   /** Last-writer-wins by (rev, updated_at, node). Returns true when the incoming record was taken. */
   merge(r: Rec): boolean {
     r = parseRecord(r);
-    return this.db.transaction(() => {
-      const cur = this.record(r.kind, r.id);
-      if (cur && !newer(r, cur)) return false;
-      this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
-        r.kind, r.id, r.rev, r.node, r.updated_at, r.deleted, r.data, this.nextSeq(),
-      ]);
-      return true;
-    }).immediate();
-  }
-
-  purgeTombstones() {
-    // Keep deletion history: an offline node can return after any amount of time.
+    return this.db
+      .transaction(() => {
+        const cur = this.record(r.kind, r.id);
+        if (cur && !newer(r, cur)) return false;
+        this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
+          r.kind,
+          r.id,
+          r.rev,
+          r.node,
+          r.updated_at,
+          r.deleted,
+          r.data,
+          this.nextSeq(),
+        ]);
+        return true;
+      })
+      .immediate();
   }
 
   /** A lease shared by CLI and daemon processes using this database. */
   acquireLease(key: string, owner: string, ttl = 60_000): boolean {
     return this.transaction(() => {
       const raw = this.local(key);
-      const lease = raw ? JSON.parse(raw) as { owner: string; expires: number } : undefined;
+      const lease = raw ? (JSON.parse(raw) as { owner: string; expires: number }) : undefined;
       if (lease && lease.owner !== owner && lease.expires > this.now()) return false;
       this.setLocal(key, JSON.stringify({ owner, expires: this.now() + ttl }));
       return true;
@@ -349,12 +479,25 @@ export class Store {
     });
   }
 
+  /** A request, or with a note an event (a token refresh, a refused login, an MCP connect failure), which also goes to
+   * the daemon's log, since no client shows request_log. Notes never carry secrets. */
   log(provider: string, account: string, model: string, status: number, ms: number, note = "") {
-    this.db.run("insert into request_log values (?, ?, ?, ?, ?, ?, ?)", [this.now(), provider, account, model, status, ms, note]);
+    this.db.run("insert into request_log values (?, ?, ?, ?, ?, ?, ?)", [
+      this.now(),
+      provider,
+      account,
+      model,
+      status,
+      ms,
+      note,
+    ]);
+    if (note) console.error(`${provider}${account ? ` ${account}` : ""}: ${note}`);
   }
 
   trimLog() {
-    this.db.run("delete from request_log where rowid <= (select max(rowid) from request_log) - ?", [this.settings().logRetention]);
+    this.db.run("delete from request_log where rowid <= (select max(rowid) from request_log) - ?", [
+      this.settings().logRetention,
+    ]);
   }
 }
 
@@ -370,26 +513,46 @@ export const store = () => (shared ??= new Store());
 /** A public inventory deliberately omits all arbitrary strings that may carry credentials. */
 function publicMcp(inst: McpInstance) {
   return {
-    id: inst.id, label: inst.label, template: inst.template, transport: inst.transport, mode: inst.mode, secrets: {}, fields: {},
-    ...(inst.transport === "http" ? { url: "https://configure.invalid/mcp", headers: {} } : { command: "configure-command", args: [], env: {} })
+    id: inst.id,
+    label: inst.label,
+    template: inst.template,
+    transport: inst.transport,
+    mode: inst.mode,
+    secrets: {},
+    fields: {},
+    ...(inst.transport === "http"
+      ? { url: "https://configure.invalid/mcp", headers: {} }
+      : { command: "configure-command", args: [], env: {} }),
   };
 }
 
 export function exportBackup(s: Store, secrets = true) {
-  const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as { kind: Kind; id: string; data: string }[];
+  const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as {
+    kind: Kind;
+    id: string;
+    data: string;
+  }[];
   const records = rows
     .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest", "login"].includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
-      if (!secrets && r.kind === "project") { delete data.remote; delete data.files; } // endpoint keys and env files are secrets
+      if (!secrets && r.kind === "project") {
+        delete data.remote;
+        delete data.files;
+      } // endpoint keys and env files are secrets
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
 }
 
 export function importBackup(s: Store, input: unknown) {
-  const backup = z.object({ agentgate: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]), records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000) }).parse(input);
-  const records = backup.records.map(r => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
+  const backup = z
+    .object({
+      agentgate: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+      records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000),
+    })
+    .parse(input);
+  const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {

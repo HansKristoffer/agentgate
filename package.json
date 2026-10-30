@@ -1,6 +1,6 @@
 {
   "name": "agentgate",
-  "version": "0.21.0",
+  "version": "0.27.0",
   "type": "module",
   "private": true,
   "workspaces": [
@@ -16,7 +16,8 @@
     "start": "bun run --filter @agentgate/daemon start",
     "cli": "bun apps/agentgate/src/cli.ts",
     "test": "bun test",
-    "typecheck": "bun run --filter '*' typecheck && bunx tsc --noEmit -p tsconfig.json",
+    "typecheck": "bun run --filter '*' typecheck && bun check -p tsconfig.json",
+    "fmt": "bun fmt --no-script .",
     "build": "bun scripts/build.ts",
     "build:desktop": "bun run --filter @agentgate/desktop bundle",
     "build:frontend": "bun run --filter @agentgate/desktop build",
@@ -24,5 +25,5 @@
     "check:native": "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
     "seed-dev-store": "bun scripts/seed-dev-store.ts"
   },
-  "packageManager": "bun@1.4.2"
+  "packageManager": "bun@1.4.4"
 }

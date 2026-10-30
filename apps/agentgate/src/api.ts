@@ -1,9 +1,7 @@
 import {
   API_VERSION,
-  accountSchema,
   projectSchema,
   providerSchema,
-  settingsSchema,
   SkillConflict,
   decodedSize,
   projectIdSchema,
@@ -13,46 +11,61 @@ import {
   type Status,
   type ToolPreview,
 } from "@agentgate/protocol";
+import { recordFromKeys, sumBy } from "hanzio";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { homedir } from "node:os";
 import { z } from "zod";
 import { pkce } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
-import * as claude from "./llm/claude.ts";
-import * as codex from "./llm/codex.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
-import { forgetLogin, infisicalSite, listLogins, setInfisicalIdentity, shareLogins } from "./logins.ts";
+import {
+  forgetLogin,
+  infisicalSite,
+  listLogins,
+  setInfisicalIdentity,
+  shareLogins,
+  startInfisicalSignIn,
+} from "./logins.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenHours, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
 import { checkRevision, patchSettings, revision } from "./configuration.ts";
-import { failureSchema, modelIdSchema, ConfigurationConflict, accountPatchSchema, settingsPatchSchema } from "@agentgate/protocol";
-import packageInfo from "../../../package.json";
-import { updateNode } from "./update.ts";
 import {
-  aliasesFor,
-  connect,
-  listAllTools,
-  needsLogin,
-  serverHealth,
-  renameInstance,
-  scanRepos,
-  toolName,
-} from "./mcp/gateway.ts";
+  failureSchema,
+  modelIdSchema,
+  ConfigurationConflict,
+  accountPatchSchema,
+  settingsPatchSchema,
+} from "@agentgate/protocol";
+import packageInfo from "../../../package.json";
+import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
+import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
-import { presets } from "./mcp/templates.ts";
+import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
   createInstance,
+  setServerProjects,
   labelInstance,
   deleteAccount,
   deleteInstance,
+  removeNode,
+  renameInstance,
   saveProject,
   setAccount,
+  setHealthDashboard,
 } from "./operations.ts";
 import * as desktop from "./desktop.ts";
-import { deleteProject, disableRemote, enableRemote, publicProject, regenerate, regenerateAfterUnpair, rotateSecret, showRemote } from "./remote.ts";
+import {
+  deleteProject,
+  disableRemote,
+  enableRemote,
+  publicProject,
+  regenerate,
+  rotateSecret,
+  showRemote,
+} from "./remote.ts";
 import { jsonInput } from "./http.ts";
 import { addFileAt, fileContent, filesErrors, removeFiles, setFileContent } from "./checkout-files.ts";
 import {
@@ -71,8 +84,15 @@ import {
 } from "./skills.ts";
 import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
 import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
-import { allNodes, connectNode, disconnectNode, handoffJob, pairingLinkNode, requestHandoff } from "./handoff/threads.ts";
-import { join, lastSeen, pairCode, peers, tailscale, unpair } from "./sync.ts";
+import {
+  allNodes,
+  connectNode,
+  disconnectNode,
+  handoffJob,
+  pairingLinkNode,
+  requestHandoff,
+} from "./handoff/threads.ts";
+import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import {
   RelayBusy,
   RelayError,
@@ -84,8 +104,6 @@ import {
   newNodeName,
   parseJoin,
   reconcileRelay,
-  relayInvite,
-  relayNodes,
   relayStatus,
   rotateRelay,
   setServiceKey,
@@ -97,15 +115,19 @@ const required = (value: unknown, name: string) => {
 };
 const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 const detectedSource = { claude: "~/.claude", codex: "~/.codex", cursor: "~/.cursor" };
-const readableEndpoint = (url?: string) => {
-  if (!url) return "Local command";
-  try {
-    const u = new URL(url);
-    return `${u.origin}${u.pathname}`;
-  } catch {
-    return "HTTP server";
-  }
-};
+/** The coding tools' own logins, read at most every 30 s: ~/.claude.json alone can be megabytes, and the app polls
+ * status every second while something is under way. */
+const detections = new Map<
+  keyof typeof providerLogins,
+  { at: number; found: ReturnType<(typeof providerLogins)[keyof typeof providerLogins]["detect"]> }
+>();
+function detect(provider: keyof typeof providerLogins) {
+  const cached = detections.get(provider);
+  if (cached && Date.now() - cached.at < 30_000) return cached.found;
+  const found = moduleFor(provider).detect();
+  detections.set(provider, { at: Date.now(), found });
+  return found;
+}
 
 /** JSON control plane. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {
@@ -133,8 +155,7 @@ export function management(ctx: Ctx) {
     try {
       return await fn();
     } catch (error) {
-      if (error instanceof RelayBusy)
-        throw new HTTPException(409, { message: error.message });
+      if (error instanceof RelayBusy) throw new HTTPException(409, { message: error.message });
       if (error instanceof RelayError)
         throw new HTTPException(error.status ? 502 : 400, {
           message: error.message,
@@ -142,24 +163,23 @@ export function management(ctx: Ctx) {
       throw error;
     }
   };
-  const optionalJson = async (req: Request) =>
-    req.headers.get("content-type") ? json(req) : {};
+  const optionalJson = async (req: Request) => (req.headers.get("content-type") ? json(req) : {});
   const tools = async (id: string) => {
     const inst = s.get("mcp", id);
     required(inst, "server");
-    const client = await connect(inst!, process.cwd(), s);
-    try {
-      return await listAllTools(client);
-    } finally {
-      await client.close();
-    }
+    return serverTools(s, inst!);
   };
   // Operational input errors are safe to show to a signed-in administrator.
   const input = <T>(fn: () => T): T => {
     try {
       return fn();
     } catch (error) {
-      if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof SkillConflict || error instanceof ConfigurationConflict)
+      if (
+        error instanceof z.ZodError ||
+        error instanceof HTTPException ||
+        error instanceof SkillConflict ||
+        error instanceof ConfigurationConflict
+      )
         throw error;
       throw new HTTPException(400, {
         message: error instanceof Error ? error.message : "Invalid operation",
@@ -170,47 +190,60 @@ export function management(ctx: Ctx) {
     try {
       return await fn();
     } catch (error) {
-      return input(() => { throw error; });
+      return input(() => {
+        throw error;
+      });
     }
   };
   app.get("/status", (c) => {
     const status: Status = {
       apiVersion: API_VERSION,
-      daemon: { version: packageInfo.version, build: process.env.AGENTGATE_BUILD ?? "development", providers: providerCapabilities() },
+      daemon: {
+        version: packageInfo.version,
+        build: process.env.AGENTGATE_BUILD ?? "development",
+        providers: providerCapabilities(),
+      },
       settingsRevision: revision(s, "setting", "settings"),
-      metrics: metrics(s),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       detected: providerSchema.options.flatMap((provider) => {
-        const found = moduleFor(provider).detect();
-        const pooled = found && s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
+        const found = detect(provider);
+        const pooled =
+          found &&
+          s
+            .list("account")
+            .some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
         return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
       }),
       servers: s.list("mcp").map((i) => {
         const health = serverHealth(s, i.id);
         return {
-        id: i.id,
-        label: i.label,
-        template: i.template,
-        transport: i.transport,
-        mode: i.mode,
-        endpoint: readableEndpoint(i.url),
-        loggedIn: !!s.get("mcpCredential", i.id)?.tokens,
-        needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin || !!health?.needsLogin,
-        available: health?.ok,
-        checkedAt: health?.at,
-        refreshError: s.local(`refreshError:mcpCredential:${i.id}`)
-          ? "Token refresh failed"
-          : undefined,
+          id: i.id,
+          label: i.label,
+          template: i.template,
+          transport: i.transport,
+          mode: i.mode,
+          endpoint: readableEndpoint(i.url),
+          loggedIn: !!s.get("mcpCredential", i.id)?.tokens,
+          needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin || !!health?.needsLogin,
+          available: health?.ok,
+          checkedAt: health?.at,
+          refreshError: s.local(`refreshError:mcpCredential:${i.id}`) ? "Token refresh failed" : undefined,
         };
       }),
-      projects: s.list("project").map(p => publicProject(p, ctx.remote)),
+      projects: s.list("project").map((p) => publicProject(p, ctx.remote)),
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
+      skillKept: ctx.skills.kept(),
       skillHealth: ctx.skills.health(),
       skillRepos: skillRepoSummaries(s),
       fileErrors: filesErrors(s),
-      checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({ path, project, skills: ctx.skills.repoSkills(path), mirror: ctx.skills.mirroring(path) })),
+      checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({
+        path,
+        project,
+        skills: ctx.skills.repoSkills(path),
+        mirror: ctx.skills.mirroring(path),
+      })),
       settings: s.settings(),
       nodes: s.list("node").map((n) => ({
         ...n,
@@ -218,9 +251,9 @@ export function management(ctx: Ctx) {
         online: n.id === s.nodeId || s.now() - lastSeen(s, n.id) < 60_000,
         syncError: s.local(`syncError:${n.id}`) ? "Sync failed" : undefined,
         via: n.id === s.nodeId ? [] : via(s, n.id),
+        update: nodeUpdate(s, n.id),
       })),
       relay: relayStatus(s),
-      t3: t3State(s),
       logins: listLogins(s),
       peers: peers(s).map((p) => ({
         node: p.node,
@@ -229,16 +262,9 @@ export function management(ctx: Ctx) {
         cursor: p.cursor,
         error: s.local(`syncError:${p.node}`) ? "Sync failed" : undefined,
       })),
-      unknownQuota: Object.fromEntries(
-        (["claude", "codex"] as const).map((p) => [
-          p,
-          s.local(`quotaUnknown:${p}`),
-        ]),
-      ),
+      unknownQuota: recordFromKeys(["claude", "codex"], (p) => s.local(`quotaUnknown:${p}`)),
       activity: s.db
-        .query(
-          "select at, provider, account, model, status, ms, note from request_log order by at desc limit 50",
-        )
+        .query("select at, provider, account, model, status, ms, note from request_log order by at desc limit 50")
         .all() as Status["activity"],
     };
     return c.json(status);
@@ -250,34 +276,81 @@ export function management(ctx: Ctx) {
       .strict()
       .parse(await json(c.req.raw));
     const { revision: expected, ...fields } = patch;
-    if ((fields.label !== undefined || fields.priority !== undefined || fields.policy !== undefined) && !expected) throw new ConfigurationConflict();
-    return c.json(input(() => s.transaction(() => {
-      if (expected) checkRevision(s, "account", c.req.param("id"), expected);
-      return setAccount(s, c.req.param("id"), fields);
-    })));
+    if ((fields.label !== undefined || fields.priority !== undefined || fields.policy !== undefined) && !expected)
+      throw new ConfigurationConflict();
+    return c.json(
+      input(() =>
+        s.transaction(() => {
+          if (expected) checkRevision(s, "account", c.req.param("id"), expected);
+          return setAccount(s, c.req.param("id"), fields);
+        }),
+      ),
+    );
   });
   app.get("/requests", (c) => {
-    const f = z.object({ provider: providerSchema.optional(), account: z.string().max(512).optional(), model: modelIdSchema.optional(), outcome: z.enum(["pending", "success", "failed", "interrupted", "cancelled"]).optional(), failure: failureSchema.optional(), search: z.string().max(128).optional(), since: z.coerce.number().int().nonnegative().optional(), until: z.coerce.number().int().nonnegative().optional(), cursor: z.string().regex(/^\d{1,16}$/).optional(), limit: z.coerce.number().int().min(1).max(100).optional() }).strict().parse(c.req.query());
+    const f = z
+      .object({
+        provider: providerSchema.optional(),
+        account: z.string().max(512).optional(),
+        model: modelIdSchema.optional(),
+        outcome: z.enum(["pending", "success", "failed", "interrupted", "cancelled"]).optional(),
+        failure: failureSchema.optional(),
+        search: z.string().max(128).optional(),
+        since: z.coerce.number().int().nonnegative().optional(),
+        until: z.coerce.number().int().nonnegative().optional(),
+        cursor: z
+          .string()
+          .regex(/^\d{1,16}$/)
+          .optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .strict()
+      .parse(c.req.query());
     return c.json(input(() => requests(s, f)));
   });
-  app.get("/requests/:id", (c) => { const result = requestDetail(s, c.req.param("id")); required(result, "request"); return c.json(result!); });
-  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
+  app.get("/requests/:id", (c) => {
+    const result = requestDetail(s, c.req.param("id"));
+    required(result, "request");
+    return c.json(result!);
+  });
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
+  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));
   });
   app.post("/accounts/batch", async (c) => {
-    const f = z.object({ ids: z.array(z.string().min(1).max(512)).min(1).max(100), action: z.enum(["quota", "verify", "enable", "disable", "refresh", "models", "reset-cooldown"]) }).strict().parse(await json(c.req.raw));
-    return c.json(await ctx.proxyOperations.batch(f.ids, f.action, AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)])));
+    const f = z
+      .object({
+        ids: z.array(z.string().min(1).max(512)).min(1).max(100),
+        action: z.enum(["quota", "verify", "enable", "disable", "refresh", "models", "reset-cooldown"]),
+      })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json(
+      await ctx.proxyOperations.batch(
+        f.ids,
+        f.action,
+        AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)]),
+      ),
+    );
   });
   app.post("/accounts/:id/verify", async (c) => {
     required(s.get("account", c.req.param("id")), "account");
-    const f = z.object({ probe: z.boolean().default(false), model: modelIdSchema.optional() }).strict().parse(await optionalJson(c.req.raw));
+    const f = z
+      .object({ probe: z.boolean().default(false), model: modelIdSchema.optional() })
+      .strict()
+      .parse(await optionalJson(c.req.raw));
     if (f.probe && !f.model) throw new HTTPException(400, { message: "Choose a model for the quota-consuming probe" });
-    return c.json(await ctx.proxyOperations.verify(c.req.param("id"), AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)]), f));
+    return c.json(
+      await ctx.proxyOperations.verify(
+        c.req.param("id"),
+        AbortSignal.any([signal(c.req.raw), AbortSignal.timeout(90000)]),
+        f,
+      ),
+    );
   });
   app.delete("/accounts/:id", (c) => {
     required(s.get("account", c.req.param("id")), "account");
@@ -294,21 +367,15 @@ export function management(ctx: Ctx) {
       })
       .parse(await json(c.req.raw));
     return c.json({
-      id: await moduleFor(f.provider).importFrom(
-        s,
-        f.dir.replace(/^~/, homedir()),
-        f.label,
-      ),
+      id: await moduleFor(f.provider).importFrom(s, f.dir.replace(/^~/, homedir()), f.label),
     });
   });
   app.post("/accounts/login", async (c) => {
     const f = z
       .object({ provider: providerSchema, label: z.string().optional(), email: z.email().optional() })
       .parse(await json(c.req.raw));
-    for (const [state, p] of pending)
-      if (s.now() - p.at > 30 * 60_000) pending.delete(state);
-    if (pending.size >= 128)
-      throw new HTTPException(429, { message: "Too many pending logins" });
+    for (const [state, p] of pending) if (s.now() - p.at > 30 * 60_000) pending.delete(state);
+    if (pending.size >= 128) throw new HTTPException(429, { message: "Too many pending logins" });
     const { verifier, challenge, state: oauthState } = await pkce();
     // Cursor names the attempt with a UUID that it polls on, rather than an OAuth state.
     const state = f.provider === "cursor" ? crypto.randomUUID() : oauthState;
@@ -324,9 +391,7 @@ export function management(ctx: Ctx) {
     return c.json({ ok: true });
   });
   app.post("/accounts/login/finish", async (c) => {
-    const f = z
-      .object({ state: z.string().min(1), code: z.string().min(1).optional() })
-      .parse(await json(c.req.raw));
+    const f = z.object({ state: z.string().min(1), code: z.string().min(1).optional() }).parse(await json(c.req.raw));
     const p = pending.get(f.state);
     if (!p || s.now() - p.at > 30 * 60_000) {
       pending.delete(f.state);
@@ -343,13 +408,7 @@ export function management(ctx: Ctx) {
     pending.delete(f.state);
     if (!f.code) throw new HTTPException(400, { message: "Paste the code shown after signing in" });
     return c.json({
-      id: await moduleFor(p.provider).exchange(
-        s,
-        f.code,
-        p.verifier,
-        p.label,
-        f.state,
-      ),
+      id: await moduleFor(p.provider).exchange(s, f.code, p.verifier, p.label, f.state),
     });
   });
   app.get("/presets", (c) => c.json(presets));
@@ -366,10 +425,15 @@ export function management(ctx: Ctx) {
       .parse(await json(c.req.raw));
     const { id: name, ...rest } = f;
     const inst = input(() => createInstance(s, { name, ...rest }));
-    return c.json({ id: inst.id }, 201);
+    // Connect a hosted server right away: it shows as available, or the app goes straight on to its sign-in.
+    const login = inst.url ? await serverTools(s, inst).then(() => false, needsLogin) : false;
+    return c.json({ id: inst.id, needsLogin: login }, 201);
   });
   app.patch("/servers/:id", async (c) => {
-    const f = z.object({ label: z.string() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ label: z.string() })
+      .strict()
+      .parse(await json(c.req.raw));
     input(() => labelInstance(s, c.req.param("id"), f.label));
     return c.json({ ok: true });
   });
@@ -392,20 +456,31 @@ export function management(ctx: Ctx) {
   });
   app.post("/servers/:id/login", async (c) => {
     required(s.get("mcp", c.req.param("id")), "server");
-    const url = await startLogin(
-      s,
-      c.req.param("id"),
-      `${new URL(c.req.url).origin}/oauth/callback`,
-    );
+    const url = await startLogin(s, c.req.param("id"), `${new URL(c.req.url).origin}/oauth/callback`);
     return c.json({ url: url?.href, ok: !url });
+  });
+  app.put("/servers/:id/projects", async (c) => {
+    const f = z
+      .object({ projects: z.array(projectIdSchema).max(5000) })
+      .strict()
+      .parse(await json(c.req.raw));
+    input(() => setServerProjects(s, c.req.param("id"), f.projects));
+    return c.json({ ok: true });
   });
   app.delete("/servers/:id", (c) => {
     required(s.get("mcp", c.req.param("id")), "server");
     deleteInstance(s, c.req.param("id"));
     return c.json({ ok: true });
   });
-  const skillRequired = (id: string) => { const skill = s.get("skill", id); required(skill, "skill"); return skill!; };
-  const sourceInput = z.object({ source: z.string().trim().min(1).max(2048), skill: z.string().min(1).max(256).optional() });
+  const skillRequired = (id: string) => {
+    const skill = s.get("skill", id);
+    required(skill, "skill");
+    return skill!;
+  };
+  const sourceInput = z.object({
+    source: z.string().trim().min(1).max(2048),
+    skill: z.string().min(1).max(256).optional(),
+  });
   app.get("/skills/search", async (c) => {
     const q = z.string().trim().min(2).max(200).parse(c.req.query("q"));
     try {
@@ -415,10 +490,15 @@ export function management(ctx: Ctx) {
     }
   });
   // GitHub repositories the daemon keeps in sync. Not under /skills/, where a skill could be named "repos".
-  const repoInput = z.object({ url: z.string().trim().min(1).max(512), projects: z.array(projectIdSchema).max(5000) }).strict();
+  const repoInput = z
+    .object({ url: z.string().trim().min(1).max(512), projects: z.array(projectIdSchema).max(5000) })
+    .strict();
   app.post("/skill-repos", async (c) => {
     const f = repoInput.parse(await json(c.req.raw));
-    return c.json({ url: await inputAsync(() => connectSkillRepo(s, f.url, f.projects, undefined, signal(c.req.raw))) }, 201);
+    return c.json(
+      { url: await inputAsync(() => connectSkillRepo(s, f.url, f.projects, undefined, signal(c.req.raw))) },
+      201,
+    );
   });
   app.put("/skill-repos", async (c) => {
     const f = repoInput.parse(await json(c.req.raw));
@@ -433,15 +513,25 @@ export function management(ctx: Ctx) {
     const f = sourceInput.strict().parse(await json(c.req.raw));
     try {
       const artifact = await ctx.imports.preview(f.source, f.skill, signal(c.req.raw));
-      const preview: SkillPreviewResponse = { token: artifact.token, skills: artifact.skills.map(k => {
-        const existing = s.get("skill", k.id);
-        return {
-          id: k.id, description: k.description, files: k.files.length,
-          size: k.files.reduce((n, file) => n + decodedSize(file.data), 0),
-          hash: k.hash, security: k.security, installed: !!existing,
-          conflict: existing && existing.source !== f.source ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}` : undefined,
-        };
-      }) };
+      const preview: SkillPreviewResponse = {
+        token: artifact.token,
+        skills: artifact.skills.map((k) => {
+          const existing = s.get("skill", k.id);
+          return {
+            id: k.id,
+            description: k.description,
+            files: k.files.length,
+            size: sumBy(k.files, (file) => decodedSize(file.data)),
+            hash: k.hash,
+            security: k.security,
+            installed: !!existing,
+            conflict:
+              existing && existing.source !== f.source
+                ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}`
+                : undefined,
+          };
+        }),
+      };
       return c.json(preview);
     } catch (error) {
       if (error instanceof SkillConflict) throw error;
@@ -449,9 +539,19 @@ export function management(ctx: Ctx) {
     }
   });
   app.post("/skills", async (c) => {
-    const f = z.object({ token: z.string().uuid(), ids: z.array(skillIdSchema).min(1).max(100), projects: z.array(projectIdSchema).max(5000).default([]) }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({
+        token: z.string().uuid(),
+        ids: z.array(skillIdSchema).min(1).max(100),
+        projects: z.array(projectIdSchema).max(5000).default([]),
+      })
+      .strict()
+      .parse(await json(c.req.raw));
     const artifact = ctx.imports.get(f.token);
-    return c.json({ installed: input(() => installSkills(s, artifact.source, artifact.skills, f.ids, f.projects)) }, 201);
+    return c.json(
+      { installed: input(() => installSkills(s, artifact.source, artifact.skills, f.ids, f.projects)) },
+      201,
+    );
   });
   app.get("/skills/:id", (c) => {
     const skill = s.get("skill", c.req.param("id"));
@@ -467,25 +567,40 @@ export function management(ctx: Ctx) {
   });
   app.put("/skills/:id", async (c) => {
     const id = c.req.param("id");
-    if (!SKILL_ID.test(id)) throw new HTTPException(400, { message: "Skill names use lowercase letters, digits, ., _ and -" });
-    const f = z.object({ skillMd: z.string().max(1024 * 1024), revision: z.string().max(1024).nullable() }).strict().parse(await json(c.req.raw));
+    if (!SKILL_ID.test(id))
+      throw new HTTPException(400, { message: "Skill names use lowercase letters, digits, ., _ and -" });
+    const f = z
+      .object({ skillMd: z.string().max(1024 * 1024), revision: z.string().max(1024).nullable() })
+      .strict()
+      .parse(await json(c.req.raw));
     input(() => writeSkillMd(s, id, f.skillMd, f.revision));
     return c.json({ ok: true });
   });
   app.put("/skills/:id/projects", async (c) => {
     skillRequired(c.req.param("id"));
-    const f = z.object({ projects: z.array(projectIdSchema).max(5000) }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ projects: z.array(projectIdSchema).max(5000) })
+      .strict()
+      .parse(await json(c.req.raw));
     input(() => setSkillProjects(s, c.req.param("id"), f.projects));
     return c.json({ ok: true });
   });
   app.post("/skills/:id/update", async (c) => {
-    if (!skillRequired(c.req.param("id")).source) throw new HTTPException(400, { message: "This skill was written by hand; edit it instead" });
+    if (!skillRequired(c.req.param("id")).source)
+      throw new HTTPException(400, { message: "This skill was written by hand; edit it instead" });
     try {
       return c.json({ updated: await updateSkill(s, c.req.param("id"), ctx.imports.fetchFresh, signal(c.req.raw)) });
     } catch (error) {
       if (error instanceof SkillConflict) throw error;
       throw new HTTPException(502, { message: error instanceof Error ? error.message : "Update failed" });
     }
+  });
+  app.post("/skills/conflicts", async (c) => {
+    const f = z
+      .object({ path: z.string().min(1).max(4096), use: z.enum(["agentgate", "keep"]) })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json({ backup: input(() => ctx.skills.resolveConflict(f.path, f.use)) });
   });
   app.delete("/skills/:id", (c) => {
     skillRequired(c.req.param("id"));
@@ -503,31 +618,56 @@ export function management(ctx: Ctx) {
     return c.json(publicProject(saved, ctx.remote));
   });
   // A repository's env files (checkout-files.ts). Adding reads a file from this machine's checkout, so it is local only.
-  const filesRoot = () => { if (!ctx.files.root) throw new Error("Env files are off in this daemon"); return ctx.files.root; };
+  const filesRoot = () => {
+    if (!ctx.files.root) throw new Error("Env files are off in this daemon");
+    return ctx.files.root;
+  };
   app.post("/projects/files", async (c) => {
     local(c.env.listener);
-    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(4096) }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ project: projectIdSchema, path: z.string().min(1).max(4096) })
+      .strict()
+      .parse(await json(c.req.raw));
     return c.json({ project: await inputAsync(() => addFileAt(s, filesRoot(), f.project, f.path)) });
   });
   // A file's contents are secrets, so reading and editing them is local only.
   app.get("/projects/files/content", (c) => {
     local(c.env.listener);
-    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    const id = projectIdSchema.parse(c.req.query("id")),
+      path = z.string().min(1).max(512).parse(c.req.query("path"));
     return c.json(input(() => fileContent(s, filesRoot(), id, path)));
   });
   app.put("/projects/files/content", async (c) => {
     local(c.env.listener);
-    const f = z.object({ project: projectIdSchema, path: z.string().min(1).max(512), content: z.string().max(1024 * 1024), sha256: z.string().max(64).optional() }).strict().parse(await json(c.req.raw));
-    return c.json({ project: await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)) });
+    const f = z
+      .object({
+        project: projectIdSchema,
+        path: z.string().min(1).max(512),
+        content: z.string().max(1024 * 1024),
+        sha256: z.string().max(64).optional(),
+      })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json(await inputAsync(() => setFileContent(s, filesRoot(), f.project, f.path, f.content, f.sha256)));
   });
   app.delete("/projects/files", (c) => {
-    const id = projectIdSchema.parse(c.req.query("id")), path = z.string().min(1).max(512).parse(c.req.query("path"));
+    const id = projectIdSchema.parse(c.req.query("id")),
+      path = z.string().min(1).max(512).parse(c.req.query("path"));
     return c.json({ project: input(() => removeFiles(s, filesRoot(), id, [path])) });
   });
   // Virtual projects' endpoints. Every route that returns or changes a secret is loopback-only.
-  const remoteId = (c: { req: { query(name: string): string | undefined } }) => z.string().min(1).max(80).parse(c.req.query("id"));
-  const remoteBody = async (req: Request) => z.object({ id: z.string().min(1).max(80), servedBy: z.string().min(1).max(512).optional() }).strict().parse(await json(req));
-  const remoteChanged = <T>(fn: () => T): T => { const out = input(fn); ctx.remote.reconcile(); return out; };
+  const remoteId = (c: { req: { query(name: string): string | undefined } }) =>
+    z.string().min(1).max(80).parse(c.req.query("id"));
+  const remoteBody = async (req: Request) =>
+    z
+      .object({ id: z.string().min(1).max(80), servedBy: z.string().min(1).max(512).optional() })
+      .strict()
+      .parse(await json(req));
+  const remoteChanged = <T>(fn: () => T): T => {
+    const out = input(fn);
+    ctx.remote.reconcile();
+    return out;
+  };
   app.post("/projects/remote", async (c) => {
     local(c.env.listener);
     const f = await remoteBody(c.req.raw);
@@ -559,9 +699,7 @@ export function management(ctx: Ctx) {
   });
   app.post("/projects/scan", async (c) => {
     local(c.env.listener);
-    const { dir } = z
-      .object({ dir: z.string().min(1) })
-      .parse(await json(c.req.raw));
+    const { dir } = z.object({ dir: z.string().min(1) }).parse(await json(c.req.raw));
     const repos = input(() => scanRepos(dir.replace(/^~/, homedir())));
     // Scanned checkouts receive their project's skills on this machine.
     for (const r of repos) ctx.skills.register(r.path, r.repo, false);
@@ -570,15 +708,16 @@ export function management(ctx: Ctx) {
   });
   app.put("/checkouts/mirroring", async (c) => {
     local(c.env.listener);
-    const f = z.object({ path: z.string().min(1).max(4096), enabled: z.boolean() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ path: z.string().min(1).max(4096), enabled: z.boolean() })
+      .strict()
+      .parse(await json(c.req.raw));
     input(() => ctx.skills.setMirroring(f.path, f.enabled));
     return c.json({ ok: true });
   });
   app.get("/projects/tools", async (c) => {
     const result: ToolPreview[] = [];
-    for (const [alias, id] of Object.entries(
-      aliasesFor(s, c.req.query("id") ?? "*"),
-    )) {
+    for (const [alias, id] of Object.entries(aliasesFor(s, c.req.query("id") ?? "*"))) {
       const inst = s.get("mcp", id);
       if (inst?.mode === "perSession")
         result.push({
@@ -610,9 +749,7 @@ export function management(ctx: Ctx) {
       })
       .strict()
       .parse(await optionalJson(c.req.raw));
-    const name = f.name?.trim()
-      ? await relayed(async () => newNodeName(s, f.name!.trim()))
-      : undefined;
+    const name = f.name?.trim() ? await relayed(async () => newNodeName(s, f.name!.trim())) : undefined;
     if (f.method === "relay") {
       // The invite is a master key: only a local caller may see it.
       local(c.env.listener);
@@ -637,12 +774,8 @@ export function management(ctx: Ctx) {
         z.object({ url: z.url(), code: z.string().min(1) }).strict(),
       ])
       .parse(await json(c.req.raw));
-    const target =
-      "command" in f ? await relayed(async () => parseJoin(f.command)) : f;
-    if ("invite" in target)
-      return c.json(
-        await relayed(() => joinRelay(s, target.invite, target.force)),
-      );
+    const target = "command" in f ? await relayed(async () => parseJoin(f.command)) : f;
+    if ("invite" in target) return c.json(await relayed(() => joinRelay(s, target.invite, target.force)));
     const self = s.get("node", s.nodeId)?.url ?? (await tailscale())?.url;
     if (!self)
       throw new HTTPException(409, {
@@ -690,27 +823,37 @@ export function management(ctx: Ctx) {
     required(n, "node");
     return c.json(s.put("node", n!.id, { ...n!, ...f }));
   });
+  // Not local-only, like always-on: any paired machine's dashboard is turned on from here (operations.ts).
+  app.post("/nodes/:id/dashboard", async (c) => {
+    const { on } = z
+      .object({ on: z.boolean() })
+      .strict()
+      .parse(await json(c.req.raw));
+    required(s.get("node", c.req.param("id")), "node");
+    return c.json(input(() => setHealthDashboard(s, c.req.param("id"), on)));
+  });
   // Not local-only: updating an always-on server from wherever you are is the point. The node runs the release
   // checks itself and refuses copies another tool owns.
   app.post("/nodes/:id/update", async (c) => {
     const n = s.get("node", c.req.param("id"));
     required(n, "node");
-    return c.json(await inputAsync(() => updateNode(s, n!.id)));
+    return c.json(await inputAsync(() => updateTracked(s, n!.id)));
+  });
+  // Not local-only either, on purpose: see routeNode.
+  app.post("/nodes/:id/primary", async (c) => {
+    const { on } = z
+      .object({ on: z.boolean() })
+      .strict()
+      .parse(await json(c.req.raw));
+    const n = s.get("node", c.req.param("id"));
+    required(n, "node");
+    return c.json(await inputAsync(() => routeNode(s, n!.id, on)));
   });
   app.delete("/nodes/:id", async (c) => {
-    const id = c.req.param("id");
-    // The removed machine knows every endpoint's credentials, so each gets a new URL (shown again locally).
-    const endpoints = s.list("project").some(p => p.remote) ? (local(c.env.listener), regenerateAfterUnpair(s, id)) : [];
+    // New endpoint URLs and the new relay secret are credentials: only a local caller removes a machine that needs them.
+    const { endpoints, rotated } = await relayed(() => removeNode(s, c.req.param("id"), () => local(c.env.listener)));
     if (endpoints.length) ctx.remote.reconcile();
-    if (relayInvite(s) && relayNodes(s).some((n) => n.node === id)) {
-      // A relay member can only be removed by moving everyone else to a new secret.
-      local(c.env.listener);
-      if (peers(s).some((p) => p.node === id)) unpair(s, id);
-      const rotated = await relayed(() => rotateRelay(s));
-      return c.json({ ok: true, rotated: true, ...rotated, endpoints });
-    }
-    input(() => unpair(s, id));
-    return c.json({ ok: true, endpoints });
+    return c.json(rotated ? { ok: true, rotated: true, ...rotated, endpoints } : { ok: true, endpoints });
   });
   // Thread handoff. Connecting receives a T3 pairing token and a pairing link is one, credentials: local callers only.
   app.get("/t3", (c) => c.json(t3State(s)));
@@ -731,13 +874,20 @@ export function management(ctx: Ctx) {
   });
   // The app's T3 Code page asks for a T3 project sync when it opens; it runs in the background.
   app.post("/t3/projects/sync", (c) => {
-    void ctx.handoffs.syncProjects().catch(() => { });
+    void ctx.handoffs.syncProjects().catch(() => {});
     return c.json({ ok: true }, 202);
   });
   app.get("/threads", async (c) => c.json(await allNodes(ctx.handoffs)));
   app.get("/handoffs", (c) => c.json(ctx.handoffs.list().map((job) => ctx.handoffs.view(job))));
   app.post("/handoffs", async (c) => {
-    const f = z.object({ threadId: z.string().min(1).max(512), node: z.string().min(1).max(512).optional(), to: z.string().min(1).max(512).optional() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({
+        threadId: z.string().min(1).max(512),
+        node: z.string().min(1).max(512).optional(),
+        to: z.string().min(1).max(512).optional(),
+      })
+      .strict()
+      .parse(await json(c.req.raw));
     return c.json(await inputAsync(() => requestHandoff(ctx.handoffs, f)), 201);
   });
   app.get("/handoffs/:id", async (c) => {
@@ -746,13 +896,11 @@ export function management(ctx: Ctx) {
     return c.json(job);
   });
   app.patch("/settings", async (c) => {
-    const f = z.object({ revision: z.string().length(64), patch: settingsPatchSchema }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ revision: z.string().length(64), patch: settingsPatchSchema })
+      .strict()
+      .parse(await json(c.req.raw));
     return c.json(patchSettings(s, f.patch, f.revision));
-  });
-  app.put("/settings", async (c) => {
-    const f = settingsSchema.extend({ revision: z.string().length(64) }).strict().parse(await json(c.req.raw));
-    const { revision: expected, ...settings } = f;
-    return c.json(patchSettings(s, settings, expected));
   });
   app.get("/backup", (c) => {
     local(c.env.listener);
@@ -766,13 +914,30 @@ export function management(ctx: Ctx) {
   // Sharing reads this machine's own gh and Infisical logins, like coding-tool setup: loopback only.
   app.post("/logins/share", async (c) => {
     local(c.env.listener);
-    const f = z.object({ id: loginIdSchema.optional() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ id: loginIdSchema.optional() })
+      .strict()
+      .parse(await json(c.req.raw));
     return c.json({ results: await inputAsync(() => shareLogins(s, f.id)) });
+  });
+  // The browser login answers on this machine's loopback, so it signs in where the app's browser is: loopback only.
+  app.post("/logins/infisical/signin", async (c) => {
+    local(c.env.listener);
+    const url = await inputAsync(() => startInfisicalSignIn(s, ctx.abort.signal));
+    // On macOS the Infisical CLI opens the browser itself.
+    return c.json({ url, opened: process.platform === "darwin" });
   });
   // Receives a client secret: loopback only.
   app.put("/logins/infisical-identity", async (c) => {
     local(c.env.listener);
-    const f = z.object({ clientId: z.string().min(1).max(512), clientSecret: z.string().min(1).max(4096), siteUrl: z.string().url().max(2048).optional() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({
+        clientId: z.string().min(1).max(512),
+        clientSecret: z.string().min(1).max(4096),
+        siteUrl: z.string().url().max(2048).optional(),
+      })
+      .strict()
+      .parse(await json(c.req.raw));
     await inputAsync(() => setInfisicalIdentity(s, { ...f, siteUrl: f.siteUrl ?? infisicalSite() }));
     return c.json({ ok: true });
   });
@@ -791,7 +956,10 @@ export function management(ctx: Ctx) {
   });
   app.post("/desktop/add", async (c) => {
     local(c.env.listener);
-    const f = z.object({ expected: z.string().max(320).optional() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ expected: z.string().max(320).optional() })
+      .strict()
+      .parse(await json(c.req.raw));
     await inputAsync(() => desktop.add(s, f.expected));
     return c.json({ ok: true });
   });
@@ -802,7 +970,10 @@ export function management(ctx: Ctx) {
   });
   app.post("/desktop/use", async (c) => {
     local(c.env.listener);
-    const f = z.object({ accountUuid: z.string().min(1).max(64) }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ accountUuid: z.string().min(1).max(64) })
+      .strict()
+      .parse(await json(c.req.raw));
     await inputAsync(() => desktop.use(s, f.accountUuid));
     return c.json({ ok: true });
   });
@@ -813,7 +984,10 @@ export function management(ctx: Ctx) {
   });
   app.post("/desktop/gateway", async (c) => {
     local(c.env.listener);
-    const f = z.object({ on: z.boolean() }).strict().parse(await json(c.req.raw));
+    const f = z
+      .object({ on: z.boolean() })
+      .strict()
+      .parse(await json(c.req.raw));
     await inputAsync(() => desktop.gateway(s, f.on));
     return c.json({ ok: true });
   });
@@ -825,18 +999,22 @@ export function oauthCallback(ctx: Ctx) {
   return async (c: import("hono").Context<Env>) => {
     c.header("Cache-Control", "no-store");
     const { code, state, error, iss } = c.req.query();
-    if (error || !code || !state)
-      return c.text("Login failed. Return to Agentgate and start again.", 400);
+    if (error || !code || !state) return c.text("Login failed. Return to Agentgate and start again.", 400);
     try {
-      await finishLogin(ctx.s, state, code, iss);
-      return c.text(
-        "Logged in. You can close this window and return to Agentgate.",
-      );
+      const inst = ctx.s.get("mcp", await finishLogin(ctx.s, state, code, iss));
+      // Connect once signed in, so the server shows as available without a test; in the background, so this page
+      // answers at once, and tracked, so the daemon stops after it.
+      if (inst) {
+        const check = serverTools(ctx.s, inst).then(
+          () => {},
+          () => {},
+        );
+        ctx.pending.add(check);
+        void check.finally(() => ctx.pending.delete(check));
+      }
+      return c.text("Logged in. You can close this window and return to Agentgate.");
     } catch {
-      return c.text(
-        "Login failed or expired. Return to Agentgate and start again.",
-        400,
-      );
+      return c.text("Login failed or expired. Return to Agentgate and start again.", 400);
     }
   };
 }

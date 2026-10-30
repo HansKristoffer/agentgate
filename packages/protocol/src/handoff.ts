@@ -84,10 +84,19 @@ type HandoffTargetInfo = { node: string; server: boolean; available: boolean; re
 /** Where a thread on `threadNode` can go. Available: online, reachable over Tailscale, T3 Code connected with a valid
  * token, and not the thread's own node. Shared by the daemon (API, CLI, MCP tools) and the app. */
 export function handoffTargets(views: NodeThreads[], threadNode: string): HandoffTargetInfo[] {
-  return views.filter((v) => v.node !== threadNode).map((v) => {
-    const reason = v.error ?? (!v.t3?.connected ? (v.t3?.url ? "T3 Code token expired; pair T3 Code again there" : "T3 Code not connected") : undefined);
-    return { node: v.node, server: v.server, available: !reason, ...(reason && { reason }) };
-  }).sort((a, b) => a.node.localeCompare(b.node));
+  return views
+    .filter((v) => v.node !== threadNode)
+    .map((v) => {
+      const reason =
+        v.error ??
+        (!v.t3?.connected
+          ? v.t3?.url
+            ? "T3 Code token expired; pair T3 Code again there"
+            : "T3 Code not connected"
+          : undefined);
+      return { node: v.node, server: v.server, available: !reason, ...(reason && { reason }) };
+    })
+    .sort((a, b) => a.node.localeCompare(b.node));
 }
 /** `to: "server"`: the first available always-on node by node id. */
 export const firstServer = (targets: HandoffTargetInfo[]) => targets.find((t) => t.server && t.available);

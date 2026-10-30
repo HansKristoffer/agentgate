@@ -25,8 +25,29 @@ export const presets: Preset[] = [
   { id: "railway", label: "Railway", url: "https://mcp.railway.com" },
   { id: "context7", label: "Context7", url: "https://mcp.context7.com/mcp" },
   // Shopify's documented server is local: its docs and Admin/Storefront API schemas, no login.
-  { id: "shopify", label: "Shopify", command: "npx", args: ["-y", "@shopify/dev-mcp@latest"], note: "Shopify docs and API schemas" },
-  { id: "filesystem", label: "Filesystem", command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "."], mode: "perSession", note: "runs in each session's worktree" },
+  {
+    id: "shopify",
+    label: "Shopify",
+    command: "npx",
+    args: ["-y", "@shopify/dev-mcp@latest"],
+    note: "Shopify docs and API schemas",
+  },
+  // Signs in with the Infisical machine identity set under Shared logins (infisicalMcpEnv in logins.ts).
+  {
+    id: "infisical",
+    label: "Infisical",
+    command: "npx",
+    args: ["-y", "@infisical/mcp"],
+    note: "uses the Infisical machine identity from Shared logins",
+  },
+  {
+    id: "filesystem",
+    label: "Filesystem",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
+    mode: "perSession",
+    note: "runs in each session's worktree",
+  },
 ];
 
 export const preset = (id: string) => presets.find((p) => p.id === id);
@@ -39,19 +60,29 @@ export function parseHeaders(text: string | string[] = ""): Record<string, strin
   for (const line of (Array.isArray(text) ? text : text.split("\n")).map((l) => l.trim()).filter(Boolean)) {
     const m = line.match(/^([^:=\s]+)\s*[:=]\s*(.*)$/);
     if (!m) throw new Error(`bad header: ${line} (use Name: value)`);
-    const valid = new Headers(); valid.set(m[1]!, m[2]!);
+    const valid = new Headers();
+    valid.set(m[1]!, m[2]!);
     out[m[1]!] = m[2]!;
   }
   return out;
 }
 
 /** Build an instance record from a URL or a command. */
-export function newInstance(o: { id: string; template?: string; url?: string; headers?: Record<string, string>; command?: string; args?: string[]; mode?: McpInstance["mode"] }): McpInstance {
+export function newInstance(o: {
+  id: string;
+  template?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  command?: string;
+  args?: string[];
+  mode?: McpInstance["mode"];
+}): McpInstance {
   if (!validId(o.id)) throw new Error("name: letters, digits, - and _ (it becomes the tool prefix)");
   const base = { id: o.id, template: o.template ?? "custom", secrets: {}, fields: {} };
   if (o.url) {
     const url = new URL(o.url.trim()); // throws on a bad URL
-    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("use an https:// URL");
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname)))
+      throw new Error("use an https:// URL");
     return { ...base, transport: "http", mode: "shared", url: url.href, headers: o.headers ?? {} };
   }
   if (!o.command) throw new Error("a URL or a command is required");
@@ -62,10 +93,15 @@ export function fromPreset(p: Preset, id = p.id): McpInstance {
   return newInstance({ id, template: p.id, url: p.url, command: p.command, args: p.args, mode: p.mode });
 }
 
-/** A free name for a new instance: `posthog`, then `posthog-2`, … */
-export function freeId(taken: (id: string) => boolean, base: string): string {
-  if (!taken(base)) return base;
-  for (let i = 2; ; i++) if (!taken(`${base}-${i}`)) return `${base}-${i}`;
+/** A server's address without what may carry a credential: the query, the user and password. */
+export function readableEndpoint(url?: string) {
+  if (!url) return "Local command";
+  try {
+    const u = new URL(url);
+    return `${u.origin}${u.pathname}`;
+  } catch {
+    return "HTTP server";
+  }
 }
 
 // Older instances may use `{{x}}` / `{{secret.x}}` placeholders filled from fields and secrets.

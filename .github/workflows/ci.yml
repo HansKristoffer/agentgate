@@ -25,6 +25,19 @@ jobs:
             const title = context.payload.pull_request.title;
             if (!/^(feat|fix|perf|docs|style|refactor|test|build|ci|chore|revert)(\([^\r\n]+\))?!?: \S[^\r\n]*$/.test(title)) {
               core.setFailed('Use a conventional PR title, for example fix: handle startup failures or feat!: change the public API.');
+              return;
+            }
+            // The squash commit takes the PR title, and release-please writes the changelog
+            // and picks the version from it alone, so the title must cover the commits' types.
+            const rank = (subject) => {
+              const m = /^(\w+)(\([^)]*\))?(!)?:/.exec(subject);
+              if (!m) return 0;
+              return m[3] ? 3 : m[1] === 'feat' ? 2 : ['fix', 'perf'].includes(m[1]) ? 1 : 0;
+            };
+            const commits = await github.paginate(github.rest.pulls.listCommits, { ...context.repo, pull_number: context.payload.pull_request.number });
+            const top = commits.map((c) => c.commit.message.split('\n')[0]).sort((x, y) => rank(y) - rank(x))[0];
+            if (top && rank(top) > rank(title)) {
+              core.setFailed(`The PR title hides "${top}" from the changelog. Squashing keeps only the title, so give it that commit's type (${['', 'fix or perf', 'feat', 'a breaking !'][rank(top)]}).`);
             }
 
   check:
@@ -37,8 +50,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      - run: bun fmt --no-script --check .
       - run: bun run typecheck
       - run: bun test
       - run: bun run --filter @agentgate/relay test:workers
@@ -52,7 +66,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.4.2
+          bun-version: 1.4.4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt

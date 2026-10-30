@@ -37,13 +37,26 @@ export function t3StateDir(port: string, threads: string[]) {
   db.exec(SCHEMA);
   for (const id of threads) {
     db.run("INSERT INTO orchestration_v2_projection_threads VALUES (?, 'Fix the bug', NULL)", [id]);
-    const item = { id: `item:${id}`, threadId: id, runId: "run-1", ordinal: 1_000_001, type: "assistant_message", text: "earlier" };
-    const seq = db.query<{ sequence: number }, [string, string, string]>(`INSERT INTO orchestration_events (event_id, aggregate_kind, stream_id,
+    const item = {
+      id: `item:${id}`,
+      threadId: id,
+      runId: "run-1",
+      ordinal: 1_000_001,
+      type: "assistant_message",
+      text: "earlier",
+    };
+    const seq = db
+      .query<{ sequence: number }, [string, string, string]>(
+        `INSERT INTO orchestration_events (event_id, aggregate_kind, stream_id,
       stream_version, event_type, occurred_at, actor_kind, payload_json, metadata_json, application_event_version)
-      VALUES (?, 'thread', ?, 0, 'turn-item.updated', '2026-10-01T00:00:00.000Z', 'provider', ?, '{}', 2) RETURNING sequence`)
+      VALUES (?, 'thread', ?, 0, 'turn-item.updated', '2026-10-01T00:00:00.000Z', 'provider', ?, '{}', 2) RETURNING sequence`,
+      )
       .get(`event:${id}`, id, JSON.stringify(item))!.sequence;
-    db.run(`INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
-      VALUES (?, ?, 'run-1', 1000001, 'assistant_message', 'completed', '2026-10-01T00:00:00.000Z', ?)`, [item.id, id, JSON.stringify(item)]);
+    db.run(
+      `INSERT INTO orchestration_v2_projection_turn_items (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
+      VALUES (?, ?, 'run-1', 1000001, 'assistant_message', 'completed', '2026-10-01T00:00:00.000Z', ?)`,
+      [item.id, id, JSON.stringify(item)],
+    );
     db.run("INSERT INTO orchestration_v2_turn_item_positions VALUES (?, ?, 1000001)", [id, item.id]);
     db.run("UPDATE orchestration_v2_projection_metadata SET last_sequence = ?", [seq]);
   }
@@ -55,9 +68,15 @@ export function t3StateDir(port: string, threads: string[]) {
 export function timeline(dir: string, threadId: string) {
   const db = new Database(join(dir, "statev2.sqlite"), { readonly: true });
   try {
-    return db.query<{ ordinal: number; payload_json: string }, [string]>(
-      "SELECT ordinal, payload_json FROM orchestration_v2_projection_turn_items WHERE thread_id = ? ORDER BY ordinal").all(threadId)
-      .map((r) => { const p = JSON.parse(r.payload_json); return { ordinal: r.ordinal, type: p.type as string, text: p.text as string }; });
+    return db
+      .query<{ ordinal: number; payload_json: string }, [string]>(
+        "SELECT ordinal, payload_json FROM orchestration_v2_projection_turn_items WHERE thread_id = ? ORDER BY ordinal",
+      )
+      .all(threadId)
+      .map((r) => {
+        const p = JSON.parse(r.payload_json);
+        return { ordinal: r.ordinal, type: p.type as string, text: p.text as string };
+      });
   } finally {
     db.close();
   }

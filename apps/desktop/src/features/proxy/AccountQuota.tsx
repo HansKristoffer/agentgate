@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
+import { typedSwitch } from "hanzio";
 import { TriangleAlert } from "lucide-react";
+import { Spinner } from "@heroui/react";
 import type { AccountStatus } from "@agentgate/protocol";
 import { Badge, Quota } from "../../components/ui.tsx";
 import { ago, resetIn, windowName } from "../../views/utils.ts";
@@ -22,14 +24,27 @@ const subscribe = (listener: () => void) => {
 };
 const snapshot = () => Math.floor(Date.now() / 1000);
 /** The account's limits as small bars with their resets, on Overview and Accounts. Stale usage gets a warning icon; `onRefresh` makes it a refresh button. */
-export function AccountQuota({ account, onRefresh }: { account: AccountStatus; onRefresh?: () => void }) {
+export function AccountQuota({
+  account,
+  onRefresh,
+  refreshing,
+}: {
+  account: AccountStatus;
+  onRefresh?: () => void;
+  refreshing?: boolean;
+}) {
   const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
   const updated = account.observedAt ? `Updated ${ago(account.observedAt)}` : "Usage unknown";
   const stale = account.quotaState === "stale" && account.windows.length > 0;
   const staleNote = `Usage is out of date. ${updated}.${onRefresh ? " Click to refresh." : ""}`;
   return (
     <div className={stale ? "mini-quotas stale" : "mini-quotas"} title={updated}>
-      {stale &&
+      {refreshing ? (
+        <span className="stale-usage" title="Refreshing usage">
+          <Spinner size="sm" color="current" />
+        </span>
+      ) : (
+        stale &&
         (onRefresh ? (
           <button type="button" className="stale-usage" title={staleNote} aria-label={staleNote} onClick={onRefresh}>
             <TriangleAlert size={13} />
@@ -38,7 +53,8 @@ export function AccountQuota({ account, onRefresh }: { account: AccountStatus; o
           <span className="stale-usage" title={staleNote}>
             <TriangleAlert size={13} />
           </span>
-        ))}
+        ))
+      )}
       {account.windows.length ? (
         account.windows.map((w) => {
           const model = w.scope?.kind === "model" ? ` · ${w.scope.model}` : "";
@@ -75,15 +91,14 @@ export function QuotaNotes({ account }: { account: AccountStatus }) {
       {cooldowns.map((c) => (
         <div className="row" key={`${c.scope}:${c.model ?? ""}`}>
           <Badge>
-            {c.reason === "rate"
-              ? "Rate limited"
-              : c.reason === "model"
-                ? "Model unavailable"
-                : "Upstream backoff"}
+            {typedSwitch(
+              c.reason,
+              { rate: () => "Rate limited", model: () => "Model unavailable" },
+              () => "Upstream backoff",
+            )}
           </Badge>
           <small>
-            {c.model ?? "All models"} · retry in{" "}
-            {Math.max(1, Math.ceil((c.retryAt - now) / 1000))} s
+            {c.model ?? "All models"} · retry in {Math.max(1, Math.ceil((c.retryAt - now) / 1000))} s
           </small>
         </div>
       ))}

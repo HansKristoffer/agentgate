@@ -1,8 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { Button } from "@heroui/react";
-import { ArrowLeftRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
-import { firstServer, handoffJobSchema, handoffTargets, nodeThreadsSchema, type HandoffJob, type NodeThreads, type T3PairingLink, type T3Thread } from "@agentgate/protocol";
-import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle } from "../components/ui.tsx";
+import { Button, toast } from "@heroui/react";
+import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
+import { ArrowLeft, ArrowRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
+import {
+  firstServer,
+  handoffJobSchema,
+  handoffTargets,
+  nodeThreadsSchema,
+  type HandoffJob,
+  type NodeThreads,
+  type T3PairingLink,
+  type T3Thread,
+} from "@agentgate/protocol";
+import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle, ActionButton } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, elapsed, field, since } from "./utils.ts";
@@ -15,21 +25,31 @@ const STEPS: Record<string, string> = {
   finish: "Archiving here",
 };
 const TIMINGS: Record<string, string> = {
-  resolve: "Resolve", stop: "Stop", package: "Pack", send: "Send",
-  prepare: "Prepare", apply: "Apply code", place: "Place session", import: "Import", setup: "Setup", ready: "Ready", continue: "Continue",
+  resolve: "Resolve",
+  stop: "Stop",
+  package: "Pack",
+  send: "Send",
+  prepare: "Prepare",
+  apply: "Apply code",
+  place: "Place session",
+  import: "Import",
+  setup: "Setup",
+  ready: "Ready",
+  continue: "Continue",
 };
 const SHOW_FINISHED = 60_000;
 
-const timings = (job: HandoffJob) => job.timings
-  .filter((t) => TIMINGS[t.step])
-  .map((t) => `${TIMINGS[t.step]}${t.node === job.from ? "" : ` on ${t.node}`} ${(t.ms / 1000).toFixed(1)} s`)
-  .join(" · ");
+const timings = (job: HandoffJob) =>
+  job.timings
+    .filter((t) => TIMINGS[t.step])
+    .map((t) => `${TIMINGS[t.step]}${t.node === job.from ? "" : ` on ${t.node}`} ${(t.ms / 1000).toFixed(1)} s`)
+    .join(" · ");
 
 /** What a handoff is doing, or how it ended. B prepares while A stops and packs, so those steps mention it. */
 function progress(j: HandoffJob) {
   if (j.status === "failed") return `Failed: ${j.error}`;
   if (j.status !== "running") return `Running on ${j.to} · ${ago(j.updatedAt)}`;
-  const step = j.step === "await" ? `Importing on ${j.to}` : STEPS[j.step] ?? j.step;
+  const step = j.step === "await" ? `Importing on ${j.to}` : (STEPS[j.step] ?? j.step);
   return ["resolve", "stop", "package"].includes(j.step) ? `${step} · Preparing ${j.to}` : step;
 }
 
@@ -53,7 +73,15 @@ function cannotConnect(v: NodeThreads, local: boolean) {
 
 /** Each machine's T3 Code connection, and connecting it, from here or for another machine. Each machine's T3 Code
  * creates its own pairing links (`t3 pair`): agentgate redeems one to connect, or shows one to connect a T3 Code client. */
-function MachinesDialog({ views, here, local, conn, perform, connected, close }: Pick<ViewProps, "local" | "perform"> & {
+function MachinesDialog({
+  views,
+  here,
+  local,
+  conn,
+  perform,
+  connected,
+  close,
+}: Pick<ViewProps, "local" | "perform"> & {
   views: NodeThreads[];
   here: string;
   conn: ViewProps["connection"];
@@ -66,19 +94,24 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
   const elsewhere = pairingNode !== here;
   const at = (node: string) => `?node=${encodeURIComponent(node)}`;
 
-  const connect = (node: string) => perform(async () => {
-    try {
-      await request(conn, `/t3/connect${at(node)}`, "POST", { create: true });
-    } catch (e) {
-      setPairingNode(node);
-      throw e;
-    }
-    setPairingNode(undefined);
-    await connected();
-  }, `T3 Code connected on ${node}`);
-  const createLink = (node: string, tailscale: boolean) => perform(async () => {
-    setLink({ node, ...await request<T3PairingLink>(conn, `/t3/pairing-link${at(node)}`, "POST", tailscale ? { tailscale } : {}) });
-  });
+  const connect = (node: string) =>
+    perform(async () => {
+      try {
+        await request(conn, `/t3/connect${at(node)}`, "POST", { create: true });
+      } catch (e) {
+        setPairingNode(node);
+        throw e;
+      }
+      setPairingNode(undefined);
+      await connected();
+    }, `T3 Code connected on ${node}`);
+  const createLink = (node: string, tailscale: boolean) =>
+    perform(async () => {
+      setLink({
+        node,
+        ...(await request<T3PairingLink>(conn, `/t3/pairing-link${at(node)}`, "POST", tailscale ? { tailscale } : {})),
+      });
+    });
 
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -90,29 +123,42 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
       close();
     }, `T3 Code connected on ${node}`);
   };
-  const disconnect = (node: string) => perform(
-    () => request(conn, `/t3?node=${encodeURIComponent(node)}`, "DELETE"),
-    `T3 Code disconnected on ${node}`,
-  );
+  const disconnect = (node: string) =>
+    perform(async () => {
+      await request(conn, `/t3?node=${encodeURIComponent(node)}`, "DELETE");
+      await connected();
+    }, `T3 Code disconnected on ${node}`);
 
   return (
     <Modal title="Machines" close={close}>
-      <p className="muted">Each machine's agentgate talks to the T3 Code running next to it. Set up any of them from here.</p>
+      <p className="muted">
+        Each machine's agentgate talks to the T3 Code running next to it. Set up any of them from here.
+      </p>
       <Panel>
         {views.map((v) => (
           <div className="item" key={v.node}>
-            <div className="machine-icon"><Monitor size={16} /></div>
+            <div className="machine-icon">
+              <Monitor size={16} />
+            </div>
             <div className="grow">
               <div className="row">
                 <strong>{v.node}</strong>
                 {v.node === here && <Badge>This node</Badge>}
                 {v.server && <Badge>Server</Badge>}
               </div>
-              <small>{connection(v)}{v.t3?.label ? ` · ${v.t3.label}` : ""}</small>
+              <small>
+                {connection(v)}
+                {v.t3?.label ? ` · ${v.t3.label}` : ""}
+              </small>
             </div>
             {needsT3(v) ? (
               <span title={cannotConnect(v, local)}>
-                <Button size="sm" variant="tertiary" isDisabled={!!cannotConnect(v, local)} onPress={() => void connect(v.node)}>
+                <Button
+                  size="sm"
+                  variant="tertiary"
+                  isDisabled={!!cannotConnect(v, local)}
+                  onPress={() => void connect(v.node)}
+                >
                   Connect T3 Code
                 </Button>
               </span>
@@ -120,12 +166,25 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
               <Badge good={!v.error}>{v.error ? "Unavailable" : "Connected"}</Badge>
             )}
             {(!cannotConnect(v, local) || (v.t3?.url && !v.error)) && (
-              <RowMenu label={`More for ${v.node}`} items={[
-                !cannotConnect(v, local) && { label: "Create pairing link", onAction: () => void createLink(v.node, false) },
-                !cannotConnect(v, local) && { label: "Create pairing link over Tailscale", onAction: () => void createLink(v.node, true) },
-                !cannotConnect(v, local) && { label: "Connect with a pasted link", onAction: () => setPairingNode(v.node) },
-                !!v.t3?.url && !v.error && { label: "Disconnect T3 Code", danger: true, onAction: () => void disconnect(v.node) },
-              ]} />
+              <RowMenu
+                label={`More for ${v.node}`}
+                items={[
+                  !cannotConnect(v, local) && {
+                    label: "Create pairing link",
+                    onAction: () => void createLink(v.node, false),
+                  },
+                  !cannotConnect(v, local) && {
+                    label: "Create pairing link over Tailscale",
+                    onAction: () => void createLink(v.node, true),
+                  },
+                  !cannotConnect(v, local) && {
+                    label: "Connect with a pasted link",
+                    onAction: () => setPairingNode(v.node),
+                  },
+                  !!v.t3?.url &&
+                    !v.error && { label: "Disconnect T3 Code", danger: true, onAction: () => void disconnect(v.node) },
+                ]}
+              />
             )}
           </div>
         ))}
@@ -134,14 +193,27 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
         <Panel title={`Pairing link for ${link.node}`}>
           <div className="item">
             <span className="grow">
-              <small><code>{link.url}</code></small>
+              <small>
+                <code>{link.url}</code>
+              </small>
               <small>
                 Open it in T3 Code on the machine you connect from, under Settings → Connections. It works once
-                {link.expiresAt ? `, until ${new Date(link.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : ""}.
+                {link.expiresAt
+                  ? `, until ${new Date(link.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+                  : ""}
+                .
               </small>
-              {link.notes.map((n) => <small key={n}>{n}</small>)}
+              {link.notes.map((n) => (
+                <small key={n}>{n}</small>
+              ))}
             </span>
-            <Button isIconOnly size="sm" variant="ghost" aria-label="Copy pairing link" onPress={() => void perform(() => navigator.clipboard.writeText(link.url), "Pairing link copied")}>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="Copy pairing link"
+              onPress={() => void perform(() => navigator.clipboard.writeText(link.url), "Pairing link copied")}
+            >
               <Copy size={15} />
             </Button>
           </div>
@@ -152,24 +224,39 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
           <ol className="steps">
             <li>
               <strong>Turn on Network access in T3 Code{elsewhere ? ` on ${pairingNode}` : ""}</strong>
-              <p>Settings → Connections. T3 Code only offers pairing links while it is on. agentgate itself connects on that machine only.</p>
+              <p>
+                Settings → Connections. T3 Code only offers pairing links while it is on. agentgate itself connects on
+                that machine only.
+              </p>
             </li>
             <li>
               <strong>Create a pairing link there</strong>
-              <p>Authorized clients → Create link. Name it Agentgate and choose Standard: agentgate needs to view and operate threads, not to manage access or the relay.</p>
+              <p>
+                Authorized clients → Create link. Name it Agentgate and choose Standard: agentgate needs to view and
+                operate threads, not to manage access or the relay.
+              </p>
             </li>
             <li>
               <strong>Paste it below within five minutes</strong>
               <p>
-                Any of the links works{elsewhere ? `; agentgate sends it to ${pairingNode} over your paired connection` : ""}.
-                Then you can turn Network access off again; agentgate keeps working for 30 days and tells you when to pair again.
+                Any of the links works
+                {elsewhere ? `; agentgate sends it to ${pairingNode} over your paired connection` : ""}. Then you can
+                turn Network access off again; agentgate keeps working for 30 days and tells you when to pair again.
               </p>
             </li>
           </ol>
           <Panel>
             <form className="item" onSubmit={submit}>
-              <Field className="field grow" label={`Pairing link from ${pairingNode}`} name="pairingUrl" isRequired placeholder="http://192.168.1.10:3773/pair#token=…" />
-              <Button type="submit" size="sm">Connect</Button>
+              <Field
+                className="field grow"
+                label={`Pairing link from ${pairingNode}`}
+                name="pairingUrl"
+                isRequired
+                placeholder="http://192.168.1.10:3773/pair#token=…"
+              />
+              <Button type="submit" size="sm">
+                Connect
+              </Button>
             </form>
           </Panel>
         </>
@@ -179,13 +266,25 @@ function MachinesDialog({ views, here, local, conn, perform, connected, close }:
 }
 
 /** A thread laid out like T3 Code's sidebar row, so the same thread is easy to find in both apps. */
-function ThreadRow({ thread: t, machine, here, action }: { thread: T3Thread; machine: NodeThreads; here: string; action: ReactNode }) {
+function ThreadRow({
+  thread: t,
+  machine,
+  here,
+  action,
+}: {
+  thread: T3Thread;
+  machine: NodeThreads;
+  here: string;
+  action: ReactNode;
+}) {
   const where = machine.node === here ? " (this machine)" : machine.server ? " (server)" : "";
   return (
     <div className="item">
       <div className="grow thread">
         <div className="thread-line">
-          <span><span>{t.project}</span></span>
+          <span>
+            <span>{t.project}</span>
+          </span>
           {t.running ? (
             <span className="working">
               <LoaderCircle size={12} />
@@ -205,7 +304,10 @@ function ThreadRow({ thread: t, machine, here, action }: { thread: T3Thread; mac
         <div className="thread-line">
           <span>
             <Monitor size={12} />
-            <span>{machine.node}{where}</span>
+            <span>
+              {machine.node}
+              {where}
+            </span>
           </span>
         </div>
       </div>
@@ -227,18 +329,21 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
     try {
       // Validated like status: the daemon may be another machine's, on another version.
       const parsed = nodeThreadsSchema.array().safeParse(await request(conn, "/threads"));
-      if (!parsed.success) throw new Error("A machine returned incompatible thread data. Update Agentgate on every machine.");
+      if (!parsed.success)
+        throw new Error("A machine returned incompatible thread data. Update Agentgate on every machine.");
       const next = parsed.data;
       // Jobs started from this app, until they finish: the node driving one may stop listing it while it runs.
       const job = async (s: (typeof started)[number]) => {
-        const answer = await request(conn, `/handoffs/${s.handoffId}?node=${encodeURIComponent(s.node)}`).catch(() => undefined);
+        const answer = await request(conn, `/handoffs/${s.handoffId}?node=${encodeURIComponent(s.node)}`).catch(
+          () => undefined,
+        );
         return handoffJobSchema.safeParse(answer).data;
       };
       const tracked = await Promise.all(started.map(job));
 
       if (!live.current) return;
       setNodes(next);
-      const found = tracked.filter((j): j is HandoffJob => !!j);
+      const found = tracked.filter(isTruthy);
       setJobs((old) => ({ ...old, ...Object.fromEntries(found.map((j) => [j.id, j])) }));
       const finished = new Set(found.filter((j) => j.status !== "running").map((j) => j.id));
       if (finished.size) setStarted((old) => old.filter((s) => !finished.has(s.handoffId)));
@@ -249,7 +354,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
   };
   // Opening the page catches T3 Code up with projects added on other machines.
   useEffect(() => {
-    if (data.settings.t3ProjectSync) void request(conn, "/t3/projects/sync", "POST").catch(() => { });
+    if (data.settings.t3ProjectSync) void request(conn, "/t3/projects/sync", "POST").catch(() => {});
   }, [conn]);
   useEffect(() => {
     live.current = true;
@@ -271,8 +376,11 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
   for (const j of [...views.flatMap((v) => v.jobs), ...Object.values(jobs)]) {
     if ((all.get(j.id)?.updatedAt ?? 0) <= j.updatedAt) all.set(j.id, j);
   }
-  const recent = [...all.values()].filter((j) => j.role === "source" && (j.status === "running" || Date.now() - j.updatedAt < SHOW_FINISHED));
-  const runningFor = (t: T3Thread) => recent.find((j) => j.thread === t.id && j.from === t.node && j.status === "running");
+  const recent = [...all.values()].filter(
+    (j) => j.role === "source" && (j.status === "running" || Date.now() - j.updatedAt < SHOW_FINISHED),
+  );
+  const runningFor = (t: T3Thread) =>
+    recent.find((j) => j.thread === t.id && j.from === t.node && j.status === "running");
   const servers = views.filter((v) => v.server);
   const self = views.find((v) => v.node === here);
   const online = views.filter((v) => v.online).length;
@@ -284,20 +392,51 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
     const target = toHere ? list.find((x) => x.node === here) : firstServer(list);
     if (!toHere && !list.some((x) => x.server)) return null; // no other server: nothing to offer
     const job = runningFor(t);
-    const reason = !t.claude ? "Only Claude Code threads can be handed off"
-      : job ? "A handoff of this thread is already running"
-        : !target ? list.filter((x) => x.server).map((x) => `${x.node}: ${x.reason}`).join("; ")
-          : !target.available ? target.reason : undefined;
+    const reason = !t.claude
+      ? "Only Claude Code threads can be handed off"
+      : job
+        ? "A handoff of this thread is already running"
+        : !target
+          ? list
+              .filter((x) => x.server)
+              .map((x) => `${x.node}: ${x.reason}`)
+              .join("; ")
+          : !target.available
+            ? target.reason
+            : undefined;
     return (
       <span title={reason}>
-        <Button size="sm" variant="tertiary" isDisabled={!!reason} onPress={() => void perform(async () => {
-          const body = { threadId: t.id, node: t.node, to: toHere ? "here" : "server" };
-          const r = await request<{ handoffId: string; node: string }>(conn, "/handoffs", "POST", body);
-          setStarted((old) => [...old, { handoffId: r.handoffId, node: r.node }]);
-        }, `Handing ${t.title} to ${toHere ? here : target!.node}`)}>
-          <ArrowLeftRight size={14} />
-          {toHere ? "To here" : "To server"}
-        </Button>
+        <ActionButton
+          size="sm"
+          variant="tertiary"
+          isDisabled={!!reason}
+          pendingKey={`handoff:${t.id}`}
+          onPress={() =>
+            void perform(
+              async () => {
+                const body = { threadId: t.id, node: t.node, to: toHere ? "here" : "server" };
+                const r = await request<{ handoffId: string; node: string }>(conn, "/handoffs", "POST", body);
+                setStarted((old) => [...old, { handoffId: r.handoffId, node: r.node }]);
+                toast(`Handing ${t.title} to ${toHere ? here : target!.node}`);
+              },
+              undefined,
+              `handoff:${t.id}`,
+            )
+          }
+        >
+          {/* The arrow points where the thread goes: back to this machine, or off to the server. */}
+          {toHere ? (
+            <>
+              <ArrowLeft size={14} />
+              To <u>here</u>
+            </>
+          ) : (
+            <>
+              To <u>server</u>
+              <ArrowRight size={14} />
+            </>
+          )}
+        </ActionButton>
       </span>
     );
   };
@@ -312,59 +451,109 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       </HeaderActions>
       {machinesOpen && (
         <MachinesDialog
-          views={views} here={here} local={local} conn={conn} perform={perform}
+          views={views}
+          here={here}
+          local={local}
+          conn={conn}
+          perform={perform}
           connected={load}
           close={() => setMachinesOpen(false)}
         />
       )}
       {recent.length > 0 && (
-        <Panel title="Handoffs">
+        <Panel title="Recent handoffs">
           {recent.map((j) => (
             <div className="item" key={j.id}>
               <div className="grow">
                 <strong>{j.title ?? j.thread}</strong>
-                <small>{j.from} → {j.to} · {progress(j)}</small>
+                <small>
+                  {j.from} → {j.to} · {progress(j)}
+                </small>
                 {j.status !== "running" && j.status !== "failed" && <small>{timings(j)}</small>}
-                {j.warnings.map((w) => <small key={w}>{w}</small>)}
+                {j.warnings.map((w) => (
+                  <small key={w}>{w}</small>
+                ))}
               </div>
-              <Badge good={j.status === "imported" || j.status === "done"}>{j.status === "running" ? "Moving" : j.status === "failed" ? "Failed" : "Done"}</Badge>
+              <Badge good={j.status === "imported" || j.status === "done"}>
+                {typedSwitch(j.status, {
+                  running: () => "Moving",
+                  failed: () => "Failed",
+                  ...typedSwitchGroup(j.status, ["imported", "done"], () => "Done"),
+                })}
+              </Badge>
             </div>
           ))}
         </Panel>
       )}
-      <Panel title="Active threads" foot={!servers.length ? "Mark a machine as a server (Always on, on the Machines page) to use To server." : undefined}>
-        {error && <div className="item"><small>{error}</small></div>}
+      <Panel
+        title="Active threads"
+        foot={!servers.length ? "Mark a machine as always on (in its ⋯ menu on Machines) to use To server." : undefined}
+      >
+        {error && (
+          <div className="item">
+            <small>{error}</small>
+          </div>
+        )}
         {!views.some((v) => v.threads.length) ? (
           <Empty>
             <SquareTerminal size={22} />
-            <strong>{self?.t3?.connected ? "No active threads." : "Connect T3 Code on this machine to see its threads."}</strong>
+            <strong>
+              {self?.t3?.connected ? "No active threads." : "Connect T3 Code on this machine to see its threads."}
+            </strong>
             {canConnect && (
               <Button size="sm" variant="tertiary" onPress={() => setMachinesOpen(true)}>
                 Connect T3 Code
               </Button>
             )}
           </Empty>
-        ) : views.filter((v) => v.threads.length).map((v) => v.threads.map((t) => (
-          <ThreadRow key={`${v.node}:${t.id}`} thread={t} machine={v} here={here} action={action(t)} />
-        )))}
+        ) : (
+          views
+            .filter((v) => v.threads.length)
+            .map((v) =>
+              v.threads.map((t) => (
+                <ThreadRow key={`${v.node}:${t.id}`} thread={t} machine={v} here={here} action={action(t)} />
+              )),
+            )
+        )}
       </Panel>
-      <Panel title="Projects">
+      <Panel title="Options">
         <Toggle
           label="Keep projects in sync"
           description="Every machine with T3 Code connected adds the GitHub projects your other machines have, cloning them into its clone folder. Removing a project stays on that machine."
           isSelected={data.settings.t3ProjectSync}
-          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }))}
+          onChange={(on) =>
+            perform(
+              () =>
+                request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }),
+              undefined,
+              "t3ProjectSync",
+            )
+          }
         />
-        {views.filter((v) => v.t3?.projectSyncError).map((v) => (
-          <div className="item" key={v.node}><small>{v.node}: {v.t3!.projectSyncError}</small></div>
-        ))}
-      </Panel>
-      <Panel title="Handoffs">
+        {views
+          .filter((v) => v.t3?.projectSyncError)
+          .map((v) => (
+            <div className="item" key={v.node}>
+              <small>
+                {v.node}: {v.t3!.projectSyncError}
+              </small>
+            </div>
+          ))}
         <Toggle
           label="Show messages from other machines"
           description="A thread that comes back shows the messages it got on your other machines. agentgate writes them into T3 Code's own database, which T3 Code does not support; turn this off if T3 Code misbehaves after a handoff."
           isSelected={data.settings.t3HandoffHistory}
-          onChange={(on) => void perform(() => request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3HandoffHistory: on } }))}
+          onChange={(on) =>
+            perform(
+              () =>
+                request(conn, "/settings", "PATCH", {
+                  revision: data.settingsRevision,
+                  patch: { t3HandoffHistory: on },
+                }),
+              undefined,
+              "t3HandoffHistory",
+            )
+          }
         />
       </Panel>
     </>

@@ -31,7 +31,7 @@ const features = [
     image: cardMachines,
     alt: "Paired machines next to a log of requests, refreshes and account switches",
     title: "Every machine, in sync",
-    body: "Pair your laptop with a desktop or an always-on server over Tailscale. Accounts, tools and mappings follow you, and each machine keeps working when the others are offline.",
+    body: "Pair your laptop with a desktop or an always-on server, over Tailscale or an end-to-end encrypted relay. Accounts, tools and mappings follow you, and each machine keeps working when the others are offline.",
   },
 ];
 
@@ -70,7 +70,7 @@ const mac =
     <title>Agentgate - one pool for every coding agent</title>
     <meta
       name="description"
-      content="Agentgate pools your Claude and Codex subscriptions, gives each repository its own MCP tools, and shares your setup between your machines over Tailscale."
+      content="Agentgate pools your Claude and Codex subscriptions, gives each repository its own MCP tools, and shares your setup between your machines over Tailscale or an end-to-end encrypted relay."
     />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
@@ -167,8 +167,8 @@ const mac =
             <span class="num">3</span>
             <h3>Point your coding tools at it</h3>
             <p>
-              Agentgate writes the settings for Claude Code and Codex, and gives you the two paths
-              to paste into T3 Code. Every session from then on goes through the pool.
+              Installing the service routes the Claude Code, Codex and Cursor you already use through
+              agentgate, so T3 Code needs no settings. Every session from then on goes through the pool.
             </p>
           </li>
         </ol>
@@ -178,15 +178,14 @@ const mac =
           <pre><code>{`npm install -g @hanskristoffer/agentpool
 
 agentgate init
+agentgate service install
 agentgate login claude --label work
-agentgate login codex --label personal
-agentgate setup
-agentgate service install`}</code></pre>
+agentgate login codex --label personal`}</code></pre>
         </div>
 
         <p class="fineprint">
-          Needs <a href="https://tailscale.com">Tailscale</a> on each machine you want to pair, and
-          the <code>claude</code> or <code>codex</code> CLI for signing in. No npm? Use the{" "}
+          Pairs machines over <a href="https://tailscale.com">Tailscale</a> or an end-to-end encrypted
+          relay, and needs the <code>claude</code> or <code>codex</code> CLI for signing in. No npm? Use the{" "}
           <a href={`${REPO}#install`}>install script</a> instead.
         </p>
       </section>
@@ -194,9 +193,9 @@ agentgate service install`}</code></pre>
       <section class="trust">
         <h2>Your setup stays yours.</h2>
         <p>
-          Agentgate runs on your own machines. There is no account to make and no server of ours in
-          the middle: your logins and settings live in a local database, and travel only to the
-          machines you pair, over your own Tailscale network.
+          Agentgate runs on your own machines. There is no account to make: your logins and settings
+          live in a local database, and travel only to the machines you pair, directly over your own
+          Tailscale network or through a relay that only ever sees them encrypted.
         </p>
         <p>
           That also means you should pair only machines you control, since each one holds working
