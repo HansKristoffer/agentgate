@@ -409,6 +409,8 @@ export const statusSchema = z.object({
   ),
   /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: z.array(z.string()),
+  /** Clashes the user settled by keeping what was there; Agentgate's copy isn't linked at these paths. */
+  skillKept: z.array(z.string()).default([]),
   skillRepos: z
     .array(
       z.object({

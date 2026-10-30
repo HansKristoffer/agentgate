@@ -227,6 +227,7 @@ export function management(ctx: Ctx) {
       projects: s.list("project").map((p) => publicProject(p, ctx.remote)),
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
+      skillKept: ctx.skills.kept(),
       skillHealth: ctx.skills.health(),
       skillRepos: skillRepoSummaries(s),
       fileErrors: filesErrors(s),
@@ -586,6 +587,13 @@ export function management(ctx: Ctx) {
       if (error instanceof SkillConflict) throw error;
       throw new HTTPException(502, { message: error instanceof Error ? error.message : "Update failed" });
     }
+  });
+  app.post("/skills/conflicts", async (c) => {
+    const f = z
+      .object({ path: z.string().min(1).max(4096), use: z.enum(["agentgate", "keep"]) })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json({ backup: input(() => ctx.skills.resolveConflict(f.path, f.use)) });
   });
   app.delete("/skills/:id", (c) => {
     skillRequired(c.req.param("id"));

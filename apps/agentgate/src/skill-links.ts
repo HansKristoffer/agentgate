@@ -2,9 +2,11 @@ import type { SkillHealth } from "@agentgate/protocol";
 import { getErrorMessage, safeJsonParse } from "hanzio";
 import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema } from "@agentgate/protocol";
 import {
+  cpSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -21,7 +23,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
-import { CONFIG_DIR, SKILL_ID, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, SKILL_ID, type Store } from "./store.ts";
 
 export const SKILLS_DIR = join(CONFIG_DIR, "skills");
 const EXCLUDE_HEADER = "# agentgate skills (symlinks into ~/.config/agentgate/skills)";
@@ -163,6 +165,49 @@ export class SkillLinks {
 
   conflicts(): string[] {
     return safeJsonParse<string[]>(this.s.local("skillConflicts") ?? "[]").data ?? [];
+  }
+
+  /** Clashes the user settled by keeping what was there: no link of ours there on this machine, and no report. */
+  kept(): string[] {
+    return safeJsonParse<string[]>(this.s.local("skillKept") ?? "[]").data ?? [];
+  }
+
+  /**
+   * Settle a clash at `path`. "agentgate" moves what is there into skill-backups next to the store and links our copy;
+   * "keep" leaves it and stops linking ours there. Only reported or kept clashes are touched, never a folder the
+   * repository tracks. Returns where the old entry went.
+   */
+  resolveConflict(path: string, use: "agentgate" | "keep"): string | undefined {
+    const kept = this.kept();
+    if (!this.root || (!this.conflicts().includes(path) && !kept.includes(path)))
+      throw new Error(`${path} is not a skill that clashes with Agentgate's`);
+    if (use === "keep") {
+      this.s.setLocal("skillKept", JSON.stringify([...new Set([...kept, path])]));
+      this.sync();
+      return;
+    }
+    if (this.root === SKILLS_DIR && !path.startsWith(CONFIG_DIR + sep)) liveOnly("Replacing a skill folder");
+    const tracked = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", basename(path)], {
+      cwd: dirname(path),
+      stdout: "ignore",
+      stderr: "ignore",
+      timeout: 10_000,
+    });
+    if (tracked.exitCode === 0)
+      throw new Error(`${path} is part of its repository. Rename or remove it there, or keep it.`);
+    const backups = join(dirname(this.root), "skill-backups");
+    mkdirSync(backups, { recursive: true });
+    const backup = join(mkdtempSync(join(backups, `${basename(path)}-`)), basename(path));
+    try {
+      (this.io.rename ?? renameSync)(path, backup);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EXDEV") throw error;
+      cpSync(path, backup, { recursive: true, verbatimSymlinks: true });
+      rmSync(path, { recursive: true, force: true });
+    }
+    this.s.setLocal("skillKept", JSON.stringify(kept.filter((p) => p !== path)));
+    this.sync();
+    return backup;
   }
 
   /** Remember the main checkout of the repo containing `path`. Returns it, or undefined for non-repos. */
@@ -352,11 +397,12 @@ export class SkillLinks {
           .filter((r) => existsSync(join(root, r.id, "SKILL.md")) && existsSync(join(root, r.id, MARKER)))
           .map((r) => r.id),
       ),
-      conflicts: string[] = [];
+      conflicts: string[] = [],
+      kept = { asked: new Set(this.kept()), still: [] as string[] };
     const global = (this.s.get("project", "*")?.skills ?? []).filter((id) => all.has(id));
     for (const [dir, on] of this.globalDirs())
       this.attempt(dir, () => {
-        this.linkDir(root, dir, on ? global : [], conflicts);
+        this.linkDir(root, dir, on ? global : [], conflicts, kept);
       });
     const checkouts = this.checkouts(),
       live: Record<string, string> = {},
@@ -394,7 +440,8 @@ export class SkillLinks {
           ...(i === 0 || existsSync(join(tree, ".claude", "skills")) ? [join(tree, ".claude", "skills")] : []),
           join(tree, ".agents", "skills"),
         ]);
-        for (const dir of dirs) this.attempt(dir, () => ignoreLinks(dir, this.linkDir(root, dir, wanted, conflicts)));
+        for (const dir of dirs)
+          this.attempt(dir, () => ignoreLinks(dir, this.linkDir(root, dir, wanted, conflicts, kept)));
         // Mirrors stay visible: they are relative, so committing them gives every clone both agents' skills.
         exclude(common, wanted);
         if (wanted.length || mirrored.length || this.mirroring(main))
@@ -409,6 +456,9 @@ export class SkillLinks {
     if (Object.keys(live).length !== Object.keys(checkouts).length) this.s.setLocal("checkouts", JSON.stringify(live));
     const text = conflicts.length ? JSON.stringify(conflicts) : undefined;
     if (text !== this.s.local("skillConflicts")) this.s.setLocal("skillConflicts", text);
+    // A kept entry that is gone, or no longer clashes, is forgotten, so ours is linked there again once the place is free.
+    const keptText = kept.still.length ? JSON.stringify(kept.still) : undefined;
+    if (keptText !== this.s.local("skillKept")) this.s.setLocal("skillKept", keptText);
   }
 
   /** A skill the repo carries for one agent only, linked for the other with a relative link, so it holds in every worktree.
@@ -472,9 +522,15 @@ export class SkillLinks {
     }
   }
 
-  /** Make our links in `dir` exactly `wanted`. Entries we did not create are never touched; a clash is reported. */
-  /** Returns the names now linked. */
-  private linkDir(root: string, dir: string, wanted: string[], conflicts: string[]): string[] {
+  /** Make our links in `dir` exactly `wanted`. Entries we did not create are never touched; a clash is reported unless
+   * the user kept it. Returns the names now linked. */
+  private linkDir(
+    root: string,
+    dir: string,
+    wanted: string[],
+    conflicts: string[],
+    kept: { asked: Set<string>; still: string[] },
+  ): string[] {
     let entries: string[] = [];
     try {
       entries = readdirSync(dir);
@@ -488,7 +544,8 @@ export class SkillLinks {
         target = join(root, id);
       if (lstatSync(path, { throwIfNoEntry: false })) {
         if (!this.ours(root, path)) {
-          conflicts.push(path);
+          if (kept.asked.has(path)) kept.still.push(path);
+          else conflicts.push(path);
           continue;
         }
         if (readlinkSync(path) === target) continue;
