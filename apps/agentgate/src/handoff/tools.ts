@@ -1,8 +1,6 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Server, type CallToolResult, type ListToolsResult } from "@modelcontextprotocol/server";
 import { getErrorMessage } from "hanzio";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { BUILTIN_ALIAS, type Source } from "../mcp/gateway.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
@@ -17,7 +15,7 @@ const fail = (value: string): CallToolResult => ({ isError: true, content: [{ ty
 function server(h: Handoffs): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
   // Only once T3 Code is connected here: other sessions have no thread to hand off.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => ({
     tools: !t3State(h.s).url
       ? []
       : [
@@ -45,7 +43,7 @@ function server(h: Handoffs): Server {
           },
         ],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler("tools/call", async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
       if (req.params.name === "handoff_targets") return text(handoffTargets(await allNodes(h), h.s.nodeId));

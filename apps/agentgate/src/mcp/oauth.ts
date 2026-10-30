@@ -1,9 +1,11 @@
-import { auth, type OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type {
-  OAuthClientInformationMixed,
-  OAuthClientMetadata,
-  OAuthTokens,
-} from "@modelcontextprotocol/sdk/shared/auth.js";
+import {
+  auth,
+  type OAuthClientInformationMixed,
+  type OAuthClientMetadata,
+  type OAuthClientProvider,
+  type OAuthDiscoveryState,
+  type OAuthTokens,
+} from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
 import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
@@ -25,6 +27,7 @@ const sessionSchema = z.object({
   loginId: z.string(),
   expiresAt: z.number(),
   verifier: z.string().optional(),
+  discovery: z.custom<OAuthDiscoveryState>((v) => typeof v === "object" && v !== null).optional(),
 });
 export function expireLogins(s: Store) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as {
@@ -48,6 +51,7 @@ export class InstanceAuth implements OAuthClientProvider {
     private deferred = false,
     private verifier?: string,
     private snapshot?: McpCredential,
+    private discovery?: OAuthDiscoveryState,
   ) {}
   private credential() {
     const c = this.snapshot ?? this.s.get("mcpCredential", this.id);
@@ -97,6 +101,8 @@ export class InstanceAuth implements OAuthClientProvider {
     return this.credential().tokens as OAuthTokens | undefined;
   }
   saveTokens(tokens: OAuthTokens) {
+    // The SDK saves stored tokens again once to stamp their issuer; that is not a new login.
+    if (tokens.access_token === this.credential().tokens?.access_token) return this.update({ tokens });
     this.update({
       tokens,
       expiresAt: tokens.expires_in ? this.s.now() + tokens.expires_in * 1000 : undefined,
@@ -113,11 +119,18 @@ export class InstanceAuth implements OAuthClientProvider {
     if (!this.stateValue) throw new Error("no pending login");
     const key = `oauth-state:${this.stateValue}`;
     const pending = sessionSchema.parse(JSON.parse(this.s.local(key)!));
-    this.s.setLocal(key, JSON.stringify({ ...pending, verifier }));
+    this.s.setLocal(key, JSON.stringify({ ...pending, verifier, discovery: this.discovery }));
   }
   codeVerifier() {
     if (!this.verifier) throw new Error("login expired; start it again");
     return this.verifier;
+  }
+  /** Kept with the pending login, so the code goes to the authorization server the browser was sent to. */
+  discoveryState() {
+    return this.discovery;
+  }
+  saveDiscoveryState(state: OAuthDiscoveryState) {
+    this.discovery = state;
   }
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
     if (this.deferred && (scope === "all" || scope === "tokens"))
@@ -206,7 +219,7 @@ export async function startLogin(s: Store, id: string, callbackUrl: string): Pro
   return result === "REDIRECT" ? provider.authUrl : undefined;
 }
 
-export async function finishLogin(s: Store, state: string, code: string): Promise<string> {
+export async function finishLogin(s: Store, state: string, code: string, iss?: string): Promise<string> {
   const pending = s.transaction(() => {
     const raw = s.local(`oauth-state:${state}`);
     if (!raw) throw new Error("unknown or expired login; start it again");
@@ -222,11 +235,12 @@ export async function finishLogin(s: Store, state: string, code: string): Promis
   });
   const inst = s.get("mcp", pending.id);
   if (!inst?.url) throw new Error(`no MCP instance ${pending.id}`);
-  const provider = new InstanceAuth(s, pending.id, true, true, pending.verifier);
+  const provider = new InstanceAuth(s, pending.id, true, true, pending.verifier, undefined, pending.discovery);
   const signal = AbortSignal.timeout(30_000);
   const result = await auth(provider, {
     serverUrl: resolve(inst).url!,
     authorizationCode: code,
+    iss,
     fetchFn: (url, init) => fetchHeaders(url, { ...init, signal }),
   });
   if (result !== "AUTHORIZED" || !provider.staged.tokens) throw new Error("authorization did not issue tokens");

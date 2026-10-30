@@ -998,10 +998,10 @@ export function management(ctx: Ctx) {
 export function oauthCallback(ctx: Ctx) {
   return async (c: import("hono").Context<Env>) => {
     c.header("Cache-Control", "no-store");
-    const { code, state, error } = c.req.query();
+    const { code, state, error, iss } = c.req.query();
     if (error || !code || !state) return c.text("Login failed. Return to Agentgate and start again.", 400);
     try {
-      const inst = ctx.s.get("mcp", await finishLogin(ctx.s, state, code));
+      const inst = ctx.s.get("mcp", await finishLogin(ctx.s, state, code, iss));
       // Connect once signed in, so the server shows as available without a test; in the background, so this page
       // answers at once, and tracked, so the daemon stops after it.
       if (inst) {

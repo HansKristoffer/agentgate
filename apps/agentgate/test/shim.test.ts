@@ -1,8 +1,5 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { McpServer, WebStandardStreamableHTTPServerTransport, type Server } from "@modelcontextprotocol/server";
 import { afterAll, expect, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,7 +39,7 @@ test("long tool names are shortened to 64 characters, distinctly", () => {
   expect(toolName("posthog", "query")).toBe("posthog__query");
 });
 
-async function connectTo(server: import("@modelcontextprotocol/sdk/server/index.js").Server) {
+async function connectTo(server: Server) {
   const [a, b] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "t", version: "0" });
   await Promise.all([server.connect(a), client.connect(b)]);
@@ -113,7 +110,7 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   expect(s.get("project", "o/a")!.seenOn).toBe("t");
 
   // A mapping change reaches the running session.
-  const changed = new Promise<void>((r) => shimA.setNotificationHandler(ToolListChangedNotificationSchema, () => r()));
+  const changed = new Promise<void>((r) => shimA.setNotificationHandler("notifications/tools/list_changed", () => r()));
   s.put("project", "o/a", { id: "o/a", mcp: { posthog: "posthog-a", analytics: "posthog-b" } });
   ctx.gateway.toolsChanged();
   await changed;
@@ -324,13 +321,16 @@ test("per-session children use each worktree, reconcile mappings, and forward ca
     expect((result.content as { text: string }[])[0]!.text).toBe(realpathSync(cwd));
     const abort = new AbortController();
     let progress = false;
-    const slow = client.callTool({ name: "local__slow" }, undefined, {
-      signal: abort.signal,
-      onprogress: () => {
-        progress = true;
-        abort.abort();
+    const slow = client.callTool(
+      { name: "local__slow" },
+      {
+        signal: abort.signal,
+        onprogress: () => {
+          progress = true;
+          abort.abort();
+        },
       },
-    });
+    );
     await expect(slow).rejects.toThrow();
     expect(progress).toBe(true);
     for (let i = 0; i < 100 && !(await Bun.file(join(cwd, "cancelled")).exists()); i++) await Bun.sleep(10);
@@ -370,10 +370,13 @@ test("shared long tools stay open during idle sweeps and carry cancellation/prog
   const abort = new AbortController();
   try {
     await client.listTools();
-    const task = client.callTool({ name: "shared__slow" }, undefined, {
-      signal: abort.signal,
-      onprogress: () => progressed(),
-    });
+    const task = client.callTool(
+      { name: "shared__slow" },
+      {
+        signal: abort.signal,
+        onprogress: () => progressed(),
+      },
+    );
     await progress;
     expect(ctx.gateway.upstreams.get("shared")?.calls).toBe(1);
     s.now = () => Date.now() + 31 * 60000;

@@ -10,7 +10,7 @@ import {
 } from "@agentgate/protocol";
 import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
-import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/core";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, statfsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
