@@ -20,7 +20,14 @@ import { pkce } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
-import { forgetLogin, infisicalSite, listLogins, setInfisicalIdentity, shareLogins } from "./logins.ts";
+import {
+  forgetLogin,
+  infisicalSite,
+  listLogins,
+  setInfisicalIdentity,
+  shareLogins,
+  startInfisicalSignIn,
+} from "./logins.ts";
 import { providerCapabilities, providerLogins } from "./llm/providers.ts";
 import { requests, requestDetail, metrics, tokenHours, tokenUsage } from "./llm/telemetry.ts";
 import { route } from "./llm/routing.ts";
@@ -904,6 +911,13 @@ export function management(ctx: Ctx) {
       .strict()
       .parse(await json(c.req.raw));
     return c.json({ results: await inputAsync(() => shareLogins(s, f.id)) });
+  });
+  // The browser login answers on this machine's loopback, so it signs in where the app's browser is: loopback only.
+  app.post("/logins/infisical/signin", async (c) => {
+    local(c.env.listener);
+    const url = await inputAsync(() => startInfisicalSignIn(s, ctx.abort.signal));
+    // On macOS the Infisical CLI opens the browser itself.
+    return c.json({ url, opened: process.platform === "darwin" });
   });
   // Receives a client secret: loopback only.
   app.put("/logins/infisical-identity", async (c) => {

@@ -1,7 +1,9 @@
 import { outdatedNodes, type AccountStatus, type Status } from "@agentgate/protocol";
 
 export type Page = "accounts" | "servers" | "skills" | "projects" | "nodes";
-export type Problem = { key: string; page: Page; title: string; detail?: string };
+/** `signIn`: signing in to Infisical again, from the daemon's own machine, fixes it. */
+export type Problem = { key: string; page: Page; title: string; detail?: string; signIn?: boolean };
+const loginName = { github: "GitHub", infisical: "Infisical", "infisical-identity": "Infisical machine identity" };
 
 /** What an account needs before it can serve sessions again, or undefined while it works. Overview and Accounts both
  * label accounts with it. */
@@ -24,7 +26,15 @@ export const accountProblem = (a: AccountStatus) =>
 export function problems(
   data: Pick<
     Status,
-    "accounts" | "servers" | "skillHealth" | "skillConflicts" | "skillRepos" | "fileErrors" | "nodes" | "relay"
+    | "accounts"
+    | "servers"
+    | "skillHealth"
+    | "skillConflicts"
+    | "skillRepos"
+    | "fileErrors"
+    | "nodes"
+    | "relay"
+    | "logins"
   >,
 ): Problem[] {
   const list: Problem[] = [];
@@ -83,6 +93,17 @@ export function problems(
     // An offline machine fails to sync until it is back, which is expected.
     else if (n.online && n.syncError)
       list.push({ key: `sync:${n.id}`, page: "nodes", title: `${n.id} isn't syncing`, detail: n.syncError });
+  }
+  // In place but not working, e.g. a shared Infisical session that expired on every machine at once.
+  for (const l of data.logins.filter((l) => l.problems.length)) {
+    const reasons = [...new Set(l.problems.map((p) => p.problem))];
+    list.push({
+      key: `login:${l.id}`,
+      page: "nodes",
+      title: `The ${loginName[l.id]} login doesn't work on ${l.problems.map((p) => p.node).join(", ")}`,
+      detail: `${l.account}: ${reasons.length === 1 ? reasons[0] : l.problems.map((p) => `${p.node}: ${p.problem}`).join("; ")}`,
+      signIn: l.id === "infisical",
+    });
   }
   const relay = data.relay?.pushError ?? data.relay?.pullError;
   if (relay) list.push({ key: "relay", page: "nodes", title: "The relay isn't syncing", detail: relay });

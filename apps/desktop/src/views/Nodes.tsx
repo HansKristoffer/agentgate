@@ -6,7 +6,7 @@ import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protoco
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { openExternal, request } from "../api.ts";
+import { INFISICAL_SIGNIN_STARTED, openExternal, request, signInToInfisical } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
@@ -426,12 +426,13 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
       foot={
         local
           ? undefined
-          : "Sharing reads this machine's own logins, so it is only available on the daemon's own machine."
+          : "Sharing and signing in use this machine's own logins, so they are only available on the daemon's own machine. To sign in to Infisical on a server without a browser, run agentgate logins signin infisical there in a terminal."
       }
     >
       {LOGINS.map(({ id, name, tool }) => {
         const login = data.logins.find((l) => l.id === id);
         const fromHere = login?.from === data.node;
+        const broken = login?.problems.find((p) => p.node === data.node)?.problem;
         return (
           <div className="item" key={id}>
             <div className="machine-icon">
@@ -440,9 +441,11 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
             <div className="grow">
               <div className="row">
                 <strong>{name}</strong>
-                {login && fromHere && <Badge good={!login.error}>Shared from this machine</Badge>}
+                {login && fromHere && <Badge good={!login.error && !broken}>Shared from this machine</Badge>}
                 {login && !fromHere && (
-                  <Badge good={login.signedIn}>{login.signedIn ? "Signed in here" : "Not signed in here"}</Badge>
+                  <Badge good={login.signedIn && !broken}>
+                    {!login.signedIn ? "Not signed in here" : broken ? "Not working here" : "Signed in here"}
+                  </Badge>
                 )}
               </div>
               <small>
@@ -450,8 +453,18 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
                   ? `${login.account || "Signed in"} · shared from ${login.from}`
                   : `Not shared. Share ${tool}'s login from the machine where you are signed in.`}
               </small>
-              {login?.error && <small>{login.error}</small>}
+              {(login?.error ?? broken) && <small>{login?.error ?? broken}</small>}
             </div>
+            {id === "infisical" && login?.problems.length ? (
+              <Button
+                size="sm"
+                variant="tertiary"
+                isDisabled={!local}
+                onPress={() => void perform(() => signInToInfisical(connection), INFISICAL_SIGNIN_STARTED)}
+              >
+                Sign in again
+              </Button>
+            ) : null}
             {(!login || fromHere) && (
               <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => share(id)}>
                 {login ? "Share again" : "Share"}
