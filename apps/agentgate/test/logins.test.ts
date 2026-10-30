@@ -3,12 +3,26 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exportBackup, Store } from "../src/store.ts";
-import { forgetLogin, host, listLogins, setInfisicalIdentity, shareLogins, syncLogins } from "../src/logins.ts";
+import {
+  forgetLogin,
+  host,
+  listLogins,
+  setInfisicalIdentity,
+  shareLogins,
+  signInInfisical,
+  startInfisicalSignIn,
+  syncLogins,
+} from "../src/logins.ts";
 
 const temp = mkdtempSync(join(tmpdir(), "agentgate-logins-"));
 const original = { ...host };
+const originalFetch = globalThis.fetch;
+/** GitHub's answer to the shared token. */
+let github = 200;
+globalThis.fetch = (async () => new Response("{}", { status: github })) as unknown as typeof fetch;
 afterAll(() => {
   Object.assign(host, original);
+  globalThis.fetch = originalFetch;
   rmSync(temp, { recursive: true, force: true });
 });
 const node = (name: string) => {
@@ -34,6 +48,29 @@ const on = (home: string) => {
     if (args[1] === "login") me.token = stdin;
     return { ok: true, out: "" };
   };
+  host.infisical = async (args) => {
+    const cli = infisicalCli.get(home);
+    if (!cli) return undefined;
+    cli.calls.push(args);
+    if (args[0] === "--version") return { ok: true, out: `infisical version ${cli.version}` };
+    if (args[1] === "status") {
+      const session = {
+        principalType: "user",
+        email: "me@example.com",
+        status: cli.status,
+        token: { exp: 1793109462 },
+      };
+      return { ok: cli.status === "authenticated", out: JSON.stringify({ sessions: [session] }) };
+    }
+    return { ok: false, out: "" };
+  };
+  return me;
+};
+/** A fake Infisical CLI per home: its version, its session's state, and every command it ran. */
+const infisicalCli = new Map<string, { version: string; status: string; calls: string[][] }>();
+const cli = (home: string, status = "authenticated", version = "0.43.145") => {
+  const me = { version, status, calls: [] as string[][] };
+  infisicalCli.set(home, me);
   return me;
 };
 const infisical = (home: string, email: string, session: string) => {
@@ -172,7 +209,7 @@ test("an Infisical machine identity is checked, written on every machine, and re
     await syncLogins(b);
     expect(JSON.parse(readFileSync(file(homeB), "utf8"))).toEqual(written);
     expect(listLogins(b)).toEqual([
-      { id: "infisical-identity", account: "client-1", from: "a", signedIn: true, error: undefined },
+      { id: "infisical-identity", account: "client-1", from: "a", signedIn: true, error: undefined, problems: [] },
     ]);
 
     on(homeA);
@@ -185,4 +222,146 @@ test("an Infisical machine identity is checked, written on every machine, and re
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("an expired Infisical session shows as not working on every machine that has it, and where", async () => {
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "exp-a"),
+    homeB = join(temp, "exp-b");
+  on(homeA);
+  infisical(homeA, "me@example.com", "session-1");
+  const cliA = cli(homeA, "expired");
+  await shareLogins(a, "infisical");
+  await syncLogins(a);
+  sync(a, b);
+  on(homeB);
+  cli(homeB, "expired");
+  await syncLogins(b);
+  sync(b, a);
+
+  // Signed in here from the files' point of view, but not working, and both machines see where.
+  const expired = "the Infisical session expired on 2026-10-27";
+  expect(listLogins(a)[0]).toMatchObject({
+    problems: [
+      { node: "a", problem: expired },
+      { node: "b", problem: expired },
+    ],
+  });
+  expect(listLogins(b)[0]).toMatchObject({
+    signedIn: true,
+    problems: [
+      { node: "a", problem: expired },
+      { node: "b", problem: expired },
+    ],
+  });
+  // The check is the CLI's own status command, which never starts a login.
+  expect(cliA.calls).toContainEqual(["login", "status", "--json"]);
+
+  // A CLI too old for `login status` would take it for a login, so it is not asked and nothing is claimed.
+  const old = cli(homeB, "expired", "0.43.85");
+  await syncLogins(b);
+  expect(old.calls).toEqual([["--version"]]);
+  sync(b, a);
+  expect(listLogins(a)[0]!.problems.map((p) => p.node)).toEqual(["a"]);
+
+  // Forgetting the login clears this machine's report with it.
+  on(homeA);
+  forgetLogin(a, "infisical");
+  expect(a.get("node", "a")!.loginProblems).toBeUndefined();
+});
+
+test("signing in to Infisical again shares the fresh session, after which every machine works", async () => {
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "sign-a"),
+    homeB = join(temp, "sign-b");
+  on(homeA);
+  infisical(homeA, "me@example.com", "session-old");
+  const config = join(homeA, ".infisical/infisical-config.json");
+  writeFileSync(
+    config,
+    JSON.stringify({
+      ...JSON.parse(readFileSync(config, "utf8")),
+      activeProfile: "me@example.com",
+      profiles: [
+        { name: "other", email: "other@example.com" },
+        { name: "me@example.com", email: "me@example.com" },
+      ],
+    }),
+  );
+  const cliA = cli(homeA, "expired");
+  await shareLogins(a, "infisical");
+  await syncLogins(a);
+  sync(a, b);
+  on(homeB);
+  cli(homeB, "expired");
+  await syncLogins(b);
+
+  on(homeA);
+  let finish!: () => void;
+  const finished = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const fake = host.infisical;
+  host.infisical = async (args, o = {}) => {
+    if (args[0] !== "login" || args[1] !== "--profile") return fake(args, o);
+    cliA.calls.push(args);
+    o.stderr?.(
+      "\n\nTo complete your login, open this address in your browser: https://eu.infisical.com/login?callback_port=4242 \n",
+    );
+    await finished;
+    writeFileSync(join(homeA, "infisical-keyring/me@example.com"), "session-new");
+    cliA.status = "authenticated";
+    return { ok: true, out: "" };
+  };
+
+  // The daemon answers with the browser address while the login waits for the browser.
+  expect(await startInfisicalSignIn(a)).toBe("https://eu.infisical.com/login?callback_port=4242");
+  expect(cliA.calls).toContainEqual(["login", "--profile", "me@example.com"]);
+  finish();
+  // The share follows the finished login in the background.
+  while (!JSON.stringify(a.get("login", "infisical")).includes("session-new")) await Bun.sleep(1);
+  await syncLogins(a);
+  sync(a, b);
+  on(homeB);
+  infisicalCli.get(homeB)!.status = "authenticated";
+  await syncLogins(b);
+  expect(readFileSync(join(homeB, "infisical-keyring/me@example.com"), "utf8")).toBe("session-new");
+  sync(b, a);
+  expect(listLogins(a)[0]!.problems).toEqual([]);
+});
+
+test("signing in to Infisical fails plainly when the CLI here has no login for the shared account", async () => {
+  const a = node("a"),
+    home = join(temp, "sign-none");
+  on(home);
+  infisical(home, "me@example.com", "session-1");
+  cli(home);
+  await shareLogins(a, "infisical");
+  writeFileSync(
+    join(home, ".infisical/infisical-config.json"),
+    JSON.stringify({ loggedInUserEmail: "other@example.com", vaultBackendType: "file" }),
+  );
+  await expect(signInInfisical(a)).rejects.toThrow("has no login for me@example.com");
+});
+
+test("a GitHub token GitHub no longer accepts shows as not working", async () => {
+  const a = node("a");
+  on(join(temp, "gh-revoked")).token = "gho_revoked";
+  await shareLogins(a, "github");
+  github = 401;
+  try {
+    await syncLogins(a);
+  } finally {
+    github = 200;
+  }
+  expect(listLogins(a)[0]!.problems).toEqual([
+    {
+      node: "a",
+      problem: "GitHub rejected the shared token; run gh auth login on a, then agentgate logins share github",
+    },
+  ]);
+  await syncLogins(a);
+  expect(listLogins(a)[0]!.problems).toEqual([]);
 });

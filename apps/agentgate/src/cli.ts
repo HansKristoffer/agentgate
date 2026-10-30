@@ -111,6 +111,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   handoffs                                    recent handoffs and their state
   logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
   logins share [github|infisical]             share this machine's logins; every machine signs in with them
+  logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
   logins forget github|infisical              stop sharing (machines stay signed in)
   logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
   logins forget infisical-identity            remove it from every machine
@@ -1027,6 +1028,11 @@ async function main() {
           }
           return;
         }
+        if (sub === "signin") {
+          if (id !== "infisical") return die("logins signin infisical");
+          const account = await lg.signInInfisical(s, { terminal: true });
+          return console.log(`Infisical signed in as ${account} and shared; every machine signs in with it`);
+        }
         if (sub === "forget") {
           lg.forgetLogin(s, id ?? die("logins forget github|infisical|infisical-identity"));
           return console.log(
@@ -1046,11 +1052,21 @@ async function main() {
           "No shared logins. Share this machine's gh and Infisical logins with: agentgate logins share",
         );
       for (const l of list) {
-        const here =
-          l.from === s.nodeId ? "shared from here" : l.signedIn ? "signed in here" : "not signed in here yet";
+        const broken = l.error ? undefined : l.problems.find((p) => p.node === s.nodeId)?.problem;
+        const here = broken
+          ? `not working here: ${broken}`
+          : l.from === s.nodeId
+            ? "shared from here"
+            : l.signedIn
+              ? "signed in here"
+              : "not signed in here yet";
         console.log(
           `${l.id.padEnd(10)} ${(l.account || "-").padEnd(28)} from ${l.from.padEnd(12)} ${here}${l.error ? `: ${l.error}` : ""}`,
         );
+        for (const p of l.problems.filter((p) => p.node !== s.nodeId))
+          console.log(`${"".padEnd(10)} not working on ${p.node}: ${p.problem}`);
+        if (l.id === "infisical" && l.problems.length)
+          console.log(`${"".padEnd(10)} to fix, on a machine with a browser: agentgate logins signin infisical`);
       }
       return;
     }
