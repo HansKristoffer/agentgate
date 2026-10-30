@@ -539,10 +539,11 @@ test("shared logins show in status without their secrets, share only locally and
   const res = await call("/api/status");
   expect(await res.clone().text()).not.toContain("gho_private");
   expect(((await res.json()) as Status).logins).toEqual([
-    { id: "github", account: "octocat", from: "mac", signedIn: false },
+    { id: "github", account: "octocat", from: "mac", signedIn: false, problems: [] },
   ]);
   const auth = { authorization: "Bearer admin-secret" };
   expect((await call("/api/logins/share", "POST", {}, "tailnet", auth)).status).toBe(403);
+  expect((await call("/api/logins/infisical/signin", "POST", {}, "tailnet", auth)).status).toBe(403);
   expect((await call("/api/logins/github", "DELETE", undefined, "tailnet", auth)).status).toBe(200);
   expect(s.list("login")).toEqual([]);
 });

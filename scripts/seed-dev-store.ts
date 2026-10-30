@@ -1,5 +1,5 @@
 // Seeds this checkout's dev store from a scrubbed copy of the live one, so the dev daemon has real
-// accounts, MCP servers, projects, skills and activity to show. Credentials, MCP secrets, peers, relay
+// accounts, MCP servers, projects, skills and activity to show. Credentials, shared logins, MCP secrets, peers, relay
 // membership, registered checkouts and other node-local state stay behind: the dev daemon must never
 // refresh a real token, sync with a real machine, or link skills into a real repository.
 // Usage, with the dev daemon stopped: bun scripts/seed-dev-store.ts [--force]
@@ -36,7 +36,7 @@ source.close();
 
 const s = new Store(target);
 s.transaction(() => {
-  s.db.run("delete from records where kind in ('credential', 'mcpCredential', 'refreshRequest')");
+  s.db.run("delete from records where kind in ('credential', 'mcpCredential', 'refreshRequest', 'login')");
   s.db.run("delete from peers");
   s.db.run("delete from local");
   for (const table of ["relay_counters", "relay_pending"])

@@ -5,6 +5,7 @@ import { AccountQuota } from "../features/proxy/AccountQuota.tsx";
 import { TokenCalendar } from "../features/proxy/TokenCalendar.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
+import { INFISICAL_SIGNIN_STARTED, signInToInfisical } from "../api.ts";
 import { accountProblem, problems, type Page } from "../attention.ts";
 import { providerIcon, providerName, toolName } from "./utils.ts";
 
@@ -16,7 +17,13 @@ const pageTitle: Record<Page, string> = {
   nodes: "Machines",
 };
 
-export function Dashboard({ data, connection, navigate }: ViewProps & { navigate: (view: Page) => void }) {
+export function Dashboard({
+  data,
+  connection,
+  perform,
+  local,
+  navigate,
+}: ViewProps & { navigate: (view: Page) => void }) {
   const issues = problems(data);
   return (
     <>
@@ -60,10 +67,20 @@ export function Dashboard({ data, connection, navigate }: ViewProps & { navigate
                 <strong>{p.title}</strong>
                 {p.detail && <small>{p.detail}</small>}
               </div>
-              <Button size="sm" variant="tertiary" onPress={() => navigate(p.page)}>
-                {pageTitle[p.page]}
-                <ArrowRight size={14} />
-              </Button>
+              {p.signIn && local ? (
+                // The CLI's browser login answers on the daemon's machine, which is this one.
+                <Button
+                  size="sm"
+                  onPress={() => void perform(() => signInToInfisical(connection), INFISICAL_SIGNIN_STARTED)}
+                >
+                  Sign in
+                </Button>
+              ) : (
+                <Button size="sm" variant="tertiary" onPress={() => navigate(p.page)}>
+                  {pageTitle[p.page]}
+                  <ArrowRight size={14} />
+                </Button>
+              )}
             </div>
           ))}
         </Panel>

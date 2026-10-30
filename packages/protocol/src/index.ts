@@ -121,6 +121,8 @@ export const nodeSchema = z.object({
   routing: z.object({ claude: z.boolean(), codex: z.boolean() }).optional(),
   /** Whether this node serves its machine health dashboard at HEALTH_PATH (health.ts). Older daemons never serve it. */
   healthDashboard: z.boolean().default(false),
+  /** Shared logins that do not work on this node, by login id, and why. Written only by that node. */
+  loginProblems: z.record(z.string(), z.string().max(1000)).optional(),
 });
 /** Where a node with healthDashboard on serves its machine health dashboard, on both of its listeners. */
 export const HEALTH_PATH = "/health";
@@ -292,6 +294,8 @@ export const sharedLoginSchema = z.object({
   from: z.string(),
   signedIn: z.boolean(),
   error: z.string().optional(),
+  /** Machines, this one included, where the login is in place but does not work, e.g. an expired Infisical session. */
+  problems: z.array(z.object({ node: z.string(), problem: z.string() })).default([]),
 });
 export type SharedLogin = z.infer<typeof sharedLoginSchema>;
 /** An update this node started on another one (or itself), until that node runs the new release. */
