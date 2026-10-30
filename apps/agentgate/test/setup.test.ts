@@ -363,7 +363,7 @@ test("after the binary or port moved, the daemon points this install's MCP entri
     tools = ownTools({ codex: true, cursor: true }),
     codexFile = join(tools.dirs.codex, "config.toml");
   await routeHere(s, true, tools.dirs);
-  const move = (entry: any) => Object.assign(entry, { command: "/old/agentgate", args: ["mcp"] });
+  const move = (entry: object) => Object.assign(entry, { command: "/old/agentgate", args: ["mcp"] });
   const claudeJson = join(tools.dirs.claude, ".claude.json");
   const claude = JSON.parse(readFileSync(claudeJson, "utf8"));
   move(claude.mcpServers.agentgate);
@@ -377,7 +377,10 @@ test("after the binary or port moved, the daemon points this install's MCP entri
 
   expect(await keepMcp(s, tools.dirs)).toHaveLength(3);
   expect(tools.claudeMcp().command).not.toBe("/old/agentgate");
-  const codex = Bun.TOML.parse(readFileSync(codexFile, "utf8")) as any;
+  const codex = Bun.TOML.parse(readFileSync(codexFile, "utf8")) as {
+    mcp_servers: { agentgate: { command: string } };
+    model_providers: { agentgate: { requires_openai_auth: boolean } };
+  };
   expect(codex.mcp_servers.agentgate.command).not.toBe("/old/agentgate");
   expect(codex.model_providers.agentgate.requires_openai_auth).toBe(true);
   const after = JSON.parse(readFileSync(tools.dirs.cursor, "utf8"));
