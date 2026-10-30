@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.1](https://github.com/HansKristoffer/agentgate/compare/v0.27.0...v0.27.1) (2026-10-30)
+
+
+### Bug Fixes
+
+* **mcp:** MCP logins get a refresh token, on the v2 MCP SDK ([#99](https://github.com/HansKristoffer/agentgate/issues/99)) ([2d8fffd](https://github.com/HansKristoffer/agentgate/commit/2d8fffd21469aca31109bff1c0f23a58de4ba94e))
+
 ## [0.27.0](https://github.com/HansKristoffer/agentgate/compare/v0.26.0...v0.27.0) (2026-10-30)
 
 
