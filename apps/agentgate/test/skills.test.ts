@@ -109,6 +109,53 @@ test("skill file paths cannot leave the skill folder", () => {
   ).toThrow();
 });
 
+test("a clash is settled by keeping what is there or by moving it to a backup and linking ours", () => {
+  const { dir, s, root, global, repo, links } = setup();
+  try {
+    installSkills(s, "owner/pack", [fetched("alpha"), fetched("beta")]);
+    setSkillProjects(s, "alpha", ["*"]);
+    setSkillProjects(s, "beta", ["owner/repo"]);
+    // The user's own copy of alpha, and a beta the repository commits.
+    mkdirSync(join(global, "alpha"), { recursive: true });
+    writeFileSync(join(global, "alpha", "SKILL.md"), md("alpha", "Mine."));
+    mkdirSync(join(repo, ".agents", "skills", "beta"), { recursive: true });
+    writeFileSync(join(repo, ".agents", "skills", "beta", "SKILL.md"), md("beta"));
+    git(repo, "add", ".agents");
+    links.register(repo, "owner/repo");
+    const mine = join(global, "alpha"),
+      tracked = join(repo, ".agents", "skills", "beta");
+    expect(links.conflicts().sort()).toEqual([mine, tracked].sort());
+    expect(() => links.resolveConflict(join(global, "other"), "keep")).toThrow(/not a skill that clashes/);
+
+    // Keep: nothing moves, and it is reported as kept instead of as a clash.
+    links.resolveConflict(mine, "keep");
+    expect(links.conflicts()).toEqual([tracked]);
+    expect(links.kept()).toEqual([mine]);
+    expect(readFileSync(join(mine, "SKILL.md"), "utf8")).toContain("Mine.");
+
+    // Changing one's mind: the kept copy moves to a backup and ours is linked.
+    const backup = links.resolveConflict(mine, "agentgate")!;
+    expect(link(mine)).toBe(join(root, "alpha"));
+    expect(readFileSync(join(backup, "SKILL.md"), "utf8")).toContain("Mine.");
+    expect(backup.startsWith(join(dir, "skill-backups"))).toBe(true);
+    expect(links.kept()).toEqual([]);
+
+    // A folder the repository tracks is never moved.
+    expect(() => links.resolveConflict(tracked, "agentgate")).toThrow(/part of its repository/);
+    expect(existsSync(join(tracked, "SKILL.md"))).toBe(true);
+
+    // A kept folder that is removed is forgotten, and ours is linked there.
+    links.resolveConflict(tracked, "keep");
+    expect(links.kept()).toEqual([tracked]);
+    rmSync(tracked, { recursive: true });
+    links.sync();
+    expect(links.kept()).toEqual([]);
+    expect(link(tracked)).toBe(join(root, "beta"));
+  } finally {
+    links.close();
+  }
+});
+
 test("readSkill reads files, the exec bit and the frontmatter description", () => {
   const { dir } = setup();
   const src = join(dir, "src");

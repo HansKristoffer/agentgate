@@ -127,6 +127,21 @@ export function Skills({ data, connection, perform }: ViewProps) {
       </Button>
     </form>
   );
+  const resolveConflict = (path: string, use: "agentgate" | "keep") =>
+    request<{ backup?: string }>(connection, "/skills/conflicts", "POST", { path, use });
+  const keepExisting = (path: string) =>
+    void perform(() => resolveConflict(path, "keep"), "Kept. Agentgate leaves this skill alone on this machine.");
+  const useAgentgates = async (path: string) => {
+    const ok = await confirmDialog(
+      `Move ${path} into Agentgate's skill-backups folder and link Agentgate's copy in its place?`,
+      { okLabel: "Use Agentgate's" },
+    );
+    if (ok)
+      void perform(async () => {
+        const { backup } = await resolveConflict(path, "agentgate");
+        toast(`Agentgate's copy is linked. The old one is in ${backup}`);
+      });
+  };
   return (
     <>
       <HeaderActions>
@@ -142,7 +157,14 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Button>
       </HeaderActions>
       {(data.skillHealth.errors.length > 0 || data.skillConflicts.length > 0) && (
-        <Panel title="Skills need attention" detail="Agentgate retries these automatically.">
+        <Panel
+          title="Skills need attention"
+          detail={
+            data.skillConflicts.length
+              ? "Choose which copy to keep. Agentgate retries the rest automatically."
+              : "Agentgate retries these automatically."
+          }
+        >
           {data.skillHealth.errors.map((error, index) => (
             <div className="item" key={`${error.path}:${index}`}>
               <span className="grow">
@@ -151,16 +173,36 @@ export function Skills({ data, connection, perform }: ViewProps) {
               </span>
             </div>
           ))}
-          {/* A folder we didn't create already holds a skill by this name, so we never overwrite it. */}
+          {/* A folder we didn't create already holds a skill by this name, so we only replace it when asked. */}
           {data.skillConflicts.map((path) => (
             <div className="item" key={path}>
               <span className="grow">
                 <strong>{path}</strong>
                 <small className="danger">
-                  Another skill with this name is already here, so Agentgate's copy isn't linked. Rename or remove one
-                  of them.
+                  Another skill with this name is already here, so Agentgate's copy isn't linked.
                 </small>
               </span>
+              <Button size="sm" variant="tertiary" onPress={() => keepExisting(path)}>
+                Keep this one
+              </Button>
+              <Button size="sm" onPress={() => useAgentgates(path)}>
+                Use Agentgate's
+              </Button>
+            </div>
+          ))}
+        </Panel>
+      )}
+      {data.skillKept.length > 0 && (
+        <Panel title="Kept on this machine" detail="You kept these instead of Agentgate's copy of the same skill.">
+          {data.skillKept.map((path) => (
+            <div className="item" key={path}>
+              <span className="grow">
+                <strong>{path}</strong>
+                <small>Agentgate's copy isn't linked here.</small>
+              </span>
+              <Button size="sm" variant="tertiary" onPress={() => useAgentgates(path)}>
+                Use Agentgate's
+              </Button>
             </div>
           ))}
         </Panel>

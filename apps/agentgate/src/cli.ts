@@ -86,6 +86,8 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   skills repo add <github-url> --project <owner/repo|*> ...  keep a public repo's .claude/skills and .agents/skills in sync
   skills repo ls | sync [url] | projects <url> <owner/repo|*> ... | rm <url>
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
+  skills conflicts                            skill folders that clash with Agentgate's copy, and the ones you kept
+  skills resolve <path> agentgate|keep        link Agentgate's copy there (the old one moves to a backup), or keep it
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
@@ -576,6 +578,22 @@ async function main() {
           die("No repository/project found. Supply --project owner/repo for a repository without an origin.");
         if (result.errors?.length) die(result.errors.map((e) => `${e.path}: ${e.message}`).join("\n"));
         return console.log(`Prepared ${result.checkout}; start your session now.`);
+      }
+      if (sub === "conflicts") {
+        const st = await management<import("@agentgate/protocol").Status>("/status");
+        for (const path of st.skillConflicts) console.log(`${path}  clashes with Agentgate's copy`);
+        for (const path of st.skillKept) console.log(`${path}  kept; Agentgate's copy isn't linked here`);
+        if (!st.skillConflicts.length && !st.skillKept.length) console.log("No skill conflicts.");
+        return;
+      }
+      if (sub === "resolve") {
+        const usage = "skills resolve <path> agentgate|keep";
+        const use = rest[1] === "agentgate" || rest[1] === "keep" ? rest[1] : die(usage);
+        const path = resolve((rest[0] ?? die(usage)).replace(/^~(?=\/|$)/, homedir()));
+        const { backup } = await management<{ backup?: string }>("/skills/conflicts", "POST", { path, use });
+        return console.log(
+          backup ? `Linked Agentgate's copy; the old one is in ${backup}` : `Kept ${path}; Agentgate leaves it alone`,
+        );
       }
       if (sub === "find") {
         for (const r of await sk.searchSkills(rest.join(" ") || die("skills find <query>")))
