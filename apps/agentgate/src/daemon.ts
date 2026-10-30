@@ -97,7 +97,14 @@ export function makeCtx(
   const gateway = new Gateway(s);
   const memory = s.db.filename === ":memory:";
   const files = options.files ?? new CheckoutFiles(s, memory ? null : undefined);
-  const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s));
+  const skills = options.skills ?? new SkillLinks(s, memory ? null : undefined);
+  // A dev daemon connected to the real T3 Code must not link its skills into real repositories.
+  const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s), (checkouts) => {
+    if (DEV) return;
+    const before = JSON.stringify(skills.checkouts());
+    for (const c of checkouts) skills.register(c.path, c.project, false);
+    if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
+  });
   gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
   return {
@@ -108,7 +115,7 @@ export function makeCtx(
     proxyOperations: new ProxyOperations(s, creds, quotas, providers),
     gateway,
     remote: new RemoteEndpoints(s, gateway),
-    skills: options.skills ?? new SkillLinks(s, memory ? null : undefined),
+    skills,
     files,
     imports: options.imports ?? new SkillImports(),
     abort: new AbortController(),
@@ -274,7 +281,7 @@ export async function serve(
   if (!DEV)
     schedule(async () => {
       publishRouting(s);
-      if (await keepMcp(s)) console.log("put agentgate's MCP server back in Claude Code's ~/.claude.json");
+      for (const change of await keepMcp(s)) console.log(change);
     }, 60_000);
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {

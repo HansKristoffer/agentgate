@@ -9,6 +9,7 @@ import {
   cursorMcp,
   cursorMcpEnabled,
   keepMcp,
+  MCP_RESTORED,
   mcp,
   mcpHere,
   primary,
@@ -331,26 +332,67 @@ test("the daemon puts back an MCP server Claude Code dropped, unless the user tu
     writeFileSync(file, JSON.stringify({ ...cfg, projects: { "/code": {} } }));
   };
   await routeHere(s, true, tools.dirs);
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
   drop();
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(true);
+  expect(await keepMcp(s, tools.dirs)).toEqual([`Put back agentgate's MCP server in ${file}`]);
   expect(tools.claudeMcp().args.at(-1)).toBe("mcp");
   expect(JSON.parse(readFileSync(file, "utf8")).projects).toEqual({ "/code": {} });
+  expect(s.local(MCP_RESTORED)).toBeDefined();
   await mcpHere(s, false, tools.dirs);
+  expect(s.local(MCP_RESTORED)).toBeUndefined();
   expect(cursorMcpEnabled(tools.dirs.cursor)).toBe(false);
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
   expect(tools.claudeMcp()).toBeUndefined();
   // Before the choice was recorded, routing being on is what counts.
   await mcpHere(s, true, tools.dirs);
   drop();
   s.setLocal("setup:mcp", undefined);
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(true);
+  expect(await keepMcp(s, tools.dirs)).toHaveLength(1);
   await primary(false, tools.dirs.claude);
   s.setLocal("setup:mcp", undefined);
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
   rmSync(file);
   s.setLocal("setup:mcp", "on");
-  expect(await keepMcp(s, tools.dirs.claude)).toBe(false);
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
   expect(existsSync(file)).toBe(false);
+  rmSync(tools.dir, { recursive: true });
+});
+
+test("after the binary or port moved, the daemon points this install's MCP entries at the current ones", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ codex: true, cursor: true }),
+    codexFile = join(tools.dirs.codex, "config.toml");
+  await routeHere(s, true, tools.dirs);
+  const move = (entry: any) => Object.assign(entry, { command: "/old/agentgate", args: ["mcp"] });
+  const claudeJson = join(tools.dirs.claude, ".claude.json");
+  const claude = JSON.parse(readFileSync(claudeJson, "utf8"));
+  move(claude.mcpServers.agentgate);
+  writeFileSync(claudeJson, JSON.stringify(claude));
+  writeFileSync(codexFile, readFileSync(codexFile, "utf8").replace(/^command = .*$/m, 'command = "/old/agentgate"'));
+  const cursor = JSON.parse(readFileSync(tools.dirs.cursor, "utf8"));
+  cursor.mcpServers.agentgate.env.AGENTGATE_PORT = "1";
+  // Another install's entry (another AGENTGATE_HOME) is left as it is.
+  cursor.mcpServers.other = { command: "/other", args: ["mcp"], env: { AGENTGATE_HOME: "/elsewhere" } };
+  writeFileSync(tools.dirs.cursor, JSON.stringify(cursor));
+
+  expect(await keepMcp(s, tools.dirs)).toHaveLength(3);
+  expect(tools.claudeMcp().command).not.toBe("/old/agentgate");
+  const codex = Bun.TOML.parse(readFileSync(codexFile, "utf8")) as any;
+  expect(codex.mcp_servers.agentgate.command).not.toBe("/old/agentgate");
+  expect(codex.model_providers.agentgate.requires_openai_auth).toBe(true);
+  const after = JSON.parse(readFileSync(tools.dirs.cursor, "utf8"));
+  expect(after.mcpServers.agentgate.env).toEqual(agentEnvironment());
+  expect(after.mcpServers.other.command).toBe("/other");
+  expect(s.local(MCP_RESTORED)).toBeUndefined();
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
+
+  // Codex switched to another provider by hand is not taken back, even with an outdated entry.
+  writeFileSync(
+    codexFile,
+    readFileSync(codexFile, "utf8")
+      .replace('model_provider = "agentgate"', 'model_provider = "openai"')
+      .replace(/^command = .*$/m, 'command = "/old/agentgate"'),
+  );
+  expect(await keepMcp(s, tools.dirs)).toEqual([]);
   rmSync(tools.dir, { recursive: true });
 });

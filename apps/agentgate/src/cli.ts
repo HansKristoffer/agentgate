@@ -336,6 +336,11 @@ async function main() {
         `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}\nCursor MCP servers ${setupMod.cursorMcpEnabled() ? "on" : "off"}`,
       );
       if (!claude.routing || !codex) console.log("  to route them: agentgate setup --primary");
+      const restored = Number(s.local(setupMod.MCP_RESTORED));
+      if (claude.mcp && restored > Date.now() - 86_400_000)
+        console.log(
+          `  agentgate put its MCP server back in Claude Code at ${new Date(restored).toLocaleTimeString()}; to remove it for good: agentgate setup --mcp off`,
+        );
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       return;
     }

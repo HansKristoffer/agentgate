@@ -156,6 +156,8 @@ export class Handoffs {
   constructor(
     readonly s: Store,
     readonly options: HandoffOptions,
+    /** Tell skill links about checkouts this node has, so a repo's first session here already has its skills. */
+    readonly register: (checkouts: { path: string; project?: string }[]) => void = () => {},
   ) {}
 
   get pollMs() {

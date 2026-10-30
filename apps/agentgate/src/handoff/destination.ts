@@ -291,6 +291,8 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
       h.save(job);
     }
     if (!st.cwd) await workspace(h, job, p.baseSha);
+    // A clone made here, or a project with no session here yet: link its skills before the thread continues.
+    if (st.cwd) h.register([{ path: st.cwd }]);
   });
 
   if (job.step === "prepare") h.advance(job, "prepared");

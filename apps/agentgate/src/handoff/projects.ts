@@ -7,7 +7,10 @@ import { run } from "./code.ts";
 import type { Handoffs } from "./jobs.ts";
 import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
 
-/** T3 project sync (the `t3ProjectSync` setting). Each node marks the GitHub repositories its T3 Code has as projects
+/** Every T3 project's checkout is registered for skill links, whatever the setting: Claude Code and Codex read skills
+ * before the shim could report the checkout, so a project T3 cloned or the user added would miss them the first time.
+ *
+ * T3 project sync (the `t3ProjectSync` setting). Each node marks the GitHub repositories its T3 Code has as projects
  * by setting `t3Title` on the synced project record, once. Each node adds every marked repository its T3 Code lacks,
  * reusing a checkout it already has or letting T3 clone it with this machine's GitHub login. Additions only:
  * removing a T3 project stays on that machine, and a repository this node had once is never added again. A clone
@@ -38,8 +41,14 @@ const github = (url: string) => /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:www\.)?github\
 export async function syncT3Projects(h: Handoffs) {
   const s = h.s;
   const report = (errors: string[]) => s.setLocal("t3:projectSyncError", errors.length ? errors.join("; ") : undefined);
-  if (!s.settings().t3ProjectSync || !t3State(s).connected) return report([]);
+  if (!t3State(s).connected) return report([]);
   const t3 = t3Client(s);
+  // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
+  const all = await t3Projects(t3).catch(() => undefined);
+  if (!all) return report([]);
+  const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
+  h.register(here.map((p) => ({ path: p.project.workspaceRoot, project: p.repo })));
+  if (!s.settings().t3ProjectSync) return report([]);
   s.setLocal("t3:knownRepos", undefined);
   const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
   const remember = (repo: string) => {
@@ -53,10 +62,6 @@ export async function syncT3Projects(h: Handoffs) {
   // A permission T3 Code refused is refused for every clone; stop asking until agentgate is paired again.
   let denied: string | undefined;
 
-  // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
-  const all = await t3Projects(t3).catch(() => undefined);
-  if (!all) return report([]);
-  const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
   // T3 clones over SSH unless told otherwise; follow how this machine's checkouts reach GitHub, HTTPS by default.
   const protocol = here.length && here.every((p) => !/^https:/i.test(p.origin)) ? "ssh" : "https";
   for (const { repo, project } of here) {
