@@ -201,12 +201,12 @@ export async function startLogin(s: Store, id: string, callbackUrl: string): Pro
   const inst = s.get("mcp", id);
   if (!inst?.url) throw new Error(`${id} is not an HTTP server`);
   expireLogins(s);
-  const previous = s.get("mcpCredential", id);
-  const client = previous?.redirectUri === callbackUrl ? previous.client : undefined;
+  // Every login registers a new client. A server may delete a registration (unused ones are swept, a revoked app's
+  // goes with it), and its authorize page then shows invalid_client in the browser instead of telling us, so a kept
+  // client id would fail every later login the same way.
   s.put("mcpCredential", id, {
     instanceId: id,
     redirectUri: callbackUrl,
-    client,
     holder: s.nodeId,
     loginId: crypto.randomUUID(),
   });
