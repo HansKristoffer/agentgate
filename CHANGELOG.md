@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.27.2](https://github.com/HansKristoffer/agentgate/compare/v0.27.1...v0.27.2) (2026-10-31)
+
+
+### Bug Fixes
+
+* **mcp:** signing in again works after a server drops agentgate's registration ([#101](https://github.com/HansKristoffer/agentgate/issues/101)) ([1f84e6e](https://github.com/HansKristoffer/agentgate/commit/1f84e6e129dd0a8b29e65f583a505e7dfdcd8eae))
+
 ## [0.27.1](https://github.com/HansKristoffer/agentgate/compare/v0.27.0...v0.27.1) (2026-10-30)
 
 
