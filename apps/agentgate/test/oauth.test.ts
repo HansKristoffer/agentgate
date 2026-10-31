@@ -12,6 +12,8 @@ const access = new Set<string>();
 const refresh = new Set<string>();
 let n = 0;
 let tokenEndpointDown = false;
+// Client ids the server still knows. It can forget one, as a server that sweeps unused registrations does.
+const clients = new Set<string>();
 const issue = () => {
   const t = { access_token: `at-${++n}`, refresh_token: `rt-${n}`, token_type: "Bearer", expires_in: 3600 };
   access.add(t.access_token);
@@ -39,9 +41,15 @@ const server = Bun.serve({
           scopes_supported: ["mcp", "offline_access"],
           authorization_response_iss_parameter_supported: true,
         });
-      case "/register":
-        return Response.json({ ...((await req.json()) as object), client_id: "client-1" }, { status: 201 });
+      case "/register": {
+        const clientId = `client-${++n}`;
+        clients.add(clientId);
+        return Response.json({ ...((await req.json()) as object), client_id: clientId }, { status: 201 });
+      }
       case "/authorize": {
+        // An unknown client never goes back to the app: the server shows its own error page.
+        if (!clients.has(url.searchParams.get("client_id")!))
+          return Response.json({ error: "invalid_client" }, { status: 400 });
         // The user "logs in" at once and is sent back with a code.
         const code = `code-${++n}`;
         challenges.set(code, url.searchParams.get("code_challenge")!);
@@ -111,7 +119,7 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   expect(authUrl!.pathname).toBe("/authorize");
   // Asked for even though the server's own scopes leave it out, so the login can refresh.
   expect(authUrl!.searchParams.get("scope")).toBe("mcp offline_access");
-  expect(s.get("mcpCredential", "fake")!.client!.client_id).toBe("client-1");
+  expect(s.get("mcpCredential", "fake")!.client!.client_id).toStartWith("client-");
 
   // The browser: login page → redirect to our callback with code and state.
   const res = await fetch(authUrl!, { redirect: "manual" });
@@ -139,6 +147,23 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
 
   // A reused state is refused.
   await expect(finishLogin(s, back.searchParams.get("state")!, "x")).rejects.toThrow();
+});
+
+test("a new login registers again, so a registration the server dropped cannot block it", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  await startLogin(s, "fake", "http://localhost/oauth/callback");
+  clients.clear();
+
+  const url = await startLogin(s, "fake", "http://localhost/oauth/callback");
+  const response = await fetch(url!, { redirect: "manual" });
+
+  expect(response.status).toBe(302);
+  const back = new URL(response.headers.get("location")!);
+  await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!, back.searchParams.get("iss")!);
+  expect(s.get("mcpCredential", "fake")?.tokens?.access_token).toBeDefined();
+  s.close();
 });
 
 test("a login that cannot refresh keeps showing that it needs one", async () => {
