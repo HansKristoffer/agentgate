@@ -1,7 +1,15 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { LOCAL_URL, schemas } from "../store.ts";
-import { VERSION, connect, mergeInstructions, mergedServer, parseRemote, type Source } from "./gateway.ts";
+import {
+  SHIM_CLIENT_NAME,
+  VERSION,
+  connect,
+  mergeInstructions,
+  mergedServer,
+  parseRemote,
+  type Source,
+} from "./gateway.ts";
 
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
@@ -100,7 +108,7 @@ export async function buildShim(
     if (closed) return Promise.resolve();
     return (flight ??= (async () => {
       if (!daemon) {
-        const client = new Client({ name: "agentgate-shim", version: VERSION });
+        const client = new Client({ name: SHIM_CLIENT_NAME, version: VERSION });
         const t = new StreamableHTTPClientTransport(new URL(`${daemonUrl}/mcp?${q}`), {
           fetch: async (url, init) => {
             const res = await fetchHeaders(url, init, init?.method === "DELETE" ? 1000 : 5000);

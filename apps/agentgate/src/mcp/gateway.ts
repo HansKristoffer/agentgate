@@ -2,6 +2,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
   type CallToolRequest,
+  type Implementation,
   type RequestOptions,
   type Tool,
 } from "@modelcontextprotocol/client";
@@ -141,17 +142,53 @@ export async function serverTools(s: Store, inst: McpInstance): Promise<Tool[]> 
   }
 }
 
-/** Every page: the SDK walks them (at most 64) and caches the list it validates tool results against. */
-export async function listAllTools(c: Client): Promise<Tool[]> {
-  const { tools } = await c.listTools();
-  if (tools.length > 10000) throw new Error("MCP tool list exceeds 10000 tools");
-  return tools;
+/** Each connection's tool list, asked for once. A failed listing is not kept. */
+const toolLists = new WeakMap<Client, Promise<Tool[]>>();
+
+/**
+ * Every page: the SDK walks them (at most 64) and caches the list it validates tool results against. The list is
+ * kept per connection, so a session's tools/list and its first calls don't ask every server again; asking every
+ * upstream on each listing cost 650–800 ms, bound by the slowest server. `fresh` asks again.
+ */
+export function listAllTools(c: Client, options: { fresh?: boolean } = {}): Promise<Tool[]> {
+  const kept = options.fresh ? undefined : toolLists.get(c);
+  if (kept) return kept;
+  const listing = c.listTools().then(({ tools }) => {
+    if (tools.length > 10000) throw new Error("MCP tool list exceeds 10000 tools");
+    return tools;
+  });
+  toolLists.set(c, listing);
+  listing.catch(() => {
+    if (toolLists.get(c) === listing) toolLists.delete(c);
+  });
+  return listing;
 }
+
+/** Forgets the connection's tool list when its server says the tools changed, then runs `then`. */
+function watchTools(c: Client, then: () => void) {
+  c.setNotificationHandler("notifications/tools/list_changed", () => {
+    toolLists.delete(c);
+    then();
+  });
+}
+
+/** The `_meta` key that names the client calling through agentgate, such as Claude Code, for the server's history. */
+const CALLER_META_KEY = "dev.agentgate/client";
+
+/** The shim's own name toward the daemon: a caller through it is named by the shim, never as the shim. */
+export const SHIM_CLIENT_NAME = "agentgate-shim";
 
 export interface Source {
   alias: string; // '' passes tool names through unchanged
   client: Client;
   invoke?: (params: CallToolRequest["params"], options: RequestOptions) => ReturnType<Client["callTool"]>;
+  /**
+   * Answer listings from the connection's kept tool list. Only the daemon's shared upstream connections keep theirs:
+   * they are the remote servers whose listing is slow, and they say when their tools change. Local sources (the
+   * shim's daemon, per-session children, the built-in tools) are asked every time, since their lists can change
+   * without a notice and a listing is how the shim notices a restarted daemon.
+   */
+  keepTools?: boolean;
 }
 
 export function mergeInstructions(sources: Source[]): string {
@@ -178,14 +215,26 @@ export function mergedServer(
     { capabilities: { tools: { listChanged: true } }, instructions },
   );
   let routes = new Map<string, { alias: string; tool: string }>();
+  let listing: Promise<Tool[]> | undefined;
 
-  async function list(): Promise<Tool[]> {
+  /** One listing at a time: parallel first calls of a session share it instead of each listing every server. */
+  function list(options: { fresh?: boolean } = {}): Promise<Tool[]> {
+    if (listing && !options.fresh) return listing;
+    const current = listSources(options).finally(() => {
+      if (listing === current) listing = undefined;
+    });
+    listing = current;
+    return current;
+  }
+
+  async function listSources(options: { fresh?: boolean }): Promise<Tool[]> {
     const next = new Map<string, { alias: string; tool: string }>();
     const all: Tool[] = [];
     const pages = await Promise.all(
       (await sources()).map(async (src) => {
         try {
-          return { src, tools: await listAllTools(src.client) };
+          const fresh = options.fresh || !src.keepTools;
+          return { src, tools: await listAllTools(src.client, { fresh }) };
         } catch (e) {
           onError(src.alias, e);
           return { src, tools: [] };
@@ -206,6 +255,8 @@ export function mergedServer(
   server.setRequestHandler("tools/list", async () => ({ tools: await list() }));
   server.setRequestHandler("tools/call", async (req, ctx) => {
     if (!routes.has(req.params.name)) await list();
+    // A kept list can miss a tool a server added without saying so; ask again once before giving up.
+    if (!routes.has(req.params.name)) await list({ fresh: true });
     activity?.(1);
     try {
       const route = routes.get(req.params.name);
@@ -230,7 +281,11 @@ export function mergedServer(
                   .catch(() => {});
               },
       };
-      const params = { ...req.params, name: route.tool };
+      const params = {
+        ...req.params,
+        name: route.tool,
+        _meta: withCaller(req.params._meta, server.getClientVersion()),
+      };
       return await (source.invoke ? source.invoke(params, options) : source.client.callTool(params, options));
     } finally {
       activity?.(-1);
@@ -238,6 +293,16 @@ export function mergedServer(
   });
 
   return server;
+}
+
+/**
+ * The request's `_meta` with the calling client named under `CALLER_META_KEY`, so the server behind agentgate can
+ * tell Claude Code from Codex. A name already there, which the shim set, stays; the shim itself is never the name.
+ */
+function withCaller(meta: Record<string, unknown> | undefined, caller: Implementation | undefined) {
+  if (!caller || caller.name === SHIM_CLIENT_NAME || meta?.[CALLER_META_KEY]) return meta;
+  const { name, title, version } = caller;
+  return { ...meta, [CALLER_META_KEY]: { name, version, ...(title && { title }) } };
 }
 
 interface Upstream {
@@ -301,7 +366,9 @@ export class Gateway {
         }
         entry.client = c;
         entry.connecting = undefined;
-        c.setNotificationHandler("notifications/tools/list_changed", () => this.toolsChanged());
+        watchTools(c, () => this.toolsChanged());
+        // Listed while the session that asked for the connection is still starting, so its tools/list is ready.
+        void listAllTools(c).catch(() => {});
         c.onclose = () => {
           if (entry.client === c) entry.client = undefined;
         };
@@ -323,6 +390,7 @@ export class Gateway {
     return {
       alias,
       client,
+      keepTools: true,
       invoke: async (params, options) => {
         // Recheck immediately before sending. A notification is not an authorization check.
         const currentId = aliasesFor(this.s, project)[alias];
