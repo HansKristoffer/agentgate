@@ -124,6 +124,91 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   rmSync(cwd, { recursive: true, force: true });
 });
 
+/** An upstream that counts its tools/list requests, answers them after `delayMs`, and echoes who called. */
+function countingUpstream(delayMs: number) {
+  const seen = { lists: 0 };
+  const server = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      const body = req.method === "POST" ? await req.clone().text() : "";
+      if (body.includes('"tools/list"')) {
+        seen.lists++;
+        await Bun.sleep(delayMs);
+      }
+      const mcp = new McpServer({ name: "counting", version: "0" });
+      mcp.registerTool("caller", { description: "who called" }, async (ctx) => ({
+        content: [{ type: "text", text: JSON.stringify(ctx.mcpReq._meta?.["dev.agentgate/client"] ?? null) }],
+      }));
+      const t = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+      await mcp.connect(t);
+      return t.handleRequest(req);
+    },
+  });
+  servers.push(server);
+  return { url: `http://127.0.0.1:${server.port}/mcp`, seen };
+}
+
+async function gatewayWith(upstreamUrl: string) {
+  const s = new Store(":memory:");
+  s.setLocal("node", "t");
+  s.put("mcp", "brain", newInstance({ id: "brain", url: upstreamUrl }));
+  s.put("project", "o/r", { id: "o/r", mcp: { brain: "brain" } });
+  const ctx = makeCtx(s);
+  const a = app(ctx);
+  const daemon = Bun.serve({ port: 0, fetch: (req) => a.fetch(req, { listener: "loopback" }) });
+  servers.push(daemon);
+  const cwd = mkdtempSync(join(tmpdir(), "agentgate-shim-"));
+  const shim = () => buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "o/r" });
+  const done = async () => {
+    await ctx.gateway.close();
+    s.close();
+    rmSync(cwd, { recursive: true, force: true });
+  };
+  return { shim, done };
+}
+
+test("sessions list each upstream's tools once, and parallel first calls share that listing", async () => {
+  const upstream = countingUpstream(300);
+  const gateway = await gatewayWith(upstream.url);
+
+  const first = await gateway.shim();
+  const firstClient = await connectTo(first.server);
+  const calls = await Promise.all(
+    Array.from({ length: 10 }, () => firstClient.callTool({ name: "brain__caller", arguments: {} })),
+  );
+  expect(calls.every((call) => !call.isError)).toBe(true);
+  expect((await firstClient.listTools()).tools.map((tool) => tool.name)).toEqual(["brain__caller"]);
+
+  const second = await gateway.shim();
+  const secondClient = await connectTo(second.server);
+  expect((await secondClient.listTools()).tools.map((tool) => tool.name)).toEqual(["brain__caller"]);
+
+  expect(upstream.seen.lists).toBe(1);
+
+  await firstClient.close();
+  await secondClient.close();
+  await first.close();
+  await second.close();
+  await gateway.done();
+});
+
+test("forwarded calls carry the client that made them", async () => {
+  const upstream = countingUpstream(0);
+  const gateway = await gatewayWith(upstream.url);
+  const container = await gateway.shim();
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "claude-code", title: "Claude Code", version: "2.1.0" });
+  await Promise.all([container.server.connect(a), client.connect(b)]);
+
+  const result = await client.callTool({ name: "brain__caller", arguments: {} });
+  const caller = JSON.parse((result.content as { text: string }[])[0]!.text);
+  expect(caller).toEqual({ name: "claude-code", title: "Claude Code", version: "2.1.0" });
+
+  await client.close();
+  await container.close();
+  await gateway.done();
+});
+
 test("renaming a server moves its repo mappings; an alias equal to the old name follows", () => {
   const s = new Store(":memory:");
   s.put("mcp", "posthog", newInstance({ id: "posthog", url: "https://mcp.posthog.com/mcp" }));
