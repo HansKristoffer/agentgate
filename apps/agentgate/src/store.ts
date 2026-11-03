@@ -113,6 +113,22 @@ export const schemas = {
     secrets: z.record(z.string(), z.string()).default({}),
     fields: z.record(z.string(), z.string()).default({}),
     mode: z.enum(["shared", "perSession"]).default("shared"),
+    /** Only these tools (the server's names) are offered to agents; absent offers every tool. */
+    tools: z.array(z.string().max(200)).max(1000).optional(),
+    /** Replaces the server's own instructions to agents; empty hides them. */
+    instructions: z.string().max(4000).optional(),
+    /** Results longer than this many characters are cut; 0 never cuts. Absent: `MAX_RESULT_CHARS` (mcp/gateway.ts). */
+    maxResultChars: z.number().int().nonnegative().optional(),
+    /** Per tool, by the server's name: its own result limit, and arguments a call gets unless the agent passes them. */
+    toolOptions: z
+      .record(
+        z.string().max(200),
+        z.object({
+          maxResultChars: z.number().int().nonnegative().optional(),
+          defaults: z.record(z.string(), z.unknown()).optional(),
+        }),
+      )
+      .optional(),
     /** MCP OAuth state from the SDK (client registration and tokens), set once a login was started. */
     oauth: OAuth.optional(), // accepted only to migrate pre-v1 databases/backups
   }),

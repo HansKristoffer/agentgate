@@ -160,6 +160,17 @@ agentgate mcp test posthog-lullu
 
 A server can have any name, such as "PostHog Lullu"; its slug (`posthog-lullu`) becomes its id and the default tool prefix, and `agentgate mcp label <id> <name>` changes only the name shown in the app. The alias is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Running Claude Code sessions pick up new servers and mapping changes without a restart. Codex reads the tool list only when a session starts, so start a new Codex session to see them.
 
+Every tool and every server's instructions cost an agent context in every session, so map a server only to the repos that use it rather than to Global defaults. Agents see the servers' instructions merged into one text of at most 4,000 characters, which is what Claude Code keeps; when they are longer, each server keeps its first lines. You can also narrow what a server offers:
+
+```sh
+agentgate mcp tools railway get-logs list-deployments list-services   # offer only these tools (none: every tool)
+agentgate mcp instructions railway "Pass a filter to get-logs."       # replace its instructions; --hide drops them
+agentgate mcp limit railway 10000 [--tool get-logs]                   # cut longer results; off, or default
+agentgate mcp defaults railway get-logs '{"limit": 30}'               # arguments a call gets unless the agent passes them
+```
+
+A tool result longer than 20,000 characters is cut there, with a note telling the agent to ask for less. `agentgate mcp test <name>` lists a server's tools with these settings, and `agentgate service logs` shows one line per tool call with its server, tool, time and result size.
+
 ## Skills per repo
 
 Skills are installed once and synced to every machine like MCP servers; you choose which repos use each one. In the native app, **Skills → Add skills** offers each source as a tab: **skills.sh** searches the [skills.sh](https://skills.sh) directory, **Source** uses the pinned `skills@1.7.0` CLI and accepts (`owner/repo`, `owner/repo@skill`, a Git or GitHub URL, a folder), and **Write** writes a SKILL.md by hand. Then pick **Every session** or specific repos.

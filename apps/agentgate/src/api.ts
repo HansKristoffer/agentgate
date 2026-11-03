@@ -727,10 +727,11 @@ export function management(ctx: Ctx) {
       else
         try {
           for (const t of await tools(id))
-            result.push({
-              name: toolName(alias, t.name),
-              description: t.description,
-            });
+            if (!inst?.tools || inst.tools.includes(t.name))
+              result.push({
+                name: toolName(alias, t.name),
+                description: t.description,
+              });
         } catch {
           result.push({
             name: `${alias}__*`,

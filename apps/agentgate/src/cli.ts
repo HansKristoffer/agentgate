@@ -14,7 +14,7 @@ import { relevant } from "./llm/quota.ts";
 import { aliasesFor, connect, listAllTools, needsLogin, serverHealth } from "./mcp/gateway.ts";
 import { startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
-import { exportBackup, importBackup, LOCAL_URL, schemas, store, type Store } from "./store.ts";
+import { exportBackup, importBackup, LOCAL_URL, schemas, store, type McpInstance, type Store } from "./store.ts";
 import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
 import {
   cleanupRelay,
@@ -42,6 +42,8 @@ import {
   saveProject,
   setAccount,
   setHealthDashboard,
+  tuneInstance,
+  tuneTool,
 } from "./operations.ts";
 import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "./checkout-files.ts";
 import {
@@ -78,6 +80,10 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   mcp label <id> <name>                                      change the name shown in the app
   mcp login <name> | rename <name> <new> | ls | presets | test <name> | rm <name>
   mcp projects <name> [<owner/repo|*> ...]   the projects that use the server (* = Global defaults)
+  mcp tools <name> [<tool> ...]               offer agents only these tools (none listed: every tool)
+  mcp instructions <name> [<text>] [--hide]   replace the server's instructions to agents (no text: its own)
+  mcp limit <name> <chars|off|default> [--tool <tool>]   cut longer results (default 20000 characters)
+  mcp defaults <name> <tool> [<json>]         arguments a call gets unless the agent passes them (no json: none)
   skills find <query>                         search skills.sh
   skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...]
   skills new|edit <name> --file SKILL.md      write a skill by hand
@@ -156,6 +162,8 @@ const { values: opts, positionals: pos } = parseArgs({
     header: { type: "string", multiple: true },
     command: { type: "string" },
     "per-session": { type: "boolean" },
+    tool: { type: "string" },
+    hide: { type: "boolean" },
     "no-secrets": { type: "boolean" },
     primary: { type: "boolean" },
     mcp: { type: "boolean" },
@@ -184,6 +192,16 @@ const { values: opts, positionals: pos } = parseArgs({
   },
 });
 const str = (k: string) => opts[k] as string | undefined;
+/** How a server is offered to agents, where it differs from the default. */
+const tuning = (i: McpInstance) => {
+  const notes = [
+    i.tools && `${i.tools.length} tools offered`,
+    i.instructions !== undefined && `instructions ${i.instructions ? "replaced" : "hidden"}`,
+    i.maxResultChars !== undefined && `limit ${i.maxResultChars || "off"}`,
+    i.toolOptions && `${Object.keys(i.toolOptions).length} tool settings`,
+  ].filter(Boolean);
+  return notes.length ? `  (${notes.join(", ")})` : "";
+};
 
 const [cmd, sub, ...rest] = pos;
 async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
@@ -500,7 +518,7 @@ async function main() {
           const h = serverHealth(s, i.id),
             state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
           console.log(
-            `${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}`,
+            `${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}${tuning(i)}`,
           );
         }
         return;
@@ -542,9 +560,63 @@ async function main() {
         } finally {
           await client.close();
         }
-        console.log(`${inst.id}: ${tools.length} tools`);
-        for (const t of tools) console.log(`  ${t.name}`);
+        console.log(`${inst.id}: ${tools.length} tools${tuning(inst)}`);
+        for (const t of tools) {
+          const o = inst.toolOptions?.[t.name];
+          const notes = [
+            inst.tools && !inst.tools.includes(t.name) && "not offered",
+            o?.maxResultChars !== undefined && `limit ${o.maxResultChars || "off"}`,
+            o?.defaults && `defaults ${JSON.stringify(o.defaults)}`,
+          ].filter(Boolean);
+          console.log(`  ${t.name}${notes.length ? `  (${notes.join(", ")})` : ""}`);
+        }
         return;
+      }
+      if (sub === "tools") {
+        const [id, ...tools] = rest;
+        if (!id) die("mcp tools <name> [<tool> ...]");
+        tuneInstance(s, id!, { tools: tools.length ? tools : undefined });
+        return console.log(tools.length ? `${id} offers agents ${tools.join(", ")}` : `${id} offers agents every tool`);
+      }
+      if (sub === "instructions") {
+        const [id, text] = rest;
+        if (!id) die("mcp instructions <name> [<text>] [--hide]");
+        const instructions = opts.hide ? "" : text;
+        tuneInstance(s, id!, { instructions });
+        return console.log(
+          instructions === undefined
+            ? `${id} gives agents its own instructions`
+            : `${id}'s instructions are ${instructions ? "replaced" : "hidden"}`,
+        );
+      }
+      if (sub === "limit") {
+        const [id, value] = rest;
+        if (!id || !value) die("mcp limit <name> <chars|off|default> [--tool <tool>]");
+        const chars = value === "default" ? undefined : value === "off" ? 0 : Number(value);
+        if (chars !== undefined && (!Number.isInteger(chars) || chars < 0))
+          die("limit: a number of characters, off, or default");
+        const tool = str("tool");
+        if (tool) tuneTool(s, id!, tool, { maxResultChars: chars });
+        else tuneInstance(s, id!, { maxResultChars: chars });
+        return console.log(
+          `${tool ? `${id} ${tool}` : id}: ${chars === undefined ? "default limit" : chars ? `results cut past ${chars} characters` : "results never cut"}`,
+        );
+      }
+      if (sub === "defaults") {
+        const [id, tool, json] = rest;
+        if (!id || !tool) die("mcp defaults <name> <tool> [<json>]");
+        let defaults: Record<string, unknown> | undefined;
+        if (json) {
+          try {
+            defaults = JSON.parse(json);
+          } catch {}
+          if (!defaults || typeof defaults !== "object" || Array.isArray(defaults))
+            die("defaults: a JSON object, such as '{\"limit\": 30}'");
+        }
+        tuneTool(s, id!, tool!, { defaults });
+        return console.log(
+          defaults ? `${id} ${tool} defaults to ${JSON.stringify(defaults)}` : `${id} ${tool}: no defaults`,
+        );
       }
       if (sub === "label") {
         const [id, label] = rest;

@@ -2,6 +2,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
   type CallToolRequest,
+  type CallToolResult,
   type Implementation,
   type RequestOptions,
   type Tool,
@@ -181,7 +182,9 @@ export const SHIM_CLIENT_NAME = "agentgate-shim";
 export interface Source {
   alias: string; // '' passes tool names through unchanged
   client: Client;
-  invoke?: (params: CallToolRequest["params"], options: RequestOptions) => ReturnType<Client["callTool"]>;
+  /** The server's settings: its tool allowlist, instructions, result limits and default arguments. */
+  instance?: McpInstance;
+  invoke?: (params: CallToolRequest["params"], options: RequestOptions) => Promise<CallToolResult>;
   /**
    * Answer listings from the connection's kept tool list. Only the daemon's shared upstream connections keep theirs:
    * they are the remote servers whose listing is slow, and they say when their tools change. Local sources (the
@@ -191,24 +194,110 @@ export interface Source {
   keepTools?: boolean;
 }
 
-export function mergeInstructions(sources: Source[]): string {
-  return sources
-    .map((src) => {
-      const text = src.client.getInstructions()?.trim();
-      return text ? (src.alias ? `## ${src.alias}\n${text}` : text) : "";
-    })
-    .filter(Boolean)
-    .join("\n\n");
+/** Claude Code keeps the first 4,096 characters of a server's instructions and drops the rest. */
+export const INSTRUCTIONS_BUDGET = 4000;
+const INSTRUCTIONS_CUT = "\n[… agentgate cut the rest to fit the instructions limit]";
+
+/**
+ * Every source's instructions under its alias, within `budget`. Each source gets an equal share, and a short one
+ * leaves the rest of its share to the others, so a long one loses its tail rather than every later server losing all.
+ */
+export function mergeInstructions(
+  sources: Source[],
+  onTrim?: (aliases: string[]) => void,
+  budget = INSTRUCTIONS_BUDGET,
+): string {
+  const parts = sources.flatMap((src) => {
+    const text = (src.instance?.instructions ?? src.client.getInstructions())?.trim();
+    return text ? [{ alias: src.alias, head: src.alias ? `## ${src.alias}\n` : "", text }] : [];
+  });
+  let left = budget - parts.reduce((n, p) => n + p.head.length + 2, 0);
+  const trimmed: string[] = [];
+  [...parts]
+    .sort((a, b) => a.text.length - b.text.length)
+    .forEach((p, i, all) => {
+      const share = Math.max(0, Math.floor(left / (all.length - i)));
+      if (p.text.length > share) {
+        const room = share - INSTRUCTIONS_CUT.length;
+        const line = p.text.lastIndexOf("\n", room);
+        p.text = room > 0 ? p.text.slice(0, line > room / 2 ? line : room).trimEnd() + INSTRUCTIONS_CUT : "";
+        trimmed.push(p.alias);
+      }
+      left -= p.text.length;
+    });
+  if (trimmed.length) onTrim?.(trimmed);
+  return parts.map((p) => p.head + p.text).join("\n\n");
+}
+
+/**
+ * Results past this many characters are cut unless the server or tool sets its own limit. Railway logs, PostHog SQL
+ * and Cloudflare docs returned 20–50K characters per call, which agents paid for in tokens and rarely read.
+ */
+export const MAX_RESULT_CHARS = 20_000;
+
+const resultLimit = (inst: McpInstance | undefined, tool: string) =>
+  inst ? (inst.toolOptions?.[tool]?.maxResultChars ?? inst.maxResultChars ?? MAX_RESULT_CHARS) : 0;
+
+const textLength = (result: CallToolResult) =>
+  result.content.reduce((n, c) => n + (c.type === "text" ? c.text.length : 0), 0);
+
+/** The result's text cut to `max` characters, with a note telling the agent how to ask for less. Structured content
+ * goes too: it repeats the text, and agentgate offers no output schema that would require it. */
+export function capResult(result: CallToolResult, max: number): CallToolResult {
+  const total = textLength(result);
+  if (total <= max) return result;
+  let left = max;
+  const content: CallToolResult["content"] = [];
+  for (const c of result.content) {
+    if (c.type !== "text") content.push(c);
+    else if (left > 0) {
+      content.push({ ...c, text: c.text.slice(0, left) });
+      left -= c.text.length;
+    }
+  }
+  content.push({
+    type: "text",
+    text: `\n\n[agentgate cut this result at ${max} of ${total} characters. Ask for less: a smaller limit, a filter, a shorter time range, or an offset.]`,
+  });
+  const { structuredContent: _, ...rest } = result;
+  return { ...rest, content };
+}
+
+/**
+ * A tool call without the SDK's output-schema check. A proxy passes the server's result on as it came: the check
+ * failed valid Railway results over one extra property, and the agent lost them.
+ */
+const callTool = (client: Client, params: CallToolRequest["params"], options: RequestOptions) =>
+  client.request({ method: "tools/call", params }, options) as Promise<CallToolResult>;
+
+/** One forwarded tool call, for the log. Never the arguments or the result. */
+export interface CallRecord {
+  alias: string;
+  tool: string;
+  ms: number;
+  chars: number;
+  cut?: number;
+  failed?: boolean;
 }
 
 /** One MCP server in front of many: the tools of every source under their aliases. */
 export function mergedServer(
   instructions: string,
   sources: () => Promise<Source[]>,
-  onError: (alias: string, e: unknown) => void = () => {},
-  resolveSource?: (alias: string) => Promise<Source | undefined>,
-  activity?: (change: number) => void,
-  signal?: AbortSignal,
+  {
+    onError = () => {},
+    resolveSource,
+    activity,
+    signal,
+    onCall,
+  }: {
+    onError?: (alias: string, e: unknown) => void;
+    /** Finds a call's source without listing every source again. */
+    resolveSource?: (alias: string) => Promise<Source | undefined>;
+    activity?: (change: number) => void;
+    signal?: AbortSignal;
+    onCall?: (call: CallRecord) => void;
+  } = {},
 ): Server {
   const server = new Server(
     { name: "agentgate", version: VERSION },
@@ -241,13 +330,17 @@ export function mergedServer(
         }
       }),
     );
-    for (const { src, tools } of pages)
-      for (const t of tools) {
+    for (const { src, tools } of pages) {
+      const offered = src.instance?.tools && new Set(src.instance.tools);
+      // No output schema: results pass through unchecked, so a client must not check them against one either.
+      for (const { outputSchema: _, ...t } of tools) {
+        if (offered && !offered.has(t.name)) continue;
         const name = toolName(src.alias, t.name);
         if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
         next.set(name, { alias: src.alias, tool: t.name });
         all.push({ ...t, name });
       }
+    }
     routes = next;
     return all.sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -257,18 +350,25 @@ export function mergedServer(
     if (!routes.has(req.params.name)) await list();
     // A kept list can miss a tool a server added without saying so; ask again once before giving up.
     if (!routes.has(req.params.name)) await list({ fresh: true });
+    const route = routes.get(req.params.name);
+    if (!route)
+      return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
     activity?.(1);
+    const started = performance.now();
+    const call: CallRecord = { alias: route.alias, tool: route.tool, ms: 0, chars: 0 };
     try {
-      const route = routes.get(req.params.name);
-      const source =
-        route &&
-        (resolveSource ? await resolveSource(route.alias) : (await sources()).find((s) => s.alias === route.alias));
-      if (!route || !source)
+      const source = resolveSource
+        ? await resolveSource(route.alias)
+        : (await sources()).find((s) => s.alias === route.alias);
+      if (!source) {
+        call.failed = true;
         return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
+      }
       const progressToken = req.params._meta?.progressToken;
       const options: RequestOptions = {
-        // The SDK does not abort handlers when the HTTP request goes away, so a caller-owned signal is combined in.
-        signal: anySignal(ctx.mcpReq.signal, signal),
+        // The SDK does not abort handlers when the HTTP request goes away, so the request's own signal and a
+        // caller-owned one are combined in: a client that dropped the call cancels it upstream.
+        signal: anySignal(ctx.mcpReq.signal, ctx.http?.req?.signal, signal),
         timeout: 5 * 60_000,
         maxTotalTimeout: CALL_LIMIT,
         resetTimeoutOnProgress: true,
@@ -281,14 +381,26 @@ export function mergedServer(
                   .catch(() => {});
               },
       };
+      const defaults = source.instance?.toolOptions?.[route.tool]?.defaults;
       const params = {
         ...req.params,
         name: route.tool,
+        ...(defaults && { arguments: { ...defaults, ...req.params.arguments } }),
         _meta: withCaller(req.params._meta, server.getClientVersion()),
       };
-      return await (source.invoke ? source.invoke(params, options) : source.client.callTool(params, options));
+      const result = await (source.invoke ? source.invoke(params, options) : callTool(source.client, params, options));
+      call.chars = textLength(result);
+      const max = resultLimit(source.instance, route.tool);
+      if (!max || call.chars <= max) return result;
+      call.cut = max;
+      return capResult(result, max);
+    } catch (e) {
+      call.failed = true;
+      throw e;
     } finally {
       activity?.(-1);
+      call.ms = Math.round(performance.now() - started);
+      onCall?.(call);
     }
   });
 
@@ -312,7 +424,16 @@ interface Upstream {
   lastUsed: number;
   calls: number;
   retired?: boolean;
+  /** Connects that failed in a row, and when the next may be tried. A changed config starts a new entry. */
+  failures?: number;
+  retryAt?: number;
 }
+
+/** A server that failed to connect is tried again after 30 s, doubling to 5 minutes, not on every listing. */
+const retryDelay = (failures: number) => Math.min(5 * 60_000, 30_000 * 2 ** (failures - 1));
+
+/** A connect skipped because the server failed recently; already logged when it failed. */
+class Backoff extends Error {}
 
 /** The daemon side: shared upstream connections, and one merged server per shim session. */
 export class Gateway {
@@ -325,8 +446,11 @@ export class Gateway {
       project: string;
       lastUsed: number;
       calls: number;
+      /** What the session's tool list depends on (`toolsKey`), as of its last notice. */
+      tools: string;
     }
   >();
+  private trimmed = new Set<string>();
   private timer = setInterval(() => {
     void this.closeIdle();
   }, 60_000);
@@ -357,6 +481,9 @@ export class Gateway {
     if (!u) this.upstreams.set(inst.id, (u = { config, lastUsed: this.s.now(), calls: 0 }));
     u.lastUsed = this.s.now();
     if (u.client) return u.client;
+    // A Test that reached the server since (app or CLI) ends the wait.
+    if (!u.connecting && u.retryAt && this.s.now() < u.retryAt && !serverHealth(this.s, inst.id)?.ok)
+      throw new Backoff(`${inst.id}: unavailable, next try in ${Math.ceil((u.retryAt - this.s.now()) / 1000)} s`);
     const entry = u;
     entry.connecting ??= connect(inst, undefined, this.s).then(
       async (c) => {
@@ -366,7 +493,8 @@ export class Gateway {
         }
         entry.client = c;
         entry.connecting = undefined;
-        watchTools(c, () => this.toolsChanged());
+        entry.failures = entry.retryAt = undefined;
+        watchTools(c, () => this.toolsChanged(inst.id));
         // Listed while the session that asked for the connection is still starting, so its tools/list is ready.
         void listAllTools(c).catch(() => {});
         c.onclose = () => {
@@ -376,6 +504,8 @@ export class Gateway {
       },
       (e) => {
         entry.connecting = undefined;
+        entry.failures = (entry.failures ?? 0) + 1;
+        entry.retryAt = this.s.now() + retryDelay(entry.failures);
         throw e;
       },
     );
@@ -390,6 +520,7 @@ export class Gateway {
     return {
       alias,
       client,
+      instance: inst,
       keepTools: true,
       invoke: async (params, options) => {
         // Recheck immediately before sending. A notification is not an authorization check.
@@ -402,7 +533,7 @@ export class Gateway {
         entry.calls++;
         entry.lastUsed = this.s.now();
         try {
-          return await active.callTool(params, options);
+          return await callTool(active, params, options);
         } finally {
           entry.calls--;
           entry.lastUsed = this.s.now();
@@ -419,7 +550,7 @@ export class Gateway {
     const out = await Promise.all(
       Object.keys(aliasesFor(this.s, project)).map((alias) => {
         const source = this.source(project, alias).catch((e) => {
-          this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
+          if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
           return undefined;
         });
         return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
@@ -468,18 +599,32 @@ export class Gateway {
     if (project !== "*" && !projectIdSchema.safeParse(project).success)
       return new Response("invalid project", { status: 400 });
     // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
-    const instructions = mergeInstructions(await this.localSources(project, 3000));
+    const instructions = mergeInstructions(await this.localSources(project, 3000), (aliases) => {
+      const key = `${project} ${aliases.join(" ")}`;
+      if (this.trimmed.has(key)) return;
+      this.trimmed.add(key);
+      this.s.log("mcp", "", "", 0, 0, `${project}: instructions of ${aliases.join(", ")} cut to fit`);
+    });
+    const tools = this.toolsKey(project);
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(
-      instructions,
-      () => this.localSources(project),
-      (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
-      async (alias) => (alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias)),
-      (delta) => {
+    const server = mergedServer(instructions, () => this.localSources(project), {
+      onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
+      resolveSource: async (alias) =>
+        alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias),
+      activity: (delta) => {
         usage.calls += delta;
         usage.lastUsed = this.s.now();
       },
-    );
+      onCall: (c) =>
+        this.s.log(
+          "mcp",
+          c.alias,
+          c.tool,
+          c.failed ? 502 : 200,
+          c.ms,
+          `${c.tool} ${c.ms} ms, ${c.chars} chars${c.cut ? `, cut to ${c.cut}` : ""}${c.failed ? ", failed" : ""}`,
+        ),
+    });
     const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
@@ -488,6 +633,7 @@ export class Gateway {
           transport,
           server,
           project,
+          tools,
           get lastUsed() {
             return usage.lastUsed;
           },
@@ -549,7 +695,7 @@ export class Gateway {
               return await this.source(project, alias);
             } catch (e) {
               failed.add(alias);
-              this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
+              if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
               return undefined;
             }
           }),
@@ -562,23 +708,20 @@ export class Gateway {
         ? Promise.resolve(skills)
         : this.source(project, alias).catch((e) => {
             failed.add(alias);
-            this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
+            if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
             throw new Error(`${alias} is unavailable`);
           });
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
     const instructions =
       (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
-    const server = mergedServer(
-      instructions,
-      sources,
-      (alias, e) => {
+    const server = mergedServer(instructions, sources, {
+      onError: (alias, e) => {
         failed.add(alias);
         this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`);
       },
       resolveSource,
-      undefined,
       signal,
-    );
+    });
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
@@ -614,9 +757,34 @@ export class Gateway {
     }
   }
 
-  /** Tell every running session to re-list its tools (a mapping or instance changed). */
-  toolsChanged() {
-    for (const { server } of this.sessions.values()) server.sendToolListChanged().catch(() => {});
+  /** What a project's tool list depends on: its mapping, the mapped servers' settings, and which are signed in. */
+  private toolsKey(project: string): string {
+    return JSON.stringify(
+      Object.entries(aliasesFor(this.s, project)).map(([alias, id]) => [
+        alias,
+        this.s.get("mcp", id) ?? null,
+        !!this.s.get("mcpCredential", id)?.tokens,
+      ]),
+    );
+  }
+
+  /**
+   * Tells the sessions whose tools may have changed to list them again: after a store change, those whose mapping,
+   * servers or sign-ins differ; with `instance`, those using that server, which said its tools changed. A client
+   * re-lists on every notice, and store changes that leave tools alone (a session being recorded, a token refresh)
+   * are frequent.
+   */
+  toolsChanged(instance?: string) {
+    for (const session of this.sessions.values()) {
+      if (instance) {
+        if (!Object.values(aliasesFor(this.s, session.project)).includes(instance)) continue;
+      } else {
+        const key = this.toolsKey(session.project);
+        if (key === session.tools) continue;
+        session.tools = key;
+      }
+      session.server.sendToolListChanged().catch(() => {});
+    }
   }
 
   /** Auto-discovered repos for the native app; written at most every 5 minutes per repo to keep sync quiet. */

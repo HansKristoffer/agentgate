@@ -1,6 +1,6 @@
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { LOCAL_URL, schemas } from "../store.ts";
+import { LOCAL_URL, schemas, type McpInstance } from "../store.ts";
 import {
   SHIM_CLIENT_NAME,
   VERSION,
@@ -10,6 +10,7 @@ import {
   parseRemote,
   type Source,
 } from "./gateway.ts";
+import { headerWait } from "./oauth.ts";
 
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
@@ -35,8 +36,10 @@ export async function buildShim(
   cwd: string,
   daemonUrl = LOCAL_URL,
   env = process.env,
-  options: { reconnectMs?: number } = {},
+  options: { reconnectMs?: number; handshakeMs?: number } = {},
 ) {
+  // The handshake and session reads fail fast, so a hung daemon costs the session its tools, not its start.
+  const handshake = options.handshakeMs ?? 5000;
   const project = detectProject(cwd, env);
   const q = `project=${encodeURIComponent(project)}`;
   // Too late for this session's skills (agents read them before starting MCP servers), but it lets the
@@ -53,7 +56,7 @@ export async function buildShim(
   let daemon: Client | undefined, transport: StreamableHTTPClientTransport | undefined;
   let closed = false,
     flight: Promise<void> | undefined;
-  const children = new Map<string, { config: string; client: Client }>();
+  const children = new Map<string, { config: string; instance: McpInstance; client: Client }>();
   let server: ReturnType<typeof mergedServer> | undefined;
   const changed = () => {
     void server?.sendToolListChanged().catch(() => {});
@@ -66,7 +69,7 @@ export async function buildShim(
     changed();
   };
   const reconcile = async () => {
-    const res = await fetchHeaders(`${daemonUrl}/api/shim?${q}`, { signal: AbortSignal.timeout(5000) }, 5000);
+    const res = await fetchHeaders(`${daemonUrl}/api/shim?${q}`, { signal: AbortSignal.timeout(handshake) }, handshake);
     if (!res.ok) throw new Error("cannot read session configuration");
     const config = z
       .array(z.object({ alias: z.string(), instance: schemas.mcp }))
@@ -94,7 +97,7 @@ export async function buildShim(
             await client.close();
             return;
           }
-          children.set(alias, { config: serialized, client });
+          children.set(alias, { config: serialized, instance, client });
           client.onclose = () => {
             if (children.get(alias)?.client === client) children.delete(alias);
           };
@@ -111,13 +114,15 @@ export async function buildShim(
         const client = new Client({ name: SHIM_CLIENT_NAME, version: VERSION });
         const t = new StreamableHTTPClientTransport(new URL(`${daemonUrl}/mcp?${q}`), {
           fetch: async (url, init) => {
-            const res = await fetchHeaders(url, init, init?.method === "DELETE" ? 1000 : 5000);
+            // Bun.serve sends an SSE response's headers with its first event, so a call's (a POST's) headers come
+            // when the tool finishes; the handshake keeps its own deadline below.
+            const res = await fetchHeaders(url, init, headerWait(init?.method, handshake));
             if (res.status === 404 && t.sessionId) invalidate(client);
             return res;
           },
         });
         try {
-          await client.connect(t, { timeout: 5000 });
+          await client.connect(t, { timeout: handshake });
         } catch (e) {
           await client.close().catch(() => {});
           throw e;
@@ -142,16 +147,24 @@ export async function buildShim(
     }));
   };
   await ensure().catch(() => {});
+  const child = (alias: string): Source | undefined => {
+    const c = children.get(alias);
+    return c && { alias, client: c.client, instance: c.instance };
+  };
   const sources = async (): Promise<Source[]> => {
     await ensure().catch(() => {});
-    return [
-      ...(daemon ? [{ alias: "", client: daemon }] : []),
-      ...Array.from(children, ([alias, child]) => ({ alias, client: child.client })),
-    ];
+    return [...(daemon ? [{ alias: "", client: daemon }] : []), ...Array.from(children.keys(), (a) => child(a)!)];
   };
-  server = mergedServer(daemon ? mergeInstructions(await sources()) : DAEMON_DOWN, sources, (alias, e) =>
-    console.error(`agentgate: ${alias || "daemon"}: ${e}`),
-  );
+  server = mergedServer(daemon ? mergeInstructions(await sources()) : DAEMON_DOWN, sources, {
+    onError: (alias, e) => console.error(`agentgate: ${alias || "daemon"}: ${e}`),
+    // A call goes to the connection it was listed from. Listings and the timer reread the session's configuration;
+    // a call does not, which saves it a round trip to the daemon.
+    resolveSource: async (alias) => {
+      if (alias) return child(alias);
+      if (!daemon) await ensure().catch(() => {});
+      return daemon && { alias: "", client: daemon };
+    },
+  });
   const timer = setInterval(() => {
     void ensure().catch(() => {});
   }, options.reconnectMs ?? 5000);
