@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.28.0](https://github.com/HansKristoffer/agentgate/compare/v0.27.2...v0.28.0) (2026-11-03)
+
+
+### Features
+
+* **mcp:** long tool calls no longer time out at 5 s, and big results are cut to 20,000 characters ([#105](https://github.com/HansKristoffer/agentgate/issues/105)) ([f125045](https://github.com/HansKristoffer/agentgate/commit/f125045c3f8eed87b654d59b6b386912dd7367eb))
+
+
+### Performance Improvements
+
+* **mcp:** sessions list each upstream's tools once, and calls name the client behind them ([#103](https://github.com/HansKristoffer/agentgate/issues/103)) ([b3935a1](https://github.com/HansKristoffer/agentgate/commit/b3935a1fa94e5a60783a23a14333b8340f75a346))
+
 ## [0.27.2](https://github.com/HansKristoffer/agentgate/compare/v0.27.1...v0.27.2) (2026-10-31)
 
 
