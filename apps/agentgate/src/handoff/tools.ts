@@ -28,7 +28,7 @@ function server(h: Handoffs): Server {
           {
             name: "handoff_thread",
             description:
-              "Hand a T3 Code thread, with its Claude session and its code (unpushed commits and uncommitted files), to another machine and continue it there. To hand off yourself, get your thread id from T3's t3_thread_configuration tool (called without arguments). Handing off the calling thread interrupts it right after this returns; it then continues on the other machine.",
+              "Hand a T3 Code thread, with its Claude session and its code (unpushed commits and uncommitted files), to another machine and continue it there. To hand off yourself, get your thread id from T3's t3_thread_configure tool (called without arguments). Handing off the calling thread interrupts it right after this returns; it then continues on the other machine.",
             inputSchema: {
               type: "object",
               required: ["threadId"],

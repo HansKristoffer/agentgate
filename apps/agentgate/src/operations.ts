@@ -117,6 +117,25 @@ export function labelInstance(s: Store, id: string, label: string) {
   if (!name || name.length > 100) throw new Error("name: 1 to 100 characters");
   s.put("mcp", id, { ...inst, label: name === id ? undefined : name });
 }
+/** How a server is offered to agents; a key set to `undefined` goes back to the default. */
+export function tuneInstance(
+  s: Store,
+  id: string,
+  change: Partial<Pick<McpInstance, "tools" | "instructions" | "maxResultChars">>,
+) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  s.put("mcp", id, { ...inst, ...change });
+}
+/** One tool's result limit or default arguments; a key set to `undefined` goes back to the server's. */
+export function tuneTool(s: Store, id: string, tool: string, change: NonNullable<McpInstance["toolOptions"]>[string]) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  const options = { ...inst.toolOptions, [tool]: { ...inst.toolOptions?.[tool], ...change } };
+  for (const [name, o] of Object.entries(options))
+    if (o.maxResultChars === undefined && o.defaults === undefined) delete options[name];
+  s.put("mcp", id, { ...inst, toolOptions: Object.keys(options).length ? options : undefined });
+}
 const unmap = (s: Store, p: Project, id: string) =>
   s.put("project", p.id, { ...p, mcp: Object.fromEntries(Object.entries(p.mcp).filter(([, v]) => v !== id)) });
 export function deleteInstance(s: Store, id: string) {

@@ -62,7 +62,7 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 - **Unpairing a machine** gives every endpoint a new URL and secret (the removed machine knows the current ones), and endpoints it served move to this machine. Update the URLs in Grok afterwards. `relay rotate` does not change endpoints.
 - **Every machine must run a version that understands endpoints** before one can be enabled; older daemons would drop the endpoint when they edit the project.
 - One machine serves each endpoint (always-on machines by default). Its MCP servers must work on that machine; servers that start per worktree are not offered.
-- Limits: 256 KiB per request, 4 MiB per response, 4 requests in flight, 10 minutes per request, no JSON-RPC batches. An endpoint is deleted after `RELAY_RETENTION_DAYS` with neither a request nor a connected machine.
+- Limits: 256 KiB per request, 4 MiB per response, 4 requests in flight per endpoint (a fifth gets `503` with `Retry-After: 1`), 10 minutes per request, no JSON-RPC batches. The limits are `REMOTE_LIMITS` in `packages/protocol/src/remote.ts`, which the relay and the serving machine both enforce, so changing one means deploying both. An endpoint is deleted after `RELAY_RETENTION_DAYS` with neither a request nor a connected machine.
 
 | Variable                             | Default | Meaning                                  |
 | ------------------------------------ | ------- | ---------------------------------------- |
