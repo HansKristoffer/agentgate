@@ -15,7 +15,7 @@
     "@modelcontextprotocol/client": "^2.4.0",
     "@modelcontextprotocol/core": "^2.4.0",
     "@modelcontextprotocol/server": "^2.4.0",
-    "hanzio": "^3.3.0",
+    "hanzio": "^3.4.0",
     "hono": "^4.13.12",
     "llm-usage-extraction": "^0.2.0",
     "zod": "^4.6.5"
