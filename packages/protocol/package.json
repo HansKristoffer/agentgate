@@ -11,7 +11,7 @@
     "typecheck": "bun check"
   },
   "dependencies": {
-    "hanzio": "^3.3.0",
+    "hanzio": "^3.4.0",
     "zod": "^4.6.5"
   }
 }
