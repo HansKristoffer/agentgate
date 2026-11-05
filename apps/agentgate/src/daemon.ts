@@ -44,6 +44,8 @@ import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
+import { createFactoryRuntime, loopTask, type FactoryRuntime } from "./factory/runtime.ts";
+import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -65,6 +67,8 @@ export interface Ctx {
   /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
   health: HealthDashboard;
+  /** The software factory's features and what they registered (factory/runtime.ts). */
+  factory: FactoryRuntime;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -105,9 +109,9 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
-  gateway.builtin = () => handoffSource(handoffs);
   const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return {
+  ensureFactoryTables(s);
+  const base: Omit<Ctx, "factory"> = {
     channel,
     s,
     creds,
@@ -123,6 +127,11 @@ export function makeCtx(
     handoffs,
     health: new HealthDashboard(s),
   };
+  // Features may keep the context, but none reads ctx.factory while they set up.
+  const ctx = base as Ctx;
+  ctx.factory = createFactoryRuntime(ctx);
+  gateway.builtin = () => handoffSource(handoffs, ctx.factory);
+  return ctx;
 }
 
 export function app(ctx: Ctx) {
@@ -213,11 +222,12 @@ export function app(ctx: Ctx) {
   });
 
   // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)));
+  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer));
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
   app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
+  app.get("/factory", (c) => (ctx.factory.page ? ctx.factory.page(c.req.raw, c.env.listener) : c.notFound()));
   app.route("/api", management(ctx));
   return app;
 }
@@ -358,6 +368,7 @@ export async function serve(
   }, 2000);
   schedule(async () => {
     s.trimLog();
+    trimFactory(s);
     expireLogins(s);
     rotateLogs();
   }, 3600000);
@@ -366,6 +377,7 @@ export async function serve(
   }, 5000);
   schedule(() => ctx.handoffs.syncProjects(), 30_000);
   schedule(() => ctx.channel.reconcile(), 30_000);
+  for (const loop of ctx.factory.loops) schedule(loopTask(ctx.factory, loop), loop.everyMs);
   let stopping: Promise<void> | undefined;
   return {
     ctx,

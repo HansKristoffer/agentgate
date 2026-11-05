@@ -115,6 +115,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   threads [--node <node>]                     active T3 Code threads on every machine
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
+  factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
   logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
   logins share [github|infisical]             share this machine's logins; every machine signs in with them
   logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
@@ -449,6 +450,7 @@ async function main() {
       if (sub !== "set") die("settings show | settings set --file patch.json");
       const expected = revision(s, "setting", "settings");
       const patch = await Bun.file(str("file") ?? die("--file patch.json is required")).json();
+      if (patch?.factory) (await import("./factory/runtime.ts")).requireFactoryProtocol(s);
       return console.log(JSON.stringify(patchSettings(s, patch, expected), null, 2));
     }
     case "proxy": {
@@ -1367,6 +1369,23 @@ async function main() {
           `${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`,
         );
       return;
+    }
+
+    case "factory": {
+      // The daemon owns every factory command. Arguments go as typed, since each command parses its own options.
+      const [name, ...args] = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
+      if (!name || name === "help") {
+        const commands = await management<{ name: string; usage: string }[]>("/factory/commands");
+        return console.log(commands.map((c) => `  factory ${c.usage}`).join("\n") || "No factory commands yet.");
+      }
+      const stdin = process.stdin.isTTY ? undefined : await Bun.stdin.text();
+      const result = await management<import("@agentgate/protocol").FactoryCommandResult>("/factory/command", "POST", {
+        name,
+        args,
+        ...(stdin !== undefined && { stdin }),
+      });
+      for (const line of result.output) console.log(line);
+      process.exit(result.code);
     }
 
     case "setup": {

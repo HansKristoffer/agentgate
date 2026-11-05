@@ -38,7 +38,10 @@ import {
   ConfigurationConflict,
   accountPatchSchema,
   settingsPatchSchema,
+  factoryCommandInputSchema,
+  type FactoryCommandResult,
 } from "@agentgate/protocol";
+import { requireFactoryProtocol, runCommand } from "./factory/runtime.ts";
 import packageInfo from "../../../package.json";
 import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
@@ -901,6 +904,7 @@ export function management(ctx: Ctx) {
       .object({ revision: z.string().length(64), patch: settingsPatchSchema })
       .strict()
       .parse(await json(c.req.raw));
+    if (f.patch.factory) input(() => requireFactoryProtocol(s));
     return c.json(patchSettings(s, f.patch, f.revision));
   });
   app.get("/backup", (c) => {
@@ -992,6 +996,21 @@ export function management(ctx: Ctx) {
     await inputAsync(() => desktop.gateway(s, f.on));
     return c.json({ ok: true });
   });
+  // `agentgate factory <name> ...`: the factory's features register their commands, and the CLI only relays them.
+  app.get("/factory/commands", (c) =>
+    c.json(Array.from(ctx.factory.commands, ([name, { usage }]) => ({ name, usage }))),
+  );
+  // Commands include setting secrets, so like the secret routes they are loopback only; the app uses typed routes.
+  app.post("/factory/command", async (c) => {
+    local(c.env.listener);
+    const f = factoryCommandInputSchema.parse(await json(c.req.raw));
+    const output: string[] = [];
+    const code = await inputAsync(() =>
+      runCommand(ctx.factory, f.name, f.args, { stdin: f.stdin, out: (line) => output.push(line) }),
+    );
+    return c.json({ code, output } satisfies FactoryCommandResult);
+  });
+  app.route("/factory", ctx.factory.api);
   return app;
 }
 

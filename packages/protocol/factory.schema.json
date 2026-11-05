@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": { "type": "number", "const": 1 },
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+    "description": { "type": "string", "maxLength": 500 },
+    "repositories": {
+      "type": "object",
+      "propertyNames": { "type": "string", "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$" },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "reviewers": {
+            "default": [],
+            "maxItems": 10,
+            "type": "array",
+            "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "secrets": {
+      "default": [],
+      "maxItems": 100,
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" }
+    },
+    "limits": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "threads": { "default": 3, "type": "integer", "minimum": 1, "maximum": 20 },
+        "waitForQuota": { "default": true, "type": "boolean" },
+        "waitingForYou": { "default": 5, "type": "integer", "minimum": 1, "maximum": 100 },
+        "itemTokens": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "reviewRounds": { "default": 3, "type": "integer", "minimum": 0, "maximum": 5 },
+        "nudges": { "default": 3, "type": "integer", "minimum": 0, "maximum": 10 },
+        "stalledAfter": { "default": "15m", "type": "string", "pattern": "^\\d+(m|h|d)$" }
+      },
+      "additionalProperties": false
+    },
+    "sources": {
+      "default": [],
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+              "type": { "type": "string", "const": "github" },
+              "repo": { "type": "string", "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$" },
+              "label": { "type": "string", "minLength": 1, "maxLength": 50 },
+              "intake": { "default": "auto", "type": "string", "enum": ["auto", "hold"] },
+              "webhook": {
+                "type": "object",
+                "properties": { "secret": { "type": "string", "pattern": "^secret:[A-Z][A-Z0-9_]{0,63}$" } },
+                "required": ["secret"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["id", "type", "repo", "label"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+              "type": { "type": "string", "const": "linear" },
+              "repo": { "type": "string", "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$" },
+              "team": { "type": "string", "minLength": 1, "maxLength": 20 },
+              "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+              "apiKey": { "type": "string", "pattern": "^secret:[A-Z][A-Z0-9_]{0,63}$" },
+              "intake": { "default": "auto", "type": "string", "enum": ["auto", "hold"] },
+              "webhook": {
+                "type": "object",
+                "properties": { "secret": { "type": "string", "pattern": "^secret:[A-Z][A-Z0-9_]{0,63}$" } },
+                "required": ["secret"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["id", "type", "repo", "team", "label", "apiKey"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
+              "type": { "type": "string", "const": "webhook" },
+              "repo": { "type": "string", "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$" },
+              "intake": { "default": "hold", "type": "string", "enum": ["auto", "hold"] },
+              "signature": {
+                "type": "object",
+                "properties": {
+                  "header": { "type": "string", "minLength": 1, "maxLength": 100 },
+                  "encoding": { "type": "string", "enum": ["hex", "base64"] },
+                  "prefix": { "default": "", "type": "string", "maxLength": 20 },
+                  "secret": { "type": "string", "pattern": "^secret:[A-Z][A-Z0-9_]{0,63}$" }
+                },
+                "required": ["header", "encoding", "secret"],
+                "additionalProperties": false
+              },
+              "title": { "type": "string", "minLength": 1, "maxLength": 2000 },
+              "body": { "default": "{{body}}", "type": "string", "minLength": 1, "maxLength": 2000 },
+              "dedupe": { "type": "string", "minLength": 1, "maxLength": 2000 },
+              "dedupeWindow": { "default": "1h", "type": "string", "pattern": "^\\d+(m|h|d)$" }
+            },
+            "required": ["id", "type", "repo", "title"],
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "learning": {
+      "default": {},
+      "type": "object",
+      "properties": { "every": { "default": "7d", "type": "string", "pattern": "^\\d+(m|h|d)$" } },
+      "additionalProperties": false
+    },
+    "scoring": {
+      "default": {},
+      "type": "object",
+      "properties": { "sample": { "default": 25, "type": "number", "minimum": 0, "maximum": 100 } },
+      "additionalProperties": false
+    }
+  },
+  "required": ["version", "name", "repositories"],
+  "additionalProperties": false
+}
