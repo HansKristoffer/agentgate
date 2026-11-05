@@ -109,10 +109,8 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
-  const channel = new NodeChannel(s, relayedRoutes(handoffs));
   ensureFactoryTables(s);
-  const base: Omit<Ctx, "factory"> = {
-    channel,
+  const base: Omit<Ctx, "factory" | "channel"> = {
     s,
     creds,
     quotas,
@@ -127,9 +125,11 @@ export function makeCtx(
     handoffs,
     health: new HealthDashboard(s),
   };
-  // Features may keep the context, but none reads ctx.factory while they set up.
+  // Features may keep the context, but none reads ctx.factory or ctx.channel while they set up.
   const ctx = base as Ctx;
   ctx.factory = createFactoryRuntime(ctx);
+  // After the features, whose peer routes the relay serves too.
+  ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
   gateway.builtin = () => handoffSource(handoffs, ctx.factory);
   return ctx;
 }
