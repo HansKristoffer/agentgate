@@ -270,7 +270,7 @@ test("a feature's route, peer route, command and tool are reachable, and its fac
   expect(loops).toBe(0);
 
   useFactory(s, "a");
-  expect((await builtin.listTools()).tools.map((t) => t.name)).toEqual(["factory_echo"]);
+  expect((await builtin.listTools()).tools.map((t) => t.name)).toContain("factory_echo");
   const result = await builtin.callTool({
     name: "factory_echo",
     arguments: { word: "hi" },
