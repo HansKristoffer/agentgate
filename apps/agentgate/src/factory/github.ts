@@ -1,5 +1,5 @@
 import type { FactoryItem } from "./db.ts";
-import { issueComments, issueState, openLabelledIssues, postIssueComment } from "./gh.ts";
+import { issueComments, issueState, openLabelledIssues, postIssueComment, viewerLogin } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
 
@@ -37,9 +37,14 @@ export const githubSource: SourceAdapter = {
     const { repo, number } = issueOf(item);
     return postIssueComment(repo, number, body);
   },
+  /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */
   async newestMarker(item) {
     const { repo, number } = issueOf(item);
-    return (await issueComments(repo, number)).flatMap((c) => parseMarkers(c.body)).at(-1);
+    const [comments, viewer] = await Promise.all([issueComments(repo, number), viewerLogin()]);
+    return comments
+      .filter((c) => c.author.toLowerCase() === viewer.toLowerCase())
+      .flatMap((c) => parseMarkers(c.body))
+      .at(-1);
   },
 };
 

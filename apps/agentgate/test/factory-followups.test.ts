@@ -33,6 +33,7 @@ function markerComment(number: number, marker: Partial<MarkerPayload>) {
   };
   return {
     body: `**gh-${number}**: Shipped.\n\n${MARKER_PREFIX}${JSON.stringify(payload)} -->`,
+    author: { login: "maintainer" },
     authorAssociation: "OWNER",
     createdAt: "2026-11-02T10:00:00Z",
   };

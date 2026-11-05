@@ -99,12 +99,30 @@ export async function issueState(repo: string, number: number): Promise<"OPEN" |
   return view.state === "OPEN" ? "OPEN" : "CLOSED";
 }
 
+let viewer: Promise<string> | undefined;
+
+/** The login this machine's `gh` acts as, which is the factory's own account (D42). Read once per process; a failed
+ * read is not kept, so the next call asks again. */
+export async function viewerLogin(): Promise<string> {
+  viewer ??= ghJson("read this machine's gh login", login, ["api", "user"]).then(
+    (user) => user.login,
+    (e) => {
+      viewer = undefined;
+      throw e;
+    },
+  );
+  return viewer;
+}
+
+// A deleted account's comments come without an author.
+const issueComment = comment.extend({ author: login.nullish() });
+
 /** Every comment, oldest first: `gh` pages through them when `comments` is asked for. Zod drops the other fields. */
 export async function issueComments(
   repo: string,
   number: number,
-): Promise<Array<{ body: string; authorAssociation: string; createdAt: string }>> {
-  const view = await ghJson(`read the comments on ${repo}#${number}`, z.object({ comments: z.array(comment) }), [
+): Promise<Array<{ body: string; author: string; authorAssociation: string; createdAt: string }>> {
+  const view = await ghJson(`read the comments on ${repo}#${number}`, z.object({ comments: z.array(issueComment) }), [
     "issue",
     "view",
     String(number),
@@ -113,7 +131,7 @@ export async function issueComments(
     "--json",
     "comments",
   ]);
-  return view.comments;
+  return view.comments.map(({ author, ...rest }) => ({ ...rest, author: author?.login ?? "" }));
 }
 
 /** A POST whose outcome decides between failed (GitHub refused it, or it never left) and uncertain (it may exist). */

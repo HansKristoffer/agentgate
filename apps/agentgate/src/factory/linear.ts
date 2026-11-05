@@ -175,10 +175,21 @@ const createdSchema = z.object({ commentCreate: z.object({ success: z.boolean() 
 const CREATE = `mutation FactoryComment($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) { success }
 }`;
+// The viewer is the API key's user, who posts the factory's comments; a comment from an integration has no user.
 const commentsSchema = z.object({
-  issue: z.object({ comments: z.object({ nodes: z.array(z.object({ body: z.string(), createdAt: z.string() })) }) }),
+  viewer: z.object({ id: z.string().min(1) }),
+  issue: z.object({
+    comments: z.object({
+      nodes: z.array(
+        z.object({ body: z.string(), createdAt: z.string(), user: z.object({ id: z.string() }).nullish() }),
+      ),
+    }),
+  }),
 });
-const COMMENTS = `query FactoryComments($id: String!) { issue(id: $id) { comments(first: 100) { nodes { body createdAt } } } }`;
+const COMMENTS = `query FactoryComments($id: String!) {
+  viewer { id }
+  issue(id: $id) { comments(first: 100) { nodes { body createdAt user { id } } } }
+}`;
 
 /** markers.ts's hidden marker becomes a visible last line. A backtick in a value would end the code span early. */
 function visibleMarker(body: string) {
@@ -234,10 +245,13 @@ export function setup(f: FactoryRuntime): void {
       return !CLOSED.includes(issue.state.type);
     },
     post: (item, body) => post(f, item, body),
+    /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */
     async newestMarker(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source));
-      const { issue } = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
-      const newest = issue.comments.nodes.toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const { viewer, issue } = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
+      const newest = issue.comments.nodes
+        .filter((c) => c.user?.id === viewer.id)
+        .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
       for (const comment of newest) {
         const marker = markerOf(comment.body);
         if (marker) return marker;

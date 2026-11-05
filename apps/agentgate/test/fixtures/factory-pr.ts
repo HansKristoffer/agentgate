@@ -10,7 +10,7 @@ const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 const sha = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("");
 
-type Comment = { body: string; authorAssociation: string; createdAt: string };
+type Comment = { body: string; author?: { login: string }; authorAssociation: string; createdAt: string };
 export interface FakePr {
   number: number;
   url: string;
@@ -97,10 +97,14 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
       const issue = issues.get(Number(args[2]))!;
       return ok(flag(args, "--json") === "state" ? { state: issue.state } : { comments: issue.comments });
     }
+    // The factory acts as the maintainer's own login (D42).
+    if (command === "api" && sub === "user") return ok({ login: "maintainer" });
     const comment = sub?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
     if (command === "api" && comment) {
       const { body } = JSON.parse(stdin!);
-      issues.get(Number(comment[1]))!.comments.push({ body, authorAssociation: "OWNER", createdAt: "2026-11-05" });
+      issues
+        .get(Number(comment[1]))!
+        .comments.push({ body, author: { login: "maintainer" }, authorAssociation: "OWNER", createdAt: "2026-11-05" });
       return ok({ id: 1 });
     }
     const pr = prs.get(args[2]!);

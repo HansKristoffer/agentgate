@@ -95,13 +95,29 @@ const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? 
 
 // ---- items and runs
 
+/** `approved`: a person started this stage, so `start: manual` does not hold it again. */
 export function enqueueRun(
   f: FactoryRuntime,
-  input: { kind: RunKind; item?: string; configCommit?: string; attempt?: number; checked?: unknown },
+  input: {
+    kind: RunKind;
+    item?: string;
+    configCommit?: string;
+    attempt?: number;
+    checked?: unknown;
+    approved?: boolean;
+  },
 ): FactoryRun {
   const item = input.item ? items.get(f.s, input.item) : undefined;
   const configCommit = input.configCommit ?? item?.configCommit ?? currentFolder(f)?.commit;
   if (!configCommit) throw new Error("The factory's folder has not loaded yet; see agentgate factory status");
+  // `start: manual` holds the item before the stage, not every round of it: a retry, a spec round the maintainer asked
+  // for or a re-review goes on. Dispatch leaves the run queued while the item is held.
+  const holds =
+    item &&
+    !input.approved &&
+    isStage(input.kind) &&
+    folderFor(f, configCommit)?.stages[input.kind]?.file.start === "manual" &&
+    !runs.forItem(f.s, item.id).some((r) => r.kind === input.kind);
   const run = runs.insert(f.s, {
     id: newId("run"),
     ...(input.item && { item: input.item }),
@@ -114,6 +130,11 @@ export function enqueueRun(
   });
   const what = item ? `${input.kind} for ${item.key}` : input.kind;
   f.events.emit({ kind: "run.queued", run: run.id, ...(input.item && { item: input.item }), text: `Queued ${what}` });
+  if (holds)
+    setNeedsYou(f, item.id, {
+      reason: "held",
+      question: `Start ${input.kind} with agentgate factory approve ${item.key}`,
+    });
   return run;
 }
 
@@ -474,6 +495,7 @@ async function dispatch(f: FactoryRuntime) {
       endRun(f, run, "cancelled");
       continue;
     }
+    if (item?.needsYou?.reason === "held") continue;
     try {
       const spec = await definition.launch(run, item);
       if ("wait" in spec) {
@@ -834,7 +856,7 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
         .map((r) => r.kind)
         .findLast(isStage) ?? "triage";
     moveItem(f, item.id, kind, null);
-    enqueueRun(f, { kind, item: item.id });
+    enqueueRun(f, { kind, item: item.id, approved: true });
     touched(f, item, "retry", `retried ${kind}`);
     return `Retrying ${kind} for ${item.key}`;
   }
@@ -847,9 +869,21 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
       return `Rejected ${item.key}`;
     }
     moveItem(f, item.id, "triage", null);
-    enqueueRun(f, { kind: "triage", item: item.id });
+    enqueueRun(f, { kind: "triage", item: item.id, approved: true });
     touched(f, item, "approve", "approved to start");
     return `Approved ${item.key}; triage is queued`;
+  }
+  // Held before a stage with `start: manual`: its run is queued, and dispatch starts it once the hold is gone.
+  if (item.needsYou?.reason === "held") {
+    const stage = last?.kind ?? item.phase;
+    if (!approve) {
+      await closeItem(f, item, `The maintainer rejected it${because}.`);
+      touched(f, item, "reject", `rejected before ${stage}`);
+      return `Rejected ${item.key}`;
+    }
+    setNeedsYou(f, item.id, null);
+    touched(f, item, "approve", `approved to start ${stage}`);
+    return `Approved ${item.key}; ${stage} starts`;
   }
   if (last?.state === "waiting") {
     const answer = f.runKinds.get(last.kind)?.answer;

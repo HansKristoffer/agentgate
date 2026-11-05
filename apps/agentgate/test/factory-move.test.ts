@@ -20,7 +20,7 @@ afterEach(async () => {
 interface Issue {
   number: number;
   title: string;
-  comments: { body: string; authorAssociation: string; createdAt: string }[];
+  comments: { body: string; author: { login: string }; authorAssociation: string; createdAt: string }[];
 }
 
 /** One repository's open issues labelled `factory`, answering the gh commands gh.ts sends. */
@@ -37,10 +37,14 @@ function fakeGitHub(repo: string) {
       const issue = issues.get(Number(args[2]))!;
       return ok(args.at(-1) === "state" ? { state: "OPEN" } : { comments: issue.comments });
     }
+    // Every machine's gh acts as the maintainer's login (D42), so each one's markers count on the others.
+    if (args[0] === "api" && args[1] === "user") return ok({ login: "maintainer" });
     const comment = args[1]?.match(/\/issues\/(\d+)\/comments$/);
     if (args[0] === "api" && comment) {
       const { body } = JSON.parse(stdin!);
-      issues.get(Number(comment[1]))!.comments.push({ body, authorAssociation: "OWNER", createdAt: "2026-11-05" });
+      issues
+        .get(Number(comment[1]))!
+        .comments.push({ body, author: { login: "maintainer" }, authorAssociation: "OWNER", createdAt: "2026-11-05" });
       return ok({ id: 1 });
     }
     throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
@@ -62,6 +66,7 @@ function fakeGitHub(repo: string) {
                 state: "open",
                 ...marker,
               })} -->`,
+              author: { login: "maintainer" },
               authorAssociation: "OWNER",
               createdAt: "2026-11-02T10:00:00Z",
             },
