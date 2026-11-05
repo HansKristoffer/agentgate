@@ -255,6 +255,9 @@ export function fakeT3(options: {
         case "thread.unarchive":
           t.archivedAt = null;
           break;
+        case "thread.settle":
+          t.settledOverride = "settled";
+          break;
         case "thread.unsettle":
           t.settledOverride = "active";
           break;
