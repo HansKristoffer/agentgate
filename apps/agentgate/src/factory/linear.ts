@@ -21,6 +21,16 @@ const MAX_PAGES = 10; // 1,000 open labelled issues is far past what a factory t
 const CLOSED = ["completed", "canceled"];
 const VISIBLE = "agentgate-factory:1 ";
 
+const CAPPED = "Only the first 1,000 open labelled issues are read; the rest wait until fewer are open";
+
+/** Sources whose last poll stopped at MAX_PAGES with issues left, which their board row says. */
+const cappedSources = new WeakMap<FactoryRuntime, Set<string>>();
+function cappedOf(f: FactoryRuntime) {
+  let set = cappedSources.get(f);
+  if (!set) cappedSources.set(f, (set = new Set()));
+  return set;
+}
+
 type LinearSource = Extract<FactorySource, { type: "linear" }>;
 
 class LinearError extends Error {
@@ -127,10 +137,13 @@ const ISSUES = `query FactoryIssues($team: String!, $label: String!, $after: Str
 }`;
 
 async function poll(f: FactoryRuntime, source: FactorySource) {
+  // Cleared first, so a failed poll shows its own error instead.
+  cappedOf(f).delete(source.id);
   if (source.type !== "linear") throw new LinearError(`The source ${source.id} is not a Linear source`);
   const apiKey = apiKeyOf(f, source);
   const found: IncomingItem[] = [];
   let after: string | undefined;
+  let more = false;
   for (let page = 0; page < MAX_PAGES; page++) {
     const { issues } = await graphql(f, apiKey, issuesSchema, ISSUES, {
       team: source.team,
@@ -145,9 +158,11 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
         url: issue.url,
         snapshot: { title: issue.title, description: issue.description ?? "", url: issue.url },
       });
-    if (!issues.pageInfo.hasNextPage || !issues.pageInfo.endCursor) break;
-    after = issues.pageInfo.endCursor;
+    more = issues.pageInfo.hasNextPage && !!issues.pageInfo.endCursor;
+    if (!more) break;
+    after = issues.pageInfo.endCursor!;
   }
+  if (more) cappedOf(f).add(source.id);
   return found;
 }
 
@@ -204,6 +219,12 @@ async function post(f: FactoryRuntime, item: FactoryItem, body: string): Promise
 }
 
 export function setup(f: FactoryRuntime): void {
+  // Merged into the controller's row for the source, which comes earlier.
+  f.boardParts.push(async () => ({
+    sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
+      cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],
+    ),
+  }));
   f.sources.set("linear", {
     type: "linear",
     poll: (source) => poll(f, source),

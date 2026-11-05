@@ -54,12 +54,19 @@ async function benchFactory() {
   };
 
   // Merged PRs, newest first: #30 closes two issues, #31 is the factory's own, #32 a bot's.
+  const person = (login: string) => ({ __typename: "User", login });
   const merged = [
-    { number: 30, issues: [10, 11], branch: "fix-save", author: "alice", mergedAt: "2026-10-05T00:00:00Z" },
-    { number: 31, issues: [12], branch: "factory/it-12", author: "alice", mergedAt: "2026-10-04T00:00:00Z" },
-    { number: 32, issues: [13], branch: "deps", author: "dependabot[bot]", mergedAt: "2026-10-03T00:00:00Z" },
-    { number: 33, issues: [14], branch: "fix-load", author: "bob", mergedAt: "2026-10-02T00:00:00Z" },
-    { number: 34, issues: [15], branch: "fix-copy", author: "bob", mergedAt: "2026-10-01T00:00:00Z" },
+    { number: 30, issues: [10, 11], branch: "fix-save", author: person("alice"), mergedAt: "2026-10-05T00:00:00Z" },
+    { number: 31, issues: [12], branch: "factory/it-12", author: person("alice"), mergedAt: "2026-10-04T00:00:00Z" },
+    {
+      number: 32,
+      issues: [13],
+      branch: "deps",
+      author: { __typename: "Bot", login: "dependabot" },
+      mergedAt: "2026-10-03T00:00:00Z",
+    },
+    { number: 33, issues: [14], branch: "fix-load", author: person("bob"), mergedAt: "2026-10-02T00:00:00Z" },
+    { number: 34, issues: [15], branch: "fix-copy", author: person("bob"), mergedAt: "2026-10-01T00:00:00Z" },
   ];
   const prUrl = (number: number) => `https://github.com/${n.repo}/pull/${number}`;
   const prs = new Map<string, number>();
@@ -78,6 +85,8 @@ async function benchFactory() {
                 url: prUrl(pr.number),
                 mergedAt: pr.mergedAt,
                 baseRefOid: base,
+                headRefName: pr.branch,
+                author: pr.author,
                 closingIssuesReferences: {
                   nodes: pr.issues.map((issue) => ({
                     number: issue,
@@ -98,26 +107,8 @@ async function benchFactory() {
       const number = prs.get(args[args.indexOf("--head") + 1]!);
       return json(number ? [{ number, url: `https://github.com/acme/factory/pull/${number}` }] : []);
     }
-    const pr = args[0] === "pr" && args[1] === "view" && merged.find((p) => prUrl(p.number) === args[2]);
-    if (!pr) throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
-    return json({
-      number: pr.number,
-      url: prUrl(pr.number),
-      title: `Fix ${pr.issues[0]}`,
-      state: "MERGED",
-      isDraft: false,
-      author: { login: pr.author },
-      headRefName: pr.branch,
-      headRefOid: "b".repeat(40),
-      baseRefName: "main",
-      mergedAt: pr.mergedAt,
-      statusCheckRollup: [],
-      mergeable: "UNKNOWN",
-      body: "",
-      files: [],
-      comments: [],
-      reviews: [],
-    });
+    // Picking issues needs nothing beyond the GraphQL answer, so `gh pr view` has no answer here.
+    throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
   };
   cleanup.push(() => {
     host.gh = realGh;
@@ -328,4 +319,42 @@ test("a branch with an open factory PR is compared with the current folder on th
     ],
   });
   expect(side(n.commit)).toHaveLength(2);
+});
+
+test("bench --cancel ends a bench's queued and running replays and judges, keeps what another bench shares, and posts no comment", async () => {
+  const n = await benchFactory();
+  const commit = n.candidate(BRANCH, "Candidate guidance.");
+  n.prs.set(BRANCH, 7);
+  await n.command("bench", "--ref", BRANCH, "--items", "2");
+  await n.dispatch();
+  const side = (c: string) => n.replays().filter((r) => r.configCommit === c);
+  const [c10, c14] = side(commit);
+  const [b10, b14] = side(n.commit);
+  await n.finish(c14!, "same-fix");
+  expect(await n.report(c10!, n.replayed())).toEqual({ accepted: true });
+  const judge = n.judgeOf(c10!);
+  // A second learning PR's bench reuses the running replays with the current folder.
+  const other = n.candidate("factory/learn-run_2", "Other guidance.");
+  n.prs.set("factory/learn-run_2", 8);
+  await n.command("bench", "--ref", "factory/learn-run_2", "--items", "2");
+  const state = (run: FactoryRun) => runs.get(n.s, run.id)!.state;
+
+  expect((await n.command("bench", "--cancel", "--ref", BRANCH)).output).toEqual([
+    `Cancelled 1 run of the bench of ${BRANCH}`,
+  ]);
+  expect(state(judge)).toBe("cancelled");
+  expect([c14, b10, b14].map((r) => state(r!))).toEqual(["reported", "running", "running"]);
+
+  const res = await n.api("/api/factory/bench", "DELETE", {});
+  expect(await res.json()).toEqual({ cancelled: 4 });
+  expect([...side(other), b10!, b14!].map(state)).toEqual(["cancelled", "cancelled", "cancelled", "cancelled"]);
+  for (const run of [b10!, b14!]) {
+    const threadId = runs.get(n.s, run.id)!.threadId;
+    const acts = n.mcp.calls.filter((c) => c.args.threadId === threadId).map((c) => c.tool);
+    expect(acts.slice(-2)).toEqual(["t3_thread_interrupt", "t3_thread_organize"]);
+  }
+
+  await n.benchLoop();
+  expect(n.comments).toEqual([]);
+  expect((await n.command("bench", "--cancel")).output).toEqual(["Nothing to cancel: no bench has runs going"]);
 });

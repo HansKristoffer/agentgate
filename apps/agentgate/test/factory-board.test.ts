@@ -3,6 +3,7 @@ import { factoryBoardSchema, type FactoryBoard } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { buildBoard } from "../src/factory/board.ts";
 import { mirrorOf, timing } from "../src/factory/mirror.ts";
+import { FACTORY_PAGE } from "../src/factory/page.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
@@ -334,4 +335,99 @@ test("on another machine, GET /api/factory and factory status show the factory m
   const { output } = (await res.json()) as { output: string[] };
   expect(output).toContain("Factory: acme/api on b, online");
   expect(output).toContain("  a (this machine): 0 threads");
+});
+
+/** Just enough DOM for the board page's script: elements with text, classes and children. */
+class FakeElement {
+  className = "";
+  hidden = false;
+  href = "";
+  target = "";
+  rel = "";
+  children: FakeElement[] = [];
+  #text = "";
+  get textContent(): string {
+    return this.#text + this.children.map((c) => c.textContent).join(" ");
+  }
+  set textContent(text: string) {
+    this.#text = text;
+    this.children = [];
+  }
+  append(...nodes: FakeElement[]) {
+    this.children.push(...nodes);
+  }
+  replaceChildren(...nodes: FakeElement[]) {
+    this.children = nodes;
+  }
+}
+
+/** Runs the page's script once against `fetchBoard`, and returns each element with an id. */
+async function renderPage(fetchBoard: (path: string, init: { headers: object }) => Response | Promise<Response>) {
+  const byId = new Map<string, FakeElement>();
+  const document = {
+    createElement: () => new FakeElement(),
+    getElementById: (id: string) => byId.get(id) ?? byId.set(id, new FakeElement()).get(id)!,
+  };
+  let refresh: () => Promise<void> = async () => {};
+  const script = FACTORY_PAGE.match(/<script>([\s\S]*)<\/script>/)![1]!;
+  new Function("document", "fetch", "location", "setInterval", script)(
+    document,
+    fetchBoard,
+    { pathname: "/factory" },
+    (fn: () => Promise<void>) => (refresh = fn),
+  );
+  await refresh();
+  return (id: string) => document.getElementById(id);
+}
+
+test("the page and factory status show the last 7 days' outcomes and each judge's pass rate by factory commit", async () => {
+  const { s, f, ctx } = fixture();
+  useFactory(s, "a");
+  s.put("node", "a", { id: "a", protocol: 8, healthDashboard: true });
+  // As records.ts and scorers.ts report them.
+  f.boardParts.push(
+    async () => ({
+      metrics: {
+        merged: 4,
+        mergeRate: 0.8,
+        reverts14d: 1,
+        medianHoursToMerge: 5.25,
+        humanTouchesPerItem: 1.5,
+        tokensPerMergedPr: 1_234_567,
+        scorers: [],
+      },
+    }),
+    async () =>
+      ({
+        metrics: {
+          scorers: [
+            {
+              name: "review",
+              passRate: 0.75,
+              runs: 4,
+              byConfig: [
+                { commit: "aaaaaaa1111", passRate: 1, runs: 2 },
+                { commit: "bbbbbbb2222", passRate: 0.5, runs: 2 },
+              ],
+            },
+          ],
+        },
+      }) as Partial<FactoryBoard>,
+  );
+  const call = caller(app(ctx));
+
+  const page = await renderPage((path, init) => call(path, init));
+  expect(page("updated").textContent).toStartWith("Updated");
+  expect(page("metrics-section").hidden).toBe(false);
+  expect(page("metrics").textContent).toBe(
+    "4 merged 80% merge rate 1 reverted within 14 days 5.3h median time to merge 1.5 human touches per item 1.2M tokens per merged PR",
+  );
+  expect(page("judges").textContent).toContain("review 75% 4 aaaaaaa 100% of 2 · bbbbbbb 50% of 2");
+
+  const res = await call("/api/factory/command", { method: "POST", body: { name: "status", args: [] } });
+  const text = ((await res.json()) as { output: string[] }).output;
+  expect(text).toContain(
+    "Last 7 days: 4 merged, merge rate 80%, 1 reverted within 14 days, median 5.3h to merge, 1.5 human touches per item, 1.2M tokens per merged PR",
+  );
+  expect(text).toContain("  review: 75% passed of 4 runs");
 });

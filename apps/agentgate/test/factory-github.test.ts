@@ -386,6 +386,8 @@ const recorded = {
               url: `https://github.com/${REPO}/pull/${after ? 40 : 41}`,
               mergedAt: "2026-11-03T17:40:14Z",
               baseRefOid: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+              headRefName: after ? "dependabot/bun/hono-4.10.4" : "bagtoad/gh-help-environment-fix",
+              author: after ? { __typename: "Bot", login: "dependabot" } : { __typename: "User", login: "BagToad" },
               closingIssuesReferences: { nodes: [{ number: after ? 5 : 6, title: "Bug", body: "Steps" }] },
             },
             {
@@ -393,6 +395,8 @@ const recorded = {
               url: `https://github.com/${REPO}/pull/39`,
               mergedAt: "2026-11-02T00:25:42Z",
               baseRefOid: "9c399f1520a45f1bffb968d7d6565ea4112937fa",
+              headRefName: "patch-1",
+              author: null,
               closingIssuesReferences: { nodes: [] },
             },
           ],
@@ -459,6 +463,8 @@ test("each gh.ts read parses a recorded gh answer", async () => {
       pr: 41,
       prUrl: `https://github.com/${REPO}/pull/41`,
       baseSha: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+      headRefName: "bagtoad/gh-help-environment-fix",
+      author: "BagToad",
       mergedAt: "2026-11-03T17:40:14Z",
     },
     {
@@ -468,9 +474,21 @@ test("each gh.ts read parses a recorded gh answer", async () => {
       pr: 40,
       prUrl: `https://github.com/${REPO}/pull/40`,
       baseSha: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
+      headRefName: "dependabot/bun/hono-4.10.4",
+      // GraphQL names bots without the suffix gh and REST use.
+      author: "dependabot[bot]",
       mergedAt: "2026-11-03T17:40:14Z",
     },
   ]);
+
+  const calls = recordedGh({ "pr list": [{ number: 43, url: `https://github.com/${REPO}/pull/43` }] });
+  expect(await gh.openPrForHead(REPO, "factory/learn-run_1")).toEqual({
+    number: 43,
+    url: `https://github.com/${REPO}/pull/43`,
+  });
+  expect([flag(calls[0]!.args, "--head"), flag(calls[0]!.args, "--state")]).toEqual(["factory/learn-run_1", "open"]);
+  recordedGh({ "pr list": [] });
+  expect(await gh.openPrForHead(REPO, "factory/learn-run_1")).toBeUndefined();
 });
 
 test("each gh.ts read rejects a malformed answer with an error naming the repository", async () => {
@@ -483,6 +501,7 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
     ["run list", () => gh.defaultBranchCi(REPO)],
     ["pr list", () => gh.mergedRevertOf(REPO, { number: 42, title: "x", mergedAt: "2026-11-03T17:40:14Z" })],
+    ["pr list", () => gh.openPrForHead(REPO, "factory/learn-run_1")],
     ["api graphql", () => gh.closedByMergedPr(REPO, 10)],
   ];
   for (const [command, read] of reads) {

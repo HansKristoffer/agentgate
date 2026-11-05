@@ -23,14 +23,16 @@ import { setupFeatures } from "./features.ts";
 /** Every node must advertise this before `settings.factory` is written: older nodes drop the field when they save settings. */
 export const FACTORY_PROTOCOL = 8;
 
-/** Throws, naming the nodes that are too old to keep `settings.factory`. */
+/** Throws, naming the nodes too old to sync `settings.factory` and factory secrets. */
 export function requireFactoryProtocol(s: Store) {
   const old = s
     .list("node")
     .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
     .map((n) => n.id);
   if (old.length)
-    throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the factory setting`);
+    throw new Error(
+      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
+    );
 }
 
 export type SourceType = "github" | "linear" | "webhook" | "manual";

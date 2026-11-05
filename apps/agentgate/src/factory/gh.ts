@@ -315,11 +315,27 @@ export async function mergedRevertOf(
   });
 }
 
+/** The open pull request whose branch is `branch`, if there is one. */
+export async function openPrForHead(
+  repo: string,
+  branch: string,
+): Promise<{ number: number; url: string } | undefined> {
+  const list = await ghJson(
+    `list the open pull requests from ${branch} in ${repo}`,
+    z.array(z.object({ number: z.number().int(), url: z.string() })),
+    ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url"],
+  );
+  return list[0];
+}
+
 const CLOSED_BY_QUERY = `query($owner: String!, $name: String!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: MERGED, first: 50, after: $after, orderBy: { field: UPDATED_AT, direction: DESC }) {
       pageInfo { hasNextPage endCursor }
-      nodes { number url mergedAt baseRefOid closingIssuesReferences(first: 10) { nodes { number title body } } }
+      nodes {
+        number url mergedAt baseRefOid headRefName author { __typename login }
+        closingIssuesReferences(first: 10) { nodes { number title body } }
+      }
     }
   }
 }`;
@@ -334,6 +350,8 @@ const closedBySchema = z.object({
             url: z.string(),
             mergedAt: z.string(),
             baseRefOid: z.string(),
+            headRefName: z.string(),
+            author: z.object({ __typename: z.string(), login: z.string() }).nullable(),
             closingIssuesReferences: z.object({
               nodes: z.array(z.object({ number: z.number().int(), title: z.string(), body: z.string() })),
             }),
@@ -345,12 +363,27 @@ const closedBySchema = z.object({
 });
 const CLOSED_BY_PAGES = 20;
 
+/** GraphQL names a bot `dependabot` where REST and `gh` say `dependabot[bot]`, and a deleted account has no author;
+ * GitHub shows that account as `ghost`. */
+const authorLogin = (author: { __typename: string; login: string } | null) =>
+  !author ? "ghost" : author.__typename === "Bot" ? `${author.login}[bot]` : author.login;
+
 /** Issues closed by a merged PR, most recently updated PRs first, at most `limit`. Reads at most 1,000 merged PRs. */
 export async function closedByMergedPr(
   repo: string,
   limit: number,
 ): Promise<
-  Array<{ issue: number; title: string; body: string; pr: number; prUrl: string; baseSha: string; mergedAt: string }>
+  Array<{
+    issue: number;
+    title: string;
+    body: string;
+    pr: number;
+    prUrl: string;
+    baseSha: string;
+    headRefName: string;
+    author: string;
+    mergedAt: string;
+  }>
 > {
   const [owner, name] = repo.split("/");
   const found: Awaited<ReturnType<typeof closedByMergedPr>> = [];
@@ -381,6 +414,8 @@ export async function closedByMergedPr(
           pr: pr.number,
           prUrl: pr.url,
           baseSha: pr.baseRefOid,
+          headRefName: pr.headRefName,
+          author: authorLogin(pr.author),
           mergedAt: pr.mergedAt,
         });
     if (!pageInfo.hasNextPage || !pageInfo.endCursor) break;
