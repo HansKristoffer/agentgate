@@ -1,9 +1,15 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
+import { app, makeCtx } from "../../src/daemon.ts";
+import { fetcher } from "../../src/factory/folder.ts";
+import { mirrorOf } from "../../src/factory/mirror.ts";
+import { loopTask, runCommand } from "../../src/factory/runtime.ts";
 import { REQUIRED_T3_TOOLS } from "../../src/factory/t3-mcp.ts";
-import { tmp } from "./git.ts";
-import { fakeT3 } from "./t3.ts";
+import { connectT3, host } from "../../src/handoff/t3.ts";
+import { Store } from "../../src/store.ts";
+import { repos, tmp } from "./git.ts";
+import { fakeT3, type FakeThread } from "./t3.ts";
 
 /** T3 Code's MCP sign-in and `/mcp`, as the nightly 0.1.7 serves them (`EnvironmentMcpOAuthHttpApi` and the
  * `AuthMcp*` schemas), mounted on a `fakeT3` through its `routes`. Pairing codes come from `pairBin`, a stand-in for
@@ -26,6 +32,71 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
   const answers = new Map<string, (args: Record<string, unknown>) => unknown>(
     REQUIRED_T3_TOOLS.map((tool) => [tool, () => ({ ok: true })]),
   );
+
+  // Threads made through `/mcp` reach the shell stream with their status, the way T3's shell shows a turn.
+  let sequence = 1_000_000;
+  const statuses = new Map<string, { status: string; needsYou: boolean }>();
+  const push = (t: FakeThread, patch: { status?: string; needsYou?: boolean } = {}) => {
+    const state = { status: "idle", needsYou: false, ...statuses.get(t.id), ...patch };
+    statuses.set(t.id, state);
+    t.updatedAt = new Date().toISOString();
+    fake.shell.push({
+      kind: "thread.updated",
+      sequence: ++sequence,
+      location: t.archivedAt ? "archive" : "active",
+      thread: {
+        id: t.id,
+        projectId: t.projectId,
+        title: t.title,
+        status: state.status,
+        pendingRuntimeRequest: state.needsYou ? { id: "request-1", kind: "user-input", createdAt: t.updatedAt } : null,
+        settledOverride: t.settledOverride ?? null,
+        archivedAt: t.archivedAt,
+        worktreePath: t.worktreePath,
+        updatedAt: t.updatedAt,
+      },
+    });
+  };
+  const thread = (args: Record<string, unknown>) => {
+    const t = fake.threads.get(String(args.threadId));
+    if (!t) throw new Error(`Thread ${String(args.threadId)} was not found.`);
+    return t;
+  };
+  answers.set("t3_thread_launch", (args) => {
+    // Like T3, the same clientRequestId answers with the same thread.
+    const id = `mcp:launch:${String(args.clientRequestId ?? crypto.randomUUID())}`;
+    if (!fake.threads.has(id)) {
+      const strategy = args.workspaceStrategy as { branch?: string } | undefined;
+      const t = fake.addThread({
+        id,
+        projectId: String(args.projectId),
+        sessionId: crypto.randomUUID(),
+        title: String(args.title),
+        runtimeMode: String(args.runtimeMode ?? "auto"),
+        branch: strategy?.branch ?? null,
+        worktreePath: `/worktrees/${id}`,
+      });
+      if (typeof args.message === "string") t.messages.push(args.message);
+      push(t, { status: args.message ? "running" : "idle" });
+    }
+    return { threadId: id, link: `https://t3.test/threads/${encodeURIComponent(id)}` };
+  });
+  answers.set("t3_thread_send", (args) => {
+    const t = thread(args);
+    t.messages.push(String(args.message));
+    push(t, { status: "running" });
+    return { ok: true };
+  });
+  answers.set("t3_thread_interrupt", (args) => {
+    push(thread(args), { status: "interrupted" });
+    return { ok: true };
+  });
+  answers.set("t3_thread_organize", (args) => {
+    const t = thread(args);
+    if (args.action === "settle") t.settledOverride = "settled";
+    push(t);
+    return { ok: true };
+  });
 
   const api = {
     /** Tool calls that reached `/mcp`. */
@@ -55,6 +126,10 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
     /** Refuse every token, including those issued later. */
     refuseAll: false,
     routes: (req: Request) => routes(req),
+    /** Changes a thread made through `/mcp` as its turn would: `running`, `idle` when it ends, or waiting on a person. */
+    setThread(threadId: string, patch: { status?: string; needsYou?: boolean }) {
+      push(thread({ threadId }), patch);
+    },
   };
 
   const approvalError = (message: string) => Response.json({ _tag: "AuthMcpApprovalError", message }, { status: 400 });
@@ -212,4 +287,118 @@ export function fakeT3WithMcp(options: Omit<Parameters<typeof fakeT3>[0], "route
   const t3 = fakeT3({ ...options, routes: (req) => mcp?.routes(req) });
   mcp = fakeT3Mcp(t3);
   return { t3, mcp };
+}
+
+/**
+ * The factory machine `a` on an in-memory store with fake time: connected to a `fakeT3WithMcp`, its folder loaded
+ * from `folder` (factory.yaml as an object, plus other files), the mirror live, and every repository in
+ * `repositories` a real git origin with no T3 project yet. `config` may be a function of the repository's name. `cleanup` collects what a test's afterEach undoes.
+ */
+export async function factoryNode(
+  cleanup: (() => unknown)[],
+  folder: {
+    config?: Record<string, unknown> | ((repo: string) => Record<string, unknown>);
+    files?: Record<string, string>;
+  } = {},
+) {
+  const origin = repos();
+  const repo = origin.url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
+  const commit = Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  const realFetch = fetcher.fetch;
+  const realRoot = fetcher.root;
+  fetcher.root = tmp();
+  const dir = join(fetcher.root, commit);
+  const files = {
+    "factory.yaml": JSON.stringify({
+      version: 1,
+      name: "acme",
+      repositories: { [repo]: {} },
+      ...(typeof folder.config === "function" ? folder.config(repo) : folder.config),
+    }),
+    "rulings.md": "# Rulings\n\n- Keep public field names.",
+    ...folder.files,
+  };
+  for (const [file, text] of Object.entries(files)) {
+    const path = join(dir, file);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, text);
+  }
+  fetcher.fetch = async () => ({ commit, dir });
+
+  const { t3, mcp } = fakeT3WithMcp({ claudeDir: tmp() });
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  s.setLocal("adminToken", "admin-secret");
+  s.setLocal("handoff:cloneDir", tmp());
+  s.put("node", "a", { id: "a", protocol: 8 });
+  const ctx = makeCtx(s);
+  const realT3 = host.t3;
+  host.t3 = () => mcp.pairBin;
+  cleanup.push(t3.stop, () => {
+    host.t3 = realT3;
+    fetcher.fetch = realFetch;
+    fetcher.root = realRoot;
+    ctx.abort.abort();
+    ctx.skills.close();
+    ctx.imports.close();
+    return ctx.gateway.close().then(() => s.close());
+  });
+  await connectT3(s, { url: t3.url, token: t3.pairingToken() });
+  const f = ctx.factory;
+  const command = async (name: string, ...args: string[]) => {
+    const output: string[] = [];
+    const code = await runCommand(f, name, args, { out: (line) => output.push(line) }).catch((e: Error) => {
+      output.push(e.message);
+      return 1;
+    });
+    return { code, output };
+  };
+  const used = await command("use", "acme/factory", "--node", "a");
+  if (used.code) throw new Error(`the factory folder did not load: ${used.output.join("\n")}`);
+  let now = Date.now();
+  s.now = () => now;
+
+  const until = async (fn: () => unknown, what: string) => {
+    const deadline = Date.now() + 3_000;
+    while (!fn()) {
+      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+      await Bun.sleep(5);
+    }
+  };
+  const mirror = mirrorOf(f);
+  await until(() => mirror.status().stream === "live", "the shell stream");
+  const loop = (name: string) =>
+    loopTask(
+      f,
+      f.loops.find((l) => l.name === name)!,
+    );
+  const handler = app(ctx);
+  return {
+    s,
+    ctx,
+    f,
+    t3,
+    mcp,
+    mirror,
+    repo,
+    origin,
+    commit,
+    command,
+    until,
+    advance: (ms: number) => (now += ms),
+    dispatch: loop("factory-dispatch"),
+    intake: loop("factory-intake"),
+    /** A control API request on loopback. */
+    api: (path: string, method = "GET", body?: unknown) =>
+      handler.fetch(
+        new Request(`http://127.0.0.1:7878${path}`, {
+          method,
+          headers: { host: "127.0.0.1:7878", ...(body !== undefined && { "content-type": "application/json" }) },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        }),
+        { listener: "loopback" },
+      ),
+  };
 }
