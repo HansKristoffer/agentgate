@@ -5,7 +5,7 @@ import { items, newId, runs, scores, type FactoryRun } from "../src/factory/db.t
 import { fetcher } from "../src/factory/folder.ts";
 import { loopTask } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
-import { updateSkills, writeSkillMd } from "../src/skills.ts";
+import { updateSkill, updateSkills, writeSkillMd } from "../src/skills.ts";
 import { removeTmp, repos } from "./fixtures/git.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 
@@ -245,6 +245,10 @@ test("the folder's skills are installed and linked into the factory's repositori
   // Only the folder updates them: the hourly skill update never asks the skills CLI for a `factory:` source.
   const asked: string[] = [];
   expect(await updateSkills(n.s, async (from) => (asked.push(from), []))).toEqual([]);
+  expect(asked).toEqual([]);
+  await expect(updateSkill(n.s, "style", async (from) => (asked.push(from), []))).rejects.toThrow(
+    `style follows the factory folder ${n.factoryRepo.toLowerCase()}; it updates when the folder loads`,
+  );
   expect(asked).toEqual([]);
 
   // The next commit drops `style` and adds `notes`, a name a person already wrote a skill under.
