@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=../../../../../packages/protocol/factory.schema.json
+version: 1
+name: acme
+description: Works Acme's bug reports from GitHub, Linear and the support desk.
+repositories:
+  acme/api:
+    reviewers: [octocat]
+  acme/web: {}
+secrets: [LINEAR_KEY, GITHUB_HOOK, DESK_SIGNING]
+limits:
+  threads: 2
+  stalledAfter: 30m
+sources:
+  - id: bugs
+    type: github
+    repo: Acme/API
+    label: factory
+    webhook:
+      secret: secret:GITHUB_HOOK
+  - id: linear
+    type: linear
+    repo: acme/web
+    team: WEB
+    label: Factory
+    apiKey: secret:LINEAR_KEY
+  - id: desk
+    type: webhook
+    repo: acme/api
+    title: "{{body.ticket.subject}}"
+    signature:
+      header: X-Desk-Signature
+      encoding: hex
+      prefix: "sha256="
+      secret: secret:DESK_SIGNING
+learning:
+  every: 14d

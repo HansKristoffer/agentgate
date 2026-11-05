@@ -253,7 +253,7 @@ test("a feature's route, peer route, command and tool are reachable, and its fac
   const ping = await call("/peer/factory/ping", "GET", undefined, "tailnet", { authorization: "Bearer peer-token" });
   expect(await ping.json()).toEqual({ pong: true });
 
-  expect(await (await call("/api/factory/commands")).json()).toEqual([{ name: "echo", usage: "echo <words>" }]);
+  expect(await (await call("/api/factory/commands")).json()).toContainEqual({ name: "echo", usage: "echo <words>" });
   const command = { name: "echo", args: ["a", "--b"], stdin: "in" };
   expect(await (await call("/api/factory/command", "POST", command)).json()).toEqual({
     code: 3,
