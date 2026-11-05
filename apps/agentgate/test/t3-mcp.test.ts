@@ -152,9 +152,11 @@ test("when T3's MCP lacks a required tool, the status names it and calls are ref
   await client.signIn();
 
   expect(client.status()).toMatchObject({ mcp: "failed", error: expect.stringContaining("t3_pending_request") });
-  const [part]: unknown[] = await Promise.all(f.boardParts.map((p) => p()));
-  expect(part).toEqual({
-    t3: { mcp: "failed", mcpExpiresAt: expect.any(Number), error: expect.stringContaining("t3_pending_request") },
+  const parts = await Promise.all(f.boardParts.map((p) => p()));
+  expect(parts.find((part) => part.t3)?.t3 as unknown).toEqual({
+    mcp: "failed",
+    mcpExpiresAt: expect.any(Number),
+    error: expect.stringContaining("t3_pending_request"),
   });
   await expect(client.call("t3_project_list", {})).rejects.toThrow(/t3_pending_request/);
   expect(mcp.calls).toEqual([]);
