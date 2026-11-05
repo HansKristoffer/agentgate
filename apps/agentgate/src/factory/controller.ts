@@ -299,6 +299,10 @@ export async function defaultBranch(f: FactoryRuntime, repo: string) {
   return branch;
 }
 
+/** The run's thread lives on another machine, after a handoff took it there. */
+const elsewhere = (f: FactoryRuntime, run: FactoryRun): run is FactoryRun & { node: string } =>
+  !!run.node && run.node !== f.s.nodeId;
+
 type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
 
 /** Acts on the run's thread on the machine that holds it: through T3's MCP here, or, for a thread handed to another
@@ -306,7 +310,7 @@ type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; te
 async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAction): Promise<void> {
   if (!run.threadId) throw new Error(`run ${run.id} has no thread yet`);
   const threadId = run.threadId;
-  if (run.node && run.node !== f.s.nodeId) {
+  if (elsewhere(f, run)) {
     await peerCall(f.s, run.node, "/factory/thread", { json: { ...action, threadId } });
     return;
   }
@@ -318,7 +322,7 @@ async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAct
 
 /** For actions whose caller goes on regardless: the failure is the run's error and a note. */
 const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
-  const where = run.node && run.node !== f.s.nodeId ? ` on ${run.node}` : "";
+  const where = elsewhere(f, run) ? ` on ${run.node}` : "";
   const text = `${what} the thread of ${run.id}${where} failed: ${short(e)}`;
   runs.update(f.s, run.id, { error: text });
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
@@ -767,6 +771,12 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
 
   if (action === "drop") {
     if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
+    // The implement thread watches the PR in this machine's T3; one that moved away left the watch on its archived copy.
+    const implement = runs.forItem(s, item.id).findLast((r) => r.kind === "implement" && r.threadId);
+    if (item.prUrl && implement && !elsewhere(f, implement))
+      await t3Mcp(f)
+        .call("unwatch_pull_request", { threadId: implement.threadId, url: item.prUrl })
+        .catch((e) => f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${short(e)}` }));
     await interruptItem(f, item.id, `Dropped by the maintainer${because}`);
     moveItem(f, item.id, "closed", null);
     await writeBack(f, item, "closed", { text: `The maintainer dropped it${because}.` });
