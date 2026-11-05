@@ -862,15 +862,16 @@ function itemView(f: FactoryRuntime, run: FactoryRun) {
     runs: all
       .filter((r) => r.id !== run.id)
       .map((r) => {
-        // A reviewer judges the change, never the implementer's own claims about it.
-        const result = run.kind === "review" && r.report?.result?.kind === "implement" ? undefined : r.report?.result;
+        // A reviewer judges the change, never the implementer's own account of it: no summary, no claims.
+        const blind = run.kind === "review" && r.kind === "implement";
         return {
           id: r.id,
           kind: r.kind,
           attempt: r.attempt,
           state: r.state,
-          ...(r.report && { outcome: r.report.outcome, summary: r.report.summary }),
-          ...(result && { result }),
+          ...(r.report && { outcome: r.report.outcome }),
+          ...(r.report && !blind && { summary: r.report.summary }),
+          ...(r.report?.result && !blind && { result: r.report.result }),
         };
       }),
     ...(item.prUrl && { pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }) } }),

@@ -310,28 +310,8 @@ async function followReviews(f: FactoryRuntime) {
   }
 }
 
-/** `factory_item` for a review run without the implement run's summary: the reviewer judges the change, not the
- * implementer's account of it. (The controller already leaves out its claims.) */
-function blind(f: FactoryRuntime) {
-  const tool = f.tools.get("factory_item");
-  if (!tool) return;
-  f.tools.set("factory_item", {
-    ...tool,
-    async call(args, caller) {
-      const view = (await tool.call(args, caller)) as { runs?: Array<{ kind: string; summary?: string }> };
-      const run = typeof args.run === "string" ? runs.get(f.s, args.run) : undefined;
-      if (run?.kind !== "review" || !view.runs) return view;
-      return {
-        ...view,
-        runs: view.runs.map((r) => (r.kind === "implement" ? { ...r, summary: undefined, result: undefined } : r)),
-      };
-    },
-  });
-}
-
 export function setup(f: FactoryRuntime): void {
   f.runKinds.set("review", review(f));
-  blind(f);
   // Every machine follows the reviews of the items in its own tables.
   f.loops.push({ name: "factory-reviews", everyMs: 2 * 60_000, where: "every-node", run: () => followReviews(f) });
 }
