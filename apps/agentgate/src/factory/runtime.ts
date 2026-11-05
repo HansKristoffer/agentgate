@@ -1,5 +1,9 @@
+import { getErrorMessage } from "hanzio";
 import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
 import {
+  ConfigurationConflict,
   factoryCommandResultSchema,
   type FactoryBoard,
   type FactoryModel,
@@ -180,6 +184,23 @@ export async function runCommand(f: FactoryRuntime, name: string, args: string[]
   );
   result.output.forEach((line) => io.out(line));
   return result.code;
+}
+
+/** An error's message for a note or a run's error, cut short: an adapter's or T3's message could be long. */
+export function shortError(e: unknown) {
+  const text = getErrorMessage(e);
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/** For routes: what an administrator typed wrong is a 400, like the rest of the control API. */
+export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof ConfigurationConflict)
+      throw error;
+    throw new HTTPException(400, { message: getErrorMessage(error) });
+  }
 }
 
 /** A loop as the daemon schedules it: a factory-node loop does nothing on other machines. */

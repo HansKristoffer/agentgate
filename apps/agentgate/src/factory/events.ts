@@ -65,9 +65,4 @@ export class FactoryEvents {
       .all(limit) as { seq: number; at: number; item: string | null; kind: string; text: string }[];
     return rows.map(({ item, ...r }) => ({ ...r, ...(item !== null && { item }) }));
   }
-
-  /** Whether the item has an event of this kind, e.g. has(item, "writeback:triaged"). */
-  has(item: string, kind: string) {
-    return !!this.s.db.query("select 1 from factory_events where item=? and kind=? limit 1").get(item, kind);
-  }
 }

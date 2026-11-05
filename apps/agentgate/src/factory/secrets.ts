@@ -1,11 +1,9 @@
 import { factorySecretInputSchema, secretNameSchema } from "@agentgate/protocol";
-import { getErrorMessage } from "hanzio";
 import { HTTPException } from "hono/http-exception";
-import { z } from "zod";
 import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
 import { currentFolder } from "./config.ts";
-import { requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory's secrets: values the folder names as `secret:NAME`, set from the CLI and kept as synced `secret` records
@@ -108,29 +106,20 @@ export function setup(f: FactoryRuntime): void {
     if (listener !== "loopback")
       throw new HTTPException(403, { message: "This operation requires a local connection" });
   };
-  // What an administrator typed wrong is a 400, like the rest of the control API.
-  const input = <T>(fn: () => T) => {
-    try {
-      return fn();
-    } catch (error) {
-      if (error instanceof z.ZodError) throw error;
-      throw new HTTPException(400, { message: getErrorMessage(error) });
-    }
-  };
   f.api.get("/secrets", (c) => {
     local(c.env.listener);
     return c.json(secretList(f));
   });
   f.api.put("/secrets/:name", async (c) => {
     local(c.env.listener);
-    const id = input(() => parseName(c.req.param("name")));
+    const id = await asInput(() => parseName(c.req.param("name")));
     const { value } = factorySecretInputSchema.parse(await jsonInput(c.req.raw));
-    input(() => setSecret(f.s, id, value));
+    await asInput(() => setSecret(f.s, id, value));
     return c.json({ ok: true });
   });
-  f.api.delete("/secrets/:name", (c) => {
+  f.api.delete("/secrets/:name", async (c) => {
     local(c.env.listener);
-    const id = input(() => parseName(c.req.param("name")));
+    const id = await asInput(() => parseName(c.req.param("name")));
     if (getSecret(f.s, id) === undefined) throw new HTTPException(404, { message: `${id} is not set` });
     deleteSecret(f.s, id);
     return c.json({ ok: true });

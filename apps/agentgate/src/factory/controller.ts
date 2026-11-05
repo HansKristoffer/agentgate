@@ -2,10 +2,8 @@ import { existsSync } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   factoryActionInputSchema,
-  factoryConfigSchema,
   factoryItemInputSchema,
   factoryReportSchema,
-  stageNames,
   type BoardItem,
   type FactoryBoard,
   type FactoryModel,
@@ -20,7 +18,7 @@ import {
   type RunState,
   type StageName,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage } from "hanzio";
+import { exponentialBackoff } from "hanzio";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
@@ -30,19 +28,21 @@ import { jsonInput } from "../http.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
-import { currentFolder, folderAt, type LoadedFolder } from "./config.ts";
-import { isOpenPhase, items, newId, runs, type FactoryItem, type FactoryRun } from "./db.ts";
+import { currentFolder, DEFAULT_LIMITS, folderFor, type LoadedFolder } from "./config.ts";
+import { ACTIVE, isOpenPhase, isStage, items, newId, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { HumanAct } from "./events.ts";
 import { renderComment } from "./markers.ts";
-import { mirrorOf, WORKING_STATUSES, type MirrorThread } from "./mirror.ts";
-import type {
-  FactoryRuntime,
-  FactoryTool,
-  IncomingItem,
-  LaunchSpec,
-  PostResult,
-  SourceAdapter,
-  ToolCaller,
+import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
+import {
+  asInput,
+  shortError,
+  type FactoryRuntime,
+  type FactoryTool,
+  type IncomingItem,
+  type LaunchSpec,
+  type PostResult,
+  type SourceAdapter,
+  type ToolCaller,
 } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
@@ -57,13 +57,6 @@ export class ReportError extends Error {
 }
 
 const DAY = 86_400_000;
-const ACTIVE: RunState[] = ["queued", "starting", "running", "waiting"];
-const isStage = (kind: string): kind is StageName => (stageNames as readonly string[]).includes(kind);
-/** Our own text, cut short: an adapter's or T3's message could be long. */
-const short = (e: unknown) => {
-  const text = getErrorMessage(e);
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
-};
 
 interface Memory {
   watching: boolean;
@@ -89,9 +82,7 @@ function memory(f: FactoryRuntime) {
   return m;
 }
 
-const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
 const limitsOf = (f: FactoryRuntime) => currentFolder(f)?.config.limits ?? DEFAULT_LIMITS;
-const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? currentFolder(f);
 
 // ---- items and runs
 
@@ -216,7 +207,8 @@ function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
   touched(f, item, "answer", "answered in T3 Code");
 }
 
-function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
+/** The event names `patch.error`, when given, as why the run ended. */
+export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
   const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
   memory(f).seen.delete(run.id);
   f.events.emit({
@@ -224,13 +216,19 @@ function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Part
     run: run.id,
     ...(run.item && { item: run.item }),
     state,
-    text: `${run.kind} run ${run.id} ended: ${state}`,
+    text: `${run.kind} run ${run.id} ended: ${patch.error ?? state}`,
   });
   return ended;
 }
 
+/** For a run kind's `launch` that will never start the run: it ends cancelled, and dispatch notes why. */
+export function cancelLaunch(f: FactoryRuntime, run: FactoryRun, why: string) {
+  endRun(f, run, "cancelled", { error: why });
+  return { wait: why };
+}
+
 /** Closes an item and cancels its queued runs, with the closed comment. */
-async function closeItem(f: FactoryRuntime, item: FactoryItem, reason: string, report?: FactoryReport) {
+export async function closeItem(f: FactoryRuntime, item: FactoryItem, reason: string, report?: FactoryReport) {
   for (const run of runs.forItem(f.s, item.id)) if (run.state === "queued") endRun(f, run, "cancelled");
   moveItem(f, item.id, "closed", null);
   // The item as it was, so the marker names the stage it closed in.
@@ -290,7 +288,7 @@ export async function writeBack(
   });
   const result: PostResult = await adapter
     .post(item, body)
-    .catch((e) => ({ status: "uncertain" as const, error: short(e) }));
+    .catch((e) => ({ status: "uncertain" as const, error: shortError(e) }));
   s.db.run("update factory_writebacks set status=? where item=? and moment=?", [result.status, item.id, moment]);
   f.events.emit({
     kind: "writeback",
@@ -334,14 +332,14 @@ export async function defaultBranch(f: FactoryRuntime, repo: string) {
 }
 
 /** The run's thread lives on another machine, after a handoff took it there. */
-const elsewhere = (f: FactoryRuntime, run: FactoryRun): run is FactoryRun & { node: string } =>
+export const elsewhere = (f: FactoryRuntime, run: FactoryRun): run is FactoryRun & { node: string } =>
   !!run.node && run.node !== f.s.nodeId;
 
 type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
 
 /** Acts on the run's thread on the machine that holds it: through T3's MCP here, or, for a thread handed to another
- * machine (D28), through that machine's `/peer/factory/thread`, since only the factory machine signs in to the MCP. */
-async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAction): Promise<void> {
+ * machine, through that machine's `/peer/factory/thread`, since only the factory machine signs in to the MCP. */
+export async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAction): Promise<void> {
   if (!run.threadId) throw new Error(`run ${run.id} has no thread yet`);
   const threadId = run.threadId;
   if (elsewhere(f, run)) {
@@ -357,7 +355,7 @@ async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAct
 /** For actions whose caller goes on regardless: the failure is the run's error and a note. */
 const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
   const where = elsewhere(f, run) ? ` on ${run.node}` : "";
-  const text = `${what} the thread of ${run.id}${where} failed: ${short(e)}`;
+  const text = `${what} the thread of ${run.id}${where} failed: ${shortError(e)}`;
   runs.update(f.s, run.id, { error: text });
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
 };
@@ -447,8 +445,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
 
 // ---- limits and dispatch
 
-const working = (t: MirrorThread | undefined) =>
-  !!t && !t.needsYou && (WORKING_STATUSES as readonly string[]).includes(t.status);
+const working = (t: MirrorThread | undefined) => !!t && !t.needsYou && isWorkingStatus(t.status);
 
 /** Runs that are starting, or whose T3 turn runs, for kinds that count. A thread that waits for a person, or sits idle
  * owning a PR, does not count; one T3 has not shown yet does. */
@@ -527,7 +524,7 @@ async function dispatch(f: FactoryRuntime) {
       const current = runs.get(s, run.id);
       if (current && ACTIVE.includes(current.state)) {
         if (current.state === "starting") runs.update(s, run.id, { state: "queued" });
-        note(f, current, `starting it failed: ${short(e)}`);
+        note(f, current, `starting it failed: ${shortError(e)}`);
       }
     }
   }
@@ -724,7 +721,8 @@ function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
   return waitingForYou(f) >= limitsOf(f).waitingForYou ? "paused-for-you" : "on";
 }
 
-const elsewhereItem = (source: FactorySource, incoming: IncomingItem, marker: MarkerPayload): BoardItem => ({
+/** The board row of an issue another machine marked as its own. */
+export const elsewhereItem = (source: FactorySource, incoming: IncomingItem, marker: MarkerPayload): BoardItem => ({
   id: marker.item,
   key: incoming.key,
   repo: source.repo,
@@ -756,7 +754,7 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
         externalId: incoming.externalId,
         repo: source.repo,
       });
-      // Another machine holds it (D29): leave it there, and show where.
+      // Another machine holds it: leave it there, and show where.
       if (marker?.state === "open" && marker.node !== s.nodeId) {
         elsewhere.push(elsewhereItem(source, incoming, marker));
         continue;
@@ -768,7 +766,7 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
     if (st.failures) console.log(`factory: the source ${source.id} works again`);
     Object.assign(st, { lastPollAt: s.now(), error: undefined, failures: 0, retryAt: 0, elsewhere });
   } catch (e) {
-    const error = short(e);
+    const error = shortError(e);
     if (st.error !== error) console.error(`factory: the source ${source.id} failed: ${error}`);
     st.failures++;
     Object.assign(st, { error, retryAt: s.now() + exponentialBackoff(st.failures, SOURCE_BACKOFF) });
@@ -810,11 +808,11 @@ function addManual(f: FactoryRuntime, input: unknown) {
 }
 
 /** An item by id, or the newest with that key. */
-function findItem(f: FactoryRuntime, ref: string) {
+export function findItem(f: FactoryRuntime, ref: string) {
   return items.get(f.s, ref) ?? items.list(f.s).findLast((i) => i.key === ref);
 }
 
-const ACTIONS = ["approve", "reject", "retry", "drop"] as const;
+export const ACTIONS = ["approve", "reject", "retry", "drop"] as const;
 type Action = (typeof ACTIONS)[number];
 
 /** approve, reject, retry or drop an item. Returns what happened, for the CLI and API. */
@@ -841,7 +839,9 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
     if (item.prUrl && implement && !elsewhere(f, implement))
       await t3Mcp(f)
         .call("unwatch_pull_request", { threadId: implement.threadId, url: item.prUrl })
-        .catch((e) => f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${short(e)}` }));
+        .catch((e) =>
+          f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${shortError(e)}` }),
+        );
     await interruptItem(f, item.id, `Dropped by the maintainer${because}`);
     moveItem(f, item.id, "closed", null);
     await writeBack(f, item, "closed", { text: `The maintainer dropped it${because}.` });
@@ -1052,16 +1052,6 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
       };
     }),
   };
-}
-
-// Routes report what an administrator typed wrong as a 400, like the rest of the control API.
-async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (error) {
-    if (error instanceof z.ZodError || error instanceof HTTPException) throw error;
-    throw new HTTPException(400, { message: getErrorMessage(error) });
-  }
 }
 
 const triage = (f: FactoryRuntime) => ({

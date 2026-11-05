@@ -6,14 +6,14 @@ import { z } from "zod";
 import { checkRelayUrl, relayUrl } from "../relay.ts";
 import { hookUrl, queueDelete, type HookEndpoint } from "../remote.ts";
 import { serialTask } from "../runtime.ts";
-import { currentFolder } from "./config.ts";
+import { currentFolder, durationMs } from "./config.ts";
 import { addItem, pollSource } from "./controller.ts";
 import { items, type FactoryItem } from "./db.ts";
 import type { FactoryRuntime } from "./runtime.ts";
 import { deleteSecret, getSecret, resolveSecretRef, setSecret } from "./secrets.ts";
 
 /**
- * Webhooks (D15): each webhook source, and each GitHub or Linear source with `webhook`, has a public relay URL,
+ * Webhooks: each webhook source, and each GitHub or Linear source with `webhook`, has a public relay URL,
  * `/hook/:key`, served over the factory machine's socket like a remote MCP endpoint. The relay checks nothing, so the
  * sender's signature is checked here. A webhook source's delivery becomes an item; a GitHub or Linear delivery only
  * polls that source now. Nothing is queued while the factory machine is offline.
@@ -125,9 +125,6 @@ function render(template: string, delivery: { body: string; json: unknown; heade
     return typeof value === "object" ? JSON.stringify(value) : String(value);
   });
 }
-
-const UNITS = { m: 60_000, h: 3600_000, d: 86_400_000 } as const;
-const durationMs = (d: string) => Number.parseInt(d, 10) * UNITS[d.slice(-1) as keyof typeof UNITS];
 
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 

@@ -11,7 +11,7 @@ import { mirrorOf } from "./mirror.ts";
 import { runCommand, runTool, type FactoryRuntime } from "./runtime.ts";
 
 /**
- * The factory across machines (D27, D28). Commands and tools on another machine run on the factory machine through
+ * The factory across machines. Commands and tools on another machine run on the factory machine through
  * `/peer/factory/op`. A stage thread handed to another machine takes its run along: the run's `node` and `threadId`
  * become the destination's once it imported the thread, that machine's daemon forwards the thread's reports, and the
  * run's status is read from its `/peer/threads`.
@@ -21,7 +21,7 @@ import { runCommand, runTool, type FactoryRuntime } from "./runtime.ts";
 const OP_TIMEOUT = 60_000;
 /** A run's `threadId` while its thread moves away from this machine, followed by the handoff job's id. The
  * controller's watcher matches runs by thread, so the stopped and archived source thread is not a silent end. */
-const MOVING = "handoff:";
+export const MOVING = "handoff:";
 
 const callerSchema = z
   .object({ thread: z.string().min(1).max(512).optional(), node: z.string().min(1).max(512) })

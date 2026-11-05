@@ -1,15 +1,15 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
-import { currentFolder, folderAt } from "./config.ts";
-import { defaultBranch, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
+import { folderFor } from "./config.ts";
+import { closeItem, defaultBranch, elsewhere, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
 /**
  * The spec stage, for items triage found unclear or large. The thread writes a spec, has a fresh agent review it, and
- * asks the maintainer one Approve or Change question card in T3 (D18). An approved spec starts implement, and
+ * asks the maintainer one Approve or Change question card in T3. An approved spec starts implement, and
  * `factory_item` hands it to the implement and review runs from the run's report. A Change answer starts one more
  * round in a new thread; after that the item waits for the maintainer.
  */
@@ -81,7 +81,7 @@ const spec = (f: FactoryRuntime) => ({
     // retry after a silent end repeats its round, but still gets a branch of its own.
     const before = specRuns(f, item);
     const round = before.filter(asksForChanges).length + 1;
-    const model = (folderAt(f, item.configCommit) ?? currentFolder(f))?.stages.spec?.file.model;
+    const model = folderFor(f, item.configCommit)?.stages.spec?.file.model;
     const context = [
       "## This run",
       [
@@ -123,11 +123,7 @@ const spec = (f: FactoryRuntime) => ({
   async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined) {
     if (!item) return;
     const { result } = report;
-    if (result?.kind !== "spec") {
-      moveItem(f, item.id, "closed", null);
-      await writeBack(f, item, "closed", { report, text: "There is nothing to do." });
-      return;
-    }
+    if (result?.kind !== "spec") return closeItem(f, item, "There is nothing to do.", report);
     if (result.approved) {
       const moved = moveItem(f, item.id, "implement");
       enqueueRun(f, { kind: "implement", item: item.id });
@@ -157,7 +153,7 @@ const spec = (f: FactoryRuntime) => ({
   async answer(run: FactoryRun, decision: { approve: boolean; reason?: string }) {
     const { threadId } = run;
     if (!threadId) throw new Error(`The spec run ${run.id} has no thread yet`);
-    if (run.node && run.node !== f.s.nodeId) {
+    if (elsewhere(f, run)) {
       const where = run.threadLink ? `: ${run.threadLink}` : "";
       throw new Error(`The spec thread runs on ${run.node}; answer its question in T3 Code there${where}`);
     }

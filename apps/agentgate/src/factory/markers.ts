@@ -31,6 +31,10 @@ const HEADLINES: Record<Moment, (marker: MarkerPayload) => string> = {
   waiting: () => "The factory waits for the maintainer.",
 };
 
+/** The hidden marker. `>` never occurs inside the JSON, so nothing in a value can end the comment early. */
+export const markerTag = (marker: MarkerPayload) =>
+  `${MARKER_PREFIX}${JSON.stringify(marker).replaceAll(">", "\\u003e")} -->`;
+
 export function renderComment(
   moment: Moment,
   item: FactoryItem,
@@ -43,8 +47,7 @@ export function renderComment(
       .map((p, i) => (i ? defuse(p.trim()) : p))
       .join("\n\n"),
   );
-  // `>` never occurs inside the JSON, so nothing in a value can end the comment early.
-  return `${text}\n\n${MARKER_PREFIX}${JSON.stringify(input.marker).replaceAll(">", "\\u003e")} -->`;
+  return `${text}\n\n${markerTag(input.marker)}`;
 }
 
 /** Every valid marker in a comment, issue or PR body, in order. */

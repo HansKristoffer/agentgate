@@ -2,8 +2,6 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import type { FactoryReport } from "@agentgate/protocol";
-import { getErrorMessage } from "hanzio";
-import { HTTPException } from "hono/http-exception";
 import { skillId } from "../skill-import.ts";
 import {
   deleteSkill,
@@ -14,15 +12,15 @@ import {
   type FetchedSkill,
 } from "../skills.ts";
 import { renderBrief } from "./briefs.ts";
-import { currentFolder, type LoadedFolder } from "./config.ts";
+import { currentFolder, durationMs, type LoadedFolder } from "./config.ts";
 import { defaultBranch, enqueueRun } from "./controller.ts";
-import { items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
+import { ACTIVE, items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
 import { postIssueComment, prView } from "./gh.ts";
 import { itemOutcome } from "./records.ts";
-import { runTool, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { asInput, runTool, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
- * The learning thread (D33): every `learning.every`, or on demand, a T3 thread in a worktree of the factory repo
+ * The learning thread: every `learning.every`, or on demand, a T3 thread in a worktree of the factory repo
  * studies the runs that finished and the repositories' human history, and opens one PR against the factory folder.
  * The factory checks that PR, never merges it, and installs the folder's `skills/` where the factory works.
  */
@@ -39,13 +37,6 @@ const LEARN_BRIEF = `You are the learning thread of AgentGate's software factory
 const SECTIONS = ["Targets", "Runs addressed", "Evidence", "Expected effect"];
 const PAGE_CHARS = 20_000;
 const MINUTE = 60_000;
-const UNITS = { m: MINUTE, h: 3600_000, d: 86_400_000 };
-const durationMs = (d: string) => Number.parseInt(d, 10) * UNITS[d.slice(-1) as keyof typeof UNITS];
-const ACTIVE = new Set(["queued", "starting", "running", "waiting"]);
-const short = (e: unknown) => {
-  const text = getErrorMessage(e);
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
-};
 const day = (at: number) => new Date(at).toISOString().slice(0, 10);
 
 // ---- when it runs
@@ -59,7 +50,7 @@ const finishedSince = (f: FactoryRuntime, at: number) => items.list(f.s, { open:
 function learnNow(f: FactoryRuntime) {
   if (!f.pointer()) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
   if (!currentFolder(f)) throw new Error("The factory's folder has not loaded yet; see agentgate factory status");
-  const running = learnRuns(f).find((r) => ACTIVE.has(r.state));
+  const running = learnRuns(f).find((r) => ACTIVE.includes(r.state));
   if (running) return { skipped: `The learn run ${running.id} has not finished yet` };
   const last = lastLearn(f);
   if (!finishedSince(f, last?.queuedAt ?? 0).length)
@@ -193,7 +184,7 @@ const learn = (f: FactoryRuntime) => ({
     if (!prUrl) return;
     // The run has ended already, so a failure here is not the learner's to fix.
     await judgePr(f, run, prUrl).catch((e) =>
-      f.events.emit({ kind: "note", run: run.id, text: `Checking the learning PR ${prUrl} failed: ${short(e)}` }),
+      f.events.emit({ kind: "note", run: run.id, text: `Checking the learning PR ${prUrl} failed: ${shortError(e)}` }),
     );
   },
 });
@@ -268,7 +259,7 @@ function historyEntries(f: FactoryRuntime, repo: string | undefined, since: numb
     for (const run of runs.forItem(f.s, item.id)) entries.push(runEntry(f, run));
   }
   for (const run of learnRuns(f))
-    if (ACTIVE.has(run.state) || (run.endedAt ?? 0) >= since) entries.push(runEntry(f, run));
+    if (ACTIVE.includes(run.state) || (run.endedAt ?? 0) >= since) entries.push(runEntry(f, run));
   return entries;
 }
 
@@ -328,7 +319,7 @@ function readFolderSkills(dir: string | undefined) {
     try {
       found.push({ id: skillId(entry.name), ...readSkill(join(dir, entry.name)) });
     } catch (e) {
-      skipped.push(`${entry.name}: ${short(e)}`);
+      skipped.push(`${entry.name}: ${shortError(e)}`);
     }
   }
   return { found, skipped };
@@ -379,7 +370,7 @@ export function setup(f: FactoryRuntime): void {
     try {
       installFolderSkills(f);
     } catch (e) {
-      f.events.emit({ kind: "note", text: `Installing the factory's skills failed: ${short(e)}` });
+      f.events.emit({ kind: "note", text: `Installing the factory's skills failed: ${shortError(e)}` });
     }
   };
   // A folder loaded before this machine knew about skills gets them on the first round, not at its next commit.
@@ -435,11 +426,5 @@ export function setup(f: FactoryRuntime): void {
     },
   });
   // Through runTool, so a machine that does not run the factory asks the one that does.
-  f.api.post("/learn", async (c) => {
-    try {
-      return c.json(await runTool(f, "factory_learn", {}, { node: f.s.nodeId }));
-    } catch (e) {
-      throw new HTTPException(400, { message: getErrorMessage(e) });
-    }
-  });
+  f.api.post("/learn", async (c) => c.json(await asInput(() => runTool(f, "factory_learn", {}, { node: f.s.nodeId }))));
 }

@@ -24,7 +24,9 @@ export interface MirrorThread {
   worktreePath?: string;
   updatedAt: number;
 }
-export const WORKING_STATUSES = ["preparing", "queued", "starting", "running"] as const;
+const WORKING_STATUSES: readonly string[] = ["preparing", "queued", "starting", "running"];
+/** A T3 run status whose turn is still going. */
+export const isWorkingStatus = (status: string) => WORKING_STATUSES.includes(status);
 export interface T3Mirror {
   threads(): MirrorThread[];
   thread(id: string): MirrorThread | undefined;

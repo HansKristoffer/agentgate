@@ -1,4 +1,12 @@
-import type { FactoryReport, ItemPhase, NeedsYou, RunKind, RunState } from "@agentgate/protocol";
+import {
+  stageNames,
+  type FactoryReport,
+  type ItemPhase,
+  type NeedsYou,
+  type RunKind,
+  type RunState,
+  type StageName,
+} from "@agentgate/protocol";
 import type { Store } from "../store.ts";
 
 /** The factory's node-local tables. Never synced: the machine that runs the factory holds its items and runs. */
@@ -90,6 +98,9 @@ export function newId(prefix: "it" | "run") {
 
 const FINISHED: readonly ItemPhase[] = ["shipped", "closed", "failed"];
 export const isOpenPhase = (phase: ItemPhase) => !FINISHED.includes(phase);
+/** Runs that have not ended. */
+export const ACTIVE: readonly RunState[] = ["queued", "starting", "running", "waiting"];
+export const isStage = (kind: string): kind is StageName => (stageNames as readonly string[]).includes(kind);
 const finishedList = FINISHED.map((p) => `'${p}'`).join(",");
 
 type Row = Record<string, string | number | null>;
@@ -237,7 +248,7 @@ export const runs = {
   },
   forItem: (s: Store, item: string) =>
     (s.db.query("select * from factory_runs where item=? order by queued_at").all(item) as Row[]).map(toRun),
-  list: (s: Store, filter: { states?: RunState[]; kinds?: RunKind[]; endedSince?: number } = {}) => {
+  list: (s: Store, filter: { states?: readonly RunState[]; kinds?: RunKind[]; endedSince?: number } = {}) => {
     const where: string[] = [],
       args: (string | number)[] = [];
     for (const [column, values] of [

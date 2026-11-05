@@ -212,8 +212,6 @@ test("events are recorded and reach their listeners, and a failing listener neve
     { item: "it_1", kind: "writeback:triaged", text: "Commented" },
     { item: "it_1", kind: "item.phase", text: "Triaged" },
   ]);
-  expect(f.events.has("it_1", "writeback:triaged")).toBe(true);
-  expect(f.events.has("it_1", "writeback:ready")).toBe(false);
   expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
     "factory: item.phase listener failed: TypeError",
     "factory: item.phase listener failed: RangeError",

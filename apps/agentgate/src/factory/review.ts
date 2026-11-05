@@ -1,17 +1,17 @@
-import { factoryConfigSchema, type FactoryReport, type MarkerPayload, type StageResult } from "@agentgate/protocol";
-import { getErrorMessage } from "hanzio";
+import type { FactoryReport, MarkerPayload, StageResult } from "@agentgate/protocol";
 import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
-import { currentFolder, folderAt } from "./config.ts";
-import { defaultBranch, enqueueRun, moveItem, sendToThread, writeBack } from "./controller.ts";
+import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
+import { defaultBranch, endRun, enqueueRun, moveItem, sendToThread, writeBack } from "./controller.ts";
 import { items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
-import { postPrReview, prAddReviewers, prReady, prView, type PrView } from "./gh.ts";
-import { defuse, MARKER_PREFIX } from "./markers.ts";
-import { mirrorOf, WORKING_STATUSES } from "./mirror.ts";
-import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
+import { postPrReview, prView, type PrView } from "./gh.ts";
+import { green, markReady, prRun } from "./implement.ts";
+import { defuse, markerTag } from "./markers.ts";
+import { isWorkingStatus, mirrorOf } from "./mirror.ts";
+import { shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
- * The review stage (D23): a fresh thread in its own worktree reviews the PR's head, blind to what the implementer said
+ * The review stage: a fresh thread in its own worktree reviews the PR's head, blind to what the implementer said
  * about it. The factory posts its findings as one PR review and hands them to the implement thread. Once that thread
  * pushes and the checks pass, the next round reviews only the new commits, until a round is clean or `reviewRounds`
  * is used up; then the PR is marked ready and goes to the maintainer.
@@ -23,14 +23,6 @@ const REVIEW_BRIEF = `You review one pull request for AgentGate's software facto
 - Revert the fix locally, keeping the new tests, and run them to show they fail without it. Tests that pass without the fix are an Important finding.
 - In round 2 and later, review only the diff since the reviewed commit, and do not repeat the findings you are given.
 - Report findings tagged Important, Nit or Pre-existing for that commit, and do not post them: the factory does.`;
-
-const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
-const UNITS = { m: 60_000, h: 3600_000, d: 86_400_000 };
-const durationMs = (d: string) => Number.parseInt(d, 10) * UNITS[d.slice(-1) as keyof typeof UNITS];
-const short = (e: unknown) => {
-  const text = getErrorMessage(e);
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
-};
 
 type Finding = Extract<StageResult, { kind: "review" }>["findings"][number];
 /** Pre-existing findings are posted, but they are not this PR's to fix and never hold it back. */
@@ -51,18 +43,14 @@ const checkedOf = (run: FactoryRun | undefined) => {
   return parsed.success ? parsed.data : undefined;
 };
 
-const folderOf = (f: FactoryRuntime, item: FactoryItem) => folderAt(f, item.configCommit) ?? currentFolder(f);
-const limitsOf = (f: FactoryRuntime, item: FactoryItem) => folderOf(f, item)?.config.limits ?? DEFAULT_LIMITS;
+const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
+  folderFor(f, item.configCommit)?.config.limits ?? DEFAULT_LIMITS;
 const reviewRuns = (f: FactoryRuntime, item: FactoryItem) =>
   runs.forItem(f.s, item.id).filter((r) => r.kind === "review");
 const findingsOf = (run: FactoryRun) => (run.report?.result?.kind === "review" ? run.report.result.findings : []);
 /** Review rounds whose findings counted, oldest first. */
 const rounds = (f: FactoryRuntime, item: FactoryItem) =>
   reviewRuns(f, item).filter((r) => r.state === "reported" && checkedOf(r) && !checkedOf(r)!.stale);
-const green = (view: PrView) =>
-  (view.checks === "passing" || view.checks === "none") && view.mergeable !== "CONFLICTING";
-const implementRun = (f: FactoryRuntime, item: FactoryItem) =>
-  runs.forItem(f.s, item.id).findLast((r) => r.kind === "implement" && r.report?.result?.kind === "implement");
 
 const SEVERITY = { important: "Important", nit: "Nit", "pre-existing": "Pre-existing" };
 const describe = (finding: Finding) =>
@@ -85,13 +73,10 @@ function marker(f: FactoryRuntime, item: FactoryItem, head: string): MarkerPaylo
 /** Marks the PR ready, requests the repository's reviewers and moves the item to `ready`, with the ready comment
  * listing what is still open. False when GitHub refused, so the review loop tries again. */
 async function toReady(f: FactoryRuntime, item: FactoryItem, view: PrView, open: Finding[], why: string) {
-  const repos = folderOf(f, item)?.config.repositories ?? {};
-  const repo = Object.keys(repos).find((r) => r.toLowerCase() === item.repo.toLowerCase());
   try {
-    if (view.isDraft) await prReady(view.url);
-    if (repo && repos[repo]!.reviewers.length) await prAddReviewers(view.url, repos[repo]!.reviewers);
+    await markReady(f, item, view);
   } catch (e) {
-    f.events.emit({ kind: "note", item: item.id, text: `Marking ${item.key}'s PR ready failed: ${short(e)}` });
+    f.events.emit({ kind: "note", item: item.id, text: `Marking ${item.key}'s PR ready failed: ${shortError(e)}` });
     return false;
   }
   const ready = moveItem(f, item.id, "ready", item.needsYou?.reason === "stalled" ? null : undefined);
@@ -112,14 +97,7 @@ const review = (f: FactoryRuntime) => ({
     if (max === 0) {
       // Review is switched off: the PR goes straight to the maintainer, and a refusal is retried like a failed launch.
       if (!(await toReady(f, item, view, [], ""))) throw new Error(`marking ${view.url} ready failed`);
-      runs.update(f.s, run.id, { state: "cancelled", endedAt: f.s.now() });
-      f.events.emit({
-        kind: "run.ended",
-        run: run.id,
-        item: item.id,
-        state: "cancelled",
-        text: `review run ${run.id} ended: cancelled`,
-      });
+      endRun(f, run, "cancelled");
       return { wait: "reviewRounds is 0, so the PR went to the maintainer unreviewed" };
     }
     const done = rounds(f, item);
@@ -146,7 +124,7 @@ const review = (f: FactoryRuntime) => ({
         : []),
     ].join("\n\n");
     const n = reviewRuns(f, item).filter((r) => r.queuedAt <= run.queuedAt).length;
-    const model = folderOf(f, item)?.stages.review?.file.model;
+    const model = folderFor(f, item.configCommit)?.stages.review?.file.model;
     return {
       repo: item.repo,
       title: `Review ${item.key} (round ${round}): ${item.title}`,
@@ -179,7 +157,7 @@ const review = (f: FactoryRuntime) => ({
         kind: "note",
         item: item.id,
         run: run.id,
-        text: `Taking ${item.key}'s review failed: ${short(e)}`,
+        text: `Taking ${item.key}'s review failed: ${shortError(e)}`,
       }),
     );
   },
@@ -199,7 +177,7 @@ async function judge(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
     });
     return;
   }
-  // D22: the report is a claim about one commit, checked against the PR as GitHub has it now.
+  // The report is a claim about one commit, checked against the PR as GitHub has it now.
   const view = await prView(item.prUrl);
   const round = rounds(f, item).length + 1;
   if (!view.headRefOid.startsWith(result.commit.toLowerCase())) {
@@ -223,7 +201,7 @@ async function judge(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
     const count = `${result.findings.length} finding${result.findings.length === 1 ? "" : "s"}`;
     const body = [
       `**${item.key}**: The factory's review, round ${round} of ${max}, of ${head.slice(0, 12)}: ${count}.`,
-      `${MARKER_PREFIX}${JSON.stringify(marker(f, item, head)).replaceAll(">", "\\u003e")} -->`,
+      markerTag(marker(f, item, head)),
     ].join("\n\n");
     const comments = result.findings.map((x) => ({
       path: x.file,
@@ -243,7 +221,7 @@ async function judge(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
     await toReady(f, items.get(f.s, item.id)!, view, open, `Review round ${round} of ${max} still found problems.`);
     return;
   }
-  const implement = implementRun(f, item);
+  const implement = prRun(f, item);
   if (!implement?.threadId) return;
   await sendToThread(
     f,
@@ -257,7 +235,7 @@ async function judge(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
     f.events.emit({
       kind: "note",
       item: item.id,
-      text: `Sending the findings to the implement thread failed: ${short(e)}`,
+      text: `Sending the findings to the implement thread failed: ${shortError(e)}`,
     }),
   );
 }
@@ -291,9 +269,9 @@ async function followReview(f: FactoryRuntime, item: FactoryItem) {
     if (green(view)) enqueueRun(f, { kind: "review", item: item.id });
     return;
   }
-  const implement = implementRun(f, item);
+  const implement = prRun(f, item);
   const thread = implement?.threadId ? mirrorOf(f).thread(implement.threadId) : undefined;
-  const busy = !!thread && (thread.needsYou || (WORKING_STATUSES as readonly string[]).includes(thread.status));
+  const busy = !!thread && (thread.needsYou || isWorkingStatus(thread.status));
   if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) return;
   runs.update(f.s, last.id, { checked: { ...checked, final: true } satisfies Checked });
   await toReady(f, item, view, findingsOf(last).filter(holds), why);
@@ -305,7 +283,7 @@ async function followReviews(f: FactoryRuntime) {
     try {
       await followReview(f, item);
     } catch (e) {
-      f.events.emit({ kind: "note", item: item.id, text: `Following ${item.key}'s review failed: ${short(e)}` });
+      f.events.emit({ kind: "note", item: item.id, text: `Following ${item.key}'s review failed: ${shortError(e)}` });
     }
   }
 }
