@@ -127,25 +127,28 @@ function create(f: FactoryRuntime) {
   const coolingDown = () => failedAt !== undefined && s.now() - failedAt < RETRY_AFTER;
 
   function signIn(): Promise<void> {
-    signing ??= (async () => {
-      try {
-        // The loop signs out on any other machine, so a token here would not last.
-        if (!f.isFactoryNode()) throw new T3McpError(`the factory does not run on ${s.nodeId}`);
-        const old = saved();
-        s.setLocal(KEY, JSON.stringify(await authorize(s, t3Url())));
-        error = failedAt = missing = undefined;
-        // The replaced session would linger in T3's Connections until it expires.
-        if (old) await revoke(s, old.token);
-        await check(false); // never throws: a missing tool or unreachable MCP shows in the status
-      } catch (e) {
-        failedAt = s.now();
-        error = e instanceof T3McpError || e instanceof T3Error ? e.message : `T3 MCP sign-in failed: ${name(e)}`;
-        throw new T3McpError(error);
-      } finally {
-        signing = undefined;
-      }
-    })();
+    // Cleared in `.finally`, which runs after the assignment even when the attempt fails before its first await.
+    signing ??= attemptSignIn().finally(() => {
+      signing = undefined;
+    });
     return signing;
+  }
+
+  async function attemptSignIn() {
+    try {
+      // The loop signs out on any other machine, so a token here would not last.
+      if (!f.isFactoryNode()) throw new T3McpError(`the factory does not run on ${s.nodeId}`);
+      const old = saved();
+      s.setLocal(KEY, JSON.stringify(await authorize(s, t3Url())));
+      error = failedAt = missing = undefined;
+      // The replaced session would linger in T3's Connections until it expires.
+      if (old) await revoke(s, old.token);
+      await check(false); // never throws: a missing tool or unreachable MCP shows in the status
+    } catch (e) {
+      failedAt = s.now();
+      error = e instanceof T3McpError || e instanceof T3Error ? e.message : `T3 MCP sign-in failed: ${name(e)}`;
+      throw new T3McpError(error);
+    }
   }
 
   /** A connected client for one batch of requests, signing in first when needed and once more if T3 refuses. */
