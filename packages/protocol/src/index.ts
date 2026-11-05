@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getUniqueValues, isTruthy } from "hanzio";
 import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
+import { factoryPointerSchema } from "./factory.ts";
 import {
   aliasesSchema,
   modelPolicySchema,
@@ -15,6 +16,7 @@ import {
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
+export * from "./factory.ts";
 
 export const API_VERSION = 4;
 export const accountSchema = z.object({
@@ -159,6 +161,8 @@ export const settingsSchema = z.object({
   t3ProjectSync: z.boolean().default(false),
   /** A thread that comes back to a machine gets the messages it had elsewhere written into T3 Code's own database. */
   t3HandoffHistory: z.boolean().default(true),
+  /** The factory's folder and the machine that runs it; absent while the factory is off. */
+  factory: factoryPointerSchema.optional(),
 });
 /** Remove defaults before making patches optional: omission must never reset a field. */
 export const accountPatchSchema = z
@@ -186,6 +190,11 @@ export const settingsPatchSchema = z
     codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
     t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
     t3HandoffHistory: settingsSchema.shape.t3HandoffHistory.removeDefault().optional(),
+    // null turns the factory off; the patch is spread over the saved settings, so it becomes undefined there.
+    factory: factoryPointerSchema
+      .nullable()
+      .transform((v) => v ?? undefined)
+      .optional(),
   })
   .strict();
 export type Account = z.infer<typeof accountSchema>;
