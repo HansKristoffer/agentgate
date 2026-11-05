@@ -4,7 +4,8 @@ One daemon per machine that:
 
 - pools several **Claude**, **Codex**, and **Cursor** subscriptions and moves to the next account when one hits its limit;
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
-- **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
+- **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline;
+- can run a **software factory**, off until you turn it on, that works the issues you label in T3 Code threads until a pull request is ready for you to merge.
 
 T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [running agentgate](docs/operations/running.md).
 
@@ -238,9 +239,53 @@ agentgate remote secret @grok        # new secret, same URL
 
 Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
 
+## Software factory
+
+The factory takes the issues you label on GitHub or Linear, or that a webhook sends, and works each one in T3 Code threads on one of your machines until its pull request is ready for review. Every step is a T3 Code thread you can open and talk to. The factory never merges; that stays with you.
+
+Each item goes through these stages:
+
+1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, and chooses between a fix and a spec.
+2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change** in T3 Code.
+3. **Implement** works on the branch `factory/<item>` and opens a draft pull request. The thread keeps the PR. T3 Code wakes it for failing checks, conflicts and your review comments, and the factory nudges it when it sits on a problem. No fix starts while the default branch fails CI.
+4. **Review**: a fresh thread reviews the PR without reading what the implementer said about it. The factory posts its findings as a PR review and hands them to the implement thread, for up to three rounds by default.
+5. **Ready**: the factory marks the PR ready for review and requests the repository's reviewers. You merge it or close it.
+
+The factory comments on the issue when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it waits for you.
+
+To start one:
+
+1. Write the factory as a folder in a git repository, with a `factory.yaml` that names its repositories and sources, plus optional stage briefs, judges and skills. The [factory guide](docs/user/factory.md) has the format and an example.
+2. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary` or `--mcp`). Stage threads report back through it.
+3. Run `agentgate factory use owner/repo[:folder]`. The factory runs on your always-on machine, or the one you name with `--node`. Other machines forward factory commands to it.
+4. Run `agentgate dashboard on` on that machine and open `/factory` on its address to watch the board, or run `agentgate factory status`.
+5. Label an issue with your source's label. The factory looks every 2 minutes.
+
+You act in three places:
+
+- **T3 Code**: answer the questions threads ask, including the spec card.
+- **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, and `agentgate factory add <owner/repo> <title>` adds one by hand.
+- **GitHub**: review the PR, ask for changes in a review comment, and merge it.
+
+```sh
+agentgate factory use acme/factory:factory   # turn it on; off turns it off, reload fetches the folder now
+agentgate factory status                     # the board: items, what waits for you, sources and webhook URLs
+printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY
+agentgate factory approve gh-42 --reason "keep the old field as an alias"
+agentgate factory bench --ref my-change      # replay past fixes with the folder at a branch
+agentgate factory help                       # every factory command
+```
+
+Things to know:
+
+- **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt.
+- **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. `limits.itemTokens` in `factory.yaml` stops an item that costs too much.
+- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other. AI judges grade a sample of runs, and `bench` replays issues people already fixed to test a change to the folder before you merge it.
+- Every machine must run this release before you turn the factory on or set a factory secret, because older releases drop them.
+
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `factory help`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 

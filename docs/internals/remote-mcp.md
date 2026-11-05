@@ -26,6 +26,15 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
 - The public `/mcp/:key` route does not require `RELAY_KEY`, because clients like Grok only send a bearer
   token. Creating, connecting and deleting endpoints do.
 - `export --no-secrets` drops the whole `remote` field.
+- The factory's webhook URLs reuse this machinery as endpoints of kind `hook`, served at `POST /hook/:key`
+  ([factory](factory.md#hook-endpoints-hookkey)). Like `/mcp/:key`, the route needs neither a bearer token nor
+  `RELAY_KEY`, because senders such as GitHub cannot send them. The serving machine checks the sender's signature
+  instead, so the relay forwards every header except cookies, hop-by-hop headers (including those `Connection`
+  names) and its own `x-agentgate-*`, and the body as exact UTF-8 bytes. Bodies may be up to 1 MiB
+  (`REMOTE_LIMITS.hookRequestBytes`), more than MCP requests, since a GitHub push event can be large.
+- An endpoint's kind is fixed when the relay first admits it. A `PUT /e/:key` with another kind is refused, and a
+  public request reaches only an endpoint of its own kind, so a hook key never opens an MCP endpoint. MCP updates
+  leave `kind` out, which relays from before webhooks expect.
 
 ## Traps
 
