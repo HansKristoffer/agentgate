@@ -12,6 +12,7 @@ import {
 import { clamp, startTimer } from "hanzio";
 import type { Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
+import { trimSessionUsage } from "./sessions.ts";
 
 export class Telemetry {
   readonly request: ProxyRequest;
@@ -105,11 +106,15 @@ export class Telemetry {
     this.save();
     if (!this.s.closed) trimTelemetry(this.s);
   }
+  /** The model a response's tokens count under. */
+  get tokenModel() {
+    return this.request.routedModel || this.request.requestedModel || "unknown";
+  }
   /** Adds a response's token counts to this hour's total for its model. */
   tokens(t: Tokens) {
     if (this.s.closed || !(t.input + t.output + t.cacheRead + t.cacheWrite)) return;
     const now = this.s.now(),
-      model = this.request.routedModel || this.request.requestedModel || "unknown";
+      model = this.tokenModel;
     this.s.db.run(
       "insert into token_usage values (?,?,?,?,?,?,?) on conflict(hour, provider, model) do update set input=input+excluded.input, output=output+excluded.output, cache_read=cache_read+excluded.cache_read, cache_write=cache_write+excluded.cache_write",
       [now - (now % 3600000), this.request.provider, model, t.input, t.output, t.cacheRead, t.cacheWrite],
@@ -295,6 +300,7 @@ export function trimTelemetry(s: Store) {
         s.db.run("delete from proxy_requests where seq=?", [r.seq]);
       }
     }
+    trimSessionUsage(s);
   });
 }
 export type Tokens = Omit<ModelTokens, "provider" | "model">;
