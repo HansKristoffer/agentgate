@@ -15,6 +15,8 @@ test("a PR whose checks pass is marked ready, with reviewers requested except it
   const n = await prFactory(cleanup, (repo) => ({
     repositories: { [repo]: { reviewers: ["Maintainer", "octocat"] } },
   }));
+  // The PR loop on its own: without a review stage, passing checks lead straight to ready.
+  n.f.runKinds.delete("review");
   const { item, pr } = await n.opened(1);
 
   await n.pollPrs();
@@ -35,6 +37,7 @@ test("a PR whose checks pass is marked ready, with reviewers requested except it
 
 test("a merge ships the item and a PR closed unmerged closes it, each with one comment; a merge before ready is flawed", async () => {
   const n = await prFactory(cleanup);
+  n.f.runKinds.delete("review");
   const ready = await n.opened(1, { checks: "passing" });
   const early = await n.opened(2);
   const dropped = await n.opened(3);
@@ -68,6 +71,7 @@ test("a merge ships the item and a PR closed unmerged closes it, each with one c
 
 test("an idle thread with failing checks, a conflict or a collaborator's comment for stalledAfter gets one nudge, and past nudges the item waits as stalled", async () => {
   const n = await prFactory(cleanup, () => ({ limits: { threads: 20, nudges: 2, stalledAfter: "15m" } }));
+  n.f.runKinds.delete("review");
   const { item, run, pr } = await n.opened(1);
   const thread = run.threadId!;
   const at = () => new Date(n.s.now() + 1000).toISOString();
