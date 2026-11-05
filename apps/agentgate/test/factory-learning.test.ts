@@ -343,7 +343,7 @@ test("factory_history returns finished items with their runs, outcomes, scores a
     outcome: "done",
     scores: [{ scorer: "tests-first", label: "missing", passed: false }],
   });
-  expect(seen[0]).toMatchObject({ type: "item", key: "gh-1", outcome: { humanTouches: 1, tokens: 0 } });
+  expect(seen[0]).toMatchObject({ type: "item", key: "gh-1", outcome: { humanTouches: 0, tokens: 0 } });
 
   n.advance(MINUTE);
   n.finish("gh-13");

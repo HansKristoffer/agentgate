@@ -4,7 +4,7 @@ import { getErrorMessage } from "hanzio";
 import { z } from "zod";
 import { peerCall } from "../handoff/jobs.ts";
 import { currentFolder } from "./config.ts";
-import { addItem, enqueueRun, moveItem } from "./controller.ts";
+import { addItem, boardItem, enqueueRun, moveItem } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem } from "./db.ts";
 import type { FactoryRuntime, ForwardOp, IncomingItem, SourceAdapter } from "./runtime.ts";
 
@@ -43,45 +43,7 @@ const pointerKey = (f: FactoryRuntime) => JSON.stringify(f.pointer() ?? null);
 const sourceKey = (source: string, key: string) => `${source}\0${key}`;
 
 /** This machine's items for another machine's board. */
-function boardItems(f: FactoryRuntime, open: boolean): BoardItem[] {
-  const { s } = f;
-  const since = new Map(
-    (
-      s.db.query("select item, max(at) as at from factory_events where kind='item.phase' group by item").all() as {
-        item: string;
-        at: number;
-      }[]
-    ).map((r) => [r.item, r.at]),
-  );
-  return items.list(s, { open }).map((item) => {
-    const run = runs.forItem(s, item.id).at(-1);
-    return {
-      id: item.id,
-      key: item.key,
-      repo: item.repo,
-      title: item.title,
-      ...(item.url && { url: item.url }),
-      source: item.source,
-      phase: item.phase,
-      heldBy: s.nodeId,
-      ...(run && {
-        run: {
-          id: run.id,
-          kind: run.kind,
-          state: run.state,
-          ...(run.node && { node: run.node }),
-          ...(run.threadLink && { threadLink: run.threadLink }),
-          ...(run.startedAt && { startedAt: run.startedAt }),
-        },
-      }),
-      ...(item.needsYou && { needsYou: item.needsYou }),
-      ...(item.prUrl && { pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }) } }),
-      tokens: item.tokens,
-      inPhaseSince: since.get(item.id) ?? item.createdAt,
-      updatedAt: item.updatedAt,
-    };
-  });
-}
+const boardItems = (f: FactoryRuntime, open: boolean) => items.list(f.s, { open }).map((item) => boardItem(f, item));
 
 const heldSchema = z.array(boardItemSchema);
 async function openItemsOf(f: FactoryRuntime, node: string) {
@@ -251,17 +213,14 @@ async function adopt(f: FactoryRuntime, ref: string): Promise<FactoryItem | unde
     externalId: incoming.externalId,
     repo: source.repo,
   });
-  if (marker?.state !== "open")
-    throw new Error(
-      marker
-        ? `The factory finished ${incoming.key}; nothing holds it`
-        : `No machine has marked ${incoming.key} as taken; intake adds it`,
-    );
+  if (!marker) throw new Error(`No machine has marked ${incoming.key} as taken; intake adds it`);
+  // Intake skips an issue the factory finished, so taking it again starts over.
+  const finished = marker.state === "finished";
   const holder = marker.node;
-  if (holder !== s.nodeId && (await stillHolds(f, holder, marker.item, source.id, incoming.key)))
+  if (!finished && holder !== s.nodeId && (await stillHolds(f, holder, marker.item, source.id, incoming.key)))
     throw new Error(`${holder} still holds ${incoming.key} and finishes it there`);
 
-  const stage = marker.stage ?? "triage";
+  const stage = finished ? "triage" : (marker.stage ?? "triage");
   // Held first, so intake's triage run is not queued; then started at the marked stage. A closed item here reopens.
   const item = addItem(f, { source: source.id, repo: source.repo, incoming, hold: true });
   moveItem(f, item.id, stage, null);
@@ -269,7 +228,9 @@ async function adopt(f: FactoryRuntime, ref: string): Promise<FactoryItem | unde
   f.events.emit({
     kind: "note",
     item: item.id,
-    text: `${incoming.key} was taken over from ${holder}; it restarts at ${stage}`,
+    text: finished
+      ? `${incoming.key} was taken again after the factory finished it; it restarts at triage`
+      : `${incoming.key} was taken over from ${holder}; it restarts at ${stage}`,
   });
   const m = memory(f);
   m.orphans = m.orphans.filter((o) => o.externalId !== incoming.externalId);

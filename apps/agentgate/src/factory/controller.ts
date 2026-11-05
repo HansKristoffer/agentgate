@@ -32,6 +32,7 @@ import { candidates, earliestReset } from "../llm/routing.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
 import { currentFolder, folderAt, type LoadedFolder } from "./config.ts";
 import { isOpenPhase, items, newId, runs, type FactoryItem, type FactoryRun } from "./db.ts";
+import type { HumanAct } from "./events.ts";
 import { renderComment } from "./markers.ts";
 import { mirrorOf, WORKING_STATUSES, type MirrorThread } from "./mirror.ts";
 import type {
@@ -96,7 +97,7 @@ const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? 
 
 export function enqueueRun(
   f: FactoryRuntime,
-  input: { kind: RunKind; item?: string; configCommit?: string; attempt?: number },
+  input: { kind: RunKind; item?: string; configCommit?: string; attempt?: number; checked?: unknown },
 ): FactoryRun {
   const item = input.item ? items.get(f.s, input.item) : undefined;
   const configCommit = input.configCommit ?? item?.configCommit ?? currentFolder(f)?.commit;
@@ -107,6 +108,7 @@ export function enqueueRun(
     kind: input.kind,
     attempt: input.attempt ?? 1,
     state: "queued",
+    ...(input.checked !== undefined && { checked: input.checked }),
     nudges: 0,
     configCommit,
   });
@@ -180,6 +182,17 @@ export function setNeedsYou(f: FactoryRuntime, item: string, needsYou: NeedsYou 
       text: `${after.key} needs you (${needsYou.reason})${needsYou.question ? `: ${needsYou.question}` : ""}`,
     });
   return after;
+}
+
+/** Records something a person did to the item, for the human-touches metric. */
+function touched(f: FactoryRuntime, item: FactoryItem, act: HumanAct, text: string) {
+  f.events.emit({ kind: "human", item: item.id, act, text: `${item.key}: ${text}` });
+}
+
+/** The person answered the thread's question in T3 Code, so the item no longer waits for them. */
+function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
+  setNeedsYou(f, item.id, null);
+  touched(f, item, "answer", "answered in T3 Code");
 }
 
 function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
@@ -352,6 +365,18 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
 
 const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().optional() });
 
+/** A run cancelled while its launch was in flight, by `drop` or a closed item, ended without a thread to stop. Its new
+ * thread is interrupted and settled, so it spends nothing; true when the run ended. */
+async function endedWhileStarting(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id)!;
+  if (run.state === "starting") return false;
+  await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
+    threadFailed(f, run, "Interrupting"),
+  );
+  await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
+  return true;
+}
+
 async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | undefined, spec: LaunchSpec) {
   const { s } = f;
   const { projectId } = await project(f, spec.repo);
@@ -377,6 +402,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   if (!answer.success) throw new Error("T3 Code's t3_thread_launch answered without a thread id");
   const { threadId, link } = answer.data;
   runs.update(s, run.id, { threadId, ...(link && { threadLink: link }), node: s.nodeId });
+  if (await endedWhileStarting(f, run.id)) return;
   if (spec.prepare) {
     await spec.prepare({ threadId, worktreePath: mirrorOf(f).thread(threadId)?.worktreePath });
     await mcp.call("t3_thread_send", {
@@ -385,6 +411,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
       mode: "queue",
       clientRequestId: `${run.id}:brief`,
     });
+    if (await endedWhileStarting(f, run.id)) return;
   }
   runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
   // T3 may show the turn running before the launch answers, when the run did not know its thread yet.
@@ -532,7 +559,8 @@ async function onThread(f: FactoryRuntime, thread: MirrorThread, previous: Mirro
   }
   if (run.state === "waiting") {
     runs.update(s, run.id, { state: "running" });
-    if (run.item && items.get(s, run.item)?.needsYou?.reason === "approval") setNeedsYou(f, run.item, null);
+    const item = run.item ? items.get(s, run.item) : undefined;
+    if (item?.needsYou?.reason === "approval") answeredInT3(f, item);
   }
   if (working(thread)) {
     m.seen.add(run.id);
@@ -560,7 +588,14 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
   }
   endRun(f, run, "silent");
   if (run.attempt < 2) {
-    enqueueRun(f, { kind: run.kind, ...(run.item && { item: run.item }), configCommit: run.configCommit, attempt: 2 });
+    // What the factory gave or found for attempt 1, such as the run a judge grades, holds for attempt 2 as well.
+    enqueueRun(f, {
+      kind: run.kind,
+      ...(run.item && { item: run.item }),
+      configCommit: run.configCommit,
+      attempt: 2,
+      ...(run.checked !== undefined && { checked: run.checked }),
+    });
     return;
   }
   const item = run.item ? items.get(s, run.item) : undefined;
@@ -625,7 +660,8 @@ export async function acceptReport(
   if (!takes(runs.get(s, run.id))) throw new ReportError(`Run ${run.id} already ended`);
 
   const reported = endRun(f, run, "reported", { report });
-  if (item?.needsYou?.reason === "approval") setNeedsYou(f, item.id, null);
+  // The thread could only go on to report once the person answered it.
+  if (item?.needsYou?.reason === "approval") answeredInT3(f, item);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
   const closing = CLOSING[report.outcome];
   if (item && closing) await closeItem(f, item, closing(report), report);
@@ -703,6 +739,8 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
         elsewhere.push(elsewhereItem(source, incoming, marker));
         continue;
       }
+      // The factory finished it, here before the trim or on another machine; `retry` takes it again.
+      if (marker?.state === "finished") continue;
       addItem(f, { source: source.id, repo: source.repo, incoming, hold: source.intake === "hold" });
     }
     if (st.failures) console.log(`factory: the source ${source.id} works again`);
@@ -740,11 +778,13 @@ function addManual(f: FactoryRuntime, input: unknown) {
   const known = repos.find((r) => r.toLowerCase() === repo.toLowerCase());
   if (!known) throw new Error(`${repo} is not one of the factory's repositories: ${repos.join(", ") || "none"}`);
   const key = `m-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`;
-  return addItem(f, {
+  const item = addItem(f, {
     source: "manual",
     repo: known,
     incoming: { externalId: crypto.randomUUID(), key, title, snapshot: { title, ...(body && { body }) } },
   });
+  touched(f, item, "add", "added by hand");
+  return item;
 }
 
 /** An item by id, or the newest with that key. */
@@ -762,7 +802,10 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
   if (!item) {
     if (action === "retry" && f.adopt) {
       const adopted = await f.adopt(ref);
-      if (adopted) return `Took over ${adopted.key} from another machine`;
+      if (adopted) {
+        touched(f, adopted, "retry", "taken over with retry");
+        return `Took over ${adopted.key}; it starts at ${adopted.phase}`;
+      }
     }
     throw new Error(`${s.nodeId} holds no factory item ${ref}`);
   }
@@ -792,6 +835,7 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
         .findLast(isStage) ?? "triage";
     moveItem(f, item.id, kind, null);
     enqueueRun(f, { kind, item: item.id });
+    touched(f, item, "retry", `retried ${kind}`);
     return `Retrying ${kind} for ${item.key}`;
   }
 
@@ -799,10 +843,12 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
   if (item.phase === "held") {
     if (!approve) {
       await closeItem(f, item, `The maintainer rejected it${because}.`);
+      touched(f, item, "reject", "rejected while held");
       return `Rejected ${item.key}`;
     }
     moveItem(f, item.id, "triage", null);
     enqueueRun(f, { kind: "triage", item: item.id });
+    touched(f, item, "approve", "approved to start");
     return `Approved ${item.key}; triage is queued`;
   }
   if (last?.state === "waiting") {
@@ -810,6 +856,7 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
     if (!answer)
       throw new Error(`Answer ${item.key}'s question in T3 Code${last.threadLink ? `: ${last.threadLink}` : ""}`);
     await answer(last, { approve, ...(reason && { reason }) });
+    touched(f, item, action, `${action === "approve" ? "approved" : "rejected"} what the ${last.kind} thread asked`);
     return `${approve ? "Approved" : "Rejected"} for ${item.key}`;
   }
   // A stage that reported a question or what blocks it hears the answer in its own thread, and goes on.
@@ -830,6 +877,7 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
       throw e;
     }
     setNeedsYou(f, item.id, null);
+    touched(f, item, action, `answered the ${last.kind} thread's ${outcome === "blocked" ? "blocker" : "question"}`);
     return `Sent the answer to ${item.key}'s ${last.kind} thread`;
   }
   throw new Error(`${item.key} has no question to ${action}`);
@@ -878,44 +926,70 @@ function itemView(f: FactoryRuntime, run: FactoryRun) {
   };
 }
 
-function boardItems(f: FactoryRuntime): BoardItem[] {
-  const { s } = f;
-  const since = new Map(
-    (
-      s.db.query("select item, max(at) as at from factory_events where kind='item.phase' group by item").all() as {
-        item: string;
-        at: number;
-      }[]
-    ).map((r) => [r.item, r.at]),
-  );
-  const list = items.list(s, { finishedSince: s.now() - 7 * DAY }).map((item): BoardItem => {
-    const run = runs.forItem(s, item.id).at(-1);
-    return {
-      id: item.id,
-      key: item.key,
-      repo: item.repo,
-      title: item.title,
-      ...(item.url && { url: item.url }),
-      source: item.source,
-      phase: item.phase,
-      heldBy: s.nodeId,
-      ...(run && {
-        run: {
-          id: run.id,
-          kind: run.kind,
-          state: run.state,
-          ...(run.node && { node: run.node }),
-          ...(run.threadLink && { threadLink: run.threadLink }),
-          ...(run.startedAt && { startedAt: run.startedAt }),
-        },
-      }),
-      ...(item.needsYou && { needsYou: item.needsYou }),
-      ...(item.prUrl && { pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }) } }),
-      tokens: item.tokens,
-      inPhaseSince: since.get(item.id) ?? item.createdAt,
-      updatedAt: item.updatedAt,
-    };
+/** A review run's `checked`, as review.ts records it: rounds that count are reported and not stale, and `final` sent
+ * the item to `ready`. */
+const reviewCheckedSchema = z.object({
+  round: z.number(),
+  stale: z.boolean().optional(),
+  final: z.boolean().optional(),
+});
+
+/** The review rounds so far, and the findings the last one left open when the item went to `ready` with them. */
+function reviewState(f: FactoryRuntime, item: FactoryItem) {
+  const counted = runs.forItem(f.s, item.id).filter((r) => {
+    if (r.kind !== "review" || r.state !== "reported") return false;
+    const checked = reviewCheckedSchema.safeParse(r.checked);
+    return checked.success && !checked.data.stale;
   });
+  const last = counted.at(-1);
+  if (!last) return {};
+  const result = last.report?.result;
+  // Pre-existing findings are not this PR's to fix, so they never count as open (review.ts).
+  const open =
+    item.phase !== "review" && reviewCheckedSchema.parse(last.checked).final && result?.kind === "review"
+      ? result.findings.filter((x) => x.severity !== "pre-existing").length
+      : 0;
+  return { reviewRound: counted.length, ...(open > 0 && { openFindings: open }) };
+}
+
+/** One of this machine's items as a board row; move.ts gives the same rows to the factory machine after a move. */
+export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
+  const { s } = f;
+  const run = runs.forItem(s, item.id).at(-1);
+  const since = s.db
+    .query("select max(at) as at from factory_events where item=? and kind='item.phase'")
+    .get(item.id) as { at: number | null };
+  return {
+    id: item.id,
+    key: item.key,
+    repo: item.repo,
+    title: item.title,
+    ...(item.url && { url: item.url }),
+    source: item.source,
+    phase: item.phase,
+    heldBy: s.nodeId,
+    ...(run && {
+      run: {
+        id: run.id,
+        kind: run.kind,
+        state: run.state,
+        ...(run.node && { node: run.node }),
+        ...(run.threadLink && { threadLink: run.threadLink }),
+        ...(run.startedAt && { startedAt: run.startedAt }),
+      },
+    }),
+    ...(item.needsYou && { needsYou: item.needsYou }),
+    ...(item.prUrl && {
+      pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }), ...reviewState(f, item) },
+    }),
+    tokens: item.tokens,
+    inPhaseSince: since.at ?? item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+}
+
+function boardItems(f: FactoryRuntime): BoardItem[] {
+  const list = items.list(f.s, { finishedSince: f.s.now() - 7 * DAY }).map((item) => boardItem(f, item));
   return [...list, ...[...memory(f).sources.values()].flatMap((st) => st.elsewhere)];
 }
 

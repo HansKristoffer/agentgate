@@ -1,6 +1,5 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { setNeedsYou } from "../src/factory/controller.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome, runTokens } from "../src/factory/records.ts";
@@ -174,7 +173,7 @@ test("outcomes come from each item's PR, every finished run gets D31's verdict, 
     { body: "Looks right now.", authorAssociation: "OWNER", submittedAt: MERGED_AT, state: "APPROVED" },
     { body: "", authorAssociation: "OWNER", submittedAt: MERGED_AT, state: "APPROVED" },
   );
-  setNeedsYou(n.f, merged.item.id, { reason: "decision", question: "Rename the flag?" });
+  n.f.events.emit({ kind: "human", item: merged.item.id, act: "answer", text: "gh-1: answered in T3 Code" });
   merged.pr.state = "MERGED";
   const early = await n.opened(2);
   early.pr.state = "MERGED"; // merged before the factory called it ready

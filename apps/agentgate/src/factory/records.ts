@@ -201,18 +201,12 @@ function storedPr(f: FactoryRuntime, item: string) {
   return parsed?.success ? parsed.data : undefined;
 }
 
-/** Questions the factory asked the maintainer, held items they started, retries, and adding the item by hand, from the
- * factory's own events. Commits on GitHub carry the maintainer's login whether a person or an agent made them, so
- * they cannot be told apart and are not counted. */
+/** What people did to the item, from the factory's `human` events: adding it by hand, approving or rejecting,
+ * answering a thread and retrying. Commits on GitHub carry the maintainer's login whether a person or an agent made them, so they
+ * cannot be told apart and are not counted. */
 function humanTouches(f: FactoryRuntime, item: FactoryItem) {
-  const row = f.s.db
-    .query(
-      `select count(*) as n from factory_events where item=? and (
-        (kind='note' and text like '% needs you (%')
-        or (kind='item.phase' and (text like '% moved from held to %' or text like '% moved from failed to %')))`,
-    )
-    .get(item.id) as { n: number };
-  return row.n + (item.source === "manual" ? 1 : 0);
+  const query = f.s.db.query("select count(*) as n from factory_events where item=? and kind='human'");
+  return (query.get(item.id) as { n: number }).n;
 }
 
 /** The item's outcome: its PR as last read from GitHub, with human touches and tokens as they are now. Hours to merge
