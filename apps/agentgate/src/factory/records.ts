@@ -1,19 +1,19 @@
-import { factoryConfigSchema, type FactoryBoard } from "@agentgate/protocol";
-import { getErrorMessage } from "hanzio";
+import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import { peerCall } from "../handoff/jobs.ts";
 import { projection, t3Client } from "../handoff/t3.ts";
 import { sessionUsage } from "../llm/sessions.ts";
-import { currentFolder } from "./config.ts";
-import { interruptItem, moveItem, writeBack } from "./controller.ts";
+import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
+import { elsewhere, interruptItem, moveItem, writeBack } from "./controller.ts";
 import { isOpenPhase, items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
 import { mergedRevertOf, prView } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import { mirrorOf } from "./mirror.ts";
-import type { FactoryRuntime } from "./runtime.ts";
+import { MOVING } from "./follow.ts";
+import { shortError, type FactoryRuntime } from "./runtime.ts";
 
 /**
- * What each run cost and how each item turned out (D30, D31, D37). A run's tokens are the `session_usage` rows of
+ * What each run cost and how each item turned out. A run's tokens are the `session_usage` rows of
  * the provider sessions behind its T3 thread and the subagent threads under it, counted by the proxy of every machine
  * that served them. Outcomes come from the item's PR on GitHub, and every finished run gets the item's verdict.
  */
@@ -24,13 +24,6 @@ const DAY = 86_400_000;
 const TRANSCRIPT_BYTES = 256 * 1024;
 const CUT = "[The start of this transcript was cut to keep its newest 256 KiB.]\n\n";
 const SESSION_ID = /^[\w-]{1,128}$/;
-/** A run's `threadId` while its thread moves to another machine (follow.ts); it names no thread yet. */
-const MOVING = "handoff:";
-const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
-const short = (e: unknown) => {
-  const text = getErrorMessage(e);
-  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
-};
 
 // ---- a thread's sessions and transcript, read on the machine whose T3 holds it
 
@@ -100,11 +93,11 @@ async function measure(f: FactoryRuntime, run: FactoryRun, withTranscript: boole
   const { s } = f;
   const thread = run.threadId;
   if (!thread || thread.startsWith(MOVING)) return undefined;
-  const node = run.node && run.node !== s.nodeId ? run.node : undefined;
-  if (!node) {
+  if (!elsewhere(f, run)) {
     const record = await threadRecord(f, thread, withTranscript);
     return { tokens: total(sessionUsage(s, record.sessions)), transcript: record.transcript };
   }
+  const { node } = run;
   const record = threadRecordSchema.parse(
     await peerCall(s, node, `/factory/threads/${encodeURIComponent(thread)}${withTranscript ? "?transcript=1" : ""}`),
   );
@@ -148,7 +141,7 @@ function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number) {
   return sum === item.tokens ? item : items.update(s, item.id, { tokens: sum, updatedAt: item.updatedAt });
 }
 
-/** D26: an item over `limits.itemTokens` has its threads stopped and waits for the maintainer. It moves to `failed`
+/** An item over `limits.itemTokens` has its threads stopped and waits for the maintainer. It moves to `failed`
  * so the factory leaves its PR and threads alone, and `retry` is the way back once the budget is raised. The budget
  * is read from the current folder, so raising it applies to items started before. */
 async function enforceBudget(f: FactoryRuntime, item: FactoryItem) {
@@ -252,7 +245,7 @@ async function refreshPr(f: FactoryRuntime, item: FactoryItem) {
     ]);
 }
 
-/** D31. A flawed verdict already on a run (implement.ts marks a PR merged before ready) makes the item flawed. A
+/** A flawed verdict already on a run (implement.ts marks a PR merged before ready) makes the item flawed. A
  * finished item without a PR has no verdict unless a judge failed one of its runs. */
 function verdictOf(f: FactoryRuntime, item: FactoryItem, itemRuns: FactoryRun[]): FactoryRun["verdict"] {
   const judgedFailed = itemRuns.some((r) => scores.forRun(f.s, r.id).some((x) => !x.passed));
@@ -285,7 +278,7 @@ async function refreshOutcomes(f: FactoryRuntime) {
       await refreshPr(f, item);
       errors.delete(item.id);
     } catch (e) {
-      const text = `Reading the outcome of ${item.key}'s PR failed: ${short(e)}`;
+      const text = `Reading the outcome of ${item.key}'s PR failed: ${shortError(e)}`;
       if (errors.get(item.id) !== text) f.events.emit({ kind: "note", item: item.id, text });
       errors.set(item.id, text);
     }
@@ -335,7 +328,7 @@ export function setup(f: FactoryRuntime): void {
         kind: "note",
         run: run.id,
         ...(run.item && { item: run.item }),
-        text: `Recording the transcript and tokens of ${run.id} failed: ${short(e)}`,
+        text: `Recording the transcript and tokens of ${run.id} failed: ${shortError(e)}`,
       }),
     );
   });
@@ -348,7 +341,7 @@ export function setup(f: FactoryRuntime): void {
     where: "factory-node",
     run: () => refreshOutcomes(f),
   });
-  // Metrics merge key by key; the scorers are the judges' (7.1).
+  // Metrics merge key by key; scorers.ts adds the judges' pass rates.
   f.boardParts.push(async () => ({ metrics: metrics(f) }) as Partial<FactoryBoard>);
 
   // GET /peer/factory/usage?sessions=a,b -> SessionUsage[]: what this machine's proxy counted for those sessions.
@@ -363,7 +356,7 @@ export function setup(f: FactoryRuntime): void {
     try {
       return c.json(await threadRecord(f, c.req.param("id"), c.req.query("transcript") === "1"));
     } catch (e) {
-      return c.json({ error: short(e) }, 502);
+      return c.json({ error: shortError(e) }, 502);
     }
   });
 }

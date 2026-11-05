@@ -2,7 +2,6 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
-  ConfigurationConflict,
   factoryConfigSchema,
   factoryUseInputSchema,
   scorerFileSchema,
@@ -16,7 +15,6 @@ import {
   type StageName,
 } from "@agentgate/protocol";
 import { exponentialBackoff, getErrorMessage, safeJsonParse } from "hanzio";
-import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { patchSettings, revision } from "../configuration.ts";
 import { jsonInput } from "../http.ts";
@@ -24,7 +22,7 @@ import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { items } from "./db.ts";
 import { fetcher, folderPath, pruneFolders } from "./folder.ts";
-import { requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves, and the
@@ -221,6 +219,15 @@ export function currentFolder(f: FactoryRuntime): LoadedFolder | undefined {
   return commit ? folderAt(f, commit) : undefined;
 }
 
+/** The folder an item or run started under, or the current one once that commit's folder is gone. */
+export const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? currentFolder(f);
+
+export const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+
+const UNITS = { m: 60_000, h: 3600_000, d: 86_400_000 } as const;
+/** A folder duration such as `15m`, `1h` or `7d`, which the schema has checked, in milliseconds. */
+export const durationMs = (d: string) => Number.parseInt(d, 10) * UNITS[d.slice(-1) as keyof typeof UNITS];
+
 const short = (commit: string) => commit.slice(0, 7);
 
 /** Fetches when the ref moved (always when forced), loads, and keeps the last good folder. Never throws. */
@@ -387,17 +394,6 @@ const print = (status: FactoryStatus, out: (line: string) => void) => {
   describe(status).forEach(out);
   return status.config?.error ? 1 : 0;
 };
-
-// Routes report what an administrator typed wrong as a 400, like the rest of the control API.
-async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (error) {
-    if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof ConfigurationConflict)
-      throw error;
-    throw new HTTPException(400, { message: getErrorMessage(error) });
-  }
-}
 
 export function setup(f: FactoryRuntime): void {
   f.commands.set("use", {

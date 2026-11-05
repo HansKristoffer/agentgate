@@ -4,12 +4,12 @@ import { getErrorMessage } from "hanzio";
 import { z } from "zod";
 import { peerCall } from "../handoff/jobs.ts";
 import { currentFolder } from "./config.ts";
-import { addItem, boardItem, enqueueRun, moveItem } from "./controller.ts";
+import { ACTIONS, addItem, boardItem, elsewhereItem, enqueueRun, findItem, moveItem } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem } from "./db.ts";
 import type { FactoryRuntime, ForwardOp, IncomingItem, SourceAdapter } from "./runtime.ts";
 
 /**
- * Moving the factory to another machine (D29). The new factory machine pauses intake until it has asked every other
+ * Moving the factory to another machine. The new factory machine pauses intake until it has asked every other
  * machine for the items it still holds, and its intake skips those: an item in triage has no marker on its issue yet.
  * The old machine stops intake and drives its own items to the end. A machine that cannot be asked leaves only its
  * markers, so GitHub and Linear issues marked `open` there show as orphaned, and `retry` adopts one here. Webhook and
@@ -128,21 +128,11 @@ async function findOrphans(f: FactoryRuntime, unreachable: string[]) {
         orphans.push({
           externalId: incoming.externalId,
           item: {
-            id: marker.item,
-            key: incoming.key,
-            repo: source.repo,
-            title: incoming.title,
-            ...(incoming.url && { url: incoming.url }),
-            source: source.id,
-            phase: marker.stage ?? "triage",
-            heldBy: marker.node,
+            ...elsewhereItem(source, incoming, marker),
             needsYou: {
               reason: "orphaned",
               question: `${marker.node} is unreachable; take it over here with agentgate factory retry ${incoming.externalId}`,
             },
-            tokens: 0,
-            inPhaseSince: 0,
-            updatedAt: 0,
           },
         });
       }
@@ -237,16 +227,14 @@ async function adopt(f: FactoryRuntime, ref: string): Promise<FactoryItem | unde
   return items.get(s, item.id);
 }
 
-const ITEM_COMMANDS = ["approve", "reject", "retry", "drop"];
-
 /** A call about a run or an item in this machine's tables, which stays here after the factory moved away. */
 function heldHere(f: FactoryRuntime, op: ForwardOp) {
   const { s } = f;
   if (op.kind === "tool") return typeof op.args.run === "string" && !!runs.get(s, op.args.run);
-  if (!ITEM_COMMANDS.includes(op.name)) return false;
+  if (!(ACTIONS as readonly string[]).includes(op.name)) return false;
   const { positionals } = parseArgs({ args: op.args, options: { reason: { type: "string" } }, strict: false });
   const ref = positionals[0];
-  return !!ref && (!!items.get(s, ref) || items.list(s).some((i) => i.key === ref));
+  return !!ref && !!findItem(f, ref);
 }
 
 async function runHere(f: FactoryRuntime, op: ForwardOp) {

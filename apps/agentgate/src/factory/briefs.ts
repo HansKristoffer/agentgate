@@ -1,6 +1,6 @@
-import { stageNames, type RunKind, type StageName } from "@agentgate/protocol";
-import { currentFolder, folderAt } from "./config.ts";
-import type { FactoryItem, FactoryRun } from "./db.ts";
+import type { RunKind } from "@agentgate/protocol";
+import { folderFor } from "./config.ts";
+import { isStage, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -29,10 +29,8 @@ const RESULTS: Record<RunKind, string> = {
   replay: '`done` needs `result: { kind: "replay", patch, testsPassed }`.',
 };
 
-const isStage = (kind: RunKind): kind is StageName => (stageNames as readonly string[]).includes(kind);
-
 /** A fence longer than any run of backticks in the text, so the text cannot close it. */
-function fenced(text: string) {
+export function fenced(text: string) {
   const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(Math.max(3, longest + 1));
   return `${fence}untrusted\n${text}\n${fence}`;
@@ -47,6 +45,9 @@ function itemSection(item: FactoryItem) {
     fenced(`Title: ${item.title}\n\n${snapshot ?? ""}`),
   ].join("\n\n");
 }
+
+export const rulingsSection = (rulings: string) =>
+  `## Rulings\n\nThe maintainer's standing rulings for this factory:\n\n${rulings}`;
 
 function reportSection(kind: RunKind, run: FactoryRun) {
   return [
@@ -68,14 +69,13 @@ export function renderBrief(
   input: { kind: RunKind; run: FactoryRun; item?: FactoryItem; builtIn: string; context?: string },
 ): string {
   const { kind, run, item } = input;
-  const folder = folderAt(f, item?.configCommit ?? run.configCommit) ?? currentFolder(f);
+  const folder = folderFor(f, item?.configCommit ?? run.configCommit);
   const stage = isStage(kind) ? folder?.stages[kind] : undefined;
   const parts = [stage?.brief || input.builtIn];
   if (stage?.file.skill) parts.push(`Use the ${stage.file.skill} skill.`);
   if (input.context) parts.push(input.context);
   if (item) parts.push(itemSection(item));
-  if (folder?.rulings)
-    parts.push(`## Rulings\n\nThe maintainer's standing rulings for this factory:\n\n${folder.rulings}`);
+  if (folder?.rulings) parts.push(rulingsSection(folder.rulings));
   parts.push(reportSection(kind, run));
   return parts.join("\n\n");
 }

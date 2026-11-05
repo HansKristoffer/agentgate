@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
-import { stageNames, type FactoryBoard, type FactoryReport, type ScorerFile } from "@agentgate/protocol";
+import type { FactoryBoard, FactoryReport, ScorerFile } from "@agentgate/protocol";
 import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
-import { currentFolder, folderAt } from "./config.ts";
-import { defaultBranch, enqueueRun } from "./controller.ts";
-import { items, runs, scores, type FactoryRun } from "./db.ts";
+import { folderAt, folderFor } from "./config.ts";
+import { cancelLaunch, defaultBranch, enqueueRun } from "./controller.ts";
+import { isStage, items, runs, scores, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec, ToolCaller } from "./runtime.ts";
 
 /**
- * AI judges (D32). Each `scorers/<name>.md` grades a sample of the reported runs of its stages in a judge thread of
+ * AI judges. Each `scorers/<name>.md` grades a sample of the reported runs of its stages in a judge thread of
  * its own. A judge run has no item, so its outcome, tokens and retries never touch the judged item; `checked` names
  * the run it grades. Scores are only stored here: the outcomes loop (records.ts) turns a failed one into a flawed
  * verdict for every run of the item.
@@ -23,14 +23,13 @@ const JUDGE_BRIEF = `You grade one finished run of AgentGate's software factory 
 - Change nothing: no commits, pushes, comments or reviews.
 - Follow the rubric, then report exactly one label with your reasoning.`;
 
+/** A judge run's `checked`: the run it grades and the scorer it grades as. The bench's judge has the same shape. */
 const checkedSchema = z.object({ run: z.string(), scorer: z.string() });
 type Checked = z.infer<typeof checkedSchema>;
-const checkedOf = (run: FactoryRun) => {
+export const judgedOf = (run: FactoryRun) => {
   const parsed = checkedSchema.safeParse(run.checked);
   return parsed.success ? parsed.data : undefined;
 };
-
-const isStage = (kind: string) => (stageNames as readonly string[]).includes(kind);
 
 /** Whether a run is in the sample. The seed is the run's id, so asking again gives the same answer. */
 function sampled(run: string, sample: number) {
@@ -39,7 +38,7 @@ function sampled(run: string, sample: number) {
 
 /** The scorer as the judged item's folder has it; the current folder once that commit's folder is gone. */
 function scorerOf(f: FactoryRuntime, run: FactoryRun, name: string) {
-  return (folderAt(f, run.configCommit) ?? currentFolder(f))?.scorers[name];
+  return folderFor(f, run.configCommit)?.scorers[name];
 }
 
 /** The score a label gives, and whether it reaches the pass mark. */
@@ -62,12 +61,6 @@ function sample(f: FactoryRuntime, run: FactoryRun) {
   }
 }
 
-function cancel(f: FactoryRuntime, run: FactoryRun, why: string) {
-  runs.update(f.s, run.id, { state: "cancelled", endedAt: f.s.now(), error: why });
-  f.events.emit({ kind: "run.ended", run: run.id, state: "cancelled", text: `judge run ${run.id} ended: ${why}` });
-  return { wait: why };
-}
-
 function rubricSection(name: string, file: ScorerFile, rubric: string, judged: FactoryRun) {
   const labels = file.labels.map((l) => `- \`${l.value}\` (score ${l.score}): ${l.description}`).join("\n");
   return [
@@ -84,12 +77,12 @@ const judge = (f: FactoryRuntime) => ({
   countsAsWorking: true,
 
   async launch(run: FactoryRun): Promise<LaunchSpec | { wait: string }> {
-    const checked = checkedOf(run);
+    const checked = judgedOf(run);
     const judged = checked && runs.get(f.s, checked.run);
     const item = judged?.item ? items.get(f.s, judged.item) : undefined;
-    if (!checked || !judged || !item) return cancel(f, run, "the run it grades is gone");
+    if (!checked || !judged || !item) return cancelLaunch(f, run, "the run it grades is gone");
     const scorer = scorerOf(f, run, checked.scorer);
-    if (!scorer) return cancel(f, run, `the scorer ${checked.scorer} is no longer in the factory folder`);
+    if (!scorer) return cancelLaunch(f, run, `the scorer ${checked.scorer} is no longer in the factory folder`);
     const context = rubricSection(checked.scorer, scorer.file, scorer.rubric, judged);
     const { model } = scorer.file;
     return {
@@ -104,7 +97,7 @@ const judge = (f: FactoryRuntime) => ({
   },
 
   async validate(report: FactoryReport, run: FactoryRun) {
-    const checked = checkedOf(run);
+    const checked = judgedOf(run);
     if (!checked) return `Run ${run.id} names no run to grade`;
     const scorer = scorerOf(f, run, checked.scorer);
     if (!scorer) return `The scorer ${checked.scorer} is no longer in the factory folder`;
@@ -120,7 +113,7 @@ const judge = (f: FactoryRuntime) => ({
   async accept(report: FactoryReport, run: FactoryRun) {
     const { result } = report;
     if (result?.kind !== "judge") return;
-    const checked = checkedOf(run)!;
+    const checked = judgedOf(run)!;
     const { score, passed } = grade(scorerOf(f, run, checked.scorer)!.file, result.label)!;
     scores.put(f.s, {
       run: checked.run,
@@ -148,7 +141,7 @@ function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
     ? runs.list(f.s, { kinds: ["judge"] }).find((r) => r.threadId === caller.thread && r.node === caller.node)
     : undefined;
   if (!judgeRun) throw new Error("factory_run serves judge threads only; call it from your judge run's thread");
-  const graded = checkedOf(judgeRun)?.run;
+  const graded = judgedOf(judgeRun)?.run;
   if (graded !== id) throw new Error(`Your judge run grades ${graded ?? "no run"}, not ${id}`);
   const run = runs.get(f.s, id);
   if (!run) throw new Error(`${f.s.nodeId} has no factory run ${id}`);
