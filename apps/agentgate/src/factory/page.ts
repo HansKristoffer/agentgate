@@ -74,6 +74,7 @@ table { width: 100%; border-collapse: collapse; background: var(--surface); bord
 td, th { text-align: left; padding: 6px 10px; border-top: 1px solid var(--border); font-size: 13px; }
 th { color: var(--ink-2); font-weight: 600; border-top: none; }
 .events div { padding: 3px 0; font-size: 13px; }
+#judges table { margin-top: 8px; }
 .empty { color: var(--muted); font-size: 13px; }
 </style>
 </head>
@@ -88,6 +89,11 @@ th { color: var(--ink-2); font-weight: 600; border-top: none; }
 <div id="needs"></div>
 <h2>Capacity</h2>
 <div class="tiles" id="capacity"></div>
+<section id="metrics-section">
+<h2>Last 7 days</h2>
+<div class="tiles" id="metrics"></div>
+<div id="judges"></div>
+</section>
 <h2>Items</h2>
 <div class="board" id="items"></div>
 <h2>Machines</h2>
@@ -128,6 +134,10 @@ function pill(text, tone) {
 	var p = el("span", "pill");
 	p.append(el("span", "dot " + (tone || "")), el("span", "", text));
 	return p;
+}
+function percent(rate) { return Math.round(rate * 100) + "%"; }
+function tokens(n) {
+	return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
 }
 function tile(value, label) {
 	var t = el("div", "tile");
@@ -182,6 +192,35 @@ function render(b) {
 		tile(c.quota === "ok" ? "ok" : "waiting", "quota" + (c.quota !== "ok" && c.quota.waitingUntil ? " until " + new Date(c.quota.waitingUntil).toLocaleTimeString() : "")),
 		tile(c.mainRed.length ? c.mainRed.join(", ") : "none", "main is red"),
 	]);
+
+	var m = b.metrics;
+	document.getElementById("metrics-section").hidden = !f;
+	var none = "–";
+	fill("metrics", [
+		tile(m.merged, "merged"),
+		tile(percent(m.mergeRate), "merge rate"),
+		tile(m.reverts14d, "reverted within 14 days"),
+		tile(m.medianHoursToMerge === undefined ? none : m.medianHoursToMerge.toFixed(1) + "h", "median time to merge"),
+		tile(m.humanTouchesPerItem === undefined ? none : m.humanTouchesPerItem.toFixed(1), "human touches per item"),
+		tile(m.tokensPerMergedPr === undefined ? none : tokens(m.tokensPerMergedPr), "tokens per merged PR"),
+	]);
+	if (!m.scorers.length) fill("judges", []);
+	else {
+		var judges = el("table");
+		var jh = el("tr");
+		["Judge", "Passed", "Runs", "By factory commit"].forEach(function (t) { jh.append(el("th", "", t)); });
+		judges.append(jh);
+		m.scorers.forEach(function (x) {
+			var tr = el("tr");
+			tr.append(
+				el("td", "", x.name), el("td", "", percent(x.passRate)), el("td", "", x.runs),
+				el("td", "", x.byConfig.map(function (c) {
+					return c.commit.slice(0, 7) + " " + percent(c.passRate) + " of " + c.runs;
+				}).join(" · ")));
+			judges.append(tr);
+		});
+		fill("judges", [judges]);
+	}
 
 	var columns = PHASES.filter(function (phase) {
 		return OPEN.indexOf(phase) >= 0 || b.items.some(function (i) { return i.phase === phase; });

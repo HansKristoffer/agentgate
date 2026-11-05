@@ -87,7 +87,7 @@ test("secret set takes the value from stdin and reaches a peer once every node u
   b!.s.put("node", "b", { id: "b", protocol: 7 });
   await pull(a!, b!);
   await expect(command(a!.ctx.factory, ["set", "LINEAR_KEY"], `${VALUE}\n`)).rejects.toThrow(
-    "Update agentgate on b first",
+    "Update agentgate on b first: older versions cannot sync factory settings and secrets",
   );
   expect(a!.s.record("secret", "LINEAR_KEY")).toBeUndefined();
 

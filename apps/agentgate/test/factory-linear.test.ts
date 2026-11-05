@@ -33,7 +33,7 @@ interface FakeIssue {
 function fakeLinear() {
   const issues = new Map<string, FakeIssue>();
   const requests: { operation: string; variables: Record<string, unknown>; authorization: string | null }[] = [];
-  let answer: ((operation: string) => Response | undefined) | undefined;
+  let answer: ((operation: string, variables: Record<string, unknown>) => Response | undefined) | undefined;
   const add = (identifier: string, patch: Partial<FakeIssue> = {}) =>
     issues.set(identifier, {
       id: crypto.randomUUID(),
@@ -51,7 +51,7 @@ function fakeLinear() {
     const { query, variables } = JSON.parse(String(init.body)) as { query: string; variables: Record<string, unknown> };
     const operation = /^(?:query|mutation) (\w+)/.exec(query)![1]!;
     requests.push({ operation, variables, authorization: new Headers(init.headers).get("authorization") });
-    const override = answer?.(operation);
+    const override = answer?.(operation, variables);
     if (override) return override;
     const data = (value: unknown) => Response.json({ data: value });
     if (operation === "FactoryIssues") {
@@ -203,4 +203,34 @@ test("a missing API key shows on the source's row without a request, and Linear'
   n.advance(60 * 60_000);
   await n.intake();
   expect((await row())?.error).toBe("Linear: Invalid key [redacted]");
+});
+
+test("a poll that stops at the page cap adds what it read and says so on the source's row until a poll reads everything", async () => {
+  const n = await factoryNode(cleanup, { config: linearConfig });
+  setSecret(n.s, "LINEAR_KEY", KEY);
+  const linear = fakeLinear();
+  for (let i = 1; i <= 11; i++) linear.add(`ENG-${i}`);
+  // One issue per page, so the cap of 10 pages leaves ENG-11 unread.
+  linear.answerWith((operation, variables) => {
+    if (operation !== "FactoryIssues") return undefined;
+    const page = Number(String(variables.after ?? "page-0").slice(5));
+    const identifier = `ENG-${page + 1}`;
+    const nodes = [
+      { identifier, title: identifier, description: "", url: `https://linear.app/acme/issue/${identifier}` },
+    ];
+    const pageInfo = { hasNextPage: page < 10, endCursor: `page-${page + 1}` };
+    return Response.json({ data: { issues: { nodes, pageInfo } } });
+  });
+  const row = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).sources[0];
+
+  await n.intake();
+  expect(items.list(n.s).map((i) => i.externalId)).toEqual([...Array(10)].map((_, i) => `ENG-${i + 1}`));
+  expect(await row()).toMatchObject({
+    lastPollAt: n.s.now(),
+    error: "Only the first 1,000 open labelled issues are read; the rest wait until fewer are open",
+  });
+
+  linear.answerWith(undefined);
+  await n.intake();
+  expect((await row())?.error).toBeUndefined();
 });

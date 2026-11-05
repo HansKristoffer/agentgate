@@ -247,6 +247,24 @@ const ago = (at: number, now: number) => {
 /** `text` when `value` is set, else nothing: the optional parts of a line. */
 const when = (value: unknown, text: string) => (value ? text : "");
 
+const percent = (rate: number) => `${Math.round(rate * 100)}%`;
+const tokens = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
+
+/** The last 7 days' outcomes, and each judge's pass rate. */
+function metricsText(m: FactoryBoard["metrics"]): string[] {
+  const outcomes = [
+    `${m.merged} merged`,
+    `merge rate ${percent(m.mergeRate)}`,
+    `${m.reverts14d} reverted within 14 days`,
+    ...(m.medianHoursToMerge !== undefined ? [`median ${m.medianHoursToMerge.toFixed(1)}h to merge`] : []),
+    ...(m.humanTouchesPerItem !== undefined ? [`${m.humanTouchesPerItem.toFixed(1)} human touches per item`] : []),
+    ...(m.tokensPerMergedPr !== undefined ? [`${tokens(m.tokensPerMergedPr)} tokens per merged PR`] : []),
+  ];
+  const judges = m.scorers.map((x) => `  ${x.name}: ${percent(x.passRate)} passed of ${x.runs} runs`);
+  return [`Last 7 days: ${outcomes.join(", ")}`, ...(judges.length ? ["Judges, last 7 days:", ...judges] : [])];
+}
+
 /** The board for a terminal or an agent. `short` leaves out each machine's threads and the event list. */
 export function boardText(b: FactoryBoard, { short = false, now = Date.now() } = {}): string[] {
   const here = (node: string) => when(node === b.node, " (this machine)");
@@ -270,6 +288,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
     ...(c.mainRed.length ? [`main is red in ${c.mainRed.join(", ")}`] : []),
   ];
   lines.push(capacity.join(", "));
+  if (p) lines.push(...metricsText(b.metrics));
 
   const waiting = b.items.flatMap((i) => (i.needsYou ? [{ ...i, needsYou: i.needsYou }] : []));
   if (waiting.length) lines.push("", "Needs you:");

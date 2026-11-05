@@ -338,7 +338,7 @@ test("the factory setting waits until every machine understands it, and null tur
   const refused = await patch(pointer);
   expect(refused.status).toBe(400);
   expect(await refused.json()).toEqual({
-    error: "Update agentgate on old first: older versions drop the factory setting",
+    error: "Update agentgate on old first: older versions cannot sync factory settings and secrets",
   });
   expect(s.settings().factory).toBeUndefined();
 

@@ -4,13 +4,13 @@ import { getErrorMessage, safeJsonParse } from "hanzio";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
+import { peerCall } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
-import { host } from "../logins.ts";
 import { currentFolder, folderAt, loadFolder, type LoadedFolder } from "./config.ts";
 import { enqueueRun } from "./controller.ts";
 import { runs, scores, type FactoryRun, type FactoryScore } from "./db.ts";
 import { fetcher } from "./folder.ts";
-import { closedByMergedPr, postIssueComment, prView } from "./gh.ts";
+import { closedByMergedPr, openPrForHead, postIssueComment } from "./gh.ts";
 import type { FactoryRuntime, LaunchSpec, RunKindDefinition } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
@@ -19,12 +19,13 @@ import { t3Mcp } from "./t3-mcp.ts";
  * in a thread at its merged PR's base commit that cannot push, and a built-in judge compares each replay with the
  * merged PR. Scores are stored against the replay run, so they group by its factory commit. When `ref` is the branch of
  * an open PR on the factory repo, the same issues are replayed with the current folder too, and one comment on that PR
- * compares the two.
+ * compares the two. `bench --cancel` ends a bench's runs and drops its comment.
  */
 
 const MINUTE = 60_000;
 const ACTIVE: RunState[] = ["queued", "starting", "running", "waiting"];
 const short = (commit: string) => commit.slice(0, 7);
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
 /** The name the built-in judge's scores carry. A folder scorer of the same name never grades a replay. */
@@ -163,7 +164,7 @@ async function disablePush(f: FactoryRuntime, thread: { threadId: string; worktr
     throw new Error(`git could not disable pushing in ${path}: ${set.err.split("\n").at(-1) || "unknown error"}`);
 }
 
-function cancel(f: FactoryRuntime, run: FactoryRun, why: string) {
+function endRun(f: FactoryRuntime, run: FactoryRun, why: string) {
   runs.update(f.s, run.id, { state: "cancelled", endedAt: f.s.now(), error: why });
   f.events.emit({
     kind: "run.ended",
@@ -171,6 +172,10 @@ function cancel(f: FactoryRuntime, run: FactoryRun, why: string) {
     state: "cancelled",
     text: `${run.kind} run ${run.id} ended: ${why}`,
   });
+}
+
+function cancel(f: FactoryRuntime, run: FactoryRun, why: string) {
+  endRun(f, run, why);
   return { wait: why };
 }
 
@@ -265,7 +270,7 @@ function withBenchJudge(f: FactoryRuntime, base: RunKindDefinition): RunKindDefi
 
 // ---- picking issues
 
-const isBot = (login: string) => /\[bot\]$|^app\//i.test(login);
+const isBot = (login: string) => /\[bot\]$/i.test(login);
 
 /** The newest issues in the factory's repositories that a person's merged PR closed, one per PR. The factory's own PRs
  * are on `factory/` branches. */
@@ -281,8 +286,7 @@ async function pickIssues(folder: LoadedFolder, count: number) {
     if (picked.length >= count) break;
     if (seen.has(c.prUrl)) continue;
     seen.add(c.prUrl);
-    const view = await prView(c.prUrl);
-    if (view.headRefName.startsWith("factory/") || isBot(view.author)) continue;
+    if (c.headRefName.startsWith("factory/") || isBot(c.author)) continue;
     picked.push({
       repo: c.repo,
       issue: c.issue,
@@ -294,23 +298,6 @@ async function pickIssues(folder: LoadedFolder, count: number) {
     });
   }
   return picked;
-}
-
-/** The open PR on the factory repo whose branch is `ref`. */
-async function openPrFor(repo: string, ref: string) {
-  const what = `list the open pull requests from ${ref} in ${repo}`;
-  const r = await host.gh(["pr", "list", "--repo", repo, "--head", ref, "--state", "open", "--json", "number,url"]);
-  if (!r) throw new Error(`gh is not installed, so the factory cannot ${what}`);
-  if (!r.ok) throw new Error(`gh could not ${what}: check gh auth status on this machine`);
-  let json: unknown;
-  try {
-    json = JSON.parse(r.out);
-  } catch {
-    throw new Error(`gh answered with something other than JSON when asked to ${what}`);
-  }
-  const parsed = z.array(z.object({ number: z.number().int(), url: z.string() })).safeParse(json);
-  if (!parsed.success) throw new Error(`gh answered in an unexpected shape when asked to ${what}`);
-  return parsed.data[0];
 }
 
 // ---- results
@@ -348,12 +335,12 @@ function reusable(f: FactoryRuntime, issue: Replay, commit: string) {
 
 // ---- the bench
 
-/** A bench that reports on a PR, kept node-local until its comment is posted. */
+/** A bench, kept node-local until its runs end: what `--cancel` ends, and for a PR, what its comment reports. */
 const benchSchema = z.object({
   ref: z.string(),
   repo: z.string(),
-  pr: z.number().int(),
-  prUrl: z.string(),
+  pr: z.number().int().optional(),
+  prUrl: z.string().optional(),
   candidate: z.string(),
   baseline: z.string(),
   issues: z.array(replaySchema.pick({ repo: true, issue: true, pr: true })),
@@ -362,17 +349,31 @@ const benchSchema = z.object({
 type Bench = z.infer<typeof benchSchema>;
 const BENCH_KEY = "factory:bench:";
 
-async function startBench(f: FactoryRuntime, input: { ref: string; items?: number }) {
+function benches(f: FactoryRuntime) {
+  return [...f.s.localPrefixed(BENCH_KEY)].flatMap(([key, raw]) => {
+    const parsed = benchSchema.safeParse(safeJsonParse(raw).data);
+    if (parsed.success) return [{ key, bench: parsed.data }];
+    f.s.setLocal(key, undefined);
+    return [];
+  });
+}
+
+function requirePointer(f: FactoryRuntime) {
   const pointer = f.pointer();
   if (!pointer) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
   if (!f.isFactoryNode()) throw new Error(`The factory runs on ${pointer.node}; run the bench there`);
+  return pointer;
+}
+
+async function startBench(f: FactoryRuntime, input: { ref: string; items?: number }) {
+  const pointer = requirePointer(f);
   const current = currentFolder(f);
   if (!current) throw new Error("The factory's folder has not loaded yet; see agentgate factory status");
 
   const candidate = await fetchRef(f, input.ref);
   const picked = await pickIssues(current, input.items ?? 5);
   if (!picked.length) throw new Error("No issue in the factory's repositories was closed by a merged PR from a person");
-  const pr = await openPrFor(pointer.repo, input.ref);
+  const pr = await openPrForHead(pointer.repo, input.ref);
   // Without a PR to report on there is nothing to compare with, so only the candidate replays.
   const commits = [candidate.commit, ...(pr && current.commit !== candidate.commit ? [current.commit] : [])];
 
@@ -385,19 +386,16 @@ async function startBench(f: FactoryRuntime, input: { ref: string; items?: numbe
       return { issue, commit, run: run.id, reused: false };
     }),
   );
-  if (pr) {
-    const bench: Bench = {
-      ref: input.ref,
-      repo: pointer.repo,
-      pr: pr.number,
-      prUrl: pr.url,
-      candidate: candidate.commit,
-      baseline: commits.at(-1)!,
-      issues: picked.map(({ repo, issue, pr: fix }) => ({ repo, issue, pr: fix })),
-      at: f.s.now(),
-    };
-    f.s.setLocal(`${BENCH_KEY}${pr.number}:${candidate.commit}`, JSON.stringify(bench));
-  }
+  const bench: Bench = {
+    ref: input.ref,
+    repo: pointer.repo,
+    ...(pr && { pr: pr.number, prUrl: pr.url }),
+    candidate: candidate.commit,
+    baseline: commits.at(-1)!,
+    issues: picked.map(({ repo, issue, pr: fix }) => ({ repo, issue, pr: fix })),
+    at: f.s.now(),
+  };
+  f.s.setLocal(`${BENCH_KEY}${input.ref}:${candidate.commit}`, JSON.stringify(bench));
   const queued = replays.filter((r) => !r.reused).length;
   f.events.emit({
     kind: "note",
@@ -463,15 +461,10 @@ function commentBody(bench: Bench, rows: { issue: Bench["issues"][number]; candi
   ].join("\n\n");
 }
 
-/** Posts each finished bench's comment once. The record goes first, so a restart never posts it twice. */
+/** Posts each finished bench's comment once, when it has a PR. The record goes first, so a restart never posts it
+ * twice. */
 async function reportBenches(f: FactoryRuntime) {
-  for (const [key, raw] of f.s.localPrefixed(BENCH_KEY)) {
-    const parsed = benchSchema.safeParse(safeJsonParse(raw).data);
-    if (!parsed.success) {
-      f.s.setLocal(key, undefined);
-      continue;
-    }
-    const bench = parsed.data;
+  for (const { key, bench } of benches(f)) {
     const rows = bench.issues.map((issue) => ({
       issue,
       candidate: resultOf(f, issue, bench.candidate),
@@ -479,6 +472,7 @@ async function reportBenches(f: FactoryRuntime) {
     }));
     if (rows.some((r) => [r.candidate, r.baseline].some((x) => x.status === "pending"))) continue;
     f.s.setLocal(key, undefined);
+    if (!bench.pr) continue;
     const posted = await postIssueComment(bench.repo, bench.pr, commentBody(bench, rows));
     f.events.emit({
       kind: "note",
@@ -486,6 +480,69 @@ async function reportBenches(f: FactoryRuntime) {
     });
   }
 }
+
+// ---- cancelling
+
+/** The runs a bench still waits on: its replays that have not ended, and the judges grading its replays. */
+function activeRuns(f: FactoryRuntime, bench: Bench) {
+  const commits = [...new Set([bench.candidate, bench.baseline])];
+  const replays = bench.issues.flatMap((issue) =>
+    commits.flatMap((commit) => {
+      const result = resultOf(f, issue, commit);
+      return result.status === "pending" ? [result.run] : [];
+    }),
+  );
+  const ids = new Set(replays.map((r) => r.id));
+  const judges = runs
+    .list(f.s, { kinds: ["judge"], states: ACTIVE })
+    .filter((j) => ids.has(benchJudged(f, j)?.id ?? ""));
+  return [...replays.filter((r) => ACTIVE.includes(r.state)), ...judges];
+}
+
+/** Interrupts and settles a cancelled run's thread: here through T3's MCP, or where a handoff took it. A failure is a
+ * note, since the run has ended either way. */
+async function stopThread(f: FactoryRuntime, run: FactoryRun, threadId: string) {
+  const remote = run.node && run.node !== f.s.nodeId ? run.node : undefined;
+  const reason = "The bench was cancelled";
+  try {
+    if (remote) {
+      await peerCall(f.s, remote, "/factory/thread", { json: { action: "interrupt", threadId, text: reason } });
+      await peerCall(f.s, remote, "/factory/thread", { json: { action: "settle", threadId } });
+    } else {
+      await t3Mcp(f).call("t3_thread_interrupt", { threadId, reason });
+      await t3Mcp(f).call("t3_thread_organize", { threadId, action: "settle" });
+    }
+  } catch (e) {
+    const text = `Stopping the thread of ${run.id}${remote ? ` on ${remote}` : ""} failed: ${clip(getErrorMessage(e), 300)}`;
+    f.events.emit({ kind: "note", run: run.id, text });
+  }
+}
+
+/** Ends the runs of the benches of `ref`, or of every bench, and drops their comments. A run another bench still
+ * waits on, such as a replay with the current folder that two benches share, keeps going. */
+async function cancelBench(f: FactoryRuntime, ref?: string) {
+  requirePointer(f);
+  const all = benches(f);
+  const chosen = all.filter((b) => ref === undefined || b.bench.ref === ref);
+  const shared = new Set(
+    all.filter((b) => !chosen.includes(b)).flatMap((b) => activeRuns(f, b.bench).map((r) => r.id)),
+  );
+  const ending = new Map(chosen.flatMap((b) => activeRuns(f, b.bench)).map((r) => [r.id, r] as const));
+  for (const id of shared) ending.delete(id);
+  // The records first, so the comment loop never reports a half-cancelled bench.
+  for (const { key } of chosen) f.s.setLocal(key, undefined);
+  // Cancelled before the interrupt, so the controller does not take the interrupted thread for a silent end.
+  for (const run of ending.values()) endRun(f, run, "the bench was cancelled");
+  for (const run of ending.values()) if (run.threadId) await stopThread(f, run, run.threadId);
+  if (chosen.length)
+    f.events.emit({
+      kind: "note",
+      text: `Cancelled ${ref ? `the bench of ${ref}` : "every bench"}: ${plural(ending.size, "run")} ended`,
+    });
+  return { cancelled: ending.size };
+}
+
+const cancelInputSchema = z.object({ ref: factoryBenchInputSchema.shape.ref.optional() }).strict();
 
 // ---- setup
 
@@ -510,20 +567,35 @@ export function setup(f: FactoryRuntime): void {
 
   f.loops.push({ name: "factory-bench", everyMs: MINUTE, where: "factory-node", run: () => reportBenches(f) });
 
+  const usage =
+    "usage: agentgate factory bench --ref <ref> [--items <n>], with 1 to 100 items, or bench --cancel [--ref <ref>]";
   f.commands.set("bench", {
-    usage: "bench --ref <ref> [--items <n>]",
+    usage: "bench --ref <ref> [--items <n>] | bench --cancel [--ref <ref>]",
     async run(args, io) {
       const { values } = parseArgs({
         args,
-        options: { ref: { type: "string" }, items: { type: "string" } },
+        options: { ref: { type: "string" }, items: { type: "string" }, cancel: { type: "boolean" } },
         allowPositionals: false,
       });
+      if (values.cancel) {
+        const input = cancelInputSchema.safeParse({ ref: values.ref });
+        if (!input.success || values.items !== undefined) {
+          io.out(usage);
+          return 2;
+        }
+        const { cancelled } = await cancelBench(f, input.data.ref);
+        const { ref } = input.data;
+        if (cancelled)
+          io.out(`Cancelled ${plural(cancelled, "run")} of ${ref ? `the bench of ${ref}` : "every bench"}`);
+        else io.out(`Nothing to cancel: ${ref ? `the bench of ${ref} has no runs going` : "no bench has runs going"}`);
+        return 0;
+      }
       const input = factoryBenchInputSchema.safeParse({
         ref: values.ref,
         ...(values.items !== undefined && { items: Number(values.items) }),
       });
       if (!input.success) {
-        io.out("usage: agentgate factory bench --ref <ref> [--items <n>], with 1 to 100 items");
+        io.out(usage);
         return 2;
       }
       const result = await startBench(f, input.data);
@@ -542,6 +614,14 @@ export function setup(f: FactoryRuntime): void {
     const input = factoryBenchInputSchema.parse(await jsonInput(c.req.raw));
     try {
       return c.json(await startBench(f, input));
+    } catch (e) {
+      throw new HTTPException(400, { message: getErrorMessage(e) });
+    }
+  });
+  f.api.delete("/bench", async (c) => {
+    const input = cancelInputSchema.parse(await jsonInput(c.req.raw));
+    try {
+      return c.json(await cancelBench(f, input.ref));
     } catch (e) {
       throw new HTTPException(400, { message: getErrorMessage(e) });
     }
