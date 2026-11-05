@@ -7,6 +7,7 @@ import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome } from "../src/factory/records.ts";
 import { loopTask } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
+import { factoryNode } from "./fixtures/t3-mcp.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
 
@@ -145,4 +146,28 @@ test("approving, retrying and adding by hand are each one human touch, and a que
   expect((await n.command("add", n.repo, "Crash on save")).code).toBe(0);
   const manual = items.list(n.s).find((i) => i.source === "manual")!;
   expect(touches(manual)).toBe(1);
+});
+
+test("a run dropped while its launch is in flight stays cancelled, and the thread T3 then starts is interrupted", async () => {
+  const n = await factoryNode(cleanup);
+  let answerLaunch!: () => void;
+  const launchAnswered = new Promise<void>((resolve) => (answerLaunch = resolve));
+  n.mcp.answer("t3_thread_launch", async (args) => {
+    await launchAnswered;
+    const thread = n.t3.addThread({ projectId: String(args.projectId), sessionId: crypto.randomUUID() });
+    return { threadId: thread.id };
+  });
+  expect((await n.command("add", n.repo, "Crash on save")).code).toBe(0);
+  const [run] = runs.list(n.s);
+
+  const dispatched = n.dispatch();
+  await n.until(() => n.mcp.calls.some((c) => c.tool === "t3_thread_launch"), "the launch");
+  expect((await n.command("drop", run!.item!)).code).toBe(0);
+  answerLaunch();
+  await dispatched;
+
+  const ended = runs.get(n.s, run!.id)!;
+  expect(ended).toMatchObject({ state: "cancelled", threadId: expect.any(String) });
+  const interrupted = n.mcp.calls.filter((c) => c.tool === "t3_thread_interrupt").map((c) => c.args.threadId);
+  expect(interrupted).toEqual([ended.threadId]);
 });

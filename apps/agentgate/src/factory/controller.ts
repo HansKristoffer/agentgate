@@ -365,6 +365,18 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
 
 const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().optional() });
 
+/** A run cancelled while its launch was in flight, by `drop` or a closed item, ended without a thread to stop. Its new
+ * thread is interrupted and settled, so it spends nothing; true when the run ended. */
+async function endedWhileStarting(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id)!;
+  if (run.state === "starting") return false;
+  await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
+    threadFailed(f, run, "Interrupting"),
+  );
+  await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
+  return true;
+}
+
 async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | undefined, spec: LaunchSpec) {
   const { s } = f;
   const { projectId } = await project(f, spec.repo);
@@ -390,6 +402,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   if (!answer.success) throw new Error("T3 Code's t3_thread_launch answered without a thread id");
   const { threadId, link } = answer.data;
   runs.update(s, run.id, { threadId, ...(link && { threadLink: link }), node: s.nodeId });
+  if (await endedWhileStarting(f, run.id)) return;
   if (spec.prepare) {
     await spec.prepare({ threadId, worktreePath: mirrorOf(f).thread(threadId)?.worktreePath });
     await mcp.call("t3_thread_send", {
@@ -398,6 +411,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
       mode: "queue",
       clientRequestId: `${run.id}:brief`,
     });
+    if (await endedWhileStarting(f, run.id)) return;
   }
   runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
   // T3 may show the turn running before the launch answers, when the run did not know its thread yet.
