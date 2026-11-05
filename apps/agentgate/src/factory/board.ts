@@ -98,15 +98,18 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
 const defined = <T extends object>(o: T | undefined) =>
   Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined)) as Partial<T>;
 
-/** Arrays add up (items by id, the later part winning), `metrics`, `t3` and `capacity` merge key by key, and any
- * other key is the later part's. `t3` merges because the mirror and the T3 sign-in each report half of it. */
+/** Arrays add up (items by id, the later part winning), sources by id key by key, `metrics`, `t3` and `capacity`
+ * merge key by key, and any other key is the later part's. `t3` merges because the mirror and the T3 sign-in each
+ * report half of it, and a source row because the controller reports its polls and the webhooks its URL. */
 function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
   const { items, sources, machines, events, metrics, t3, capacity, ...rest } = part;
+  const byId = new Map(board.sources.map((row) => [row.id, row]));
+  for (const row of sources ?? []) byId.set(row.id, { ...byId.get(row.id), ...row });
   return {
     ...board,
     ...defined(rest),
     items: [...new Map([...board.items, ...(items ?? [])].map((i) => [i.id, i])).values()],
-    sources: [...board.sources, ...(sources ?? [])],
+    sources: [...byId.values()],
     machines: [...board.machines, ...(machines ?? [])],
     events: [...board.events, ...(events ?? [])],
     metrics: {

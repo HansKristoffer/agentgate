@@ -13,6 +13,7 @@ import { anySignal, getErrorMessage, isTruthy } from "hanzio";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
+import { REMOTE_LIMITS } from "@agentgate/protocol/remote";
 import { NeedsLogin } from "../credentials.ts";
 import { infisicalMcpEnv } from "../logins.ts";
 import { fetchHeaders, sleep } from "../runtime.ts";
@@ -677,6 +678,8 @@ export class Gateway {
       failed: [],
     });
     if (this.closed) return error(503, -32000, "agentgate is stopping");
+    // The relay frame allows webhook-sized bodies; MCP requests keep their own limit, whatever the relay enforces.
+    if (Buffer.byteLength(body) > REMOTE_LIMITS.requestBytes) return error(413, -32000, "request too large");
     let message: unknown;
     try {
       message = JSON.parse(body);

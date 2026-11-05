@@ -1,15 +1,23 @@
 import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
 import { getErrorMessage } from "hanzio";
-import { REMOTE_LIMITS, relayFrame, sha256Hex, type RemoteResponseFrame } from "@agentgate/protocol/remote";
+import {
+  REMOTE_LIMITS,
+  relayFrame,
+  sha256Hex,
+  type remoteRequestFrame,
+  type RemoteResponseFrame,
+} from "@agentgate/protocol/remote";
+import type { z } from "zod";
 import type { Gateway } from "./mcp/gateway.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
 /**
- * Remote MCP endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients
- * like Grok. The serving node keeps a WebSocket open to the relay and answers each request from its gateway.
+ * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
+ * Grok, and the factory's webhook URLs (factory/hooks.ts). The serving node keeps a WebSocket open to the relay and
+ * answers each request from its gateway, or a webhook delivery from the factory.
  */
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
@@ -120,7 +128,8 @@ export function deleteProject(s: Store, id: string) {
   });
 }
 
-function queueDelete(s: Store, r: Remote) {
+/** Deletes a relay endpoint best-effort: the endpoint manager retries until the relay confirms. */
+export function queueDelete(s: Store, r: { relay: string; key: string; token: string }) {
   const queue = JSON.parse(s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
   queue.push({ relay: r.relay, key: r.key, token: r.token });
   s.setLocal("remote:delete", JSON.stringify(queue.slice(-100)));
@@ -128,9 +137,24 @@ function queueDelete(s: Store, r: Remote) {
 
 // ---------------------------------------------------------------- serving
 
+/** A webhook URL the factory serves on this node: its relay credentials, and what answers a delivery. */
+export interface HookEndpoint {
+  source: string;
+  relay: string;
+  key: string;
+  token: string;
+  secret: string;
+  handle(req: Request): Promise<Response>;
+}
+export const hookUrl = (h: Pick<HookEndpoint, "relay" | "key">) => `${h.relay}/hook/${h.key}`;
+
+type RequestFrame = z.infer<typeof remoteRequestFrame>;
+
 interface Conn {
-  project: string;
+  /** The project id, or `~hook:<source>` for a webhook. */
+  id: string;
   remote: Remote;
+  hook?: HookEndpoint;
   ws?: WebSocket;
   connected: boolean;
   closed: boolean;
@@ -150,33 +174,41 @@ const describe = (e: unknown) => getErrorMessage(e).slice(0, 200);
 export class RemoteEndpoints {
   private conns = new Map<string, Conn>();
   private closed = false;
+  /** The webhook endpoints this node serves now; set by the factory. */
+  hooks: () => HookEndpoint[] = () => [];
 
   constructor(
     private s: Store,
     private gateway: Gateway,
   ) {}
 
-  /** Start, restart or stop sockets to match the project records; also retries queued deletions. */
+  /** Start, restart or stop sockets to match the project records and the factory's webhooks; also retries queued
+   * deletions. */
   reconcile() {
     if (this.closed) return;
-    const wanted = new Map(
+    const wanted = new Map<string, { remote: Remote; hook?: HookEndpoint }>(
       this.s
         .list("project")
         .filter((p) => p.remote?.enabled && p.remote.servedBy === this.s.nodeId)
-        .map((p) => [p.id, p.remote!]),
+        .map((p) => [p.id, { remote: p.remote! }]),
     );
+    for (const hook of this.hooks()) {
+      const { relay, key, token, secret } = hook;
+      const remote = { relay, key, token, secret, enabled: true, servedBy: this.s.nodeId };
+      wanted.set(`~hook:${hook.source}`, { remote, hook });
+    }
     for (const [id, c] of this.conns) {
-      const next = wanted.get(id);
+      const next = wanted.get(id)?.remote;
       if (!next || next.key !== c.remote.key || next.token !== c.remote.token || next.relay !== c.remote.relay)
         this.stop(id);
       else if (next.secret !== c.remote.secret) {
         c.remote = next;
-        void this.put(next).catch((e) => {
+        void this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
           c.error = describe(e);
         });
       }
     }
-    for (const [id, remote] of wanted) if (!this.conns.has(id)) this.start(id, remote);
+    for (const [id, next] of wanted) if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
     for (const p of this.s.list("project"))
       if (p.remote && !p.remote.enabled && p.remote.servedBy === this.s.nodeId) void this.put(p.remote).catch(() => {});
@@ -204,7 +236,8 @@ export class RemoteEndpoints {
     return `${r.secret.slice(0, 8)}:${enabled}`;
   }
 
-  private async put(r: Remote) {
+  /** An endpoint's kind never changes at the relay. MCP updates leave it out, as relays from before webhooks expect. */
+  private async put(r: Remote, kind: "mcp" | "hook" = "mcp") {
     const marker = this.pushedValue(r, r.enabled);
     if (this.s.local(`remote:pushed:${r.key}`) === marker) return;
     const key = serviceKeyFor(this.s, r.relay);
@@ -217,20 +250,26 @@ export class RemoteEndpoints {
           "content-type": "application/json",
           ...(key && { "x-relay-key": key }),
         },
-        body: JSON.stringify({ secretHash: await sha256Hex(r.secret), enabled: r.enabled }),
+        body: JSON.stringify({
+          secretHash: await sha256Hex(r.secret),
+          enabled: r.enabled,
+          ...(kind === "hook" && { kind }),
+        }),
       },
       10_000,
     );
     await res.body?.cancel();
     if (res.status === 401) throw new Error("the relay refused this endpoint's token; create a new URL");
+    if (res.status === 409) throw new Error("the relay holds another kind of endpoint at this URL; create a new URL");
     if (!res.ok) throw new Error(`the relay answered ${res.status}`);
     this.s.setLocal(`remote:pushed:${r.key}`, marker);
   }
 
-  private start(project: string, remote: Remote) {
+  private start(id: string, remote: Remote, hook?: HookEndpoint) {
     const c: Conn = {
-      project,
+      id,
       remote,
+      ...(hook && { hook }),
       connected: false,
       closed: false,
       failed: [],
@@ -238,15 +277,15 @@ export class RemoteEndpoints {
       lastPong: 0,
       inflight: new Map(),
     };
-    this.conns.set(project, c);
+    this.conns.set(id, c);
     void this.connect(c);
   }
 
-  private stop(project: string) {
-    const c = this.conns.get(project);
+  private stop(id: string) {
+    const c = this.conns.get(id);
     if (!c) return;
     c.closed = true;
-    this.conns.delete(project);
+    this.conns.delete(id);
     clearTimeout(c.retry);
     clearInterval(c.ping);
     for (const a of c.inflight.values()) a.abort(new Error("endpoint stopped"));
@@ -267,7 +306,7 @@ export class RemoteEndpoints {
   private async connect(c: Conn) {
     if (c.closed || this.closed) return;
     try {
-      await this.put(c.remote);
+      await this.put(c.remote, c.hook ? "hook" : "mcp");
     } catch (e) {
       return this.later(c, describe(e));
     }
@@ -310,7 +349,7 @@ export class RemoteEndpoints {
         return;
       }
       if (frame.t === "cancel") return c.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
-      void this.answer(c, ws, frame.id, frame.body, frame.headers);
+      void this.answer(c, ws, frame);
     };
     ws.onclose = () => {
       if (c.ws !== ws) return;
@@ -324,7 +363,8 @@ export class RemoteEndpoints {
     };
   }
 
-  private async answer(c: Conn, ws: WebSocket, id: string, body: string, headers: Record<string, string>) {
+  private async answer(c: Conn, ws: WebSocket, frame: RequestFrame) {
+    const { id } = frame;
     const send = (frame: RemoteResponseFrame) => {
       try {
         ws.send(JSON.stringify(frame));
@@ -337,61 +377,51 @@ export class RemoteEndpoints {
     const abort = new AbortController();
     c.inflight.set(id, abort);
     const started = Date.now();
+    // Webhook senders read plain JSON errors; MCP clients read JSON-RPC ones.
+    const failure = (status: number, code: number, message: string): RemoteResponseFrame => ({
+      t: "res",
+      id,
+      status,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(c.hook ? { error: message } : { jsonrpc: "2.0", error: { code, message }, id: null }),
+    });
     let status = 500,
-      label = "request";
+      label = c.hook ? "webhook" : "request";
+    if (!c.hook)
+      try {
+        const message = JSON.parse(frame.body) as { method?: string; params?: { name?: string } };
+        label =
+          message.method === "tools/call"
+            ? `tools/call ${message.params?.name ?? ""}`
+            : String(message.method ?? "request");
+      } catch {
+        /* the gateway answers with a parse error */
+      }
     try {
-      const message = JSON.parse(body) as { method?: string; params?: { name?: string } };
-      label =
-        message.method === "tools/call"
-          ? `tools/call ${message.params?.name ?? ""}`
-          : String(message.method ?? "request");
-    } catch {
-      /* the gateway answers with a parse error */
-    }
-    try {
-      const { response, failed } = await this.gateway.handleRemote(
-        c.project,
-        body,
-        headers,
-        AbortSignal.any([abort.signal, AbortSignal.timeout(REMOTE_LIMITS.timeoutMs)]),
-      );
+      const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(REMOTE_LIMITS.timeoutMs)]);
+      let response: Response;
+      if (c.hook) response = await c.hook.handle(hookRequest(frame, signal));
+      else {
+        const answered = await this.gateway.handleRemote(c.id, frame.body, frame.headers, signal);
+        response = answered.response;
+        c.failed = answered.failed;
+      }
       const text = await response.text();
-      c.failed = failed;
       status = response.status;
       if (text.length > REMOTE_LIMITS.responseBytes) {
         status = 413;
-        return send({
-          t: "res",
-          id,
-          status,
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            error: { code: -32000, message: "response too large for the relay (4 MiB)" },
-            id: null,
-          }),
-        });
+        return send(failure(status, -32000, "response too large for the relay (4 MiB)"));
       }
       const type = response.headers.get("content-type");
       send({ t: "res", id, status, headers: type ? { "content-type": type } : {}, body: text });
     } catch (e) {
       if (abort.signal.aborted) return; // the relay already answered the client
-      send({
-        t: "res",
-        id,
-        status: 500,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          error: { code: -32603, message: "agentgate failed to handle the request" },
-          id: null,
-        }),
-      });
+      send(failure(500, -32603, "agentgate failed to handle the request"));
       c.error = describe(e);
     } finally {
       c.inflight.delete(id);
       c.lastCall = Date.now();
-      this.s.log("remote", c.project, label.slice(0, 200), status, Date.now() - started);
+      this.s.log("remote", c.id, label.slice(0, 200), status, Date.now() - started);
     }
   }
 
@@ -424,6 +454,21 @@ export class RemoteEndpoints {
     this.closed = true;
     for (const id of [...this.conns.keys()]) this.stop(id);
   }
+}
+
+/** A delivery as the factory reads it: the relay already dropped hop-by-hop headers, and the Request sets its own
+ * content-length. */
+function hookRequest(frame: RequestFrame, signal: AbortSignal) {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(frame.headers))
+    if (name !== "content-length")
+      try {
+        headers.set(name, value);
+      } catch {
+        /* not a valid header here; a signature never needs it */
+      }
+  const query = frame.query ? `?${frame.query}` : "";
+  return new Request(`http://hook.invalid/${query}`, { method: "POST", headers, body: frame.body, signal });
 }
 
 /** Projects as the API shows them: endpoint state without key material. */
