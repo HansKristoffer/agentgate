@@ -72,6 +72,8 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 
 The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
 
+**Hook endpoints.** The [software factory](../user/factory.md#webhooks)'s webhook URLs are endpoints of the same kind of Durable Object at `<relay>/hook/<key>`. `POST /hook/:key` needs no bearer token and no `RELAY_KEY`, since senders such as GitHub send neither; the factory machine checks the sender's signature. The relay forwards every header except cookies and hop-by-hop headers, and bodies up to 1 MiB of UTF-8 text. An endpoint's kind, `mcp` or `hook`, never changes, so a hook URL can never be used as an MCP endpoint. Deliveries are readable by the relay like MCP traffic, count against the same per-endpoint limits, and get `503` while the factory machine is offline; nothing is queued. A relay deployed before webhooks cannot serve them, so update a self-hosted relay before using factory webhooks.
+
 ## Node channel
 
 Thread handoff between machines that share only a relay group goes through the node channel: one `RelayChannel` Durable Object per group holds a WebSocket from each machine in the group, and forwards a call from one member to another. It stores nothing. The design is in [internals/relay.md](../internals/relay.md#node-channel).
