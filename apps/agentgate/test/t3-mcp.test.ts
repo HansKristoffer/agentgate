@@ -121,12 +121,23 @@ test("the loop replaces a token within 3 days of its end and revokes the old ses
 });
 
 test("turning the factory off revokes the session through T3, or says where to remove it when T3 refuses", async () => {
-  const { f, mcp, client, stored } = await fixture();
+  const { s, f, mcp, client, tick, stored } = await fixture();
+  const settings = s.settings();
   await client.signIn();
   f.events.emit({ kind: "factory.off", text: "factory off" });
   await until(() => mcp.revoked.length === 1, "the revocation");
   await until(() => stored() === null, "the token to be forgotten");
   expect(client.status()).toEqual({ mcp: "off" });
+
+  // Turned off on another machine: no event here, only the synced setting.
+  await client.signIn();
+  s.put("setting", "settings", { ...settings, factory: undefined });
+  await tick();
+  expect(mcp.revoked).toHaveLength(2);
+  expect(stored()).toBeNull();
+  expect(mcp.tokens).toHaveLength(2);
+  await expect(client.signIn()).rejects.toThrow("the factory does not run on a");
+  s.put("setting", "settings", settings);
 
   await client.signIn();
   mcp.denyRevoke = true;

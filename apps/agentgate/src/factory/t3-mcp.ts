@@ -70,7 +70,8 @@ function client(f: FactoryRuntime) {
 export function setup(f: FactoryRuntime) {
   const mcp = client(f);
   f.events.on("factory.off", () => mcp.signOut());
-  f.loops.push({ name: "t3-mcp", everyMs: 60_000, where: "factory-node", run: () => mcp.tick() });
+  // Every node: `factory off` emits factory.off only where it ran, and other machines learn of it by sync.
+  f.loops.push({ name: "t3-mcp", everyMs: 60_000, where: "every-node", run: () => mcp.tick() });
   f.boardParts.push(async () => {
     const { mcp: state, expiresAt, error } = mcp.status();
     // Only the sign-in's fields; the board merges them with the stream state it owns.
@@ -79,15 +80,13 @@ export function setup(f: FactoryRuntime) {
     >;
   });
   f.commands.set("t3", {
-    usage:
-      "t3 [sign-in|sign-out]  T3 Code MCP sign-in of the factory machine (while the factory is on, it signs in again by itself)",
+    usage: "t3 [sign-in]  the factory machine's T3 Code MCP sign-in; it ends when the factory is turned off",
     async run(args, io) {
       const [action] = args;
       if (action === "sign-in")
         await mcp.signIn().catch(() => {}); // the status below says why
-      else if (action === "sign-out") await mcp.signOut();
       else if (action !== undefined) {
-        io.out(`unknown t3 action ${action}; use sign-in or sign-out`);
+        io.out(`unknown t3 action ${action}; use sign-in`);
         return 2;
       }
       const status = mcp.status();
@@ -130,6 +129,8 @@ function create(f: FactoryRuntime) {
   function signIn(): Promise<void> {
     signing ??= (async () => {
       try {
+        // The loop signs out on any other machine, so a token here would not last.
+        if (!f.isFactoryNode()) throw new T3McpError(`the factory does not run on ${s.nodeId}`);
         const old = saved();
         s.setLocal(KEY, JSON.stringify(await authorize(s, t3Url())));
         error = failedAt = missing = undefined;
@@ -226,15 +227,17 @@ function create(f: FactoryRuntime) {
     }
   }
 
+  async function signOut() {
+    await signing?.catch(() => {}); // a sign-in in flight would store its token after this
+    const old = saved();
+    s.setLocal(KEY, undefined);
+    failedAt = missing = undefined;
+    error = old && !(await revoke(s, old.token)) ? UNREVOKED : undefined;
+  }
+
   return {
     signIn,
-    async signOut() {
-      await signing?.catch(() => {}); // a sign-in in flight would store its token after this
-      const old = saved();
-      s.setLocal(KEY, undefined);
-      failedAt = missing = undefined;
-      error = old && !(await revoke(s, old.token)) ? UNREVOKED : undefined;
-    },
+    signOut,
     status() {
       const token = valid();
       // Signed out with a session T3 would not revoke is still off; any other error is a failure.
@@ -259,10 +262,15 @@ function create(f: FactoryRuntime) {
         }
       });
     },
-    /** The loop: renew a token close to its end, and read tools/list until it has every required tool (T3 may be
-     * updated meanwhile); reading it also finds a token T3 stopped accepting. */
+    /** The loop. Off the factory machine, sign out a token left from when the factory ran here. On it, renew a token
+     * close to its end, and read tools/list until it has every required tool (T3 may be updated meanwhile); reading it
+     * also finds a token T3 stopped accepting. */
     async tick() {
       if (signing) return;
+      if (!f.isFactoryNode()) {
+        if (saved()) await signOut();
+        return;
+      }
       const token = valid();
       if (!token || token.expiresAt - s.now() <= RENEW_AHEAD) {
         if (!coolingDown()) await signIn().catch(() => {}); // the status says why
