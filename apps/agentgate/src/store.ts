@@ -199,8 +199,8 @@ export const schemas = {
 
 /** The node protocol that understands `secret` records: older nodes stall on the unknown kind (FACTORY_PROTOCOL). */
 const SECRET_PROTOCOL = 8;
-/** Kinds whose data is a credential through and through; `export --no-secrets` leaves them out. */
-const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
+/** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
+export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
