@@ -1,6 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { relayApp } from "../src/app.ts";
 
 // Remote MCP endpoints on real workerd: hashes set by the node, one hibernatable socket, no replay.
 const TOKEN = "T".repeat(43),
@@ -11,11 +12,19 @@ const sha = async (s: string) =>
   ).join("");
 const keyOf = (i: number) => `key${String(i).padStart(19, "0")}`;
 
-const put = async (key: string, update: { secretHash?: string; enabled?: boolean }, token = TOKEN) =>
+const put = async (
+  key: string,
+  update: { secretHash?: string; enabled?: boolean; kind?: "mcp" | "hook" },
+  token = TOKEN,
+) =>
   exports.default.fetch(`https://relay.test/e/${key}`, {
     method: "PUT",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-    body: JSON.stringify({ secretHash: update.secretHash ?? (await sha(SECRET)), enabled: update.enabled ?? true }),
+    body: JSON.stringify({
+      secretHash: update.secretHash ?? (await sha(SECRET)),
+      enabled: update.enabled ?? true,
+      ...(update.kind && { kind: update.kind }),
+    }),
   });
 const mcp = (key: string, body: unknown = { jsonrpc: "2.0", id: 1, method: "tools/list" }, secret = SECRET) =>
   exports.default.fetch(`https://relay.test/mcp/${key}`, {
@@ -135,5 +144,106 @@ describe("remote MCP endpoints", () => {
     });
     await runDurableObjectAlarm(stub);
     expect((await mcp(idle)).status).toBe(404);
+  });
+});
+
+describe("webhook endpoints", () => {
+  const hook = (key: string, body: BodyInit = "{}", headers: Record<string, string> = {}, query = "") =>
+    exports.default.fetch(`https://relay.test/hook/${key}${query}`, { method: "POST", headers, body });
+  const answer = (node: Awaited<ReturnType<typeof connect>>, id: string, status: number, body: string) =>
+    node.ws.send(JSON.stringify({ t: "res", id, status, headers: { "content-type": "text/plain" }, body }));
+
+  it("forwards a delivery with the headers its sender signed, and returns the node's answer", async () => {
+    const key = keyOf(10);
+    expect((await put(key, { kind: "hook" })).status).toBe(200);
+    expect((await hook(key)).status).toBe(503); // no machine connected, and nothing is queued for it
+    const node = await connect(key);
+    const body = '\uFEFF{"action":"opened","title":"Grüße"}';
+    const pending = hook(
+      key,
+      body,
+      {
+        "content-type": "application/json",
+        "x-hub-signature-256": "sha256=0123abcd",
+        "linear-signature": "4567ef",
+        "x-custom-thing": "Kept As Sent",
+        cookie: "session=1",
+        connection: "keep-alive, x-per-hop",
+        "x-per-hop": "1",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        "proxy-authorization": "Basic x",
+        "x-agentgate-op": "connect",
+      },
+      "?source=ci&x=1",
+    );
+    const req = await node.next();
+    expect(req.body).toBe(body); // byte for byte, byte-order mark included
+    expect(req.query).toBe("source=ci&x=1");
+    expect(req.headers).toMatchObject({
+      "x-hub-signature-256": "sha256=0123abcd",
+      "linear-signature": "4567ef",
+      "x-custom-thing": "Kept As Sent",
+      "content-type": "application/json",
+    });
+    for (const name of ["cookie", "connection", "x-per-hop", "keep-alive", "te", "proxy-authorization", "host"])
+      expect(req.headers[name]).toBeUndefined();
+    expect(Object.keys(req.headers).filter((n) => n.startsWith("x-agentgate-"))).toEqual([]);
+    answer(node, req.id, 202, "queued");
+    const res = await pending;
+    expect(res.status).toBe(202);
+    expect(await res.text()).toBe("queued");
+    node.ws.close();
+  });
+
+  it("needs no bearer or relay key, while MCP keeps its bearer and kinds never cross", async () => {
+    // A self-hosted relay with RELAY_KEY: managing endpoints needs it, the public routes do not.
+    const app = relayApp({
+      group: () => {
+        throw new Error("unused");
+      },
+      endpoint: (key) => env.ENDPOINTS.getByName(key),
+      relayKey: "service-key",
+    });
+    const send = (path: string, init: RequestInit = {}) => app.fetch(new Request(`https://relay.test${path}`, init));
+    const hookKey = keyOf(11),
+      mcpKey = keyOf(12);
+    expect((await put(hookKey, { kind: "hook" })).status).toBe(200);
+    expect((await put(mcpKey, {})).status).toBe(200);
+    expect((await put(hookKey, {})).status).toBe(409); // a published URL keeps its kind
+    const node = await connect(hookKey);
+
+    const pending = send(`/hook/${hookKey}`, { method: "POST", body: "{}" });
+    const req = await node.next();
+    answer(node, req.id, 200, "ok");
+    expect((await pending).status).toBe(200);
+
+    expect((await send(`/mcp/${mcpKey}`, { method: "POST", body: "{}" })).status).toBe(401);
+    expect((await send(`/hook/${mcpKey}`, { method: "POST", body: "{}" })).status).toBe(404);
+    expect((await mcp(hookKey)).status).toBe(404); // the endpoint's secret does not open a hook as MCP
+    expect((await exports.default.fetch(`https://relay.test/hook/${hookKey}`)).status).toBe(405);
+    expect((await hook(hookKey, "x".repeat(1024 * 1024 + 1))).status).toBe(413);
+    expect((await hook(hookKey, new Uint8Array([0x7b, 0xff, 0x7d]))).status).toBe(415);
+    node.ws.close();
+  });
+
+  it("endpoints stored before kinds existed stay MCP endpoints", async () => {
+    const key = keyOf(13);
+    await runInDurableObject(env.ENDPOINTS.getByName(key), async (_, state) => {
+      state.storage.sql.exec(
+        "create table meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer)",
+      );
+      state.storage.sql.exec(
+        "insert into meta values (?, ?, ?, 1, ?, 1)",
+        key,
+        await sha(TOKEN),
+        await sha(SECRET),
+        Date.now(),
+      );
+    });
+    expect((await mcp(key)).status).toBe(503); // admitted and authenticated; no machine connected
+    expect((await hook(key)).status).toBe(404);
+    expect((await put(key, { enabled: false })).status).toBe(200);
+    expect((await mcp(key)).status).toBe(403);
   });
 });

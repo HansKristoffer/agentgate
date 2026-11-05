@@ -5,8 +5,10 @@ import type { EndpointOp } from "./app.ts";
 import { Window, type Config } from "./group.ts";
 
 /**
- * One remote MCP endpoint (a virtual project): a public POST URL for clients like Grok, forwarded over the one
- * hibernatable WebSocket its serving node keeps open. Unlike groups, the relay reads this traffic in the clear.
+ * One remote endpoint: a public POST URL forwarded over the one hibernatable WebSocket its serving node keeps open.
+ * An `mcp` endpoint (a virtual project, for clients like Grok) is served at `/mcp/:key` behind a bearer secret; a
+ * `hook` endpoint receives webhooks at `/hook/:key` with no secret, and the node checks the sender's signature.
+ * Unlike groups, the relay reads this traffic in the clear.
  */
 
 export interface EndpointDeps {
@@ -29,11 +31,16 @@ interface Meta {
   enabled: number;
   lastActive: number;
   admitted: number;
+  /** Absent on endpoints created before webhooks, which are all MCP endpoints. */
+  kind?: Kind;
 }
+type Kind = "mcp" | "hook";
+type Fail = (status: number, message: string, headers?: Record<string, string>) => Response;
 interface Pending {
   ws: WebSocket;
   resolve: (r: Response) => void;
   timer: ReturnType<typeof setTimeout>;
+  fail: Fail;
 }
 interface Attachment {
   node: string;
@@ -48,14 +55,15 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
     status,
     headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
   });
-const rpcError = (status: number, message: string, headers: Record<string, string> = {}) =>
+const rpcError: Fail = (status, message, headers = {}) =>
   json(status, { jsonrpc: "2.0", error: { code: -32000, message }, id: null }, headers);
+const hookError: Fail = (status, message, headers = {}) => json(status, { error: message }, headers);
 const bearer = (req: Request) => req.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
 
-async function readBounded(req: Request, max: number): Promise<string | undefined> {
+async function readBounded(req: Request, max: number): Promise<Uint8Array | undefined> {
   if (Number(req.headers.get("content-length") ?? 0) > max) return undefined;
   const reader = req.body?.getReader();
-  if (!reader) return "";
+  if (!reader) return new Uint8Array();
   const chunks: Uint8Array[] = [];
   let size = 0;
   const deadline = setTimeout(() => {
@@ -81,7 +89,7 @@ async function readBounded(req: Request, max: number): Promise<string | undefine
     bytes.set(c, offset);
     offset += c.byteLength;
   }
-  return new TextDecoder().decode(bytes);
+  return bytes;
 }
 
 export class EndpointCore {
@@ -110,18 +118,20 @@ export class EndpointCore {
   }
 
   private save(m: Meta) {
+    // The one row is rewritten whole, so the table is too: that adds `kind` to endpoints created before it.
+    this.sql.exec("drop table if exists meta");
     this.sql.exec(
-      "create table if not exists meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer)",
+      "create table meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer, kind text)",
     );
-    this.sql.exec("delete from meta");
     this.sql.exec(
-      "insert into meta values (?, ?, ?, ?, ?, ?)",
+      "insert into meta values (?, ?, ?, ?, ?, ?, ?)",
       m.key,
       m.tokenHash,
       m.secretHash,
       m.enabled,
       m.lastActive,
       m.admitted,
+      m.kind ?? "mcp",
     );
   }
 
@@ -144,6 +154,7 @@ export class EndpointCore {
     const key = req.headers.get("x-agentgate-key")!;
     const ipHash = req.headers.get("x-agentgate-ip") ?? "";
     if (op === "mcp") return this.mcp(req);
+    if (op === "hook") return this.hook(req);
     // Node operations: the token is checked against the stored hash; the first PUT stores it.
     const token = bearer(req);
     if (!token) return json(401, { error: "unauthorized" });
@@ -166,10 +177,10 @@ export class EndpointCore {
   }
 
   private async update(req: Request, key: string, tokenHash: string, ipHash: string): Promise<Response> {
-    const text = await readBounded(req, 4096);
+    const bytes = await readBounded(req, 4096);
     let body: unknown;
     try {
-      body = JSON.parse(text ?? "");
+      body = JSON.parse(bytes ? new TextDecoder().decode(bytes) : "");
     } catch {
       return json(400, { error: "invalid JSON" });
     }
@@ -181,6 +192,11 @@ export class EndpointCore {
         now = Date.now();
       if (m?.admitted && !safeEqual(m.tokenHash, tokenHash))
         return this.unauthorized(json(401, { error: "unauthorized" }));
+      // A published URL keeps its kind: a node that omits it must not turn a webhook URL into an MCP endpoint.
+      if (m?.admitted && (m.kind ?? "mcp") !== parsed.data.kind)
+        return json(409, {
+          error: `this endpoint is a ${m.kind ?? "mcp"} endpoint; create a new URL to change its kind`,
+        });
       if (!m?.admitted) {
         // Record, then reserve: the alarm deletes a create that stopped between the two.
         await this.ctx.storage.setAlarm(now + PENDING_MS);
@@ -191,6 +207,7 @@ export class EndpointCore {
           enabled: parsed.data.enabled ? 1 : 0,
           lastActive: now,
           admitted: 0,
+          kind: parsed.data.kind,
         });
         const refused = await this.deps.admission.reserve(`e:${key}`, ipHash, this.deps.limits);
         if (refused) {
@@ -209,6 +226,7 @@ export class EndpointCore {
         enabled: parsed.data.enabled ? 1 : 0,
         lastActive: now,
         admitted: 1,
+        kind: parsed.data.kind,
       });
       await this.ctx.storage.setAlarm(now + this.deps.config.retentionMs);
       return json(200, { ok: true });
@@ -227,35 +245,90 @@ export class EndpointCore {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private async mcp(req: Request): Promise<Response> {
+  /** A public request reaches only an endpoint of its own kind: a hook URL never opens an MCP endpoint without its secret. */
+  private admit(kind: Kind, fail: Fail): Meta | Response {
     const m = this.meta();
-    if (!m?.admitted) return rpcError(404, "no such endpoint");
-    const now = Date.now();
-    const limited = this.requests.hit(this.deps.limits.requestsPerMinute, now);
-    if (limited) return rpcError(429, "too many requests", { "retry-after": String(limited) });
+    if (!m?.admitted || (m.kind ?? "mcp") !== kind) return fail(404, "no such endpoint");
+    const limited = this.requests.hit(this.deps.limits.requestsPerMinute, Date.now());
+    if (limited) return fail(429, "too many requests", { "retry-after": String(limited) });
+    return m;
+  }
+
+  /** The socket to forward on. Checked before the body is read. */
+  private open(m: Meta, fail: Fail): WebSocket | Response {
+    if (!m.enabled) return fail(403, "this endpoint is disabled");
+    const ws = this.socket();
+    if (!ws) return fail(503, "the machine serving this endpoint is offline", { "retry-after": "30" });
+    if ([...this.pending.values()].filter((p) => p.ws === ws).length >= REMOTE_LIMITS.inFlight)
+      return fail(503, "too many requests in flight", { "retry-after": "1" });
+    return ws;
+  }
+
+  private async mcp(req: Request): Promise<Response> {
+    const m = this.admit("mcp", rpcError);
+    if (m instanceof Response) return m;
     // Authenticate before reading the body.
     const secret = bearer(req);
     if (!secret || !safeEqual(m.secretHash, await sha256Hex(secret)))
       return this.unauthorized(rpcError(401, "unauthorized"));
-    if (!m.enabled) return rpcError(403, "this endpoint is disabled");
-    const ws = this.socket();
-    if (!ws) return rpcError(503, "the machine serving this endpoint is offline", { "retry-after": "30" });
-    if ([...this.pending.values()].filter((p) => p.ws === ws).length >= REMOTE_LIMITS.inFlight)
-      return rpcError(503, "too many requests in flight", { "retry-after": "1" });
-    const body = await readBounded(req, REMOTE_LIMITS.requestBytes);
-    if (body === undefined) return rpcError(413, "request too large");
+    const ws = this.open(m, rpcError);
+    if (ws instanceof Response) return ws;
+    const bytes = await readBounded(req, REMOTE_LIMITS.requestBytes);
+    if (!bytes) return rpcError(413, "request too large");
+    const body = new TextDecoder().decode(bytes);
     if (body.trimStart().startsWith("[")) return rpcError(400, "JSON-RPC batches are not supported");
     const headers: Record<string, string> = {};
     const version = req.headers.get("mcp-protocol-version");
     if (version) headers["mcp-protocol-version"] = version.slice(0, 64);
+    return this.forward(req, m, ws, rpcError, { headers, body });
+  }
+
+  /** A webhook delivery: no secret here, because the node checks the sender's signature over the exact body and headers. */
+  private async hook(req: Request): Promise<Response> {
+    const m = this.admit("hook", hookError);
+    if (m instanceof Response) return m;
+    const ws = this.open(m, hookError);
+    if (ws instanceof Response) return ws;
+    // The Worker already dropped cookies and hop-by-hop headers; x-agentgate-* are its own.
+    const headers: Record<string, string> = {};
+    for (const [name, value] of req.headers) {
+      if (name.startsWith("x-agentgate-")) continue;
+      if (Math.max(name.length, value.length) > REMOTE_LIMITS.fieldChars)
+        return hookError(431, "a request header is too large");
+      headers[name] = value;
+    }
+
+    const query = new URL(req.url).search.slice(1);
+    if (query.length > REMOTE_LIMITS.fieldChars) return hookError(414, "the query string is too long");
+
+    const bytes = await readBounded(req, REMOTE_LIMITS.hookRequestBytes);
+    if (!bytes) return hookError(413, "request too large");
+    let body: string;
+    try {
+      // A signature covers the exact bytes, so a byte-order mark is kept and anything but UTF-8 is refused.
+      body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      return hookError(415, "the body must be UTF-8 text");
+    }
+    return this.forward(req, m, ws, hookError, { headers, body, ...(query && { query }) });
+  }
+
+  private forward(
+    req: Request,
+    m: Meta,
+    ws: WebSocket,
+    fail: Fail,
+    frame: { headers: Record<string, string>; body: string; query?: string },
+  ): Promise<Response> {
+    const now = Date.now();
     const id = crypto.randomUUID();
     const response = new Promise<Response>((resolve) => {
       // No replay after a timeout or a dropped socket: the node may already have run a tool call.
       const timer = setTimeout(
-        () => this.settle(id, rpcError(504, "the serving machine did not answer in time")),
+        () => this.settle(id, fail(504, "the serving machine did not answer in time")),
         REMOTE_LIMITS.timeoutMs,
       );
-      this.pending.set(id, { ws, resolve, timer });
+      this.pending.set(id, { ws, resolve, timer, fail });
     });
     req.signal?.addEventListener("abort", () => {
       if (!this.pending.has(id)) return;
@@ -264,12 +337,12 @@ export class EndpointCore {
       } catch {
         /* socket already gone */
       }
-      this.settle(id, rpcError(499, "client closed the request"));
+      this.settle(id, fail(499, "client closed the request"));
     });
     try {
-      ws.send(JSON.stringify({ t: "req", id, headers, body }));
+      ws.send(JSON.stringify({ t: "req", id, ...frame }));
     } catch {
-      this.settle(id, rpcError(502, "the serving machine disconnected"));
+      this.settle(id, fail(502, "the serving machine disconnected"));
     }
     this.save({ ...m, lastActive: now });
     return response;
@@ -312,7 +385,7 @@ export class EndpointCore {
 
   private failSocket(ws: WebSocket) {
     for (const [id, p] of this.pending)
-      if (p.ws === ws) this.settle(id, rpcError(502, "the serving machine disconnected"));
+      if (p.ws === ws) this.settle(id, p.fail(502, "the serving machine disconnected"));
   }
 
   /** Retention counts from the last request or connection; a connected node keeps its endpoint alive. */
@@ -332,7 +405,7 @@ export class EndpointCore {
 
   private async destroy(key: string) {
     for (const ws of this.ctx.getWebSockets()) ws.close(4001, "endpoint deleted");
-    for (const id of this.pending.keys()) this.settle(id, rpcError(404, "no such endpoint"));
+    for (const [id, p] of this.pending) this.settle(id, p.fail(404, "no such endpoint"));
     await this.deps.admission.release(`e:${key}`);
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
