@@ -6,6 +6,7 @@ import {
   skillSchema,
   quotaWindowSchema,
   providerSchema,
+  secretRecordSchema,
   MAX_RECORD,
 } from "@agentgate/protocol";
 import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
@@ -192,7 +193,14 @@ export const schemas = {
       )
       .max(20000),
   }),
+  /** A factory secret by name, or agentgate's own `~hook:<source>` webhook key, shared with every node (factory/secrets.ts). */
+  secret: secretRecordSchema,
 };
+
+/** The node protocol that understands `secret` records: older nodes stall on the unknown kind (FACTORY_PROTOCOL). */
+const SECRET_PROTOCOL = 8;
+/** Kinds whose data is a credential through and through; `export --no-secrets` leaves them out. */
+const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
@@ -549,7 +557,7 @@ export function exportBackup(s: Store, secrets = true) {
     data: string;
   }[];
   const records = rows
-    .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest", "login"].includes(r.kind))
+    .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
       if (!secrets && r.kind === "project") {
@@ -569,6 +577,12 @@ export function importBackup(s: Store, input: unknown) {
     })
     .parse(input);
   const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
+  const old = s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < SECRET_PROTOCOL)
+    .map((n) => n.id);
+  if (old.length && records.some((r) => r.kind === "secret"))
+    throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync factory secrets`);
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {
