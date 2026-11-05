@@ -8,6 +8,7 @@ import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import type { IncomingItem, SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { recordUsage } from "../src/llm/quota.ts";
+import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 
@@ -168,6 +169,52 @@ test("a triage stage with start: manual holds new items until approve, and intak
   expect(launches(n)).toHaveLength(1);
   await n.intake();
   expect(polled).toEqual(["bugs"]);
+});
+
+test("an implement stage with start: manual holds a triaged item, named on the board, until approve starts it", async () => {
+  const n = await factoryNode(cleanup, { files: { "stages/implement.md": "---\nstart: manual\n---\n" } });
+  // Implement reads the default branch's CI before it starts: no runs there.
+  const realGh = host.gh;
+  host.gh = async (args) => ({
+    ok: true,
+    out: JSON.stringify(args[0] === "repo" ? { defaultBranchRef: { name: "main" } } : []),
+  });
+  cleanup.push(() => (host.gh = realGh));
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [triage] = triageRuns(n);
+  const builtin = (await n.ctx.gateway.builtin!()).client;
+  await builtin.callTool({
+    name: "factory_report",
+    arguments: {
+      run: triage!.id,
+      outcome: "done",
+      summary: "Reproduced it.",
+      result: { kind: "triage", route: "implement", reproduction: { command: "bun test", failsBefore: true } },
+    },
+    _meta: { "dev.agentgate/t3Thread": triage!.threadId },
+  });
+
+  const item = items.get(n.s, triage!.item!)!;
+  const row = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === item.id);
+  expect(await row()).toMatchObject({
+    phase: "implement",
+    needsYou: { reason: "held", question: `Start implement with agentgate factory approve ${item.key}` },
+  });
+  await n.dispatch();
+  expect(launches(n)).toHaveLength(1);
+
+  expect(await n.command("approve", item.key)).toEqual({
+    code: 0,
+    output: [`Approved ${item.key}; implement starts`],
+  });
+  expect((await row())!.needsYou).toBeUndefined();
+  await n.dispatch();
+  expect(launches(n)).toHaveLength(2);
+  expect(runs.forItem(n.s, item.id).map((r) => [r.kind, r.state])).toEqual([
+    ["triage", "reported"],
+    ["implement", "running"],
+  ]);
 });
 
 /** A GitHub-like adapter: each source id serves its issues, or throws its error. */

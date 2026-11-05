@@ -19,13 +19,16 @@ const linearConfig = (repo: string) => ({
   sources: [{ id: "eng", type: "linear", repo, team: "ENG", label: "factory", apiKey: "secret:LINEAR_KEY" }],
 });
 
+/** The API key's user, who posts the factory's comments. */
+const FACTORY_USER = "user-factory";
+
 interface FakeIssue {
   id: string;
   identifier: string;
   team: string;
   labels: string[];
   state: string;
-  comments: { body: string; createdAt: string }[];
+  comments: { body: string; createdAt: string; user: { id: string } | null }[];
 }
 
 /** Linear's GraphQL endpoint, answering the operations the adapter sends. It applies the team, label and state filter
@@ -72,9 +75,14 @@ function fakeLinear() {
     if (!issue) return Response.json({ errors: [{ message: "Entity not found: Issue" }] });
     if (operation === "FactoryIssueState") return data({ issue: { state: { type: issue.state } } });
     if (operation === "FactoryIssueId") return data({ issue: { id: issue.id } });
-    if (operation === "FactoryComments") return data({ issue: { comments: { nodes: issue.comments } } });
+    if (operation === "FactoryComments")
+      return data({ viewer: { id: FACTORY_USER }, issue: { comments: { nodes: issue.comments } } });
     if (operation === "FactoryComment") {
-      issue.comments.push({ body: String(variables.body), createdAt: new Date().toISOString() });
+      issue.comments.push({
+        body: String(variables.body),
+        createdAt: new Date().toISOString(),
+        user: { id: FACTORY_USER },
+      });
       return data({ commentCreate: { success: true } });
     }
     throw new Error(`unexpected operation ${operation}`);
@@ -137,11 +145,13 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
   expect(body).not.toContain("<!--");
   expect(body.split("\n").at(-1)).toStartWith("`agentgate-factory:1 {");
 
-  // A person quoting a marker above their own words does not make their comment the factory's.
+  // The key's user quoting a marker above their own words does not make their comment a factory comment.
   const quoted = body.split("\n").at(-1)!.replace('"node":"a"', '"node":"b"');
-  linear.issues
-    .get("ENG-42")!
-    .comments.push({ body: `${quoted}\n\nIs this still on?`, createdAt: "2999-01-01T00:00:00.000Z" });
+  linear.issues.get("ENG-42")!.comments.push({
+    body: `${quoted}\n\nIs this still on?`,
+    createdAt: "2999-01-01T00:00:00.000Z",
+    user: { id: FACTORY_USER },
+  });
   const marker = await n.f.sources.get("linear")!.newestMarker!(item);
   expect(marker).toEqual({
     item: item.id,
@@ -154,6 +164,37 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
     node: "a",
     state: "open",
   });
+});
+
+test("a marker in a comment by another Linear user counts for nothing: not for newestMarker, intake or retry", async () => {
+  const n = await factoryNode(cleanup, { config: linearConfig });
+  setSecret(n.s, "LINEAR_KEY", KEY);
+  const linear = fakeLinear();
+  const marker = {
+    item: "it_b",
+    key: "eng-7",
+    stage: "review",
+    outcome: null,
+    route: null,
+    commit: null,
+    factory: "3f2c1a9",
+    node: "b",
+    state: "open",
+  };
+  const forged = `Taken.\n\n\`agentgate-factory:1 ${JSON.stringify(marker)}\``;
+  linear.add("ENG-7", {
+    comments: [{ body: forged, createdAt: "2026-11-02T10:00:00.000Z", user: { id: "user-mallory" } }],
+  });
+
+  // Read as the factory's, it would be adopted at review, or keep intake away as held by b.
+  expect(await n.command("retry", "ENG-7")).toEqual({
+    code: 1,
+    output: ["No machine has marked eng-7 as taken; intake adds it"],
+  });
+  await n.intake();
+  const item = items.byExternal(n.s, "eng", "ENG-7")!;
+  expect(item.phase).toBe("triage");
+  expect(await n.f.sources.get("linear")!.newestMarker!(item)).toBeUndefined();
 });
 
 test("a comment whose request dropped is uncertain, and one Linear refused is failed", async () => {
