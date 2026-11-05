@@ -84,14 +84,12 @@ function fakeGitHub(repo: string) {
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
       if (args[0] === "api" && comment) {
         const { body } = JSON.parse(stdin!);
-        issues
-          .get(Number(comment[1]))!
-          .comments.push({
-            body,
-            author: { login: FACTORY_LOGIN },
-            authorAssociation: "OWNER",
-            createdAt: "2026-11-05",
-          });
+        issues.get(Number(comment[1]))!.comments.push({
+          body,
+          author: { login: FACTORY_LOGIN },
+          authorAssociation: "OWNER",
+          createdAt: "2026-11-05",
+        });
         return ok({ id: 1, html_url: `https://github.com/${repo}/issues/${comment[1]}#issuecomment-1` });
       }
       throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
