@@ -1,0 +1,156 @@
+import { afterAll, afterEach, expect, test } from "bun:test";
+import { buildBoard } from "../src/factory/board.ts";
+import { items, runs, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
+import { prFactory, triaged } from "./fixtures/factory-pr.ts";
+import { removeTmp } from "./fixtures/git.ts";
+
+afterAll(removeTmp);
+const cleanup: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const fn of cleanup.splice(0).reverse()) await fn();
+});
+
+const SPEC = "## Behavior\n\nSaving twice keeps the first copy.";
+
+/** Issue 1 entered, triage routed it to spec, and the spec run was dispatched. */
+async function specFactory() {
+  const n = await prFactory(cleanup);
+  n.github.addIssue(1);
+  await n.intake();
+  await n.dispatch();
+  const item = items.byExternal(n.s, "bugs", `${n.repo}#1`)!;
+  await n.report(runs.forItem(n.s, item.id)[0]!, { ...triaged, result: { ...triaged.result, route: "spec" } });
+  await n.dispatch();
+  const specRuns = () => runs.forItem(n.s, item.id).filter((r) => r.kind === "spec");
+  const launchOf = (run: FactoryRun) =>
+    n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id)?.args;
+  const specReport = (run: FactoryRun, result: { approved: boolean; feedback?: string }) =>
+    n.report(run, {
+      outcome: "done",
+      summary: "Wrote the spec.",
+      result: { kind: "spec", spec: SPEC, review: "One finding: name the file. Fixed.", ...result },
+    });
+  const needsYou = async (it: FactoryItem) =>
+    (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === it.id)?.needsYou;
+  return { ...n, item, specRuns, launchOf, specReport, needsYou, run: specRuns()[0]! };
+}
+
+test("route spec starts a spec run whose brief requires a fresh-subagent review and one Approve or Change card", async () => {
+  const n = await specFactory();
+
+  expect(items.get(n.s, n.item.id)!.phase).toBe("spec");
+  expect(n.run.state).toBe("running");
+  const launch = n.launchOf(n.run)!;
+  expect(launch).toMatchObject({
+    title: "Spec gh-1: Issue 1",
+    workspaceStrategy: { baseRef: "main", branch: "factory/gh-1-spec-1", startFromOrigin: true },
+  });
+  const brief = String(launch.message);
+  expect(brief).toContain("Have a fresh subagent review the spec");
+  expect(brief).toContain("one question whose options are exactly `Approve` and `Change`");
+  expect(brief).toContain(`run: "${n.run.id}"`);
+  expect(n.github.posted(1)).toEqual(["The factory triaged this and writes a spec first."]);
+});
+
+test("an approved spec starts implement, reaches factory_item and the spec-approved comment", async () => {
+  const n = await specFactory();
+
+  expect(await n.specReport(n.run, { approved: true })).toEqual({ accepted: true });
+  expect(items.get(n.s, n.item.id)!.phase).toBe("implement");
+  await n.dispatch();
+  const implement = n.implementRuns(n.item)[0]!;
+  expect(implement.state).toBe("running");
+
+  const builtin = (await n.ctx.gateway.builtin!()).client;
+  const view = await builtin.callTool({
+    name: "factory_item",
+    arguments: { run: implement.id },
+    _meta: { "dev.agentgate/t3Thread": implement.threadId },
+  });
+  expect(JSON.parse((view.content as { text: string }[])[0]!.text).spec).toBe(SPEC);
+
+  const comments = n.github.issues.get(1)!.comments.map((c) => c.body);
+  expect(n.github.posted(1).at(-1)).toBe("The spec is approved, and the factory starts on the fix.");
+  expect(comments.at(-1)).toContain("Saving twice keeps the first copy.");
+});
+
+test("feedback starts one more spec round, and the next feedback leaves the item waiting for the maintainer", async () => {
+  const n = await specFactory();
+
+  expect(await n.specReport(n.run, { approved: false })).toEqual({
+    error: "approved is false, so result.feedback needs the changes the maintainer asked for",
+  });
+  expect(await n.specReport(n.run, { approved: false, feedback: "Keep the newest copy instead." })).toEqual({
+    accepted: true,
+  });
+  await n.dispatch();
+  const [, round2] = n.specRuns();
+  expect(round2!.state).toBe("running");
+  expect(n.launchOf(round2!)!.workspaceStrategy).toMatchObject({ branch: "factory/gh-1-spec-2" });
+  expect(String(n.launchOf(round2!)!.message)).toContain("This is round 2 of the spec.");
+
+  await n.specReport(round2!, { approved: false, feedback: "Still not right." });
+  await n.dispatch();
+  expect(n.specRuns()).toHaveLength(2);
+  expect(items.get(n.s, n.item.id)).toMatchObject({
+    phase: "spec",
+    needsYou: { reason: "failed", link: round2!.threadLink },
+  });
+
+  expect((await n.command("retry", "gh-1")).output).toEqual(["Retrying spec for gh-1"]);
+  expect(n.specRuns().at(-1)!.state).toBe("queued");
+});
+
+test("approve and reject answer the waiting card through t3_pending_request, and fail clearly when none is pending", async () => {
+  const n = await specFactory();
+  const threadId = n.run.threadId!;
+  let pending: string[] = [];
+  n.mcp.answer("t3_pending_request", (args) => {
+    if (args.action === "list") return { requestIds: pending };
+    if (args.action === "read")
+      return {
+        requestId: args.requestId,
+        questions: [
+          {
+            id: "Approve the spec?",
+            header: "Spec",
+            question: "Approve the spec?",
+            options: [
+              { label: "Approve", description: "Start the fix" },
+              { label: "Change", description: "Say what to change" },
+            ],
+          },
+        ],
+      };
+    return { sequence: 1 };
+  });
+  const responses = () =>
+    n.mcp.calls.filter((c) => c.tool === "t3_pending_request" && c.args.action === "respond").map((c) => c.args);
+
+  n.mcp.setThread(threadId, { needsYou: true });
+  await n.until(() => runs.get(n.s, n.run.id)!.state === "waiting", "the spec run to wait");
+  expect(await n.needsYou(n.item)).toMatchObject({ reason: "approval", link: n.run.threadLink });
+
+  expect(await n.command("approve", "gh-1")).toEqual({
+    code: 1,
+    output: [`The spec thread has no pending question; look at it in T3 Code: ${n.run.threadLink}`],
+  });
+
+  pending = ["request-1"];
+  expect((await n.command("reject", "gh-1", "--reason", "Keep the newest copy")).code).toBe(0);
+  pending = ["request-2"];
+  expect((await n.command("approve", "gh-1")).code).toBe(0);
+  expect(responses()).toEqual([
+    {
+      action: "respond",
+      threadId,
+      requestId: "request-1",
+      answers: { "Approve the spec?": "Change: Keep the newest copy" },
+    },
+    { action: "respond", threadId, requestId: "request-2", answers: { "Approve the spec?": "Approve" } },
+  ]);
+
+  n.mcp.setThread(threadId, { needsYou: false, status: "running" });
+  await n.until(() => runs.get(n.s, n.run.id)!.state === "running", "the spec run to run again");
+  expect(await n.needsYou(n.item)).toBeUndefined();
+});
