@@ -25,6 +25,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
 import { cloneProject, findProject } from "../handoff/destination.ts";
+import { peerCall } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
@@ -298,28 +299,54 @@ export async function defaultBranch(f: FactoryRuntime, repo: string) {
   return branch;
 }
 
-export async function sendToThread(f: FactoryRuntime, run: FactoryRun, text: string): Promise<void> {
+/** The run's thread lives on another machine, after a handoff took it there. */
+const elsewhere = (f: FactoryRuntime, run: FactoryRun): run is FactoryRun & { node: string } =>
+  !!run.node && run.node !== f.s.nodeId;
+
+type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
+
+/** Acts on the run's thread on the machine that holds it: through T3's MCP here, or, for a thread handed to another
+ * machine (D28), through that machine's `/peer/factory/thread`, since only the factory machine signs in to the MCP. */
+async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAction): Promise<void> {
   if (!run.threadId) throw new Error(`run ${run.id} has no thread yet`);
-  await t3Mcp(f).call("t3_thread_send", { threadId: run.threadId, message: text, mode: "queue" });
+  const threadId = run.threadId;
+  if (elsewhere(f, run)) {
+    await peerCall(f.s, run.node, "/factory/thread", { json: { ...action, threadId } });
+    return;
+  }
+  const mcp = t3Mcp(f);
+  if (action.action === "send") await mcp.call("t3_thread_send", { threadId, message: action.text, mode: "queue" });
+  else if (action.action === "interrupt") await mcp.call("t3_thread_interrupt", { threadId, reason: action.text });
+  else await mcp.call("t3_thread_organize", { threadId, action: "settle" });
+}
+
+/** For actions whose caller goes on regardless: the failure is the run's error and a note. */
+const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
+  const where = elsewhere(f, run) ? ` on ${run.node}` : "";
+  const text = `${what} the thread of ${run.id}${where} failed: ${short(e)}`;
+  runs.update(f.s, run.id, { error: text });
+  f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
+};
+
+export async function sendToThread(f: FactoryRuntime, run: FactoryRun, text: string): Promise<void> {
+  await actOnThread(f, run, { action: "send", text });
 }
 
 /** Interrupts the item's running threads, settles every thread it used, and cancels its runs that have not ended. */
 export async function interruptItem(f: FactoryRuntime, item: string, reason: string): Promise<void> {
-  const mcp = t3Mcp(f);
   const mirror = mirrorOf(f);
-  const failed = (what: string, run: FactoryRun) => (e: unknown) =>
-    f.events.emit({ kind: "note", item, run: run.id, text: `${what} the thread of ${run.id} failed: ${short(e)}` });
   for (const run of runs.forItem(f.s, item)) {
     const active = ACTIVE.includes(run.state);
     // Cancelled first, so the mirror does not take the interrupted thread for a silent end.
     if (active) endRun(f, run, "cancelled");
     if (!run.threadId) continue;
     if (active)
-      await mcp
-        .call("t3_thread_interrupt", { threadId: run.threadId, reason: reason.slice(0, 2000) })
-        .catch(failed("Interrupting", run));
+      await actOnThread(f, run, { action: "interrupt", text: reason.slice(0, 2000) }).catch(
+        threadFailed(f, run, "Interrupting"),
+      );
+    // The mirror shows this machine's threads only; settling a settled thread on another machine changes nothing.
     if (!mirror.thread(run.threadId)?.settled)
-      await mcp.call("t3_thread_organize", { threadId: run.threadId, action: "settle" }).catch(failed("Settling", run));
+      await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   }
 }
 
@@ -616,9 +643,7 @@ export async function acceptReport(
   // A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
   // its PR until the item ships.
   if (!asks && !(run.kind === "implement" && report.outcome === "done") && run.threadId)
-    await t3Mcp(f)
-      .call("t3_thread_organize", { threadId: run.threadId, action: "settle" })
-      .catch((e) => f.events.emit({ kind: "note", run: run.id, text: `Settling the thread failed: ${short(e)}` }));
+    await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   return { accepted: true };
 }
 
@@ -746,6 +771,12 @@ async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason
 
   if (action === "drop") {
     if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
+    // The implement thread watches the PR in this machine's T3; one that moved away left the watch on its archived copy.
+    const implement = runs.forItem(s, item.id).findLast((r) => r.kind === "implement" && r.threadId);
+    if (item.prUrl && implement && !elsewhere(f, implement))
+      await t3Mcp(f)
+        .call("unwatch_pull_request", { threadId: implement.threadId, url: item.prUrl })
+        .catch((e) => f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${short(e)}` }));
     await interruptItem(f, item.id, `Dropped by the maintainer${because}`);
     moveItem(f, item.id, "closed", null);
     await writeBack(f, item, "closed", { text: `The maintainer dropped it${because}.` });

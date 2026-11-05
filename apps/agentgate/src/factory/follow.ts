@@ -2,6 +2,7 @@ import type { HandoffJob } from "@agentgate/protocol";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
 import { PeerError, peerCall } from "../handoff/jobs.ts";
+import { ACTIVE, dispatch, projection, t3Client, type Call } from "../handoff/t3.ts";
 import { peerView, type ViewThread } from "../handoff/threads.ts";
 import { jsonInput } from "../http.ts";
 import { setNeedsYou } from "./controller.ts";
@@ -44,6 +45,19 @@ const opSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
+const threadId = z.string().min(1).max(512);
+/** What the factory machine does to a stage thread this machine holds (`sendToThread`, `interruptItem`, the settle
+ * after a report). `text` is the message to send, or the interrupt's reason. */
+const threadActionSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("send"), threadId, text: z.string().min(1).max(256_000) }).strict(),
+  z.object({ action: z.literal("interrupt"), threadId, text: z.string().max(2000).optional() }).strict(),
+  z.object({ action: z.literal("settle"), threadId }).strict(),
+]);
+const shellThreads = z.object({
+  threads: z.array(z.object({ id: z.string() })),
+  archivedThreads: z.array(z.object({ id: z.string() })).default([]),
+});
+
 export function setup(f: FactoryRuntime): void {
   f.forwarder = async (op) => {
     const node = f.pointer()!.node;
@@ -75,6 +89,23 @@ export function setup(f: FactoryRuntime): void {
     }
   });
 
+  // Only the factory machine signs in to T3's MCP, so a moved thread is reached through this machine's own T3 client.
+  f.peer.post("/thread", async (c) => {
+    const input = threadActionSchema.safeParse(await jsonInput(c.req.raw));
+    if (!input.success) return c.json({ error: "invalid thread action" }, 400);
+    const { data } = input;
+    try {
+      const t3 = t3Client(f.s);
+      const { threads, archivedThreads } = shellThreads.parse(await t3.shell());
+      if (![...threads, ...archivedThreads].some((t) => t.id === data.threadId))
+        return c.json({ error: `T3 Code on ${f.s.nodeId} has no thread ${data.threadId}` }, 404);
+      await t3.rpc((call) => threadAction(call, data));
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: getErrorMessage(e) }, 502);
+    }
+  });
+
   // Registered here, before the controller's watcher (which registers on its first dispatch), so a run is marked as
   // moving before the watcher sees the handoff interrupt its thread.
   mirrorOf(f).onChange((thread) => {
@@ -88,6 +119,32 @@ export function setup(f: FactoryRuntime): void {
 
   // Every machine, like dispatch: a machine drives the runs in its own tables.
   f.loops.push({ name: "factory-follow", everyMs: 5000, where: "every-node", run: () => follow(f) });
+}
+
+/** The T3 commands behind the MCP tools the controller calls on its own machine: `message.dispatch` as
+ * `t3_thread_send` with mode queue, `run.interrupt` for the turn `t3_thread_interrupt` stops, and `thread.settle`. */
+async function threadAction(call: Call, input: z.infer<typeof threadActionSchema>) {
+  const { threadId } = input;
+  if (input.action === "send")
+    await dispatch(call, {
+      type: "message.dispatch",
+      threadId,
+      messageId: crypto.randomUUID(),
+      text: input.text,
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "user",
+      creationSource: "web",
+    });
+  else if (input.action === "interrupt") {
+    for (const run of (await projection(call, threadId)).runs.filter((r) => ACTIVE.has(r.status)))
+      await dispatch(call, {
+        type: "run.interrupt",
+        threadId,
+        runId: run.id,
+        ...(input.text && { reason: input.text }),
+      });
+  } else await dispatch(call, { type: "thread.settle", threadId });
 }
 
 const active = (f: FactoryRuntime) => runs.list(f.s, { states: ["running", "waiting"] });
