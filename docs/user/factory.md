@@ -75,7 +75,7 @@ The file's body replaces the stage's built-in brief. Whatever the body says, the
 
 | Key     | Default | Meaning                                                                                                                                                                                                                    |
 | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start` | `auto`  | `manual` in `stages/triage.md` holds every new item until you approve it. The other stages accept the key but do not use it yet.                                                                                           |
+| `start` | `auto`  | `manual` holds each item before this stage until you run `agentgate factory approve <item>`. In `stages/triage.md` it holds every new item.                                                                                |
 | `skill` |         | A skill name; the brief says "Use the \<skill\> skill."                                                                                                                                                                    |
 | `model` |         | The model the stage's threads use, as T3 Code's thread launch takes it: `provider` (T3 Code's provider instance, such as `claudeAgent` or `codex`), `model`, and optional `options`. The default is T3 Code's own default. |
 
@@ -160,6 +160,7 @@ Reproduce the report with a failing test before you route it.
 
 ```text
 ---
+start: manual
 skill: debug
 ---
 
@@ -243,7 +244,7 @@ Items are named `gh-<number>`. The PR says `Fixes #<number>`, so merging it clos
     secret: secret:LINEAR_HOOK
 ```
 
-Create a personal API key in Linear's settings and store it with `agentgate factory secret set LINEAR_KEY`. Items are named after the Linear issue, such as `web-42`, and the PR's title starts with the issue's key so Linear links it. Linear drops hidden HTML comments, so the factory's comments end with a visible line, `agentgate-factory:1 {...}`, that tells your machines which one holds the issue. Leave it in place.
+Create a personal API key in Linear's settings and store it with `agentgate factory secret set LINEAR_KEY`. Items are named after the Linear issue, such as `web-42`, and the PR's title starts with the issue's key so Linear links it. Linear drops hidden HTML comments, so the factory's comments end with a visible line, `agentgate-factory:1 {...}`, that tells your machines which one holds the issue. Leave it in place. Only the first 1,000 open labelled issues are read per poll; the board's source row says so when a team has more.
 
 ### Webhooks
 
@@ -309,16 +310,16 @@ An item is in one of these stages: `held`, `triage`, `spec`, `implement`, `pr` (
 
 When an item waits for you, the board says why:
 
-| Reason     | What happened                                                                   | What to do                                                                                      |
-| ---------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `held`     | A new item from a source with `intake: hold`.                                   | `approve` starts triage; `reject` closes it with a comment.                                     |
-| `approval` | The thread asks you something in T3 Code, such as the spec's Approve or Change. | Answer in T3 Code. For the spec card, `approve` or `reject --reason "<changes>"` also answers.  |
-| `decision` | A stage reported a question with its recommendation.                            | `approve` takes the recommendation, or `approve --reason "<your answer>"`; `reject` refuses it. |
-| `blocked`  | A stage reported what it is missing.                                            | Provide it, then `approve --reason "<what changed>"`.                                           |
-| `stalled`  | The implement thread sat on a PR problem after every nudge.                     | Look at the thread and fix it there, or `drop` the item.                                        |
-| `budget`   | The item went over `limits.itemTokens` and its threads were stopped.            | Raise the limit, then `retry`, or `drop`.                                                       |
-| `failed`   | A stage ended twice without reporting, or you asked for spec changes twice.     | Read the thread, then `retry` or `drop`.                                                        |
-| `orphaned` | The machine that held the issue is unreachable.                                 | `retry owner/repo#42` (or the Linear key) takes it over here.                                   |
+| Reason     | What happened                                                                                 | What to do                                                                                      |
+| ---------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `held`     | A new item from a source with `intake: hold`, or an item before a stage with `start: manual`. | `approve` starts the stage; `reject` closes it with a comment.                                  |
+| `approval` | The thread asks you something in T3 Code, such as the spec's Approve or Change.               | Answer in T3 Code. For the spec card, `approve` or `reject --reason "<changes>"` also answers.  |
+| `decision` | A stage reported a question with its recommendation.                                          | `approve` takes the recommendation, or `approve --reason "<your answer>"`; `reject` refuses it. |
+| `blocked`  | A stage reported what it is missing.                                                          | Provide it, then `approve --reason "<what changed>"`.                                           |
+| `stalled`  | The implement thread sat on a PR problem after every nudge.                                   | Look at the thread and fix it there, or `drop` the item.                                        |
+| `budget`   | The item went over `limits.itemTokens` and its threads were stopped.                          | Raise the limit, then `retry`, or `drop`.                                                       |
+| `failed`   | A stage ended twice without reporting, or you asked for spec changes twice.                   | Read the thread, then `retry` or `drop`.                                                        |
+| `orphaned` | The machine that held the issue is unreachable.                                               | `retry owner/repo#42` (or the Linear key) takes it over here.                                   |
 
 - `reject` on a spec card answers **Change** with your reason as the feedback, and the spec gets another round.
 - `retry` restarts a `failed` item at the stage it stopped in, in a new thread.

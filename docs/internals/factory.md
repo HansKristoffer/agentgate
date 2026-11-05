@@ -47,9 +47,9 @@ cache that can be lost. A machine that loses them leaves only its markers, and t
 - A write-back is claimed in `factory_writebacks` before it is posted, so each item and moment is posted at most
   once, and an uncertain post is never repeated. That table, not the event log, holds the claim, because the event
   log is trimmed while items stay open.
-- The newest marker on an issue counts whoever wrote it, so anyone who can comment on the issue can forge one. The
-  worst it does is keep intake away from the issue, which then shows as held elsewhere or orphaned, or make a
-  maintainer's `retry` adopt the issue at a later stage than it reached.
+- Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
+  user on Linear. Anyone else who can comment on an issue could otherwise forge one, keeping intake away from the
+  issue or making `retry` adopt it at a later stage than it reached.
 
 ## T3 Code coupling
 
@@ -133,4 +133,3 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - `approve` and `reject` cannot answer a spec card on a thread that moved to another machine, because only the
   factory machine signs in to T3's MCP and answering a pending request needs it. The card is answered in T3 Code
   there.
-- `start: manual` in a stage file is read only for `triage`; the other stages accept it and ignore it.
