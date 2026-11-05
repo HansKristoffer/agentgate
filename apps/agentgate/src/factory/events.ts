@@ -11,7 +11,11 @@ export type FactoryEvent =
   | { kind: "writeback"; item: string; moment: Moment; status: "posted" | "failed" | "uncertain"; text: string }
   | { kind: "config"; commit?: string; error?: string; text: string }
   | { kind: "factory.off"; text: string }
-  | { kind: "note"; item?: string; run?: string; text: string };
+  | { kind: "note"; item?: string; run?: string; text: string }
+  /** Something a person did to the item; records.ts counts these as human touches. */
+  | { kind: "human"; item: string; act: HumanAct; text: string };
+
+export type HumanAct = "approve" | "reject" | "retry" | "answer" | "add";
 
 type Listener = (event: FactoryEvent) => void | Promise<void>;
 
@@ -21,6 +25,8 @@ export class FactoryEvents {
 
   /** Records the event, then tells its listeners. A listener's failure is logged and never reaches the emitter. */
   emit(event: FactoryEvent) {
+    // A late event after shutdown, such as a thread's answer arriving as the daemon stops, has nowhere to go.
+    if (this.s.closed) return;
     const kind = event.kind === "writeback" ? `writeback:${event.moment}` : event.kind;
     this.s.db.run("insert into factory_events (at, item, run, kind, text) values (?, ?, ?, ?, ?)", [
       this.s.now(),

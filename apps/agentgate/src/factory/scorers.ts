@@ -199,20 +199,9 @@ function scorerMetrics(f: FactoryRuntime): FactoryBoard["metrics"]["scorers"] {
 export function setup(f: FactoryRuntime): void {
   f.runKinds.set("judge", judge(f));
 
-  // The controller retries a silent judge run as attempt 2 without `checked`; the retry takes it from attempt 1.
-  // Both events fire in one synchronous step of the controller, so nothing else comes between them.
-  let retrying: Checked | undefined;
   f.events.on("run.ended", (event) => {
     const run = runs.get(f.s, event.run);
-    if (!run) return;
-    retrying = run.kind === "judge" && event.state === "silent" && run.attempt === 1 ? checkedOf(run) : undefined;
-    sample(f, run);
-  });
-  f.events.on("run.queued", (event) => {
-    const run = runs.get(f.s, event.run);
-    if (run?.kind !== "judge" || run.attempt !== 2 || run.checked || !retrying) return;
-    runs.update(f.s, run.id, { checked: retrying });
-    retrying = undefined;
+    if (run) sample(f, run);
   });
 
   f.tools.set("factory_run", {

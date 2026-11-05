@@ -184,7 +184,7 @@ test("with a unreachable, b lists a's marked issues as orphaned and adopts one a
 
   const output: string[] = [];
   expect(await runCommand(bf, "retry", [`${a.repo}#5`], { out: (line) => output.push(line) })).toBe(0);
-  expect(output).toEqual(["Took over gh-5 from another machine"]);
+  expect(output).toEqual(["Took over gh-5; it starts at implement"]);
   const [item] = items.list(bf.s);
   expect(item).toMatchObject({ key: "gh-5", phase: "implement", externalId: `${a.repo}#5` });
   expect(runs.forItem(bf.s, item!.id).map((r) => [r.kind, r.state])).toEqual([["implement", "queued"]]);
