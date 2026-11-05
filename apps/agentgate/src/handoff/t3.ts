@@ -14,6 +14,7 @@ const T3_PROTOCOL = 2;
 const PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 /** Bearer tokens live 30 days with no refresh token; ask for a new pairing a few days ahead. */
 const REPAIR_AHEAD = 3 * 86_400_000;
+const STREAM_PING_MS = 15_000;
 
 export class T3Error extends Error {}
 /** T3 Code refused a call because agentgate's token lacks a permission. Newer T3 Code splits permissions finer (in
@@ -158,19 +159,13 @@ export class T3 {
     return shellSchema.parse(await this.request("/api/orchestration/shell"));
   }
 
-  /** One short-lived WebSocket for a batch of RPC calls. */
-  async rpc<T>(fn: (call: Call) => Promise<T>): Promise<T> {
+  /** A WebSocket to T3's Effect RPC endpoint, opened with a single-use ticket. */
+  private async open() {
     const { ticket } = z
       .object({ ticket: z.string() })
       .parse(await this.request("/api/auth/websocket-ticket", { method: "POST" }));
     const query = new URLSearchParams({ wsTicket: ticket, orchestrationProtocol: String(T3_PROTOCOL) });
     const ws = new WebSocket(`${this.url.replace(/^http/, "ws")}/ws?${query}`);
-    const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
-    const failAll = (error: Error) => {
-      for (const p of pending.values()) p.reject(error);
-      pending.clear();
-    };
-
     try {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new T3Error(`T3 Code on ${this.node} did not open a WebSocket`)), 10_000);
@@ -187,16 +182,28 @@ export class T3 {
         await this.shell();
         throw error;
       });
+    } catch (error) {
+      ws.close();
+      throw error;
+    }
+    return ws;
+  }
+
+  /** One short-lived WebSocket for a batch of RPC calls. */
+  async rpc<T>(fn: (call: Call) => Promise<T>): Promise<T> {
+    const ws = await this.open();
+    const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
+    const failAll = (error: Error) => {
+      for (const p of pending.values()) p.reject(error);
+      pending.clear();
+    };
+
+    try {
       ws.onclose = () => failAll(new T3Error(`T3 Code on ${this.node} closed the WebSocket`));
       ws.onmessage = (event) => {
-        let frame: { _tag?: string; requestId?: string; exit?: { _tag: string; value?: unknown; cause?: unknown } };
-        try {
-          frame = JSON.parse(String(event.data));
-        } catch {
-          return; // not an RPC frame
-        }
-        if (frame._tag === "Ping") return ws.send(JSON.stringify({ _tag: "Pong" }));
-        if (frame._tag !== "Exit" || !frame.requestId) return;
+        const frame = parseFrame(event.data);
+        if (frame?._tag === "Ping") return ws.send(JSON.stringify({ _tag: "Pong" }));
+        if (frame?._tag !== "Exit" || !frame.requestId) return;
         const p = pending.get(frame.requestId);
         if (!p) return;
         pending.delete(frame.requestId);
@@ -228,6 +235,69 @@ export class T3 {
     } finally {
       ws.close();
     }
+  }
+
+  /** Read one of T3's streaming RPCs, such as `orchestration.subscribeShell`, on its own WebSocket until T3 ends it,
+   * the socket drops or `signal` aborts. T3 sends the next chunk only after the last one is acknowledged, so each is
+   * acknowledged once `onValues` has taken it. T3 never pings a client, so a ping that goes unanswered for a whole
+   * interval ends the stream instead of leaving it hanging on a dead connection. */
+  async stream(method: string, payload: unknown, onValues: (values: unknown[]) => void, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const ws = await this.open();
+    const id = "1";
+    let ping: ReturnType<typeof setInterval> | undefined;
+    let onAbort = () => {};
+    try {
+      await new Promise<void>((resolve, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort);
+        if (signal.aborted) return onAbort(); // aborted while the socket opened
+        let heard = true;
+        ping = setInterval(() => {
+          if (!heard) return reject(new T3Error(`T3 Code on ${this.node} stopped answering ${method}`));
+          heard = false;
+          ws.send(JSON.stringify({ _tag: "Ping" }));
+        }, STREAM_PING_MS);
+        ws.onclose = () => reject(new T3Error(`T3 Code on ${this.node} closed the WebSocket`));
+        ws.onerror = () => reject(new T3Error(`T3 Code on ${this.node} broke the WebSocket`));
+        ws.onmessage = (event) => {
+          heard = true;
+          const frame = parseFrame(event.data);
+          if (frame?._tag === "Ping") return ws.send(JSON.stringify({ _tag: "Pong" }));
+          if (frame?.requestId !== id) return;
+          if (frame._tag === "Chunk") {
+            try {
+              onValues(Array.isArray(frame.values) ? frame.values : []);
+            } catch (error) {
+              return reject(error);
+            }
+            ws.send(JSON.stringify({ _tag: "Ack", requestId: id }));
+          } else if (frame._tag === "Exit") {
+            if (frame.exit?._tag === "Success") resolve();
+            else reject(failure(this.node, frame.exit?.cause));
+          }
+        };
+        ws.send(JSON.stringify({ _tag: "Request", id, tag: method, payload, headers: [] }));
+      });
+    } finally {
+      clearInterval(ping);
+      signal.removeEventListener("abort", onAbort);
+      ws.close();
+    }
+  }
+}
+
+type Frame = {
+  _tag?: string;
+  requestId?: string;
+  values?: unknown;
+  exit?: { _tag: string; value?: unknown; cause?: unknown };
+};
+function parseFrame(data: unknown): Frame | undefined {
+  try {
+    return JSON.parse(String(data));
+  } catch {
+    return undefined; // not an RPC frame
   }
 }
 
@@ -284,10 +354,10 @@ export const pairingLinkInput = z.object({ tailscale: z.boolean().optional() }).
 /** A new single-use pairing link from the T3 Code server running on this machine, made by its `t3 pair`, which writes
  * straight into T3's own state: no token of ours is needed, so it also works when agentgate's token expired. With
  * `tailscale`, T3 Code publishes itself over Tailscale Serve (a lasting change T3 reports in the notes) so the link
- * works from other machines. */
+ * works from other machines. `scopes` replaces T3's default set of permissions for the link. */
 export async function createPairingLink(
   s: Store,
-  options: { label?: string; tailscale?: boolean } = {},
+  options: { label?: string; tailscale?: boolean; scopes?: string[] } = {},
 ): Promise<T3PairingLink> {
   const bin = host.t3();
   if (!bin)
@@ -302,6 +372,7 @@ export async function createPairingLink(
       "error",
       ...(options.label ? ["--label", options.label] : []),
       ...(options.tailscale ? ["--tailscale"] : []),
+      ...(options.scopes ?? []).flatMap((scope) => ["--scope", scope]),
     ],
     {
       stdin: "ignore",
