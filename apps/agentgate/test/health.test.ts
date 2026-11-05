@@ -58,12 +58,13 @@ test("the dashboard is off until a machine turns it on, and turning it on waits 
   const { s, call } = machine();
   expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(404);
 
-  s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL - 1 });
+  s.put("node", "old", { id: "old", protocol: 6 });
   expect(() => setHealthDashboard(s, "mac", true)).toThrow("Update agentgate on old first");
   expect(s.get("node", "mac")!.healthDashboard).toBe(false);
   expect(() => setHealthDashboard(s, "nobody", true)).toThrow("no machine nobody");
 
-  s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL });
+  // Protocol 7 brought the dashboard setting; a later protocol must not make turning it on wait.
+  s.put("node", "old", { id: "old", protocol: 7 });
   expect(setHealthDashboard(s, "mac", true).healthDashboard).toBe(true);
   // Linux serves the page; any other machine answers with a note instead.
   expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(
@@ -71,7 +72,7 @@ test("the dashboard is off until a machine turns it on, and turning it on waits 
   );
 
   // Turning it off needs no wait: a machine that drops the field reads it as off.
-  s.put("node", "old", { id: "old", protocol: NODE_PROTOCOL - 1 });
+  s.put("node", "old", { id: "old", protocol: 6 });
   expect(setHealthDashboard(s, "mac", false).healthDashboard).toBe(false);
 });
 
