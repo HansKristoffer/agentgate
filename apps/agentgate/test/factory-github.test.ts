@@ -617,7 +617,7 @@ test("PR checks sum up to failing over pending over passing, and a merged PR wit
   expect(await reverted({ mergedAt: "2026-11-18T17:40:14Z" })).toBe(false);
 });
 
-test("gh.ts writes: refused or unsent posts fail, line-less review findings join the body, and review requests skip the PR's author", async () => {
+test("gh.ts writes: refused or unsent posts fail, and review requests skip the PR's author", async () => {
   stubGh(() => undefined);
   expect(await gh.postIssueComment(REPO, 7, "Hello")).toEqual({
     status: "failed",
@@ -625,22 +625,11 @@ test("gh.ts writes: refused or unsent posts fail, line-less review findings join
   });
 
   let calls = stubGh(() => ({ ok: false, out: JSON.stringify({ message: "Unprocessable Entity", status: "422" }) }));
-  const review = await gh.postPrReview(PR, {
-    commit: "f44bd1d",
-    body: "Two findings.",
-    comments: [
-      { path: "src/a.ts", line: 12, body: "Off by one." },
-      { path: "README.md", body: "Describe the flag." },
-    ],
+  expect(await gh.postIssueComment(REPO, 7, "Hello")).toEqual({
+    status: "failed",
+    error: `GitHub refused to comment on ${REPO}#7: Unprocessable Entity`,
   });
-  expect(review).toEqual({ status: "failed", error: `GitHub refused to review ${REPO}#42: Unprocessable Entity` });
-  expect(calls[0]!.args[1]).toBe(`repos/${REPO}/pulls/42/reviews`);
-  expect(JSON.parse(calls[0]!.stdin!)).toEqual({
-    commit_id: "f44bd1d",
-    event: "COMMENT",
-    body: "Two findings.\n\n**README.md**: Describe the flag.",
-    comments: [{ path: "src/a.ts", line: 12, side: "RIGHT", body: "Off by one." }],
-  });
+  expect(calls[0]!.args[1]).toBe(`repos/${REPO}/issues/7/comments`);
 
   calls = recordedGh();
   await gh.prAddReviewers(PR, ["bagtoad", "octocat"]);

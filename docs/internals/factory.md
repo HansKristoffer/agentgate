@@ -23,6 +23,11 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   the maintainer's login: not merging or marking its PR ready, not pushing elsewhere, and asking the spec card before
   reporting a spec approved. The PR follower notices a PR merged or closed by anyone, and the docs never call these
   guarantees.
+- Review rounds stay between the factory's threads: findings go to the implement thread, never to GitHub, and the
+  person reads one summary that `toReady` writes into the PR body (`readySummary` in [`pr.ts`](../../apps/agentgate/src/factory/pr.ts)).
+  It is written only at ready on purpose. The reviewer is blind to the implementer's claims (`factory_item` hides
+  them), but only a prompt keeps it from reading the PR description, so claims in the body before review would reach
+  it.
 - `settings.factory` (the pointer to the folder and the machine that runs it) and the `secret` record kind are gated
   on every node advertising node protocol 8 (`FACTORY_PROTOCOL`), because older nodes drop the settings field when
   they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change.
@@ -35,8 +40,8 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
 Every change to an item runs as a step of that item (`withItem` in [`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)):
 report acceptance, dispatch's decision to launch, item actions, silent ends, the PR follower's pass and budget
 enforcement. Steps of one item never overlap; steps of different items do. Without this, dispatch closed an item
-whose PR had just been merged, because "Fixes #n" had closed its issue, and a review report racing the PR loop posted
-its review twice.
+whose PR had just been merged, because "Fixes #n" had closed its issue, and a review report racing the PR loop was
+taken twice.
 
 - A step never awaits another step of its own item, which would wait forever. It queues one with `later`. Write-backs
   are claimed inside the step and posted in a later one, so `factory_report` answers once the item moved, before
@@ -193,7 +198,7 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
   warns when the branch is unprotected; a check inside the factory would also refuse the maintainer's own pushes.
 - Token budgets count what agentgate's proxy saw for a run's T3 sessions. A thread whose sessions bypass the proxy
   counts nothing, so the board shows its item's tokens as unknown after 10 minutes.
-- The factory acts as the maintainer's GitHub login (D42): its comments, PRs and reviews carry the `gh` login of the
+- The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the
   machine that holds the item. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
   out, and the outcome metrics count comments without a factory marker as people's.
 - A stage thread handed to another machine is not reminded when its turn ends without a report, because the controller's

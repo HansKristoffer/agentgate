@@ -34,6 +34,7 @@ test("route implement starts a run on factory/<key> from the default branch, and
   });
   const brief = String(launch!.args.message);
   expect(brief).toContain("Never comment on GitHub or Linear");
+  expect(brief).toContain("Before you open the PR, read your whole diff as a reviewer would");
   expect(brief).toContain("Put `Fixes #1` in its body.");
   expect(brief).toContain(`run: "${run.id}"`);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.mainRed).toEqual([]);

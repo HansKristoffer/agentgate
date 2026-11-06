@@ -327,7 +327,7 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
       mergedAt: MERGED_AT,
       reverted: false,
       peopleComments: 2,
-      reviewRounds: 2,
+      peopleReviews: 2,
     },
     humanTouches: 1,
     hoursToMerge: (Date.parse(MERGED_AT) - merged.item.createdAt) / 3600_000,

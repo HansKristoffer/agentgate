@@ -247,9 +247,9 @@ Each item goes through these stages:
 
 1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, and chooses between a fix and a spec.
 2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change** in T3 Code.
-3. **Implement** works on the branch `factory/<item>` and opens a draft pull request. The thread keeps the PR, and the factory wakes it when it sits on a failing check, a conflict, or comments from the repository's own people. No fix starts while the default branch fails CI.
-4. **Review**: a fresh thread reviews the PR without reading what the implementer said about it. The factory posts its findings as a PR review and hands them to the implement thread, for up to three rounds by default.
-5. **Ready**: the factory marks the PR ready for review and requests the repository's reviewers. You merge it or close it.
+3. **Implement** works on the branch `factory/<item>`, reviews its own diff, and opens a draft pull request. The thread keeps the PR, and the factory wakes it when it sits on a failing check, a conflict, or comments from the repository's own people. No fix starts while the default branch fails CI.
+4. **Review**: a fresh thread reviews the PR in focused passes (correctness, tests, reuse, efficiency, security and the repository's own rules) without reading what the implementer said about it. Its findings go to the implement thread, not to GitHub, for up to three rounds by default.
+5. **Ready**: the factory marks the PR ready for review, requests the repository's reviewers, and adds a summary to the PR's description: what the implementer checked and did not, what the last review round left open, and where the risk is. You merge it or close it.
 
 The factory comments on the issue when it takes it in, when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it waits for you.
 

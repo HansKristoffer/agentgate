@@ -1,19 +1,20 @@
-import type { FactoryReport, MarkerPayload, StageResult } from "@agentgate/protocol";
+import type { FactoryReport, StageResult } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import { cancelLaunch, defaultBranch, enqueueRun, sendToThread } from "./controller.ts";
 import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
-import { postPrReview, prView, type PrView } from "./gh.ts";
-import { defuse, markerTag } from "./markers.ts";
+import { prView, type PrView } from "./gh.ts";
+import { defuse } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { green, prRun, toReady } from "./pr.ts";
 import { later, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
  * The review stage: a fresh thread in its own worktree reviews the PR's head, blind to what the implementer said
- * about it. The factory posts its findings as one PR review and hands them to the implement thread. Once that thread
- * pushes and the checks pass, the next round reviews only the new commits, until a round is clean or `reviewRounds`
- * is used up; then the PR is marked ready and goes to the maintainer. The PR follower (pr.ts) drives the rounds.
+ * about it. The factory hands its findings to the implement thread and posts none on GitHub: the maintainer reads
+ * the last round in the PR's summary at ready (pr.ts). Once the implement thread pushes and the checks pass, the next
+ * round reviews only the new commits, until a round is clean or `reviewRounds` is used up; then the PR is marked ready
+ * and goes to the maintainer. The PR follower (pr.ts) drives the rounds.
  */
 
 const REVIEW_BRIEF = `You review one pull request for AgentGate's software factory.
@@ -21,10 +22,14 @@ const REVIEW_BRIEF = `You review one pull request for AgentGate's software facto
 - Check out the PR in this worktree, and read the item and spec with the \`factory_item\` tool. Never read the PR's description or comments: judge the change, not what anyone says about it.
 - Revert the fix locally, keeping the new tests, and run them to show they fail without it. Tests that pass without the fix are an Important finding.
 - In round 2 and later, review only the diff since the reviewed commit, and do not repeat the findings you are given.
-- Report findings tagged Important, Nit or Pre-existing for that commit, and do not post them: the factory does.`;
+- Review in focused passes, each as a subagent if you can start one, otherwise one after another: correctness, including how failures surface; tests, with the revert check above; reuse and simplicity; efficiency; security; and the repository's own rules (its AGENTS.md, CLAUDE.md or CONTRIBUTING.md, and the rulings). Merge their findings and drop duplicates.
+- Report a finding only once you have confirmed it in the code, naming the file and line you read. A problem in code the PR did not change is Pre-existing, unless the change causes it.
+- Report the risk: whether a revert undoes the change, how far a mistake reaches, changes the item did not ask for, and where a person should look first.
+- Report findings tagged Important, Nit or Pre-existing for that commit.`;
 
-type Finding = Extract<StageResult, { kind: "review" }>["findings"][number];
-/** Pre-existing findings are posted, but they are not this PR's to fix and never hold it back. */
+type ReviewResult = Extract<StageResult, { kind: "review" }>;
+type Finding = ReviewResult["findings"][number];
+/** Pre-existing findings are not this PR's to fix: the summary shows them, but they never hold the PR back. */
 const holds = (f: Finding) => f.severity !== "pre-existing";
 
 const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
@@ -39,19 +44,18 @@ const rounds = (f: FactoryRuntime, item: FactoryItem) =>
 const SEVERITY = { important: "Important", nit: "Nit", "pre-existing": "Pre-existing" };
 const describe = (finding: Finding) =>
   `**${SEVERITY[finding.severity]}** ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.text}`;
+/** A finding as the PR's summary lists it: its text defused, since GitHub renders it for everyone. */
+export const summaryLine = (finding: Finding) =>
+  `- ${SEVERITY[finding.severity]}, \`${defuse(`${finding.file}${finding.line ? `:${finding.line}` : ""}`, 300)}\`: ${defuse(finding.text, 1000)}`;
 
-function marker(f: FactoryRuntime, item: FactoryItem, head: string): MarkerPayload {
-  return {
-    item: item.id,
-    key: item.key,
-    stage: "review",
-    outcome: "done",
-    route: null,
-    commit: head,
-    factory: item.configCommit.slice(0, 7),
-    node: f.s.nodeId,
-    state: "open",
-  };
+/** The last review round that counted, for the PR's summary: how many rounds counted, the head it reviewed, and what it
+ * reported. */
+export function lastRound(f: FactoryRuntime, item: FactoryItem) {
+  const counted = rounds(f, item);
+  const last = counted.at(-1);
+  const result = last?.report?.result;
+  if (!last || result?.kind !== "review") return undefined;
+  return { count: counted.length, head: dataOf(last, "review")!.head, result };
 }
 
 const review = (f: FactoryRuntime) => ({
@@ -106,7 +110,7 @@ const review = (f: FactoryRuntime) => ({
     if (report.outcome !== "done")
       return `A review run reports done, blocked or needs-decision, not ${report.outcome}; put what you found in findings`;
     if (!result)
-      return 'The outcome done needs result: { kind: "review", prUrl, commit, findings, testsFailWithoutFix }';
+      return 'The outcome done needs result: { kind: "review", prUrl, commit, findings, testsFailWithoutFix, risk? }';
     if (item?.prUrl && result.prUrl.toLowerCase() !== item.prUrl.toLowerCase())
       return `You were asked to review ${item.prUrl}, not ${result.prUrl}`;
     return undefined;
@@ -118,29 +122,8 @@ const review = (f: FactoryRuntime) => ({
   },
 });
 
-/** Posts one round's findings as one PR review. A finding on a line outside the diff makes GitHub refuse the whole
- * review, so a refused one is posted again with every finding in its body. */
-async function postFindings(f: FactoryRuntime, item: FactoryItem, view: PrView, head: string, findings: Finding[]) {
-  const max = limitsOf(f, item).reviewRounds;
-  const round = rounds(f, item).length;
-  const count = `${findings.length} finding${findings.length === 1 ? "" : "s"}`;
-  const headline = `**${item.key}**: The factory's review, round ${round} of ${max}, of ${head.slice(0, 12)}: ${count}.`;
-  const tag = markerTag(marker(f, item, head));
-  const comments = findings.map((x) => ({ path: x.file, ...(x.line && { line: x.line }), body: defuse(describe(x)) }));
-  let posted = await postPrReview(view.url, { commit: head, body: [headline, tag].join("\n\n"), comments });
-  if (posted.status === "failed" && comments.some((c) => c.line !== undefined)) {
-    const body = [headline, ...findings.map((x) => `- ${defuse(describe(x))}`), tag].join("\n\n");
-    posted = await postPrReview(view.url, { commit: head, body, comments: [] });
-  }
-  f.events.emit({
-    kind: "note",
-    item: item.id,
-    text: `The review of ${item.key}'s round ${round}: ${posted.status}${posted.error ? ` (${posted.error})` : ""}`,
-  });
-}
-
 /** What a reported review means for the item, as a step of it, once: discarded when the PR moved on, otherwise its
- * findings are posted and go to the implement thread, or the item goes to `ready`. */
+ * findings go to the implement thread, or the item goes to `ready`. */
 export async function takeReview(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id);
   const item = run?.item ? items.get(f.s, run.item) : undefined;
@@ -170,7 +153,12 @@ export async function takeReview(f: FactoryRuntime, id: string) {
   // Recorded before anything is posted, so a restart never posts this round twice.
   const checked: RunDataOf<"review"> = { kind: "review", head, round, final };
   runs.update(f.s, run.id, { commitSha: head, checked });
-  if (result.findings.length) await postFindings(f, item, view, head, result.findings);
+  f.events.emit({
+    kind: "note",
+    item: item.id,
+    run: run.id,
+    text: `${item.key}'s review round ${round} of ${max}: ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"}`,
+  });
   if (final) {
     await toReady(
       f,
@@ -187,7 +175,7 @@ export async function takeReview(f: FactoryRuntime, id: string) {
     f,
     implement,
     [
-      `The factory's reviewer found these in ${head.slice(0, 12)} (round ${round} of ${max}). They are posted on ${view.url} too:`,
+      `The factory's reviewer found these in ${head.slice(0, 12)} (round ${round} of ${max}):`,
       open.map((o) => `- ${describe(o)}`).join("\n"),
       `Fix them, push to ${view.headRefName}, and end your turn. Once the checks pass, the factory reviews the new commits. Do not comment on GitHub, mark the PR ready or merge it.`,
     ].join("\n\n"),

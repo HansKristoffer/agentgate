@@ -291,6 +291,20 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
         )
         .max(100),
       testsFailWithoutFix: z.union([z.boolean(), z.literal("no-new-tests")]),
+      risk: z
+        .object({
+          // two-way: reverting the PR undoes it. one-way: it cannot be walked back (stored data changed or deleted, a
+          // contract other systems use changed, something sent).
+          door: z.enum(["one-way", "two-way"]),
+          // The widest thing a mistake here can break.
+          reach: z.enum(["local", "module", "app", "data"]),
+          // Changes in the diff the item did not ask for, each "file: what".
+          unrelated: z.array(z.string().min(1).max(500)).max(20),
+          // Where a person should look first, and why.
+          focus: z.array(z.string().min(1).max(500)).max(10),
+        })
+        .strict()
+        .optional(),
     })
     .strict(),
   z

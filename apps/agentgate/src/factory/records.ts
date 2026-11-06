@@ -258,8 +258,9 @@ const prOutcomeSchema = z.object({
   /** Comments and review bodies from the repository's people without a factory marker: all GitHub text carries the
    * maintainer's login (D42), and bots and outsiders are not the people whose reviews the factory learns from. */
   peopleComments: z.number(),
-  /** Reviews submitted on the PR, the factory's and people's. */
-  reviewRounds: z.number(),
+  /** Reviews people submitted on the PR, approvals without a body included. The factory posts none: its rounds are
+   * its review runs. */
+  peopleReviews: z.number(),
 });
 type PrOutcome = z.infer<typeof prOutcomeSchema>;
 
@@ -296,7 +297,7 @@ async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome>
     ...(view.mergedAt && { mergedAt: view.mergedAt }),
     reverted: view.mergedAt ? await mergedRevertOf(item.repo, { ...view, mergedAt: view.mergedAt }) : false,
     peopleComments: text.filter((c) => COLLABORATORS.includes(c.by) && !parseMarkers(c.body).length).length,
-    reviewRounds: view.reviews.length,
+    peopleReviews: view.reviews.length,
   };
 }
 

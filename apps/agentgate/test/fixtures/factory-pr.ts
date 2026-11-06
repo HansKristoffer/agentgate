@@ -158,6 +158,7 @@ export const triaged = {
 export async function prFactory(
   cleanup: (() => unknown)[],
   config: (repo: string) => Record<string, unknown> = () => ({}),
+  files: Record<string, string> = {},
 ) {
   const n = await factoryNode(cleanup, {
     config: (repo) => ({
@@ -165,6 +166,7 @@ export async function prFactory(
       sources: [{ id: "bugs", type: "github", repo, label: "factory" }],
       ...config(repo),
     }),
+    files,
   });
   const github = fakeGitHub(n.repo, cleanup);
   const builtin = (await n.ctx.gateway.builtin!()).client;

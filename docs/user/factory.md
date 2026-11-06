@@ -83,7 +83,9 @@ The file's body replaces the stage's built-in brief. Whatever the body says, the
 | `model` |         | The model the stage's threads use, as T3 Code's thread launch takes it: `provider` (T3 Code's provider instance, such as `claudeAgent` or `codex`), `model`, and optional `options`. The default is T3 Code's own default. |
 | `mcp`   | `[]`    | The MCP servers the stage's threads, and the T3 Code subagents they start, may use, by their name in the repository's mapping (up to 20). agentgate's own tools are always there. Others are neither listed nor callable.  |
 
-`mcp` narrows what a factory thread sees by default, so a stage reaches a cloud or database server only when you name it. It is not a security boundary: the thread runs with your login at full access and could start a process of its own.
+`mcp` narrows what a factory thread sees by default, so a stage reaches a cloud or database server only when you name it. It is not a security boundary: the thread runs with your login at full access and could start a process of its own. A stage that should check its work in a browser needs that server named too, such as `mcp: [chrome-devtools]`.
+
+The built-in briefs are a starting point. The implement thread reads its whole diff as a reviewer would before it opens the PR. The review thread runs focused passes, as subagents where its agent can start them: correctness, tests (with the fix reverted), reuse and simplicity, efficiency, security, and the repository's own rules. It reports only findings it confirmed in the code, and the risk of the change. A `stages/review.md` replaces those passes with your own.
 
 ### scorers/\<name\>.md
 
@@ -168,9 +170,24 @@ Reproduce the report with a failing test before you route it.
 ---
 start: manual
 skill: debug
+model:
+  provider: claudeAgent
+  model: claude-opus-5-5
 ---
 
 Fix the cause, not the symptom, and keep the diff small.
+```
+
+`stages/review.md`, on another provider than implement, since different models make different mistakes:
+
+```text
+---
+model:
+  provider: codex
+  model: gpt-5
+---
+
+Review the PR in focused passes, and report only findings you confirmed in the code.
 ```
 
 `scorers/tests.md`:
@@ -283,6 +300,24 @@ Each webhook source, and each GitHub or Linear source with `webhook`, gets a URL
 
 A GitHub or Linear delivery only makes the factory poll that source now, so a forged one costs one poll. A webhook source's delivery carries the item itself, which is why it waits for your approval by default.
 
+Sentry alerts can come in the same way, through an integration's webhook for issues, with its client secret stored as `SENTRY_HOOK`:
+
+```yaml
+- id: sentry
+  type: webhook
+  repo: acme/api
+  title: "{{body.data.issue.title}}"
+  body: "{{body.data.issue.web_url}}"
+  dedupe: "{{body.data.issue.id}}"
+  dedupeWindow: 30d
+  signature:
+    header: Sentry-Hook-Signature
+    encoding: hex
+    secret: secret:SENTRY_HOOK
+```
+
+Sentry sends a delivery for every change to an issue (created, resolved, assigned and so on); the dedupe key makes them one item within the window.
+
 What to expect:
 
 - The relay answers for the factory machine, and nothing is queued. While that machine is offline a delivery gets `503`, and the sender must try again. GitHub and Linear sources catch up at their next poll anyway.
@@ -337,6 +372,8 @@ When an item waits for you, it stays in its stage and the board says why:
 - `drop` stops the item's threads and closes it with a comment. Its PR, if it has one, stays open for you to close.
 
 A stage thread whose turn ends without a report is reminded once, then the stage starts again in a new thread; a second silent end makes the item wait for you as `failed`. A turn that waits on a command or a subagent is still working. The factory comments on the item's issue at most once for each moment, even when GitHub or Linear did not confirm the comment.
+
+When the PR goes ready, the factory adds a section to the end of its description, before its own marker: each claim the implementer checked with its evidence, what it did not check, what the last review round left open or saw elsewhere, and the reviewer's risk notes (whether a revert undoes the change, how far a mistake reaches, changes the item did not ask for, and where to look first). It is written once, at ready, and names the commits it covers; later pushes leave it as it is. Review rounds before that stay between the factory's threads. To route sensitive paths, such as auth or billing, to the people who own them, add a `CODEOWNERS` file: GitHub requests code owners when the factory marks the PR ready.
 
 On the PR, the factory wakes the implement thread itself when the thread sits idle on a problem: a failing check or a conflict at the PR's head, or comments from the repository's owner, members and collaborators since the thread's last push, which it quotes. It wakes the thread once for each new problem, and again after `limits.stalledAfter`; after `limits.nudges` times the item waits for you as `stalled`. Nobody else's comments reach the thread, unless the repository sets `watchPullRequests`. A PR without checks counts as passing once its head is 10 minutes old. If you merge a PR before the factory calls it ready, the item ships and the event list says so.
 

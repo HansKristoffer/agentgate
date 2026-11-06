@@ -120,6 +120,24 @@ test("an unknown key is refused at every level of the folder's files and the rep
   for (const [where, schema, value] of cases) expect([where, schema.safeParse(value).success]).toEqual([where, false]);
 });
 
+test("a review result may carry its risk, and a door outside the two is refused there", () => {
+  const review = {
+    kind: "review",
+    prUrl: "https://github.com/acme/api/pull/7",
+    commit: "abc1234",
+    findings: [],
+    testsFailWithoutFix: true,
+  };
+  const risk = { door: "one-way", reach: "data", unrelated: [], focus: ["the migration"] };
+  const report = (result: unknown) =>
+    factoryReportSchema.safeParse({ run: "r", outcome: "done", summary: "ok", result });
+  expect(report(review).success).toBe(true);
+  expect(report({ ...review, risk }).success).toBe(true);
+  const refused = report({ ...review, risk: { ...risk, door: "revolving" } });
+  expect(refused.success).toBe(false);
+  expect(refused.error!.issues[0]!.path).toEqual(["result", "risk", "door"]);
+});
+
 test("the committed factory.schema.json matches the schema it is generated from", () => {
   expect(schemaFile).toEqual(JSON.parse(JSON.stringify(factoryJsonSchema())));
 });

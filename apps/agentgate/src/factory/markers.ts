@@ -10,12 +10,12 @@ import type { FactoryItem } from "./db.ts";
 export const MARKER_PREFIX = "<!-- agentgate-factory:1 ";
 const CAP = 2000;
 
-const cap = (text: string) => (text.length > CAP ? `${text.slice(0, CAP - 1)}…` : text);
+const cap = (text: string, max = CAP) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 /** Agent and person text for a comment: no mentions that notify anyone, no HTML comment that could fake a marker or
- * hide the rest, and at most 2,000 characters. */
-export function defuse(text: string) {
-  return cap(text.replace(/@(?=[\w-])/g, "@​").replaceAll("<!--", "&lt;!--"));
+ * hide the rest, and at most `max` characters. */
+export function defuse(text: string, max = CAP) {
+  return cap(text.replace(/@(?=[\w-])/g, "@​").replaceAll("<!--", "&lt;!--"), max);
 }
 
 const HEADLINES: Record<Moment, (marker: MarkerPayload) => string> = {

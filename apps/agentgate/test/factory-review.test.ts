@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { items, newId, runs, type FactoryItem } from "../src/factory/db.ts";
-import { parseMarkers } from "../src/factory/markers.ts";
+import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -15,19 +15,22 @@ const MINUTE = 60_000;
 const head = (c: string) => c.repeat(40);
 const finding = { file: "src/save.ts", line: 12, severity: "important", text: "The lock is never released." } as const;
 
-type PostedReview = {
-  commit_id: string;
-  body: string;
-  comments: { path: string; line: number; side: string; body: string }[];
-};
+const SUMMARY = "<!-- agentgate-factory:summary -->";
+const risk = {
+  door: "two-way",
+  reach: "module",
+  unrelated: ["src/util.ts: renamed a helper"],
+  focus: ["the retry in src/save.ts, which runs on every save"],
+} as const;
 
-/** The review factory: the PR fixture plus the PR reviews the factory posts, and helpers for the review stage. */
-async function reviewFactory(config: Record<string, unknown> = {}) {
-  const n = await prFactory(cleanup, (repo) => ({
-    repositories: { [repo]: { reviewers: ["octocat"] } },
-    ...config,
-  }));
-  const reviews: PostedReview[] = [];
+/** The review factory: the PR fixture plus any PR review posted (none should be), and helpers for the review stage. */
+async function reviewFactory(config: Record<string, unknown> = {}, files: Record<string, string> = {}) {
+  const n = await prFactory(
+    cleanup,
+    (repo) => ({ repositories: { [repo]: { reviewers: ["octocat"] } }, ...config }),
+    files,
+  );
+  const reviews: unknown[] = [];
   const outage = { on: false };
   const gh = host.gh;
   host.gh = async (args, stdin) => {
@@ -66,10 +69,10 @@ async function reviewFactory(config: Record<string, unknown> = {}) {
     pollReviews: n.pollPrs,
     /** The newest review run of the item, as dispatched. */
     latest: (item: FactoryItem) => reviewRuns(item).at(-1)!,
-    reviewed: (pr: FakePr, findings: unknown[], commit = pr.headRefOid) => ({
+    reviewed: (pr: FakePr, findings: unknown[], commit = pr.headRefOid, extra: Record<string, unknown> = {}) => ({
       outcome: "done",
       summary: "Reviewed it.",
-      result: { kind: "review", prUrl: pr.url, commit, findings, testsFailWithoutFix: true },
+      result: { kind: "review", prUrl: pr.url, commit, findings, testsFailWithoutFix: true, ...extra },
     }),
     async itemView(run: { id: string; threadId?: string }) {
       const result = await builtin.callTool({
@@ -130,10 +133,26 @@ test("once checks pass and every claim has evidence, a blind review starts in it
   expect(brief).toContain("Revert the fix locally");
   expect(brief).toContain("testsFailWithoutFix");
   expect(brief).toContain("Never post anything on GitHub");
+  for (const area of ["correctness", "tests", "reuse and simplicity", "efficiency", "security", "own rules"])
+    expect(brief).toContain(area);
+  expect(brief).toContain("as a subagent if you can start one");
+  expect(brief).toContain("confirmed it in the code");
+  expect(brief).toContain("Report the risk");
   expect(view).toContain("Saving twice keeps one file.");
+  // The implementer's claims reach the PR only at ready, so the reviewer cannot read them there either.
+  expect(pr.body).not.toContain(SUMMARY);
 });
 
-test("a stale report is discarded, findings become one PR review that holds the item until a green push, and round 2 sees only the new range", async () => {
+test("a folder's own review brief still shows the result's shape, risk included", async () => {
+  const n = await reviewFactory({}, { "stages/review.md": "Review it our way." });
+  const { item } = await n.reviewing(1);
+  const brief = String(n.launches(item)[0]!.args.message);
+  expect(brief).toContain("Review it our way.");
+  expect(brief).not.toContain("focused passes");
+  expect(brief).toContain('risk?: { door: "one-way" | "two-way"');
+});
+
+test("a stale report is discarded, findings go to the implement thread and not to GitHub and hold the item until a green push, and round 2 sees only the new range", async () => {
   const n = await reviewFactory();
   const { item, pr, run: implement, review } = await n.reviewing(1);
   const reviewedHead = pr.headRefOid;
@@ -152,13 +171,12 @@ test("a stale report is discarded, findings become one PR review that holds the 
 
   const elsewhere = { file: "src/old.ts", severity: "pre-existing", text: "This was already broken." };
   expect(await n.report(again, n.reviewed(pr, [finding, elsewhere]))).toEqual({ accepted: true });
-  expect(n.reviews).toHaveLength(1);
-  const [posted] = n.reviews;
-  expect(posted!.commit_id).toBe(head("a"));
-  expect(parseMarkers(posted!.body)).toEqual([expect.objectContaining({ item: item.id, stage: "review" })]);
-  expect(posted!.comments).toEqual([{ path: "src/save.ts", line: 12, side: "RIGHT", body: expect.any(String) }]);
-  expect(posted!.body).toContain("This was already broken.");
-  expect(n.sent(implement.threadId!).at(-1)).toContain("The lock is never released.");
+  expect(n.reviews).toEqual([]);
+  const sent = n.sent(implement.threadId!).at(-1)!;
+  expect(sent).toStartWith(`The factory's reviewer found these in ${head("a").slice(0, 12)} (round 1 of 3):`);
+  expect(sent).toContain("The lock is never released.");
+  // Pre-existing findings are not the implementer's to fix.
+  expect(sent).not.toContain("This was already broken.");
   expect(items.get(n.s, item.id)!.phase).toBe("review");
 
   // Nothing new to review until the head moves and its checks pass.
@@ -178,7 +196,7 @@ test("a stale report is discarded, findings become one PR review that holds the 
   expect(n.launches(item)[2]!.args.title).toBe(`Review ${n.key(1)} (round 2): Issue 1`);
 });
 
-test("a clean review moves the item to ready; findings in the last allowed round go to ready as open findings in the ready comment", async () => {
+test("a clean review moves the item to ready; findings in the last allowed round go to ready as open findings in the ready comment and the PR's summary", async () => {
   const n = await reviewFactory({ limits: { threads: 20, reviewRounds: 2 } });
   const clean = await n.reviewing(1);
   expect(await n.report(clean.review, n.reviewed(clean.pr, []))).toEqual({ accepted: true });
@@ -186,6 +204,11 @@ test("a clean review moves the item to ready; findings in the last allowed round
   expect(clean.pr).toMatchObject({ isDraft: false, reviewers: ["octocat"] });
   expect(n.reviews).toEqual([]);
   expect(n.github.posted(1).at(-1)).toBe("The pull request is ready for review.");
+  expect(clean.pr.body).toContain(
+    `**Review:** 1 round, the last at \`${clean.pr.headRefOid.slice(0, 12)}\` found nothing to fix.`,
+  );
+  // That round reported no risk, so the summary has no Risk line.
+  expect(clean.pr.body).not.toContain("**Risk:**");
 
   const { item, pr, review } = await n.reviewing(2);
   await n.report(review, n.reviewed(pr, [finding]));
@@ -193,9 +216,10 @@ test("a clean review moves the item to ready; findings in the last allowed round
   await n.pollReviews();
   await n.dispatch();
   const last = { ...finding, text: "The retry loop never ends." };
-  await n.report(n.latest(item), n.reviewed(pr, [last]));
+  const old = { file: "src/load.ts", line: 10, severity: "pre-existing", text: "The cache is never cleared." };
+  await n.report(n.latest(item), n.reviewed(pr, [last, old], pr.headRefOid, { risk }));
 
-  expect(n.reviews).toHaveLength(2);
+  expect(n.reviews).toEqual([]);
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
   expect(pr.isDraft).toBe(false);
   const comment = n.github.issues.get(2)!.comments.at(-1)!.body;
@@ -203,6 +227,20 @@ test("a clean review moves the item to ready; findings in the last allowed round
   expect(comment).toContain("Review round 2 of 2 still found problems.");
   expect(comment).toContain("The retry loop never ends.");
   expect(comment).not.toContain("The lock is never released.");
+
+  // The PR's body: the author's text, the factory's summary of the last round, then its marker.
+  const body = pr.body;
+  expect(body).toStartWith("Fixes #2");
+  expect(body.indexOf(SUMMARY)).toBeLessThan(body.indexOf(MARKER_PREFIX));
+  expect(body).toContain(`**Review:** 2 rounds, the last at \`${head("c").slice(0, 12)}\`. Still open:`);
+  expect(body).toContain("- Important, `src/save.ts:12`: The retry loop never ends.");
+  expect(body).toContain(
+    "Also seen, not this PR's to fix:\n- Pre-existing, `src/load.ts:10`: The cache is never cleared.",
+  );
+  expect(body).toContain(
+    "**Risk:** two-way door, reaches the module. Look first at: the retry in src/save.ts, which runs on every save. Unrelated changes: src/util.ts: renamed a helper.",
+  );
+  expect(body).not.toContain("The lock is never released.");
 });
 
 test("findings the implement thread leaves unanswered for stalledAfter go to ready as open findings", async () => {
@@ -240,52 +278,34 @@ test("a review report without testsFailWithoutFix is refused", async () => {
   expect(runs.get(n.s, review.id)!.state).toBe("running");
 });
 
-test("a review taken while GitHub is down is finished by the review loop, and its findings are posted once", async () => {
+/** The messages carrying round 1's finding to the implement thread. */
+const findingsSent = (n: Awaited<ReturnType<typeof reviewFactory>>, threadId: string) =>
+  n.sent(threadId).filter((m) => m.includes("The lock is never released."));
+
+test("a review taken while GitHub is down is finished by the review loop, and its findings reach the implement thread once", async () => {
   const n = await reviewFactory();
-  const { item, pr, review } = await n.reviewing(1);
+  const { item, pr, run: implement, review } = await n.reviewing(1);
 
   n.outage.on = true;
   expect(await n.report(review, n.reviewed(pr, [finding]))).toEqual({ accepted: true });
   await n.pollReviews();
-  expect(n.reviews).toEqual([]);
+  expect(findingsSent(n, implement.threadId!)).toEqual([]);
   expect(items.get(n.s, item.id)!.phase).toBe("review");
 
   n.outage.on = false;
   await n.pollReviews();
   await n.pollReviews();
-  expect(n.reviews).toHaveLength(1);
+  expect(findingsSent(n, implement.threadId!)).toHaveLength(1);
+  expect(n.reviews).toEqual([]);
   expect(items.get(n.s, item.id)!.phase).toBe("review");
 });
 
-test("a review taken while the PR follower runs is posted once", async () => {
+test("a review taken while the PR follower runs reaches the implement thread once", async () => {
   const n = await reviewFactory();
-  const { item, pr, review } = await n.reviewing(1);
+  const { item, pr, run: implement, review } = await n.reviewing(1);
   // The report and a pass of the follower arrive together; each is a step of the item, so one takes the review.
   await Promise.all([n.report(review, n.reviewed(pr, [finding])), n.pollReviews(), n.pollReviews()]);
-  expect(n.reviews).toHaveLength(1);
+  expect(findingsSent(n, implement.threadId!)).toHaveLength(1);
+  expect(n.reviews).toEqual([]);
   expect(items.get(n.s, item.id)!.phase).toBe("review");
-});
-
-test("a review GitHub refuses for a line outside the diff is posted again with every finding in its body", async () => {
-  const n = await reviewFactory();
-  const { pr, review } = await n.reviewing(1);
-  const gh = host.gh;
-  let refused = 0;
-  host.gh = async (args, stdin) => {
-    const inline = args[0] === "api" && /\/reviews$/.test(args[1]!) && JSON.parse(stdin!).comments.length;
-    if (inline) {
-      refused++;
-      return {
-        ok: false,
-        out: JSON.stringify({ message: "Pull request review thread line must be part of the diff" }),
-      };
-    }
-    return gh(args, stdin);
-  };
-  cleanup.push(() => (host.gh = gh));
-  await n.report(review, n.reviewed(pr, [{ ...finding, line: 999 }]));
-  expect(refused).toBe(1);
-  expect(n.reviews).toHaveLength(1);
-  expect(n.reviews[0]!.comments).toEqual([]);
-  expect(n.reviews[0]!.body).toContain("src/save.ts:999: The lock is never released.");
 });

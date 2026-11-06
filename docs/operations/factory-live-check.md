@@ -24,8 +24,13 @@ results in the PR that ships the change: each step, what you saw, and anything t
    - The implement thread opens a draft PR on `factory/<repo>-<n>`, and the issue gets its comment.
    - In the implement thread's T3 Code session, the MCP tools list agentgate's tools and the server the stage names,
      not the one left out. Ask the thread to list its tools if T3 Code does not show them.
-   - The review runs, the PR goes ready with your reviewers requested, and the issue says so. Merge it: the item
-     ships, its threads settle, and the issue's last comment says shipped.
+   - The review thread runs focused passes (as subagents where its agent can) and leaves no review on the PR. The PR
+     goes ready with your reviewers requested, the issue says so, and the PR's description ends with the factory's
+     summary: claims with evidence, what was not checked, the last round, and risk notes. Merge it: the item ships,
+     its threads settle, and the issue's last comment says shipped.
+   - Compare with an item reviewed by the release before: findings per round, rounds until clean, any finding that was
+     wrong, and the review runs' tokens from `agentgate factory show <key>`. Note whether a Codex review thread
+     started subagents.
    - `agentgate factory show <key>` lists every run with its thread, and each comment as posted.
 2. **One issue through a spec.** Label an issue that needs a decision, such as a feature with two reasonable designs.
    - Triage routes it to spec, and the spec thread asks Approve or Change in T3 Code.

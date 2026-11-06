@@ -5,7 +5,6 @@ import { setNeedsYou } from "../src/factory/controller.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome } from "../src/factory/records.ts";
-import { host } from "../src/logins.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -80,10 +79,6 @@ test("a run that ends twice without reporting is retried as attempt 2 with what 
 
 test("the board shows an item's review rounds, and the findings left open when it went to ready", async () => {
   const n = await prFactory(cleanup, () => ({ limits: { threads: 20, reviewRounds: 2 } }));
-  const gh = host.gh;
-  host.gh = async (args, stdin) =>
-    args[0] === "api" && /\/pulls\/\d+\/reviews$/.test(args[1]!) ? { ok: true, out: "{}" } : gh(args, stdin);
-  cleanup.push(() => (host.gh = gh));
   const latestReview = (item: FactoryItem) => runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;
   const reviewed = (pr: FakePr, findings: { severity: string; text: string }[]) => ({
     outcome: "done",

@@ -265,22 +265,6 @@ export async function prSetBody(url: string, body: string): Promise<void> {
   await gh(`edit the body of ${repo}#${number}`, ["pr", "edit", url, "--body-file", "-"], body);
 }
 
-/** One review per round, as comments only. A finding without a line has no place in the diff, so it joins the body. */
-export async function postPrReview(
-  url: string,
-  input: { commit: string; body: string; comments: Array<{ path: string; line?: number; body: string }> },
-): Promise<PostResult> {
-  const { repo, number } = prOf(url);
-  const inline = input.comments.filter((c) => c.line !== undefined);
-  const fileLevel = input.comments.filter((c) => c.line === undefined).map((c) => `**${c.path}**: ${c.body}`);
-  return post(`review ${repo}#${number}`, `repos/${repo}/pulls/${number}/reviews`, {
-    commit_id: input.commit,
-    event: "COMMENT",
-    body: [input.body, ...fileLevel].join("\n\n"),
-    comments: inline.map((c) => ({ path: c.path, line: c.line, side: "RIGHT", body: c.body })),
-  });
-}
-
 /** The workflow runs of the newest commit pushed to the default branch. Scheduled and manual runs do not count. */
 export async function defaultBranchCi(repo: string): Promise<"passing" | "failing" | "pending" | "none"> {
   const branch = await defaultBranch(repo);

@@ -11,11 +11,11 @@ import {
   writeBack,
 } from "./controller.ts";
 import { dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
-import { COLLABORATORS, prAddReviewers, prReady, prView, type PrView } from "./gh.ts";
-import { parseMarkers } from "./markers.ts";
+import { COLLABORATORS, prAddReviewers, prReady, prSetBody, prView, type PrView } from "./gh.ts";
+import { defuse, MARKER_PREFIX, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { recordItemEnd } from "./records.ts";
-import { followReview } from "./review.ts";
+import { followReview, lastRound, summaryLine } from "./review.ts";
 import { later, shortError, withItem, type FactoryRuntime } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
@@ -84,7 +84,81 @@ export async function toReady(
     ? `${view.url}\n\n${why} These findings are still open:\n\n${open.map((o) => `- ${o}`).join("\n")}`
     : view.url;
   writeBack(f, ready, "ready", { text, commit: view.headRefOid });
+  // After this step, reading the body again: the marker write, or a person, may have changed it since `view`.
+  later(f, item.id, `Writing the summary on ${item.key}'s PR`, async () => {
+    const current = items.get(f.s, item.id);
+    if (!current) return;
+    const fresh = await prView(view.url);
+    await prSetBody(view.url, withSummary(fresh.body, readySummary(f, current)));
+  });
   return true;
+}
+
+const SUMMARY_OPEN = "<!-- agentgate-factory:summary -->";
+const SUMMARY_CLOSE = "<!-- /agentgate-factory:summary -->";
+const SUMMARY_MAX = 20_000;
+const REACH = {
+  local: "stays local",
+  module: "reaches the module",
+  app: "reaches the whole app",
+  data: "reaches stored data",
+};
+
+/** Lines joined within `max` characters; what does not fit becomes one "…and N more" line. */
+function within(lines: string[], max: number) {
+  let out = "";
+  for (const [i, line] of lines.entries()) {
+    if (out.length + line.length + 1 > max - 30) return `${out}…and ${lines.length - i} more\n`;
+    out += `${line}\n`;
+  }
+  return out;
+}
+
+/** The factory's summary of an item going ready, from its runs: what its PR-owning implement run checked and did not
+ * check, at the commit it reported; the review rounds, with the last counted round's head, open and pre-existing
+ * findings, and risk. Each piece defused, the whole within 20,000 characters. Written once, at ready, so the blind
+ * reviewer never sees the implementer's claims in the PR. */
+export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
+  const lines = ["## What the factory checked", ""];
+  const result = prRun(f, item)?.report?.result;
+  if (result?.kind === "implement") {
+    lines.push(`**The implementer checked** at \`${result.commit.slice(0, 12)}\`:`);
+    for (const c of result.claims) lines.push(`- ${defuse(c.claim, 1000)}: ${defuse(c.evidence, 2000)}`);
+    const skipped = result.notChecked.map((n) => defuse(n, 500)).join("; ");
+    lines.push("", `**Not checked:** ${skipped || "nothing listed"}`, "");
+  }
+  const last = lastRound(f, item);
+  if (!f.runKinds.has("review") || limitsOf(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");
+  else if (!last) lines.push("**Review:** No review round finished.");
+  else {
+    const rounds = `${last.count} round${last.count === 1 ? "" : "s"}, the last at \`${last.head.slice(0, 12)}\``;
+    const open = last.result.findings.filter((x) => x.severity !== "pre-existing");
+    const seen = last.result.findings.filter((x) => x.severity === "pre-existing");
+    if (open.length) lines.push(`**Review:** ${rounds}. Still open:`, ...open.map(summaryLine));
+    else lines.push(`**Review:** ${rounds} found nothing to fix.`);
+    if (seen.length) lines.push("Also seen, not this PR's to fix:", ...seen.map(summaryLine));
+    const risk = last.result.risk;
+    if (risk) {
+      const focus = risk.focus.map((x) => defuse(x, 500)).join("; ") || "nothing named";
+      const unrelated = risk.unrelated.map((x) => defuse(x, 500)).join("; ") || "none";
+      lines.push(
+        "",
+        `**Risk:** ${risk.door} door, ${REACH[risk.reach]}. Look first at: ${focus}. Unrelated changes: ${unrelated}.`,
+      );
+    }
+  }
+  return within(lines, SUMMARY_MAX).trimEnd();
+}
+
+/** The PR body with `summary` as its one factory summary section: after the author's text and before the factory's
+ * marker, or at the end without one. A section already there is replaced. */
+export function withSummary(body: string, summary: string): string {
+  const section = `${SUMMARY_OPEN}\n${summary}\n${SUMMARY_CLOSE}`;
+  const rest = body.replace(/\s*<!-- agentgate-factory:summary -->[\s\S]*?<!-- \/agentgate-factory:summary -->/g, "");
+  const at = rest.lastIndexOf(MARKER_PREFIX);
+  const before = (at < 0 ? rest : rest.slice(0, at)).trimEnd();
+  const after = at < 0 ? "" : `\n\n${rest.slice(at)}`;
+  return `${before ? `${before}\n\n` : ""}${section}${after}`;
 }
 
 /** Stops the watch and settles the item's threads once its PR is merged or closed. */
