@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
 import { currentFolder, folderAt, loadFolder } from "../src/factory/config.ts";
@@ -73,7 +73,15 @@ test("the example folder loads with every file type, defaults applied and source
     ["bugs", "acme/api"],
     ["linear", "acme/web"],
     ["desk", "acme/api"],
+    ["perf", "acme/api"],
   ]);
+  expect(folder.config.sources[3]).toMatchObject({
+    schedule: { at: "09:00", days: ["mon", "thu"], timezone: "Europe/Copenhagen" },
+    intake: "auto",
+    dedupeWindow: "14d",
+    enabled: true,
+  });
+  expect(folder.scouts.perf!.prompt).toStartWith("Look at the p95 latency");
   expect(folder.stages.triage).toEqual({
     file: { start: "auto", model: { provider: "claudeAgent", model: "claude-sonnet-5-5" } },
     brief: "Reproduce the report with a failing test before you route it.",
@@ -110,6 +118,44 @@ test.each([
     edited("scorers/tests.md", (t) => t.replace("score: 1\n", "score: 0.4\n").replace("score: 0.5\n", "score: 0.3\n")),
     "scorers/tests.md: pass: 0.5 is above the best label's score, 0.4, so nothing passes",
   ],
+  [
+    "a scout without its prompt",
+    (() => {
+      const dir = edited("factory.yaml", (t) => t);
+      rmSync(join(dir, "scouts/perf.md"));
+      return dir;
+    })(),
+    "scouts/perf.md: the scout perf has no prompt; write it in scouts/perf.md",
+  ],
+  [
+    "a prompt without its scout",
+    edited("factory.yaml", (t) => t.replace("id: perf", "id: speed")),
+    "scouts/speed.md: the scout speed has no prompt; write it in scouts/speed.md",
+  ],
+  [
+    "a scout prompt no source names",
+    (() => {
+      const dir = edited("factory.yaml", (t) => t);
+      writeFileSync(join(dir, "scouts/deps.md"), "Look at outdated dependencies.");
+      return dir;
+    })(),
+    "scouts/deps.md: no scout source has the id deps",
+  ],
+  [
+    "an unknown timezone",
+    edited("factory.yaml", (t) => t.replace("timezone: Europe/Copenhagen", "timezone: Nope/Nowhere")),
+    "factory.yaml: sources[3].schedule.timezone: Nope/Nowhere is not a timezone",
+  ],
+  [
+    "a scout more often than hourly",
+    edited("factory.yaml", (t) =>
+      t.replace(
+        /schedule:\n(\s+)at: "09:00"\n\s+days: \[mon, thu\]\n\s+timezone: Europe\/Copenhagen/,
+        "schedule:\n$1every: 30m",
+      ),
+    ),
+    "factory.yaml: sources[3].schedule.every: a scout runs at most once an hour",
+  ],
 ])("the loader rejects %s, naming the file and field", (_, dir, message) => {
   expect(() => loadFolder(dir, "c0ffee")).toThrow(message);
 });
@@ -136,6 +182,7 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
     "factory.yaml",
     "rulings.md",
     "scorers",
+    "scouts",
     "skills",
     "stages",
   ]);

@@ -163,12 +163,23 @@ async function post(what: string, path: string, payload: unknown): Promise<PostR
 /** Whether GitHub answered a read with "Not Found". */
 const notFound = (r: { ok: boolean; out: string } | undefined) => !!r && !r.ok && apiMessage(r.out) === "Not Found";
 
-/** Whether a file exists on the default branch. */
-export async function fileExists(repo: string, path: string): Promise<boolean> {
-  const r = await host.gh(["api", `repos/${repo}/contents/${path}`, "--jq", ".path"]);
+const contents = (repo: string, path: string, ref?: string) =>
+  `repos/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
+
+/** Whether a file exists on `ref`, or the default branch. */
+export async function fileExists(repo: string, path: string, ref?: string): Promise<boolean> {
+  const r = await host.gh(["api", contents(repo, path, ref), "--jq", ".path"]);
   if (notFound(r)) return false;
-  await gh(`read ${path} in ${repo}`, ["api", `repos/${repo}/contents/${path}`, "--jq", ".path"]);
+  await gh(`read ${path} in ${repo}`, ["api", contents(repo, path, ref), "--jq", ".path"]);
   return true;
+}
+
+/** A text file's content on `ref`, or undefined when there is none. */
+export async function readFile(repo: string, path: string, ref: string): Promise<string | undefined> {
+  const args = ["api", "-H", "Accept: application/vnd.github.raw+json", contents(repo, path, ref)];
+  const r = await host.gh(args);
+  if (notFound(r)) return undefined;
+  return gh(`read ${path} at ${ref} in ${repo}`, args);
 }
 
 /** Whether a branch exists. */
@@ -181,10 +192,16 @@ export async function branchExists(repo: string, branch: string): Promise<boolea
 
 const sha = z.object({ sha: z.string().min(1) });
 
-/** One commit on a new branch from the default branch's head, adding `files` (path to text). Throws when the branch
- * exists or the repository has no commits. */
-export async function pushNewBranch(repo: string, branch: string, message: string, files: Record<string, string>) {
-  const base = await defaultBranch(repo);
+/** One commit on a new branch from the head of `base` (default: the default branch), adding or replacing `files` (path
+ * to text). Throws when the branch exists or the repository has no commits. */
+export async function pushNewBranch(
+  repo: string,
+  branch: string,
+  message: string,
+  files: Record<string, string>,
+  base?: string,
+) {
+  base ??= await defaultBranch(repo);
   const head = await ghJson(
     `read the head of ${base} in ${repo} (an empty repository has none)`,
     z.object({ object: sha }),
@@ -212,12 +229,32 @@ export async function pushNewBranch(repo: string, branch: string, message: strin
   );
 }
 
-/** Opens a draft PR from `head` to the default branch. */
-export async function openDraftPr(repo: string, head: string, title: string, body: string) {
-  const base = await defaultBranch(repo);
+/** Opens a PR from `head` to `base`, or the default branch. */
+export async function openPr(
+  repo: string,
+  head: string,
+  title: string,
+  body: string,
+  opts: { base?: string; draft?: boolean } = {},
+) {
+  const base = opts.base ?? (await defaultBranch(repo));
   const out = await gh(
     `open a pull request from ${head} in ${repo}`,
-    ["pr", "create", "--repo", repo, "--head", head, "--base", base, "--draft", "--title", title, "--body-file", "-"],
+    [
+      "pr",
+      "create",
+      "--repo",
+      repo,
+      "--head",
+      head,
+      "--base",
+      base,
+      ...(opts.draft ? ["--draft"] : []),
+      "--title",
+      title,
+      "--body-file",
+      "-",
+    ],
     body,
   );
   const url = out.trim().split("\n").at(-1)!.trim();

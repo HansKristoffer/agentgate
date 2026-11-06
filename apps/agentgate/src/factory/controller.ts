@@ -753,15 +753,22 @@ function runOfThread(f: FactoryRuntime, thread: string) {
 
 /**
  * What the MCP gateway lets the sessions of a T3 Code thread use (R8): a stage run's thread, and the T3 subagent
- * threads under it, get agentgate's tools and the servers its stage file names in `mcp`; a judge or learn thread gets
- * agentgate's tools only. Every other session gets every server its project maps, but not the tools made for a run's
+ * threads under it, get agentgate's tools and the servers its stage file names in `mcp`, a scout's thread those its
+ * source names, and a judge or learn thread agentgate's tools only. Every other session gets every server its project maps, but not the tools made for a run's
  * own thread. The thread id is a label its shim sends, so this narrows a default and is no boundary.
  */
 export function threadScope(f: FactoryRuntime, thread: string | undefined): SessionScope {
   const head = thread ? runOfThread(f, thread) : undefined;
   const run = head && runs.get(f.s, head.id);
   if (!run) return { hidden: [...f.tools.values()].filter((t) => t.forRuns).map((t) => t.name) };
-  const servers = isStage(run.kind) ? folderFor(f, run.configCommit)?.stages[run.kind]?.file.mcp : undefined;
+  const folder = folderFor(f, run.configCommit);
+  const { checked } = run;
+  const scout = checked?.kind === "scout" ? folder?.config.sources.find((x) => x.id === checked.source) : undefined;
+  const servers = isStage(run.kind)
+    ? folder?.stages[run.kind]?.file.mcp
+    : scout?.type === "scout"
+      ? scout.mcp
+      : undefined;
   return { servers: servers ?? [] };
 }
 
@@ -948,7 +955,7 @@ function sourceMemory(f: FactoryRuntime, id: string) {
 const waitingForYou = (f: FactoryRuntime) =>
   items.list(f.s, { open: true }).filter((i) => i.needsYou || i.phase === "ready").length;
 
-function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
+export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
   if (!f.pointer() || !f.isFactoryNode() || !currentFolder(f) || isPaused(f)) return "off";
   return waitingForYou(f) >= limitsOf(f).waitingForYou ? "paused-for-you" : "on";
 }

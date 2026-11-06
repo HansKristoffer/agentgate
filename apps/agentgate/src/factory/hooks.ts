@@ -43,7 +43,9 @@ function credentials(f: FactoryRuntime, source: string): Credentials | undefined
 }
 
 const hookSources = (f: FactoryRuntime) =>
-  (currentFolder(f)?.config.sources ?? []).filter((s): s is HookSource => s.type === "webhook" || !!s.webhook);
+  (currentFolder(f)?.config.sources ?? []).filter(
+    (s): s is HookSource => s.type === "webhook" || ("webhook" in s && !!s.webhook),
+  );
 
 /** Gives every webhook-capable source its credentials, and deletes the URL of a source the folder no longer has. */
 function ensureHooks(f: FactoryRuntime) {
@@ -130,7 +132,7 @@ const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0,
 
 /** Deliveries of one source waiting for approval before the next one is refused: a URL that leaked, unsigned, could
  * otherwise fill the board and pause every other source's intake. */
-const HELD_LIMIT = 20;
+export const HELD_LIMIT = 20;
 
 const answer = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
 /** Sources whose held items reached HELD_LIMIT, so the refusal is noted once. */

@@ -32,5 +32,13 @@ sources:
       encoding: hex
       prefix: "sha256="
       secret: secret:DESK_SIGNING
+  - id: perf
+    type: scout
+    repo: acme/api
+    schedule:
+      at: "09:00"
+      days: [mon, thu]
+      timezone: Europe/Copenhagen
+    mcp: [railway]
 learning:
   every: 14d

@@ -10,6 +10,7 @@ import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
 import { FactoryOff } from "./factory/Init.tsx";
 import { FactorySettings } from "./factory/Settings.tsx";
+import { Sources } from "./factory/Sources.tsx";
 
 /**
  * The software factory: what waits for you first, then every stage. Everything here goes through
@@ -271,48 +272,14 @@ function Status({ board }: { board: FactoryBoard }) {
     ["Default branch CI", c.mainRed.length ? `red in ${c.mainRed.join(", ")}` : "green"],
   ];
   return (
-    <>
-      <Panel title="Status">
-        {rows.map(([label, value]) => (
-          <div className="item" key={label}>
-            <span className="grow">{label}</span>
-            <span className="muted">{value}</span>
-          </div>
-        ))}
-      </Panel>
-      <Panel title="Sources" detail="Where items come from. Give a webhook URL only to its sender.">
-        {board.sources.length ? (
-          board.sources.map((s) => (
-            <div className="item" key={s.id}>
-              <div className="grow">
-                <div className="row">
-                  <strong>{s.id}</strong>
-                  <small className="muted">
-                    {s.type} · {s.repo}
-                  </small>
-                </div>
-                <small className={s.error ? "danger" : "muted"}>
-                  {s.error ?? (s.lastPollAt ? `Polled ${ago(s.lastPollAt)}` : "Not polled yet")}
-                </small>
-              </div>
-              {s.webhook?.url && (
-                <Button
-                  size="sm"
-                  variant="tertiary"
-                  onPress={() => void navigator.clipboard.writeText(s.webhook!.url!)}
-                >
-                  Copy webhook URL
-                </Button>
-              )}
-            </div>
-          ))
-        ) : (
-          <Empty>
-            <p>No sources yet. Add them to factory.yaml.</p>
-          </Empty>
-        )}
-      </Panel>
-    </>
+    <Panel title="Status">
+      {rows.map(([label, value]) => (
+        <div className="item" key={label}>
+          <span className="grow">{label}</span>
+          <span className="muted">{value}</span>
+        </div>
+      ))}
+    </Panel>
   );
 }
 
@@ -604,7 +571,12 @@ export function Factory(props: ViewProps) {
           <Stages board={board} open={setSelected} />
         </>
       )}
-      {tab === "status" && <Status board={board} />}
+      {tab === "status" && (
+        <>
+          <Status board={board} />
+          <Sources {...props} board={board} run={run} />
+        </>
+      )}
       {tab === "machines" && <Machines board={board} />}
       {tab === "metrics" && <Metrics board={board} />}
       {tab === "events" && <Events board={board} />}

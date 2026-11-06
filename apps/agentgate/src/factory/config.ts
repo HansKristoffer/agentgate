@@ -37,6 +37,7 @@ export interface LoadedFolder {
   config: FactoryConfig; // factory.yaml with defaults applied
   stages: Partial<Record<StageName, { file: StageFile; brief: string }>>;
   scorers: Record<string, { file: ScorerFile; rubric: string }>;
+  scouts: Record<string, { prompt: string }>; // scouts/<id>.md of each scout source
   rulings: string; // "" when absent
   skillsDir?: string; // <dir>/skills when present
 }
@@ -133,6 +134,29 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
     if (!config.secrets.includes(ref.name))
       throw new FolderError("factory.yaml", fieldPath(ref.path), `secret:${ref.name} is not declared under secrets`);
 
+  const scouts: LoadedFolder["scouts"] = {};
+  const scoutFiles = new Set(markdownFiles(join(dir, "scouts")));
+  config.sources.forEach((source, i) => {
+    if (source.type !== "scout") return;
+    const { schedule } = source;
+    if ("every" in schedule && durationMs(schedule.every) < MIN_SCOUT_EVERY)
+      throw new FolderError("factory.yaml", `sources[${i}].schedule.every`, "a scout runs at most once an hour");
+    if ("timezone" in schedule && !knownTimezone(schedule.timezone))
+      throw new FolderError(
+        "factory.yaml",
+        `sources[${i}].schedule.timezone`,
+        `${schedule.timezone} is not a timezone`,
+      );
+    const file = `scouts/${source.id}.md`;
+    if (!scoutFiles.has(source.id))
+      throw new FolderError(file, "", `the scout ${source.id} has no prompt; write it in ${file}`);
+    const { body } = markdown(dir, file);
+    if (!body) throw new FolderError(file, "", "the prompt is empty");
+    scouts[source.id] = { prompt: body };
+  });
+  for (const name of scoutFiles)
+    if (!scouts[name]) throw new FolderError(`scouts/${name}.md`, "", `no scout source has the id ${name}`);
+
   const stages: LoadedFolder["stages"] = {};
   for (const name of markdownFiles(join(dir, "stages"))) {
     const file = `stages/${name}.md`;
@@ -158,7 +182,7 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
   const rulings = existsSync(join(dir, "rulings.md")) ? readFileSync(join(dir, "rulings.md"), "utf8").trim() : "";
   const skills = join(dir, "skills");
   const skillsDir = existsSync(skills) && statSync(skills).isDirectory() ? skills : undefined;
-  return { commit, dir, config, stages, scorers, rulings, ...(skillsDir && { skillsDir }) };
+  return { commit, dir, config, stages, scorers, scouts, rulings, ...(skillsDir && { skillsDir }) };
 }
 
 // What the factory machine knows about its folder, kept across restarts. `fetched` is the newest commit tried,
@@ -224,6 +248,16 @@ export function currentFolder(f: FactoryRuntime): LoadedFolder | undefined {
 export const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? currentFolder(f);
 
 export const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+
+const MIN_SCOUT_EVERY = 3600_000;
+const knownTimezone = (zone: string) => {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const UNITS = { m: 60_000, h: 3600_000, d: 86_400_000 } as const;
 /** A folder duration such as `15m`, `1h` or `7d`, which the schema has checked, in milliseconds. */

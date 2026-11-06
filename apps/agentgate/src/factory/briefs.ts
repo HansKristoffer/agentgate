@@ -26,6 +26,8 @@ const RESULTS: Record<RunKind, string> = {
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
   learn:
     '`done` needs `result: { kind: "learn", prUrl?, lessons }`; report `nothing-to-do` when there is nothing to learn.',
+  scout:
+    'Report only `done` or `nothing-to-do`. `done` needs `result: { kind: "scout", findings: [{ key, title, body }] }` with at least one finding; report `nothing-to-do` when nothing needs a ticket.',
 };
 
 /** A fence longer than any run of backticks in the text, so the text cannot close it. */

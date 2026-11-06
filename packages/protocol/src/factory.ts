@@ -34,6 +34,8 @@ export const modelSchema = z
 export type FactoryModel = z.infer<typeof modelSchema>;
 
 const intake = z.enum(["auto", "hold"]); // hold: new items wait for `agentgate factory approve`
+/** MCP server aliases a factory thread may use besides agentgate's own tools. */
+const mcpAliases = z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/)).max(20);
 export const githubSourceSchema = z
   .object({
     id: name,
@@ -77,10 +79,43 @@ export const webhookSourceSchema = z
     dedupeWindow: duration.default("1h"),
   })
   .strict();
+export const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+export type Weekday = (typeof weekdays)[number];
+/** `every` counts from the last run; `at` is a time of day on some weekdays in a timezone. */
+export const scoutScheduleSchema = z.union([
+  z.object({ every: duration }).strict(), // the loader refuses less than 1h
+  z
+    .object({
+      at: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+      days: z
+        .array(z.enum(weekdays))
+        .min(1)
+        .max(7)
+        .default([...weekdays]),
+      timezone: z.string().min(1).max(64).default("UTC"), // the loader checks it with Intl
+    })
+    .strict(),
+]);
+export type ScoutSchedule = z.infer<typeof scoutScheduleSchema>;
+/** A scout: on its schedule, a T3 thread follows `scouts/<id>.md` and reports findings, each of which becomes an item. */
+export const scoutSourceSchema = z
+  .object({
+    id: name,
+    type: z.literal("scout"),
+    repo,
+    schedule: scoutScheduleSchema,
+    intake: intake.default("auto"),
+    dedupeWindow: duration.default("14d"), // a finding whose key an item of this scout had within it is skipped
+    model: modelSchema.optional(),
+    mcp: mcpAliases.optional(),
+    enabled: z.boolean().default(true),
+  })
+  .strict();
 export const factorySourceSchema = z.discriminatedUnion("type", [
   githubSourceSchema,
   linearSourceSchema,
   webhookSourceSchema,
+  scoutSourceSchema,
 ]);
 export type FactorySource = z.infer<typeof factorySourceSchema>;
 
@@ -137,10 +172,7 @@ export const stageFileSchema = z
       .optional(), // adds "Use the <skill> skill."
     model: modelSchema.optional(),
     /** The MCP servers (aliases) this stage's threads may use besides agentgate's own tools; none when absent. */
-    mcp: z
-      .array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/))
-      .max(20)
-      .optional(),
+    mcp: mcpAliases.optional(),
   })
   .strict();
 export type StageFile = z.infer<typeof stageFileSchema>;
@@ -207,7 +239,7 @@ export const itemPhases = [
   "closed",
 ] as const;
 export type ItemPhase = (typeof itemPhases)[number];
-export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn"] as const;
+export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn", "scout"] as const;
 export type RunKind = (typeof runKinds)[number];
 /** waiting: the thread asked a person a question. silent: the thread ended without a report. */
 export const runStates = [
@@ -325,6 +357,22 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
       kind: z.literal("learn"),
       prUrl: z.string().url().max(2048).optional(),
       lessons: z.array(z.string().min(1).max(2000)).max(50),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("scout"),
+      findings: z
+        .array(
+          z
+            .object({
+              key: z.string().regex(/^[a-z0-9][a-z0-9-]{0,79}$/), // the same problem keeps the same key across runs
+              title: z.string().trim().min(1).max(300),
+              body: z.string().min(1).max(32_000),
+            })
+            .strict(),
+        )
+        .max(50), // a bound on the report's size, not a setting
     })
     .strict(),
 ]);
@@ -470,12 +518,30 @@ export const factoryBoardSchema = z.object({
   sources: z.array(
     z.object({
       id: z.string(),
-      type: z.enum(["github", "linear", "webhook", "manual"]),
+      // A string, not an enum: an older machine reading a newer factory machine's board must not fail on a new type.
+      type: z.string(),
       repo: z.string(),
       lastPollAt: z.number().optional(),
       error: z.string().optional(),
       // The URL only in GET /api/factory and the CLI: the token-less page and factory_status never show it.
       webhook: z.object({ configured: z.boolean(), url: z.string().optional() }).optional(),
+      scout: z
+        .object({
+          schedule: z.string(), // "every 6h", "09:00 Mon, Fri (Europe/Copenhagen)"
+          enabled: z.boolean(),
+          nextAt: z.number().optional(), // absent while intake is not on or the scout is disabled
+          lastRun: z
+            .object({
+              id: z.string(),
+              state: z.enum(runStates),
+              at: z.number(),
+              threadLink: z.string().optional(),
+              filed: z.number(),
+              skipped: z.number(),
+            })
+            .optional(),
+        })
+        .optional(),
     }),
   ),
   metrics: z.object({
@@ -552,6 +618,21 @@ export const factoryUseInputSchema = z
 /** POST /api/factory/init, `agentgate factory init` */
 export const factoryInitInputSchema = z.object({ repo, node: factoryPointerSchema.shape.node.optional() }).strict();
 export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;
+/** POST /api/factory/sources, `agentgate factory source add`: a PR on the factory folder that adds a source. */
+export const factorySourceAddInputSchema = z
+  .object({
+    source: z.discriminatedUnion("type", [webhookSourceSchema, scoutSourceSchema]),
+    prompt: z.string().trim().min(1).max(32_000).optional(), // a scout's scouts/<id>.md; required for one
+  })
+  .strict();
+export type FactorySourceAddInput = z.input<typeof factorySourceAddInputSchema>;
+export const factorySourceAddResultSchema = z.object({
+  prUrl: z.string().url(),
+  branch: z.string(),
+  /** Each a sentence for the person: a tag the factory follows, a secret to set. */
+  warnings: z.array(z.string()),
+});
+export type FactorySourceAddResult = z.infer<typeof factorySourceAddResultSchema>;
 /** POST /api/factory/items */
 export const factoryItemInputSchema = z
   .object({

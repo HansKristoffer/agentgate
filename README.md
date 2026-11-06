@@ -241,7 +241,7 @@ Unlike sync, this traffic is readable by the relay (your logins stay on your mac
 
 ## Software factory
 
-The factory takes the issues you label on GitHub or Linear, or that a webhook sends, and works each one in T3 Code threads on one of your machines until its pull request is ready for review. Every step is a T3 Code thread you can open and talk to. The factory never merges; that stays with you.
+The factory takes the issues you label on GitHub or Linear, those a webhook sends, and those a scout files when it checks something on a schedule (such as slow endpoints), and works each one in T3 Code threads on one of your machines until its pull request is ready for review. Every step is a T3 Code thread you can open and talk to. The factory never merges; that stays with you.
 
 Each item goes through these stages:
 

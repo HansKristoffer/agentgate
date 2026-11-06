@@ -7,7 +7,7 @@ import {
 } from "@agentgate/protocol";
 import { jsonInput } from "../http.ts";
 import { defaultNode, protectionWarning, useFactory } from "./config.ts";
-import { branchExists, ensureLabel, fileExists, openDraftPr, openPrFor, pushNewBranch } from "./gh.ts";
+import { branchExists, ensureLabel, fileExists, openPr, openPrFor, pushNewBranch } from "./gh.ts";
 import { asInput, requireFactoryProtocol, shortError, type FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -88,7 +88,9 @@ export async function initFactory(f: FactoryRuntime, input: unknown): Promise<Fa
   }
 
   await pushNewBranch(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", initTemplate(repo));
-  const pr = await openDraftPr(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", prBody(repo));
+  const pr = await openPr(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", prBody(repo), {
+    draft: true,
+  });
   const warnings: string[] = [];
   await ensureLabel(repo, LABEL, "5319e7", "Issues the AgentGate software factory works").catch((e) =>
     warnings.push(`Creating the ${LABEL} label failed (${shortError(e)}); create it before labelling issues`),

@@ -40,6 +40,7 @@ factory/                  any folder in a git repository
   rulings.md              your standing rulings, added to every brief
   stages/<stage>.md       replaces a stage's built-in brief: triage, spec, implement or review
   scorers/<name>.md       an AI judge that grades a sample of runs
+  scouts/<id>.md          the prompt of a scout source
   skills/<name>/SKILL.md  a skill installed into every repository the factory works in
 ```
 
@@ -328,6 +329,57 @@ What to expect:
 - Deliveries are limited to 1 MiB of UTF-8 text. The relay reads them, unlike sync traffic; see [webhook endpoints](../operations/relay.md#remote-mcp-endpoints).
 - The URL stays when the factory moves to another machine. Removing the source from `factory.yaml` deletes it.
 
+### Scouts
+
+A `scout` source looks for work on a schedule, such as slow endpoints, new errors or outdated dependencies. Each time, a T3 Code thread follows the prompt in `scouts/<id>.md` in a worktree of `repo`, and reports what it finds. Each finding becomes an item that goes through triage, a fix and review like any other.
+
+```yaml
+- id: perf
+  type: scout
+  repo: acme/api
+  schedule:
+    at: "09:00" # quoted, or some YAML tools read it as a number
+    days: [mon, thu] # default: every day
+    timezone: Europe/Copenhagen # default: UTC
+  mcp: [railway] # optional: MCP servers the thread may use
+  intake: auto # default; hold makes each finding wait for approve
+  dedupeWindow: 14d # default
+  enabled: true # default
+  model: # optional, like a stage file's
+    provider: claudeAgent
+    model: claude-sonnet-5-5
+```
+
+`scouts/perf.md`:
+
+```text
+Look at the p95 latency of every API endpoint over the last week in Railway. File each endpoint that got more than 20% slower, with the numbers and the commits around when it changed. Ignore endpoints with fewer than 100 requests.
+```
+
+- **When it runs**: `schedule: { every: 6h }` runs it that long after its last run, and at once the first time (at least `1h`). `at` runs it at that time on those days. A run that cannot start within an hour of its time, because the machine was off or intake was paused, is skipped until the next one. `agentgate factory scout perf`, the **Run now** button and the `agentgate__factory_scout` tool run it at once. `enabled: false` keeps it in the folder but runs it only when you ask.
+- **What it can use**: agentgate's tools, the repository, and the servers in `mcp`. A server must also be mapped to the repository's project, as for any session there. The thread changes no code and opens no PRs or issues.
+- **Its tickets**: every finding a run reports is filed; say in the prompt how many are worth a run. Each finding has a key the thread chooses, such as `slow-orders-list`. A finding whose key one of the scout's items has, open or finished within `dedupeWindow`, is skipped, and the thread sees those keys so it can reuse them. A reworded key gets through as a new item. With `intake: hold`, nothing is filed while 20 of its items wait for approval.
+- The board shows each scout's schedule, its next run, and what its last run filed, with a link to its thread.
+- Its last run is remembered on the factory's machine, so after the factory moves, an `every` scout runs once at the next chance.
+
+### Adding a webhook or a scout
+
+The app's Factory view has **New webhook** and **New scout** under Status → Sources. The CLI takes the same as YAML on stdin:
+
+```sh
+agentgate factory source add <<'YAML'
+source:
+  id: perf
+  type: scout
+  repo: acme/api
+  schedule: { every: 1d }
+prompt: |
+  Look at the p95 latency of every API endpoint over the last day.
+YAML
+```
+
+Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. The PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments, and adds `scouts/<id>.md` for a scout. A signed webhook's secret name is added under `secrets`; set its value after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
+
 ### By hand
 
 ```sh
@@ -350,7 +402,7 @@ Secrets are copied to every paired machine, so whichever machine runs the factor
 
 ## While it runs
 
-The app's **Factory** view is the place to follow and steer it. Items that wait for you come first, with their question, the recommendation, buttons to approve, answer, reject, retry or drop, and **Open in T3 Code** for the thread that asks. Below are the stages as columns; an item opens to its runs (each with its thread), the comments the factory posted and its events. Tabs show the status, sources and their webhook URLs, every machine's threads, the week's metrics and recent events, and Settings has pause and resume, reload, learning, the T3 Code sign-in, moving the factory, turning it off, and secrets (on a local connection only). It works the same whichever machine the app is connected to.
+The app's **Factory** view is the place to follow and steer it. Items that wait for you come first, with their question, the recommendation, buttons to approve, answer, reject, retry or drop, and **Open in T3 Code** for the thread that asks. Below are the stages as columns; an item opens to its runs (each with its thread), the comments the factory posted and its events. Tabs show the status, sources with their webhook URLs and scout schedules (and buttons to add a webhook or scout), every machine's threads, the week's metrics and recent events, and Settings has pause and resume, reload, learning, the T3 Code sign-in, moving the factory, turning it off, and secrets (on a local connection only). It works the same whichever machine the app is connected to.
 
 Watch the board with `agentgate factory status`, or turn on the page with `agentgate dashboard on` (add `--node` for another machine) and open `/factory` on that machine's address. The page needs no sign-in, like the [machine dashboard](../../README.md#machine-dashboard), so anyone on your tailnet can read item titles and questions while it is on. It shows the items by stage with their PRs, review rounds and open findings, what waits for you, capacity, sources, every machine's T3 Code threads, recent events, and the last 7 days' numbers: PRs merged, merge rate, reverts within 14 days, median hours to merge, how often a person stepped in per item, tokens per merged PR, and each judge's pass rate by folder commit. Agents read the same board through the `agentgate__factory_status` tool.
 
@@ -411,5 +463,7 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory secret set <NAME>` / `list` / `delete <NAME>`                       | Manage secrets; `set` reads the value from stdin.                                 |
 | `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                                           |
 | `factory learn`                                                              | Start the learning thread now.                                                    |
+| `factory scout <id>`                                                         | Run a scout now.                                                                  |
+| `factory source add [--json] < source.yaml`                                  | Open a PR that adds a webhook source or scout.                                    |
 
 The control API has the same operations under `/api/factory`.

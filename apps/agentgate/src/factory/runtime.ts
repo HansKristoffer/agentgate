@@ -39,7 +39,7 @@ export function requireFactoryProtocol(s: Store) {
     );
 }
 
-export type SourceType = "github" | "linear" | "webhook" | "manual";
+export type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
 /** thread: `_meta["dev.agentgate/t3Thread"]`, a label the shim adds, not proof; node: the machine that received the call. */
 export interface ToolCaller {
   thread?: string;

@@ -59,6 +59,13 @@ export const runDataSchema = z.discriminatedUnion("kind", [
   }),
   z.object({ kind: z.literal("judge"), run: z.string(), scorer: z.string() }),
   z.object({ kind: z.literal("learn"), pr: z.string(), head: z.string(), problems: z.array(z.string()) }),
+  /** Set when queued; `filed` (item keys) and `skipped` (finding keys) once the report is accepted. */
+  z.object({
+    kind: z.literal("scout"),
+    source: z.string(),
+    filed: z.array(z.string()).optional(),
+    skipped: z.array(z.string()).optional(),
+  }),
 ]);
 export type RunData = z.infer<typeof runDataSchema>;
 export type RunDataOf<K extends RunData["kind"]> = Extract<RunData, { kind: K }>;

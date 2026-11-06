@@ -85,8 +85,8 @@ machine that loses them leaves only its markers, and the work resumes from those
   merged init PR from moving a new factory.
 - A `taken` comment that fails leaves its issue unmarked, and after a move another machine's intake would take it
   too. The write-back shows as failed in `factory show`.
-- Webhook and manual items have no source to hold a marker, so they live only in their machine's tables and never
-  move.
+- Webhook, scout and manual items have no source to hold a marker, so they live only in their machine's tables and
+  never move.
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.
@@ -173,7 +173,9 @@ implement thread with. The mitigations:
   marker.
 
 A webhook source's delivery is outside the label gate entirely, which is why webhook sources default to
-`intake: hold`.
+`intake: hold`. A scout's findings are outside it too: a thread writes them from what its tools returned, such as logs
+and dashboards. Scouts default to `intake: auto` all the same, because the maintainer chose what the scout watches and
+wrote its prompt; `intake: hold` closes that path.
 
 ### The `/factory` page
 
@@ -197,6 +199,19 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - The URL's relay credentials are the synced `~hook:<source>` secret, so the URL survives a move to another machine.
   `~hook:` ids are agentgate's own, so a folder cannot declare them and `secret list` hides them.
 - The relay reads deliveries in clear, like remote MCP traffic, and queues nothing while the machine is offline.
+
+## Scouts and added sources
+
+- A scout run has no item. Its source is in the run's `checked` data, and the schedule counts from that source's last
+  run in this machine's tables ([`scouts.ts`](../../apps/agentgate/src/factory/scouts.ts)), so after a move an `every`
+  scout runs once at the next chance.
+- A finding is skipped by its key, which the thread chooses; the brief lists the keys of the scout's recent items so
+  it can reuse them. Nothing stops a reworded key, and nothing caps a run's findings but the report's size limit.
+- The board's `sources[].type` is a string, not an enum: other machines parse the factory machine's board with their
+  own schema, and an enum makes every older machine show the factory as offline when a source type is added.
+- `factory source add` edits `factory.yaml` as text and keeps the change only when parsing the result gives the old
+  file plus the new source (and its secret name). No YAML writer at hand keeps comments, and the folder is the
+  maintainer's file ([`source-add.ts`](../../apps/agentgate/src/factory/source-add.ts)).
 
 ## Known limits in v1
 

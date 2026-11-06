@@ -258,6 +258,24 @@ const ago = (at: number, now: number) => {
   return hours < 48 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
 };
 
+const inTime = (at: number, now: number) => {
+  const minutes = Math.round((at - now) / 60_000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return hours < 48 ? `in ${hours}h` : `in ${Math.round(hours / 24)}d`;
+};
+
+/** A scout's schedule, its next run and what its last one filed. */
+function scoutText(scout: NonNullable<FactoryBoard["sources"][number]["scout"]>, now: number) {
+  const next = scout.enabled ? when(scout.nextAt, `, next ${inTime(scout.nextAt ?? 0, now)}`) : ", disabled";
+  const last = scout.lastRun;
+  const ran = last
+    ? `, last run ${ago(last.at, now)} ${last.state === "reported" ? `filed ${last.filed}${when(last.skipped, ` (skipped ${last.skipped})`)}` : last.state}`
+    : "";
+  return `${scout.schedule}${next}${ran}`;
+}
+
 /** `text` when `value` is set, else nothing: the optional parts of a line. */
 const when = (value: unknown, text: string) => (value ? text : "");
 
@@ -322,8 +340,9 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   for (const s of b.sources) {
     const hook = s.webhook && (s.webhook.url ?? (s.webhook.configured ? "configured" : "not configured"));
     const polled = when(s.lastPollAt, `, polled ${ago(s.lastPollAt ?? 0, now)}`);
+    const scout = s.scout && scoutText(s.scout, now);
     lines.push(
-      `  ${s.id} (${s.type}, ${s.repo})${polled}${when(hook, `, webhook ${hook}`)}${when(s.error, `: ${s.error}`)}`,
+      `  ${s.id} (${s.type}, ${s.repo})${polled}${when(scout, `, ${scout}`)}${when(hook, `, webhook ${hook}`)}${when(s.error, `: ${s.error}`)}`,
     );
   }
 

@@ -265,13 +265,19 @@ function render(b) {
 	else {
 		var table = el("table");
 		var head = el("tr");
-		["Source", "Type", "Repository", "Last poll", "Webhook", "Problem"].forEach(function (t) { head.append(el("th", "", t)); });
+		["Source", "Type", "Repository", "Last poll or run", "Schedule", "Webhook", "Problem"].forEach(function (t) { head.append(el("th", "", t)); });
 		table.append(head);
 		b.sources.forEach(function (s) {
 			var tr = el("tr");
 			tr.append(
 				el("td", "", s.id), el("td", "", s.type), el("td", "", s.repo),
-				el("td", "", s.lastPollAt ? ago(s.lastPollAt) : "never"),
+				el("td", "", s.scout
+					? (s.scout.lastRun ? ago(s.scout.lastRun.at) + ", filed " + s.scout.lastRun.filed : "never")
+					: s.lastPollAt ? ago(s.lastPollAt) : "never"),
+				el("td", "", s.scout
+					? s.scout.schedule + (s.scout.enabled ? "" : ", disabled")
+						+ (s.scout.nextAt ? ", next " + new Date(s.scout.nextAt).toLocaleString() : "")
+					: ""),
 				el("td", "", s.webhook ? (s.webhook.configured ? "configured" : "not configured") : "none"),
 				el("td", "bad", s.error || ""));
 			table.append(tr);
