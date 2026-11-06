@@ -119,6 +119,11 @@ export const factorySourceSchema = z.discriminatedUnion("type", [
 ]);
 export type FactorySource = z.infer<typeof factorySourceSchema>;
 
+const stageNote = z
+  .object({ note: z.string().trim().min(1).max(4000) })
+  .strict()
+  .optional();
+
 /** `factory.yaml`. A public contract: `factory.schema.json` is generated from it for editors. */
 export const factoryConfigSchema = z
   .object({
@@ -150,6 +155,11 @@ export const factoryConfigSchema = z
       .strict()
       .prefault({}),
     sources: z.array(factorySourceSchema).max(50).default([]),
+    /** Per stage, a note for this project added after the stage's brief, built-in or replaced by stages/<stage>.md. */
+    stages: z
+      .object({ triage: stageNote, spec: stageNote, implement: stageNote, review: stageNote })
+      .strict()
+      .prefault({}),
     learning: z
       .object({ every: duration.default("7d") })
       .strict()

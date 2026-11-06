@@ -87,6 +87,9 @@ test("the example folder loads with every file type, defaults applied and source
     brief: "Reproduce the report with a failing test before you route it.",
   });
   expect(folder.stages.implement?.file).toEqual({ start: "manual", skill: "debug" });
+  expect(folder.config.stages).toEqual({
+    implement: { note: "Run `bun test` in the package you changed before you open the PR." },
+  });
   expect(folder.scorers.tests!.file.sample).toBe(50);
   expect(folder.rulings).toStartWith("# Rulings");
   expect(folder.skillsDir).toBe(join(FIXTURE, "skills"));
@@ -117,6 +120,11 @@ test.each([
     "a scorer whose pass is above its best label",
     edited("scorers/tests.md", (t) => t.replace("score: 1\n", "score: 0.4\n").replace("score: 0.5\n", "score: 0.3\n")),
     "scorers/tests.md: pass: 0.5 is above the best label's score, 0.4, so nothing passes",
+  ],
+  [
+    "a note for a stage that does not exist",
+    edited("factory.yaml", (t) => t.replace("stages:\n  implement:", "stages:\n  deploy:")),
+    "factory.yaml: stages.deploy: unknown key",
   ],
   [
     "a scout without its prompt",

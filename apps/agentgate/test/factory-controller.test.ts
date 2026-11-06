@@ -503,6 +503,32 @@ test("pause stops intake and new threads and the board says so, and resume start
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.intake).toBe("on");
 });
 
+test("a stage's note from factory.yaml follows its brief, whether built in or replaced by its stage file", async () => {
+  const n = await factoryNode(cleanup, {
+    config: {
+      stages: {
+        triage: { note: "Start the API with `docker compose up` before you reproduce." },
+        spec: { note: "Specs go in docs/specs/." },
+      },
+    },
+    files: { "stages/spec.md": "Write the spec as a numbered list of decisions." },
+  });
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const brief = String(launches(n)[0]!.args.message);
+  expect(brief).toStartWith("You triage one item for AgentGate's software factory.");
+  const note = "## For this project\n\nStart the API with `docker compose up` before you reproduce.";
+  expect(brief).toContain(note);
+  expect(brief.indexOf(note)).toBeLessThan(brief.indexOf("## The item"));
+  expect(brief).not.toContain("Specs go in docs/specs/.");
+
+  const { renderBrief } = await import("../src/factory/briefs.ts");
+  const spec = renderBrief(n.f, { kind: "spec", run: triageRuns(n)[0]!, builtIn: "The built-in spec brief." });
+  expect(spec).toStartWith(
+    "Write the spec as a numbered list of decisions.\n\n## For this project\n\nSpecs go in docs/specs/.",
+  );
+});
+
 test("a stage thread and the T3 subagents under it may use the servers its stage names, a judge thread none, and every other thread every server but not the run tools", async () => {
   const n = await factoryNode(cleanup, { files: { "stages/triage.md": "---\nmcp: [docs]\n---\n" } });
   const scope = (thread: string | undefined) => {

@@ -173,6 +173,37 @@
         ]
       }
     },
+    "stages": {
+      "default": {},
+      "type": "object",
+      "properties": {
+        "triage": {
+          "type": "object",
+          "properties": { "note": { "type": "string", "minLength": 1, "maxLength": 4000 } },
+          "required": ["note"],
+          "additionalProperties": false
+        },
+        "spec": {
+          "type": "object",
+          "properties": { "note": { "type": "string", "minLength": 1, "maxLength": 4000 } },
+          "required": ["note"],
+          "additionalProperties": false
+        },
+        "implement": {
+          "type": "object",
+          "properties": { "note": { "type": "string", "minLength": 1, "maxLength": 4000 } },
+          "required": ["note"],
+          "additionalProperties": false
+        },
+        "review": {
+          "type": "object",
+          "properties": { "note": { "type": "string", "minLength": 1, "maxLength": 4000 } },
+          "required": ["note"],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "learning": {
       "default": {},
       "type": "object",

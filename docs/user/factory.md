@@ -71,6 +71,7 @@ Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys 
 | `limits.nudges`                    | `3`        | Times the factory reminds an implement thread of a PR problem it sits on (0 to 10) before the item waits for you.                                                                                                                                                 |
 | `limits.stalledAfter`              | `15m`      | How long a thread may sit idle on a failing check, a conflict, a collaborator's comment or review findings before the factory nudges it, or sends the PR to you.                                                                                                  |
 | `sources`                          | `[]`       | Where items come from, up to 50. See [Sources](#sources).                                                                                                                                                                                                         |
+| `stages.<stage>.note`              |            | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 | `learning.every`                   | `7d`       | How often the learning thread runs, counted from the last one. It is skipped while no item finished since.                                                                                                                                                        |
 | `scoring.sample`                   | `25`       | The percentage of finished stage runs each judge grades (0 to 100). While fewer than 20 runs were graded in the last 7 days, judges grade every run; `0` turns them off.                                                                                          |
 
@@ -78,7 +79,17 @@ Repository names are matched without regard to case, and a source names a reposi
 
 ### stages/\<stage\>.md
 
-The file's body replaces the stage's built-in brief. Whatever the body says, the factory adds the item (fenced as untrusted data), `rulings.md` and how to report, so a stage file cannot leave them out. The frontmatter is optional:
+The file's body replaces the stage's built-in brief. To add to the built-in brief instead, for example how to run this project's tests, write a note in `factory.yaml`:
+
+```yaml
+stages:
+  triage:
+    note: Start the API with `docker compose up` before you reproduce.
+  implement:
+    note: Never change files under migrations/.
+```
+
+A note follows the brief, built in or from this file, so a project keeps getting the built-in brief's improvements. Whatever the body says, the factory adds the item (fenced as untrusted data), `rulings.md` and how to report, so a stage file cannot leave them out. The frontmatter is optional:
 
 | Key     | Default | Meaning                                                                                                                                                                                                                    |
 | ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -152,6 +163,9 @@ sources:
       encoding: hex
       prefix: "sha256="
       secret: secret:DESK_SIGNING
+stages:
+  implement:
+    note: Run `bun test` in the package you changed before you open the PR.
 learning:
   every: 14d
 ```

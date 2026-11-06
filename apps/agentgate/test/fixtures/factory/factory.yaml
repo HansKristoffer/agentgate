@@ -40,5 +40,8 @@ sources:
       days: [mon, thu]
       timezone: Europe/Copenhagen
     mcp: [railway]
+stages:
+  implement:
+    note: Run `bun test` in the package you changed before you open the PR.
 learning:
   every: 14d
