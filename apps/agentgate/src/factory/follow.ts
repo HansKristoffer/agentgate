@@ -108,10 +108,18 @@ export function setup(f: FactoryRuntime): void {
   f.peer.post("/op", async (c) => {
     const op = opSchema.safeParse(await jsonInput(c.req.raw));
     if (!op.success) return c.json({ error: "invalid factory operation" }, 400);
+    const { data } = op;
+    // An item or run this machine still holds after the factory moved away: the factory machine sends those here.
+    if (!f.isFactoryNode() && heldHere(f, data)) {
+      try {
+        return c.json((await runHere(f, data)) ?? null);
+      } catch (e) {
+        return c.json({ error: getErrorMessage(e) }, 400);
+      }
+    }
     // Two machines that disagree on where the factory runs would otherwise forward to each other.
     if (!f.isFactoryNode()) return c.json({ error: `${f.s.nodeId} does not run the factory` }, 409);
     try {
-      const { data } = op;
       if (data.kind === "tool") return c.json((await runTool(f, data.name, data.args, data.caller)) ?? null);
       const output: string[] = [];
       const io = { ...(data.stdin !== undefined && { stdin: data.stdin }), out: (line: string) => output.push(line) };

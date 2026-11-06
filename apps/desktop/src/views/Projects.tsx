@@ -9,6 +9,7 @@ import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
+import { InitDialog } from "./factory/Init.tsx";
 
 const FILES_GUIDE = "https://github.com/HansKristoffer/agentgate#env-files-between-machines";
 
@@ -34,6 +35,7 @@ export function Projects(props: ViewProps) {
   const [tools, setTools] = useState<ToolPreview[]>();
   /** The project whose env files are open. */
   const [files, setFiles] = useState<string>();
+  const [factoryRepo, setFactoryRepo] = useState<string>();
   const filesOf = (id: string) => data.projects.find((p) => p.id === id)?.files ?? [];
   /** The env file whose contents are open for editing, with the text this machine's store has. */
   const [fileEdit, setFileEdit] = useState<{ path: string; content: string; sha256: string }>();
@@ -158,6 +160,7 @@ export function Projects(props: ViewProps) {
                     ),
                 },
                 { label: "Env files", onAction: () => setFiles(p.id) },
+                { label: "Start a factory", onAction: () => setFactoryRepo(p.id) },
                 mirrorItem(p.id),
                 {
                   label: "Delete",
@@ -465,6 +468,7 @@ export function Projects(props: ViewProps) {
           )}
         </Modal>
       )}
+      {factoryRepo && <InitDialog {...props} repo={factoryRepo} close={() => setFactoryRepo(undefined)} />}
       {tools && (
         <Modal title="Tools visible to this project" close={() => setTools(undefined)}>
           <div className="tool-list">

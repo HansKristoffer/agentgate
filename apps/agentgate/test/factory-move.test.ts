@@ -254,3 +254,45 @@ test("with a machine offline and labelled issues held, an hour of loops reads no
   expect(bf.loops.map((l) => l.name)).not.toContain("factory-move");
   expect(keys(bf)).toEqual([]);
 });
+
+test("after a move, show, approve and drop on b reach the item a still holds, also through b's API, and an unreachable a gets today's answer", async () => {
+  const { a, b, bf, github, key, moveToB, aGoesQuiet } = await twoMachines();
+  github.open(1);
+  await a.intake();
+  await a.dispatch();
+  await idle(a.f);
+  await moveToB();
+  await loop(bf, "factory-intake");
+  const row = (await buildBoard(bf, { includeWebhookUrls: false })).items.find((i) => i.key === key(1))!;
+  expect(row).toMatchObject({ heldBy: "a" });
+  expect(bf.isFactoryNode()).toBe(true);
+  expect(a.f.isFactoryNode()).toBe(false);
+
+  const output: string[] = [];
+  expect(await runCommand(bf, "show", [row.id], { out: (line) => output.push(line) })).toBe(0);
+  expect(output[0]).toStartWith(`${key(1)} Issue 1 (${a.repo}, triage)`);
+  await expect(runCommand(bf, "approve", [key(1)], { out: () => {} })).rejects.toThrow(
+    `${key(1)} has no question to approve`,
+  );
+
+  const api = app(b.ctx);
+  const dropped = await api.fetch(
+    new Request(`http://127.0.0.1:7878/api/factory/items/${row.id}/drop`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7878", "content-type": "application/json" },
+      body: JSON.stringify({ reason: "not now" }),
+    }),
+    { listener: "loopback" },
+  );
+  expect(await dropped.json()).toEqual({ message: `Dropped ${key(1)}` });
+  await idle(a.f);
+  expect(items.byKey(a.s, key(1))!.phase).toBe("closed");
+
+  // Once a has not been seen for a minute, b answers as before.
+  github.open(2, { node: "a" });
+  await loop(bf, "factory-intake");
+  aGoesQuiet();
+  await expect(runCommand(bf, "drop", [key(2)], { out: () => {} })).rejects.toThrow(
+    `b holds no factory item ${key(2)}`,
+  );
+});

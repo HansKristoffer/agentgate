@@ -22,8 +22,8 @@ import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { items } from "./db.ts";
 import { fetcher, folderPath, pruneFolders } from "./folder.ts";
-import { branchProtected, defaultBranch } from "./gh.ts";
-import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { branchProtected, defaultBranch, prState } from "./gh.ts";
+import { asInput, commandRoute, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves, and the
@@ -239,11 +239,33 @@ function sync(f: FactoryRuntime, force = false): Promise<void> {
   return run;
 }
 
+/** A factory `init` turned on at its branch follows the default branch once the init PR merges. Checked before the
+ * fetch and while a failed fetch backs off: GitHub usually deletes a merged PR's branch, so its fetch fails. */
+async function followInit(f: FactoryRuntime): Promise<boolean> {
+  const { s } = f;
+  const pointer = f.pointer();
+  if (!pointer?.init || !f.isFactoryNode()) return false;
+  const state = await prState(pointer.repo, pointer.init.pr).catch(() => "OPEN" as const);
+  if (state === "OPEN") return false;
+  const { init, ref, ...rest } = pointer;
+  const merged = state === "MERGED";
+  patchSettings(s, { factory: merged ? rest : { ...rest, ...(ref && { ref }) } }, revision(s, "setting", "settings"));
+  f.events.emit({
+    kind: "note",
+    text: merged
+      ? `The init PR #${init.pr} merged; the factory follows ${pointer.repo}'s default branch`
+      : `The init PR #${init.pr} was closed without merging; the factory still runs ${ref}`,
+  });
+  return true;
+}
+
 async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   const { s, events } = f;
+  // A new branch owes nothing to the old one's failed fetches.
+  if (await followInit(f)) Object.assign(m, { failures: 0, retryAt: 0 });
   const pointer = f.pointer();
   if (!pointer || !f.isFactoryNode()) return;
-  if (!force && m.retryAt > s.now()) return;
+  if (!force && m.retryAt > s.now() && !pointer.init) return;
 
   const state = readState(s, pointer);
   const save = (next: FolderState) => {
@@ -338,10 +360,12 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
 }
 
 /** An always-on machine is the natural host; otherwise this one. */
-const defaultNode = (s: Store) => s.list("node").find((n) => n.alwaysOn)?.id ?? s.nodeId;
+export const defaultNode = (s: Store) => s.list("node").find((n) => n.alwaysOn)?.id ?? s.nodeId;
 
 /** `agentgate factory use` and `PUT /api/factory`. On the factory machine, the folder is fetched before it returns. */
-async function useFactory(f: FactoryRuntime, input: unknown) {
+/** `agentgate factory use` and `PUT /api/factory`; `factory init` adds the PR whose merge moves it to the default
+ * branch. */
+export async function useFactory(f: FactoryRuntime, input: unknown, extra: { init?: { pr: number } } = {}) {
   const { s } = f;
   const parsed = factoryUseInputSchema.parse(input);
   requireFactoryProtocol(s);
@@ -352,6 +376,7 @@ async function useFactory(f: FactoryRuntime, input: unknown) {
     path: folderPath(parsed.path ?? ""),
     ...(parsed.ref && { ref: parsed.ref }),
     node,
+    ...(extra.init && { init: extra.init }),
   };
   patchSettings(s, { factory: pointer }, revision(s, "setting", "settings"));
   await sync(f, true);
@@ -361,7 +386,7 @@ async function useFactory(f: FactoryRuntime, input: unknown) {
 /** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
  * pushes where the plan allows it (free private repositories cannot). So `use` says once when the branch is open.
  * A tag, or a GitHub that cannot be asked, says nothing. */
-async function protectionWarning(pointer: { repo: string; ref?: string }) {
+export async function protectionWarning(pointer: { repo: string; ref?: string }) {
   try {
     const branch = pointer.ref ?? (await defaultBranch(pointer.repo));
     if (await branchProtected(pointer.repo, branch)) return {};
@@ -435,7 +460,8 @@ export function setup(f: FactoryRuntime): void {
     return c.json(await asInput(() => useFactory(f, body)));
   });
   f.api.delete("/", async (c) => c.json(await asInput(() => turnOff(f))));
-  f.api.post("/reload", async (c) => c.json(await asInput(() => reloadFactory(f))));
+  // Through the command, which reaches the factory machine from any machine, as the CLI does.
+  f.api.post("/reload", async (c) => c.json({ message: (await commandRoute(f, "reload", [])).join("\n") }));
 
   f.loops.push({ name: "factory-folder", everyMs: 2 * 60_000, where: "factory-node", run: () => sync(f) });
   f.boardParts.push(async () => factoryStatus(f));

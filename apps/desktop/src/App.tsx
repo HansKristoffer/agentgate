@@ -8,6 +8,7 @@ import {
   Boxes,
   ChevronRight,
   CircleHelp,
+  Factory as FactoryIcon,
   FolderGit2,
   LayoutDashboard,
   Monitor,
@@ -23,6 +24,7 @@ import {
   Accounts,
   ActivityView,
   Dashboard,
+  Factory,
   Nodes,
   Projects,
   Servers,
@@ -45,6 +47,7 @@ const navigation = [
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "t3", title: "T3 Code", icon: SquareTerminal },
+  { id: "factory", title: "Factory", icon: FactoryIcon },
   { id: "activity", title: "Activity", icon: Activity },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
@@ -57,6 +60,7 @@ const descriptions: Record<View, string> = {
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   t3: "Hand a thread to another machine and back, with its session and code.",
+  factory: "Issues worked in T3 Code threads, up to a PR ready for you. See what waits for you and steer it.",
   activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
@@ -209,6 +213,7 @@ export function App() {
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
+    factory: <Factory {...props} />,
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };

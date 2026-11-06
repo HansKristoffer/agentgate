@@ -50,6 +50,14 @@ results in the PR that ships the change: each step, what you saw, and anything t
    its secret, and one with a wrong signature.
    - The signed one answers `202` and adds a `held` item; the other answers `401` and adds nothing.
 
+7. **Start from the app.** With the factory off, press **Start a factory** in the app's Factory view for a second scratch
+   repository.
+   - A draft PR adds `factory/factory.yaml` and `factory/rulings.md` on `agentgate/factory-init`, the `factory` label
+     exists, and the board shows the factory on at that branch.
+   - Label an issue: it shows under Needs you or a stage, and **Open in T3 Code** opens its thread. Try it on a thread
+     another machine holds, and record whether that opens.
+   - Merge the PR: within 2 minutes the events say the factory follows the default branch.
+
 ## Things to record
 
 - The status the implement thread shows in the board's threads while a T3 Code subagent it started works (`waiting`,

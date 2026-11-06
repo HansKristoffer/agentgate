@@ -15,7 +15,10 @@ Every paired machine must run a release that knows the factory before you turn i
 
 ## Turning it on and off
 
+The quickest start is `agentgate factory init acme/api`, or **Start a factory** in the app's Factory view (or a project's menu in Projects). It pushes a `factory/` folder with a `factory.yaml` for that repository (one GitHub source on the label `factory`) and an empty `rulings.md` to the branch `agentgate/factory-init`, opens a draft PR, creates the `factory` label, and turns the factory on at that branch at once. When you merge the PR, the factory moves to the default branch by itself; if you close it, the factory stays on the branch until you run `use`. Init refuses while a factory is on, and when the repository already has `factory/factory.yaml` or an `agentgate/factory-init` branch. It writes to GitHub with the `gh` login of the machine it runs on, which is the machine the app is connected to.
+
 ```sh
+agentgate factory init acme/api                         # a template PR on acme/api, and the factory on at its branch
 agentgate factory use acme/factory                      # factory.yaml at the repository's root
 agentgate factory use acme/tools:factory --ref stable   # the factory folder in acme/tools, at a branch or tag
 agentgate factory use acme/factory --node srv           # run it on srv instead of the always-on machine
@@ -347,6 +350,8 @@ Secrets are copied to every paired machine, so whichever machine runs the factor
 
 ## While it runs
 
+The app's **Factory** view is the place to follow and steer it. Items that wait for you come first, with their question, the recommendation, buttons to approve, answer, reject, retry or drop, and **Open in T3 Code** for the thread that asks. Below are the stages as columns; an item opens to its runs (each with its thread), the comments the factory posted and its events. Tabs show the status, sources and their webhook URLs, every machine's threads, the week's metrics and recent events, and Settings has pause and resume, reload, learning, the T3 Code sign-in, moving the factory, turning it off, and secrets (on a local connection only). It works the same whichever machine the app is connected to.
+
 Watch the board with `agentgate factory status`, or turn on the page with `agentgate dashboard on` (add `--node` for another machine) and open `/factory` on that machine's address. The page needs no sign-in, like the [machine dashboard](../../README.md#machine-dashboard), so anyone on your tailnet can read item titles and questions while it is on. It shows the items by stage with their PRs, review rounds and open findings, what waits for you, capacity, sources, every machine's T3 Code threads, recent events, and the last 7 days' numbers: PRs merged, merge rate, reverts within 14 days, median hours to merge, how often a person stepped in per item, tokens per merged PR, and each judge's pass rate by folder commit. Agents read the same board through the `agentgate__factory_status` tool.
 
 An item is in one of these stages: `held`, `triage`, `spec`, `implement`, `pr` (a draft PR exists and its checks run), `review`, `ready`, and when it ends, `shipped` (the PR was merged) or `closed`. Items are named by their key, such as `api-42`, or their id; a bare number works while only one item has it.
@@ -387,23 +392,24 @@ On the PR, the factory wakes the implement thread itself when the thread sits id
 One machine runs the factory. It polls the sources, starts the threads in its T3 Code, and holds the items. On your other machines, `agentgate factory` commands and the agents' factory tools reach it over Tailscale or the relay, and `status` shows its board.
 
 - **Handing off a stage thread** works like any thread (`agentgate handoff`). The run goes with it: the thread reports from the other machine, and the factory reaches it there. A moved thread is not reminded when its turn ends without a report, and its spec card must be answered in T3 Code on that machine.
-- **Moving the factory**: `agentgate factory use <the same folder> --node <machine>`. Each machine finishes the items it already holds, and keeps its T3 Code sign-in until the last one is done. The new machine's intake leaves alone every issue another machine marked as taken, and its board shows them with the machine that holds them. One whose machine has not been seen for a minute shows as `orphaned`, and `agentgate factory retry owner/repo#42` (or its key) takes it over, starting again at the stage it reached; `retry` refuses while that machine is online. Webhook and hand-added items have no issue to mark, so they stay with their machine.
+- **Moving the factory**: `agentgate factory use <the same folder> --node <machine>`. Each machine finishes the items it already holds, and keeps its T3 Code sign-in until the last one is done. The new machine's intake leaves alone every issue another machine marked as taken, and its board shows them with the machine that holds them. Show, approve, reject, retry and drop on such an issue reach the machine that holds it, from any machine. One whose machine has not been seen for a minute shows as `orphaned`, and `agentgate factory retry owner/repo#42` (or its key) takes it over, starting again at the stage it reached; `retry` refuses while that machine is online. Webhook and hand-added items have no issue to mark, so they stay with their machine.
 - Dropping an item while its thread is being handed off leaves the thread running on the machine it arrives on. Stop it there in T3 Code.
 
 ## Commands
 
-| Command                                                                      | What it does                                                   |
-| ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]` | Turn the factory on, or point it at another folder or machine. |
-| `factory off`                                                                | Turn it off.                                                   |
-| `factory reload`                                                             | Fetch and check the folder now.                                |
-| `factory status [--json]`                                                    | The board, with the webhook URLs.                              |
-| `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                           |
-| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                               |
-| `factory show <item> [--json]`                                               | An item's runs, comments and events.                           |
-| `factory pause` / `resume`                                                   | Stop intake, new threads and nudges, and start them again.     |
-| `factory secret set <NAME>` / `list` / `delete <NAME>`                       | Manage secrets; `set` reads the value from stdin.              |
-| `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                        |
-| `factory learn`                                                              | Start the learning thread now.                                 |
+| Command                                                                      | What it does                                                                      |
+| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `factory init <owner/repo> [--node <machine>] [--json]`                      | Start a factory in a repository: a template PR, and the factory on at its branch. |
+| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]` | Turn the factory on, or point it at another folder or machine.                    |
+| `factory off`                                                                | Turn it off.                                                                      |
+| `factory reload`                                                             | Fetch and check the folder now.                                                   |
+| `factory status [--json]`                                                    | The board, with the webhook URLs.                                                 |
+| `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                                              |
+| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                                                  |
+| `factory show <item> [--json]`                                               | An item's runs, comments and events.                                              |
+| `factory pause` / `resume`                                                   | Stop intake, new threads and nudges, and start them again.                        |
+| `factory secret set <NAME>` / `list` / `delete <NAME>`                       | Manage secrets; `set` reads the value from stdin.                                 |
+| `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                                           |
+| `factory learn`                                                              | Start the learning thread now.                                                    |
 
 The control API has the same operations under `/api/factory`.

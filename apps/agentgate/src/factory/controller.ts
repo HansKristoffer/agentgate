@@ -52,10 +52,9 @@ import { renderComment } from "./markers.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { recordRun } from "./records.ts";
 import {
-  asInput,
+  commandRoute,
   later,
   logError,
-  runCommand,
   shortError,
   withItem,
   type FactoryRuntime,
@@ -1357,6 +1356,26 @@ function elsewhereRows(f: FactoryRuntime): BoardItem[] {
     );
 }
 
+/** The machine another machine's marker says holds `ref` (a board row's id, or its key), while it answers. */
+export function holderOf(f: FactoryRuntime, ref: string): string | undefined {
+  const lower = ref.toLowerCase();
+  const row = elsewhereRows(f).find((r) => r.id === ref || r.key === lower);
+  return row && !row.needsYou ? row.heldBy : undefined;
+}
+
+/** An item command for an item this machine does not hold, sent to the machine that does: after the factory moved,
+ * the old machine still drives its items, and every machine reaches them through the factory machine. Undefined when
+ * this machine holds it, or no reachable machine does. */
+async function viaHolder(f: FactoryRuntime, name: string, args: string[], ref: string) {
+  if (findItem(f, ref)) return undefined;
+  const holder = holderOf(f, ref);
+  if (!holder) return undefined;
+  return peerCall<{ code: number; output: string[] }>(f.s, holder, "/factory/op", {
+    json: { kind: "command", name, args },
+    timeout: 100_000,
+  });
+}
+
 function boardItems(f: FactoryRuntime): BoardItem[] {
   const list = items.list(f.s, { finishedSince: f.s.now() - 7 * DAY }).map((item) => boardItem(f, item));
   return [...list, ...elsewhereRows(f)];
@@ -1479,13 +1498,6 @@ const triage = (f: FactoryRuntime) => ({
 
 /** Runs a command through `runCommand`, so a machine that does not run the factory reaches the one that does, and
  * answers like a route: a failure is a 400 with the command's message. */
-async function commandRoute(f: FactoryRuntime, name: string, args: string[]) {
-  const output: string[] = [];
-  const code = await asInput(() => runCommand(f, name, args, { out: (line) => output.push(line) }));
-  if (code) throw new HTTPException(400, { message: output.join("\n") || `factory ${name} failed` });
-  return output;
-}
-
 export function setup(f: FactoryRuntime): void {
   f.sources.set("manual", { type: "manual" });
   f.runKinds.set("triage", triage(f));
@@ -1563,6 +1575,11 @@ export function setup(f: FactoryRuntime): void {
           return 2;
         }
         // On the machine that holds the item: the factory machine, or one the factory moved away from.
+        const there = await viaHolder(f, action, args, positionals[0]!);
+        if (there) {
+          there.output.forEach((line) => io.out(line));
+          return there.code;
+        }
         io.out(await itemAction(f, positionals[0]!, action, values.reason));
         return 0;
       },
@@ -1578,6 +1595,11 @@ export function setup(f: FactoryRuntime): void {
       if (positionals.length !== 1) {
         io.out("usage: agentgate factory show <item> [--json]");
         return 2;
+      }
+      const there = await viaHolder(f, "show", args, positionals[0]!);
+      if (there) {
+        there.output.forEach((line) => io.out(line));
+        return there.code;
       }
       const item = findItem(f, positionals[0]!);
       if (!item) throw new Error(`${f.s.nodeId} holds no factory item ${positionals[0]}`);

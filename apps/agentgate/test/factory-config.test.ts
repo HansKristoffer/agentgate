@@ -15,22 +15,20 @@ import { startNodes } from "./fixtures/nodes.ts";
 const FIXTURE = join(import.meta.dir, "fixtures", "factory");
 const realFetch = fetcher.fetch;
 const cleanup: (() => Promise<void> | void)[] = [];
+const realGh = host.gh;
 beforeEach(() => {
   fetcher.root = tmp("agentgate-factory-home-");
+  // No test reaches GitHub: `use` asks it whether the folder's branch is protected.
+  host.gh = async () => undefined;
 });
 afterEach(async () => {
+  host.gh = realGh;
   fetcher.fetch = realFetch;
   for (const fn of cleanup.splice(0)) await fn();
 });
 afterAll(removeTmp);
 
-const realGh = host.gh;
 function node(name = "a") {
-  // No test reaches GitHub: `use` asks it whether the folder's branch is protected.
-  host.gh = async () => undefined;
-  cleanup.push(() => {
-    host.gh = realGh;
-  });
   const s = new Store(":memory:");
   s.setLocal("node", name);
   s.setLocal("adminToken", "admin-secret");
@@ -232,6 +230,36 @@ test("use waits for every machine to understand the factory, and only the machin
   expect(off).toEqual(["The factory was turned off"]);
   await fetchLoop(b!.ctx.factory)();
   expect(calls).toHaveLength(1);
+});
+
+test("POST /api/factory/reload on another machine reloads the factory machine's folder, and says when it cannot reach it", async () => {
+  const [a, b] = await startNodes("a", "b");
+  let bStopped = false;
+  cleanup.push(() => Promise.all([a!.stop(), bStopped ? undefined : b!.stop()]).then(() => {}));
+  const { calls } = fakeFetcher();
+  expect((await command(a!.ctx.factory, "use", "acme/factory", "--node", "b")).code).toBe(0);
+  await pullPeer(
+    b!.s,
+    peers(b!.s).find((p) => p.node === "a")!,
+  );
+  await fetchLoop(b!.ctx.factory)();
+  const fetched = calls.length;
+  const reload = () =>
+    app(a!.ctx).fetch(
+      new Request("http://127.0.0.1:7878/api/factory/reload", { method: "POST", headers: { host: "127.0.0.1:7878" } }),
+      { listener: "loopback" },
+    );
+
+  const res = await reload();
+  expect(res.status).toBe(200);
+  expect(((await res.json()) as { message: string }).message).toContain("Factory folder acme/factory, run by b");
+  expect(calls).toHaveLength(fetched + 1);
+
+  await b!.stop();
+  bStopped = true;
+  const down = await reload();
+  expect(down.status).toBe(400);
+  expect(((await down.json()) as { error: string }).error).toContain("this machine cannot reach it");
 });
 
 test("use warns when GitHub does not protect the folder's branch, and says nothing when it does or cannot tell", async () => {

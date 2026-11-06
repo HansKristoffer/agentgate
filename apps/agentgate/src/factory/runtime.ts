@@ -239,6 +239,15 @@ export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/** For routes: the command run as the CLI runs it, forwarded to the factory machine when it runs elsewhere; a command
+ * that fails is a 400 with its output. */
+export async function commandRoute(f: FactoryRuntime, name: string, args: string[]) {
+  const output: string[] = [];
+  const code = await asInput(() => runCommand(f, name, args, { out: (line) => output.push(line) }));
+  if (code) throw new HTTPException(400, { message: output.join("\n") || `factory ${name} failed` });
+  return output;
+}
+
 /** A loop as the daemon schedules it: a factory-node loop does nothing on other machines. */
 export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
   if (loop.where === "factory-node" && !f.isFactoryNode()) return;

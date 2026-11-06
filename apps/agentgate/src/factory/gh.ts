@@ -158,6 +158,113 @@ async function post(what: string, path: string, payload: unknown): Promise<PostR
     : { status: "uncertain", error: `gh could not ${what}, and GitHub gave no answer` };
 }
 
+// ---- starting a factory folder in a repository (factory init)
+
+/** Whether GitHub answered a read with "Not Found". */
+const notFound = (r: { ok: boolean; out: string } | undefined) => !!r && !r.ok && apiMessage(r.out) === "Not Found";
+
+/** Whether a file exists on the default branch. */
+export async function fileExists(repo: string, path: string): Promise<boolean> {
+  const r = await host.gh(["api", `repos/${repo}/contents/${path}`, "--jq", ".path"]);
+  if (notFound(r)) return false;
+  await gh(`read ${path} in ${repo}`, ["api", `repos/${repo}/contents/${path}`, "--jq", ".path"]);
+  return true;
+}
+
+/** Whether a branch exists. */
+export async function branchExists(repo: string, branch: string): Promise<boolean> {
+  const r = await host.gh(["api", `repos/${repo}/branches/${encodeURIComponent(branch)}`, "--jq", ".name"]);
+  if (notFound(r)) return false;
+  await gh(`read the branch ${branch} of ${repo}`, ["api", `repos/${repo}/branches/${encodeURIComponent(branch)}`]);
+  return true;
+}
+
+const sha = z.object({ sha: z.string().min(1) });
+
+/** One commit on a new branch from the default branch's head, adding `files` (path to text). Throws when the branch
+ * exists or the repository has no commits. */
+export async function pushNewBranch(repo: string, branch: string, message: string, files: Record<string, string>) {
+  const base = await defaultBranch(repo);
+  const head = await ghJson(
+    `read the head of ${base} in ${repo} (an empty repository has none)`,
+    z.object({ object: sha }),
+    ["api", `repos/${repo}/git/ref/heads/${base}`],
+  ).then((r) => r.object.sha);
+  const parent = await ghJson(`read commit ${head} of ${repo}`, z.object({ tree: sha }), [
+    "api",
+    `repos/${repo}/git/commits/${head}`,
+  ]);
+  const post = (what: string, path: string, payload: unknown) =>
+    ghJson(what, sha, ["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload));
+  const tree = await post(`write the files to ${repo}`, `repos/${repo}/git/trees`, {
+    base_tree: parent.tree.sha,
+    tree: Object.entries(files).map(([path, content]) => ({ path, mode: "100644", type: "blob", content })),
+  });
+  const commit = await post(`commit the files to ${repo}`, `repos/${repo}/git/commits`, {
+    message,
+    tree: tree.sha,
+    parents: [head],
+  });
+  await gh(
+    `create the branch ${branch} in ${repo}`,
+    ["api", `repos/${repo}/git/refs`, "--method", "POST", "--input", "-"],
+    JSON.stringify({ ref: `refs/heads/${branch}`, sha: commit.sha }),
+  );
+}
+
+/** Opens a draft PR from `head` to the default branch. */
+export async function openDraftPr(repo: string, head: string, title: string, body: string) {
+  const base = await defaultBranch(repo);
+  const out = await gh(
+    `open a pull request from ${head} in ${repo}`,
+    ["pr", "create", "--repo", repo, "--head", head, "--base", base, "--draft", "--title", title, "--body-file", "-"],
+    body,
+  );
+  const url = out.trim().split("\n").at(-1)!.trim();
+  const { number } = prOf(url);
+  return { url, number };
+}
+
+/** The open PR whose head is `branch`, if there is one. */
+export async function openPrFor(repo: string, branch: string): Promise<string | undefined> {
+  const list = await ghJson(`list pull requests from ${branch} in ${repo}`, z.array(z.object({ url: z.string() })), [
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--head",
+    branch,
+    "--state",
+    "open",
+    "--json",
+    "url",
+  ]);
+  return list[0]?.url;
+}
+
+/** Creates a label unless the repository has it. */
+export async function ensureLabel(repo: string, name: string, color: string, description: string) {
+  const r = await host.gh(["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"]);
+  if (r?.ok) return;
+  if (!notFound(r))
+    await gh(`read the label ${name} in ${repo}`, ["api", `repos/${repo}/labels/${encodeURIComponent(name)}`]);
+  await gh(
+    `create the label ${name} in ${repo}`,
+    ["api", `repos/${repo}/labels`, "--method", "POST", "--input", "-"],
+    JSON.stringify({ name, color, description }),
+  );
+}
+
+/** A PR's state. */
+export async function prState(repo: string, number: number): Promise<"OPEN" | "CLOSED" | "MERGED"> {
+  const view = await ghJson(
+    `read the state of ${repo}#${number}`,
+    z.object({ state: z.enum(["OPEN", "CLOSED", "MERGED"]) }),
+    ["pr", "view", String(number), "--repo", repo, "--json", "state"],
+  );
+  return view.state;
+}
+
 export async function postIssueComment(repo: string, number: number, body: string): Promise<PostResult> {
   return post(`comment on ${repo}#${number}`, `repos/${repo}/issues/${number}/comments`, { body });
 }

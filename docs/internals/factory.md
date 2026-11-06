@@ -74,6 +74,15 @@ machine that loses them leaves only its markers, and the work resumes from those
 
 - Moving the factory moves no item. The old machine keeps driving the items it holds, and keeps its T3 MCP sign-in
   until the last one finishes. Nothing asks other machines what they hold, so an offline machine costs no polling.
+- An item command (`show`, `approve`, `reject`, `retry`, `drop`) for an issue another machine holds goes from the
+  factory machine to that machine (`viaHolder` in [`controller.ts`](../../apps/agentgate/src/factory/controller.ts)).
+  `/peer/factory/op` answers for an item or run the machine still holds even when it no longer runs the factory;
+  everything else there it refuses, so two machines that disagree on where the factory runs never forward to each
+  other in a loop.
+- `factory init` keeps its PR's number in the pointer (`init.pr`). The folder loop asks GitHub about that PR before
+  it fetches, and while a failed fetch backs off, because GitHub usually deletes a merged PR's branch: once it merged,
+  the pointer drops its ref and follows the default branch. Matching the number, not the branch name, keeps an old
+  merged init PR from moving a new factory.
 - A `taken` comment that fails leaves its issue unmarked, and after a move another machine's intake would take it
   too. The write-back shows as failed in `factory show`.
 - Webhook and manual items have no source to hold a marker, so they live only in their machine's tables and never

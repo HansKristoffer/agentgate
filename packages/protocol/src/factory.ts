@@ -178,8 +178,13 @@ export const factoryPointerSchema = z.object({
   path: z.string().max(200).default(""), // folder inside the repo; "" is the root
   ref: z.string().min(1).max(200).optional(), // default: the repo's default branch
   node: z.string().min(1).max(512), // the machine that runs the factory
+  // Set by `factory init`: the PR that adds the folder. Once it merges, the factory follows the default branch.
+  init: z.object({ pr: z.number().int().positive() }).optional(),
 });
 export type FactoryPointer = z.infer<typeof factoryPointerSchema>;
+
+/** The branch `factory init` pushes the template to. */
+export const FACTORY_INIT_BRANCH = "agentgate/factory-init";
 
 /** The synced `secret` record. `~hook:` ids are agentgate's own (webhook URL keys), never declared in a folder. */
 export const secretRecordSchema = z.object({
@@ -524,6 +529,17 @@ export const factoryItemDetailSchema = z.object({
 });
 export type FactoryItemDetail = z.infer<typeof factoryItemDetailSchema>;
 
+/** What `factory init` did: the draft PR with the template, and the factory, already on at its branch. */
+export const factoryInitResultSchema = z.object({
+  prUrl: z.string().url(),
+  branch: z.literal(FACTORY_INIT_BRANCH),
+  /** What init could not set up, each a sentence for the person. */
+  warnings: z.array(z.string()),
+  factory: factoryBoardSchema.shape.factory,
+  config: factoryBoardSchema.shape.config,
+});
+export type FactoryInitResult = z.infer<typeof factoryInitResultSchema>;
+
 /** PUT /api/factory */
 export const factoryUseInputSchema = z
   .object({
@@ -533,6 +549,9 @@ export const factoryUseInputSchema = z
     node: factoryPointerSchema.shape.node.optional(),
   })
   .strict();
+/** POST /api/factory/init, `agentgate factory init` */
+export const factoryInitInputSchema = z.object({ repo, node: factoryPointerSchema.shape.node.optional() }).strict();
+export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;
 /** POST /api/factory/items */
 export const factoryItemInputSchema = z
   .object({

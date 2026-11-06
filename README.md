@@ -255,11 +255,10 @@ The factory comments on the issue when it takes it in, when it triages it, when 
 
 To start one:
 
-1. Write the factory as a folder in a git repository, with a `factory.yaml` that names its repositories and sources, plus optional stage briefs, judges and skills. The [factory guide](docs/user/factory.md) has the format and an example.
-2. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary` or `--mcp`). Stage threads report back through it.
-3. Run `agentgate factory use owner/repo[:folder]`. The factory runs on your always-on machine, or the one you name with `--node`. Other machines forward factory commands to it.
-4. Run `agentgate dashboard on` on that machine and open `/factory` on its address to watch the board, or run `agentgate factory status`.
-5. Label an issue with your source's label. The factory looks every 2 minutes.
+1. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary` or `--mcp`). Stage threads report back through it.
+2. Press **Start a factory** in the app's Factory view, or run `agentgate factory init owner/repo`. It opens a draft PR that adds a `factory/` folder to the repository and turns the factory on at that PR's branch; once you merge the PR, it follows the default branch. To use a folder you wrote yourself (the [factory guide](docs/user/factory.md) has the format and an example), run `agentgate factory use owner/repo[:folder]` instead. The factory runs on your always-on machine, or the one you name with `--node`. Other machines forward factory commands to it.
+3. Watch it in the app's Factory view, which shows what waits for you, every stage, and links that open each thread in T3 Code. `agentgate factory status` and the `/factory` page (`agentgate dashboard on`) show the same board.
+4. Label an issue with your source's label (`factory` for a folder `init` made). The factory looks every 2 minutes.
 
 You act in three places:
 
