@@ -202,7 +202,7 @@ export const itemPhases = [
   "closed",
 ] as const;
 export type ItemPhase = (typeof itemPhases)[number];
-export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn", "replay"] as const;
+export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn"] as const;
 export type RunKind = (typeof runKinds)[number];
 /** waiting: the thread asked a person a question. silent: the thread ended without a report. */
 export const runStates = [
@@ -308,7 +308,6 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
       lessons: z.array(z.string().min(1).max(2000)).max(50),
     })
     .strict(),
-  z.object({ kind: z.literal("replay"), patch: z.string().max(256 * 1024), testsPassed: z.boolean() }).strict(),
 ]);
 export type StageResult = z.infer<typeof stageResultSchema>;
 

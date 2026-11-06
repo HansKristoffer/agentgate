@@ -26,7 +26,6 @@ const RESULTS: Record<RunKind, string> = {
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
   learn:
     '`done` needs `result: { kind: "learn", prUrl?, lessons }`; report `nothing-to-do` when there is nothing to learn.',
-  replay: '`done` needs `result: { kind: "replay", patch, testsPassed }`.',
 };
 
 /** A fence longer than any run of backticks in the text, so the text cannot close it. */
