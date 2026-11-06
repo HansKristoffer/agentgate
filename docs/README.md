@@ -13,6 +13,7 @@ Start with the [README](../README.md).
 - [Backups, upgrades and distribution checks](./operations/running.md)
 - [The relay: trust model, limits and self-hosting](./operations/relay.md)
 - [Releasing](./operations/releasing.md)
+- [Factory live check](./operations/factory-live-check.md)
 
 ## Working on agentgate
 

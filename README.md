@@ -247,11 +247,11 @@ Each item goes through these stages:
 
 1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, and chooses between a fix and a spec.
 2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change** in T3 Code.
-3. **Implement** works on the branch `factory/<item>` and opens a draft pull request. The thread keeps the PR. T3 Code wakes it for failing checks, conflicts and your review comments, and the factory nudges it when it sits on a problem. No fix starts while the default branch fails CI.
+3. **Implement** works on the branch `factory/<item>` and opens a draft pull request. The thread keeps the PR, and the factory wakes it when it sits on a failing check, a conflict, or comments from the repository's own people. No fix starts while the default branch fails CI.
 4. **Review**: a fresh thread reviews the PR without reading what the implementer said about it. The factory posts its findings as a PR review and hands them to the implement thread, for up to three rounds by default.
 5. **Ready**: the factory marks the PR ready for review and requests the repository's reviewers. You merge it or close it.
 
-The factory comments on the issue when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it waits for you.
+The factory comments on the issue when it takes it in, when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it waits for you.
 
 To start one:
 
@@ -264,23 +264,22 @@ To start one:
 You act in three places:
 
 - **T3 Code**: answer the questions threads ask, including the spec card.
-- **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, and `agentgate factory add <owner/repo> <title>` adds one by hand.
+- **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, `show <item>` tells what happened to it, `pause` and `resume` stop and restart the whole factory, and `add <owner/repo> <title>` adds an item by hand.
 - **GitHub**: review the PR, ask for changes in a review comment, and merge it.
 
 ```sh
 agentgate factory use acme/factory:factory   # turn it on; off turns it off, reload fetches the folder now
 agentgate factory status                     # the board: items, what waits for you, sources and webhook URLs
 printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY
-agentgate factory approve gh-42 --reason "keep the old field as an alias"
-agentgate factory bench --ref my-change      # replay past fixes with the folder at a branch
+agentgate factory approve api-42 --reason "keep the old field as an alias"
 agentgate factory help                       # every factory command
 ```
 
 Things to know:
 
-- **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt.
-- **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. `limits.itemTokens` in `factory.yaml` stops an item that costs too much.
-- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other. AI judges grade a sample of runs, and `bench` replays issues people already fixed to test a change to the folder before you merge it.
+- **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt. Protect the factory folder's branch on GitHub if your plan allows; `factory use` warns when it is open.
+- **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. An item that passes `limits.itemTokens` in `factory.yaml` (30 million tokens by default) stops and waits for you.
+- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other. AI judges grade a sample of runs.
 - Every machine must run this release before you turn the factory on or set a factory secret, because older releases drop them.
 
 ## Commands

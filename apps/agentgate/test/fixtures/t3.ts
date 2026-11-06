@@ -33,6 +33,8 @@ export type FakeThread = {
   runs: Run[];
   settledOverride?: "settled" | "active" | null;
   subagent?: boolean;
+  /** A subagent's parent thread, as T3's lineage names it. */
+  parentThreadId?: string;
   createdAt: string;
   pinnedAt?: string | null;
   pinOrderKey?: string | null;
@@ -113,7 +115,7 @@ export function fakeT3(options: {
     pinOrderKey: t.pinOrderKey ?? null,
     activeOrderKey: t.activeOrderKey ?? null,
     settledOverride: t.settledOverride ?? null,
-    lineage: { relationshipToParent: t.subagent ? "subagent" : null },
+    lineage: { parentThreadId: t.parentThreadId ?? null, relationshipToParent: t.subagent ? "subagent" : null },
   });
   const projection = (t: FakeThread) => ({
     thread: {
@@ -358,6 +360,7 @@ export function fakeT3(options: {
         }
         try {
           const handler = rpc[frame.tag];
+          api.reads.set(frame.tag, (api.reads.get(frame.tag) ?? 0) + 1);
           if (!handler) throw { _tag: "RpcNotFound", message: `no method ${frame.tag}` };
           ws.send(
             JSON.stringify({
@@ -394,6 +397,8 @@ export function fakeT3(options: {
     homePath: options.claudeDir as string | undefined,
     /** Refuse clones for a missing permission. */
     denyClones: false,
+    /** How many times each RPC method was called. */
+    reads: new Map<string, number>(),
     /** A single-use pairing token, as `t3 pair` prints. */
     pairingToken() {
       const token = crypto.randomUUID();

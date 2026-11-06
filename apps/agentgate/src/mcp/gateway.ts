@@ -195,6 +195,24 @@ export interface Source {
   keepTools?: boolean;
 }
 
+/**
+ * What one shim session may use, from the T3 Code thread its shim names (`/mcp?thread=`). The daemon narrows the
+ * sessions of factory threads with it (`threadScope` in factory/controller.ts). The thread id is a label the shim
+ * sends, so a scope narrows a default and is no boundary.
+ */
+export interface SessionScope {
+  /** The project's servers the session may use, by alias; every mapped one when absent. */
+  servers?: readonly string[];
+  /** agentgate's own tools the session does not see. */
+  hidden?: readonly string[];
+}
+
+/** Whether a session with this scope may use the source `alias`, or its tool `tool`. */
+export function inScope(scope: SessionScope | undefined, alias: string, tool?: string): boolean {
+  if (alias === BUILTIN_ALIAS) return tool === undefined || !scope?.hidden?.includes(tool);
+  return !scope?.servers || scope.servers.includes(alias);
+}
+
 /** Claude Code keeps the first 4,096 characters of a server's instructions and drops the rest. */
 export const INSTRUCTIONS_BUDGET = 4000;
 const INSTRUCTIONS_CUT = "\n[… agentgate cut the rest to fit the instructions limit]";
@@ -288,6 +306,7 @@ export function mergedServer(
   {
     onError = () => {},
     resolveSource,
+    allow,
     activity,
     signal,
     onCall,
@@ -295,6 +314,8 @@ export function mergedServer(
     onError?: (alias: string, e: unknown) => void;
     /** Finds a call's source without listing every source again. */
     resolveSource?: (alias: string) => Promise<Source | undefined>;
+    /** Whether the session may list and call a source's tool now; asked again on every call. */
+    allow?: (alias: string, tool: string) => boolean;
     activity?: (change: number) => void;
     signal?: AbortSignal;
     onCall?: (call: CallRecord) => void;
@@ -336,6 +357,7 @@ export function mergedServer(
       // No output schema: results pass through unchecked, so a client must not check them against one either.
       for (const { outputSchema: _, ...t } of tools) {
         if (offered && !offered.has(t.name)) continue;
+        if (allow && !allow(src.alias, t.name)) continue;
         const name = toolName(src.alias, t.name);
         if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
         next.set(name, { alias: src.alias, tool: t.name });
@@ -352,7 +374,7 @@ export function mergedServer(
     // A kept list can miss a tool a server added without saying so; ask again once before giving up.
     if (!routes.has(req.params.name)) await list({ fresh: true });
     const route = routes.get(req.params.name);
-    if (!route)
+    if (!route || (allow && !allow(route.alias, route.tool)))
       return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
     activity?.(1);
     const started = performance.now();
@@ -447,6 +469,8 @@ export class Gateway {
       project: string;
       lastUsed: number;
       calls: number;
+      /** The T3 Code thread the session's shim named, which decides its scope. */
+      thread?: string;
       /** What the session's tool list depends on (`toolsKey`), as of its last notice. */
       tools: string;
     }
@@ -460,6 +484,9 @@ export class Gateway {
   /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
   builtin?: () => Promise<Source>;
   private builtinSource?: Promise<Source>;
+  /** A session's scope from the T3 Code thread its shim names, if any; set by the daemon. Without it, or without a
+   * scope, a session uses every server its project maps. */
+  scope?: (thread: string | undefined) => SessionScope | undefined;
 
   constructor(private s: Store) {
     this.timer.unref();
@@ -546,16 +573,19 @@ export class Gateway {
       },
     };
   }
-  /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. */
-  private async sources(project: string, wait?: number): Promise<Source[]> {
+  /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. A server
+   * outside the scope is not connected for the session. */
+  private async sources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
     const out = await Promise.all(
-      Object.keys(aliasesFor(this.s, project)).map((alias) => {
-        const source = this.source(project, alias).catch((e) => {
-          if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
-          return undefined;
-        });
-        return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
-      }),
+      Object.keys(aliasesFor(this.s, project))
+        .filter((alias) => inScope(scope, alias))
+        .map((alias) => {
+          const source = this.source(project, alias).catch((e) => {
+            if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
+            return undefined;
+          });
+          return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
+        }),
     );
     return out.filter(isTruthy);
   }
@@ -567,9 +597,9 @@ export class Gateway {
       throw e;
     }));
   }
-  private async localSources(project: string, wait?: number): Promise<Source[]> {
+  private async localSources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
     const builtin = await this.builtinTools().catch(() => undefined);
-    const out = await this.sources(project, wait);
+    const out = await this.sources(project, wait, scope);
     return builtin ? [...out.filter((src) => src.alias !== BUILTIN_ALIAS), builtin] : out;
   }
 
@@ -596,22 +626,27 @@ export class Gateway {
     }
     if (this.closed) return new Response("gateway stopped", { status: 503 });
     if (this.sessions.size >= 256) return new Response("too many MCP sessions", { status: 503 });
-    const project = new URL(req.url).searchParams.get("project") || "*";
+    const params = new URL(req.url).searchParams;
+    const project = params.get("project") || "*";
     if (project !== "*" && !projectIdSchema.safeParse(project).success)
       return new Response("invalid project", { status: 400 });
+    const thread = params.get("thread") || undefined;
+    if (thread && thread.length > 256) return new Response("invalid thread", { status: 400 });
+    const scope = () => this.scope?.(thread);
     // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
-    const instructions = mergeInstructions(await this.localSources(project, 3000), (aliases) => {
+    const instructions = mergeInstructions(await this.localSources(project, 3000, scope()), (aliases) => {
       const key = `${project} ${aliases.join(" ")}`;
       if (this.trimmed.has(key)) return;
       this.trimmed.add(key);
       this.s.log("mcp", "", "", 0, 0, `${project}: instructions of ${aliases.join(", ")} cut to fit`);
     });
-    const tools = this.toolsKey(project);
+    const tools = this.toolsKey(project, thread);
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(instructions, () => this.localSources(project), {
+    const server = mergedServer(instructions, () => this.localSources(project, undefined, scope()), {
       onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
       resolveSource: async (alias) =>
         alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias),
+      allow: (alias, tool) => inScope(scope(), alias, tool),
       activity: (delta) => {
         usage.calls += delta;
         usage.lastUsed = this.s.now();
@@ -634,6 +669,7 @@ export class Gateway {
           transport,
           server,
           project,
+          ...(thread && { thread }),
           tools,
           get lastUsed() {
             return usage.lastUsed;
@@ -760,29 +796,31 @@ export class Gateway {
     }
   }
 
-  /** What a project's tool list depends on: its mapping, the mapped servers' settings, and which are signed in. */
-  private toolsKey(project: string): string {
-    return JSON.stringify(
+  /** What a session's tool list depends on: its project's mapping, the mapped servers' settings, which are signed
+   * in, and its thread's scope. */
+  private toolsKey(project: string, thread: string | undefined): string {
+    return JSON.stringify([
       Object.entries(aliasesFor(this.s, project)).map(([alias, id]) => [
         alias,
         this.s.get("mcp", id) ?? null,
         !!this.s.get("mcpCredential", id)?.tokens,
       ]),
-    );
+      this.scope?.(thread) ?? null,
+    ]);
   }
 
   /**
-   * Tells the sessions whose tools may have changed to list them again: after a store change, those whose mapping,
-   * servers or sign-ins differ; with `instance`, those using that server, which said its tools changed. A client
-   * re-lists on every notice, and store changes that leave tools alone (a session being recorded, a token refresh)
-   * are frequent.
+   * Tells the sessions whose tools may have changed to list them again: after a store change or a factory run's
+   * change, those whose mapping, servers, sign-ins or scope differ; with `instance`, those using that server, which
+   * said its tools changed. A client re-lists on every notice, and store changes that leave tools alone (a session
+   * being recorded, a token refresh) are frequent.
    */
   toolsChanged(instance?: string) {
     for (const session of this.sessions.values()) {
       if (instance) {
         if (!Object.values(aliasesFor(this.s, session.project)).includes(instance)) continue;
       } else {
-        const key = this.toolsKey(session.project);
+        const key = this.toolsKey(session.project, session.thread);
         if (key === session.tools) continue;
         session.tools = key;
       }

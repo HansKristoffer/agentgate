@@ -6,6 +6,7 @@ import { currentFolder, folderAt, loadFolder } from "../src/factory/config.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher, type FolderFetcher } from "../src/factory/folder.ts";
 import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, repos, sh, tmp } from "./fixtures/git.ts";
@@ -23,7 +24,13 @@ afterEach(async () => {
 });
 afterAll(removeTmp);
 
+const realGh = host.gh;
 function node(name = "a") {
+  // No test reaches GitHub: `use` asks it whether the folder's branch is protected.
+  host.gh = async () => undefined;
+  cleanup.push(() => {
+    host.gh = realGh;
+  });
   const s = new Store(":memory:");
   s.setLocal("node", name);
   s.setLocal("adminToken", "admin-secret");
@@ -225,6 +232,32 @@ test("use waits for every machine to understand the factory, and only the machin
   expect(off).toEqual(["The factory was turned off"]);
   await fetchLoop(b!.ctx.factory)();
   expect(calls).toHaveLength(1);
+});
+
+test("use warns when GitHub does not protect the folder's branch, and says nothing when it does or cannot tell", async () => {
+  const { f } = node();
+  fakeFetcher();
+  const asked: string[][] = [];
+  let protectedBranch: boolean | undefined = false;
+  host.gh = async (args) => {
+    asked.push(args);
+    if (args[0] === "repo" && args[1] === "view")
+      return { ok: true, out: JSON.stringify({ defaultBranchRef: { name: "main" } }) };
+    if (protectedBranch === undefined) return { ok: false, out: JSON.stringify({ message: "Not Found" }) };
+    return { ok: true, out: JSON.stringify({ name: "main", protected: protectedBranch }) };
+  };
+  const warning =
+    "Warning: main of acme/factory is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub if your plan allows.";
+  expect((await command(f, "use", "acme/factory")).output).toContain(warning);
+  expect(asked.at(-1)).toEqual(["api", "repos/acme/factory/branches/main"]);
+  expect((await command(f, "use", "acme/factory", "--ref", "release/v2")).output.at(-1)).toContain(
+    "release/v2 of acme/factory is not protected",
+  );
+  expect(asked.at(-1)).toEqual(["api", "repos/acme/factory/branches/release%2Fv2"]);
+  protectedBranch = true;
+  expect((await command(f, "use", "acme/factory")).output.join("\n")).not.toContain("Warning");
+  protectedBranch = undefined; // a tag, or no access
+  expect((await command(f, "use", "acme/factory", "--ref", "v1.0")).output.join("\n")).not.toContain("Warning");
 });
 
 test("the use command and PUT /api/factory set the same pointer, and the board shows it with the folder", async () => {

@@ -2,7 +2,7 @@ import type { FactoryReport } from "@agentgate/protocol";
 import { items, runs, type FactoryItem, type FactoryRun } from "../../src/factory/db.ts";
 import { loopTask } from "../../src/factory/runtime.ts";
 import { host } from "../../src/logins.ts";
-import { factoryNode } from "./t3-mcp.ts";
+import { factoryNode, idle } from "./t3-mcp.ts";
 
 type Answer = { ok: boolean; out: string } | undefined;
 const ok = (value: unknown): Answer => ({ ok: true, out: JSON.stringify(value) });
@@ -177,6 +177,7 @@ export async function prFactory(
       _meta: { "dev.agentgate/t3Thread": run.threadId },
     });
     const text = (result.content as { text: string }[])[0]!.text;
+    await idle(n.f);
     return result.isError ? { error: text } : JSON.parse(text);
   };
   const implementRuns = (item: FactoryItem) => runs.forItem(n.s, item.id).filter((r) => r.kind === "implement");
@@ -186,7 +187,7 @@ export async function prFactory(
     github.addIssue(number);
     await n.intake();
     await n.dispatch();
-    const item = items.byExternal(n.s, "bugs", `${n.repo}#${number}`)!;
+    const item = items.byExternal(n.s, `${n.repo}#${number}`)!;
     await report(runs.forItem(n.s, item.id)[0]!, triaged);
     await n.dispatch();
     return { item, run: implementRuns(item)[0]! };
@@ -218,15 +219,21 @@ export async function prFactory(
   return {
     ...n,
     github,
+    /** The item key intake gives issue `number`: the repository's name and the number. */
+    key: (number: number) => `${n.repo.split("/")[1]!.toLowerCase()}-${number}`,
     report,
     done,
     implementing,
     opened,
     implementRuns,
-    pollPrs: loopTask(
-      n.f,
-      n.f.loops.find((l) => l.name === "factory-prs")!,
-    ),
+    /** One pass of the PR follower, with what it left to post. */
+    pollPrs: async () => {
+      await loopTask(
+        n.f,
+        n.f.loops.find((l) => l.name === "factory-prs")!,
+      )();
+      await idle(n.f);
+    },
     /** Messages the factory sent to a thread after launching it. */
     sent: (threadId: string) =>
       n.mcp.calls

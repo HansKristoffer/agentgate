@@ -1,33 +1,54 @@
+import { createHash } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { FactoryBoard, FactoryCommandResult } from "@agentgate/protocol";
 import { z } from "zod";
 import { createPairingLink, parsePairing, t3State, T3Error } from "../handoff/t3.ts";
 import { VERSION } from "../mcp/gateway.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
+import { ACTIVE, items, runs } from "./db.ts";
 import { runCommand, type FactoryRuntime } from "./runtime.ts";
 
 /** The factory drives T3 Code through its own `/mcp`, signed in like any outside MCP client: OAuth with PKCE, approved
  * with a pairing code from the local `t3 pair` at full access. T3 issues no refresh token, so the factory signs in
  * again before the 30 days end. The token is node-local and never leaves this module: not in status, errors or logs. */
 
-export const REQUIRED_T3_TOOLS = [
-  "t3_project_list",
-  "t3_thread_launch",
-  "t3_thread_send",
-  "t3_thread_read",
-  "t3_thread_interrupt",
-  "t3_thread_organize",
-  "t3_pending_request",
-  "link_pull_request",
-  "watch_pull_request",
-  "unwatch_pull_request",
-] as const;
-export type T3Tool = (typeof REQUIRED_T3_TOOLS)[number];
-export class T3McpError extends Error {}
+/** Every input the factory sends to each T3 tool. A sign-in reads `tools/list` and refuses a T3 Code whose tools lack
+ * one: an older T3 drops an input it does not know, such as `clientRequestId`, which makes a retried launch start a
+ * second thread instead of finding the first. */
+export const REQUIRED_T3_INPUTS = {
+  t3_thread_launch: [
+    "projectId",
+    "title",
+    "runtimeMode",
+    "workspaceStrategy",
+    "modelSelection",
+    "message",
+    "clientRequestId",
+  ],
+  t3_thread_send: ["threadId", "message", "mode"],
+  t3_thread_interrupt: ["threadId", "reason"],
+  t3_thread_organize: ["threadId", "action"],
+  t3_pending_request: ["action", "threadId", "requestId", "answers"],
+} as const;
+export const REQUIRED_T3_TOOLS = Object.keys(REQUIRED_T3_INPUTS) as (keyof typeof REQUIRED_T3_INPUTS)[];
+/** Called only for repositories that opt in to T3 Code's PR watch (`watchPullRequests`), so not required. */
+type OptionalTool = "watch_pull_request" | "unwatch_pull_request";
+export type T3Tool = keyof typeof REQUIRED_T3_INPUTS | OptionalTool;
+export class T3McpError extends Error {
+  /** T3 answered the call with an error, so it ran nothing; otherwise the outcome is unknown. */
+  answered = false;
+}
 
 export interface T3McpClient {
-  /** Parses the tool's JSON result; throws T3McpError on a tool error or transport failure. */
-  call<T = unknown>(tool: T3Tool, args: Record<string, unknown>): Promise<T>;
+  /** Parses the tool's JSON result; throws T3McpError on a tool error or transport failure. With `session`, the call
+   * goes only under that MCP session: a sign-in that changed meanwhile, even one this call made after T3 refused the
+   * token, fails it unsent, as an answered error. */
+  call<T = unknown>(tool: T3Tool, args: Record<string, unknown>, options?: { session?: string }): Promise<T>;
+  /** The MCP session the current token belongs to, or undefined while signed out. T3 dedupes `clientRequestId`
+   * within one session only. */
+  session(): string | undefined;
+  /** The session calls go under now, signing in first when needed. */
+  sessionId(): Promise<string>;
   status(): { mcp: "signed-in" | "signing-in" | "failed" | "off"; expiresAt?: number; error?: string };
   signIn(): Promise<void>;
   signOut(): Promise<void>;
@@ -50,6 +71,30 @@ const UNREVOKED = `Signed out here, but T3 Code could not revoke the session; re
 
 const savedSchema = z.object({ token: z.string(), expiresAt: z.number() });
 type Saved = z.infer<typeof savedSchema>;
+
+/** T3's session tokens are `<base64url claims>.<signature>`, and the claims name the session (`sid`). A token of
+ * another shape is its own session. */
+function sessionOf(token: string): string {
+  try {
+    const sid = JSON.parse(Buffer.from(token.split(".")[0]!, "base64url").toString()).sid;
+    if (typeof sid === "string" && sid) return sid;
+  } catch {
+    // Not T3's shape.
+  }
+  return createHash("sha256").update(token).digest("hex").slice(0, 32);
+}
+
+/** A machine signs in while it runs the factory, and after the factory moved away while it still holds items or runs:
+ * it drives those to the end. Off is off everywhere. */
+function needsSignIn(f: FactoryRuntime) {
+  if (!f.pointer()) return false;
+  if (f.isFactoryNode()) return true;
+  return items.list(f.s, { open: true }).length > 0 || runs.list(f.s, { states: ACTIVE }).length > 0;
+}
+
+/** A launch whose answer has not come: renewing the session now would make it impossible to send again safely. */
+const launching = (f: FactoryRuntime) =>
+  runs.list(f.s, { states: ["queued", "starting"] }).some((r) => r.state === "starting" || r.launchSession);
 
 /** T3 refused the token: the one failure where repeating a call is safe, because nothing ran. */
 class Refused extends Error {}
@@ -80,7 +125,7 @@ export function setup(f: FactoryRuntime) {
     >;
   });
   f.commands.set("t3", {
-    usage: "t3 [sign-in]  the factory machine's T3 Code MCP sign-in; it ends when the factory is turned off",
+    usage: "t3 [sign-in]  this machine's T3 Code MCP sign-in for the factory; it ends when the factory is turned off",
     async run(args, io) {
       const [action] = args;
       if (action === "sign-in")
@@ -137,7 +182,7 @@ function create(f: FactoryRuntime) {
   async function attemptSignIn() {
     try {
       // The loop signs out on any other machine, so a token here would not last.
-      if (!f.isFactoryNode()) throw new T3McpError(`the factory does not run on ${s.nodeId}`);
+      if (!needsSignIn(f)) throw new T3McpError(`the factory does not run on ${s.nodeId}`);
       const old = saved();
       s.setLocal(KEY, JSON.stringify(await authorize(s, t3Url())));
       error = failedAt = missing = undefined;
@@ -211,19 +256,24 @@ function create(f: FactoryRuntime) {
     }
   }
 
-  /** Reads tools/list and records the required tools T3 lacks. */
+  /** Reads tools/list and records what T3 lacks: a required tool, or an input the factory sends it. */
   async function check(renew: boolean) {
     try {
-      const names = new Set<string>();
+      const inputs = new Map<string, Set<string>>();
       await session(async (mcp) => {
         let cursor: string | undefined;
         do {
           const page = await mcp.listTools(cursor ? { cursor } : {}, { timeout: 30_000 });
-          for (const tool of page.tools) names.add(tool.name);
+          for (const tool of page.tools) inputs.set(tool.name, new Set(Object.keys(tool.inputSchema.properties ?? {})));
           cursor = page.nextCursor;
         } while (cursor);
       }, renew);
-      missing = REQUIRED_T3_TOOLS.filter((tool) => !names.has(tool));
+      missing = Object.entries(REQUIRED_T3_INPUTS).flatMap(([tool, wanted]) => {
+        const has = inputs.get(tool);
+        if (!has) return [tool];
+        const lacks = wanted.filter((input) => !has.has(input));
+        return lacks.length ? [`${tool} (${lacks.join(", ")})`] : [];
+      });
       error = missing.length ? `T3 Code's MCP lacks ${missing.join(", ")}; update T3 Code` : undefined;
     } catch (e) {
       error = e instanceof T3McpError ? e.message : `T3 Code's MCP check failed: ${name(e)}`;
@@ -241,6 +291,20 @@ function create(f: FactoryRuntime) {
   return {
     signIn,
     signOut,
+    session() {
+      const token = valid();
+      return token && sessionOf(token.token);
+    },
+    async sessionId() {
+      let token = valid();
+      if (!token) {
+        if (coolingDown()) throw new T3McpError(error ?? "T3 MCP sign-in failed");
+        await signIn();
+        token = valid();
+      }
+      if (!token) throw new T3McpError(error ?? `the factory is not signed in to T3 Code on ${s.nodeId}`);
+      return sessionOf(token.token);
+    },
     status() {
       const token = valid();
       // Signed out with a session T3 would not revoke is still off; any other error is a failure.
@@ -248,14 +312,27 @@ function create(f: FactoryRuntime) {
       const mcp = signing ? "signing-in" : failed ? "failed" : token ? "signed-in" : "off";
       return { mcp, ...(token && { expiresAt: token.expiresAt }), ...(error && { error }) } as const;
     },
-    async call<T = unknown>(tool: T3Tool, args: Record<string, unknown>): Promise<T> {
+    async call<T = unknown>(
+      tool: T3Tool,
+      args: Record<string, unknown>,
+      options: { session?: string } = {},
+    ): Promise<T> {
       if (missing?.length) throw new T3McpError(error ?? `T3 Code's MCP lacks ${missing.join(", ")}`);
       return session(async (mcp, token) => {
+        if (options.session && sessionOf(token) !== options.session) {
+          const changed = new T3McpError(`T3 Code's sign-in changed before ${tool} was sent`);
+          changed.answered = true;
+          throw changed;
+        }
         const result = await mcp.callTool({ name: tool, arguments: args }, { timeout: CALL_TIMEOUT });
         const text = (result.content as { type: string; text?: string }[] | undefined)?.find(
           (c) => c.type === "text",
         )?.text;
-        if (result.isError) throw new T3McpError(`T3 Code's ${tool} failed: ${scrub(errorText(text), token)}`);
+        if (result.isError) {
+          const refused = new T3McpError(`T3 Code's ${tool} failed: ${scrub(errorText(text), token)}`);
+          refused.answered = true;
+          throw refused;
+        }
         if (result.structuredContent !== undefined) return result.structuredContent as T;
         if (text === undefined) return undefined as T;
         try {
@@ -265,17 +342,18 @@ function create(f: FactoryRuntime) {
         }
       });
     },
-    /** The loop. Off the factory machine, sign out a token left from when the factory ran here. On it, renew a token
-     * close to its end, and read tools/list until it has every required tool (T3 may be updated meanwhile); reading it
-     * also finds a token T3 stopped accepting. */
+    /** The loop. On a machine with nothing left to drive, sign out a token left from when the factory ran here.
+     * Otherwise renew a token close to its end, unless a launch's answer is still out, and read tools/list until it
+     * has every required tool and input (T3 may be updated meanwhile); reading it also finds a token T3 stopped
+     * accepting. */
     async tick() {
       if (signing) return;
-      if (!f.isFactoryNode()) {
+      if (!needsSignIn(f)) {
         if (saved()) await signOut();
         return;
       }
       const token = valid();
-      if (!token || token.expiresAt - s.now() <= RENEW_AHEAD) {
+      if (!token || (token.expiresAt - s.now() <= RENEW_AHEAD && !launching(f))) {
         if (!coolingDown()) await signIn().catch(() => {}); // the status says why
       } else if (!missing || missing.length) await check(true);
     },
@@ -356,6 +434,8 @@ async function authorize(s: FactoryRuntime["s"], url: string) {
   const state = base64url(crypto.getRandomValues(new Uint8Array(16)));
   const pairing = parsePairing((await createPairingLink(s, { label: CLIENT_NAME, scopes: SCOPES })).url).token;
 
+  // The resource the token is for (RFC 8707), as T3's own sign-in between environments names it.
+  const resource = `${url}/mcp`;
   const decided = await http(url, "/oauth/mcp/decision", {
     json: {
       authorization: {
@@ -365,6 +445,7 @@ async function authorize(s: FactoryRuntime["s"], url: string) {
         code_challenge: challenge,
         code_challenge_method: "S256",
         state,
+        resource,
       },
       decision: { _tag: "pairing-code", access: "full-access", code: pairing },
     },
@@ -384,6 +465,7 @@ async function authorize(s: FactoryRuntime["s"], url: string) {
       redirect_uri: REDIRECT,
       client_id: clientId,
       code_verifier: verifier,
+      resource,
     },
   });
   const token = z
@@ -398,7 +480,6 @@ async function authorize(s: FactoryRuntime["s"], url: string) {
 async function revoke(s: FactoryRuntime["s"], token: string) {
   const url = t3State(s).url;
   const bearer = s.local("t3:token");
-  // T3's session tokens are `<base64url claims>.<signature>`; the claims name the session.
   let sessionId: unknown;
   try {
     sessionId = JSON.parse(Buffer.from(token.split(".")[0]!, "base64url").toString()).sid;

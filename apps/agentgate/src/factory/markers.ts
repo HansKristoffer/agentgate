@@ -19,6 +19,7 @@ export function defuse(text: string) {
 }
 
 const HEADLINES: Record<Moment, (marker: MarkerPayload) => string> = {
+  taken: () => "The factory took this.",
   triaged: (m) =>
     m.route === "spec"
       ? "The factory triaged this and writes a spec first."

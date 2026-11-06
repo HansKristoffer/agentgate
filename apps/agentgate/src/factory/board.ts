@@ -6,7 +6,7 @@ import { lastSeen } from "../sync.ts";
 import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { FACTORY_PAGE } from "./page.ts";
-import type { FactoryRuntime } from "./runtime.ts";
+import { logError, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The board: every machine's T3 threads and what the factory's features add through `f.boardParts`. One builder serves
@@ -15,6 +15,8 @@ import type { FactoryRuntime } from "./runtime.ts";
 
 /** How long other machines' threads, read through `/peer/threads`, are reused. */
 const PEER_EVERY = 10_000;
+/** How long the token-less page's board is reused: every open page asks for it. */
+const PAGE_EVERY = 5000;
 
 export function setup(f: FactoryRuntime) {
   f.page = (req, listener) => respond(f, req, listener);
@@ -86,8 +88,7 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
   const parts = await Promise.all(
     f.boardParts.map((part) =>
       part().catch((e) => {
-        // The name only: a feature's error text can carry a token or a URL with credentials.
-        console.error(`factory: a board part failed: ${e instanceof Error ? e.name : "error"}`);
+        console.error(`factory: a board part failed: ${logError(e)}`);
         return {};
       }),
     ),
@@ -151,7 +152,8 @@ function pointerRow(f: FactoryRuntime): FactoryBoard["factory"] {
 async function machines(f: FactoryRuntime): Promise<FactoryBoard["machines"]> {
   const [here, others] = await Promise.all([localThreads(f), peerMachines(f)]);
   // A factory run's thread names its item.
-  const byThread = new Map(runs.list(f.s).flatMap((r) => (r.threadId ? [[r.threadId, r] as const] : [])));
+  const ids = [...here, ...others.flatMap((m) => m.threads)].map((t) => t.id);
+  const byThread = new Map(runs.byThreads(f.s, ids).map((r) => [r.threadId!, r]));
   const linked = (t: BoardThread): BoardThread => {
     const run = byThread.get(t.id);
     return run ? { ...t, ...(run.item && { item: run.item }), ...(run.threadLink && { link: run.threadLink }) } : t;
@@ -222,11 +224,23 @@ async function respond(f: FactoryRuntime, req: Request, listener: Listener) {
   if (req.headers.get("accept")?.includes("text/html"))
     return new Response(FACTORY_PAGE, { headers: { ...headers, "content-type": "text/html; charset=utf-8" } });
   try {
-    return Response.json(await buildBoard(f, { includeWebhookUrls: false }), { headers });
+    return Response.json(await pageBoard(f), { headers });
   } catch (e) {
-    console.error(`factory: the board failed: ${e instanceof Error ? e.name : "error"}`);
+    console.error(`factory: the board failed: ${logError(e)}`);
     return Response.json({ error: "the board could not be built" }, { status: 500, headers });
   }
+}
+
+const pageCache = new WeakMap<FactoryRuntime, { at: number; board: Promise<FactoryBoard> }>();
+
+/** The page's board, built at most every 5 seconds however many pages are open. */
+function pageBoard(f: FactoryRuntime) {
+  const cached = pageCache.get(f);
+  if (cached && f.s.now() - cached.at < PAGE_EVERY) return cached.board;
+  const board = buildBoard(f, { includeWebhookUrls: false });
+  pageCache.set(f, { at: f.s.now(), board });
+  board.catch(() => pageCache.delete(f));
+  return board;
 }
 
 /** The rule health.ts applies to /health (DNS rebinding): an IPv4 address or this node's own tailnet name. */
@@ -281,6 +295,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   lines.push(`T3 Code: stream ${b.t3.stream}, MCP ${b.t3.mcp}${when(b.t3.error, ` (${b.t3.error})`)}`);
   const c = b.capacity;
   const capacity = [
+    ...(c.paused ? ["Paused (agentgate factory resume)"] : []),
     `Capacity: ${c.working} of ${c.threads} threads working`,
     `${c.waitingForYou} of ${c.waitingForYouLimit} waiting for you`,
     `intake ${c.intake}`,
@@ -299,7 +314,8 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   for (const phase of itemPhases)
     for (const i of b.items.filter((i) => i.phase === phase)) {
       const run = when(i.run, ` [${i.run?.kind} ${i.run?.state}]`);
-      lines.push(`  ${phase.padEnd(9)} ${i.key} ${i.title}${run}${when(i.pr, ` ${i.pr?.url}`)}`);
+      const unknown = when(i.tokensUnknown, " (tokens unknown)");
+      lines.push(`  ${phase.padEnd(9)} ${i.key} ${i.title}${run}${when(i.pr, ` ${i.pr?.url}`)}${unknown}`);
     }
 
   if (b.sources.length) lines.push("", "Sources:");

@@ -188,7 +188,7 @@ const commentsSchema = z.object({
 });
 const COMMENTS = `query FactoryComments($id: String!) {
   viewer { id }
-  issue(id: $id) { comments(first: 100) { nodes { body createdAt user { id } } } }
+  issue(id: $id) { comments(last: 100) { nodes { body createdAt user { id } } } }
 }`;
 
 /** markers.ts's hidden marker becomes a visible last line. A backtick in a value would end the code span early. */

@@ -1,6 +1,6 @@
 import { itemPhases } from "@agentgate/protocol";
 
-// The board page that `/factory` serves to browsers. It asks the same URL for the board's JSON every 2 seconds and
+// The board page that `/factory` serves to browsers. It asks the same URL for the board's JSON every 10 seconds and
 // draws it with the DOM, so text from issues and threads is never parsed as HTML. No external assets: the tailnet
 // listener may be the only thing the browser can reach. The client code avoids template literals, since it lives
 // inside one.
@@ -188,7 +188,7 @@ function render(b) {
 	fill("capacity", [
 		tile(c.working + " / " + c.threads, "threads working"),
 		tile(c.waitingForYou + " / " + c.waitingForYouLimit, "waiting for you"),
-		tile(c.intake, "intake"),
+		tile(c.paused ? "paused" : c.intake, "intake"),
 		tile(c.quota === "ok" ? "ok" : "waiting", "quota" + (c.quota !== "ok" && c.quota.waitingUntil ? " until " + new Date(c.quota.waitingUntil).toLocaleTimeString() : "")),
 		tile(c.mainRed.length ? c.mainRed.join(", ") : "none", "main is red"),
 	]);
@@ -234,6 +234,7 @@ function render(b) {
 			var sub = [];
 			if (i.run) sub.push(i.run.kind + " " + i.run.state + (i.run.node && i.run.node !== i.heldBy ? " on " + i.run.node : ""));
 			if (i.pr) sub.push("PR" + (i.pr.checks ? " " + i.pr.checks : "") + (i.pr.openFindings ? ", " + i.pr.openFindings + " findings" : ""));
+			if (i.tokensUnknown) sub.push("tokens unknown");
 			sub.push("since " + ago(i.inPhaseSince));
 			card.append(el("div", "sub", sub.join(" · ")));
 			col.append(card);
@@ -302,7 +303,7 @@ async function refresh() {
 	}
 }
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 10000);
 </script>
 </body>
 </html>

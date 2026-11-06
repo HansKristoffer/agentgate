@@ -29,8 +29,8 @@ test("route implement starts a run on factory/<key> from the default branch, and
   expect(implementLaunches()).toHaveLength(1);
   const [launch] = implementLaunches();
   expect(launch!.args).toMatchObject({
-    title: "Implement gh-1: Issue 1",
-    workspaceStrategy: { type: "worktree", baseRef: "main", branch: "factory/gh-1", startFromOrigin: true },
+    title: `Implement ${n.key(1)}: Issue 1`,
+    workspaceStrategy: { type: "worktree", baseRef: "main", branch: `factory/${n.key(1)}`, startFromOrigin: true },
   });
   const brief = String(launch!.args.message);
   expect(brief).toContain("Never comment on GitHub or Linear");
@@ -56,10 +56,10 @@ test("a done report missing prUrl, commit, claims or notChecked is refused, nami
   expect(items.get(n.s, item.id)!.phase).toBe("implement");
 });
 
-test("a draft on factory/<key> with the reported head moves to pr, gets the marker in its body, a watch and one comment", async () => {
+test("a draft on factory/<key> with the reported head moves to pr, gets the marker in its body and one comment, and no T3 watch unless the repository asks for one", async () => {
   const n = await prFactory(cleanup);
   const { item, run } = await n.implementing(1);
-  const pr = n.github.openPr(101, "factory/gh-1", { isDraft: false });
+  const pr = n.github.openPr(101, `factory/${n.key(1)}`, { isDraft: false });
 
   const refused = await n.done(run, pr, { commit: "abcdef1" });
   expect(refused.error).toContain("it is not a draft");
@@ -74,10 +74,10 @@ test("a draft on factory/<key> with the reported head moves to pr, gets the mark
   expect(parseMarkers(pr.body)).toEqual([
     expect.objectContaining({ item: item.id, stage: "implement", commit: pr.headRefOid, node: "a", state: "open" }),
   ]);
-  expect(n.mcp.calls.filter((c) => c.tool === "watch_pull_request").map((c) => c.args)).toEqual([
-    { threadId: run.threadId, url: pr.url },
-  ]);
+  // Only the factory wakes the thread, with what the repository's people wrote (D40).
+  expect(n.mcp.calls.filter((c) => c.tool === "watch_pull_request")).toEqual([]);
   expect(n.github.posted(1)).toEqual([
+    "The factory took this.",
     "The factory triaged this and starts on a fix.",
     "The factory opened a draft pull request.",
   ]);
@@ -91,7 +91,7 @@ test("a mismatch the thread leaves uncorrected counts as a silent end, and the n
   await n.until(() => n.mirror.thread(run.threadId!)?.status === "running", "the implement thread to run");
   const pr = n.github.openPr(101, "feature/mine");
 
-  expect((await n.done(run, pr)).error).toContain("its branch is feature/mine, not factory/gh-1");
+  expect((await n.done(run, pr)).error).toContain(`its branch is feature/mine, not factory/${n.key(1)}`);
   await n.thread(run.threadId!, "idle");
   await n.until(() => runs.get(n.s, run.id)!.state === "silent", "the run to end silent");
   // The correction was its reminder: the factory sent the thread nothing more.
@@ -101,5 +101,19 @@ test("a mismatch the thread leaves uncorrected counts as a silent end, and the n
   const [, retry] = n.implementRuns(item);
   expect(retry).toMatchObject({ attempt: 2, state: "running" });
   const launch = n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === retry!.id);
-  expect(launch!.args.workspaceStrategy).toMatchObject({ branch: "factory/gh-1-2" });
+  expect(launch!.args.workspaceStrategy).toMatchObject({ branch: `factory/${n.key(1)}-2` });
+});
+
+test("a repository that asks for T3 Code's PR watch gets it for the implement thread, and loses it when the item ships", async () => {
+  const n = await prFactory(cleanup, (repo) => ({ repositories: { [repo]: { watchPullRequests: true } } }));
+  const { run, pr } = await n.opened(1);
+  const watches = (tool: string) => n.mcp.calls.filter((c) => c.tool === tool).map((c) => c.args);
+  expect(watches("watch_pull_request")).toEqual([{ threadId: run.threadId, url: pr.url }]);
+  expect(
+    String(n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id)!.args.message),
+  ).toContain("T3 Code wakes you when the PR needs you");
+
+  pr.state = "MERGED";
+  await n.pollPrs();
+  expect(watches("unwatch_pull_request")).toEqual([{ threadId: run.threadId, url: pr.url }]);
 });

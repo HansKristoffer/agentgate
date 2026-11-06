@@ -92,7 +92,14 @@ export const factoryConfigSchema = z
     description: z.string().max(500).optional(),
     repositories: z.record(
       repo,
-      z.object({ reviewers: z.array(z.string().min(1).max(100)).max(10).default([]) }).strict(),
+      z
+        .object({
+          reviewers: z.array(z.string().min(1).max(100)).max(10).default([]),
+          /** Let T3 Code's PR watch wake the implement thread on any comment. Off: only the factory wakes it, with
+           * collaborators' comments only. */
+          watchPullRequests: z.boolean().default(false),
+        })
+        .strict(),
     ),
     secrets: z.array(secretNameSchema).max(100).default([]),
     limits: z
@@ -100,7 +107,7 @@ export const factoryConfigSchema = z
         threads: z.number().int().min(1).max(20).default(3),
         waitForQuota: z.boolean().default(true),
         waitingForYou: z.number().int().min(1).max(100).default(5),
-        itemTokens: z.number().int().positive().optional(),
+        itemTokens: z.number().int().positive().default(30_000_000),
         reviewRounds: z.number().int().min(0).max(5).default(3),
         nudges: z.number().int().min(0).max(10).default(3),
         stalledAfter: duration.default("15m"),
@@ -129,6 +136,11 @@ export const stageFileSchema = z
       .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
       .optional(), // adds "Use the <skill> skill."
     model: modelSchema.optional(),
+    /** The MCP servers (aliases) this stage's threads may use besides agentgate's own tools; none when absent. */
+    mcp: z
+      .array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/))
+      .max(20)
+      .optional(),
   })
   .strict();
 export type StageFile = z.infer<typeof stageFileSchema>;
@@ -177,6 +189,7 @@ export const secretRecordSchema = z.object({
 });
 export type SecretRecord = z.infer<typeof secretRecordSchema>;
 
+/** An item that waits for the maintainer keeps its phase and has `needsYou`; only `shipped` and `closed` end it. */
 export const itemPhases = [
   "held",
   "triage",
@@ -187,7 +200,6 @@ export const itemPhases = [
   "ready",
   "shipped",
   "closed",
-  "failed",
 ] as const;
 export type ItemPhase = (typeof itemPhases)[number];
 export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn", "replay"] as const;
@@ -207,7 +219,7 @@ export type RunState = (typeof runStates)[number];
 
 export const needsYouSchema = z
   .object({
-    reason: z.enum(["decision", "blocked", "approval", "budget", "stalled", "held", "failed", "orphaned"]),
+    reason: z.enum(["decision", "blocked", "approval", "budget", "stalled", "held", "failed", "orphaned", "stuck"]),
     question: z.string().optional(),
     recommendation: z.string().optional(),
     link: z.string().optional(),
@@ -324,8 +336,9 @@ export const factoryReportSchema = z
   .strict();
 export type FactoryReport = z.infer<typeof factoryReportSchema>;
 
-/** The moments the factory writes back to an item's source, at most once each. */
+/** The moments the factory writes back to an item's source, at most once each (`waiting` once per question). */
 export const writeBackMoments = [
+  "taken",
   "triaged",
   "spec-approved",
   "pr-opened",
@@ -395,6 +408,8 @@ export const boardItemSchema = z.object({
     })
     .optional(),
   tokens: z.number(),
+  /** A run's thread has worked for a while and no provider session of it was counted: its sessions bypass agentgate. */
+  tokensUnknown: z.boolean().optional(),
   inPhaseSince: z.number(),
   updatedAt: z.number(),
 });
@@ -428,6 +443,8 @@ export const factoryBoardSchema = z.object({
     waitingForYouLimit: z.number(),
     quota: z.union([z.literal("ok"), z.object({ waitingUntil: z.number().optional() })]),
     intake: z.enum(["on", "paused-for-you", "off"]),
+    /** `agentgate factory pause`: no intake, no launches and no nudges until `resume`. */
+    paused: z.boolean().optional(),
     mainRed: z.array(z.string()), // repositories whose default branch is red
   }),
   items: z.array(boardItemSchema), // open items, plus items finished in the last 7 days
@@ -465,6 +482,35 @@ export const factoryBoardSchema = z.object({
 });
 export type FactoryBoard = z.infer<typeof factoryBoardSchema>;
 
+/** GET /api/factory/items/:id and `agentgate factory show <item> --json`: one item with its runs, write-backs and events. */
+export const factoryItemDetailSchema = z.object({
+  item: boardItemSchema,
+  runs: z.array(
+    z.object({
+      id: z.string(),
+      kind: z.enum(runKinds),
+      attempt: z.number(),
+      state: z.enum(runStates),
+      node: z.string().optional(),
+      threadLink: z.string().optional(),
+      error: z.string().optional(),
+      tokens: z.number(),
+      queuedAt: z.number(),
+      startedAt: z.number().optional(),
+      endedAt: z.number().optional(),
+    }),
+  ),
+  writebacks: z.array(
+    z.object({
+      moment: z.enum(writeBackMoments),
+      status: z.enum(["posted", "failed", "uncertain"]),
+      at: z.number(),
+    }),
+  ),
+  events: factoryBoardSchema.shape.events,
+});
+export type FactoryItemDetail = z.infer<typeof factoryItemDetailSchema>;
+
 /** PUT /api/factory */
 export const factoryUseInputSchema = z
   .object({
@@ -489,10 +535,6 @@ export const factoryItemInputSchema = z
 export const factoryActionInputSchema = z.object({ reason: z.string().max(2000).optional() }).strict();
 /** PUT /api/factory/secrets/:name */
 export const factorySecretInputSchema = z.object({ value: secretRecordSchema.shape.value }).strict();
-/** POST /api/factory/bench */
-export const factoryBenchInputSchema = z
-  .object({ ref: z.string().min(1).max(200), items: z.number().int().min(1).max(100).optional() })
-  .strict();
 /** POST /api/factory/command: how the CLI runs `agentgate factory <name> ...` in the daemon. */
 export const factoryCommandInputSchema = z
   .object({

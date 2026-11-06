@@ -2,8 +2,9 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
 import { workingCount } from "../src/factory/controller.ts";
 import { items, newId, runs, scores, type FactoryRun } from "../src/factory/db.ts";
-import { loopTask } from "../src/factory/runtime.ts";
+import { sampleJudges } from "../src/factory/scorers.ts";
 import { recordUsage } from "../src/llm/quota.ts";
+import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 
@@ -50,6 +51,15 @@ async function judgeFactory(threads = 20) {
       "scorers/specs.md": scorer(["spec"], 25),
     },
   });
+  // Implement reads the default branch's CI before it starts: no runs there. Nothing else reaches gh.
+  const realGh = host.gh;
+  host.gh = async (args) => {
+    if (args[0] === "repo" && args[1] === "view")
+      return { ok: true, out: JSON.stringify({ defaultBranchRef: { name: "main" } }) };
+    if (args[0] === "run" && args[1] === "list") return { ok: true, out: "[]" };
+    throw new Error(`no gh in this test: ${args.join(" ")}`);
+  };
+  cleanup.push(() => (host.gh = realGh));
   const builtin = (await n.ctx.gateway.builtin!()).client;
   /** A tool call from the run's own T3 thread: the parsed answer, or the tool error's text. */
   const call = async (name: string, run: FactoryRun, args: Record<string, unknown>) => {
@@ -79,10 +89,39 @@ async function judgeFactory(threads = 20) {
   return { ...n, call, report, judgeRuns, verdict, triaged };
 }
 
-test("a quarter of reported spec runs are judged, and the same runs every time", async () => {
+/** Grades `count` runs this week, so the judges sample instead of grading every run. */
+function gradedThisWeek(n: Awaited<ReturnType<typeof judgeFactory>>, count: number) {
+  for (let i = 0; i < count; i++)
+    scores.put(n.s, {
+      run: `run_graded_${i}`,
+      scorer: "repro",
+      label: "reproduced",
+      score: 1,
+      passed: true,
+      reasoning: "",
+      judgeRun: `run_judge_${i}`,
+      at: n.s.now(),
+    });
+}
+
+test("while few runs were graded this week every run is judged, then a quarter of reported spec runs are, the same runs every time", async () => {
   const n = await judgeFactory();
   await n.command("add", n.repo, "Crash on save");
   const item = items.list(n.s)[0]!;
+  const spec = () =>
+    runs.insert(n.s, {
+      id: newId("run"),
+      item: item.id,
+      kind: "spec",
+      attempt: 1,
+      state: "reported",
+      nudges: 0,
+      configCommit: item.configCommit,
+    });
+  for (let i = 0; i < 5; i++) sampleJudges(n.f, spec());
+  expect(n.judgeRuns()).toHaveLength(5);
+
+  gradedThisWeek(n, 20);
   const ended = Array.from({ length: 400 }, () =>
     runs.insert(n.s, {
       id: newId("run"),
@@ -96,7 +135,7 @@ test("a quarter of reported spec runs are judged, and the same runs every time",
   );
   const judged = () => {
     const before = n.judgeRuns().length;
-    for (const run of ended) n.f.events.emit({ kind: "run.ended", run: run.id, state: "reported", text: "ended" });
+    for (const run of ended) sampleJudges(n.f, run);
     return n
       .judgeRuns()
       .slice(before)
@@ -114,8 +153,8 @@ test("a reported triage run gets a judge thread on the scorer's model that reads
   const n = await judgeFactory();
   const triage = await n.triaged(implement);
 
-  // Only `repro` both scores triage and samples this run.
-  expect(n.judgeRuns().map((r) => r.checked)).toEqual([{ run: triage.id, scorer: "repro" }]);
+  // Only `repro` both scores triage and samples this run; `never`'s sample of 0 keeps it off.
+  expect(n.judgeRuns().map((r) => r.checked)).toEqual([{ kind: "judge", run: triage.id, scorer: "repro" }]);
   await n.dispatch();
   const judge = n.judgeRuns()[0]!;
   expect(judge).toMatchObject({ state: "running", configCommit: triage.configCommit });
@@ -159,7 +198,7 @@ test("a reported triage run gets a judge thread on the scorer's model that reads
   expect(items.get(n.s, triage.item!)!.phase).toBe("implement");
 });
 
-test("a label outside the scorer's list is refused, and a failing grade makes the runs of the finished item flawed", async () => {
+test("a label outside the scorer's list is refused, and a failing grade makes the run it grades flawed", async () => {
   const n = await judgeFactory();
   // A triage that closes the item is still judged.
   const triage = await n.triaged({ outcome: "not-a-bug", summary: "Works as designed." });
@@ -176,14 +215,10 @@ test("a label outside the scorer's list is refused, and a failing grade makes th
 
   expect(await n.report(judge, n.verdict("guessed"))).toEqual({ accepted: true });
   expect(scores.forRun(n.s, triage.id)[0]).toMatchObject({ label: "guessed", score: 0, passed: false });
-  await loopTask(
-    n.f,
-    n.f.loops.find((l) => l.name === "factory-outcomes")!,
-  )();
   expect(runs.get(n.s, triage.id)!.verdict).toBe("flawed");
 });
 
-test("judge runs count as working and wait for quota like any stage", async () => {
+test("judge runs count as working and wait for quota like any stage, and a stage run starts before them", async () => {
   const n = await judgeFactory(1);
   const triage = await n.triaged(implement);
   const implementRun = runs.forItem(n.s, triage.item!).find((r) => r.kind === "implement")!;
@@ -205,10 +240,27 @@ test("judge runs count as working and wait for quota like any stage", async () =
 
   n.advance(3600_001);
   await n.dispatch();
-  // The judge was queued first and takes the only thread.
-  expect(n.judgeRuns()[0]!.state).toBe("running");
+  // The judge was queued first, but live work goes first and takes the only thread.
+  expect(runs.get(n.s, implementRun.id)!.state).toBe("running");
   expect(workingCount(n.f)).toBe(1);
-  expect(runs.get(n.s, implementRun.id)!.state).toBe("queued");
+  expect(n.judgeRuns()[0]!.state).toBe("queued");
+});
+
+test("with two threads and one at work, a triage queued after a judge takes the free thread, and the judge waits", async () => {
+  const n = await judgeFactory(2);
+  await n.command("add", n.repo, "Busy");
+  await n.dispatch();
+  const [busy] = runs.list(n.s, { kinds: ["triage"] });
+  await n.until(() => n.mirror.thread(busy!.threadId!)?.status === "running", "the busy thread to run");
+  await n.triaged({ outcome: "not-a-bug", summary: "Works as designed." });
+  expect(n.judgeRuns().map((r) => r.state)).toEqual(["queued"]);
+
+  await n.command("add", n.repo, "Later");
+  await n.dispatch();
+  const later = runs.list(n.s, { kinds: ["triage"] }).at(-1)!;
+  expect(runs.get(n.s, later.id)!.state).toBe("running");
+  expect(n.judgeRuns()[0]!.state).toBe("queued");
+  expect(workingCount(n.f)).toBe(2);
 });
 
 test("a judge thread that ends twice without reporting is retried as attempt 2 on the same run", async () => {
@@ -224,7 +276,11 @@ test("a judge thread that ends twice without reporting is retried as attempt 2 o
   await n.until(() => n.judgeRuns().length === 2, "the retry");
 
   expect(runs.get(n.s, judge.id)!.state).toBe("silent");
-  expect(n.judgeRuns()[1]).toMatchObject({ attempt: 2, state: "queued", checked: { run: triage.id, scorer: "repro" } });
+  expect(n.judgeRuns()[1]).toMatchObject({
+    attempt: 2,
+    state: "queued",
+    checked: { kind: "judge", run: triage.id, scorer: "repro" },
+  });
 });
 
 test("the board shows each scorer's pass rate over the last 7 days, overall and per factory commit", async () => {

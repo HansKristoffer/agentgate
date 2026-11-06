@@ -161,6 +161,25 @@ test("a signed delivery through the relay becomes one held item; a bad signature
   expect(items.list(n.s)).toHaveLength(2);
 });
 
+test("a source with 20 deliveries waiting for approval refuses the next with 429 until one is approved or rejected", async () => {
+  const { n } = await hookedFactory((repo) => [alerts(repo)]);
+  const deliver = (id: number) => {
+    const body = JSON.stringify({ alert: { id: `a-${id}`, name: `Alert ${id}`, details: "-" } });
+    const headers = { "x-alert-signature": `v1=${sign("alert-signing-key", body, "base64")}` };
+    return handleHook(n.f, "alerts", new Request("http://hook.invalid/?env=prod", { method: "POST", headers, body }));
+  };
+  for (let i = 1; i <= 20; i++) expect((await deliver(i)).status).toBe(202);
+  expect((await deliver(21)).status).toBe(429);
+  expect((await deliver(22)).status).toBe(429);
+  expect(items.list(n.s)).toHaveLength(20);
+  const notes = n.f.events.recent(50).filter((e) => e.text.startsWith("Deliveries to alerts are refused"));
+  expect(notes).toHaveLength(1);
+
+  expect((await n.command("reject", items.list(n.s)[0]!.key)).code).toBe(0);
+  expect((await deliver(23)).status).toBe(202);
+  expect(items.list(n.s, { open: true })).toHaveLength(20);
+});
+
 test("a valid GitHub or Linear delivery polls that source now and adds no item itself", async () => {
   const { n } = await hookedFactory((repo) => [
     { id: "bugs", type: "github", repo, label: "factory", webhook: { secret: "secret:GH_SECRET" } },

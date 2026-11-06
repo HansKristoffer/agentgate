@@ -16,7 +16,8 @@
             "maxItems": 10,
             "type": "array",
             "items": { "type": "string", "minLength": 1, "maxLength": 100 }
-          }
+          },
+          "watchPullRequests": { "default": false, "type": "boolean" }
         },
         "additionalProperties": false
       }
@@ -34,7 +35,7 @@
         "threads": { "default": 3, "type": "integer", "minimum": 1, "maximum": 20 },
         "waitForQuota": { "default": true, "type": "boolean" },
         "waitingForYou": { "default": 5, "type": "integer", "minimum": 1, "maximum": 100 },
-        "itemTokens": { "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
+        "itemTokens": { "default": 30000000, "type": "integer", "exclusiveMinimum": 0, "maximum": 9007199254740991 },
         "reviewRounds": { "default": 3, "type": "integer", "minimum": 0, "maximum": 5 },
         "nudges": { "default": 3, "type": "integer", "minimum": 0, "maximum": 10 },
         "stalledAfter": { "default": "15m", "type": "string", "pattern": "^\\d+(m|h|d)$" }

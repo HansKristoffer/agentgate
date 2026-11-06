@@ -53,6 +53,10 @@ function prOf(url: string) {
   return { repo: m[1]!, number: Number(m[2]) };
 }
 
+/** The author associations of a repository's own people: only their PR text reaches a factory thread or counts as a
+ * person's comment (D40). Bots and outside contributors have others. */
+export const COLLABORATORS = ["OWNER", "MEMBER", "COLLABORATOR"];
+
 const login = z.object({ login: z.string() });
 const comment = z.object({ body: z.string(), authorAssociation: z.string(), createdAt: z.string() });
 
@@ -63,6 +67,15 @@ export async function defaultBranch(repo: string): Promise<string> {
     ["repo", "view", repo, "--json", "defaultBranchRef"],
   );
   return view.defaultBranchRef.name;
+}
+
+/** Whether GitHub protects the branch from direct pushes, by a protection rule or a ruleset. */
+export async function branchProtected(repo: string, branch: string): Promise<boolean> {
+  const view = await ghJson(`read whether ${branch} of ${repo} is protected`, z.object({ protected: z.boolean() }), [
+    "api",
+    `repos/${repo}/branches/${encodeURIComponent(branch)}`,
+  ]);
+  return view.protected;
 }
 
 export async function openLabelledIssues(
@@ -331,113 +344,4 @@ export async function mergedRevertOf(
     if (!inWindow || !isRevert) return false;
     return names.test(r.title) || names.test(r.body) || r.title.includes(pr.title);
   });
-}
-
-/** The open pull request whose branch is `branch`, if there is one. */
-export async function openPrForHead(
-  repo: string,
-  branch: string,
-): Promise<{ number: number; url: string } | undefined> {
-  const list = await ghJson(
-    `list the open pull requests from ${branch} in ${repo}`,
-    z.array(z.object({ number: z.number().int(), url: z.string() })),
-    ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--limit", "1", "--json", "number,url"],
-  );
-  return list[0];
-}
-
-const CLOSED_BY_QUERY = `query($owner: String!, $name: String!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequests(states: MERGED, first: 50, after: $after, orderBy: { field: UPDATED_AT, direction: DESC }) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        number url mergedAt baseRefOid headRefName author { __typename login }
-        closingIssuesReferences(first: 10) { nodes { number title body } }
-      }
-    }
-  }
-}`;
-const closedBySchema = z.object({
-  data: z.object({
-    repository: z.object({
-      pullRequests: z.object({
-        pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullable() }),
-        nodes: z.array(
-          z.object({
-            number: z.number().int(),
-            url: z.string(),
-            mergedAt: z.string(),
-            baseRefOid: z.string(),
-            headRefName: z.string(),
-            author: z.object({ __typename: z.string(), login: z.string() }).nullable(),
-            closingIssuesReferences: z.object({
-              nodes: z.array(z.object({ number: z.number().int(), title: z.string(), body: z.string() })),
-            }),
-          }),
-        ),
-      }),
-    }),
-  }),
-});
-const CLOSED_BY_PAGES = 20;
-
-/** GraphQL names a bot `dependabot` where REST and `gh` say `dependabot[bot]`, and a deleted account has no author;
- * GitHub shows that account as `ghost`. */
-const authorLogin = (author: { __typename: string; login: string } | null) =>
-  !author ? "ghost" : author.__typename === "Bot" ? `${author.login}[bot]` : author.login;
-
-/** Issues closed by a merged PR, most recently updated PRs first, at most `limit`. Reads at most 1,000 merged PRs. */
-export async function closedByMergedPr(
-  repo: string,
-  limit: number,
-): Promise<
-  Array<{
-    issue: number;
-    title: string;
-    body: string;
-    pr: number;
-    prUrl: string;
-    baseSha: string;
-    headRefName: string;
-    author: string;
-    mergedAt: string;
-  }>
-> {
-  const [owner, name] = repo.split("/");
-  const found: Awaited<ReturnType<typeof closedByMergedPr>> = [];
-  let after: string | null = null;
-  for (let page = 0; page < CLOSED_BY_PAGES && found.length < limit; page++) {
-    const answer: z.infer<typeof closedBySchema> = await ghJson(
-      `list the issues closed by merged PRs in ${repo}`,
-      closedBySchema,
-      [
-        "api",
-        "graphql",
-        "-f",
-        `query=${CLOSED_BY_QUERY}`,
-        "-f",
-        `owner=${owner}`,
-        "-f",
-        `name=${name}`,
-        ...(after ? ["-f", `after=${after}`] : []),
-      ],
-    );
-    const { nodes, pageInfo } = answer.data.repository.pullRequests;
-    for (const pr of nodes)
-      for (const issue of pr.closingIssuesReferences.nodes)
-        found.push({
-          issue: issue.number,
-          title: issue.title,
-          body: issue.body,
-          pr: pr.number,
-          prUrl: pr.url,
-          baseSha: pr.baseRefOid,
-          headRefName: pr.headRefName,
-          author: authorLogin(pr.author),
-          mergedAt: pr.mergedAt,
-        });
-    if (!pageInfo.hasNextPage || !pageInfo.endCursor) break;
-    after = pageInfo.endCursor;
-  }
-  return found.slice(0, limit);
 }

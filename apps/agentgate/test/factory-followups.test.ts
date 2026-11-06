@@ -1,11 +1,10 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import type { MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
-import { moveItem, setNeedsYou } from "../src/factory/controller.ts";
+import { setNeedsYou } from "../src/factory/controller.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome } from "../src/factory/records.ts";
-import { loopTask } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
@@ -47,9 +46,12 @@ test("intake leaves out an open issue the factory finished on another machine, a
   await n.intake();
   expect(items.list(n.s)).toEqual([]);
 
-  expect(await n.command("retry", `${n.repo}#1`)).toEqual({ code: 0, output: ["Took over gh-1; it starts at triage"] });
+  expect(await n.command("retry", `${n.repo}#1`)).toEqual({
+    code: 0,
+    output: [`Took over ${n.key(1)}; it starts at triage`],
+  });
   const [item] = items.list(n.s);
-  expect(item).toMatchObject({ key: "gh-1", phase: "triage" });
+  expect(item).toMatchObject({ key: n.key(1), phase: "triage" });
   expect(runs.forItem(n.s, item!.id).map((r) => [r.kind, r.state])).toEqual([["triage", "queued"]]);
 });
 
@@ -59,7 +61,7 @@ test("a run that ends twice without reporting is retried as attempt 2 with what 
   await n.intake();
   await n.dispatch();
   const [first] = runs.list(n.s);
-  const checked = { head: "abc1234", round: 1 };
+  const checked = { kind: "judge" as const, run: "run_graded", scorer: "tests" };
   runs.update(n.s, first!.id, { checked });
   const threadId = first!.threadId!;
 
@@ -82,10 +84,6 @@ test("the board shows an item's review rounds, and the findings left open when i
   host.gh = async (args, stdin) =>
     args[0] === "api" && /\/pulls\/\d+\/reviews$/.test(args[1]!) ? { ok: true, out: "{}" } : gh(args, stdin);
   cleanup.push(() => (host.gh = gh));
-  const pollReviews = loopTask(
-    n.f,
-    n.f.loops.find((l) => l.name === "factory-reviews")!,
-  );
   const latestReview = (item: FactoryItem) => runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;
   const reviewed = (pr: FakePr, findings: { severity: string; text: string }[]) => ({
     outcome: "done",
@@ -108,7 +106,7 @@ test("the board shows an item's review rounds, and the findings left open when i
   expect((await row(item)).pr).toEqual({ url: pr.url, commit: expect.any(String), reviewRound: 1 });
 
   pr.headRefOid = "c".repeat(40);
-  await pollReviews();
+  await n.pollPrs();
   await n.dispatch();
   await n.report(
     latestReview(item),
@@ -122,9 +120,6 @@ test("the board shows an item's review rounds, and the findings left open when i
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
   const pre = { url: pr.url, commit: expect.any(String), reviewRound: 2, openFindings: 2 };
   expect((await row(item)).pr).toEqual(pre);
-  // The same row goes to the factory machine after a move.
-  const held = (await (await n.f.peer.request("/items?open=1")).json()) as { id: string; pr?: unknown }[];
-  expect(held.find((i) => i.id === item.id)!.pr).toEqual(pre);
 });
 
 test("approving, retrying and adding by hand are each one human touch, and a question the factory asks is none", async () => {
@@ -140,7 +135,7 @@ test("approving, retrying and adding by hand are each one human touch, and a que
   expect(touches(held!)).toBe(1);
   setNeedsYou(n.f, held!.id, { reason: "decision", question: "Rename the flag?" });
   expect(touches(held!)).toBe(1);
-  moveItem(n.f, held!.id, "failed", { reason: "failed", question: "Triage ended twice without a report." });
+  setNeedsYou(n.f, held!.id, { reason: "failed", question: "Triage ended twice without a report." });
   expect((await n.command("retry", held!.key)).code).toBe(0);
   expect(touches(held!)).toBe(2);
 

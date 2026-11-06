@@ -9,7 +9,7 @@ import { pollTokens } from "./llm/cursor.ts";
 import { LOG_DIRS, backfillTokens, publishTokens } from "./llm/token-history.ts";
 import { Quotas } from "./llm/quota.ts";
 import { ProxyOperations } from "./llm/operations.ts";
-import { Gateway, aliasesFor } from "./mcp/gateway.ts";
+import { Gateway, aliasesFor, inScope } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
@@ -45,6 +45,7 @@ import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import { createFactoryRuntime, loopTask, type FactoryRuntime } from "./factory/runtime.ts";
+import { threadScope } from "./factory/controller.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import packageInfo from "../../../package.json";
 
@@ -131,6 +132,7 @@ export function makeCtx(
   // After the features, whose peer routes the relay serves too.
   ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
   gateway.builtin = () => handoffSource(handoffs, ctx.factory);
+  gateway.scope = (thread) => threadScope(ctx.factory, thread);
   return ctx;
 }
 
@@ -205,7 +207,9 @@ export function app(ctx: Ctx) {
   );
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
+    const scope = ctx.gateway.scope?.(c.req.query("thread")?.slice(0, 256) || undefined);
     const out = Object.entries(aliasesFor(s, project))
+      .filter(([alias]) => inScope(scope, alias))
       .map(([alias, id]) => ({ alias, instance: s.get("mcp", id) }))
       .filter((x) => x.instance?.mode === "perSession");
     return c.json(out);

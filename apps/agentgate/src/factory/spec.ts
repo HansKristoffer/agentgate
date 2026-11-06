@@ -127,7 +127,7 @@ const spec = (f: FactoryRuntime) => ({
     if (result.approved) {
       const moved = moveItem(f, item.id, "implement");
       enqueueRun(f, { kind: "implement", item: item.id });
-      await writeBack(f, moved, "spec-approved", { report, text: result.spec });
+      writeBack(f, moved, "spec-approved", { report, text: result.spec });
       return;
     }
     // Every round past the second waits too, including one the maintainer started with `retry`.

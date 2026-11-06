@@ -50,6 +50,8 @@ export interface FactoryTool {
   description: string;
   inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
   local?: boolean; // never forwarded to the factory machine
+  /** Listed only to a factory run's own threads (`threadScope`). */
+  forRuns?: boolean;
   /** The value is returned as JSON text; a thrown error becomes a tool error. */
   call(args: Record<string, unknown>, caller: ToolCaller): Promise<unknown>;
 }
@@ -98,8 +100,6 @@ export interface LaunchSpec {
   branch: string;
   startFromOrigin: boolean;
   model?: FactoryModel;
-  /** When set, the thread is launched idle, prepare runs, then the brief is sent. */
-  prepare?(thread: { threadId: string; worktreePath?: string }): Promise<void>;
 }
 export interface RunKindDefinition {
   kind: RunKind;
@@ -128,10 +128,11 @@ export interface FactoryRuntime {
   runKinds: Map<RunKind, RunKindDefinition>;
   sources: Map<SourceType, SourceAdapter>;
   boardParts: Array<() => Promise<Partial<FactoryBoard>>>;
-  intakeBlockers: Array<() => string | undefined>; // a reason to pause intake, or undefined
   page?: (req: Request, listener: Listener) => Promise<Response>; // set by the board feature
   forwarder?: Forwarder; // set by the follow feature
   adopt?: (ref: string) => Promise<FactoryItem | undefined>; // set by the move feature; `retry` calls it for an item this machine does not hold
+  /** Per item, the end of its last queued step (`withItem`). */
+  locks: Map<string, Promise<unknown>>;
   isFactoryNode(): boolean;
   pointer(): FactoryPointer | undefined;
 }
@@ -151,7 +152,7 @@ export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
     runKinds: new Map(),
     sources: new Map(),
     boardParts: [],
-    intakeBlockers: [],
+    locks: new Map(),
     pointer: () => s.settings().factory,
     isFactoryNode: () => s.settings().factory?.node === s.nodeId,
   };
@@ -190,6 +191,41 @@ export async function runCommand(f: FactoryRuntime, name: string, args: string[]
 export function shortError(e: unknown) {
   const text = getErrorMessage(e);
   return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/** Errors whose messages agentgate writes itself and keeps tokens out of (t3-mcp.ts, linear.ts, the report checks), so a
+ * log line can carry the message. Any other error, whose text could hold anything, is logged by its name. */
+const SAFE_ERRORS = new Set(["ReportError", "T3McpError", "T3Error", "FolderError", "LinearError"]);
+export const logError = (e: unknown) =>
+  e instanceof Error
+    ? SAFE_ERRORS.has(e.name) || SAFE_ERRORS.has(e.constructor.name)
+      ? shortError(e)
+      : e.name
+    : "error";
+
+/**
+ * Runs `step` once every earlier step of the same item has settled, so two transitions of one item never interleave
+ * across their awaits: a report, a loop pass, a person's action. A step's failure does not hold up the next one. A
+ * step must not await another `withItem` of its own item, which would wait for itself; it can queue one with `later`.
+ */
+export function withItem<T>(f: FactoryRuntime, item: string, step: () => Promise<T>): Promise<T> {
+  const run = (f.locks.get(item) ?? Promise.resolve()).then(step);
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  f.locks.set(item, settled);
+  void settled.then(() => {
+    if (f.locks.get(item) === settled) f.locks.delete(item);
+  });
+  return run;
+}
+
+/** Queues `step` after the item's current step without waiting for it; its failure becomes a note naming `what`. */
+export function later(f: FactoryRuntime, item: string, what: string, step: () => Promise<void>) {
+  void withItem(f, item, step).catch((e) =>
+    f.events.emit({ kind: "note", item, text: `${what} failed: ${shortError(e)}` }),
+  );
 }
 
 /** For routes: what an administrator typed wrong is a 400, like the rest of the control API. */

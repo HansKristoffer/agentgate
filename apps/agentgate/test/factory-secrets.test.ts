@@ -3,6 +3,7 @@ import { cpSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Listener } from "../src/daemon.ts";
 import { app, makeCtx, type Ctx } from "../src/daemon.ts";
+import { host } from "../src/logins.ts";
 import { boardView } from "../src/factory/board.ts";
 import { fetcher } from "../src/factory/folder.ts";
 import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
@@ -22,7 +23,13 @@ afterEach(async () => {
 });
 afterAll(removeTmp);
 
+const realGh = host.gh;
 function node(name = "a") {
+  // No test reaches GitHub: `use` asks it whether the folder's branch is protected.
+  host.gh = async () => undefined;
+  cleanup.push(() => {
+    host.gh = realGh;
+  });
   const s = new Store(":memory:");
   s.setLocal("node", name);
   s.setLocal("adminToken", "admin-token");

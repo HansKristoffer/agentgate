@@ -1,7 +1,7 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 import { T3Error, t3Client, t3State } from "../handoff/t3.ts";
-import type { FactoryRuntime } from "./runtime.ts";
+import { logError, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * A live copy of this machine's T3 Code threads, from T3's `orchestration.subscribeShell` stream. While the stream is
@@ -24,7 +24,9 @@ export interface MirrorThread {
   worktreePath?: string;
   updatedAt: number;
 }
-const WORKING_STATUSES: readonly string[] = ["preparing", "queued", "starting", "running"];
+/** T3 counts `waiting` as active too: the turn waits on background work, such as a command or a subagent. A thread
+ * that waits on a person has a pending request instead (`needsYou`). */
+const WORKING_STATUSES: readonly string[] = ["preparing", "queued", "starting", "running", "waiting"];
 /** A T3 run status whose turn is still going. */
 export const isWorkingStatus = (status: string) => WORKING_STATUSES.includes(status);
 export interface T3Mirror {
@@ -235,8 +237,7 @@ class Mirror implements T3Mirror {
       try {
         listener(thread, before);
       } catch (e) {
-        // The name only: a feature's error text can carry a token or a URL with credentials.
-        console.error(`factory: mirror listener failed: ${e instanceof Error ? e.name : "error"}`);
+        console.error(`factory: mirror listener failed: ${logError(e)}`);
       }
     }
   }

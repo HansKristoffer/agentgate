@@ -1,5 +1,6 @@
 import type { ItemPhase, Moment, RunState } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
+import { logError } from "./runtime.ts";
 
 /** What happened in the factory, for the board's event list, and for features that react to each other's changes. */
 export type FactoryEvent =
@@ -35,9 +36,7 @@ export class FactoryEvents {
       kind,
       event.text,
     ]);
-    // The name only: a feature's error text can carry a token or a URL with credentials.
-    const failed = (e: unknown) =>
-      console.error(`factory: ${event.kind} listener failed: ${e instanceof Error ? e.name : "error"}`);
+    const failed = (e: unknown) => console.error(`factory: ${event.kind} listener failed: ${logError(e)}`);
     for (const listener of this.listeners.get(event.kind) ?? []) {
       try {
         const result = listener(event);

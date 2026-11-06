@@ -13,7 +13,7 @@ version: 1
 name: acme
 description: Works Acme's bugs
 repositories:
-  acme/api: { reviewers: [alice] }
+  acme/api: { reviewers: [alice], watchPullRequests: true }
   acme/web: {}
 secrets: [LINEAR_KEY, GH_HOOK, SENTRY_HOOK]
 limits:
@@ -39,7 +39,10 @@ scoring: { sample: 50 }
 
 test("a factory.yaml using every key parses, and what it leaves out gets the documented defaults", () => {
   const config = factoryConfigSchema.parse(Bun.YAML.parse(example));
-  expect(config.repositories).toEqual({ "acme/api": { reviewers: ["alice"] }, "acme/web": { reviewers: [] } });
+  expect(config.repositories).toEqual({
+    "acme/api": { reviewers: ["alice"], watchPullRequests: true },
+    "acme/web": { reviewers: [], watchPullRequests: false },
+  });
   expect(config.limits.stalledAfter).toBe("30m");
   expect(config.learning.every).toBe("14d");
   expect(config.sources.map((source) => source.intake)).toEqual(["auto", "hold", "hold"]);
@@ -53,9 +56,17 @@ test("a factory.yaml using every key parses, and what it leaves out gets the doc
   expect(minimal).toEqual({
     version: 1,
     name: "acme",
-    repositories: { "acme/api": { reviewers: [] } },
+    repositories: { "acme/api": { reviewers: [], watchPullRequests: false } },
     secrets: [],
-    limits: { threads: 3, waitForQuota: true, waitingForYou: 5, reviewRounds: 3, nudges: 3, stalledAfter: "15m" },
+    limits: {
+      threads: 3,
+      waitForQuota: true,
+      waitingForYou: 5,
+      itemTokens: 30_000_000,
+      reviewRounds: 3,
+      nudges: 3,
+      stalledAfter: "15m",
+    },
     sources: [],
     learning: { every: "7d" },
     scoring: { sample: 25 },
@@ -102,7 +113,9 @@ test("an unknown key is refused at every level of the folder's files and the rep
     ],
   ];
   // Without the unknown key each value parses, so a refusal is about that key.
-  expect(stageFileSchema.safeParse({ start: "auto", model: { provider: "codex", model: "gpt-5" } }).success).toBe(true);
+  expect(
+    stageFileSchema.safeParse({ start: "auto", model: { provider: "codex", model: "gpt-5" }, mcp: ["docs"] }).success,
+  ).toBe(true);
   expect(scorerFileSchema.safeParse(scorer).success).toBe(true);
   for (const [where, schema, value] of cases) expect([where, schema.safeParse(value).success]).toEqual([where, false]);
 });

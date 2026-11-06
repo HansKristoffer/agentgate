@@ -317,8 +317,20 @@ test("factory_history returns finished items with their runs, outcomes, scores a
     }
   }
   // Another repository's item, and one still open, are left out of a page for this repository.
-  items.insert(n.s, { ...items.get(n.s, ids[0]!)!, id: newId("it"), externalId: "other", repo: "acme/other" });
-  items.insert(n.s, { ...items.get(n.s, ids[0]!)!, id: newId("it"), externalId: "open", phase: "implement" });
+  items.insert(n.s, {
+    ...items.get(n.s, ids[0]!)!,
+    id: newId("it"),
+    externalId: "other",
+    key: "other-1",
+    repo: "acme/other",
+  });
+  items.insert(n.s, {
+    ...items.get(n.s, ids[0]!)!,
+    id: newId("it"),
+    externalId: "open",
+    key: "open-1",
+    phase: "implement",
+  });
 
   const seen: { type: string; id: string }[] = [];
   let cursor: string | undefined;

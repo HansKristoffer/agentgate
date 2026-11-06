@@ -7,7 +7,7 @@ import * as gh from "../src/factory/gh.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
 import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -100,8 +100,13 @@ function fakeGitHub(repo: string) {
 
 const source = (repo: string, id = "bugs", label = "factory") => ({ id, type: "github", repo, label });
 
-async function githubFactory(sources = (repo: string) => [source(repo)]) {
-  const n = await factoryNode(cleanup, { config: (repo) => ({ limits: { threads: 20 }, sources: sources(repo) }) });
+async function githubFactory(
+  sources = (repo: string) => [source(repo)],
+  repositories = (repo: string): Record<string, unknown> => ({ [repo]: {} }),
+) {
+  const n = await factoryNode(cleanup, {
+    config: (repo) => ({ limits: { threads: 20 }, sources: sources(repo), repositories: repositories(repo) }),
+  });
   const github = fakeGitHub(n.repo);
   const builtin = (await n.ctx.gateway.builtin!()).client;
   /** factory_report from the run's own T3 thread, as the shim forwards it. */
@@ -111,10 +116,14 @@ async function githubFactory(sources = (repo: string) => [source(repo)]) {
       arguments: { run: run.id, ...body },
       _meta: { "dev.agentgate/t3Thread": run.threadId },
     });
-    return JSON.parse((result.content as { text: string }[])[0]!.text);
+    const answer = JSON.parse((result.content as { text: string }[])[0]!.text);
+    await idle(n.f);
+    return answer;
   };
-  const posts = () => github.calls.filter((c) => c.args[0] === "api");
-  return { ...n, github, report, posts };
+  const posts = () => github.calls.filter((c) => c.args[0] === "api" && c.args[1] !== "user");
+  /** Intake gives issue `number` the key `<repository name>-<number>`. */
+  const key = (number: number) => `${n.repo.split("/")[1]!.toLowerCase()}-${number}`;
+  return { ...n, github, report, posts, key };
 }
 
 const triaged = {
@@ -123,7 +132,7 @@ const triaged = {
   result: { kind: "triage", route: "implement", reproduction: { command: "bun test", failsBefore: true } },
 } as const;
 
-test("open issues with the label enter once as gh-<n>, and closed, unlabelled or elsewhere-held issues do not", async () => {
+test("open issues with the label enter once as <repository>-<n> and hear that the factory took them, and closed, unlabelled or elsewhere-held issues do not", async () => {
   const n = await githubFactory();
   n.github.add(1, { title: "Crash on save", body: "Click save twice." });
   n.github.add(2, { state: "CLOSED" });
@@ -163,14 +172,60 @@ test("open issues with the label enter once as gh-<n>, and closed, unlabelled or
   ).toEqual([
     {
       externalId: `${n.repo}#1`,
-      key: "gh-1",
+      key: n.key(1),
       title: "Crash on save",
       url: `https://github.com/${n.repo}/issues/1`,
       snapshot: { title: "Crash on save", body: "Click save twice.", url: `https://github.com/${n.repo}/issues/1` },
     },
   ]);
   const board = await buildBoard(n.f, { includeWebhookUrls: false });
-  expect(board.items.find((i) => i.key === "gh-4")).toMatchObject({ heldBy: "b", phase: "implement" });
+  // b has not been heard from, so its issue is orphaned here: retry would take it over.
+  expect(board.items.find((i) => i.key === n.key(4))).toMatchObject({
+    heldBy: "b",
+    phase: "implement",
+    needsYou: { reason: "orphaned" },
+  });
+  await idle(n.f);
+  expect(n.posts().map((c) => c.args[1])).toEqual([`repos/${n.repo}/issues/1/comments`]);
+  expect(parseMarkers(n.github.issues.get(1)!.comments[0]!.body)).toEqual([
+    expect.objectContaining({ key: n.key(1), stage: null, node: "a", state: "open" }),
+  ]);
+});
+
+test("two sources on one repository take an issue with both labels in once, and keys stay unique", async () => {
+  const n = await githubFactory((repo) => [source(repo), source(repo, "urgent", "urgent")]);
+  n.github.add(1, { labels: ["factory", "urgent"] });
+  await n.intake();
+  expect(items.list(n.s).map((i) => [i.key, i.source])).toEqual([[n.key(1), "bugs"]]);
+});
+
+test("an issue of a repository whose name another repository shares is keyed <owner>-<name>-<n>, and a number naming two items is refused with both keys", async () => {
+  const twin = (repo: string) => `elsewhere/${repo.split("/")[1]}`;
+  const n = await githubFactory(undefined, (repo) => ({ [repo]: {}, [twin(repo)]: {} }));
+  n.github.add(42);
+  await n.intake();
+  const [owner, name] = n.repo.toLowerCase().split("/");
+  const key = `${owner}-${name}-42`;
+  expect(items.list(n.s).map((i) => i.key)).toEqual([key]);
+  await n.dispatch();
+  const [triage] = runs.list(n.s);
+  expect(n.t3.threads.get(triage!.threadId!)!.branch).toBe(`factory/${key}-triage-1`);
+
+  // The same number in the twin repository: `42` names both items, and every way in says so.
+  const other = items.insert(n.s, {
+    ...items.list(n.s)[0]!,
+    id: "it_twin",
+    externalId: `${twin(n.repo)}#42`,
+    key: `elsewhere-${name}-42`,
+    repo: twin(n.repo),
+  });
+  const refused = `42 names 2 items, ${key} and ${other.key}; name one by its key`;
+  expect(await n.command("approve", "42")).toEqual({ code: 1, output: [refused] });
+  const api = await n.api("/api/factory/items/42/approve", "POST", {});
+  expect(api.status).toBe(400);
+  expect(await api.text()).toContain(refused);
+  expect((await n.command("drop", `${n.repo}#42`)).code).toBe(0);
+  expect(items.get(n.s, other.id)!.phase).not.toBe("closed");
 });
 
 test("a marker in a comment by another login counts for nothing: not for newestMarker, intake or retry", async () => {
@@ -198,18 +253,19 @@ test("a marker in a comment by another login counts for nothing: not for newestM
   // Read as the factory's, the first would be adopted at review.
   expect(await n.command("retry", `${n.repo}#1`)).toEqual({
     code: 1,
-    output: ["No machine has marked gh-1 as taken; intake adds it"],
+    output: [`No machine has marked ${n.key(1)} as taken; intake adds it`],
   });
   // Read as the factory's, the first would show as held by b and the second as finished.
   await n.intake();
   expect(items.list(n.s).map((i) => [i.key, i.phase])).toEqual([
-    ["gh-1", "triage"],
-    ["gh-2", "triage"],
+    [n.key(1), "triage"],
+    [n.key(2), "triage"],
   ]);
 
   // The factory's own marker counts, and a forged one posted after it does not replace it.
   const item = items.list(n.s)[0]!;
-  await writeBack(n.f, item, "waiting", { text: "Which save path?" });
+  writeBack(n.f, item, "waiting", { text: "Which save path?", ref: "q1" });
+  await idle(n.f);
   n.github.issues.get(1)!.comments.push(forged(1, { state: "finished" }));
   expect(await n.f.sources.get("github")!.newestMarker!(item)).toMatchObject({
     item: item.id,
@@ -223,17 +279,21 @@ test("triage posts one comment with the template, the marker, defused mentions a
   for (const i of [1, 2, 3]) n.github.add(i);
   await n.intake();
   await n.dispatch();
+  await idle(n.f);
   const [first, second, third] = runs.list(n.s, { kinds: ["triage"] });
+  // Each issue heard that the factory took it.
+  const taken = n.posts().length;
+  expect(taken).toBe(3);
 
   const summary = `Thanks @octocat, this is real. ${"x".repeat(1960)}`;
   expect(await n.report(first!, { ...triaged, summary })).toEqual({ accepted: true });
-  expect(n.posts()).toHaveLength(1);
-  const [post] = n.posts();
+  expect(n.posts()).toHaveLength(taken + 1);
+  const post = n.posts().at(-1);
   expect(post!.args).toEqual(["api", `repos/${n.repo}/issues/1/comments`, "--method", "POST", "--input", "-"]);
   const body: string = JSON.parse(post!.stdin!).body;
   const [text] = body.split(`\n\n${MARKER_PREFIX}`);
   expect(text).toStartWith(
-    "**gh-1**: The factory triaged this and starts on a fix.\n\nThanks @​octocat, this is real.",
+    `**${n.key(1)}**: The factory triaged this and starts on a fix.\n\nThanks @​octocat, this is real.`,
   );
   // The headline and the summary together run past 2,000 characters, so the text is cut there.
   expect(text!.length).toBe(2000);
@@ -242,7 +302,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
   expect(parseMarkers(body)).toEqual([
     {
       item: first!.item!,
-      key: "gh-1",
+      key: n.key(1),
       stage: "triage",
       outcome: "done",
       route: "implement",
@@ -267,20 +327,20 @@ test("triage posts one comment with the template, the marker, defused mentions a
         : undefined;
   await n.report(second!, triaged);
   await n.report(third!, triaged);
-  const writebacks = n.s.db.query("select status from factory_writebacks order by status").all();
+  const writebacks = n.s.db.query("select status from factory_writebacks where moment='triaged' order by status").all();
   expect(writebacks).toEqual([{ status: "failed" }, { status: "posted" }, { status: "uncertain" }]);
   const texts = n.f.events.recent(50).map((e) => e.text);
   expect(texts).toContain(
-    `The triaged comment on gh-2: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed)`,
+    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed)`,
   );
   expect(texts).toContain(
-    `The triaged comment on gh-3: uncertain (gh could not comment on ${n.repo}#3, and GitHub gave no answer)`,
+    `The triaged comment on ${n.key(3)}: uncertain (gh could not comment on ${n.repo}#3, and GitHub gave no answer)`,
   );
 
   n.github.fail = undefined;
-  for (const run of [first!, second!, third!])
-    expect(await writeBack(n.f, items.get(n.s, run.item!)!, "triaged")).toBe("skipped");
-  expect(n.posts()).toHaveLength(3);
+  for (const run of [first!, second!, third!]) writeBack(n.f, items.get(n.s, run.item!)!, "triaged");
+  await idle(n.f);
+  expect(n.posts()).toHaveLength(taken + 3);
 });
 
 test("the issue is re-checked before every stage, and one closed on GitHub closes its item without a comment", async () => {
@@ -323,10 +383,11 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
   await n.dispatch();
   expect(stateChecks().map((c) => c.args[2])).toEqual(["1", "2", "1"]);
   expect(items.get(n.s, one!.id)!.phase).toBe("closed");
-  expect(implementLaunches).toEqual(["gh-1"]);
+  expect(implementLaunches).toEqual([n.key(1)]);
   expect(runs.list(n.s, { kinds: ["implement"] }).map((r) => r.state)).toEqual(["cancelled"]);
-  // Only the triaged comment: the issue already says it is closed.
-  expect(n.posts()).toHaveLength(1);
+  // The taken comments and the triaged one: the issue already says it is closed.
+  await idle(n.f);
+  expect(n.posts()).toHaveLength(3);
 });
 
 test("a failing gh shows on its source's row and backs off, while the other source keeps polling", async () => {
@@ -439,35 +500,6 @@ const recorded = {
       title: 'Revert "Use internal Apple codesign action"',
     },
   ],
-  closedBy: (after: string | null) => ({
-    data: {
-      repository: {
-        pullRequests: {
-          pageInfo: { hasNextPage: !after, endCursor: after ? null : "Y3Vyc29yOnYy" },
-          nodes: [
-            {
-              number: after ? 40 : 41,
-              url: `https://github.com/${REPO}/pull/${after ? 40 : 41}`,
-              mergedAt: "2026-11-03T17:40:14Z",
-              baseRefOid: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
-              headRefName: after ? "dependabot/bun/hono-4.10.4" : "bagtoad/gh-help-environment-fix",
-              author: after ? { __typename: "Bot", login: "dependabot" } : { __typename: "User", login: "BagToad" },
-              closingIssuesReferences: { nodes: [{ number: after ? 5 : 6, title: "Bug", body: "Steps" }] },
-            },
-            {
-              number: 39,
-              url: `https://github.com/${REPO}/pull/39`,
-              mergedAt: "2026-11-02T00:25:42Z",
-              baseRefOid: "9c399f1520a45f1bffb968d7d6565ea4112937fa",
-              headRefName: "patch-1",
-              author: null,
-              closingIssuesReferences: { nodes: [] },
-            },
-          ],
-        },
-      },
-    },
-  }),
 };
 
 /** Answers by gh subcommand, as recorded; `api` answers by path. */
@@ -479,7 +511,6 @@ function recordedGh(overrides: Record<string, unknown> = {}) {
     "pr view": (args) => (flag(args, "--json") === "author" ? { author: recorded.prView.author } : recorded.prView),
     "run list": () => recorded.runList,
     "pr list": () => recorded.revertList,
-    "api graphql": (args) => recorded.closedBy(args.find((a) => a.startsWith("after="))?.slice(6) ?? null),
   };
   return stubGh((args) => {
     const key = `${args[0]} ${args[1]}`;
@@ -524,40 +555,6 @@ test("each gh.ts read parses a recorded gh answer", async () => {
   expect(await gh.mergedRevertOf(REPO, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" })).toBe(
     true,
   );
-  expect(await gh.closedByMergedPr(REPO, 10)).toEqual([
-    {
-      issue: 6,
-      title: "Bug",
-      body: "Steps",
-      pr: 41,
-      prUrl: `https://github.com/${REPO}/pull/41`,
-      baseSha: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
-      headRefName: "bagtoad/gh-help-environment-fix",
-      author: "BagToad",
-      mergedAt: "2026-11-03T17:40:14Z",
-    },
-    {
-      issue: 5,
-      title: "Bug",
-      body: "Steps",
-      pr: 40,
-      prUrl: `https://github.com/${REPO}/pull/40`,
-      baseSha: "c4513d446bf98cfcbe72ed83f17cd3220174d88f",
-      headRefName: "dependabot/bun/hono-4.10.4",
-      // GraphQL names bots without the suffix gh and REST use.
-      author: "dependabot[bot]",
-      mergedAt: "2026-11-03T17:40:14Z",
-    },
-  ]);
-
-  const calls = recordedGh({ "pr list": [{ number: 43, url: `https://github.com/${REPO}/pull/43` }] });
-  expect(await gh.openPrForHead(REPO, "factory/learn-run_1")).toEqual({
-    number: 43,
-    url: `https://github.com/${REPO}/pull/43`,
-  });
-  expect([flag(calls[0]!.args, "--head"), flag(calls[0]!.args, "--state")]).toEqual(["factory/learn-run_1", "open"]);
-  recordedGh({ "pr list": [] });
-  expect(await gh.openPrForHead(REPO, "factory/learn-run_1")).toBeUndefined();
 });
 
 test("each gh.ts read rejects a malformed answer with an error naming the repository", async () => {
@@ -570,8 +567,6 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
     ["run list", () => gh.defaultBranchCi(REPO)],
     ["pr list", () => gh.mergedRevertOf(REPO, { number: 42, title: "x", mergedAt: "2026-11-03T17:40:14Z" })],
-    ["pr list", () => gh.openPrForHead(REPO, "factory/learn-run_1")],
-    ["api graphql", () => gh.closedByMergedPr(REPO, 10)],
   ];
   for (const [command, read] of reads) {
     recordedGh({ [command]: { surprise: [{ number: "seven" }] } });

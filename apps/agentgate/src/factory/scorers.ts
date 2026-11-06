@@ -1,20 +1,20 @@
 import { createHash } from "node:crypto";
 import type { FactoryBoard, FactoryReport, ScorerFile } from "@agentgate/protocol";
-import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
 import { folderAt, folderFor } from "./config.ts";
 import { cancelLaunch, defaultBranch, enqueueRun } from "./controller.ts";
-import { isStage, items, runs, scores, type FactoryRun } from "./db.ts";
+import { dataOf, isStage, items, runs, scores, transcripts, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec, ToolCaller } from "./runtime.ts";
 
 /**
  * AI judges. Each `scorers/<name>.md` grades a sample of the reported runs of its stages in a judge thread of
- * its own. A judge run has no item, so its outcome, tokens and retries never touch the judged item; `checked` names
- * the run it grades. Scores are only stored here: the outcomes loop (records.ts) turns a failed one into a flawed
- * verdict for every run of the item.
+ * its own. A judge run has no item, so its outcome, tokens and retries never touch the judged item; its run data names
+ * the run it grades. Scores are only stored here: the outcomes loop (records.ts) makes a run a judge failed flawed.
  */
 
 const DAY = 86_400_000;
+/** Below this many graded runs in a week, every run is graded: a sample of a few runs tells nothing. */
+const FULL_SAMPLE_BELOW = 20;
 
 const JUDGE_BRIEF = `You grade one finished run of AgentGate's software factory against a rubric.
 
@@ -23,13 +23,8 @@ const JUDGE_BRIEF = `You grade one finished run of AgentGate's software factory 
 - Change nothing: no commits, pushes, comments or reviews.
 - Follow the rubric, then report exactly one label with your reasoning.`;
 
-/** A judge run's `checked`: the run it grades and the scorer it grades as. The bench's judge has the same shape. */
-const checkedSchema = z.object({ run: z.string(), scorer: z.string() });
-type Checked = z.infer<typeof checkedSchema>;
-export const judgedOf = (run: FactoryRun) => {
-  const parsed = checkedSchema.safeParse(run.checked);
-  return parsed.success ? parsed.data : undefined;
-};
+/** The run a judge run grades and the scorer it grades as. */
+const judgedOf = (run: FactoryRun) => dataOf(run, "judge");
 
 /** Whether a run is in the sample. The seed is the run's id, so asking again gives the same answer. */
 function sampled(run: string, sample: number) {
@@ -47,17 +42,20 @@ function grade(file: ScorerFile, label: string) {
   return found && { score: found.score, passed: found.score >= file.pass };
 }
 
-/** On the end of a reported stage run: a judge run for every scorer of that stage whose sample picks it. */
-function sample(f: FactoryRuntime, run: FactoryRun) {
+/** At the end of a reported stage run: a judge run for every scorer of that stage whose sample picks it. While few
+ * runs were graded this week, every run is. */
+export function sampleJudges(f: FactoryRuntime, run: FactoryRun) {
   if (run.state !== "reported" || !run.item || !isStage(run.kind)) return;
   const item = items.get(f.s, run.item);
   const folder = item && folderAt(f, item.configCommit);
   if (!folder) return;
+  const few = scores.since(f.s, f.s.now() - 7 * DAY).length < FULL_SAMPLE_BELOW;
   for (const [scorer, { file }] of Object.entries(folder.scorers)) {
     if (!(file.stages as string[]).includes(run.kind)) continue;
-    if (!sampled(run.id, file.sample ?? folder.config.scoring.sample)) continue;
-    const judge = enqueueRun(f, { kind: "judge", configCommit: folder.commit });
-    runs.update(f.s, judge.id, { checked: { run: run.id, scorer } satisfies Checked });
+    // A sample of 0 turns the scorer off, however few runs were graded.
+    const rate = file.sample ?? folder.config.scoring.sample;
+    if (rate <= 0 || (!few && !sampled(run.id, rate))) continue;
+    enqueueRun(f, { kind: "judge", configCommit: folder.commit, checked: { kind: "judge", run: run.id, scorer } });
   }
 }
 
@@ -125,7 +123,8 @@ const judge = (f: FactoryRuntime) => ({
       judgeRun: run.id,
       at: f.s.now(),
     });
-    const judged = runs.get(f.s, checked.run);
+    // The run the judge failed is flawed; its item's other runs are judged on their own.
+    const judged = passed ? runs.get(f.s, checked.run) : runs.update(f.s, checked.run, { verdict: "flawed" });
     f.events.emit({
       kind: "note",
       run: checked.run,
@@ -163,7 +162,7 @@ function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
     commit: run.commitSha,
     report: run.report,
     checked: run.checked,
-    transcript: run.transcript,
+    transcript: transcripts.get(f.s, run.id),
   };
 }
 
@@ -192,13 +191,9 @@ function scorerMetrics(f: FactoryRuntime): FactoryBoard["metrics"]["scorers"] {
 export function setup(f: FactoryRuntime): void {
   f.runKinds.set("judge", judge(f));
 
-  f.events.on("run.ended", (event) => {
-    const run = runs.get(f.s, event.run);
-    if (run) sample(f, run);
-  });
-
   f.tools.set("factory_run", {
     name: "factory_run",
+    forRuns: true,
     description:
       "For a judge thread: the factory run it grades, with its report, what the factory checked, its commit, its transcript and its PR.",
     inputSchema: { type: "object", properties: { run: { type: "string" } }, required: ["run"] },

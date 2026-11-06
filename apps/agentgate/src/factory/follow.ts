@@ -1,3 +1,4 @@
+import { parseArgs } from "node:util";
 import type { HandoffJob } from "@agentgate/protocol";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
@@ -5,16 +6,17 @@ import { PeerError, peerCall } from "../handoff/jobs.ts";
 import { ACTIVE, dispatch, projection, t3Client, type Call } from "../handoff/t3.ts";
 import { peerView, type ViewThread } from "../handoff/threads.ts";
 import { jsonInput } from "../http.ts";
-import { setNeedsYou } from "./controller.ts";
+import { ACTIONS, findItem, setNeedsYou } from "./controller.ts";
 import { items, runs, type FactoryRun } from "./db.ts";
-import { mirrorOf } from "./mirror.ts";
-import { runCommand, runTool, type FactoryRuntime } from "./runtime.ts";
+import type { MirrorThread } from "./mirror.ts";
+import { runCommand, runTool, type FactoryRuntime, type ForwardOp } from "./runtime.ts";
 
 /**
  * The factory across machines. Commands and tools on another machine run on the factory machine through
- * `/peer/factory/op`. A stage thread handed to another machine takes its run along: the run's `node` and `threadId`
- * become the destination's once it imported the thread, that machine's daemon forwards the thread's reports, and the
- * run's status is read from its `/peer/threads`.
+ * `/peer/factory/op`, except those about a run or an item this machine still holds after the factory moved away. A
+ * stage thread handed to another machine takes its run along: the run's `node` and `threadId` become the
+ * destination's once it imported the thread, that machine's daemon forwards the thread's reports, and the run's status
+ * is read from its `/peer/threads`.
  */
 
 /** Commands such as `use` fetch the factory folder on the factory machine before they answer. */
@@ -58,8 +60,39 @@ const shellThreads = z.object({
   archivedThreads: z.array(z.object({ id: z.string() })).default([]),
 });
 
+/** Commands that name an item, which the machine that holds it answers. */
+const isItemCommand = (name: string) => name === "show" || (ACTIONS as readonly string[]).includes(name);
+
+/** A call about a run or an item in this machine's tables: after the factory moved away, this machine still drives
+ * them, and their threads report here. */
+function heldHere(f: FactoryRuntime, op: ForwardOp) {
+  if (op.kind === "tool") return typeof op.args.run === "string" && !!runs.get(f.s, op.args.run);
+  if (!isItemCommand(op.name)) return false;
+  const { positionals } = parseArgs({
+    args: op.args,
+    options: { reason: { type: "string" }, json: { type: "boolean" } },
+    strict: false,
+  });
+  const ref = positionals[0];
+  try {
+    return !!ref && !!findItem(f, ref);
+  } catch {
+    // A reference two items here share: the command here says so.
+    return true;
+  }
+}
+
+async function runHere(f: FactoryRuntime, op: ForwardOp) {
+  if (op.kind === "tool") return f.tools.get(op.name)!.call(op.args, op.caller);
+  const output: string[] = [];
+  const io = { ...(op.stdin !== undefined && { stdin: op.stdin }), out: (line: string) => output.push(line) };
+  const code = await f.commands.get(op.name)!.run(op.args, io);
+  return { code, output };
+}
+
 export function setup(f: FactoryRuntime): void {
   f.forwarder = async (op) => {
+    if (heldHere(f, op)) return runHere(f, op);
     const node = f.pointer()!.node;
     try {
       return await peerCall(f.s, node, "/factory/op", { json: op, timeout: OP_TIMEOUT });
@@ -106,17 +139,6 @@ export function setup(f: FactoryRuntime): void {
     }
   });
 
-  // Registered here, before the controller's watcher (which registers on its first dispatch), so a run is marked as
-  // moving before the watcher sees the handoff interrupt its thread.
-  mirrorOf(f).onChange((thread) => {
-    const run = active(f).find((r) => r.node === f.s.nodeId && r.threadId === thread.id);
-    if (!run) return;
-    const job = f.ctx.handoffs
-      .list("source")
-      .find((j) => j.thread === thread.id && j.step !== "done" && j.step !== "failed");
-    if (job) moving(f, run, job.id, job.target);
-  });
-
   // Every machine, like dispatch: a machine drives the runs in its own tables.
   f.loops.push({ name: "factory-follow", everyMs: 5000, where: "every-node", run: () => follow(f) });
 }
@@ -148,6 +170,17 @@ async function threadAction(call: Call, input: z.infer<typeof threadActionSchema
 }
 
 const active = (f: FactoryRuntime) => runs.list(f.s, { states: ["running", "waiting"] });
+
+/** Whether the run's thread here is being handed to another machine; it then waits for the move instead of being
+ * taken for a silent end. The controller asks before it looks at a thread's turn. */
+export function handoffOf(f: FactoryRuntime, run: FactoryRun, thread: MirrorThread) {
+  if (run.node !== f.s.nodeId) return false;
+  const job = f.ctx.handoffs
+    .list("source")
+    .find((j) => j.thread === thread.id && j.step !== "done" && j.step !== "failed");
+  if (job) moving(f, run, job.id, job.target);
+  return !!job;
+}
 
 function note(f: FactoryRuntime, run: FactoryRun, text: string) {
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });

@@ -4,7 +4,7 @@ import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import { defuse, parseMarkers } from "../src/factory/markers.ts";
 import type { SourceAdapter } from "../src/factory/runtime.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -37,6 +37,9 @@ async function triaging(count: number) {
   n.f.sources.set("github", adapter);
   await n.intake();
   await n.dispatch();
+  await idle(n.f);
+  // Each issue heard that the factory took it; the tests below look at what came after.
+  const taken = posts.splice(0);
   const started = runs.list(n.s, { kinds: ["triage"] });
   for (const run of started)
     await n.until(() => n.mirror.thread(run.threadId!)?.status === "running", `${run.id}'s thread to run`);
@@ -49,11 +52,13 @@ async function triaging(count: number) {
       ...(thread && { _meta: { "dev.agentgate/t3Thread": thread } }),
     });
     const text = (result.content as { text: string }[])[0]!.text;
+    await idle(n.f);
     return result.isError ? { error: text } : JSON.parse(text);
   };
   return {
     ...n,
     posts,
+    taken,
     started,
     report,
     markers: (key: string) => posts.filter((p) => p.key === key).flatMap((p) => parseMarkers(p.body)),
@@ -133,9 +138,12 @@ test("each outcome moves its item as the state table says, with one comment carr
     expect(queued.map((r) => r.kind)).toEqual(c.next ? [c.next as never] : []);
   }
 
-  const moments = n.posts.map((p) => [p.key, parseMarkers(p.body)[0]]);
-  const marker = (stage: string, outcome: string, state: string, route: string | null = null) =>
+  const marker = (stage: string | null, outcome: string | null, state: string, route: string | null = null) =>
     expect.objectContaining({ stage, outcome, route, state, node: "a", factory: n.commit.slice(0, 7) });
+  expect(n.taken.map((p) => [p.key, parseMarkers(p.body)[0]])).toEqual(
+    n.started.map((_, i) => [`gh-${i + 1}`, marker(null, null, "open")]),
+  );
+  const moments = n.posts.map((p) => [p.key, parseMarkers(p.body)[0]]);
   expect(moments).toEqual([
     ["gh-1", marker("triage", "done", "open", "implement")],
     ["gh-2", marker("triage", "done", "open", "spec")],
@@ -154,7 +162,7 @@ test("each outcome moves its item as the state table says, with one comment carr
   expect(settled).toEqual(n.started.slice(0, 6).map((r) => r.threadId));
 });
 
-test("an answered question goes back to its thread, and the second question is not posted again", async () => {
+test("an answered question goes back to its thread, and a second question is posted too, once", async () => {
   const n = await triaging(1);
   const [run] = n.started;
   const asks = {
@@ -177,7 +185,11 @@ test("an answered question goes back to its thread, and the second question is n
     accepted: true,
   });
   expect(item(n, run!).needsYou).toMatchObject({ reason: "decision", question: "And v0?" });
-  expect(n.posts.map((p) => p.key)).toEqual(["gh-1"]);
+  // Each question reaches the issue once: the same one asked again is not posted twice.
+  expect(n.posts.map((p) => p.body.includes("And v0?"))).toEqual([false, true]);
+  await n.command("approve", "gh-1");
+  await n.report(run!, { ...asks, decision: { question: "And v0?", recommendation: "No" } });
+  expect(n.posts).toHaveLength(2);
 });
 
 test("a report missing what its outcome needs is refused, naming the field", async () => {
@@ -207,7 +219,7 @@ async function endTurn(n: Node, run: FactoryRun, handled: () => unknown) {
   await n.until(handled, `the factory to handle ${run.id}'s silent end`);
 }
 
-test("a silent end gets one reminder, a second starts a new thread, and a silent retry fails the item", async () => {
+test("a silent end gets one reminder, a second starts a new thread, and a silent retry makes the item wait as failed", async () => {
   const n = await triaging(1);
   const [run] = n.started;
   const sends = () => n.mcp.calls.filter((c) => c.tool === "t3_thread_send");
@@ -225,20 +237,26 @@ test("a silent end gets one reminder, a second starts a new thread, and a silent
   expect(second.threadId).not.toBe(run!.threadId);
   await n.until(() => n.mirror.thread(second.threadId!)?.status === "running", "the retry's thread to run");
 
-  await endTurn(n, second, () => item(n, run!).phase === "failed");
+  await endTurn(n, second, () => item(n, run!).needsYou?.reason === "failed");
+  await idle(n.f);
   expect(sends()).toHaveLength(1);
-  expect(item(n, run!).needsYou).toMatchObject({ reason: "failed", link: second.threadLink });
+  // It keeps its phase: the maintainer retries or drops it.
+  expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: { reason: "failed", link: second.threadLink } });
   expect(n.markers("gh-1")).toEqual([expect.objectContaining({ stage: "triage", state: "open" })]);
 });
 
 test("retry starts the failed stage again, and drop interrupts and settles the thread and closes the item", async () => {
   const n = await triaging(1);
   const [run] = n.started;
-  items.update(n.s, run!.item!, { phase: "failed", needsYou: { reason: "failed" } });
+  items.update(n.s, run!.item!, { needsYou: { reason: "failed" } });
   runs.update(n.s, run!.id, { state: "silent" });
+  expect((await n.command("retry", "gh-2")).output).toEqual(["a holds no factory item gh-2"]);
 
   expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
-  expect(item(n, run!)).toMatchObject({ phase: "triage" });
+  expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: undefined });
+  expect((await n.command("retry", "gh-1")).output).toEqual([
+    "gh-1 has nothing to retry: retry takes an item that failed, went over its budget, stalled or is stuck",
+  ]);
   await n.dispatch();
   const [again] = runs.forItem(n.s, run!.item!).filter((r) => r.state === "running");
   expect(again).toMatchObject({ kind: "triage", attempt: 1 });
@@ -246,6 +264,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
 
   const drop = await n.api(`/api/factory/items/${run!.item}/drop`, "POST", { reason: "not now" });
   expect(await drop.json()).toEqual({ message: "Dropped gh-1" });
+  await idle(n.f);
   expect(item(n, run!)).toMatchObject({ phase: "closed" });
   expect(runs.get(n.s, again!.id)!.state).toBe("cancelled");
   const calls = n.mcp.calls.map((c) => [c.tool, c.args.threadId]);
@@ -256,6 +275,24 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   expect(n.posts.at(-1)!.body).toContain("The maintainer dropped it: not now.");
 
   expect(await n.command("retry", "gh-404")).toEqual({ code: 1, output: ["a holds no factory item gh-404"] });
+});
+
+test("retry takes in again an item its triage closed: that triage run counts as flawed, and the issue hears the factory took it again", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  expect(await n.report(run!, { outcome: "not-a-bug", summary: "Works as designed." })).toEqual({ accepted: true });
+  expect(item(n, run!).phase).toBe("closed");
+
+  expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
+  await idle(n.f);
+  expect(item(n, run!)).toMatchObject({ phase: "triage", touches: 1 });
+  expect(runs.get(n.s, run!.id)!.verdict).toBe("flawed");
+  expect(runs.forItem(n.s, run!.item!).map((r) => [r.kind, r.state])).toEqual([
+    ["triage", "reported"],
+    ["triage", "queued"],
+  ]);
+  expect(n.posts.at(-1)!.body.split("\n")[0]).toBe("**gh-1**: The factory took this.");
+  expect(n.markers("gh-1").at(-1)).toMatchObject({ stage: null, state: "open" });
 });
 
 test("comments defuse mentions and cannot carry a marker of their own", () => {
@@ -276,4 +313,69 @@ test("comments defuse mentions and cannot carry a marker of their own", () => {
   expect(defuse(`ping @octocat ${forged}`)).not.toContain("@octocat");
   expect(parseMarkers(defuse(forged))).toEqual([]);
   expect(defuse("x".repeat(3000))).toHaveLength(2000);
+});
+
+test("a report answers once the item moved, before GitHub hears of it", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  let posted!: () => void;
+  const slow = new Promise<void>((resolve) => (posted = resolve));
+  const adapter = n.f.sources.get("github")!;
+  n.f.sources.set("github", {
+    ...adapter,
+    post: async (item, body) => {
+      await slow;
+      return adapter.post!(item, body);
+    },
+  });
+  const builtin = (await n.ctx.gateway.builtin!()).client;
+  const answered = await builtin.callTool({
+    name: "factory_report",
+    arguments: {
+      run: run!.id,
+      outcome: "done",
+      summary: "Reproduced.",
+      result: { kind: "triage", route: "implement", reproduction },
+    },
+    _meta: { "dev.agentgate/t3Thread": run!.threadId },
+  });
+  expect(answered.isError).toBeFalsy();
+  expect(item(n, run!).phase).toBe("implement");
+  expect(n.posts).toEqual([]);
+  posted();
+  await idle(n.f);
+  expect(n.posts.map((p) => p.key)).toEqual(["gh-1"]);
+});
+
+test("a thread whose turn waits on background work or a subagent is not taken for a silent end", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  const sends = () => n.mcp.calls.filter((c) => c.tool === "t3_thread_send");
+
+  // T3's `waiting`: the turn goes on, waiting on a command or a delegated task, with no question for a person.
+  n.mcp.setThread(run!.threadId!, { status: "waiting" });
+  await n.until(() => n.mirror.thread(run!.threadId!)?.status === "waiting", "the thread to wait");
+  await idle(n.f);
+  expect(sends()).toEqual([]);
+  expect(runs.get(n.s, run!.id)!.state).toBe("running");
+
+  // The turn ended, but a subagent it started still works.
+  const parent = n.t3.threads.get(run!.threadId!)!;
+  const subagent = n.t3.addThread({
+    projectId: parent.projectId,
+    sessionId: crypto.randomUUID(),
+    subagent: true,
+    parentThreadId: parent.id,
+  });
+  n.mcp.setThread(subagent.id, { status: "running" });
+  await n.until(() => n.mirror.thread(subagent.id)?.status === "running", "the subagent to run");
+  n.mcp.setThread(run!.threadId!, { status: "completed" });
+  await n.until(() => n.mirror.thread(run!.threadId!)?.status === "completed", "the turn to end");
+  await idle(n.f);
+  expect(sends()).toEqual([]);
+
+  // Once the subagent stops too, the turn has ended without a report.
+  n.mcp.setThread(subagent.id, { status: "completed" });
+  await n.until(() => sends().length === 1, "the reminder");
+  expect(String(sends()[0]!.args.message)).toContain(`run: "${run!.id}"`);
 });

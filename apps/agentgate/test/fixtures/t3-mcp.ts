@@ -4,18 +4,30 @@ import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextp
 import { app, makeCtx } from "../../src/daemon.ts";
 import { fetcher } from "../../src/factory/folder.ts";
 import { mirrorOf } from "../../src/factory/mirror.ts";
-import { loopTask, runCommand } from "../../src/factory/runtime.ts";
+import { loopTask, runCommand, type FactoryRuntime } from "../../src/factory/runtime.ts";
 import { REQUIRED_T3_TOOLS } from "../../src/factory/t3-mcp.ts";
 import { connectT3, host } from "../../src/handoff/t3.ts";
+import { host as login } from "../../src/logins.ts";
 import { Store } from "../../src/store.ts";
 import { repos, tmp } from "./git.ts";
 import { fakeT3, type FakeThread } from "./t3.ts";
+import recordedTools from "./t3-tools.json";
+
+const realGh = login.gh;
+
+/** The inputs T3 Code's tools take, recorded from the nightly: `tools/list` serves them and a call naming another is
+ * refused, so a renamed or dropped input fails here before it fails against T3. */
+const TOOL_INPUTS = Object.fromEntries(
+  Object.entries(recordedTools).filter(([name]) => !name.startsWith("_")),
+) as Record<string, { type: "object"; properties: Record<string, Record<string, never>>; required?: string[] }>;
 
 /** T3 Code's MCP sign-in and `/mcp`, as the nightly 0.1.7 serves them (`EnvironmentMcpOAuthHttpApi` and the
  * `AuthMcp*` schemas), mounted on a `fakeT3` through its `routes`. Pairing codes come from `pairBin`, a stand-in for
  * `t3 pair`. Access tokens have T3's shape, `<base64url claims>.<signature>`, and the nth signature is
  * `test-secret-token-<n>`, so a test can search output for it. */
 export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
+  /** This fake's own copy, so a test that drops an input plays an older T3 only for itself. */
+  const inputs = structuredClone(TOOL_INPUTS);
   const dir = tmp();
   const pairLog = join(dir, "pairs");
   const pairBin = join(dir, "t3");
@@ -29,9 +41,11 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
   const usedCodes = new Set<string>();
   const pending = new Map<string, { clientId: string; redirectUri: string; challenge: string; access: string }>();
   const active = new Map<string, string>(); // token → session id
-  const answers = new Map<string, (args: Record<string, unknown>) => unknown>(
-    REQUIRED_T3_TOOLS.map((tool) => [tool, () => ({ ok: true })]),
+  const answers = new Map<string, (args: Record<string, unknown>, session: string) => unknown>(
+    Object.keys(inputs).map((tool) => [tool, () => ({ ok: true })]),
   );
+  /** Launches by T3 session and `clientRequestId`: T3 finds a retried launch's thread within one session only. */
+  const launches = new Map<string, string>();
 
   // Threads made through `/mcp` reach the shell stream with their status, the way T3's shell shows a turn.
   let sequence = 1_000_000;
@@ -54,6 +68,7 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
         archivedAt: t.archivedAt,
         worktreePath: t.worktreePath,
         updatedAt: t.updatedAt,
+        lineage: { parentThreadId: t.parentThreadId ?? null, relationshipToParent: t.subagent ? "subagent" : null },
       },
     });
   };
@@ -62,10 +77,14 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
     if (!t) throw new Error(`Thread ${String(args.threadId)} was not found.`);
     return t;
   };
-  answers.set("t3_thread_launch", (args) => {
-    // Like T3, the same clientRequestId answers with the same thread.
-    const id = `mcp:launch:${String(args.clientRequestId ?? crypto.randomUUID())}`;
-    if (!fake.threads.has(id)) {
+  answers.set("t3_thread_launch", (args, session) => {
+    // Like T3, the same clientRequestId answers with the same thread, within the MCP session that sent it.
+    const request = String(args.clientRequestId ?? crypto.randomUUID());
+    let id = launches.get(`${session} ${request}`);
+    if (!id) {
+      id = `mcp:launch:${request}`;
+      for (let n = 2; fake.threads.has(id); n++) id = `mcp:launch:${request}:${n}`;
+      launches.set(`${session} ${request}`, id);
       const strategy = args.workspaceStrategy as { branch?: string } | undefined;
       const t = fake.addThread({
         id,
@@ -106,7 +125,13 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
       answers.set(tool, fn);
     },
     /** The tools `/mcp` lists; delete one to play an older T3. */
-    tools: new Set<string>(REQUIRED_T3_TOOLS),
+    tools: new Set<string>([...REQUIRED_T3_TOOLS, "watch_pull_request", "unwatch_pull_request"]),
+    /** Inputs a tool lacks, as an older T3 would: they are left out of `tools/list`, and a call naming one is refused. */
+    dropInput(tool: string, input: string) {
+      const schema = inputs[tool]!;
+      const { [input]: _, ...rest } = schema.properties;
+      inputs[tool] = { ...schema, properties: rest };
+    },
     /** Issued access tokens, in order. */
     tokens: [] as string[],
     registrations: [] as Record<string, unknown>[],
@@ -257,13 +282,16 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
       );
     const server = new Server({ name: "t3code", version: "0.1.7" }, { capabilities: { tools: {} } });
     server.setRequestHandler("tools/list", async () => ({
-      tools: [...api.tools].map((name) => ({ name, inputSchema: { type: "object" as const } })),
+      tools: [...api.tools].map((name) => ({ name, inputSchema: inputs[name] ?? { type: "object" as const } })),
     }));
     server.setRequestHandler("tools/call", async (request) => {
       const { name, arguments: args = {} } = request.params;
       api.calls.push({ tool: name, args });
       try {
-        const value = await answers.get(name)!(args);
+        const known = inputs[name]?.properties;
+        const unknown = known && Object.keys(args).find((key) => !(key in known));
+        if (unknown) throw new Error(`${name} takes no argument ${unknown}`);
+        const value = await answers.get(name)!(args, active.get(token)!);
         // Like T3: the structured value, and its JSON as text.
         return {
           structuredContent: value as Record<string, unknown>,
@@ -279,6 +307,12 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
   }
 
   return api;
+}
+
+/** Waits until no item has a step queued: what a report or a loop pass left to do after it answered, such as the
+ * comments it posts, has run. */
+export async function idle(f: FactoryRuntime) {
+  while (f.locks.size) await Promise.all([...f.locks.values()]);
 }
 
 /** A `fakeT3` with `fakeT3Mcp` mounted on it. */
@@ -355,6 +389,9 @@ export async function factoryNode(
     });
     return { code, output };
   };
+  // No test reaches GitHub: one that needs gh answers stubs it after this.
+  login.gh = async () => undefined;
+  cleanup.push(() => (login.gh = realGh));
   const used = await command("use", "acme/factory", "--node", "a");
   if (used.code) throw new Error(`the factory folder did not load: ${used.output.join("\n")}`);
   let now = Date.now();

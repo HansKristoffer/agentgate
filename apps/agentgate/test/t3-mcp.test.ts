@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { app, makeCtx } from "../src/daemon.ts";
 import { loopTask } from "../src/factory/runtime.ts";
 import { t3Mcp, T3McpError } from "../src/factory/t3-mcp.ts";
-import { connectT3, host as t3Host } from "../src/handoff/t3.ts";
+import { connectT3, host as t3Host, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { tmp } from "./fixtures/git.ts";
 import { fakeT3WithMcp } from "./fixtures/t3-mcp.ts";
@@ -80,9 +80,13 @@ test("signing in pairs with the four scopes, approves at full access with the pa
   expect(stored()).toEqual({ token: mcp.tokens[0]!, expiresAt: s.now() + 30 * DAY });
   expect(client.status()).toEqual({ mcp: "signed-in", expiresAt: s.now() + 30 * DAY });
 
-  mcp.answer("t3_project_list", () => ({ projects: [{ id: "p1" }] }));
-  expect(await client.call<unknown>("t3_project_list", {})).toEqual({ projects: [{ id: "p1" }] });
-  expect(mcp.calls).toEqual([{ tool: "t3_project_list", args: {} }]);
+  mcp.answer("t3_pending_request", () => ({ requestIds: ["r1"] }));
+  expect(await client.call<unknown>("t3_pending_request", { action: "list", threadId: "t1" })).toEqual({
+    requestIds: ["r1"],
+  });
+  expect(mcp.calls).toEqual([{ tool: "t3_pending_request", args: { action: "list", threadId: "t1" } }]);
+  // The resource the token is for, as T3's own sign-in between environments names it (RFC 8707).
+  expect(mcp.decisions[0]!.authorization).toMatchObject({ resource: `${t3State(s).url}/mcp` });
 });
 
 test("a token T3 refuses is replaced by exactly one new sign-in, and is never sent again", async () => {
@@ -90,13 +94,18 @@ test("a token T3 refuses is replaced by exactly one new sign-in, and is never se
   await client.signIn();
   mcp.refuse(mcp.tokens[0]!);
 
-  await client.call("t3_thread_read", { threadId: "t1" });
+  mcp.answer("t3_thread_interrupt", () => ({ status: "no_active_run" }));
+  const session = client.session();
+  await client.call("t3_thread_interrupt", { threadId: "t1" });
   expect(mcp.tokens).toHaveLength(2);
   expect(stored()?.token).toBe(mcp.tokens[1]!);
-  expect(mcp.calls).toEqual([{ tool: "t3_thread_read", args: { threadId: "t1" } }]);
+  expect(mcp.calls).toEqual([{ tool: "t3_thread_interrupt", args: { threadId: "t1" } }]);
+  // A new sign-in is a new session: T3 dedupes a launch's clientRequestId within one session only.
+  expect(client.session()).toBeString();
+  expect(client.session()).not.toBe(session);
 
   mcp.refuseAll = true;
-  await expect(client.call("t3_thread_read", { threadId: "t1" })).rejects.toThrow(T3McpError);
+  await expect(client.call("t3_thread_interrupt", { threadId: "t1" })).rejects.toThrow(T3McpError);
   expect(mcp.tokens).toHaveLength(3);
   expect(stored()).toBeNull();
   expect(mcp.calls).toHaveLength(1);
@@ -158,8 +167,33 @@ test("when T3's MCP lacks a required tool, the status names it and calls are ref
     mcpExpiresAt: expect.any(Number),
     error: expect.stringContaining("t3_pending_request"),
   });
-  await expect(client.call("t3_project_list", {})).rejects.toThrow(/t3_pending_request/);
+  await expect(client.call("t3_thread_interrupt", { threadId: "t1" })).rejects.toThrow(/t3_pending_request/);
   expect(mcp.calls).toEqual([]);
+});
+
+test("when a T3 tool lacks an input the factory sends, such as a launch's clientRequestId, the sign-in names it and calls are refused", async () => {
+  const { mcp, client } = await fixture();
+  mcp.dropInput("t3_thread_launch", "clientRequestId");
+  await client.signIn();
+  expect(client.status()).toMatchObject({
+    mcp: "failed",
+    error: "T3 Code's MCP lacks t3_thread_launch (clientRequestId); update T3 Code",
+  });
+  await expect(client.call("t3_thread_interrupt", { threadId: "t1" })).rejects.toThrow(/update T3 Code/);
+  expect(mcp.calls).toEqual([]);
+});
+
+test("the fake T3 refuses an argument its recorded tools do not take, as a newer T3 would refuse a renamed one", async () => {
+  const { mcp, client } = await fixture();
+  await client.signIn();
+  const refused = await client
+    .call("t3_thread_interrupt", { threadId: "t1", runIds: ["r1"] })
+    .catch((e: T3McpError) => e);
+  expect(refused).toBeInstanceOf(T3McpError);
+  expect((refused as T3McpError).message).toContain("t3_thread_interrupt takes no argument runIds");
+  // T3 answered, so nothing ran: a launch refused this way may be sent again under any session.
+  expect((refused as T3McpError).answered).toBe(true);
+  expect(mcp.calls).toHaveLength(1);
 });
 
 test("the token appears in no log line, status, board part, command output or error", async () => {

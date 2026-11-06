@@ -5,7 +5,7 @@ import { items, runs } from "../src/factory/db.ts";
 import { linearApi } from "../src/factory/linear.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -14,6 +14,14 @@ afterEach(async () => {
 });
 
 const KEY = "lin_api_test_key_123";
+
+/** How the item's comment for a moment ended: posted, failed or uncertain. */
+const statusOf = (n: { s: { db: import("bun:sqlite").Database } }, item: string, moment: string) =>
+  (
+    n.s.db.query("select status from factory_writebacks where item=? and moment=?").get(item, moment) as {
+      status: string;
+    } | null
+  )?.status;
 const linearConfig = (repo: string) => ({
   secrets: ["LINEAR_KEY"],
   sources: [{ id: "eng", type: "linear", repo, team: "ENG", label: "factory", apiKey: "secret:LINEAR_KEY" }],
@@ -78,9 +86,10 @@ function fakeLinear() {
     if (operation === "FactoryComments")
       return data({ viewer: { id: FACTORY_USER }, issue: { comments: { nodes: issue.comments } } });
     if (operation === "FactoryComment") {
+      // Like Linear's, each comment is newer than the last, even within one millisecond.
       issue.comments.push({
         body: String(variables.body),
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(Date.now() + issue.comments.length).toISOString(),
         user: { id: FACTORY_USER },
       });
       return data({ commentCreate: { success: true } });
@@ -107,7 +116,7 @@ test("open, labelled issues in the team become items once, and an issue closed i
     ["eng", "ENG-42", "eng-42", "Issue ENG-42"],
     ["eng", "ENG-43", "eng-43", "Issue ENG-43"],
   ]);
-  expect(items.byExternal(n.s, "eng", "ENG-42")!.snapshot).toEqual({
+  expect(items.byExternal(n.s, "ENG-42")!.snapshot).toEqual({
     title: "Issue ENG-42",
     description: "Steps for ENG-42",
     url: "https://linear.app/acme/issue/ENG-42",
@@ -117,13 +126,18 @@ test("open, labelled issues in the team become items once, and an issue closed i
 
   linear.issues.get("ENG-43")!.state = "completed";
   await n.dispatch();
-  expect(items.byExternal(n.s, "eng", "ENG-43")!.phase).toBe("closed");
+  await idle(n.f);
+  expect(items.byExternal(n.s, "ENG-43")!.phase).toBe("closed");
   expect(runs.list(n.s, { kinds: ["triage"] }).map((r) => [items.get(n.s, r.item!)!.key, r.state])).toEqual([
     ["eng-42", "running"],
     ["eng-43", "cancelled"],
   ]);
-  // The issue already says it is closed.
-  expect(linear.requests.filter((r) => r.operation === "FactoryComment")).toEqual([]);
+  // Each issue heard that the factory took it; the closed one heard nothing more, since it already says so.
+  const comments = linear.requests.filter((r) => r.operation === "FactoryComment");
+  expect(comments.map((r) => String(r.variables.body).split("\n")[0])).toEqual([
+    "**eng-42**: The factory took this.",
+    "**eng-43**: The factory took this.",
+  ]);
 });
 
 test("a write-back is one commentCreate whose visible last line is the marker, and newestMarker reads it back", async () => {
@@ -132,12 +146,13 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
   const linear = fakeLinear();
   linear.add("ENG-42");
   await n.intake();
-  const item = items.byExternal(n.s, "eng", "ENG-42")!;
+  await idle(n.f);
+  const item = items.byExternal(n.s, "ENG-42")!;
 
-  expect(await writeBack(n.f, item, "waiting", { text: "Which endpoint should keep the old field?" })).toEqual({
-    status: "posted",
-  });
-  const created = linear.requests.filter((r) => r.operation === "FactoryComment");
+  writeBack(n.f, item, "waiting", { text: "Which endpoint should keep the old field?", ref: "q1" });
+  await idle(n.f);
+  expect(statusOf(n, item.id, "waiting")).toBe("posted");
+  const created = linear.requests.filter((r) => r.operation === "FactoryComment").slice(1);
   expect(created).toHaveLength(1);
   expect(created[0]!.variables.issueId).toBe(linear.issues.get("ENG-42")!.id);
   const body = String(created[0]!.variables.body);
@@ -192,7 +207,7 @@ test("a marker in a comment by another Linear user counts for nothing: not for n
     output: ["No machine has marked eng-7 as taken; intake adds it"],
   });
   await n.intake();
-  const item = items.byExternal(n.s, "eng", "ENG-7")!;
+  const item = items.byExternal(n.s, "ENG-7")!;
   expect(item.phase).toBe("triage");
   expect(await n.f.sources.get("linear")!.newestMarker!(item)).toBeUndefined();
 });
@@ -203,24 +218,26 @@ test("a comment whose request dropped is uncertain, and one Linear refused is fa
   const linear = fakeLinear();
   linear.add("ENG-42");
   await n.intake();
-  const item = items.byExternal(n.s, "eng", "ENG-42")!;
+  await idle(n.f);
+  const item = items.byExternal(n.s, "ENG-42")!;
+  const texts = () => n.f.events.recent(50).map((e) => e.text);
 
   linear.answerWith((operation) => {
     if (operation === "FactoryComment") throw new TypeError("socket hang up");
   });
-  expect(await writeBack(n.f, item, "waiting", { text: "Which one?" })).toEqual({
-    status: "uncertain",
-    error: "Linear is not reachable",
-  });
+  writeBack(n.f, item, "waiting", { text: "Which one?", ref: "q1" });
+  await idle(n.f);
+  expect(statusOf(n, item.id, "waiting")).toBe("uncertain");
+  expect(texts()).toContain("The waiting comment on eng-42: uncertain (Linear is not reachable)");
   linear.answerWith((operation) =>
     operation === "FactoryComment"
       ? Response.json({ errors: [{ message: "Argument Validation Error" }] }, { status: 400 })
       : undefined,
   );
-  expect(await writeBack(n.f, item, "closed", { text: "Out of scope." })).toEqual({
-    status: "failed",
-    error: "Linear: Argument Validation Error",
-  });
+  writeBack(n.f, item, "closed", { text: "Out of scope." });
+  await idle(n.f);
+  expect(statusOf(n, item.id, "closed")).toBe("failed");
+  expect(texts()).toContain("The closed comment on eng-42: failed (Linear: Argument Validation Error)");
 });
 
 test("a missing API key shows on the source's row without a request, and Linear's errors never carry the key", async () => {

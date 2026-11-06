@@ -9,15 +9,16 @@ import { setup as follow } from "./follow.ts";
 import { setup as linear } from "./linear.ts";
 import { setup as hooks } from "./hooks.ts";
 import { setup as implement } from "./implement.ts";
+import { setup as pr } from "./pr.ts";
 import { setup as move } from "./move.ts";
 import { setup as review } from "./review.ts";
 import { setup as records } from "./records.ts";
 import { setup as spec } from "./spec.ts";
 import { setup as scorers } from "./scorers.ts";
 import { setup as learning } from "./learning.ts";
-import { setup as bench } from "./bench.ts";
 
-/** Every feature, in the order their setup runs. Each registers what it adds on the runtime. */
+/** Every feature. Each registers its routes, commands, tools, loops, run kinds, sources and board parts on the
+ * runtime; none replaces or wraps another's, so the order only orders the board's parts and the help text. */
 const features = [
   board,
   config,
@@ -29,13 +30,13 @@ const features = [
   linear,
   hooks,
   implement,
+  pr,
   move,
   review,
   records,
   spec,
   scorers,
   learning,
-  bench,
 ];
 
 export function setupFeatures(f: FactoryRuntime) {

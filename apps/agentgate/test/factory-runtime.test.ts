@@ -6,11 +6,12 @@ import {
   items,
   runs,
   scores,
+  transcripts,
   trimFactory,
   type FactoryItem,
   type FactoryRun,
 } from "../src/factory/db.ts";
-import { loopTask, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
+import { later, loopTask, withItem, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
 import { Store } from "../src/store.ts";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -53,7 +54,7 @@ function caller(handler: ReturnType<typeof app>) {
 const useFactory = (s: Store, node: string) =>
   s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/api", node } });
 
-test("items, runs and scores keep every field, and the tables survive being created again", () => {
+test("items, runs, transcripts and scores keep every field, and the tables survive being created again", () => {
   const { s } = fixture();
   ensureFactoryTables(s);
 
@@ -61,7 +62,7 @@ test("items, runs and scores keep every field, and the tables survive being crea
     id: "it_1",
     source: "bugs",
     externalId: "acme/api#12",
-    key: "gh-12",
+    key: "api-12",
     repo: "acme/api",
     title: "Crash on save",
     url: "https://github.com/acme/api/issues/12",
@@ -74,16 +75,22 @@ test("items, runs and scores keep every field, and the tables survive being crea
     tokens: 1200,
   });
   ensureFactoryTables(s);
+  expect(item).toMatchObject({ touches: 0, phaseAt: item.createdAt });
   expect(items.get(s, "it_1")).toEqual(item);
-  expect(items.byExternal(s, "bugs", "acme/api#12")).toEqual(item);
+  expect(items.byExternal(s, "acme/api#12")).toEqual(item);
+  expect(items.byKey(s, "api-12")).toEqual(item);
+  // One item per issue and per key, whichever source took it in.
+  expect(() => items.insert(s, { ...item, id: "it_2", source: "other", key: "api-12b" })).toThrow();
+  expect(() => items.insert(s, { ...item, id: "it_3", externalId: "acme/api#13" })).toThrow();
 
   s.now = () => item.updatedAt + 1000;
-  const cleared = items.update(s, "it_1", { phase: "shipped", needsYou: undefined, url: undefined });
+  const cleared = items.update(s, "it_1", { phase: "shipped", needsYou: undefined, url: undefined, touches: 2 });
   expect(cleared).toEqual({
     ...item,
     phase: "shipped",
     needsYou: undefined,
     url: undefined,
+    touches: 2,
     updatedAt: item.updatedAt + 1000,
   });
 
@@ -98,18 +105,23 @@ test("items, runs and scores keep every field, and the tables survive being crea
     threadLink: "t3://thread-1",
     commitSha: "abc1234",
     report: { run: "run_1", outcome: "done", summary: "fixed" },
-    checked: { checks: "passing" },
+    checked: { kind: "implement", pr: "https://github.com/acme/api/pull/13", head: "abc1234", headAt: 4 },
     verdict: "success",
-    transcript: "...",
     nudges: 1,
     error: "none",
     configCommit: "3f2c1a9",
+    launchSession: "session-1",
     queuedAt: 1,
     startedAt: 2,
     endedAt: 3,
   };
   runs.insert(s, run);
   expect(runs.get(s, "run_1")).toEqual(run);
+  // A value no kind reads is no run data.
+  s.db.run("update factory_runs set checked=? where id=?", [JSON.stringify({ checks: "passing" }), "run_1"]);
+  expect(runs.get(s, "run_1")!.checked).toBeUndefined();
+  transcripts.put(s, "run_1", "the transcript");
+  expect(transcripts.get(s, "run_1")).toBe("the transcript");
   const learn = runs.insert(s, {
     id: "run_2",
     kind: "learn",
@@ -127,6 +139,8 @@ test("items, runs and scores keep every field, and the tables survive being crea
   expect(runs.forItem(s, "it_1").map((r) => r.id)).toEqual(["run_1"]);
   expect(runs.list(s, { states: ["running"], kinds: ["learn"] }).map((r) => r.id)).toEqual(["run_2"]);
   expect(runs.list(s, { endedSince: 3 }).map((r) => r.id)).toEqual(["run_1"]);
+  expect(runs.heads(s, ["running", "reported"]).map((r) => r.id)).toEqual(["run_2"]);
+  expect(runs.byThreads(s, ["thread-1", "elsewhere"]).map((r) => [r.id, r.item])).toEqual([["run_1", "it_1"]]);
 
   const score = {
     run: "run_1",
@@ -143,7 +157,7 @@ test("items, runs and scores keep every field, and the tables survive being crea
   expect(scores.since(s, 51)).toEqual([]);
 });
 
-test("open items stay; items finished 90 days ago go with their runs and scores", () => {
+test("open items stay; items finished 90 days ago go with their runs, transcripts and scores", () => {
   const { s } = fixture();
   const day = 24 * 3600_000;
   const base = { source: "bugs", repo: "acme/api", title: "t", snapshot: {}, configCommit: "c", tokens: 0 };
@@ -158,6 +172,7 @@ test("open items stay; items finished 90 days ago go with their runs and scores"
       nudges: 0,
       configCommit: "c",
     });
+    transcripts.put(s, `run_${id}`, "transcript");
     scores.put(s, {
       run: `run_${id}`,
       scorer: "x",
@@ -180,6 +195,8 @@ test("open items stay; items finished 90 days ago go with their runs and scores"
   expect(items.list(s).map((i) => i.id)).toEqual(["old-open", "recent-done"]);
   expect(runs.list(s).map((r) => r.id)).toEqual(["run_old-open", "run_recent-done"]);
   expect(scores.forRun(s, "run_old-done")).toEqual([]);
+  expect(transcripts.get(s, "run_old-done")).toBeUndefined();
+  expect(transcripts.get(s, "run_old-open")).toBe("transcript");
   expect(items.list(s, { open: true }).map((i) => i.id)).toEqual(["old-open"]);
   expect(items.list(s, { finishedSince: 85 * day }).map((i) => i.id)).toEqual(["old-open"]);
 });
@@ -350,4 +367,51 @@ test("the factory setting waits until every machine understands it, and null tur
   expect((await patch(null)).status).toBe(200);
   expect(s.settings().factory).toBeUndefined();
   expect(s.settings().threshold).toBe(90);
+});
+
+test("an item's steps never overlap and a failed one does not hold up the next; steps of two items run side by side", async () => {
+  const { f } = fixture();
+  const log: string[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  const step = (name: string, wait?: Promise<void>) => async () => {
+    log.push(`${name} starts`);
+    await wait;
+    log.push(`${name} ends`);
+  };
+  const first = withItem(f, "it_1", step("first", gate));
+  const failing = withItem(f, "it_1", async () => {
+    log.push("failing starts");
+    throw new Error("broke");
+  });
+  const second = withItem(f, "it_1", step("second"));
+  const other = withItem(f, "it_2", step("other"));
+  await other;
+  expect(log).toEqual(["first starts", "other starts", "other ends"]);
+  release();
+  await first;
+  await expect(failing).rejects.toThrow("broke");
+  await second;
+  expect(log).toEqual([
+    "first starts",
+    "other starts",
+    "other ends",
+    "first ends",
+    "failing starts",
+    "second starts",
+    "second ends",
+  ]);
+  expect(f.locks.size).toBe(0);
+
+  // Work queued from inside a step runs after it, and its failure is a note on the item.
+  await withItem(f, "it_1", async () => {
+    later(f, "it_1", "Posting", async () => {
+      log.push("later");
+      throw new Error("GitHub said no");
+    });
+    log.push("queued");
+  });
+  while (f.locks.size) await Promise.all([...f.locks.values()]);
+  expect(log.slice(-2)).toEqual(["queued", "later"]);
+  expect(f.events.recent(1)[0]).toMatchObject({ item: "it_1", text: "Posting failed: GitHub said no" });
 });

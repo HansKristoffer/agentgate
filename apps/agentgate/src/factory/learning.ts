@@ -13,11 +13,11 @@ import {
 } from "../skills.ts";
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, type LoadedFolder } from "./config.ts";
-import { defaultBranch, enqueueRun } from "./controller.ts";
+import { defaultBranch, enqueueRun, isBranch } from "./controller.ts";
 import { ACTIVE, items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
 import { postIssueComment, prView } from "./gh.ts";
 import { itemOutcome } from "./records.ts";
-import { asInput, runTool, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { asInput, later, runTool, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
  * The learning thread: every `learning.every`, or on demand, a T3 thread in a worktree of the factory repo
@@ -132,7 +132,7 @@ async function checkPr(f: FactoryRuntime, prUrl: string) {
 /** Records the check first, so a restart never comments twice, then comments once on a PR with problems. */
 async function judgePr(f: FactoryRuntime, run: FactoryRun, prUrl: string) {
   const { view, problems } = await checkPr(f, prUrl);
-  const checked = { pr: view.url, head: view.headRefOid, problems };
+  const checked = { kind: "learn" as const, pr: view.url, head: view.headRefOid, problems };
   runs.update(f.s, run.id, problems.length ? { verdict: "flawed", checked } : { checked });
   if (!problems.length) return;
 
@@ -155,7 +155,11 @@ const learn = (f: FactoryRuntime) => ({
   async launch(run: FactoryRun): Promise<LaunchSpec> {
     const pointer = f.pointer();
     if (!pointer) throw new Error("The factory is off");
-    const baseRef = pointer.ref ?? (await defaultBranch(f, pointer.repo));
+    // The folder can follow a tag; a PR goes against a branch.
+    const baseRef =
+      pointer.ref && (await isBranch(f, pointer.repo, pointer.ref))
+        ? pointer.ref
+        : await defaultBranch(f, pointer.repo);
     const folder = currentFolder(f);
     return {
       repo: pointer.repo,
@@ -182,10 +186,8 @@ const learn = (f: FactoryRuntime) => ({
   async accept(report: FactoryReport, run: FactoryRun) {
     const prUrl = report.result?.kind === "learn" ? report.result.prUrl : undefined;
     if (!prUrl) return;
-    // The run has ended already, so a failure here is not the learner's to fix.
-    await judgePr(f, run, prUrl).catch((e) =>
-      f.events.emit({ kind: "note", run: run.id, text: `Checking the learning PR ${prUrl} failed: ${shortError(e)}` }),
-    );
+    // After the report is answered. The run has ended already, so a failure here is not the learner's to fix.
+    later(f, run.id, `Checking the learning PR ${prUrl}`, () => judgePr(f, run, prUrl));
   },
 });
 

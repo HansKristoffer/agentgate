@@ -1,0 +1,49 @@
+{
+  "_source": "The inputs of the T3 Code MCP tools the factory calls, as T3 Code nightly 0.1.7-nightly.20261103.4138 declares them (the tools' parameter Structs in the server bundle inside the t3 binary). To refresh: find each tool's `make(\"<tool>\", { parameters })` in the new nightly's bundle and copy its fields. Types are left out: the fake checks names only.",
+  "t3_thread_launch": {
+    "type": "object",
+    "properties": {
+      "environmentId": {},
+      "projectId": {},
+      "scratch": {},
+      "title": {},
+      "modelSelection": {},
+      "runtimeMode": {},
+      "interactionMode": {},
+      "workspaceStrategy": {},
+      "message": {},
+      "attachments": {},
+      "clientRequestId": {},
+      "delegatedFrom": {}
+    },
+    "required": ["title"]
+  },
+  "t3_thread_send": {
+    "type": "object",
+    "properties": { "environmentId": {}, "threadId": {}, "message": {}, "mode": {}, "clientRequestId": {} },
+    "required": ["threadId", "message"]
+  },
+  "t3_thread_interrupt": {
+    "type": "object",
+    "properties": { "environmentId": {}, "threadId": {}, "runId": {}, "reason": {}, "stop": {}, "clientRequestId": {} },
+    "required": ["threadId"]
+  },
+  "t3_thread_organize": {
+    "type": "object",
+    "properties": { "environmentId": {}, "threadId": {}, "action": {}, "snoozedUntil": {} },
+    "required": ["action"]
+  },
+  "t3_pending_request": {
+    "type": "object",
+    "properties": { "action": {}, "environmentId": {}, "threadId": {}, "requestId": {}, "answers": {} },
+    "required": ["action"]
+  },
+  "watch_pull_request": {
+    "type": "object",
+    "properties": { "environmentId": {}, "threadId": {}, "url": {}, "repository": {}, "number": {}, "host": {} }
+  },
+  "unwatch_pull_request": {
+    "type": "object",
+    "properties": { "environmentId": {}, "threadId": {}, "url": {}, "repository": {}, "number": {}, "host": {} }
+  }
+}

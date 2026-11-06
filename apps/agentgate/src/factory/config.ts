@@ -22,6 +22,7 @@ import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { items } from "./db.ts";
 import { fetcher, folderPath, pruneFolders } from "./folder.ts";
+import { branchProtected, defaultBranch } from "./gh.ts";
 import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -354,7 +355,22 @@ async function useFactory(f: FactoryRuntime, input: unknown) {
   };
   patchSettings(s, { factory: pointer }, revision(s, "setting", "settings"));
   await sync(f, true);
-  return factoryStatus(f);
+  return { ...factoryStatus(f), ...(await protectionWarning(pointer)) };
+}
+
+/** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
+ * pushes where the plan allows it (free private repositories cannot). So `use` says once when the branch is open.
+ * A tag, or a GitHub that cannot be asked, says nothing. */
+async function protectionWarning(pointer: { repo: string; ref?: string }) {
+  try {
+    const branch = pointer.ref ?? (await defaultBranch(pointer.repo));
+    if (await branchProtected(pointer.repo, branch)) return {};
+    return {
+      warning: `${branch} of ${pointer.repo} is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub if your plan allows.`,
+    };
+  } catch {
+    return {};
+  }
 }
 
 /** `agentgate factory off` and `DELETE /api/factory`. */
@@ -378,7 +394,7 @@ async function reloadFactory(f: FactoryRuntime) {
   return factoryStatus(f);
 }
 
-function describe({ factory, config }: FactoryStatus) {
+function describe({ factory, config, warning }: FactoryStatus & { warning?: string }) {
   if (!factory) return ["The factory is off."];
   const path = factory.path ? `:${factory.path}` : "";
   const ref = factory.ref ? ` at ${factory.ref}` : "";
@@ -387,10 +403,11 @@ function describe({ factory, config }: FactoryStatus) {
   if (config?.name) lines.push(`Loaded ${config.name} at ${short(config.commit)}.`);
   if (config?.error) lines.push(`Error: ${config.error}`);
   if (!config) lines.push("Not loaded on this machine yet.");
+  if (warning) lines.push(`Warning: ${warning}`);
   return lines;
 }
 
-const print = (status: FactoryStatus, out: (line: string) => void) => {
+const print = (status: FactoryStatus & { warning?: string }, out: (line: string) => void) => {
   describe(status).forEach(out);
   return status.config?.error ? 1 : 0;
 };

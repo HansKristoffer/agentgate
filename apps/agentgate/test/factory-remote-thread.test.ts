@@ -8,7 +8,7 @@ import { NODE_PROTOCOL } from "../src/remote.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -16,9 +16,13 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
+/** The machine whose tables hold each moved run, so a test can wait for what its report left to do. */
+const holders = new Map<string, Awaited<ReturnType<typeof factoryNode>>>();
+const movedRunOf = (run: FactoryRun) => ({ a: holders.get(run.id)! });
+
 /** The factory machine `a`, and `b` with its own T3 Code holding a stage thread that moved there. */
-async function movedRun() {
-  const a = await factoryNode(cleanup);
+async function movedRun(config?: (repo: string) => Record<string, unknown>) {
+  const a = await factoryNode(cleanup, { ...(config && { config }) });
   const handler = app(a.ctx);
   const server = Bun.serve({
     port: 0,
@@ -55,6 +59,7 @@ async function movedRun() {
   const [started] = runs.list(a.s);
   // Where follow.ts leaves a run once b imported its thread.
   const run = runs.update(a.s, started!.id, { node: "b", threadId: thread.id, threadLink: undefined });
+  holders.set(run.id, a);
   return { a, b: b!, t3, run, thread, stopB };
 }
 
@@ -88,6 +93,9 @@ test("a report from the moved thread settles it in the T3 Code that holds it", a
   });
 
   expect(result.isError).toBeFalsy();
+  // Settling follows the report, as the item's next step.
+  const { a } = movedRunOf(run);
+  await idle(a.f);
   expect(commands(t3, thread.id)).toMatchObject([{ type: "thread.settle" }]);
 });
 
@@ -119,8 +127,8 @@ test("dropping an item interrupts and settles its moved thread, and an unreachab
   expect(notes).toContain(`Interrupting the thread of ${second.id} on b failed: b is not reachable`);
 });
 
-test("dropping an item with a PR unwatches it from the implement thread on this machine, not from a moved one", async () => {
-  const { a, run } = await movedRun();
+test("dropping an item with a PR unwatches it from the implement thread on this machine, not from a moved one, when the repository uses T3's PR watch", async () => {
+  const { a, run } = await movedRun((repo) => ({ repositories: { [repo]: { watchPullRequests: true } } }));
   const unwatches = () => a.mcp.calls.filter((c) => c.tool === "unwatch_pull_request");
   const withPr = (r: FactoryRun, url: string) => {
     runs.update(a.s, r.id, { kind: "implement" });

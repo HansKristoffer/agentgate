@@ -128,7 +128,13 @@ function render(template: string, delivery: { body: string; json: unknown; heade
 
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
+/** Deliveries of one source waiting for approval before the next one is refused: a URL that leaked, unsigned, could
+ * otherwise fill the board and pause every other source's intake. */
+const HELD_LIMIT = 20;
+
 const answer = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
+/** Sources whose held items reached HELD_LIMIT, so the refusal is noted once. */
+const capped = new WeakMap<FactoryRuntime, Set<string>>();
 
 // ---- deliveries
 
@@ -180,6 +186,20 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
     f.events.emit({ kind: "note", text: `A delivery to ${source.id} was refused: its title template rendered empty` });
     return answer(422, { error: "the delivery has no title" });
   }
+  const waiting = items.list(f.s, { open: true }).filter((i) => i.source === source.id && i.phase === "held").length;
+  let full = capped.get(f);
+  if (!full) capped.set(f, (full = new Set()));
+  if (waiting >= HELD_LIMIT) {
+    // Once per filling: a flood of deliveries would otherwise flood the event list too.
+    if (!full.has(source.id))
+      f.events.emit({
+        kind: "note",
+        text: `Deliveries to ${source.id} are refused while ${HELD_LIMIT} of its items wait for approval or rejection`,
+      });
+    full.add(source.id);
+    return answer(429, { error: "too many deliveries wait for approval" });
+  }
+  full.delete(source.id);
   const dedupe = source.dedupe && cut(render(source.dedupe, delivery).trim(), 300);
   if (dedupe) {
     const since = f.s.now() - durationMs(source.dedupeWindow);

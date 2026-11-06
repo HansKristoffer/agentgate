@@ -251,12 +251,12 @@ test("on a machine that does not run the factory, factory_add and the item comma
   expect(await command("reject", typo!.key)).toEqual({ code: 0, output: [`Rejected ${typo!.key}`] });
   expect(items.get(a.s, typo!.id)!.phase).toBe("closed");
 
-  items.update(a.s, crash!.id, { phase: "failed" });
+  items.update(a.s, crash!.id, { needsYou: { reason: "failed" } });
   expect(await command("retry", crash!.key)).toEqual({ code: 0, output: [`Retrying triage for ${crash!.key}`] });
   expect(await command("drop", crash!.key)).toEqual({ code: 0, output: [`Dropped ${crash!.key}`] });
   expect(items.get(a.s, crash!.id)!.phase).toBe("closed");
   // The factory machine's answer, as it would have been there.
-  expect(command("retry", typo!.key)).rejects.toThrow(`${typo!.key} has not failed`);
+  expect(command("approve", typo!.key)).rejects.toThrow(`${typo!.key} has no question to approve`);
 });
 
 test("a machine paired only through the relay forwards a command to the factory machine", async () => {

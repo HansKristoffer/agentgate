@@ -18,7 +18,7 @@ async function specFactory() {
   n.github.addIssue(1);
   await n.intake();
   await n.dispatch();
-  const item = items.byExternal(n.s, "bugs", `${n.repo}#1`)!;
+  const item = items.byExternal(n.s, `${n.repo}#1`)!;
   await n.report(runs.forItem(n.s, item.id)[0]!, { ...triaged, result: { ...triaged.result, route: "spec" } });
   await n.dispatch();
   const specRuns = () => runs.forItem(n.s, item.id).filter((r) => r.kind === "spec");
@@ -42,14 +42,14 @@ test("route spec starts a spec run whose brief requires a fresh-subagent review 
   expect(n.run.state).toBe("running");
   const launch = n.launchOf(n.run)!;
   expect(launch).toMatchObject({
-    title: "Spec gh-1: Issue 1",
-    workspaceStrategy: { baseRef: "main", branch: "factory/gh-1-spec-1", startFromOrigin: true },
+    title: `Spec ${n.key(1)}: Issue 1`,
+    workspaceStrategy: { baseRef: "main", branch: `factory/${n.key(1)}-spec-1`, startFromOrigin: true },
   });
   const brief = String(launch.message);
   expect(brief).toContain("Have a fresh subagent review the spec");
   expect(brief).toContain("one question whose options are exactly `Approve` and `Change`");
   expect(brief).toContain(`run: "${n.run.id}"`);
-  expect(n.github.posted(1)).toEqual(["The factory triaged this and writes a spec first."]);
+  expect(n.github.posted(1)).toEqual(["The factory took this.", "The factory triaged this and writes a spec first."]);
 });
 
 test("an approved spec starts implement, reaches factory_item and the spec-approved comment", async () => {
@@ -86,7 +86,7 @@ test("feedback starts one more spec round, and the next feedback leaves the item
   await n.dispatch();
   const [, round2] = n.specRuns();
   expect(round2!.state).toBe("running");
-  expect(n.launchOf(round2!)!.workspaceStrategy).toMatchObject({ branch: "factory/gh-1-spec-2" });
+  expect(n.launchOf(round2!)!.workspaceStrategy).toMatchObject({ branch: `factory/${n.key(1)}-spec-2` });
   expect(String(n.launchOf(round2!)!.message)).toContain("This is round 2 of the spec.");
 
   await n.specReport(round2!, { approved: false, feedback: "Still not right." });
@@ -97,7 +97,7 @@ test("feedback starts one more spec round, and the next feedback leaves the item
     needsYou: { reason: "failed", link: round2!.threadLink },
   });
 
-  expect((await n.command("retry", "gh-1")).output).toEqual(["Retrying spec for gh-1"]);
+  expect((await n.command("retry", n.key(1))).output).toEqual([`Retrying spec for ${n.key(1)}`]);
   expect(n.specRuns().at(-1)!.state).toBe("queued");
 });
 
@@ -131,15 +131,15 @@ test("approve and reject answer the waiting card through t3_pending_request, and
   await n.until(() => runs.get(n.s, n.run.id)!.state === "waiting", "the spec run to wait");
   expect(await n.needsYou(n.item)).toMatchObject({ reason: "approval", link: n.run.threadLink });
 
-  expect(await n.command("approve", "gh-1")).toEqual({
+  expect(await n.command("approve", n.key(1))).toEqual({
     code: 1,
     output: [`The spec thread has no pending question; look at it in T3 Code: ${n.run.threadLink}`],
   });
 
   pending = ["request-1"];
-  expect((await n.command("reject", "gh-1", "--reason", "Keep the newest copy")).code).toBe(0);
+  expect((await n.command("reject", n.key(1), "--reason", "Keep the newest copy")).code).toBe(0);
   pending = ["request-2"];
-  expect((await n.command("approve", "gh-1")).code).toBe(0);
+  expect((await n.command("approve", n.key(1))).code).toBe(0);
   expect(responses()).toEqual([
     {
       action: "respond",

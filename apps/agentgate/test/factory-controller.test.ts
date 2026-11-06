@@ -5,12 +5,13 @@ import type { FactorySource, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { currentFolder } from "../src/factory/config.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
-import type { IncomingItem, SourceAdapter } from "../src/factory/runtime.ts";
+import { loopTask, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
+import { t3Mcp } from "../src/factory/t3-mcp.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -22,8 +23,13 @@ type Node = Awaited<ReturnType<typeof factoryNode>>;
 const launches = (n: Node) => n.mcp.calls.filter((c) => c.tool === "t3_thread_launch");
 const triageRuns = (n: Node) => runs.list(n.s, { kinds: ["triage"] });
 const github = (repo: string, id = "bugs") => ({ id, type: "github", repo, label: "factory" });
+const loopTaskOf = (n: Node, name: string) =>
+  loopTask(
+    n.f,
+    n.f.loops.find((l) => l.name === name)!,
+  )();
 
-test("items added with the CLI, the API and factory_add are triaged in a fresh full-access worktree whose brief fences the item and carries the rulings, never a secret", async () => {
+test("items added with the CLI and the API are triaged in a fresh full-access worktree whose brief fences the item and carries the rulings, never a secret; one an agent adds waits for approval", async () => {
   const secret = "sekret-value-123";
   const n = await factoryNode(cleanup, {
     config: (repo) => ({
@@ -44,12 +50,15 @@ test("items added with the CLI, the API and factory_add are triaged in a fresh f
   const tool = await builtin.callTool({ name: "factory_add", arguments: { repo: n.repo, title: "Typo on login" } });
   expect(tool.isError).toBeFalsy();
 
-  expect(items.list(n.s).map((i) => [i.title, i.phase, i.repo])).toEqual([
-    ["Crash on save", "triage", n.repo],
-    ["Slow search", "triage", n.repo],
-    ["Typo on login", "triage", n.repo],
+  // An agent's item passed no label: a person starts it.
+  expect(items.list(n.s).map((i) => [i.title, i.phase, i.repo, i.needsYou?.reason])).toEqual([
+    ["Crash on save", "triage", n.repo, undefined],
+    ["Slow search", "triage", n.repo, undefined],
+    ["Typo on login", "held", n.repo, "held"],
   ]);
-  expect(triageRuns(n).map((r) => r.state)).toEqual(["queued", "queued", "queued"]);
+  expect(triageRuns(n).map((r) => r.state)).toEqual(["queued", "queued"]);
+  const agents = items.list(n.s).at(-1)!;
+  expect((await n.command("approve", agents.key)).output).toEqual([`Approved ${agents.key}; triage is queued`]);
 
   await n.dispatch();
   // The repository had no T3 project: it was cloned and registered once, then every run used it.
@@ -250,7 +259,7 @@ const issue = (repo: string, number: number): IncomingItem => ({
   snapshot: { number, body: `body ${number}` },
 });
 
-test("intake adds each new issue once, leaves one another machine holds, and closes an item whose issue closed before its stage", async () => {
+test("intake adds each new issue once and marks it taken, leaves one another machine holds, and closes an item whose issue closed before its stage", async () => {
   const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
   const [one, two, three] = [1, 2, 3].map((i) => issue(n.repo, i));
   const source = fakeSource(n, { bugs: [one!, two!, three!] });
@@ -276,12 +285,21 @@ test("intake adds each new issue once, leaves one another machine holds, and clo
   expect(board.items.find((i) => i.key === "gh-2")).toMatchObject({ heldBy: "b", phase: "implement" });
   expect(board.sources).toEqual([{ id: "bugs", type: "github", repo: n.repo, lastPollAt: n.s.now() }]);
 
+  // Each issue taken hears it at once, with the marker that keeps other machines' intake away.
+  await idle(n.f);
+  expect(source.posts.map((p) => [p.item, p.body.split("\n")[0]])).toEqual([
+    ["gh-1", "**gh-1**: The factory took this."],
+    ["gh-3", "**gh-3**: The factory took this."],
+  ]);
+  expect(source.posts[0]!.body).toContain('"node":"a","state":"open"');
+
   source.closed.add(one!.externalId);
   await n.dispatch();
-  expect(items.byExternal(n.s, "bugs", one!.externalId)!.phase).toBe("closed");
+  await idle(n.f);
+  expect(items.byExternal(n.s, one!.externalId)!.phase).toBe("closed");
   expect(launches(n).map((c) => c.args.title)).toEqual(["Triage gh-3: Issue 3"]);
   // The issue already says it is closed.
-  expect(source.posts).toEqual([]);
+  expect(source.posts).toHaveLength(2);
 });
 
 test("a failing source backs off and shows its error while the others keep polling", async () => {
@@ -303,4 +321,226 @@ test("a failing source backs off and shows its error while the others keep polli
   n.advance(2 * 60_000);
   await n.intake();
   expect(source.polled.at(-1)).toBe("broken");
+});
+
+test("PRs ready for the maintainer count toward waitingForYou: five of them pause intake", async () => {
+  const n = await factoryNode(cleanup, {
+    config: (repo) => ({ limits: { waitingForYou: 5 }, sources: [github(repo)] }),
+  });
+  const { polled } = fakeSource(n, {});
+  for (const title of ["one", "two", "three", "four", "five"]) await n.command("add", n.repo, title);
+  for (const item of items.list(n.s)) items.update(n.s, item.id, { phase: "ready" });
+  await n.intake();
+  expect(polled).toEqual([]);
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity).toMatchObject({
+    waitingForYou: 5,
+    intake: "paused-for-you",
+  });
+});
+
+/** Makes the next `count` launches reach T3 and start their thread, but lose T3's answer on the way back, as a proxy
+ * in between would. */
+function loseLaunchAnswers(n: Node) {
+  const routes = n.mcp.routes;
+  const lost = { count: 0 };
+  n.mcp.routes = (req: Request) => {
+    const copy = req.clone();
+    return routes(req)?.then(async (res) => {
+      if (!lost.count || !(await copy.text()).includes('"t3_thread_launch"')) return res;
+      lost.count--;
+      await res.text();
+      return new Response("upstream connection reset", { status: 502 });
+    });
+  };
+  return lost;
+}
+
+const threadsOf = (n: Node, run: { id: string }) => [...n.t3.threads.keys()].filter((id) => id.includes(run.id));
+
+test("a launch whose answer was lost is sent again under its T3 session and finds its thread", async () => {
+  const n = await factoryNode(cleanup);
+  const lost = loseLaunchAnswers(n);
+  await n.command("add", n.repo, "Crash on save");
+  lost.count = 1;
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  expect(runs.get(n.s, run!.id)).toMatchObject({ state: "queued", launchSession: t3Mcp(n.f).session() });
+  expect(threadsOf(n, run!)).toHaveLength(1);
+
+  n.advance(30_000);
+  await n.dispatch();
+  expect(runs.get(n.s, run!.id)).toMatchObject({ state: "running", threadId: threadsOf(n, run!)[0] });
+  expect(threadsOf(n, run!)).toHaveLength(1);
+  expect(launches(n).filter((c) => c.args.clientRequestId === run!.id)).toHaveLength(2);
+});
+
+test("after T3 Code's sign-in changed, a launch whose answer was lost is not sent again, and the item waits as stuck", async () => {
+  const n = await factoryNode(cleanup);
+  const lost = loseLaunchAnswers(n);
+  await n.command("add", n.repo, "Crash on save");
+  lost.count = 1;
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  // T3 forgets the session: the next send meets a refused token, and the factory signs in again.
+  n.mcp.refuse(n.mcp.tokens.at(-1)!);
+  n.advance(30_000);
+  await n.dispatch();
+  expect(n.mcp.tokens).toHaveLength(2);
+  expect(runs.get(n.s, run!.id)!.state).toBe("queued");
+
+  n.advance(60_000);
+  await n.dispatch();
+  expect(runs.get(n.s, run!.id)).toMatchObject({ state: "failed" });
+  expect(items.get(n.s, run!.item!)!.needsYou).toMatchObject({
+    reason: "stuck",
+    question: expect.stringContaining("may have started a thread before T3 Code's sign-in changed"),
+  });
+  expect(threadsOf(n, run!)).toHaveLength(1);
+  expect(launches(n).filter((c) => c.args.clientRequestId === run!.id)).toHaveLength(1);
+
+  // retry starts the stage again in a run of its own.
+  expect((await n.command("retry", items.get(n.s, run!.item!)!.key)).code).toBe(0);
+  await n.dispatch();
+  expect(triageRuns(n).map((r) => r.state)).toEqual(["failed", "running"]);
+});
+
+test("show and GET /api/factory/items/:id give an item's runs with state, thread and error, its comments and its events", async () => {
+  const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
+  fakeSource(n, { bugs: [issue(n.repo, 1)] });
+  n.mcp.answer("t3_thread_launch", () => {
+    throw new Error("the worktree could not be created");
+  });
+  await n.intake();
+  await n.dispatch();
+  await idle(n.f);
+  const [item] = items.list(n.s);
+  const shown = async () => {
+    const { code, output } = await n.command("show", item!.key, "--json");
+    expect(code).toBe(0);
+    const detail = JSON.parse(output.at(-1)!);
+    expect(await (await n.api(`/api/factory/items/${item!.key}`)).json()).toEqual(detail);
+    return detail;
+  };
+  const failed = await shown();
+  expect(failed.runs).toEqual([
+    expect.objectContaining({
+      kind: "triage",
+      attempt: 1,
+      state: "queued",
+      error: "starting it failed: T3 Code's t3_thread_launch failed: the worktree could not be created",
+    }),
+  ]);
+  expect(failed.writebacks).toEqual([{ moment: "taken", status: "posted", at: expect.any(Number) }]);
+  expect(failed.events.map((e: { text: string }) => e.text)).toContain(
+    "triage waits: starting it failed: T3 Code's t3_thread_launch failed: the worktree could not be created",
+  );
+
+  n.mcp.answer("t3_thread_launch", () => ({ threadId: "thread-1", link: "https://t3.test/threads/thread-1" }));
+  n.advance(30_000);
+  await n.dispatch();
+  const running = await shown();
+  expect(running.runs).toEqual([
+    expect.objectContaining({ state: "running", node: "a", threadLink: "https://t3.test/threads/thread-1" }),
+  ]);
+  const { output } = await n.command("show", item!.key);
+  expect(output[0]).toBe(`${item!.key} Issue 1 (${n.repo}, triage)`);
+  expect(output).toContain(`  ${triageRuns(n)[0]!.id} triage attempt 1: running on a https://t3.test/threads/thread-1`);
+});
+
+test("an item whose launch keeps failing waits as stuck once its phase is four stalledAfter old, and retry starts a new run", async () => {
+  const n = await factoryNode(cleanup, { config: { limits: { stalledAfter: "15m" } } });
+  n.mcp.answer("t3_thread_launch", () => {
+    throw new Error("the worktree could not be created");
+  });
+  await n.command("add", n.repo, "Crash on save");
+  const [item] = items.list(n.s);
+  const stuck = () => loopTaskOf(n, "factory-stuck");
+  for (let i = 0; i < 4; i++) {
+    await n.dispatch();
+    await stuck();
+    expect(items.get(n.s, item!.id)!.needsYou).toBeUndefined();
+    n.advance(15 * 60_000);
+  }
+  await stuck();
+  expect(items.get(n.s, item!.id)!.needsYou).toMatchObject({
+    reason: "stuck",
+    question: expect.stringContaining(`agentgate factory show ${item!.key}`),
+  });
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.waitingForYou).toBe(1);
+
+  n.mcp.answer("t3_thread_launch", () => ({ threadId: "thread-1" }));
+  expect(await n.command("retry", item!.key)).toEqual({ code: 0, output: [`Retrying triage for ${item!.key}`] });
+  await n.dispatch();
+  expect(triageRuns(n).map((r) => [r.state, r.error])).toEqual([
+    ["cancelled", "retried"],
+    ["running", undefined],
+  ]);
+});
+
+test("pause stops intake and new threads and the board says so, and resume starts both again", async () => {
+  const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
+  const { polled } = fakeSource(n, { bugs: [issue(n.repo, 1)] });
+  await n.command("add", n.repo, "Crash on save");
+  const paused = await n.api("/api/factory/pause", "POST", {});
+  expect(await paused.json()).toEqual({
+    message: "Paused: no intake, new threads or nudges until agentgate factory resume. Running threads finish.",
+  });
+  await n.intake();
+  await n.dispatch();
+  expect(polled).toEqual([]);
+  expect(launches(n)).toEqual([]);
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity).toMatchObject({
+    intake: "off",
+    paused: true,
+  });
+  expect((await n.command("status")).output.join("\n")).toContain("Paused (agentgate factory resume), Capacity:");
+
+  expect(await n.command("resume")).toEqual({ code: 0, output: ["Resumed."] });
+  await n.intake();
+  await n.dispatch();
+  expect(polled).toEqual(["bugs"]);
+  expect(launches(n)).toHaveLength(2);
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.intake).toBe("on");
+});
+
+test("a stage thread and the T3 subagents under it may use the servers its stage names, a judge thread none, and every other thread every server but not the run tools", async () => {
+  const n = await factoryNode(cleanup, { files: { "stages/triage.md": "---\nmcp: [docs]\n---\n" } });
+  const scope = (thread: string | undefined) => {
+    const found = n.ctx.gateway.scope!(thread)!;
+    return found.hidden ? { hidden: found.hidden.toSorted() } : found;
+  };
+  const others = { hidden: ["factory_item", "factory_report", "factory_run"] };
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  expect(scope(run!.threadId)).toEqual({ servers: ["docs"] });
+
+  const parent = n.t3.threads.get(run!.threadId!)!;
+  const subagent = n.t3.addThread({
+    projectId: parent.projectId,
+    sessionId: crypto.randomUUID(),
+    subagent: true,
+    parentThreadId: parent.id,
+  });
+  n.mcp.setThread(subagent.id, { status: "running" });
+  await n.until(() => n.mirror.thread(subagent.id)?.parentThreadId === parent.id, "the subagent in the mirror");
+  expect(scope(subagent.id)).toEqual({ servers: ["docs"] });
+
+  runs.insert(n.s, {
+    id: "run_judge",
+    kind: "judge",
+    attempt: 1,
+    state: "running",
+    nudges: 0,
+    threadId: "thread-judge",
+    configCommit: n.commit,
+  });
+  expect(scope("thread-judge")).toEqual({ servers: [] });
+  expect(scope("thread-of-the-maintainer")).toEqual(others);
+  expect(scope(undefined)).toEqual(others);
+
+  // Once its run ends, the thread is the maintainer's again.
+  expect((await n.command("drop", items.list(n.s)[0]!.key)).code).toBe(0);
+  expect(scope(run!.threadId)).toEqual(others);
+  expect(scope(subagent.id)).toEqual(others);
 });
