@@ -251,6 +251,7 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
   expect(off.mcpServers.agentgate).toBeUndefined();
   expect(await cursorMcp(false, file)).toContain("No agentgate MCP server");
   expect(cursorMcpEnabled(join(dir, "missing.json"))).toBe(false);
+  expect(cursorMcpEnabled(join(dir, "no-cursor", "mcp.json"))).toBeUndefined(); // no Cursor on this machine
   writeFileSync(file, '{"mcpServers":[]}\n');
   await expect(cursorMcp(true, file)).rejects.toThrow("mcpServers must be an object");
   rmSync(dir, { recursive: true, force: true });
@@ -306,6 +307,26 @@ test("a new store's first service install routes the own tools once, skipping th
   await routeHere(s, false, tools.dirs);
   expect(await routeByDefault(s, true, tools.dirs)).toBeUndefined();
   expect(tools.baseUrl()).toBeUndefined();
+  rmSync(tools.dir, { recursive: true });
+});
+
+test("a first routing that fails partway says what it changed and is never retried by a later service install", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ codex: true, cursor: true });
+  writeFileSync(join(tools.dirs.codex, "config.toml"), "not = [valid toml");
+  s.setLocal("setup:routing", "pending");
+  const message = await routeByDefault(s, true, tools.dirs);
+  expect(message).toContain("Could not route Codex");
+  expect(message).toContain(`New Claude sessions in ${tools.dirs.claude} use agentgate`);
+  expect(message).toContain("Left Cursor unchanged.");
+  expect(message).toContain("agentgate setup --primary");
+  expect(tools.baseUrl()).toBe(`http://127.0.0.1:${PORT}/anthropic`);
+  expect(existsSync(tools.dirs.cursor)).toBe(false);
+  expect(s.local("setup:routing")).toBe("on");
+  // The user fixes Codex's config; reinstalling the service (as an app update does) still changes nothing.
+  writeFileSync(join(tools.dirs.codex, "config.toml"), "");
+  expect(await routeByDefault(s, true, tools.dirs)).toBeUndefined();
+  expect(existsSync(tools.dirs.cursor)).toBe(false);
   rmSync(tools.dir, { recursive: true });
 });
 

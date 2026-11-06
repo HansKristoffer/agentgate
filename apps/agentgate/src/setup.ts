@@ -150,16 +150,37 @@ const OWN = { claude: PRIMARY_CLAUDE_DIR, codex: PRIMARY_CODEX_DIR, cursor: CURS
 /** `setup --primary [off]` on this machine: Claude Code, Codex and Cursor. Records the choice, so a later
  * `service install` or the daemon never undoes it, and the result on this node, so every machine's Machines view shows it. */
 export async function routeHere(s: Store, on: boolean, dirs = OWN) {
-  const message = [
-    await primary(on, dirs.claude),
-    await primaryCodex(on, dirs.codex),
-    await cursorMcp(on, dirs.cursor),
-  ].join("\n");
-  s.setLocal("setup:routing", on ? "on" : "off");
-  s.setLocal("setup:mcp", on ? "on" : "off");
-  s.setLocal(MCP_RESTORED, undefined);
-  publishRouting(s);
-  return { node: s.nodeId, message };
+  const steps = [
+    ["Claude Code", () => primary(on, dirs.claude)],
+    ["Codex", () => primaryCodex(on, dirs.codex)],
+    ["Cursor", () => cursorMcp(on, dirs.cursor)],
+  ] as const;
+  const done: string[] = [];
+  try {
+    for (const [name, step] of steps) {
+      try {
+        done.push(await step());
+      } catch (e) {
+        // Say what did change: a tool routed before the failure stays routed.
+        const rest = steps.slice(done.length + 1).map(([n]) => n);
+        throw new Error(
+          [
+            `Could not ${on ? "route" : "undo routing for"} ${name}: ${getErrorMessage(e)}`,
+            ...(done.length ? ["Done before that:", ...done] : []),
+            ...(rest.length ? [`Left ${rest.join(" and ")} unchanged.`] : []),
+          ].join("\n"),
+          { cause: e },
+        );
+      }
+    }
+  } finally {
+    // The choice holds even when a step failed, so a later `service install` never routes behind the user's back.
+    s.setLocal("setup:routing", on ? "on" : "off");
+    s.setLocal("setup:mcp", on ? "on" : "off");
+    s.setLocal(MCP_RESTORED, undefined);
+    publishRouting(s);
+  }
+  return { node: s.nodeId, message: done.join("\n") };
 }
 
 /** `setup --mcp [off]`: only the MCP server, in Claude Code and Cursor. Recorded for `keepMcp`. */
@@ -179,10 +200,11 @@ export async function routeByDefault(s: Store, on = true, dirs = OWN): Promise<s
     s.setLocal("setup:routing", "off");
     return "Left Claude Code, Codex and Cursor as they were. Route them later with agentgate setup --primary.";
   }
+  // routeHere records the choice even when it fails, so this runs once.
   try {
     return (await routeHere(s, true, dirs)).message;
   } catch (e) {
-    return `Could not route Claude Code and Codex through agentgate: ${getErrorMessage(e)}\nFix that, then run agentgate setup --primary.`;
+    return `${getErrorMessage(e)}\nFix that, then run agentgate setup --primary.`;
   }
 }
 
@@ -294,7 +316,9 @@ export async function cursorMcp(on: boolean, file = CURSOR_MCP_FILE): Promise<st
     : `Removed the agentgate MCP server from ${file}.`;
 }
 
-export function cursorMcpEnabled(file = CURSOR_MCP_FILE): boolean {
+/** Whether Cursor's config has agentgate's MCP server; undefined when this machine has no Cursor, which `cursorMcp` skips. */
+export function cursorMcpEnabled(file = CURSOR_MCP_FILE): boolean | undefined {
+  if (!existsSync(dirname(file))) return undefined;
   try {
     return !!mcpFile(file).servers.agentgate;
   } catch {

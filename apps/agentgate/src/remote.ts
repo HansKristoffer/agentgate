@@ -137,6 +137,7 @@ interface Conn {
   failed: string[];
   lastCall?: number;
   backoff: number;
+  openedAt?: number;
   retry?: ReturnType<typeof setTimeout>;
   ping?: ReturnType<typeof setInterval>;
   lastPong: number;
@@ -158,16 +159,19 @@ export class RemoteEndpoints {
   /** Start, restart or stop sockets to match the project records; also retries queued deletions. */
   reconcile() {
     if (this.closed) return;
+    const projects = this.s.list("project");
     const wanted = new Map(
-      this.s
-        .list("project")
-        .filter((p) => p.remote?.enabled && p.remote.servedBy === this.s.nodeId)
-        .map((p) => [p.id, p.remote!]),
+      projects.filter((p) => p.remote?.enabled && p.remote.servedBy === this.s.nodeId).map((p) => [p.id, p.remote!]),
     );
+    const used = (key: string) => projects.some((p) => p.remote?.key === key);
     for (const [id, c] of this.conns) {
       const next = wanted.get(id);
-      if (!next || next.key !== c.remote.key || next.token !== c.remote.token || next.relay !== c.remote.relay)
+      if (!next || next.key !== c.remote.key || next.token !== c.remote.token || next.relay !== c.remote.relay) {
         this.stop(id);
+        // No record names this endpoint any more. A start before the change arrived may have recreated it on the relay.
+        if (!used(c.remote.key)) queueDelete(this.s, c.remote);
+      } else if (next.secret !== c.remote.secret && !c.connected)
+        this.stop(id); // restarted below, e.g. after a deletion
       else if (next.secret !== c.remote.secret) {
         c.remote = next;
         void this.put(next).catch((e) => {
@@ -176,8 +180,12 @@ export class RemoteEndpoints {
       }
     }
     for (const [id, remote] of wanted) if (!this.conns.has(id)) this.start(id, remote);
+    for (const row of this.s.db.query("select key from local where key like 'remote:deleted:%'").all() as {
+      key: string;
+    }[])
+      if (!used(row.key.slice("remote:deleted:".length))) this.s.setLocal(row.key, undefined);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
-    for (const p of this.s.list("project"))
+    for (const p of projects)
       if (p.remote && !p.remote.enabled && p.remote.servedBy === this.s.nodeId) void this.put(p.remote).catch(() => {});
     void this.drainDeletes().catch((e) => console.error(`remote: endpoint deletions failed: ${e?.name ?? "error"}`));
   }
@@ -204,6 +212,10 @@ export class RemoteEndpoints {
   }
 
   private async put(r: Remote) {
+    // The relay deleted this endpoint (another machine made a new URL or deleted the project): pushing it again would
+    // recreate it with the old token, so wait for the record to change.
+    if (this.s.local(`remote:deleted:${r.key}`) === r.secret.slice(0, 8))
+      throw new Error("the relay deleted this endpoint; create a new URL");
     const marker = this.pushedValue(r, r.enabled);
     if (this.s.local(`remote:pushed:${r.key}`) === marker) return;
     const key = serviceKeyFor(this.s, r.relay);
@@ -284,7 +296,7 @@ export class RemoteEndpoints {
     ws.onopen = () => {
       c.connected = true;
       c.error = undefined;
-      c.backoff = 1000;
+      c.openedAt = Date.now();
       c.lastPong = Date.now();
       const pingMs = 30_000;
       c.ping = setInterval(() => {
@@ -311,9 +323,24 @@ export class RemoteEndpoints {
       if (frame.t === "cancel") return c.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
       void this.answer(c, ws, frame.id, frame.body, frame.headers);
     };
-    ws.onclose = () => {
+    ws.onclose = (e) => {
       if (c.ws !== ws) return;
       for (const a of c.inflight.values()) a.abort(new Error("relay connection closed"));
+      const upFor = c.openedAt ? Date.now() - c.openedAt : 0;
+      c.openedAt = undefined;
+      // Close codes from apps/relay/src/remote.ts.
+      if (e.code === 4001) {
+        this.s.setLocal(`remote:deleted:${c.remote.key}`, c.remote.secret.slice(0, 8));
+        return this.later(c, "the relay deleted this endpoint; create a new URL");
+      }
+      if (e.code === 4000) {
+        // Another connection took the endpoint, e.g. a second machine serving it: reconnecting at once would only
+        // take it back and start a duel.
+        c.backoff = Math.max(c.backoff, 30_000);
+        return this.later(c, "another connection took over this endpoint");
+      }
+      // A socket that stayed up reconnects quickly; one that keeps dropping right after opening backs off.
+      if (upFor > 60_000) c.backoff = 1000;
       // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
       if (!c.connected) this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
       this.later(c, c.connected ? undefined : "could not connect to the relay");

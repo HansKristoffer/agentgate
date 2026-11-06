@@ -1,6 +1,7 @@
 import {
   firstServer,
   handoffTargets,
+  type HandoffCancel,
   type HandoffJob,
   type NodeThreads,
   type T3NodeState,
@@ -10,7 +11,7 @@ import {
 import { getErrorMessage, getUniqueValues, isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
-import { startHandoff, type SourceState } from "./source.ts";
+import { cancelHandoff, startHandoff, type SourceState } from "./source.ts";
 import type { z } from "zod";
 import {
   ACTIVE,
@@ -230,4 +231,14 @@ export async function handoffJob(h: Handoffs, id: string, node?: string): Promis
     return job && h.view(job);
   }
   return peerCall<HandoffJob>(h.s, node, `/handoff/${encodeURIComponent(id)}/job`);
+}
+
+/** Cancel a handoff that waits for its destination, here or on the node that drives it (see cancelHandoff). */
+export async function cancelHandoffOn(h: Handoffs, id: string, node?: string): Promise<HandoffCancel> {
+  if (!node || node === h.s.nodeId) return cancelHandoff(h, id);
+  // That node asks the destination in turn, with its own deadline.
+  return peerCall<HandoffCancel>(h.s, node, `/handoff/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    timeout: 60_000,
+  });
 }

@@ -179,6 +179,8 @@ function relayFailure(status: number, text: string, node: string) {
 export class NodeChannel {
   private ws?: WebSocket;
   private target?: string;
+  /** The target and service key the socket was opened with: either changing reopens it. */
+  private opened?: string;
   private retry?: ReturnType<typeof setTimeout>;
   private ping?: ReturnType<typeof setInterval>;
   private backoff = 1000;
@@ -197,9 +199,11 @@ export class NodeChannel {
     if (this.closed) return;
     const g = await group(this.s).catch(() => undefined);
     const target = g && `${g.url}/g/${g.keys.groupId}/n/${encodeURIComponent(this.s.nodeId)}/connect`;
-    if (target === this.target) return;
+    const opened = g && `${target}|${g.serviceKey ?? ""}`;
+    if (opened === this.opened) return;
     this.stop();
     this.target = target;
+    this.opened = opened;
     if (g) this.connect(g);
   }
 

@@ -1,6 +1,6 @@
 import type { AccountStatus, Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
-import { type Credentials, NeedsLogin } from "../credentials.ts";
+import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
 import { revision } from "../configuration.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
@@ -177,8 +177,9 @@ export async function proxy(
   if (previousResponse && !requiredAccount)
     return own ? passthrough() : error(409, "continuation owner is unknown; start a new response", "stateful");
   const tried = new Set<string>();
+  /** Accounts whose login failed during this request: no usable token, or refused even after a refresh. */
+  const loginFailed = new Set<string>();
   let waited = false,
-    unavailable = false,
     accountCount = 0;
   for (;;) {
     if (budget.signal.aborted)
@@ -190,11 +191,13 @@ export async function proxy(
       if (own) return passthrough();
       const reset = earliestReset(s, provider.name, model);
       const enabled = s.list("account").filter((a) => a.provider === provider.name && a.enabled);
-      if (
-        unavailable ||
-        !enabled.length ||
-        enabled.every((a) => !s.get("credential", a.id) || s.get("credential", a.id)?.needsLogin)
-      )
+      const loginBlocked = (a: import("../store.ts").Account) =>
+        loginFailed.has(a.id) || !s.get("credential", a.id) || !!s.get("credential", a.id)?.needsLogin;
+      const eligible = enabled.filter((a) => !eligibility(s, a, model).some((r) => r.startsWith("model")));
+      const usable = eligible.filter((a) => !loginBlocked(a));
+      // Only when logins are why nothing could serve: an account skipped for quota or a cooldown still owes the client
+      // its 429 and retry-after, or a wait for its reset.
+      if (!enabled.length || enabled.every(loginBlocked) || (eligible.length && !usable.length))
         return error(
           503,
           !enabled.length ? "no enabled accounts configured" : "no valid account login available; check account status",
@@ -218,12 +221,6 @@ export async function proxy(
         tried.clear();
         continue;
       }
-      const usable = enabled.filter(
-        (a) =>
-          s.get("credential", a.id) &&
-          !s.get("credential", a.id)?.needsLogin &&
-          !eligibility(s, a, model).some((r) => r.startsWith("model")),
-      );
       if (usable.length && !usable.some((a) => exhausted(s.get("usage", a.id), model, s.now()))) {
         const blocked = usable.flatMap((a) => cooldowns(s, a.id, model));
         const rate = blocked.some((c) => c.reason === "rate");
@@ -253,7 +250,7 @@ export async function proxy(
       if (!(e instanceof NeedsLogin))
         s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "credential unavailable");
       tried.add(account.id);
-      unavailable = true;
+      loginFailed.add(account.id);
       continue;
     }
     let authRetried = false,
@@ -316,7 +313,7 @@ export async function proxy(
             } catch {}
           }
           tried.add(account.id);
-          unavailable = true;
+          loginFailed.add(account.id);
           break;
         }
         if (failure === "quota") {
@@ -408,7 +405,7 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     expiresAt: c?.expiresAt,
     expired: !!c && c.expiresAt <= now,
     waitingFor: c && !c.needsLogin && c.expiresAt <= now && c.holder !== s.nodeId ? c.holder : undefined,
-    refreshError: s.local(`refreshError:credential:${account.id}`) ? "token refresh failed" : undefined,
+    refreshError: refreshFailure(s, "credential", account.id) ? "token refresh failed" : undefined,
     revision: revision(s, "account", account.id),
     quotaState: !u ? "unknown" : now - u.observedAt >= QUOTA_STALE ? "stale" : "fresh",
     quotaHealth: quotaHealth(s, account.id),

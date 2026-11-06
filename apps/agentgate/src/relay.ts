@@ -666,7 +666,8 @@ async function syncTarget(
     });
     r.started.add(`${t}|${invite}`);
   }
-  const slot = (d: string) => `${t}|${d}`;
+  // Per group: failures against a group that was left or rotated away say nothing about the next one.
+  const slot = (d: string) => `${t}|${c.keys.groupId}|${d}`;
   if (get(s, t, "phase") !== "done" && ready(s, r, slot("reconcile"), want.force)) {
     try {
       if (await reconcile(s, t, c, signal)) succeeded(r, slot("reconcile"));
@@ -736,10 +737,10 @@ async function runCleanups(s: Store, signal: AbortSignal, force = false) {
   }
 }
 
-/** Seed the replacement group, then switch to it in one transaction. Resumable after a crash. */
-async function rotationStep(s: Store, signal: AbortSignal, force = false) {
+/** Seed the replacement group, then switch to it in one transaction. Resumable after a crash. True once switched. */
+async function rotationStep(s: Store, signal: AbortSignal, force = false): Promise<boolean> {
   const rotation = s.local("relay:rotation");
-  if (!rotation) return;
+  if (!rotation) return false;
   const newInvite = (JSON.parse(rotation) as { invite: string }).invite;
   if (get(s, "rot", "invite") !== newInvite) put(s, "rot", "invite", newInvite);
   await syncTarget(s, "rot", signal, { push: false, pull: false, force });
@@ -765,6 +766,23 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false) {
     if (oldGroup) dropGroup(s, oldGroup);
   });
   rt(s).started.add(`active|${newInvite}`); // seeded by a full reconciliation just now
+  return true;
+}
+
+/** A rotation that failed before the switch is undone, so nothing changed and a retry starts over. The new group may
+ * exist on the relay already, so it is queued for deletion. */
+async function abandonRotation(s: Store) {
+  const invite = get(s, "rot", "invite") ?? (JSON.parse(s.local("relay:rotation")!) as { invite: string }).invite;
+  const grp = (await conn(s, invite)).keys.groupId;
+  s.transaction(() => {
+    for (const f of FIELDS) put(s, "rot", f, undefined);
+    s.setLocal("relay:rotation", undefined);
+    dropGroup(s, grp);
+    setCleanups(s, [
+      ...cleanups(s).filter((j) => j.invite !== invite),
+      { invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 },
+    ]);
+  });
 }
 
 function clearSeen(s: Store) {
@@ -798,7 +816,13 @@ export function relaySync(s: Store, want: { push?: boolean; pull?: boolean; forc
         s,
         async (signal) => {
           try {
-            await rotationStep(s, signal, run.force);
+            // Only a rotation interrupted by a crash or shutdown is still pending here; nobody has seen its invite.
+            if (await rotationStep(s, signal, run.force)) {
+              s.setLocal("relay:rotatedAt", String(s.now()));
+              console.error(
+                "relay: finished an interrupted rotation; run `agentgate pair --relay` here for the command the other relay machines need to join again",
+              );
+            }
           } catch (e) {
             if (signal.aborted) throw e;
           }
@@ -830,7 +854,10 @@ export async function syncAll(s: Store): Promise<string[]> {
 export function createRelay(s: Store, url?: string): Promise<string> {
   return withRelay(s, async (signal) => {
     const existing = get(s, "active", "invite");
-    if (existing) return existing;
+    if (existing) {
+      s.setLocal("relay:rotatedAt", undefined); // the new join command is being shown
+      return existing;
+    }
     const invite = makeInvite(url ?? relayUrlDefault());
     s.transaction(() => {
       for (const f of FIELDS) put(s, "active", f, undefined);
@@ -906,8 +933,9 @@ export function reconcileRelay(s: Store): Promise<void> {
 }
 
 /**
- * Rotation: seed a new group, switch, then delete the old group as cleanup. A repeated call or a
- * restart resumes the pending rotation rather than generating another invite.
+ * Rotation: seed a new group, switch, then delete the old group as cleanup. A failure before the switch is undone,
+ * so the call either returns the new join command or changes nothing. A rotation interrupted by a crash is resumed
+ * by the next call or the daemon (which then flags it in the status, since nobody saw its command).
  */
 export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending: boolean }> {
   return withRelay(s, async (signal) => {
@@ -922,7 +950,13 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
         s.setLocal("relay:rotation", JSON.stringify({ invite, startedAt: s.now() }));
       });
     }
-    await rotationStep(s, signal, true);
+    try {
+      await rotationStep(s, signal, true);
+    } catch (e) {
+      if (!signal.aborted) await abandonRotation(s);
+      throw e;
+    }
+    s.setLocal("relay:rotatedAt", undefined);
     await runCleanups(s, signal, true);
     return { command: `agentgate join ${get(s, "active", "invite")}`, cleanupPending: cleanups(s).length > 0 };
   });
@@ -945,6 +979,7 @@ export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: bo
         ]);
       for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);
       s.setLocal("relay:rotation", undefined);
+      s.setLocal("relay:rotatedAt", undefined);
       for (const g of groups) dropGroup(s, g.grp);
       clearSeen(s);
     });
@@ -997,6 +1032,7 @@ export function relayStatus(s: Store) {
     pushed: num(s, "active", "pushed"),
     reconciling: !!invite && get(s, "active", "phase") !== "done",
     rotating: !!s.local("relay:rotation"),
+    rotatedAt: Number(s.local("relay:rotatedAt")) || undefined,
     cleanupPending: cleanups(s).length > 0,
     pushError:
       get(s, "active", "pushError") ??

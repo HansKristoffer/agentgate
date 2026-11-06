@@ -1,8 +1,10 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
+import { cool, cooldowns } from "../src/llm/policy.ts";
 import { proxy, recordUsage } from "../src/llm/pool.ts";
 import { route } from "../src/llm/routing.ts";
+import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
 // Fake Anthropic: behaviour per bearer token.
@@ -426,4 +428,28 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   expect(sawAbort).toBe(true);
   expect(s.get("usage", "claude-idle")?.windows.find((w) => w.name === "5h")?.usedPct).toBe(98);
   s.close();
+});
+
+test("an account whose login failed does not hide the other's quota 429 behind a login 503", async () => {
+  s.put("credential", "a", { ...s.get("credential", "a")!, expiresAt: Date.now() - 1000 }); // expired, refresh fails
+  modes["tok-b"] = "quota";
+  const res = await send();
+  expect(res.status).toBe(429);
+  expect(Number(res.headers.get("retry-after"))).toBeGreaterThan(0);
+  expect(seen).toEqual(["tok-b"]);
+});
+
+test("a short cooldown after a longer one keeps the longer one's reason", () => {
+  cool(s, "a", "rate", Date.now() + 60_000);
+  cool(s, "a", "transient", Date.now() + 15_000);
+  expect(cooldowns(s, "a")).toMatchObject([{ reason: "rate" }]);
+  cool(s, "a", "transient", Date.now() + 120_000);
+  expect(cooldowns(s, "a")).toMatchObject([{ reason: "transient" }]);
+});
+
+test("requests a stopped daemon left pending are marked interrupted", () => {
+  const left = new Telemetry(s, "claude").request.id;
+  interruptPending(s);
+  expect(requests(s).requests.find((r) => r.id === left)?.outcome).toBe("interrupted");
+  expect(requests(s, { outcome: "pending" }).requests).toEqual([]);
 });

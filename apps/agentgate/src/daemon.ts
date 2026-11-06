@@ -8,6 +8,7 @@ import { providers } from "./llm/providers.ts";
 import { pollTokens } from "./llm/cursor.ts";
 import { LOG_DIRS, backfillTokens, publishTokens } from "./llm/token-history.ts";
 import { Quotas } from "./llm/quota.ts";
+import { interruptPending } from "./llm/telemetry.ts";
 import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
@@ -251,6 +252,9 @@ export async function serve(
       fetch: (req) => a.fetch(req, { listener }),
     });
   const loopback = listen("127.0.0.1", "loopback", options.port ?? PORT);
+  // Once the port is ours no other daemon serves this store, and this one has served nothing yet: anything still
+  // pending belonged to a daemon that is gone.
+  interruptPending(s);
   // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate), and which
   // release it runs, so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);

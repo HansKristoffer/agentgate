@@ -268,6 +268,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               </div>
               {relay.pushError && <small>Upload: {relay.pushError}</small>}
               {relay.pullError && <small>Download: {relay.pullError}</small>}
+              {!!relay.rotatedAt && (
+                <small>
+                  The relay secret was rotated after an interruption. Every other relay machine must join again; add a
+                  machine over the relay to see the command.
+                </small>
+              )}
               {!!relay.skipped && (
                 <small>
                   {relay.skipped} entries could not be decrypted or validated. Update all nodes and reconcile to retry

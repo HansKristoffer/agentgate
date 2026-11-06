@@ -268,6 +268,13 @@ export function tokenHours(s: Store, since = 0): TokenHour[] {
     .values(...tokenArgs(s, since)) as TokenHour[];
 }
 
+/** Requests a previous daemon left pending ended with it: mark them, so retention and metrics count them again. */
+export function interruptPending(s: Store) {
+  s.db.run(
+    "update proxy_requests set outcome = 'interrupted', data = json_set(data, '$.outcome', 'interrupted') where outcome = 'pending'",
+  );
+}
+
 export function trimTelemetry(s: Store) {
   const settings = s.settings();
   s.transaction(() => {

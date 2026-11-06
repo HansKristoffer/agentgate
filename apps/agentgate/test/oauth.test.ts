@@ -119,7 +119,8 @@ test("URL + name: login through the server's OAuth, then tools work and refresh 
   expect(authUrl!.pathname).toBe("/authorize");
   // Asked for even though the server's own scopes leave it out, so the login can refresh.
   expect(authUrl!.searchParams.get("scope")).toBe("mcp offline_access");
-  expect(s.get("mcpCredential", "fake")!.client!.client_id).toStartWith("client-");
+  // Nothing is stored until the login finishes.
+  expect(s.get("mcpCredential", "fake")).toBeUndefined();
 
   // The browser: login page → redirect to our callback with code and state.
   const res = await fetch(authUrl!, { redirect: "manual" });
@@ -163,6 +164,37 @@ test("a new login registers again, so a registration the server dropped cannot b
   const back = new URL(response.headers.get("location")!);
   await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!, back.searchParams.get("iss")!);
   expect(s.get("mcpCredential", "fake")?.tokens?.access_token).toBeDefined();
+  s.close();
+});
+
+test("an abandoned or replaced login keeps the working one until a login finishes", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const login = async () =>
+    new URL(
+      (
+        await fetch((await startLogin(s, "fake", "http://localhost/oauth/callback"))!, { redirect: "manual" })
+      ).headers.get("location")!,
+    );
+  const finish = (back: URL) =>
+    finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!, back.searchParams.get("iss")!);
+  await finish(await login());
+  const working = s.get("mcpCredential", "fake")!;
+
+  // Started in the browser and never finished: the stored login is untouched and still works.
+  const abandoned = await login();
+  expect(s.get("mcpCredential", "fake")).toEqual(working);
+  expect(await call(s, "fake")).toBe(`token ${working.tokens!.access_token}`);
+
+  // A newer login replaces it, and finishing that one replaces the stored login.
+  const newer = await login();
+  await expect(finish(abandoned)).rejects.toThrow("expired");
+  await finish(newer);
+  const now = s.get("mcpCredential", "fake")!;
+  expect(now.tokens!.access_token).not.toBe(working.tokens!.access_token);
+  expect(now.client!.client_id).not.toBe(working.client!.client_id);
+  expect(now.loginId).not.toBe(working.loginId);
   s.close();
 });
 

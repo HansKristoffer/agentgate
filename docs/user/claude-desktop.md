@@ -23,7 +23,7 @@ Claude Desktop can use your Claude subscriptions in two ways. Pick one in the Ag
 2. Answer **Where do you use Claude?** with _The Claude Desktop app_.
 3. On the **Accounts** screen:
    - **Add your subscriptions** with **Add account**. One browser sign-in per account. Agentgate uses it to show each account's limits.
-   - **Connect each account to Claude Desktop** (Switch accounts only). Choose **Connect to Claude Desktop** from the account's ⋯ menu: Claude Desktop restarts signed out, you sign in with that account, and Agentgate saves the login by itself. The account Claude Desktop already had is saved first.
+   - **Connect each account to Claude Desktop** (Switch accounts only). Choose **Connect to Claude Desktop** from the account's ⋯ menu: Claude Desktop restarts signed out, you sign in with that account, and Agentgate saves the login by itself. The account Claude Desktop already had is saved first, and if you cancel or don't sign in within 10 minutes, Claude Desktop restarts on it again.
    - **Pick the account** by pinning it. Claude Code and Claude Desktop both move to it; Desktop restarts. Unpinned, Claude Code moves between accounts and Desktop stays where it is. To share automatically in the Code tab instead, use the menu bar.
 
 ## Every day

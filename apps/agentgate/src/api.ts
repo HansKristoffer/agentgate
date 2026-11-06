@@ -16,7 +16,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { homedir } from "node:os";
 import { z } from "zod";
-import { pkce } from "./credentials.ts";
+import { pkce, refreshFailure } from "./credentials.ts";
 import type { Ctx, Env } from "./daemon.ts";
 import * as cursor from "./llm/cursor.ts";
 import { accountStatus } from "./llm/pool.ts";
@@ -86,6 +86,7 @@ import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
 import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
 import {
   allNodes,
+  cancelHandoffOn,
   connectNode,
   disconnectNode,
   handoffJob,
@@ -228,7 +229,7 @@ export function management(ctx: Ctx) {
           needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin || !!health?.needsLogin,
           available: health?.ok,
           checkedAt: health?.at,
-          refreshError: s.local(`refreshError:mcpCredential:${i.id}`) ? "Token refresh failed" : undefined,
+          refreshError: refreshFailure(s, "mcpCredential", i.id) ? "Token refresh failed" : undefined,
         };
       }),
       projects: s.list("project").map((p) => publicProject(p, ctx.remote)),
@@ -896,6 +897,9 @@ export function management(ctx: Ctx) {
     required(job, "handoff");
     return c.json(job);
   });
+  app.post("/handoffs/:id/cancel", async (c) =>
+    c.json(await inputAsync(() => cancelHandoffOn(ctx.handoffs, c.req.param("id"), c.req.query("node")))),
+  );
   app.patch("/settings", async (c) => {
     const f = z
       .object({ revision: z.string().length(64), patch: settingsPatchSchema })
@@ -964,9 +968,9 @@ export function management(ctx: Ctx) {
     await inputAsync(() => desktop.add(s, f.expected));
     return c.json({ ok: true });
   });
-  app.delete("/desktop/add", (c) => {
+  app.delete("/desktop/add", async (c) => {
     local(c.env.listener);
-    desktop.cancelAdd(s);
+    await inputAsync(() => desktop.cancelAdd(s));
     return c.json({ ok: true });
   });
   app.post("/desktop/use", async (c) => {

@@ -47,6 +47,10 @@ the relay group. Do not remove it without tagging where records came from.
 - Rotation records the new invite before anything else, seeds the new group, then swaps the
   `relay:rot:*` keys into `relay:*` in one transaction. Deleting the old group is cleanup, not
   revocation: old members could recreate it.
+- A rotation that fails before the swap is undone (its new group queued for deletion), so `rotate`
+  and `unpair` either show the new join command or changed nothing. Only one cut off by a crash or
+  shutdown stays pending; the daemon finishes it and flags `rotatedAt` in the status until
+  `pair --relay` shows the command, since nobody has seen it.
 
 ## Node channel
 

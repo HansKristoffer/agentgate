@@ -315,6 +315,8 @@ export const relayStatusSchema = z.object({
   pushed: z.number(),
   reconciling: z.boolean(),
   rotating: z.boolean(),
+  /** When the daemon finished a rotation nobody saw the join command for; `pair --relay` shows it and clears this. */
+  rotatedAt: z.number().optional(),
   cleanupPending: z.boolean(),
   pushError: z.string().optional(),
   pullError: z.string().optional(),
@@ -371,7 +373,7 @@ export interface DesktopStatus {
   routing: boolean;
   /** ~/.claude.json has the agentgate MCP server (setup --mcp or --primary). */
   mcp: boolean;
-  /** ~/.cursor/mcp.json has the agentgate MCP server (setup --mcp or --primary). */
+  /** ~/.cursor/mcp.json has the agentgate MCP server (setup --mcp or --primary). Absent when the machine has no Cursor. */
   cursorMcp?: boolean;
 }
 /** Validate native status before views access required fields from a remote daemon. */

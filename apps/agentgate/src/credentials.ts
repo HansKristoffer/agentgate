@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { encodeBase64Url, randomToken, sha256 } from "hanzio/crypto";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
-import type { Credential, Data, Store } from "./store.ts";
+import { refreshHash, rotatedAway, type Credential, type Data, type Store } from "./store.ts";
 import { awakeFor, lastSeen, listeningFor } from "./sync.ts";
 
 export interface Tokens {
@@ -25,6 +25,23 @@ const login = (c: Owned) =>
     "loginId" in c ? c.loginId : undefined,
   ]);
 const identity = (c: Owned) => `${login(c)}${c.holder}`;
+/** How long a failed refresh is not tried again while the token it failed for is still in use. */
+const REFRESH_BACKOFF = MIN;
+const failureSchema = z.object({ at: z.number(), tokenHash: z.string() });
+/** This node's last failed refresh of a credential, while the credential still has the tokens it failed with. Once
+ * newer tokens arrive (another machine refreshed, or a new login), the failure is no longer this credential's. */
+export function refreshFailure(s: Store, kind: OwnedKind, id: string) {
+  const c = s.get(kind, id),
+    raw = s.local(`refreshError:${kind}:${id}`);
+  if (!c || !raw) return undefined;
+  let failure;
+  try {
+    failure = failureSchema.safeParse(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+  return failure.success && failure.data.tokenHash === tokenHash(c) ? failure.data : undefined;
+}
 /** Whether a pull heard from the other machines: syncAll answers with its errors. */
 const heard = (pull: () => Promise<unknown>) =>
   pull().then(
@@ -86,6 +103,12 @@ export function refreshOwned<K extends OwnedKind>(
       requestRefresh(s, kind, id, c);
       throw new Unavailable(`${id}: waiting for the credential holder to refresh`);
     }
+    // These tokens just failed to refresh: retrying on every request would hold each one on a failing token endpoint.
+    const failed = refreshFailure(s, kind, id);
+    if (failed && s.now() - failed.at < REFRESH_BACKOFF) {
+      if (c.expiresAt && c.expiresAt > s.now()) return c;
+      throw new Unavailable(`${id}: token refresh failed`);
+    }
     const beforeLease = identity(c);
     const owner = crypto.randomUUID();
     const leaseKey = `refresh-lease:${key}`;
@@ -112,11 +135,21 @@ export function refreshOwned<K extends OwnedKind>(
         const next = await refresh(original);
         return s.transaction(() => {
           const current = s.get(kind, id);
-          if (!current || current.needsLogin) throw new NeedsLogin(id);
-          // Only a new login wins here. A holder change that synced in meanwhile does not: the provider just rotated
-          // the refresh token, and these tokens are the only working ones.
-          if (login(current) !== login(original)) return current;
+          if (!current) throw new NeedsLogin(id);
+          // Only a new login wins here. A holder change, or another machine marking these same tokens dead, that synced
+          // in meanwhile does not: the provider just rotated the refresh token, and these tokens are the only working ones.
+          if (login(current) !== login(original)) {
+            if (current.needsLogin) throw new NeedsLogin(id);
+            return current;
+          }
           const saved = s.put(kind, id, { ...next, holder: s.nodeId, needsLogin: false });
+          // Remembered so a copy that still carries the old refresh token cannot overwrite these (Store.merge).
+          const away = refreshHash(kind, original);
+          if (away && away !== refreshHash(kind, saved))
+            s.setLocal(
+              `rotated:${key}`,
+              JSON.stringify([...rotatedAway(s, kind, id).filter((h) => h !== away), away].slice(-5)),
+            );
           const requested = s.get("refreshRequest", key);
           if (requested?.tokenHash === tokenHash(original)) s.del("refreshRequest", key);
           s.setLocal(`refreshError:${key}`, undefined);
@@ -151,7 +184,11 @@ export function refreshOwned<K extends OwnedKind>(
         if (refused) s.setLocal(`refused:${key}`, tokenHash(original));
         s.setLocal(
           `refreshError:${key}`,
-          JSON.stringify({ at: s.now(), error: "token refresh failed; retrying while the current token is valid" }),
+          JSON.stringify({
+            at: s.now(),
+            tokenHash: tokenHash(original),
+            error: "token refresh failed; retrying while the current token is valid",
+          }),
         );
         if (first)
           s.log(
@@ -162,7 +199,8 @@ export function refreshOwned<K extends OwnedKind>(
             0,
             refused ? "refresh token refused; waiting to hear from the other machines" : "token refresh failed",
           );
-        if (!force && current.expiresAt && current.expiresAt > s.now()) return current;
+        // Forced or not, a token that is still valid serves better than an error.
+        if (current.expiresAt && current.expiresAt > s.now()) return current;
         throw new Unavailable(`${id}: token refresh failed`);
       }
     } finally {

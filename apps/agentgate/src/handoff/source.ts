@@ -9,13 +9,15 @@ import { CHANNEL_CHUNK } from "../channel.ts";
 import { sessionLines } from "./history.ts";
 import { realPath, sessionProviders } from "./session.ts";
 import { ACTIVE, T3Error, claudeInstance, dispatch, projection, t3Client } from "./t3.ts";
-import { QUEUED_MAX, type Manifest } from "./destination.ts";
+import { QUEUED_MAX, send as sendMessage, type Manifest } from "./destination.ts";
 import { FILES_PROTOCOL, localEdits, managedFiles } from "../checkout-files.ts";
 import { canonicalProject, parseRemote } from "../mcp/gateway.ts";
+import type { HandoffCancel } from "@agentgate/protocol";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
- * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort and nothing
- * here changed but the interrupted run; afterwards it never aborts, or the conversation would split in two. */
+ * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort: the user's
+ * queued messages go back on the thread, and nothing else here changed but the interrupted run. Afterwards it never
+ * aborts, or the conversation would split in two. */
 
 export interface SourceState {
   title?: string;
@@ -35,6 +37,8 @@ export interface SourceState {
   wasWorking?: boolean;
   background?: string[];
   queued?: string[];
+  /** The user messages `queued` came from, so a failed handoff queues again only those stop cancelled. */
+  queuedIds?: string[];
   headSha?: string;
   snapshot?: Snapshot;
   bundle?: boolean;
@@ -72,11 +76,14 @@ export async function startHandoff(h: Handoffs, threadId: string, target: string
     step: "resolve",
     state: { warnings: [], timings: [] },
   });
+  h.starting.add(id);
   try {
     await resolve(h, job);
   } catch (e) {
     h.fail(job, `resolve on ${h.s.nodeId}: ${getErrorMessage(e)}`);
     throw e;
+  } finally {
+    h.starting.delete(id);
   }
   void h.drive("source", id);
   return id;
@@ -168,7 +175,7 @@ export async function runSource(h: Handoffs, id: string) {
         return;
       }
       await peerCall(h.s, job.target, `/handoff/${id}`, { method: "DELETE" }).catch(() => {});
-      h.fail(job, message);
+      await failBeforeImport(h, job, message, true);
       return;
     }
   }
@@ -194,8 +201,9 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
       }
       // Read before cancelling: the destination queues them again behind the continued turn.
       if (!st.queued) {
-        const { texts, attachments, overflow } = queuedMessages(p);
+        const { texts, ids, attachments, overflow } = queuedMessages(p);
         st.queued = texts;
+        st.queuedIds = ids;
         const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
         if (attachments)
           st.warnings.push(`${plural(attachments, "attachment")} on queued messages stayed on ${h.s.nodeId}`);
@@ -248,7 +256,8 @@ async function stop(h: Handoffs, job: Job<SourceState>) {
 /** The user's queued messages in T3's delivery order, as text. Server-made ones (a child task's result, a notification)
  * belong to this machine's thread. Attachments do not move, nor messages past the cap. */
 function queuedMessages(p: Awaited<ReturnType<typeof projection>>) {
-  const texts: string[] = [];
+  const texts: string[] = [],
+    ids: string[] = [];
   let attachments = 0,
     overflow = 0,
     chars = 0;
@@ -265,10 +274,11 @@ function queuedMessages(p: Awaited<ReturnType<typeof projection>>) {
     if (overflow || texts.length === QUEUED_MAX.count || chars + m.text.length > QUEUED_MAX.chars) overflow++;
     else {
       texts.push(m.text);
+      ids.push(m.id);
       chars += m.text.length;
     }
   }
-  return { texts, attachments, overflow };
+  return { texts, ids, attachments, overflow };
 }
 
 async function pack(h: Handoffs, job: Job<SourceState>) {
@@ -419,7 +429,8 @@ async function wait(h: Handoffs, job: Job<SourceState>): Promise<boolean> {
   const st = job.state;
   const elapsed = startTimer();
   for (;;) {
-    if (h.closed) return false;
+    // Closing, or cancelled meanwhile (cancelHandoff).
+    if (h.closed || h.load("source", job.id)?.step !== "await") return false;
     let r: {
       status: string;
       threadId?: string;
@@ -461,6 +472,73 @@ async function wait(h: Handoffs, job: Job<SourceState>): Promise<boolean> {
     }
     await sleep(h.pollMs);
   }
+}
+
+/** Fail a job before B imported. With `giveBack`, the user's queued messages that stop cancelled go back on the thread
+ * here: only by the caller whose `fail` ended the job, so each is queued once, and never again after a restart. */
+async function failBeforeImport(h: Handoffs, job: Job<SourceState>, message: string, giveBack: boolean) {
+  if (!h.fail(job, message) || !giveBack) return;
+  const st = job.state;
+  const ids = st.queuedIds ?? [];
+  if (!ids.length) return;
+  try {
+    await t3Client(h.s).rpc(async (call) => {
+      const { runs } = await projection(call, job.thread);
+      for (const [i, id] of ids.entries()) {
+        if (runs.find((r) => r.userMessageId === id)?.status !== "cancelled") continue;
+        await sendMessage(call, job.thread, st.queued![i]!, "queue_after_active");
+      }
+    });
+  } catch (e) {
+    h.warnFailed(
+      job,
+      `Queued messages may be missing from the thread on ${h.s.nodeId} (${getErrorMessage(e)}); send them again there`,
+    );
+  }
+}
+
+/** Give up a handoff that waits for its destination (gone, unpaired, or not answering), so the thread can be handed
+ * off again. If the destination stops its side, or never had it, the handoff fails like any other before the import.
+ * If it cannot be asked, it may already run the thread: the job ends without giving anything back here. */
+export async function cancelHandoff(h: Handoffs, id: string): Promise<HandoffCancel> {
+  const job = h.load<SourceState>("source", id);
+  if (!job) throw new T3Error(`no handoff ${id} started on ${h.s.nodeId}`);
+  if (job.step !== "await")
+    throw new T3Error(
+      job.step === "done" || job.step === "failed"
+        ? "the handoff already ended"
+        : job.step === "finish"
+          ? `${job.target} already has the thread; it is being archived on ${h.s.nodeId}`
+          : "only a handoff waiting for its destination can be cancelled; this one is still sending",
+    );
+  const answer = await peerCall(h.s, job.target, `/handoff/${id}`, { method: "DELETE" }).then(
+    () => "aborted" as const,
+    (e) => (!(e instanceof PeerError) || e.status >= 500 ? "unknown" : e.status === 404 ? "aborted" : "imported"),
+  );
+  if (answer === "imported")
+    throw new T3Error(`${job.target} already imported the thread; the handoff finishes once ${h.s.nodeId} hears back`);
+  const aborted = answer === "aborted";
+  // Loaded again after the wait: the handoff may have moved on meanwhile (its own loop may have seen the abort first,
+  // and failed it already). Nothing runs between this and the fail.
+  const current = h.load<SourceState>("source", id)!;
+  if (current.step !== "await" && !(aborted && current.step === "failed"))
+    throw new T3Error(`the handoff moved on to ${current.step} meanwhile`);
+  await failBeforeImport(
+    h,
+    current,
+    aborted
+      ? `cancelled on ${h.s.nodeId}; ${job.target} stopped its side`
+      : `given up on ${h.s.nodeId} without reaching ${job.target}, which may already have the thread`,
+    aborted,
+  );
+  const queued = current.state.queuedIds?.length ?? 0;
+  return {
+    aborted,
+    message: aborted
+      ? `Cancelled: the thread stays on ${h.s.nodeId}.`
+      : `Gave up without reaching ${job.target}, which may already have the thread. Check T3 Code on ${job.target}: if the thread is there, continue it there and archive it on ${h.s.nodeId}.` +
+        (queued ? ` Its queued messages were not queued again on ${h.s.nodeId}.` : ""),
+  };
 }
 
 /** After B imported: archive here and park the sent uncommitted files. Retried until it succeeds. */
