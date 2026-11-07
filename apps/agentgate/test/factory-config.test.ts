@@ -233,6 +233,36 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
   expect(readdirSync(fetcher.root)).toEqual([fixed]);
 });
 
+test("a commit that leaves the folder as it was keeps the loaded folder, its commit and its directory", async () => {
+  const { f } = node();
+  const git = repos("work");
+  const repo = git.url.replace(/^https:\/\/github\.com\/(.+)\.git$/, "$1");
+  const push = (message: string) => {
+    sh(git.work, "add", "-A");
+    sh(git.work, "commit", "-m", message);
+    sh(git.work, "push", "origin", "main");
+    return sh(git.work, "rev-parse", "HEAD");
+  };
+  cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
+  const first = push("factory");
+  expect((await command(f, "use", `${repo}:factory`)).code).toBe(0);
+  const loaded = () => f.events.recent(50).filter((e) => e.text.startsWith("Loaded "));
+  expect(loaded()).toHaveLength(1);
+
+  writeFileSync(join(git.work, "README.md"), "the app changed\n");
+  push("app change");
+  await fetchLoop(f)();
+  expect(currentFolder(f)?.commit).toBe(first);
+  expect(readdirSync(fetcher.root)).toEqual([first]);
+  expect(loaded()).toHaveLength(1);
+
+  writeFileSync(join(git.work, "factory", "rulings.md"), "# Rulings\n\nNo new dependencies.\n");
+  const changed = push("rulings");
+  await fetchLoop(f)();
+  expect(currentFolder(f)?.commit).toBe(changed);
+  expect(loaded()).toHaveLength(2);
+});
+
 /** A fetcher that serves the example folder as one commit, and counts its calls. */
 function fakeFetcher() {
   const commit = "c".repeat(40);

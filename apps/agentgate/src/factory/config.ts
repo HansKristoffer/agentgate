@@ -192,6 +192,7 @@ interface FolderState {
   source: string; // the pointer the state belongs to
   fetched?: string;
   commit?: string;
+  tree?: string; // the folder's git tree at `commit`: a newer commit with the same tree changes nothing
   loadedAt?: number;
   triedAt?: number;
   error?: string; // why `fetched` did not load
@@ -312,7 +313,14 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   const since = force || (state.fetched === state.commit && !currentFolder(f)) ? undefined : state.fetched;
   let fetched: Awaited<ReturnType<typeof fetcher.fetch>>;
   try {
-    fetched = await fetcher.fetch({ repo: pointer.repo, ref: pointer.ref, path: pointer.path, since });
+    const tree = currentFolder(f) ? state.tree : undefined;
+    fetched = await fetcher.fetch({
+      repo: pointer.repo,
+      ref: pointer.ref,
+      path: pointer.path,
+      since,
+      ...(tree && { tree }),
+    });
   } catch (e) {
     const error = getErrorMessage(e);
     m.failures++;
@@ -331,11 +339,20 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   m.retryAt = 0;
   if (!fetched) {
     if (state.fetchError) save({ ...state, fetchError: undefined });
+  } else if (!fetched.dir) {
+    // The folder did not change: the loaded one stays, with its commit, events and judge history.
+    save({ ...state, fetched: fetched.commit, error: undefined, fetchError: undefined });
   } else {
     try {
       const folder = loadFolder(fetched.dir, fetched.commit);
       m.folders.set(folder.commit, folder);
-      save({ source: state.source, fetched: folder.commit, commit: folder.commit, loadedAt: s.now() });
+      save({
+        source: state.source,
+        fetched: folder.commit,
+        commit: folder.commit,
+        ...(fetched.tree && { tree: fetched.tree }),
+        loadedAt: s.now(),
+      });
       events.emit({
         kind: "config",
         commit: folder.commit,

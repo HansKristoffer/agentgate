@@ -10,13 +10,15 @@ import { CONFIG_DIR } from "../store.ts";
  * item keeps reading the folder it started with while newer commits arrive.
  */
 
-/** Resolves null when the ref is still at `since`. */
+/** Resolves null when the ref is still at `since`. `tree` is the folder's git tree; a commit whose folder has the
+ * `tree` asked for is not copied, and comes back without `dir`. */
 export type FolderFetcher = (input: {
   repo: string;
   ref?: string;
   path: string;
   since?: string;
-}) => Promise<{ commit: string; dir: string } | null>;
+  tree?: string;
+}) => Promise<{ commit: string; tree?: string; dir?: string } | null>;
 
 const COMMIT = /^[0-9a-f]{40,64}$/;
 
@@ -39,7 +41,7 @@ const plain = (text: string) =>
     .join("; ")
     .slice(0, 500);
 
-const fetchFolder: FolderFetcher = async ({ repo, ref, path, since }) => {
+const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchanged }) => {
   const folder = folderPath(path);
   const bin = Bun.which("git");
   if (!bin) throw new Error("the factory needs git on the machine that runs it");
@@ -84,9 +86,12 @@ const fetchFolder: FolderFetcher = async ({ repo, ref, path, since }) => {
     const source = join(clone, folder);
     if (!existsSync(source) || !lstatSync(source).isDirectory())
       throw new Error(`${folder || "the root"} is not a folder in ${at}`);
+    // With the folder inside an app's repository, most commits leave it as it was.
+    const tree = await git(clone, "rev-parse", `HEAD:${folder}`);
+    if (tree === unchanged) return { commit, tree };
 
     const dir = join(fetcher.root, commit);
-    if (existsSync(dir)) return { commit, dir };
+    if (existsSync(dir)) return { commit, tree, dir };
 
     // Copied beside its final name and renamed, so a directory named after a commit is always complete. Links are
     // left out: one could point outside the repository.
@@ -97,7 +102,7 @@ const fetchFolder: FolderFetcher = async ({ repo, ref, path, since }) => {
       filter: (file) => !file.endsWith("/.git") && !lstatSync(file).isSymbolicLink(),
     });
     renameSync(partial, dir);
-    return { commit, dir };
+    return { commit, tree, dir };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
