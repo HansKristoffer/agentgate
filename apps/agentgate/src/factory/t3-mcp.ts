@@ -31,9 +31,7 @@ export const REQUIRED_T3_INPUTS = {
   t3_pending_request: ["action", "threadId", "requestId", "answers"],
 } as const;
 export const REQUIRED_T3_TOOLS = Object.keys(REQUIRED_T3_INPUTS) as (keyof typeof REQUIRED_T3_INPUTS)[];
-/** Called only for repositories that opt in to T3 Code's PR watch (`watchPullRequests`), so not required. */
-type OptionalTool = "watch_pull_request" | "unwatch_pull_request";
-export type T3Tool = keyof typeof REQUIRED_T3_INPUTS | OptionalTool;
+export type T3Tool = keyof typeof REQUIRED_T3_INPUTS;
 export class T3McpError extends Error {
   /** T3 answered the call with an error, so it ran nothing; otherwise the outcome is unknown. */
   answered = false;

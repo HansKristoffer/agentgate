@@ -20,30 +20,46 @@
   },
   "t3_thread_send": {
     "type": "object",
-    "properties": { "environmentId": {}, "threadId": {}, "message": {}, "mode": {}, "clientRequestId": {} },
+    "properties": {
+      "environmentId": {},
+      "threadId": {},
+      "message": {},
+      "mode": {},
+      "clientRequestId": {}
+    },
     "required": ["threadId", "message"]
   },
   "t3_thread_interrupt": {
     "type": "object",
-    "properties": { "environmentId": {}, "threadId": {}, "runId": {}, "reason": {}, "stop": {}, "clientRequestId": {} },
+    "properties": {
+      "environmentId": {},
+      "threadId": {},
+      "runId": {},
+      "reason": {},
+      "stop": {},
+      "clientRequestId": {}
+    },
     "required": ["threadId"]
   },
   "t3_thread_organize": {
     "type": "object",
-    "properties": { "environmentId": {}, "threadId": {}, "action": {}, "snoozedUntil": {} },
+    "properties": {
+      "environmentId": {},
+      "threadId": {},
+      "action": {},
+      "snoozedUntil": {}
+    },
     "required": ["action"]
   },
   "t3_pending_request": {
     "type": "object",
-    "properties": { "action": {}, "environmentId": {}, "threadId": {}, "requestId": {}, "answers": {} },
+    "properties": {
+      "action": {},
+      "environmentId": {},
+      "threadId": {},
+      "requestId": {},
+      "answers": {}
+    },
     "required": ["action"]
-  },
-  "watch_pull_request": {
-    "type": "object",
-    "properties": { "environmentId": {}, "threadId": {}, "url": {}, "repository": {}, "number": {}, "host": {} }
-  },
-  "unwatch_pull_request": {
-    "type": "object",
-    "properties": { "environmentId": {}, "threadId": {}, "url": {}, "repository": {}, "number": {}, "host": {} }
   }
 }

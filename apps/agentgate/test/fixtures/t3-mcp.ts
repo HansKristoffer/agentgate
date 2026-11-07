@@ -124,7 +124,7 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
       answers.set(tool, fn);
     },
     /** The tools `/mcp` lists; delete one to play an older T3. */
-    tools: new Set<string>([...REQUIRED_T3_TOOLS, "watch_pull_request", "unwatch_pull_request"]),
+    tools: new Set<string>(REQUIRED_T3_TOOLS),
     /** Inputs a tool lacks, as an older T3 would: they are left out of `tools/list`, and a call naming one is refused. */
     dropInput(tool: string, input: string) {
       const schema = inputs[tool]!;

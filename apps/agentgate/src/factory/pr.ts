@@ -33,15 +33,13 @@ import { recordItemEnd } from "./records.ts";
 import { followReview, lastRound, summaryLine } from "./review.ts";
 import { claimWrite } from "./outbox.ts";
 import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
-import { t3Mcp } from "./t3-mcp.ts";
 
 /**
  * The PR follower: every 2 minutes, one step per item with a PR (`pr`, `review` and `ready`). It ships or closes the
  * item when its PR is merged or closed, follows the PR's head, moves a green PR on to review or ready, takes the review
  * rounds, and wakes the implement thread when it sits idle on a problem. The implement thread owns its PR until the
- * item ships; only this follower wakes it, with what the repository's own people and bots wrote, unless the
- * repository lets T3 Code's PR watch wake it too (`watchPullRequests`). The thread says which review conversations it
- * fixed or declined with `factory_pr_threads`, and the follower answers them on GitHub.
+ * item ships; only this follower wakes it, with what the repository's own people and bots wrote. The thread says which
+ * review conversations it fixed or declined with `factory_pr_threads`, and the follower answers them on GitHub.
  */
 
 /** A PR without checks counts as green only once its head is this old: CI may not have registered its checks yet. */
@@ -176,13 +174,9 @@ export function withSummary(body: string, summary: string): string {
   return `${before ? `${before}\n\n` : ""}${section}${after}`;
 }
 
-/** Stops the watch and settles the item's threads once its PR is merged or closed. */
-async function release(f: FactoryRuntime, item: FactoryItem, run: FactoryRun | undefined, reason: string) {
+/** Stops and settles the item's threads once its PR is merged or closed. */
+async function release(f: FactoryRuntime, item: FactoryItem, reason: string) {
   noted.get(f)?.delete(item.id);
-  if (run?.threadId && repositoryOf(f, item)?.watchPullRequests)
-    await t3Mcp(f)
-      .call("unwatch_pull_request", { threadId: run.threadId, url: item.prUrl })
-      .catch((e) => f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${shortError(e)}` }));
   await interruptItem(f, item.id, reason);
   // The threads kept working after their runs reported: their transcripts are read again, after this step.
   later(f, item.id, `Reading ${item.key}'s transcripts`, async () => {
@@ -357,13 +351,13 @@ async function followPr(f: FactoryRuntime, id: string) {
       });
     moveItem(f, item.id, "shipped", null);
     writeBack(f, item, "shipped", { text: item.prUrl, commit: view.headRefOid });
-    await release(f, item, run, "The PR was merged");
+    await release(f, item, "The PR was merged");
     return;
   }
   if (view.state === "CLOSED") {
     moveItem(f, item.id, "closed", null);
     writeBack(f, item, "closed", { text: "The pull request was closed without merging." });
-    await release(f, item, run, "The PR was closed without merging");
+    await release(f, item, "The PR was closed without merging");
     return;
   }
 

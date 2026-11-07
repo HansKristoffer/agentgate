@@ -135,9 +135,6 @@ export const factoryConfigSchema = z
       z
         .object({
           reviewers: z.array(z.string().min(1).max(100)).max(10).default([]),
-          /** Let T3 Code's PR watch wake the implement thread on any comment. Off: only the factory wakes it, with
-           * collaborators' comments only. */
-          watchPullRequests: z.boolean().default(false),
         })
         .strict(),
     ),

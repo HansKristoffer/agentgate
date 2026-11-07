@@ -1,12 +1,10 @@
-import type { FactoryBoard, FactoryReport, MarkerPayload } from "@agentgate/protocol";
+import type { FactoryBoard, FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, moveItem, repositoryOf, writeBack } from "./controller.ts";
+import { closeItem, defaultBranch, moveItem, writeBack } from "./controller.ts";
 import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
-import { defaultBranchCi, prSetBody, prView, type PrView } from "./gh.ts";
-import { markerTag } from "./markers.ts";
-import { later, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
-import { t3Mcp } from "./t3-mcp.ts";
+import { defaultBranchCi, prView, type PrView } from "./gh.ts";
+import { shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
  * The implement stage. The thread works on `factory/<key>` and opens a draft PR; the factory checks that PR on GitHub
@@ -70,13 +68,6 @@ async function defaultCi(f: FactoryRuntime, repo: string) {
 const mainRed = (f: FactoryRuntime) =>
   [...ciOf(f)].filter(([, c]) => c.state === "failing" && f.s.now() - c.at < 2 * CI_TTL).map(([repo]) => repo);
 
-/** The PR body with one factory marker, the newest, at its end. */
-function withMarker(body: string, marker: MarkerPayload) {
-  const rest = body.replace(/\s*<!-- agentgate-factory:1 \{[\s\S]*?\} -->/g, "").trimEnd();
-  const tag = markerTag(marker);
-  return rest ? `${rest}\n\n${tag}` : tag;
-}
-
 const implement = (f: FactoryRuntime) => ({
   kind: "implement" as const,
   async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }> {
@@ -86,9 +77,8 @@ const implement = (f: FactoryRuntime) => ({
     const baseRef = await defaultBranch(f, item.repo);
     const branch = branchOf(f, run, item);
     const model = folderOf(f, item)?.stages.implement?.file.model;
-    const wakes = repositoryOf(f, item)?.watchPullRequests
-      ? "T3 Code wakes you when the PR needs you"
-      : "the factory wakes you with what the PR needs: failing checks, a conflict, or the review comments of the repository's people and bots";
+    const wakes =
+      "the factory wakes you with what the PR needs: failing checks, a conflict, or the review comments of the repository's people and bots";
     const context = [
       "## This run",
       [
@@ -162,27 +152,6 @@ const implement = (f: FactoryRuntime) => ({
     runs.update(f.s, run.id, { nudges: 0, checked: data });
     items.update(f.s, item.id, { prUrl: data.pr, prCommit: data.head });
     const moved = moveItem(f, item.id, "pr");
-    const marker: MarkerPayload = {
-      item: item.id,
-      key: item.key,
-      stage: "implement",
-      outcome: "done",
-      route: null,
-      commit: data.head,
-      factory: item.configCommit.slice(0, 7),
-      node: f.s.nodeId,
-      state: "open",
-    };
-    const watch = !!repositoryOf(f, item)?.watchPullRequests;
-    const note = (what: string) => (e: unknown) =>
-      f.events.emit({ kind: "note", item: item.id, run: run.id, text: `${what} ${data.pr} failed: ${shortError(e)}` });
-    later(f, item.id, `Marking ${data.pr}`, async () => {
-      await prView(data.pr)
-        .then((view) => prSetBody(data.pr, withMarker(view.body, marker)))
-        .catch(note("Adding the marker to"));
-      if (watch)
-        await t3Mcp(f).call("watch_pull_request", { threadId: run.threadId, url: data.pr }).catch(note("Watching"));
-    });
     writeBack(f, moved, "pr-opened", { report, text: data.pr, commit: data.head });
   },
 });

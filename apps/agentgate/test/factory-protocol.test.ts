@@ -13,7 +13,7 @@ version: 1
 name: acme
 description: Works Acme's bugs
 repositories:
-  acme/api: { reviewers: [alice], watchPullRequests: true }
+  acme/api: { reviewers: [alice] }
   acme/web: {}
 secrets: [LINEAR_KEY, GH_HOOK, SENTRY_HOOK]
 limits:
@@ -44,8 +44,8 @@ scoring: { sample: 50 }
 test("a factory.yaml using every key parses, and what it leaves out gets the documented defaults", () => {
   const config = factoryConfigSchema.parse(Bun.YAML.parse(example));
   expect(config.repositories).toEqual({
-    "acme/api": { reviewers: ["alice"], watchPullRequests: true },
-    "acme/web": { reviewers: [], watchPullRequests: false },
+    "acme/api": { reviewers: ["alice"] },
+    "acme/web": { reviewers: [] },
   });
   expect(config.limits.stalledAfter).toBe("30m");
   expect(config.learning.every).toBe("14d");
@@ -69,7 +69,7 @@ test("a factory.yaml using every key parses, and what it leaves out gets the doc
   expect(minimal).toEqual({
     version: 1,
     name: "acme",
-    repositories: { "acme/api": { reviewers: [], watchPullRequests: false } },
+    repositories: { "acme/api": { reviewers: [] } },
     secrets: [],
     limits: {
       threads: 3,

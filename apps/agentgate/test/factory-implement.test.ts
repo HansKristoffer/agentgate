@@ -1,7 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
-import { parseMarkers } from "../src/factory/markers.ts";
 import { prFactory } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
 
@@ -71,12 +70,8 @@ test("a draft on factory/<key> with the reported head moves to pr, gets the mark
   expect(await n.done(run, pr)).toEqual({ accepted: true });
   expect(items.get(n.s, item.id)).toMatchObject({ phase: "pr", prUrl: pr.url, prCommit: pr.headRefOid });
   expect(runs.get(n.s, run.id)).toMatchObject({ state: "reported", nudges: 0, commitSha: pr.headRefOid });
-  expect(pr.body).toStartWith("Fixes #1\n\n<!-- agentgate-factory:1 ");
-  expect(parseMarkers(pr.body)).toEqual([
-    expect.objectContaining({ item: item.id, stage: "implement", commit: pr.headRefOid, node: "a", state: "open" }),
-  ]);
-  // Only the factory wakes the thread, with what the repository's people wrote (D40).
-  expect(n.mcp.calls.filter((c) => c.tool === "watch_pull_request")).toEqual([]);
+  // The PR body is the thread's own: the factory's marker travels on the issue.
+  expect(pr.body).toBe("Fixes #1");
   expect(n.github.posted(1)).toEqual([
     "The factory took this.",
     "The factory triaged this and starts on a fix.",
@@ -103,18 +98,4 @@ test("a mismatch the thread leaves uncorrected counts as a silent end, and the n
   expect(retry).toMatchObject({ attempt: 2, state: "running" });
   const launch = n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === retry!.id);
   expect(launch!.args.workspaceStrategy).toMatchObject({ branch: `factory/${n.key(1)}-2` });
-});
-
-test("a repository that asks for T3 Code's PR watch gets it for the implement thread, and loses it when the item ships", async () => {
-  const n = await prFactory(cleanup, (repo) => ({ repositories: { [repo]: { watchPullRequests: true } } }));
-  const { run, pr } = await n.opened(1);
-  const watches = (tool: string) => n.mcp.calls.filter((c) => c.tool === tool).map((c) => c.args);
-  expect(watches("watch_pull_request")).toEqual([{ threadId: run.threadId, url: pr.url }]);
-  expect(
-    String(n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id)!.args.message),
-  ).toContain("T3 Code wakes you when the PR needs you");
-
-  pr.state = "MERGED";
-  await n.pollPrs();
-  expect(watches("unwatch_pull_request")).toEqual([{ threadId: run.threadId, url: pr.url }]);
 });

@@ -1,6 +1,5 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { items, newId, runs, type FactoryItem } from "../src/factory/db.ts";
-import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -228,10 +227,10 @@ test("a clean review moves the item to ready; findings in the last allowed round
   expect(comment).toContain("The retry loop never ends.");
   expect(comment).not.toContain("The lock is never released.");
 
-  // The PR's body: the author's text, the factory's summary of the last round, then its marker.
+  // The PR's body: the author's text, then the factory's summary of the last round.
   const body = pr.body;
   expect(body).toStartWith("Fixes #2");
-  expect(body.indexOf(SUMMARY)).toBeLessThan(body.indexOf(MARKER_PREFIX));
+  expect(body.indexOf(SUMMARY)).toBeGreaterThan(0);
   expect(body).toContain(`**Review:** 2 rounds, the last at \`${head("c").slice(0, 12)}\`. Still open:`);
   expect(body).toContain("- Important, `src/save.ts:12`: The retry loop never ends.");
   expect(body).toContain(

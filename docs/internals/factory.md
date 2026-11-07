@@ -63,8 +63,7 @@ must have exactly one machine driving its threads, which last-writer-wins record
 drives the items in its own tables (dispatch, the PR follower, and the token and stuck loops run on every node) and no
 others.
 
-What other machines need to know travels on the item's source instead. Each factory comment, and the PR body, ends
-with a marker, `<!-- agentgate-factory:1 {...} -->` ([`markers.ts`](../../apps/agentgate/src/factory/markers.ts)),
+What other machines need to know travels on the item's source instead. Each factory comment ends with a marker, `<!-- agentgate-factory:1 {...} -->` ([`markers.ts`](../../apps/agentgate/src/factory/markers.ts)),
 naming the item, the machine holding it, the last stage reached and whether it is open or finished. Linear drops HTML
 comments, so there the marker is a visible last line in a code span. Intake posts the first marker, the `taken`
 comment, in the step that adds the item, so an issue is marked before its triage starts. Intake skips an issue another
@@ -107,8 +106,7 @@ machine that loses them leaves only its markers, and the work resumes from those
 The factory depends on T3 Code interfaces that are not a stable public API, in two channels:
 
 - **T3 Code's MCP server** (`/mcp`), driven by [`t3-mcp.ts`](../../apps/agentgate/src/factory/t3-mcp.ts) for
-  launching threads, sending, interrupting, settling, answering pending requests, and, for repositories with
-  `watchPullRequests`, watching PRs. `REQUIRED_T3_INPUTS` names each tool and the inputs the factory sends, and a
+  launching threads, sending, interrupting, settling and answering pending requests. `REQUIRED_T3_INPUTS` names each tool and the inputs the factory sends, and a
   sign-in checks them against `tools/list`, so a renamed input fails with "update T3 Code" instead of a launch that
   does something else. The sign-in is OAuth with PKCE and `resource: <url>/mcp`, approved with a pairing code from the
   local `t3 pair` at full-access scopes. T3 issues no refresh token, so the factory signs in again three days before
@@ -167,8 +165,6 @@ The label is the gate. Only someone who can label issues in the repository, or t
 that arrives after it is an accepted, named risk. It covers:
 
 - an issue body edited after labelling;
-- in a repository with `watchPullRequests`, PR comments from people outside the repository, which T3's PR watch wakes
-  the implement thread with;
 - reviews and review conversations from any bot. A bot is any GitHub App installed on the repository, and the
   maintainer chose to trust them all for now ([`pr.ts`](../../apps/agentgate/src/factory/pr.ts)).
 
@@ -176,7 +172,7 @@ The mitigations:
 
 - stages read the intake snapshot through `factory_item`, not the live issue;
 - briefs fence the item, and any other live text, as untrusted data ([`briefs.ts`](../../apps/agentgate/src/factory/briefs.ts));
-- by default the PR follower is the thread's only waker. It quotes, fenced, only comments from the repository's owner,
+- the PR follower is the thread's only waker. It quotes, fenced, only comments from the repository's owner,
   members and collaborators, and bots' reviews and review conversations, never a bot's plain PR comment;
 - a thread never writes to GitHub: it tells the factory which review conversations it fixed or declined, and the
   factory replies and resolves them, after checking the reported commit is the PR's head;

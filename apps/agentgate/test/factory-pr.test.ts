@@ -69,8 +69,6 @@ test("a PR that goes ready gets the factory's summary in its body: each claim wi
       SUMMARY_END,
     ].join("\n"),
   );
-  // The factory's marker stays last.
-  expect(body.lastIndexOf(MARKER_PREFIX)).toBeGreaterThan(body.indexOf(SUMMARY_END));
 });
 
 test("agent text cannot close the summary early, long evidence is cut, and a body without a marker gets the summary at its end", async () => {
@@ -142,14 +140,13 @@ test("a merge ships the item and a PR closed unmerged closes it, each with one c
   expect(n.github.posted(2).at(-1)).toBe("Shipped: the pull request was merged.");
   expect(n.github.posted(3).at(-1)).toBe("The factory stopped working on this.");
   expect([1, 2, 3].map((i) => n.github.posted(i).length)).toEqual([5, 4, 4]);
-  // The finished PRs' threads are settled. Nothing watched them in T3, so nothing is unwatched.
-  expect(n.mcp.calls.filter((c) => c.tool === "unwatch_pull_request")).toEqual([]);
+  // The finished PRs' threads are settled.
   for (const { run } of [ready, early, dropped])
     expect(n.mcp.calls.some((c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId)).toBe(true);
 });
 
 test("a PR merged while its review run waits to start ships the item once, though the merge closed its issue first", async () => {
-  const n = await prFactory(cleanup, (repo) => ({ repositories: { [repo]: { watchPullRequests: true } } }));
+  const n = await prFactory(cleanup);
   const { item, run, pr } = await n.opened(1);
   pr.checks = "passing";
   await n.pollPrs();
@@ -166,10 +163,6 @@ test("a PR merged while its review run waits to start ships the item once, thoug
   expect(items.get(n.s, item.id)!.phase).toBe("shipped");
   expect(runs.get(n.s, review.id)!.state).toBe("cancelled");
   expect(n.github.posted(1).filter((c) => c.startsWith("Shipped"))).toEqual(["Shipped: the pull request was merged."]);
-  expect(n.mcp.calls).toContainEqual({
-    tool: "unwatch_pull_request",
-    args: expect.objectContaining({ threadId: run.threadId, url: pr.url }),
-  });
   expect(
     n.mcp.calls.some(
       (c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId && c.args.action === "settle",

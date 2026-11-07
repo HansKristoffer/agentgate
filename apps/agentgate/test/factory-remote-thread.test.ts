@@ -127,28 +127,6 @@ test("dropping an item interrupts and settles its moved thread, and an unreachab
   expect(notes).toContain(`Interrupting the thread of ${second.id} on b failed: b is not reachable`);
 });
 
-test("dropping an item with a PR unwatches it from the implement thread on this machine, not from a moved one, when the repository uses T3's PR watch", async () => {
-  const { a, run } = await movedRun((repo) => ({ repositories: { [repo]: { watchPullRequests: true } } }));
-  const unwatches = () => a.mcp.calls.filter((c) => c.tool === "unwatch_pull_request");
-  const withPr = (r: FactoryRun, url: string) => {
-    runs.update(a.s, r.id, { kind: "implement" });
-    return items.update(a.s, r.item!, { phase: "pr", prUrl: url });
-  };
-
-  const moved = withPr(run, "https://github.com/acme/app/pull/1");
-  expect((await a.command("drop", moved.key)).code).toBe(0);
-  expect(unwatches()).toEqual([]);
-
-  expect((await a.command("add", a.repo, "Typo on login")).code).toBe(0);
-  await a.dispatch();
-  const local = runs.list(a.s).find((r) => r.id !== run.id)!;
-  const item = withPr(local, "https://github.com/acme/app/pull/2");
-  expect((await a.command("drop", item.key)).code).toBe(0);
-  expect(unwatches()).toEqual([
-    { tool: "unwatch_pull_request", args: { threadId: local.threadId, url: "https://github.com/acme/app/pull/2" } },
-  ]);
-});
-
 test("POST /peer/factory/thread refuses an unknown action and a thread its T3 Code does not have", async () => {
   const { a } = await movedRun();
   const post = (json: unknown) =>

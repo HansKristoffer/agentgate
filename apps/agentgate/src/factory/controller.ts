@@ -1137,14 +1137,6 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
 
   if (action === "drop") {
     if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
-    // The implement thread watches the PR in this machine's T3; one that moved away left the watch on its archived copy.
-    const implement = runs.forItem(s, item.id).findLast((r) => r.kind === "implement" && r.threadId);
-    if (item.prUrl && implement && !elsewhere(f, implement) && repositoryOf(f, item)?.watchPullRequests)
-      await t3Mcp(f)
-        .call("unwatch_pull_request", { threadId: implement.threadId, url: item.prUrl })
-        .catch((e) =>
-          f.events.emit({ kind: "note", item: item.id, text: `Unwatching the PR failed: ${shortError(e)}` }),
-        );
     await interruptItem(f, item.id, `Dropped by the maintainer${because}`);
     moveItem(f, item.id, "closed", null);
     writeBack(f, item, "closed", { text: `The maintainer dropped it${because}.` });
