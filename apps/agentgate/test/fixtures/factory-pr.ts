@@ -169,18 +169,49 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
         args[i - 1] === "-f" || args[i - 1] === "-F" ? [[a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]] : [],
       ),
     ) as Record<string, string>;
+    const feedback = (pr: FakePr) => ({
+      reviews: { nodes: pr.reviews.map(({ bot, ...r }) => ({ ...r, author: author(bot) })) },
+      reviewThreads: {
+        nodes: pr.conversations.map(({ comments, line, ...c }) => ({
+          ...c,
+          line,
+          originalLine: line,
+          comments: { nodes: comments.map(({ bot, ...m }) => ({ ...m, author: author(bot) })) },
+        })),
+      },
+    });
+    // The follower's read: one aliased pullRequest per followed PR.
+    if (vars.query!.includes("fragment Followed")) {
+      const numbers = [...vars.query!.matchAll(/p(\d+): pullRequest\(number: \d+\)/g)].map((m) => Number(m[1]));
+      const repository = Object.fromEntries(
+        numbers.map((number) => {
+          const pr = [...prs.values()].find((p) => p.number === number);
+          return [
+            `p${number}`,
+            pr && {
+              number: pr.number,
+              url: pr.url,
+              title: "Fix it",
+              state: pr.state,
+              isDraft: pr.isDraft,
+              author: { login: pr.author },
+              headRefName: pr.headRefName,
+              headRefOid: pr.headRefOid,
+              baseRefName: "main",
+              mergedAt: pr.state === "MERGED" ? "2026-11-05T12:00:00Z" : null,
+              mergeable: pr.mergeable,
+              commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: ROLLUP[pr.checks] } } } }] },
+              comments: { nodes: pr.comments.map(({ author: _, ...c }) => c) },
+              ...feedback(pr),
+            },
+          ];
+        }),
+      );
+      return ok({ data: { repository } });
+    }
     if (vars.query!.includes("reviewThreads")) {
       const pr = [...prs.values()].find((p) => p.number === Number(vars.number))!;
-      const reviews = pr.reviews.map(({ bot, ...r }) => ({ ...r, author: author(bot) }));
-      const threads = pr.conversations.map(({ comments, line, ...c }) => ({
-        ...c,
-        line,
-        originalLine: line,
-        comments: { nodes: comments.map(({ bot, ...m }) => ({ ...m, author: author(bot) })) },
-      }));
-      return ok({
-        data: { repository: { pullRequest: { reviews: { nodes: reviews }, reviewThreads: { nodes: threads } } } },
-      });
+      return ok({ data: { repository: { pullRequest: feedback(pr) } } });
     }
     const conversation = [...prs.values()].flatMap((p) => p.conversations).find((c) => c.id === vars.id)!;
     const refused = { ok: false, out: JSON.stringify({ errors: [{ message: "Something went wrong" }] }) };

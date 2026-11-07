@@ -3,7 +3,7 @@ import { renderBrief } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import { cancelLaunch, defaultBranch, enqueueRun, sendToThread } from "./controller.ts";
 import { ACTIVE, dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
-import { prView, type PrView } from "./gh.ts";
+import { prView, type PrState } from "./gh.ts";
 import { defuse } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { green, prRun, toReady } from "./pr.ts";
@@ -192,7 +192,7 @@ export async function takeReview(f: FactoryRuntime, id: string) {
  * once the PR's head moved past the reviewed commit and its checks pass; a stale report gets a new review; and the
  * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
  * before. */
-export async function followReview(f: FactoryRuntime, item: FactoryItem, view: PrView, headAt: number) {
+export async function followReview(f: FactoryRuntime, item: FactoryItem, view: PrState, headAt: number) {
   const max = limitsOf(f, item).reviewRounds;
   // Review was switched off while the item was in it.
   if (max === 0) {

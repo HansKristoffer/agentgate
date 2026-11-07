@@ -54,7 +54,7 @@ async function ghJson<T extends z.ZodType>(what: string, schema: T, args: string
 }
 
 /** `owner/repo` and the number of a pull request URL. */
-function prOf(url: string) {
+export function prOf(url: string) {
   const m = url.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)\/?$/);
   if (!m) throw new Error(`${url} is not a GitHub pull request URL`);
   return { repo: m[1]!, number: Number(m[2]) };
@@ -439,62 +439,40 @@ const FEEDBACK = `query ($owner: String!, $name: String!, $number: Int!) {
   }
 }`;
 const author = z.object({ __typename: z.string() }).nullable(); // null for a deleted account
-const feedbackSchema = z.object({
-  data: z.object({
-    repository: z.object({
-      pullRequest: z.object({
-        reviews: z.object({
-          nodes: z.array(
-            z.object({
-              body: z.string(),
-              state: z.string(),
-              submittedAt: z.string().nullable(), // null while pending
-              authorAssociation: z.string(),
-              author,
-            }),
-          ),
-        }),
-        reviewThreads: z.object({
-          nodes: z.array(
-            z.object({
-              id: z.string(),
-              isResolved: z.boolean(),
-              isOutdated: z.boolean(),
-              path: z.string(),
-              line: z.number().nullable(),
-              originalLine: z.number().nullable(),
-              viewerCanResolve: z.boolean(),
-              comments: z.object({
-                nodes: z.array(
-                  z.object({ body: z.string(), createdAt: z.string(), authorAssociation: z.string(), author }),
-                ),
-              }),
-            }),
-          ),
+const feedbackShape = {
+  reviews: z.object({
+    nodes: z.array(
+      z.object({
+        body: z.string(),
+        state: z.string(),
+        submittedAt: z.string().nullable(), // null while pending
+        authorAssociation: z.string(),
+        author,
+      }),
+    ),
+  }),
+  reviewThreads: z.object({
+    nodes: z.array(
+      z.object({
+        id: z.string(),
+        isResolved: z.boolean(),
+        isOutdated: z.boolean(),
+        path: z.string(),
+        line: z.number().nullable(),
+        originalLine: z.number().nullable(),
+        viewerCanResolve: z.boolean(),
+        comments: z.object({
+          nodes: z.array(z.object({ body: z.string(), createdAt: z.string(), authorAssociation: z.string(), author })),
         }),
       }),
-    }),
+    ),
   }),
+};
+const feedbackSchema = z.object({
+  data: z.object({ repository: z.object({ pullRequest: z.object(feedbackShape) }) }),
 });
 
-/** A PR's reviews and review conversations, with which comments bots wrote. The last 100 reviews, the first 100
- * conversations and the first 50 comments of each. */
-export async function prFeedback(url: string): Promise<PrFeedback> {
-  const { repo, number } = prOf(url);
-  const [owner, name] = repo.split("/") as [string, string];
-  const answer = await ghJson(`read the reviews of ${repo}#${number}`, feedbackSchema, [
-    "api",
-    "graphql",
-    "-f",
-    `query=${FEEDBACK}`,
-    "-f",
-    `owner=${owner}`,
-    "-f",
-    `name=${name}`,
-    "-F",
-    `number=${number}`,
-  ]);
-  const { reviews, reviewThreads } = answer.data.repository.pullRequest;
+function toFeedback({ reviews, reviewThreads }: z.infer<z.ZodObject<typeof feedbackShape>>): PrFeedback {
   const comment = (c: { body: string; authorAssociation: string; author: { __typename: string } | null }) => ({
     body: c.body,
     association: c.authorAssociation,
@@ -514,6 +492,120 @@ export async function prFeedback(url: string): Promise<PrFeedback> {
       comments: t.comments.nodes.map((c) => ({ ...comment(c), at: c.createdAt })),
     })),
   };
+}
+
+/** A PR's reviews and review conversations, with which comments bots wrote. The last 100 reviews, the first 100
+ * conversations and the first 50 comments of each. */
+export async function prFeedback(url: string): Promise<PrFeedback> {
+  const { repo, number } = prOf(url);
+  const [owner, name] = repo.split("/") as [string, string];
+  const answer = await ghJson(`read the reviews of ${repo}#${number}`, feedbackSchema, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${FEEDBACK}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${number}`,
+  ]);
+  return toFeedback(answer.data.repository.pullRequest);
+}
+
+/** A PR's state and head, checks and mergeability, and plain comments: what the follower decides on. */
+export type PrState = Omit<PrView, "body" | "files" | "reviews">;
+/** The follower's read of a PR: its state, with the reviews and conversations of `prFeedback`. */
+export type FollowedPr = PrState & { feedback: PrFeedback };
+
+const REVIEWS_AND_THREADS = `reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
+    reviewThreads(first: 100) {
+      nodes {
+        id isResolved isOutdated path line originalLine viewerCanResolve
+        comments(first: 50) { nodes { body createdAt authorAssociation author { __typename } } }
+      }
+    }`;
+const FOLLOWED = `fragment Followed on PullRequest {
+    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      __typename ... on CheckRun { status conclusion } ... on StatusContext { state }
+    } } } } } }
+    comments(last: 100) { nodes { body authorAssociation createdAt } }
+    ${REVIEWS_AND_THREADS}
+  }`;
+const followedSchema = z.object({
+  number: z.number().int(),
+  url: z.string(),
+  title: z.string(),
+  state: z.enum(["OPEN", "CLOSED", "MERGED"]),
+  isDraft: z.boolean(),
+  author: login.nullable(), // null for a deleted account
+  headRefName: z.string(),
+  headRefOid: z.string(),
+  baseRefName: z.string(),
+  mergedAt: z.string().nullable(),
+  mergeable: z.enum(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
+  commits: z.object({
+    nodes: z.array(
+      z.object({
+        commit: z.object({
+          statusCheckRollup: z.object({ contexts: z.object({ nodes: z.array(check) }) }).nullable(),
+        }),
+      }),
+    ),
+  }),
+  comments: z.object({ nodes: z.array(comment) }),
+  ...feedbackShape,
+});
+/** PRs per query: GitHub limits a query's cost, and 20 PRs with their reviews stay well inside it. */
+const FOLLOW_BATCH = 20;
+
+/** The PR follower's read of every PR it follows in one repository: one GraphQL query per 20 PRs, instead of a
+ * `gh pr view` and a review read per PR. GitHub fails a whole query for one PR it cannot show, so a failed batch is
+ * read again one PR at a time, and each PR gets its own answer or error. */
+export async function followedPrs(repo: string, numbers: number[]): Promise<Map<number, FollowedPr | Error>> {
+  const found = new Map<number, FollowedPr | Error>();
+  const read = async (batch: number[]) => {
+    for (const pr of await followedBatch(repo, batch)) found.set(pr.number, pr);
+  };
+  for (let i = 0; i < numbers.length; i += FOLLOW_BATCH) {
+    const batch = numbers.slice(i, i + FOLLOW_BATCH);
+    try {
+      await read(batch);
+    } catch (e) {
+      if (batch.length === 1) found.set(batch[0]!, e as Error);
+      else for (const n of batch) await read([n]).catch((e: Error) => found.set(n, e));
+    }
+  }
+  for (const n of numbers)
+    if (!found.has(n)) found.set(n, new Error(`GitHub does not show ${repo}#${n} to this machine's gh login`));
+  return found;
+}
+
+async function followedBatch(repo: string, batch: number[]): Promise<FollowedPr[]> {
+  const [owner, name] = repo.split("/") as [string, string];
+  const fields = batch.map((n) => `p${n}: pullRequest(number: ${n}) { ...Followed }`).join("\n    ");
+  const query = `query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    ${fields}\n  }\n}\n${FOLLOWED}`;
+  const answer = await ghJson(
+    `read the pull requests the factory follows in ${repo}`,
+    z.object({ data: z.object({ repository: z.record(z.string(), followedSchema.nullable()) }) }),
+    ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`],
+  );
+  return Object.values(answer.data.repository).flatMap((pr) => {
+    if (!pr) return [];
+    const { commits, comments, reviews, reviewThreads, mergedAt, author, ...rest } = pr;
+    return [
+      {
+        ...rest,
+        author: author?.login ?? "ghost",
+        ...(mergedAt && { mergedAt }),
+        checks: rollup(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []),
+        comments: comments.nodes,
+        feedback: toFeedback({ reviews, reviewThreads }),
+      },
+    ];
+  });
 }
 
 const REPLY = `mutation ($id: ID!, $body: String!) {

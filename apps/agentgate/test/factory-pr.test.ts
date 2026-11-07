@@ -145,6 +145,26 @@ test("a merge ships the item and a PR closed unmerged closes it, each with one c
     expect(n.mcp.calls.some((c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId)).toBe(true);
 });
 
+test("one pass reads every followed PR of a repository with one query, and a PR GitHub cannot show fails alone", async () => {
+  const n = await prFactory(cleanup);
+  const opened = [await n.opened(1), await n.opened(2), await n.opened(3)];
+  const reads = () => n.github.calls.filter((c) => c.args.some((a) => a.includes("fragment Followed")));
+  // Besides the issue check every 15 minutes, which tells whether another machine took the item over.
+  const prCalls = () => n.github.calls.filter((c) => c.args[0] !== "issue").length;
+  const before = { reads: reads().length, calls: prCalls() };
+  await n.pollPrs();
+  expect(reads().length - before.reads).toBe(1);
+  expect(prCalls() - before.calls).toBe(1);
+
+  n.github.prs.delete(opened[1]!.pr.url);
+  opened[2]!.pr.state = "MERGED";
+  await n.pollPrs();
+  expect(items.get(n.s, opened[2]!.item.id)!.phase).toBe("shipped");
+  expect(n.f.events.recent(20).map((e) => e.text)).toContainEqual(
+    expect.stringContaining(`Reading ${opened[1]!.item.key}'s PR failed`),
+  );
+});
+
 test("a PR merged while its review run waits to start ships the item once, though the merge closed its issue first", async () => {
   const n = await prFactory(cleanup);
   const { item, run, pr } = await n.opened(1);

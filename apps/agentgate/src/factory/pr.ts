@@ -19,14 +19,18 @@ import {
 import { dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
 import {
   COLLABORATORS,
+  followedPrs,
   prAddReviewers,
   prFeedback,
+  prOf,
   prReady,
   prSetBody,
   prView,
   resolveConversation,
   type FeedbackComment,
   type PrFeedback,
+  type FollowedPr,
+  type PrState,
   type PrView,
 } from "./gh.ts";
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
@@ -69,13 +73,13 @@ export const prRun = (f: FactoryRuntime, item: FactoryItem) =>
   runs.forItem(f.s, item.id).findLast((r) => r.kind === "implement" && r.report?.result?.kind === "implement");
 
 /** Checks pass, or there are none on a head old enough to have them, and nothing conflicts with the base branch. */
-export function green(f: FactoryRuntime, view: PrView, headAt: number) {
+export function green(f: FactoryRuntime, view: PrState, headAt: number) {
   const checks = view.checks === "passing" || (view.checks === "none" && f.s.now() - headAt >= CHECKS_SETTLE);
   return checks && view.mergeable !== "CONFLICTING";
 }
 
 /** Marks the PR ready for review and requests the repository's reviewers; throws when GitHub refuses. */
-async function markReady(f: FactoryRuntime, item: FactoryItem, view: PrView) {
+async function markReady(f: FactoryRuntime, item: FactoryItem, view: PrState) {
   const reviewers = repositoryOf(f, item)?.reviewers ?? [];
   if (view.isDraft) await prReady(view.url);
   if (reviewers.length) await prAddReviewers(view.url, reviewers);
@@ -86,7 +90,7 @@ async function markReady(f: FactoryRuntime, item: FactoryItem, view: PrView) {
 export async function toReady(
   f: FactoryRuntime,
   item: FactoryItem,
-  view: PrView,
+  view: PrState,
   open: string[],
   why: string,
 ): Promise<boolean> {
@@ -188,7 +192,7 @@ async function release(f: FactoryRuntime, item: FactoryItem, reason: string) {
 }
 
 /** In `pr` with a green PR and every claim backed: a review run when review rounds are on, otherwise ready. */
-async function advance(f: FactoryRuntime, item: FactoryItem, view: PrView) {
+async function advance(f: FactoryRuntime, item: FactoryItem, view: PrState) {
   if (f.runKinds.has("review") && limitsOf(f, item).reviewRounds > 0) {
     moveItem(f, item.id, "review");
     enqueueRun(f, { kind: "review", item: item.id });
@@ -224,7 +228,7 @@ function openConversations(feedback: PrFeedback, data: Implement) {
  * of its people and bots that no nudge has quoted yet, and open review conversations. Times compare on GitHub's clock
  * only, so a comment made between a push and the follower's next pass is not lost. Plain PR comments from bots never
  * count: deploy previews and coverage reports ask for nothing. */
-function problemsOf(view: PrView, feedback: PrFeedback, data: Implement) {
+function problemsOf(view: PrState, feedback: PrFeedback, data: Implement) {
   const problems: Problem[] = [];
   if (view.checks === "failing") problems.push({ key: `checks@${view.headRefOid}`, text: "its checks fail" });
   if (view.mergeable === "CONFLICTING")
@@ -260,7 +264,7 @@ async function nudge(
   f: FactoryRuntime,
   item: FactoryItem,
   run: FactoryRun,
-  view: PrView,
+  view: PrState,
   feedback: PrFeedback,
   data: Implement,
 ) {
@@ -338,27 +342,19 @@ async function takenOver(f: FactoryRuntime, item: FactoryItem) {
   return true;
 }
 
-/** One pass over an item's PR, as a step of the item. */
-async function followPr(f: FactoryRuntime, id: string) {
+/** One pass over an item's PR, as a step of the item, with the PR as the follower's read for this pass found it. */
+async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error) {
   const { s } = f;
   const item = items.get(s, id);
   if (!item?.prUrl || !isOpenPhase(item.phase) || !["pr", "review", "ready"].includes(item.phase)) return;
   if (await takenOver(f, item)) return;
-  let view: PrView;
-  try {
-    view = await prView(item.prUrl);
-  } catch (e) {
-    failed(f, item, `Reading ${item.key}'s PR failed: ${shortError(e)}`);
+  if (read instanceof Error) {
+    failed(f, item, `Reading ${item.key}'s PR failed: ${shortError(read)}`);
     return;
   }
-  let feedback: PrFeedback | undefined;
-  try {
-    feedback = await prFeedback(item.prUrl);
-  } catch (e) {
-    failed(f, item, `Reading the reviews of ${item.key}'s PR failed: ${shortError(e)}`);
-  }
+  const { feedback, ...view } = read;
   const run = prRun(f, item);
-  if (run && feedback) await resolveFixed(f, item, run.id, feedback);
+  if (run) await resolveFixed(f, item, run.id, feedback);
 
   // A merge or a close ends the item even while it waits for the maintainer.
   if (view.state === "MERGED") {
@@ -397,8 +393,7 @@ async function followPr(f: FactoryRuntime, id: string) {
     return;
   }
   if (item.phase === "review") await followReview(f, item, view, data.headAt);
-  // Without the reviews, a nudge could miss a problem or clear a stall it should keep; the next pass tries again.
-  if (feedback) await nudge(f, items.get(s, id)!, runs.get(s, run.id)!, view, feedback, data);
+  await nudge(f, items.get(s, id)!, runs.get(s, run.id)!, view, feedback, data);
 }
 
 /** The factory's reply in a review conversation: the fix's commit, or why the thread left it. */
@@ -517,13 +512,31 @@ async function acceptConversations(f: FactoryRuntime, args: unknown, caller: Too
   });
 }
 
+/** One read per repository of every PR this machine follows there, then one step per item. */
 async function followPrs(f: FactoryRuntime) {
-  for (const item of items.list(f.s, { open: true })) {
-    if (!item.prUrl || !["pr", "review", "ready"].includes(item.phase)) continue;
+  const followed = items.list(f.s, { open: true }).flatMap((item) => {
+    if (!item.prUrl || !["pr", "review", "ready"].includes(item.phase)) return [];
     try {
-      await withItem(f, item.id, () => followPr(f, item.id));
+      return [{ item, pr: prOf(item.prUrl) }];
     } catch (e) {
       failed(f, item, `Checking ${item.key}'s PR failed: ${shortError(e)}`);
+      return [];
+    }
+  });
+  for (const repo of new Set(followed.map((x) => x.pr.repo))) {
+    const here = followed.filter((x) => x.pr.repo === repo);
+    let reads: Map<number, FollowedPr | Error>;
+    try {
+      reads = await followedPrs(repo, [...new Set(here.map((x) => x.pr.number))]);
+    } catch (e) {
+      reads = new Map(here.map((x) => [x.pr.number, e as Error]));
+    }
+    for (const { item, pr } of here) {
+      try {
+        await withItem(f, item.id, () => followPr(f, item.id, reads.get(pr.number)!));
+      } catch (e) {
+        failed(f, item, `Checking ${item.key}'s PR failed: ${shortError(e)}`);
+      }
     }
   }
 }
