@@ -577,9 +577,8 @@ test("each gh.ts read parses a recorded gh answer", async () => {
     reviews: [{ body: "", authorAssociation: "MEMBER", submittedAt: "2026-11-03T17:32:31Z", state: "APPROVED" }],
   });
   expect(await gh.defaultBranchCi(REPO)).toBe("passing");
-  expect(await gh.mergedRevertOf(REPO, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" })).toBe(
-    true,
-  );
+  const reverts = await gh.revertsSince(REPO, Date.parse("2026-11-03T17:40:14Z"));
+  expect(gh.isRevertOf(reverts, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" })).toBe(true);
 });
 
 test("each gh.ts read rejects a malformed answer with an error naming the repository", async () => {
@@ -591,7 +590,7 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     ["pr view", () => gh.prView(PR)],
     ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
     ["run list", () => gh.defaultBranchCi(REPO)],
-    ["pr list", () => gh.mergedRevertOf(REPO, { number: 42, title: "x", mergedAt: "2026-11-03T17:40:14Z" })],
+    ["pr list", () => gh.revertsSince(REPO, Date.parse("2026-11-03T17:40:14Z"))],
   ];
   for (const [command, read] of reads) {
     recordedGh({ [command]: { surprise: [{ number: "seven" }] } });
@@ -633,8 +632,8 @@ test("PR checks sum up to failing over pending over passing, and a merged PR wit
   );
 
   const reverted = async (revert: Partial<(typeof recorded.revertList)[number]>) => {
-    recordedGh({ "pr list": [{ ...recorded.revertList[0], ...revert }] });
-    return gh.mergedRevertOf(REPO, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" });
+    const reverts = [{ ...recorded.revertList[0]!, ...revert }];
+    return gh.isRevertOf(reverts, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" });
   };
   expect(await reverted({ body: "", title: 'Revert "Speed up save"' })).toBe(true);
   expect(await reverted({ body: "Reverts acme/app#421" })).toBe(false);

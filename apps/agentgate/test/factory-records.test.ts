@@ -263,8 +263,10 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
   const n = await prFactory(cleanup);
   // GitHub's revert of PR 104, the only merged PR whose title starts with "Revert".
   const fakeGh = host.gh;
+  let searches = 0;
   host.gh = async (args, stdin) => {
     if (args[0] !== "pr" || args[1] !== "list") return fakeGh(args, stdin);
+    searches++;
     const revert = {
       number: 200,
       title: 'Revert "Other"',
@@ -308,6 +310,8 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
   reverted.pr.state = "MERGED";
   await n.pollPrs();
   await loop(n.f, "factory-outcomes")();
+  // One revert search covers the repository's merged PRs.
+  expect(searches).toBe(1);
 
   const outcome = (id: string) => itemOutcome(items.get(n.s, id)!);
   const verdicts = (id: string) => runs.forItem(n.s, id).map((r) => r.verdict);

@@ -598,34 +598,33 @@ export async function defaultBranchCi(repo: string): Promise<"passing" | "failin
   return "passing";
 }
 
-/** A merged PR within 14 days whose title starts with "Revert" and names the PR's number or title. GitHub's revert
- * button writes `Revert "<title>"` with `Reverts owner/repo#<n>` in the body. */
-export async function mergedRevertOf(
-  repo: string,
-  pr: { number: number; title: string; mergedAt: string },
-): Promise<boolean> {
+const revertSchema = z.object({ number: z.number().int(), title: z.string(), body: z.string(), mergedAt: z.string() });
+export type MergedRevert = z.infer<typeof revertSchema>;
+
+/** The repository's merged PRs titled as reverts since `since`: one search covers every PR merged since then. */
+export async function revertsSince(repo: string, since: number): Promise<MergedRevert[]> {
+  return ghJson(`search ${repo} for reverts`, z.array(revertSchema), [
+    "pr",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "merged",
+    "--search",
+    `Revert in:title merged:>=${new Date(since).toISOString().slice(0, 10)}`,
+    "--limit",
+    "100",
+    "--json",
+    "number,title,body,mergedAt",
+  ]);
+}
+
+/** A revert merged within 14 days of the PR whose title starts with "Revert" and names the PR's number or title.
+ * GitHub's revert button writes `Revert "<title>"` with `Reverts owner/repo#<n>` in the body. */
+export function isRevertOf(reverts: MergedRevert[], pr: { number: number; title: string; mergedAt: string }) {
   const from = Date.parse(pr.mergedAt);
-  const since = new Date(from).toISOString().slice(0, 10);
-  const list = await ghJson(
-    `search ${repo} for reverts of #${pr.number}`,
-    z.array(z.object({ number: z.number().int(), title: z.string(), body: z.string(), mergedAt: z.string() })),
-    [
-      "pr",
-      "list",
-      "--repo",
-      repo,
-      "--state",
-      "merged",
-      "--search",
-      `Revert in:title merged:>=${since}`,
-      "--limit",
-      "50",
-      "--json",
-      "number,title,body,mergedAt",
-    ],
-  );
   const names = new RegExp(`#${pr.number}(?!\\d)`);
-  return list.some((r) => {
+  return reverts.some((r) => {
     const at = Date.parse(r.mergedAt);
     const inWindow = at >= from && at <= from + 14 * DAY;
     const isRevert = r.number !== pr.number && /^revert\b/i.test(r.title);

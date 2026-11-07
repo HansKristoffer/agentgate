@@ -5,7 +5,7 @@ import { sessionUsage } from "../llm/sessions.ts";
 import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
 import { interruptItem, setNeedsYou, writeBack } from "./controller.ts";
 import { isOpenPhase, items, runs, transcripts, type FactoryItem, type FactoryRun } from "./db.ts";
-import { COLLABORATORS, mergedRevertOf, prView } from "./gh.ts";
+import { COLLABORATORS, isRevertOf, prState, prView, revertsSince } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import { mirrorOf } from "./mirror.ts";
 import { shortError, withItem, type FactoryRuntime } from "./runtime.ts";
@@ -266,38 +266,54 @@ async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome>
     title: view.title,
     state: view.state,
     ...(view.mergedAt && { mergedAt: view.mergedAt }),
-    reverted: view.mergedAt ? await mergedRevertOf(item.repo, { ...view, mergedAt: view.mergedAt }) : false,
+    reverted: false, // the revert pass sets it
     peopleComments: text.filter((c) => COLLABORATORS.includes(c.by) && !parseMarkers(c.body).length).length,
     peopleReviews: view.reviews.length,
   };
 }
 
-/** The PR is read once its item finished; a merged one is checked for a revert until 14 days passed. */
-async function refreshPr(f: FactoryRuntime, item: FactoryItem) {
-  if (!item.prUrl) return;
-  const known = storedPr(item);
-  let pr = known;
-  if (!pr || pr.state === "OPEN") pr = await readPr({ ...item, prUrl: item.prUrl });
-  else if (pr.mergedAt && !pr.reverted && f.s.now() - Date.parse(pr.mergedAt) <= 14 * DAY + HOUR)
-    pr = { ...pr, reverted: await mergedRevertOf(item.repo, { ...pr, mergedAt: pr.mergedAt }) };
-  if (JSON.stringify(pr) !== JSON.stringify(known)) items.update(f.s, item.id, { outcome: pr });
+/** The PR is read in full once its item finished, and again once an open one changes state: `drop` leaves it open. */
+async function refreshPr(item: FactoryItem & { prUrl: string }, known: PrOutcome | undefined) {
+  if (known && (known.state !== "OPEN" || (await prState(item.repo, known.number)) === "OPEN")) return known;
+  return readPr(item);
 }
 
 const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
 
-/** Items that finished in the last 14 days, the window a revert counts in. */
+/** Items that finished in the last 14 days, the window a revert counts in. Merged PRs are checked for a revert with one
+ * search per repository. */
 async function refreshOutcomes(f: FactoryRuntime) {
   const { s } = f;
   let errors = noted.get(f);
   if (!errors) noted.set(f, (errors = new Map()));
+  const note = (key: string, text: string, item?: string) => {
+    if (errors.get(key) !== text) f.events.emit({ kind: "note", ...(item && { item }), text });
+    errors.set(key, text);
+  };
+  const watching: { item: FactoryItem; pr: PrOutcome & { mergedAt: string } }[] = [];
   for (const item of items.list(s, { open: false, finishedSince: s.now() - 14 * DAY })) {
+    if (!item.prUrl) continue;
+    const known = storedPr(item);
+    let pr = known;
     try {
-      await refreshPr(f, item);
+      pr = await refreshPr({ ...item, prUrl: item.prUrl }, known);
       errors.delete(item.id);
     } catch (e) {
-      const text = `Reading the outcome of ${item.key}'s PR failed: ${shortError(e)}`;
-      if (errors.get(item.id) !== text) f.events.emit({ kind: "note", item: item.id, text });
-      errors.set(item.id, text);
+      note(item.id, `Reading the outcome of ${item.key}'s PR failed: ${shortError(e)}`, item.id);
+    }
+    if (pr && JSON.stringify(pr) !== JSON.stringify(known)) items.update(s, item.id, { outcome: pr });
+    if (pr?.mergedAt && !pr.reverted && s.now() - Date.parse(pr.mergedAt) <= 14 * DAY + HOUR)
+      watching.push({ item, pr: { ...pr, mergedAt: pr.mergedAt } });
+  }
+  for (const repo of new Set(watching.map((w) => w.item.repo))) {
+    const mine = watching.filter((w) => w.item.repo === repo);
+    try {
+      const reverts = await revertsSince(repo, Math.min(...mine.map((w) => Date.parse(w.pr.mergedAt))));
+      errors.delete(repo);
+      for (const { item, pr } of mine)
+        if (isRevertOf(reverts, pr)) items.update(s, item.id, { outcome: { ...pr, reverted: true } });
+    } catch (e) {
+      note(repo, `Searching ${repo} for reverts failed: ${shortError(e)}`);
     }
   }
 }
@@ -334,7 +350,7 @@ export function setup(f: FactoryRuntime): void {
   f.loops.push({ name: "factory-tokens", everyMs: MINUTE, where: "every-node", run: () => measureOpen(f) });
   f.loops.push({
     name: "factory-outcomes",
-    everyMs: 15 * MINUTE,
+    everyMs: HOUR,
     where: "factory-node",
     run: () => refreshOutcomes(f),
   });
