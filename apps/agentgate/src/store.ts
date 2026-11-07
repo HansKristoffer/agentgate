@@ -197,8 +197,21 @@ export const schemas = {
   secret: secretRecordSchema,
 };
 
-/** The node protocol that understands `secret` records: older nodes stall on the unknown kind (FACTORY_PROTOCOL). */
-const SECRET_PROTOCOL = 8;
+/** Every node must advertise this before `settings.factory` or a `secret` record is written: older nodes drop the
+ * setting when they save settings, and stall on the unknown record kind. */
+export const FACTORY_PROTOCOL = 8;
+
+/** Throws, naming the nodes too old to sync `settings.factory` and factory secrets. */
+export function requireFactoryProtocol(s: Store) {
+  const old = s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
+    .map((n) => n.id);
+  if (old.length)
+    throw new Error(
+      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
+    );
+}
 /** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
 export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
@@ -623,12 +636,7 @@ export function importBackup(s: Store, input: unknown) {
     })
     .parse(input);
   const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < SECRET_PROTOCOL)
-    .map((n) => n.id);
-  if (old.length && records.some((r) => r.kind === "secret"))
-    throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync factory secrets`);
+  if (records.some((r) => r.kind === "secret")) requireFactoryProtocol(s);
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {

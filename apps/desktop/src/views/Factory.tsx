@@ -180,7 +180,7 @@ function ItemCard({ item, here, open }: { item: BoardItem; here?: string; open: 
         )}
         {item.pr && (
           <small>
-            PR{item.pr.checks ? ` ${item.pr.checks}` : ""}
+            PR
             {item.pr.reviewRound ? `, round ${item.pr.reviewRound}` : ""}
             {item.pr.openFindings ? `, ${item.pr.openFindings} open` : ""}
           </small>

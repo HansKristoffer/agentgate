@@ -520,7 +520,6 @@ export const boardItemSchema = z.object({
     .object({
       url: z.string(),
       commit: z.string().optional(),
-      checks: z.enum(["pending", "passing", "failing"]).optional(),
       reviewRound: z.number().optional(),
       openFindings: z.number().optional(),
     })

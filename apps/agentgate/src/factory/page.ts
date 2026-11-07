@@ -239,7 +239,7 @@ function render(b) {
 			card.append(el("div", "key", i.key + " · " + i.repo), link(i.title, i.url));
 			var sub = [];
 			if (i.run) sub.push(i.run.kind + " " + i.run.state + (i.run.node && i.run.node !== i.heldBy ? " on " + i.run.node : ""));
-			if (i.pr) sub.push("PR" + (i.pr.checks ? " " + i.pr.checks : "") + (i.pr.openFindings ? ", " + i.pr.openFindings + " findings" : ""));
+			if (i.pr) sub.push("PR" + (i.pr.openFindings ? ", " + i.pr.openFindings + " findings" : ""));
 			if (i.tokensUnknown) sub.push("tokens unknown");
 			sub.push("since " + ago(i.inPhaseSince));
 			card.append(el("div", "sub", sub.join(" · ")));

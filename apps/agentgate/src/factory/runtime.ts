@@ -24,20 +24,7 @@ import { setupFeatures } from "./features.ts";
  * board parts here in its own `setup`, so features never edit shared files.
  */
 
-/** Every node must advertise this before `settings.factory` is written: older nodes drop the field when they save settings. */
-export const FACTORY_PROTOCOL = 8;
-
-/** Throws, naming the nodes too old to sync `settings.factory` and factory secrets. */
-export function requireFactoryProtocol(s: Store) {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
-    .map((n) => n.id);
-  if (old.length)
-    throw new Error(
-      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
-    );
-}
+export { FACTORY_PROTOCOL, requireFactoryProtocol } from "../store.ts";
 
 export type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
 /** thread: `_meta["dev.agentgate/t3Thread"]`, a label the shim adds, not proof; node: the machine that received the call. */

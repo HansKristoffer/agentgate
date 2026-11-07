@@ -1,4 +1,4 @@
-import { factoryBoardSchema, itemPhases, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { itemPhases, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
@@ -61,7 +61,9 @@ export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: b
   const pointer = f.pointer();
   if (!pointer || f.isFactoryNode()) return buildBoard(f, opts);
   try {
-    const board = factoryBoardSchema.parse(await peerCall(f.s, pointer.node, "/factory/board", { timeout: 8000 }));
+    // A paired machine's own board, passed through: parsing it here again would show a newer factory machine, whose
+    // board has a field or value this one does not know, as offline.
+    const board = await peerCall<FactoryBoard>(f.s, pointer.node, "/factory/board", { timeout: 8000 });
     return strip({ ...board, node: f.s.nodeId }, opts);
   } catch {
     // The factory machine is unreachable or runs an older agentgate: show this machine's board, the factory offline.
