@@ -248,10 +248,22 @@ export async function commandRoute(f: FactoryRuntime, name: string, args: string
   return output;
 }
 
+/** The last failure each loop logged, so one that fails every pass says so once until it changes or recovers. */
+const loopFailures = new WeakMap<FactoryRuntime, Map<string, string>>();
+
 /** A loop as the daemon schedules it: nothing while the factory is off (unless it cleans up), and a factory-node loop
- * nothing on other machines. */
+ * nothing on other machines. A failure is logged with the loop's name, once per distinct error. */
 export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
   if (!f.pointer() && !loop.whenOff) return;
   if (loop.where === "factory-node" && !f.isFactoryNode()) return;
-  await loop.run();
+  let failures = loopFailures.get(f);
+  if (!failures) loopFailures.set(f, (failures = new Map()));
+  try {
+    await loop.run();
+    failures.delete(loop.name);
+  } catch (e) {
+    const text = logError(e);
+    if (failures.get(loop.name) !== text) console.error(`factory: the ${loop.name} loop failed: ${text}`);
+    failures.set(loop.name, text);
+  }
 };

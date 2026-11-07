@@ -425,3 +425,33 @@ test("an item's tokens are its runs' sum and only grow, and a later change to a 
   expect(items.get(s, "it_t")).toMatchObject({ finishedAt: 2000, updatedAt: 9000 });
   expect(items.list(s, { finishedSince: 3000 })).toEqual([]);
 });
+
+test("a loop that fails every pass logs its name once per distinct error, and again after it recovers", async () => {
+  const { s, f } = fixture();
+  useFactory(s, "a");
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  cleanup.push(async () => void errors.mockRestore());
+  let failure: Error | undefined = new TypeError("secret detail");
+  const loop = loopTask(f, {
+    name: "flaky",
+    everyMs: 1000,
+    where: "every-node",
+    run: async () => {
+      if (failure) throw failure;
+    },
+  });
+  await loop();
+  await loop();
+  failure = new RangeError("other");
+  await loop();
+  failure = undefined;
+  await loop();
+  failure = new RangeError("other");
+  await loop();
+  // An error whose text agentgate did not write is logged by its name only.
+  expect(errors.mock.calls.map((c) => c[0])).toEqual([
+    "factory: the flaky loop failed: TypeError",
+    "factory: the flaky loop failed: RangeError",
+    "factory: the flaky loop failed: RangeError",
+  ]);
+});
