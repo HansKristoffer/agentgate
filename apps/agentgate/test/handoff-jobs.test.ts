@@ -7,10 +7,12 @@ import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
-import { CONTINUE, READY, restartTasks } from "../src/handoff/destination.ts";
+import { CONTINUE, READY, abort, restartTasks, type DestState } from "../src/handoff/destination.ts";
+import { startHandoff } from "../src/handoff/source.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
 import {
+  cancelHandoffOn,
   connectNode,
   disconnectNode,
   localView,
@@ -547,6 +549,150 @@ test("a failure on the destination after import finishes there with a warning, s
   hidden = false;
   expect((await done(a, handoffId)).step).toBe("done");
   expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+});
+
+test("a failure on the destination once T3 Code has the thread finishes there with a warning, and abort is refused", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, branch: "main" });
+  b.t3.failCommands.add("thread.runtime-mode.set");
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  const dest = await done(b, handoffId, "destination");
+  expect(dest.step).toBe("done");
+  expect(dest.state.warnings.join("\n")).toContain("thread.runtime-mode.set failed; the thread is here");
+  expect(b.t3.threads.get(`import:claudeAgent:${SID}`)!.settledOverride).toBe("active");
+  expect((await done(a, handoffId)).step).toBe("done");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
+
+  // From the import step on, T3 Code here may have the thread, so the source can no longer abort.
+  const importing = b.h.create<DestState>({
+    id: crypto.randomUUID(),
+    role: "destination",
+    thread: "t",
+    target: "b",
+    step: "import",
+    state: { source: "a", prepare: (dest.state as DestState).prepare, warnings: [], timings: [] },
+  });
+  expect(() => abort(b.h, importing)).toThrow("already imported");
+  expect(b.h.load("destination", importing.id)!.step).toBe("import");
+});
+
+const queuedThread = (n: Node) =>
+  n.t3.addThread({
+    projectId: n.project.id,
+    sessionId: SID,
+    branch: "main",
+    runs: [
+      { id: "run-1", status: "running", ordinal: 1 },
+      { id: "q-1", status: "queued", userMessageId: "m-1", ordinal: 2, queuePosition: 1 },
+      { id: "q-2", status: "queued", userMessageId: "m-2", ordinal: 3, queuePosition: 2 },
+    ],
+    conversation: [
+      { id: "m-1", text: "use the new API", attachments: [] },
+      { id: "m-2", text: "then add tests", attachments: [] },
+    ],
+  });
+const requeued = (n: Node) =>
+  n.t3.commands
+    .filter((c) => c.type === "message.dispatch" && (c.dispatchMode as { type: string }).type === "queue_after_active")
+    .map((c) => c.text);
+
+test("a handoff that fails before the import queues the user's queued messages again on the source, once", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = queuedThread(a);
+  // B's import finds nothing (see above), so B fails and A aborts.
+  b.t3.threads.clear();
+  b.t3.homePath = tmp();
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  expect((await done(a, handoffId)).step).toBe("failed");
+  await until(() => requeued(a).length === 2, "queued again");
+  expect(requeued(a)).toEqual(["use the new API", "then add tests"]);
+  expect(requeued(b)).toEqual([]);
+  // A later tick never brings the failed job back to queue them twice.
+  a.h.tick();
+  await Bun.sleep(100);
+  expect(requeued(a)).toHaveLength(2);
+});
+
+test("a handoff waiting for a destination that never got it can be cancelled; the thread and its queue stay", async () => {
+  const r = repos("a", "b");
+  // B never sees the manifest, so it never imports, and A waits for it.
+  const peer = async (req: Request, next: (req: Request) => Promise<Response>) =>
+    new URL(req.url).pathname.endsWith("/start") ? new Response("bad gateway", { status: 502 }) : next(req);
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, peer });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = queuedThread(a);
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => a.h.load("source", handoffId)?.step === "await", "A waiting");
+  const result = await cancelHandoffOn(a.h, handoffId);
+  expect(result).toEqual({ aborted: true, message: "Cancelled: the thread stays on a." });
+  const job = a.h.load("source", handoffId)!;
+  expect(job.step).toBe("failed");
+  expect(job.error).toContain("cancelled on a");
+  expect(b.h.load("destination", handoffId)!.step).toBe("failed");
+  expect(a.t3.threads.get(thread.id)!.archivedAt).toBeNull();
+  await until(() => requeued(a).length === 2, "queued again");
+  await expect(cancelHandoffOn(a.h, handoffId)).rejects.toThrow("already ended");
+});
+
+test("a handoff whose destination is gone can be given up without taking the thread back", async () => {
+  const r = repos("a", "b");
+  // B takes the manifest, then nothing reaches it any more.
+  let gone = false;
+  const peer = async (req: Request, next: (req: Request) => Promise<Response>) => {
+    if (gone) return new Response("bad gateway", { status: 502 });
+    const res = await next(req);
+    if (new URL(req.url).pathname.endsWith("/start")) gone = true;
+    return res;
+  };
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true, peer });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = queuedThread(a);
+
+  const { handoffId } = await requestHandoff(a.h, { threadId: thread.id, to: "b" });
+  await until(() => gone && a.h.load("source", handoffId)?.step === "await", "A waiting");
+  const result = await cancelHandoffOn(a.h, handoffId);
+  expect(result.aborted).toBe(false);
+  expect(result.message).toContain("b, which may already have the thread");
+  expect(a.h.load("source", handoffId)!.step).toBe("failed");
+  await Bun.sleep(100);
+  // B may have queued them behind the continued turn: A does not queue them as well.
+  expect(requeued(a)).toEqual([]);
+});
+
+test("the tick leaves a handoff alone while it is being started, so the agent is interrupted only after", async () => {
+  const r = repos("a", "b");
+  const a = await node("a", r.a),
+    b = await node("b", r.b, { server: true });
+  pair(a, b);
+  session(a, r.a, ["hello"]);
+  const thread = a.t3.addThread({
+    projectId: a.project.id,
+    sessionId: SID,
+    branch: "main",
+    runs: [{ id: "run-1", status: "running" }],
+  });
+  // The start's own resolve answers late; a tick in the meantime must not run the job ahead of it.
+  a.t3.delayNext = { tag: "orchestration.getThreadProjection", ms: 400 };
+  const started = startHandoff(a.h, thread.id, "b");
+  a.h.tick();
+  const handoffId = await started;
+  expect(a.t3.commands.filter((c) => c.type === "run.interrupt")).toEqual([]);
+  expect((await done(a, handoffId)).step).toBe("done");
 });
 
 test("a setup script past its deadline is stopped with what it started, and the thread carries on", async () => {

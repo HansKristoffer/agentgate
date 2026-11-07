@@ -16,6 +16,11 @@ import { headerWait } from "./oauth.ts";
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
 
+/** A per-session server that failed to start is tried again after this, doubling up to RETRY_MAX while its
+ * configuration stays the same: each try may run npx or uvx. */
+const RETRY_MIN = 5_000;
+const RETRY_MAX = 5 * 60_000;
+
 export const DAEMON_DOWN =
   "agentgate daemon is not running on this machine (run `agentgate service start`). Tools reconnect automatically when the daemon becomes available.";
 
@@ -61,6 +66,7 @@ export async function buildShim(
   let closed = false,
     flight: Promise<void> | undefined;
   const children = new Map<string, { config: string; instance: McpInstance; client: Client }>();
+  const failed = new Map<string, { config: string; delay: number; retryAt: number }>();
   let server: ReturnType<typeof mergedServer> | undefined;
   const changed = () => {
     void server?.sendToolListChanged().catch(() => {});
@@ -83,6 +89,7 @@ export async function buildShim(
       );
     if (closed) return;
     const names = new Set(config.map((v) => v.alias));
+    for (const alias of failed.keys()) if (!names.has(alias)) failed.delete(alias);
     for (const [alias, child] of children)
       if (!names.has(alias)) {
         children.delete(alias);
@@ -93,6 +100,8 @@ export async function buildShim(
         const serialized = JSON.stringify(instance),
           prev = children.get(alias);
         if (prev?.config === serialized) return;
+        const last = failed.get(alias)?.config === serialized ? failed.get(alias) : undefined;
+        if (last && Date.now() < last.retryAt) return;
         children.delete(alias);
         await prev?.client.close().catch(() => {});
         try {
@@ -101,11 +110,14 @@ export async function buildShim(
             await client.close();
             return;
           }
+          failed.delete(alias);
           children.set(alias, { config: serialized, instance, client });
           client.onclose = () => {
             if (children.get(alias)?.client === client) children.delete(alias);
           };
         } catch (e) {
+          const delay = last ? Math.min(last.delay * 2, RETRY_MAX) : RETRY_MIN;
+          failed.set(alias, { config: serialized, delay, retryAt: Date.now() + delay });
           console.error(`agentgate: ${alias}: ${e}`);
         }
       }),

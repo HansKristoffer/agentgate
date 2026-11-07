@@ -21,7 +21,7 @@ import {
 } from "./destination.ts";
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
-import { startHandoff } from "./source.ts";
+import { cancelHandoff, startHandoff } from "./source.ts";
 import { T3Error, connectInput, connectWith, createPairingLink, disconnectT3, pairingLinkInput } from "./t3.ts";
 import { localView, resolveTarget } from "./threads.ts";
 import { updateHere } from "../update.ts";
@@ -94,6 +94,7 @@ export function handoffRoutes(h: Handoffs) {
     const job = h.load("source", id.parse(c.req.param("id")));
     return job ? c.json(h.view(job)) : c.json(missing, 404);
   });
+  app.post("/handoff/:id/cancel", async (c) => c.json(await cancelHandoff(h, id.parse(c.req.param("id")))));
 
   app.post("/handoff/:id/prepare", async (c) => {
     prepare(h, id.parse(c.req.param("id")), c.get("peer").node, prepareSchema.parse(await jsonInput(c.req.raw)));

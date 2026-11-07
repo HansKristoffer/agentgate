@@ -471,6 +471,29 @@ export class Store {
       .transaction(() => {
         const cur = this.record(r.kind, r.id);
         if (cur && !newer(r, cur)) return false;
+        if (cur && staleRotation(this, r, cur)) {
+          // A copy carrying a refresh token this node already rotated away from (a peer that slept through the
+          // rotation, then took over or marked the login dead) would wipe the only working tokens everywhere. Keep
+          // ours and save it above that copy's revision, so it wins plain last-writer-wins on every peer.
+          this.db.run("insert or replace into records values (?, ?, ?, ?, ?, 0, ?, ?)", [
+            r.kind,
+            r.id,
+            Math.max(r.rev, cur.rev) + 1,
+            this.nodeId,
+            this.now(),
+            cur.data,
+            this.nextSeq(),
+          ]);
+          this.log(
+            r.kind === "credential" ? "oauth" : "mcp",
+            r.id,
+            "",
+            0,
+            0,
+            `kept newer tokens over ${r.node}'s copy`,
+          );
+          return false;
+        }
         this.db.run("insert or replace into records values (?, ?, ?, ?, ?, ?, ?, ?)", [
           r.kind,
           r.id,
@@ -523,6 +546,29 @@ export class Store {
       this.settings().logRetention,
     ]);
   }
+}
+
+/** sha256 of a credential record's refresh token, if it has one. */
+export function refreshHash(kind: Kind, data: unknown): string | undefined {
+  const d = data as { refreshToken?: unknown; tokens?: { refresh_token?: unknown } } | null;
+  const token = kind === "credential" ? d?.refreshToken : kind === "mcpCredential" ? d?.tokens?.refresh_token : "";
+  return typeof token === "string" && token ? new Bun.CryptoHasher("sha256").update(token).digest("hex") : undefined;
+}
+/** Hashes of the refresh tokens this node rotated away from for one credential, oldest first (credentials.ts). */
+export const rotatedAway = (s: Store, kind: Kind, id: string): string[] =>
+  JSON.parse(s.local(`rotated:${kind}:${id}`) ?? "[]");
+
+/** Whether `incoming` carries a refresh token this node rotated away from while its own copy holds newer, working
+ * tokens. A new login has a token this node never rotated, so it always wins. */
+function staleRotation(s: Store, incoming: Rec, cur: Rec) {
+  if ((incoming.kind !== "credential" && incoming.kind !== "mcpCredential") || incoming.deleted || cur.deleted)
+    return false;
+  const ours = JSON.parse(cur.data);
+  const theirs = refreshHash(incoming.kind, JSON.parse(incoming.data)),
+    mine = refreshHash(cur.kind, ours);
+  if (!theirs || !mine || theirs === mine || ours.needsLogin) return false;
+  const rotated = rotatedAway(s, incoming.kind, incoming.id);
+  return rotated.includes(theirs) && !rotated.includes(mine);
 }
 
 function newer(a: Rec, b: Rec): boolean {

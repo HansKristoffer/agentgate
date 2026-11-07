@@ -115,6 +115,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   threads [--node <node>]                     active T3 Code threads on every machine
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
+  handoffs cancel <id> [--node <node>]        give up a handoff stuck waiting for its destination
   factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
   logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
   logins share [github|infisical]             share this machine's logins; every machine signs in with them
@@ -349,10 +350,11 @@ async function main() {
       );
       const setupMod = await import("./setup.ts"),
         claude = setupMod.claudeStatus(),
-        codex = setupMod.primaryState().codex;
+        codex = setupMod.primaryState().codex,
+        cursor = setupMod.cursorMcpEnabled();
       const uses = (on: boolean) => (on ? "uses agentgate" : "does not use agentgate");
       console.log(
-        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}\nCursor MCP servers ${setupMod.cursorMcpEnabled() ? "on" : "off"}`,
+        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${cursor === undefined ? "" : `\nCursor MCP servers ${cursor ? "on" : "off"}`}`,
       );
       if (!claude.routing || !codex) console.log("  to route them: agentgate setup --primary");
       const restored = Number(s.local(setupMod.MCP_RESTORED));
@@ -1036,6 +1038,10 @@ async function main() {
           console.log(
             `relay       ${r.url}${r.hosted ? " (hosted)" : ""}\ngeneration  ${r.generation ?? "-"}\ncursor      ${r.cursor}\nuploaded    ${r.pushed} of ${s.seq()}\nstate       ${[r.reconciling && "reconciling", r.rotating && "rotation pending", r.cleanupPending && "cleanup pending"].filter(Boolean).join(", ") || "in sync"}`,
           );
+          if (r.rotatedAt)
+            console.log(
+              `rotated     ${new Date(r.rotatedAt).toISOString()}, after an interruption. Every other relay machine must join again; \`agentgate pair --relay\` shows the command`,
+            );
           if (r.pushError) console.log(`upload      ${r.pushError}`);
           if (r.pullError) console.log(`download    ${r.pullError}`);
           if (r.skipped)
@@ -1200,7 +1206,8 @@ async function main() {
         console.log(
           `MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`,
         );
-        console.log(`MCP servers in Cursor: ${st.cursorMcp ? "on" : "off (agentgate setup --mcp)"}`);
+        if (st.cursorMcp !== undefined)
+          console.log(`MCP servers in Cursor: ${st.cursorMcp ? "on" : "off (agentgate setup --mcp)"}`);
         return;
       }
       if (sub === "capture") return console.log(`saved ${desktop.capture(s)}`);
@@ -1238,9 +1245,10 @@ async function main() {
                 : `saved ${uuid}`,
             );
           }
+          // Gone before the 10 minutes were up: cancelled in the app, or another switch replaced it.
           if (!s.local("desktop:pendingAdd"))
             die(
-              `Timed out waiting for the sign-in. Try again with: agentgate desktop add${rest[0] ? ` ${rest[0]}` : ""}`,
+              `${Date.now() - started < 10 * 60_000 ? "The sign-in was cancelled" : "Timed out waiting for the sign-in"}. Try again with: agentgate desktop add${rest[0] ? ` ${rest[0]}` : ""}`,
             );
         }
       }
@@ -1364,6 +1372,15 @@ async function main() {
     }
     case "handoffs": {
       initialized(s);
+      if (sub === "cancel") {
+        const id = rest[0] ?? die("handoffs cancel <id> [--node <node>]");
+        const node = str("node");
+        const r = await management<import("@agentgate/protocol").HandoffCancel>(
+          `/handoffs/${encodeURIComponent(id)}/cancel${node ? `?node=${encodeURIComponent(node)}` : ""}`,
+          "POST",
+        );
+        return console.log(r.message);
+      }
       for (const j of await management<import("@agentgate/protocol").HandoffJob[]>("/handoffs"))
         console.log(
           `${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`,

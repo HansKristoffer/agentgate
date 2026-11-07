@@ -94,6 +94,9 @@ export interface DestState {
   /** Whether the checkout moved onto the source's code; the source parks its sent changes only then. */
   codeTaken?: boolean;
   threadId?: string;
+  /** T3 Code here has the thread (imported or brought back): from then on the thread lives here, a failure is only a
+   * warning, and the source must not take it back. */
+  live?: boolean;
   /** The Claude provider instance the thread runs with here, and its home. */
   instanceId?: string;
   claudeHome?: string;
@@ -217,9 +220,11 @@ export function start(h: Handoffs, id: string, source: string, manifest: Manifes
   void h.drive("destination", id);
 }
 
-/** Abort before import. After it, the thread lives here and only the user can move it again. */
+/** Abort before import. Once the import step starts, T3 Code here may already have the thread: it lives here then, and
+ * only the user can move it again. */
 export function abort(h: Handoffs, job: Job<DestState>) {
-  if (job.step === "continue" || job.step === "done") throw new T3Error("the thread was already imported here");
+  if (["import", "continue", "done"].includes(job.step) || job.state.live)
+    throw new T3Error("the thread was already imported here");
   if (job.step !== "failed") h.fail(job, "aborted by the source");
 }
 
@@ -258,8 +263,12 @@ export async function runDestination(h: Handoffs, id: string) {
     } catch (e) {
       const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       // Imported: the thread lives here now, and a failure must not make the source take it back.
-      if (job.step === "continue") {
-        job.state.warnings.push(`${message}; the thread is here, continue it in T3 Code`);
+      if (job.step === "continue" || job.state.live) {
+        const queued = job.step === "import" ? (job.state.manifest?.queued?.length ?? 0) : 0;
+        job.state.warnings.push(
+          `${message}; the thread is here, continue it in T3 Code` +
+            (queued ? ` (${queued} queued message${queued === 1 ? " was" : "s were"} not sent again)` : ""),
+        );
         rmSync(h.dir(job.id), { recursive: true, force: true });
         h.advance(job, "done");
       } else h.fail(job, message);
@@ -552,17 +561,25 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
   await timed(h.s, st.timings, "import", () =>
     t3Client(h.s).rpc(async (call) => {
       const instanceId = await instance(h, call, st);
+      // T3 Code has the thread from the import, or before a thread brought back is unarchived: from then on a failure
+      // leaves it here with a warning, and the source can no longer take it back.
+      const live = () => {
+        st.live = true;
+        h.save(job);
+      };
       if (st.imported) {
         await call("agentSessions.scan", {});
         await call("agentSessions.import", { projectId: st.projectId });
         // Imported threads are named after the session.
         st.threadId = await knownThread(h, call, instanceId, m.sessionId);
         if (!st.threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
+        live();
       }
       const threadId = st.threadId!;
       if (!st.imported) copyHistory(h, job, threadId);
 
       const p = await projection(call, threadId);
+      live();
       if (p.thread.archivedAt) await dispatch(call, { type: "thread.unarchive", threadId });
       // T3 files every imported session under Settled, out of the sidebar's active list.
       if (p.thread.settledOverride === "settled")
@@ -691,7 +708,12 @@ async function fillFiles(h: Handoffs, job: Job<DestState>) {
   h.save(job);
 }
 
-async function send(call: Call, threadId: string, text: string, mode: "start_immediately" | "queue_after_active") {
+export async function send(
+  call: Call,
+  threadId: string,
+  text: string,
+  mode: "start_immediately" | "queue_after_active",
+) {
   const messageId = crypto.randomUUID();
   await dispatch(call, {
     type: "message.dispatch",

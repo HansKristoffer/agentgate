@@ -334,7 +334,7 @@ test("connecting one account but signing in to another keeps the login and says 
     accountUuid: "bbbb",
     email: "home@example.com",
   });
-  cancelAdd(s);
+  await cancelAdd(s);
   expect(status(s).addMismatch).toBeUndefined();
 
   await add(s, "work@example.com");
@@ -386,6 +386,47 @@ test("a switch interrupted by a crash is never saved mixed, and the next switch 
   expect(cookieNames()).toContain(".claude.ai extraB");
   const a = JSON.parse(s.local("desktop:login:aaaa")!); // re-saved only after the switch was finished
   expect(a.config["oauth:tokenCacheV2"]).toBe("token:aaaa");
+});
+
+test("a crash recovery that cannot finish keeps the record, so a mixed login is never saved", async () => {
+  signIn("aaaa");
+  capture(s);
+  signIn("bbbb");
+  capture(s);
+  s.setLocal("desktop:switching", JSON.stringify({ target: "aaaa" }));
+  writeFileSync(join(DESKTOP.data, "config.json"), "{ half-written"); // neither aaaa nor signing out can go in
+  await expect(use(s, "bbbb")).rejects.toThrow();
+  expect(s.local("desktop:switching")).toBeDefined();
+  expect(() => capture(s)).toThrow("interrupted");
+
+  writeFileSync(join(DESKTOP.data, "config.json"), JSON.stringify({ lastKnownAccountUuid: "bbbb" }));
+  await use(s, "bbbb");
+  expect(s.local("desktop:switching")).toBeUndefined();
+  expect(config()).toMatchObject({ lastKnownAccountUuid: "bbbb", "oauth:tokenCacheV2": "token:bbbb" });
+});
+
+test("cancelling an add, or nobody signing in, puts Desktop back on the account it had", async () => {
+  signIn("aaaa");
+  capture(s);
+  await add(s);
+  expect(status(s).pendingAdd).not.toHaveProperty("previous");
+  await cancelAdd(s);
+  expect(config()).toMatchObject({ lastKnownAccountUuid: "aaaa", "oauth:tokenCacheV2": "token:aaaa" });
+  expect(status(s)).toMatchObject({ current: { accountUuid: "aaaa" }, signedOut: false, pendingAdd: undefined });
+
+  await add(s);
+  const pending = JSON.parse(s.local("desktop:pendingAdd")!);
+  s.setLocal("desktop:pendingAdd", JSON.stringify({ ...pending, since: Date.now() - 11 * 60_000 }));
+  expect(await pollDesktopLogin(s)).toBeUndefined();
+  expect(s.local("desktop:pendingAdd")).toBeUndefined();
+  expect(config().lastKnownAccountUuid).toBe("aaaa");
+
+  // Its login is gone, so it can't go back in: Desktop shows as signed out instead of silently staying that way.
+  await add(s);
+  forget(s, "aaaa");
+  await cancelAdd(s);
+  expect(readLogin()).toBeUndefined();
+  expect(status(s).signedOut).toBe(true);
 });
 
 test("a failed gateway change keeps the user's own gateway selected", async () => {

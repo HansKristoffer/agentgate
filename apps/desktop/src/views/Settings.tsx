@@ -11,6 +11,8 @@ import { DaemonCapabilities, PoolSettings } from "../features/proxy/PoolSettings
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
   const [secrets, setSecrets] = useState(false);
+  // cursorMcp is absent when the machine has no Cursor (setup skips it), so only Claude Code counts then.
+  const mcpOn = !!desktop?.mcp && desktop.cursorMcp !== false;
   const action = (name: string) =>
     perform(async () => setOutput(await localAction(name, connection)), "Command completed");
   return (
@@ -51,11 +53,11 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
               <Toggle
                 label="Agentgate's MCP servers"
                 description={
-                  desktop.mcp && desktop.cursorMcp
-                    ? "On for Claude Code, Claude Desktop's Code tab, and Cursor."
+                  mcpOn
+                    ? `On for Claude Code${desktop.cursorMcp ? ", Claude Desktop's Code tab, and Cursor" : " and Claude Desktop's Code tab"}.`
                     : "Off. Turn on to use your MCP servers in Claude Code and Cursor without routing the subscriptions."
                 }
-                isSelected={!!desktop.mcp && !!desktop.cursorMcp}
+                isSelected={mcpOn}
                 onChange={(on) =>
                   perform(
                     () => localAction(on ? "mcp-on" : "mcp-off", connection),

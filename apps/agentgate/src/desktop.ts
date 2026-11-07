@@ -1,5 +1,5 @@
 import type { DesktopLogin, DesktopMode, DesktopStatus } from "@agentgate/protocol";
-import { isRecord, mapValues, pick } from "hanzio";
+import { getErrorMessage, isRecord, mapValues, pick } from "hanzio";
 import { Database } from "bun:sqlite";
 import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
@@ -174,6 +174,13 @@ function unreadable(): boolean {
   }
 }
 
+/** writeLogin could not put the old cookies back after a failed config write: Desktop now mixes two accounts. */
+class HalfSwitched extends Error {
+  constructor(cause: unknown) {
+    super(getErrorMessage(cause), { cause });
+  }
+}
+
 /** Replace Desktop's claude.ai cookies and token keys. Desktop must not be running.
  * Cookies and tokens must always belong to the same account, so a failed config write puts the old cookies back. */
 function writeLogin(login: Login | undefined) {
@@ -214,7 +221,11 @@ function writeLogin(login: Login | undefined) {
     try {
       writeJson(configFile(), { ...config, ...login?.config });
     } catch (e) {
-      replace(before);
+      try {
+        replace(before);
+      } catch {
+        throw new HalfSwitched(e);
+      }
       throw e;
     }
   } finally {
@@ -286,13 +297,17 @@ function locked<T>(s: Store, fn: () => T): T | undefined {
 
 /** Replace Desktop's login, recording the switch first so a crash between the cookie and config writes can be finished later. */
 function switchLogin(s: Store, target: string | null) {
+  // Already set: an earlier switch left Desktop half-switched, and only a switch that finishes makes it whole again.
+  const halfSwitched = !!s.local(JOURNAL);
   s.setLocal(JOURNAL, JSON.stringify({ target }));
-  // An error leaves Desktop consistent (writeLogin rolls back), so only a crash leaves the record behind.
   try {
     writeLogin(target ? saved(s, target) : undefined);
-  } finally {
-    s.setLocal(JOURNAL, undefined);
+  } catch (e) {
+    // Otherwise writeLogin failed before changing anything or put the old login back, so Desktop is still whole.
+    if (!halfSwitched && !(e instanceof HalfSwitched)) s.setLocal(JOURNAL, undefined);
+    throw e;
   }
+  s.setLocal(JOURNAL, undefined);
 }
 
 /** Run `fn` with Desktop quit, then reopen it. One switch at a time, across the CLI and the daemon. */
@@ -316,10 +331,10 @@ async function withDesktopClosed<T>(s: Store, fn: () => T | Promise<T>): Promise
       if (journal) {
         const { target } = JSON.parse(journal) as { target: string | null };
         // The login being left was saved before the crash; if the target can't go back in (e.g. after a Desktop update), sign out on this Mac.
+        // If that fails too, the record stays, so nothing saves Desktop's mixed login until a later switch finishes.
         try {
           switchLogin(s, target);
         } catch {
-          s.setLocal(JOURNAL, journal);
           switchLogin(s, null);
         }
       }
@@ -383,27 +398,54 @@ export async function use(s: Store, uuid: string): Promise<void> {
     }
     setGatewayMode(s, false);
     s.setLocal("desktop:current", uuid);
-    cancelAdd(s);
+    clearAdd(s);
   });
   log(s, uuid, `switched Claude Desktop to ${nameOf(s, uuid)}`);
+}
+
+interface PendingAdd {
+  since: number;
+  expected?: string;
+  /** The account Desktop was signed in to before, put back when the add is cancelled or times out. */
+  previous?: string;
 }
 
 /** Sign Desktop out on this Mac only (no request to Anthropic, so saved logins stay valid) and wait for the next sign-in. */
 export async function add(s: Store, expected?: string): Promise<void> {
   await withDesktopClosed(s, () => {
-    saveOutgoing(s);
+    const previous = saveOutgoing(s)?.accountUuid;
     switchLogin(s, null);
     setGatewayMode(s, false);
     s.setLocal("desktop:current", undefined);
-    cancelAdd(s);
-    s.setLocal("desktop:pendingAdd", JSON.stringify({ since: Date.now(), expected }));
+    clearAdd(s);
+    s.setLocal("desktop:pendingAdd", JSON.stringify({ since: Date.now(), expected, previous } satisfies PendingAdd));
   });
 }
 
-/** Stop waiting for a sign-in, and dismiss a "signed in with a different account" notice. */
-export function cancelAdd(s: Store) {
+function clearAdd(s: Store) {
   s.setLocal("desktop:pendingAdd", undefined);
   s.setLocal("desktop:addMismatch", undefined);
+}
+
+/** Stop waiting for a sign-in and put Desktop back on the account it had, and dismiss a "signed in with a different
+ * account" notice. */
+export async function cancelAdd(s: Store) {
+  const raw = s.local("desktop:pendingAdd");
+  clearAdd(s);
+  if (raw) await signBackIn(s, (JSON.parse(raw) as PendingAdd).previous);
+}
+
+/** Switch Desktop back to the account an unfinished add signed out. When that can't be done, mark Desktop as signed out
+ * of it, so the app and `agentgate desktop` say so instead of showing nothing. */
+async function signBackIn(s: Store, previous: string | undefined) {
+  if (!previous) return;
+  try {
+    if (saved(s, previous) && host.installed()) return await use(s, previous);
+  } catch (e) {
+    s.setLocal("desktop:current", previous);
+    throw e;
+  }
+  s.setLocal("desktop:current", previous);
 }
 
 /** The user was asked to sign in as `expected` (an email) but signed in as `uuid`. Unknown when neither account is in the pool. */
@@ -419,18 +461,20 @@ function mismatch(s: Store, expected: string, uuid: string): boolean {
 /** Called every few seconds by the daemon (and the CLI while it waits): save the login once the user has signed in. */
 export async function pollDesktopLogin(s: Store): Promise<string | undefined> {
   if (!s.local("desktop:pendingAdd")) return undefined;
+  let expired: PendingAdd | undefined;
   // Under the switch lock: mid-switch, Desktop's files can hold one account's cookies and another's tokens.
   const uuid = locked(s, () => {
     const raw = s.local("desktop:pendingAdd");
     if (!raw || s.local(JOURNAL)) return undefined;
-    const pending = JSON.parse(raw) as { since: number; expected?: string };
+    const pending = JSON.parse(raw) as PendingAdd;
     if (Date.now() - pending.since > ADD_TIMEOUT) {
-      cancelAdd(s);
+      clearAdd(s);
+      expired = pending;
       return undefined;
     }
     const login = readLogin();
     if (!login) return undefined;
-    cancelAdd(s);
+    clearAdd(s);
     // A different account than asked for is still a real sign-in: keep it, and say so.
     if (pending.expected && mismatch(s, pending.expected, login.accountUuid))
       s.setLocal("desktop:addMismatch", JSON.stringify({ expected: pending.expected, accountUuid: login.accountUuid }));
@@ -439,6 +483,11 @@ export async function pollDesktopLogin(s: Store): Promise<string | undefined> {
     return save(s, login);
   });
   if (uuid) log(s, uuid, `connected ${nameOf(s, uuid)} to Claude Desktop`);
+  // Nobody signed in: put back the account the add signed out (after the lock, which the switch takes itself).
+  if (expired)
+    await signBackIn(s, expired.previous).catch(() =>
+      log(s, expired!.previous, "could not switch Claude Desktop back after an unfinished add"),
+    );
   return uuid;
 }
 
@@ -572,7 +621,7 @@ export function status(s: Store): DesktopStatus {
     mode: m,
     current,
     logins,
-    pendingAdd: pending ? JSON.parse(pending) : undefined,
+    pendingAdd: pending ? pick(JSON.parse(pending) as PendingAdd, ["since", "expected"]) : undefined,
     addMismatch: wrong
       ? (({ expected, accountUuid }) => ({ expected, ...who(accountUuid) }))(JSON.parse(wrong))
       : undefined,

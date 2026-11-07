@@ -462,6 +462,37 @@ test("per-session children use each worktree, reconcile mappings, and forward ca
   }
 });
 
+test("a per-session server that fails to start is not started again on every reconcile, until its config changes", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const cwd = mkdtempSync(join(tmpdir(), "agentgate-failing-")),
+    starts = join(cwd, "starts");
+  const failing = (n: number) =>
+    newInstance({ id: "failing", command: "/bin/sh", args: ["-c", `echo ${n} >> ${starts}`], mode: "perSession" });
+  s.put("mcp", "failing", failing(1));
+  s.put("project", "*", { id: "*", mcp: { failing: "failing" } });
+  const ctx = makeCtx(s),
+    handler = app(ctx);
+  const daemon = Bun.serve({ port: 0, fetch: (req) => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "*" }, { reconnectMs: 10 });
+  const client = await connectTo(shim.server);
+  const tried = async () => (await Bun.file(starts).text()).trim().split("\n");
+  try {
+    for (let i = 0; i < 20; i++) await client.listTools();
+    expect(await tried()).toEqual(["1"]);
+    s.put("mcp", "failing", failing(2));
+    await client.listTools();
+    expect(await tried()).toEqual(["1", "2"]);
+  } finally {
+    await client.close();
+    await shim.close();
+    await ctx.gateway.close();
+    daemon.stop(true);
+    s.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("shared long tools stay open during idle sweeps and carry cancellation/progress through both gateways", async () => {
   const cwd = mkdtempSync(join(tmpdir(), "agentgate-shared-")),
     cancelled = join(cwd, "cancelled");

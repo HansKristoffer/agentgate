@@ -103,6 +103,9 @@ export function App() {
   const current = useRef(connection);
   const isLocal = useRef(false);
   const running = useRef(new Set<string>());
+  // Refreshes started, and the newest one shown: an answer older than what is on screen is dropped, so a poll that
+  // started before an action finished never puts back the state from before it.
+  const refreshes = useRef({ started: 0, shown: 0 });
   const local = trimTrailingSlash(connection.url.replace("localhost", "127.0.0.1")) === localUrl;
   isLocal.current = local;
   const selected = navigation.find((n) => n.id === view)!;
@@ -135,17 +138,23 @@ export function App() {
   }, []);
   const refresh = useCallback(async () => {
     const c = current.current;
+    const seq = ++refreshes.current.started;
+    const newerThanShown = () => {
+      if (current.current !== c || seq < refreshes.current.shown) return false;
+      refreshes.current.shown = seq;
+      return true;
+    };
     try {
       const next = await status(c);
       // Claude Desktop is per Mac: only the local daemon reports it.
       const desk = isLocal.current ? await desktopStatus(c).catch(() => undefined) : undefined;
-      if (current.current === c) {
+      if (newerThanShown()) {
         setData(next);
         setDesktop(desk);
         setError("");
       }
     } catch (e) {
-      if (current.current === c) setError(String(e));
+      if (newerThanShown()) setError(String(e));
     }
   }, []);
   // Polls, every second while something is under way so it shows as it happens, and refreshes on focus and on every
@@ -182,8 +191,8 @@ export function App() {
     if (local && data && !data.accounts.length && !localStorage.getItem("onboarding")) setWelcome(true);
   }, [local, data]);
   /** Runs an action and refreshes. A second press of the same action while it runs is ignored; `key` names it when the
-   * message does not, and is what `usePending` asks about. */
-  const perform: Perform = async (task, message, key = message ?? "action") => {
+   * message does not, and is what `usePending` asks about. An action with neither is never mistaken for another. */
+  const perform: Perform = async (task, message, key = message ?? crypto.randomUUID()) => {
     if (running.current.has(key)) return;
     running.current.add(key);
     setPending(new Set(running.current));

@@ -302,3 +302,24 @@ test("only a pull that gets an answer counts as listening", async () => {
   }
   expect(listeningFor(b)).toBeGreaterThanOrEqual(2 * 60_000);
 });
+
+test("a joiner that lost the answer gets the same token for the same code; nobody else does", async () => {
+  const a = node("a");
+  const urlA = listen(a);
+  const code = pairCode(a);
+  const join = (body: object) =>
+    fetch(`${urlA}/peer/join`, {
+      method: "POST",
+      body: JSON.stringify({ code, node: "b", url: "http://b.example", protocol: SYNC_PROTOCOL, ...body }),
+    });
+  const first = (await (await join({})).json()) as { token: string };
+  const retry = await join({});
+  expect(retry.status).toBe(200);
+  expect(((await retry.json()) as { token: string }).token).toBe(first.token);
+  expect(peers(a)).toHaveLength(1);
+  expect((await join({ node: "x" })).status).toBe(403);
+  expect((await join({ url: "http://elsewhere.example" })).status).toBe(403);
+  expect((await join({ code: pairCode(a) })).status).toBe(409); // a new code still cannot pair b twice
+  a.now = () => Date.now() + 11 * 60_000;
+  expect((await join({})).status).toBe(403);
+});

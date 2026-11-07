@@ -235,6 +235,7 @@ export function fakeT3(options: {
       return { importedCount, skippedCount: 0 };
     },
     "orchestration.dispatchCommand": (c) => {
+      if (api.failCommands.has(String(c.type))) throw { _tag: "CommandFailed", message: `${c.type} failed` };
       commands.push(c);
       const t = threads.get(String(c.threadId))!;
       t.updatedAt = now();
@@ -362,13 +363,15 @@ export function fakeT3(options: {
           const handler = rpc[frame.tag];
           api.reads.set(frame.tag, (api.reads.get(frame.tag) ?? 0) + 1);
           if (!handler) throw { _tag: "RpcNotFound", message: `no method ${frame.tag}` };
-          ws.send(
-            JSON.stringify({
-              _tag: "Exit",
-              requestId: frame.id,
-              exit: { _tag: "Success", value: handler(frame.payload) },
-            }),
-          );
+          const answer = JSON.stringify({
+            _tag: "Exit",
+            requestId: frame.id,
+            exit: { _tag: "Success", value: handler(frame.payload) },
+          });
+          const delay = api.delayNext?.tag === frame.tag ? api.delayNext.ms : 0;
+          if (delay) api.delayNext = undefined;
+          if (delay) setTimeout(() => ws.send(answer), delay);
+          else ws.send(answer);
         } catch (error) {
           ws.send(
             JSON.stringify({
@@ -399,6 +402,10 @@ export function fakeT3(options: {
     denyClones: false,
     /** How many times each RPC method was called. */
     reads: new Map<string, number>(),
+    /** Commands that fail when dispatched. */
+    failCommands: new Set<string>(),
+    /** Answer the next call of this RPC method late. */
+    delayNext: undefined as { tag: string; ms: number } | undefined,
     /** A single-use pairing token, as `t3 pair` prints. */
     pairingToken() {
       const token = crypto.randomUUID();
