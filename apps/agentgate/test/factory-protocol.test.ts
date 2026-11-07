@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   factoryConfigSchema,
+  scoutFileSchema,
   factoryJsonSchema,
   factoryReportSchema,
   scorerFileSchema,
@@ -32,7 +33,6 @@ sources:
     signature: { header: sentry-hook-signature, encoding: hex, secret: "secret:SENTRY_HOOK" }
     title: "{{body.data.issue.title}}"
     dedupe: "{{body.data.issue.id}}"
-  - { id: perf, type: scout, repo: acme/web, schedule: { at: "09:00", days: [mon] }, mcp: [railway] }
 stages:
   triage: { note: Reproduce against staging. }
   review: { note: Check the public API stays compatible. }
@@ -48,9 +48,13 @@ test("a factory.yaml using every key parses, and what it leaves out gets the doc
   });
   expect(config.limits.stalledAfter).toBe("30m");
   expect(config.learning.every).toBe("14d");
-  expect(config.sources.map((source) => source.intake)).toEqual(["auto", "hold", "hold", "auto"]);
-  expect(config.sources[3]).toMatchObject({
+  expect(config.sources.map((source) => source.intake)).toEqual(["auto", "hold", "hold"]);
+  // A scout's file: its frontmatter, with the defaults.
+  expect(
+    scoutFileSchema.parse({ repo: "acme/web", schedule: { at: "09:00", days: ["mon"] }, mcp: ["railway"] }),
+  ).toMatchObject({
     schedule: { at: "09:00", days: ["mon"], timezone: "UTC" },
+    intake: "auto",
     dedupeWindow: "14d",
     enabled: true,
   });

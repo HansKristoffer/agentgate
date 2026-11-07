@@ -6,6 +6,7 @@ import {
   factoryMoveInputSchema,
   factoryUseInputSchema,
   scorerFileSchema,
+  scoutFileSchema,
   stageFileSchema,
   stageNames,
   type FactoryBoard,
@@ -113,11 +114,15 @@ function secretRefs(value: unknown): { name: string }[] {
 export function loadFolder(dir: string, commit: string): LoadedFolder {
   if (!existsSync(join(dir, "factory.yaml")))
     throw new FolderError("factory.yaml", "", "the folder has no factory.yaml");
-  const config = check(
-    factoryConfigSchema,
-    yaml("factory.yaml", readFileSync(join(dir, "factory.yaml"), "utf8")),
-    "factory.yaml",
-  );
+  const raw = yaml("factory.yaml", readFileSync(join(dir, "factory.yaml"), "utf8"));
+  const listed = (raw as { sources?: unknown }).sources;
+  if (Array.isArray(listed)) {
+    const at = listed.findIndex((x) => (x as { type?: unknown } | null)?.type === "scout");
+    if (at >= 0)
+      throw new FolderError("factory.yaml", `sources[${at}].type`, "a scout is set in scouts/<id>.md, not here");
+  }
+  const parsed = check(factoryConfigSchema, raw, "factory.yaml");
+  const config: FactoryConfig = { ...parsed, sources: [...parsed.sources] };
 
   // GitHub names are case-insensitive: a source names its repository the way `repositories` spells it.
   const repos = new Map(Object.keys(config.repositories).map((r) => [r.toLowerCase(), r]));
@@ -135,27 +140,25 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
   const secrets = [...new Set(secretRefs(config).map((ref) => ref.name))];
 
   const scouts: LoadedFolder["scouts"] = {};
-  const scoutFiles = new Set(markdownFiles(join(dir, "scouts")));
-  config.sources.forEach((source, i) => {
-    if (source.type !== "scout") return;
-    const { schedule } = source;
+  for (const name of markdownFiles(join(dir, "scouts"))) {
+    const file = `scouts/${name}.md`;
+    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(name))
+      throw new FolderError(file, "", "a scout's name is up to 40 lowercase letters, digits and dashes");
+    const first = ids.get(name);
+    if (first !== undefined) throw new FolderError(file, "", `${name} is also the id of sources[${first}]`);
+    const { data, body } = markdown(dir, file);
+    const settings = check(scoutFileSchema, data, file);
+    const repo = repos.get(settings.repo.toLowerCase());
+    if (!repo) throw new FolderError(file, "repo", `${settings.repo} is not under repositories in factory.yaml`);
+    const { schedule } = settings;
     if ("every" in schedule && durationMs(schedule.every) < MIN_SCOUT_EVERY)
-      throw new FolderError("factory.yaml", `sources[${i}].schedule.every`, "a scout runs at most once an hour");
+      throw new FolderError(file, "schedule.every", "a scout runs at most once an hour");
     if ("timezone" in schedule && !knownTimezone(schedule.timezone))
-      throw new FolderError(
-        "factory.yaml",
-        `sources[${i}].schedule.timezone`,
-        `${schedule.timezone} is not a timezone`,
-      );
-    const file = `scouts/${source.id}.md`;
-    if (!scoutFiles.has(source.id))
-      throw new FolderError(file, "", `the scout ${source.id} has no prompt; write it in ${file}`);
-    const { body } = markdown(dir, file);
+      throw new FolderError(file, "schedule.timezone", `${schedule.timezone} is not a timezone`);
     if (!body) throw new FolderError(file, "", "the prompt is empty");
-    scouts[source.id] = { prompt: body };
-  });
-  for (const name of scoutFiles)
-    if (!scouts[name]) throw new FolderError(`scouts/${name}.md`, "", `no scout source has the id ${name}`);
+    config.sources.push({ ...settings, id: name, type: "scout", repo });
+    scouts[name] = { prompt: body };
+  }
 
   const stages: LoadedFolder["stages"] = {};
   for (const name of markdownFiles(join(dir, "stages"))) {

@@ -40,7 +40,7 @@ factory/                  any folder in a git repository
   rulings.md              your standing rulings, added to every brief
   stages/<stage>.md       replaces a stage's built-in brief: triage, spec, implement or review
   scorers/<name>.md       an AI judge that grades a sample of runs
-  scouts/<id>.md          the prompt of a scout source
+  scouts/<id>.md          a scout: its settings as frontmatter, and its prompt
   skills/<name>/SKILL.md  a skill installed into every repository the factory works in
 ```
 
@@ -68,7 +68,7 @@ Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys 
 | `limits.reviewRounds`      | `3`        | Review rounds before the PR goes to you with the findings still open (0 to 5). `0` skips the review stage.                                                                                                                                                        |
 | `limits.nudges`            | `3`        | Times the factory reminds an implement thread of a PR problem it sits on (0 to 10) before the item waits for you.                                                                                                                                                 |
 | `limits.stalledAfter`      | `15m`      | How long a thread may sit idle on a failing check, a conflict, a review comment or review findings before the factory nudges it, or sends the PR to you.                                                                                                          |
-| `sources`                  | `[]`       | Where items come from, up to 50. See [Sources](#sources).                                                                                                                                                                                                         |
+| `sources`                  | `[]`       | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
 | `stages.<stage>.note`      |            | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 | `learning.every`           | `7d`       | How often the learning thread runs, counted from the last one. It is skipped while no item finished since.                                                                                                                                                        |
 | `scoring.sample`           | `25`       | The percentage of finished stage runs each judge grades (0 to 100). While fewer than 20 runs were graded in the last 7 days, judges grade every run; `0` turns them off.                                                                                          |
@@ -342,28 +342,26 @@ What to expect:
 
 ### Scouts
 
-A `scout` source looks for work on a schedule, such as slow endpoints, new errors or outdated dependencies. Each time, a T3 Code thread follows the prompt in `scouts/<id>.md` in a worktree of `repo`, and reports what it finds. Each finding becomes an item that goes through triage, a fix and review like any other.
+A scout looks for work on a schedule, such as slow endpoints, new errors or outdated dependencies. Each time, a T3 Code thread follows its prompt in a worktree of `repo`, and reports what it finds. Each finding becomes an item that goes through triage, a fix and review like any other.
 
-```yaml
-- id: perf
-  type: scout
-  repo: acme/api
-  schedule:
-    at: "09:00" # quoted, or some YAML tools read it as a number
-    days: [mon, thu] # default: every day
-    timezone: Europe/Copenhagen # default: UTC
-  mcp: [railway] # optional: MCP servers the thread may use
-  intake: auto # default; hold makes each finding wait for approve
-  dedupeWindow: 14d # default
-  enabled: true # default
-  model: # optional, like a stage file's
-    provider: claudeAgent
-    model: claude-sonnet-5-5
-```
+A scout is one file, `scouts/<id>.md`: its settings as frontmatter, then the prompt. The file's name is the scout's id, which no source in `factory.yaml` may share. `scouts/perf.md`:
 
-`scouts/perf.md`:
+```markdown
+---
+repo: acme/api
+schedule:
+  at: "09:00" # quoted, or some YAML tools read it as a number
+  days: [mon, thu] # default: every day
+  timezone: Europe/Copenhagen # default: UTC
+mcp: [railway] # optional: MCP servers the thread may use
+intake: auto # default; hold makes each finding wait for approve
+dedupeWindow: 14d # default
+enabled: true # default
+model: # optional, like a stage file's
+  provider: claudeAgent
+  model: claude-sonnet-5-5
+---
 
-```text
 Look at the p95 latency of every API endpoint over the last week in Railway. File each endpoint that got more than 20% slower, with the numbers and the commits around when it changed. Ignore endpoints with fewer than 100 requests.
 ```
 
@@ -389,7 +387,7 @@ prompt: |
 YAML
 ```
 
-Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. The PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments, and adds `scouts/<id>.md` for a scout. For a signed webhook, set its secret after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
+Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. For a webhook, the PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments; for a scout, it adds `scouts/<id>.md`. For a signed webhook, set its secret after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
 
 ### By hand
 

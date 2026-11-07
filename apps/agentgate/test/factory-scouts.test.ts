@@ -79,12 +79,11 @@ test("scoutDue: an at slot runs within the hour after it, once, on its weekdays 
 /** The factory machine with one scout, `perf`, on the repository. */
 async function scoutFactory(scout: Record<string, unknown> = {}) {
   const n = await factoryNode(cleanup, {
-    config: (repo) => ({
-      // Room for a scout run next to the triage runs its findings start.
-      limits: { threads: 5 },
-      sources: [{ id: "perf", type: "scout", repo, schedule: { every: "6h" }, mcp: ["railway"], ...scout }],
+    // Room for a scout run next to the triage runs its findings start.
+    config: { limits: { threads: 5 } },
+    files: (repo) => ({
+      "scouts/perf.md": `---\n${JSON.stringify({ repo, schedule: { every: "6h" }, mcp: ["railway"], ...scout })}\n---\n\nLook at the p95 latency of every endpoint over the last day.`,
     }),
-    files: { "scouts/perf.md": "Look at the p95 latency of every endpoint over the last day." },
   });
   const builtin = (await n.ctx.gateway.builtin!()).client;
   const tool = async (name: string, args: Record<string, unknown>, thread?: string) => {

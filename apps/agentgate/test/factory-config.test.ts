@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
 import { currentFolder, folderAt, loadFolder } from "../src/factory/config.ts";
@@ -122,42 +122,41 @@ test.each([
     "factory.yaml: stages.deploy: unknown key",
   ],
   [
-    "a scout without its prompt",
-    (() => {
-      const dir = edited("factory.yaml", (t) => t);
-      rmSync(join(dir, "scouts/perf.md"));
-      return dir;
-    })(),
-    "scouts/perf.md: the scout perf has no prompt; write it in scouts/perf.md",
+    "a scout listed in factory.yaml",
+    edited("factory.yaml", (t) =>
+      t.replace("sources:\n", "sources:\n  - { id: deps, type: scout, repo: acme/api, schedule: { every: 6h } }\n"),
+    ),
+    "factory.yaml: sources[0].type: a scout is set in scouts/<id>.md, not here",
   ],
   [
-    "a prompt without its scout",
-    edited("factory.yaml", (t) => t.replace("id: perf", "id: speed")),
-    "scouts/speed.md: the scout speed has no prompt; write it in scouts/speed.md",
+    "a scout named like a source",
+    edited("factory.yaml", (t) => t.replace("id: desk", "id: perf")),
+    "scouts/perf.md: perf is also the id of sources[2]",
   ],
   [
-    "a scout prompt no source names",
-    (() => {
-      const dir = edited("factory.yaml", (t) => t);
-      writeFileSync(join(dir, "scouts/deps.md"), "Look at outdated dependencies.");
-      return dir;
-    })(),
-    "scouts/deps.md: no scout source has the id deps",
+    "a scout with an empty prompt",
+    edited("scouts/perf.md", (t) => t.replace(/\n---\n[\s\S]*$/, "\n---\n")),
+    "scouts/perf.md: the prompt is empty",
+  ],
+  [
+    "a scout on a repository not under repositories",
+    edited("scouts/perf.md", (t) => t.replace("repo: acme/api", "repo: acme/mobile")),
+    "scouts/perf.md: repo: acme/mobile is not under repositories in factory.yaml",
   ],
   [
     "an unknown timezone",
-    edited("factory.yaml", (t) => t.replace("timezone: Europe/Copenhagen", "timezone: Nope/Nowhere")),
-    "factory.yaml: sources[3].schedule.timezone: Nope/Nowhere is not a timezone",
+    edited("scouts/perf.md", (t) => t.replace("timezone: Europe/Copenhagen", "timezone: Nope/Nowhere")),
+    "scouts/perf.md: schedule.timezone: Nope/Nowhere is not a timezone",
   ],
   [
     "a scout more often than hourly",
-    edited("factory.yaml", (t) =>
+    edited("scouts/perf.md", (t) =>
       t.replace(
         /schedule:\n(\s+)at: "09:00"\n\s+days: \[mon, thu\]\n\s+timezone: Europe\/Copenhagen/,
         "schedule:\n$1every: 30m",
       ),
     ),
-    "factory.yaml: sources[3].schedule.every: a scout runs at most once an hour",
+    "scouts/perf.md: schedule.every: a scout runs at most once an hour",
   ],
 ])("the loader rejects %s, naming the file and field", (_, dir, message) => {
   expect(() => loadFolder(dir, "c0ffee")).toThrow(message);

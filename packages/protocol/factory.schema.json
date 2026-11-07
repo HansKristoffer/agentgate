@@ -104,64 +104,6 @@
             },
             "required": ["id", "type", "repo", "title"],
             "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,39}$" },
-              "type": { "type": "string", "const": "scout" },
-              "repo": { "type": "string", "pattern": "^[A-Za-z0-9-]+\\/[A-Za-z0-9._-]+$" },
-              "schedule": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": { "every": { "type": "string", "pattern": "^\\d+(m|h|d)$" } },
-                    "required": ["every"],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "at": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" },
-                      "days": {
-                        "default": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
-                        "minItems": 1,
-                        "maxItems": 7,
-                        "type": "array",
-                        "items": { "type": "string", "enum": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] }
-                      },
-                      "timezone": { "default": "UTC", "type": "string", "minLength": 1, "maxLength": 64 }
-                    },
-                    "required": ["at"],
-                    "additionalProperties": false
-                  }
-                ]
-              },
-              "intake": { "default": "auto", "type": "string", "enum": ["auto", "hold"] },
-              "dedupeWindow": { "default": "14d", "type": "string", "pattern": "^\\d+(m|h|d)$" },
-              "model": {
-                "type": "object",
-                "properties": {
-                  "provider": { "type": "string", "minLength": 1 },
-                  "model": { "type": "string", "minLength": 1 },
-                  "options": {
-                    "type": "object",
-                    "propertyNames": { "type": "string" },
-                    "additionalProperties": { "type": ["string", "boolean"] }
-                  }
-                },
-                "required": ["provider", "model"],
-                "additionalProperties": false
-              },
-              "mcp": {
-                "maxItems": 20,
-                "type": "array",
-                "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$" }
-              },
-              "enabled": { "default": true, "type": "boolean" }
-            },
-            "required": ["id", "type", "repo", "schedule"],
-            "additionalProperties": false
           }
         ]
       }

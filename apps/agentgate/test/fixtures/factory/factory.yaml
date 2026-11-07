@@ -31,14 +31,6 @@ sources:
       encoding: hex
       prefix: "sha256="
       secret: secret:DESK_SIGNING
-  - id: perf
-    type: scout
-    repo: acme/api
-    schedule:
-      at: "09:00"
-      days: [mon, thu]
-      timezone: Europe/Copenhagen
-    mcp: [railway]
 stages:
   implement:
     note: Run `bun test` in the package you changed before you open the PR.

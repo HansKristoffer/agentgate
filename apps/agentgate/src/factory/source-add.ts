@@ -12,8 +12,8 @@ import { asInput, type FactoryRuntime } from "./runtime.ts";
 /**
  * `agentgate factory source add` and `POST /api/factory/sources`: a webhook source or a scout, added to the factory's
  * folder in a PR, through this machine's `gh` login and without a checkout. The source starts once the PR merges and
- * the folder loop loads it. `factory.yaml` is edited as text, so its comments and layout stay, and the result is
- * checked by parsing it again.
+ * the folder loop loads it. A webhook source is added to `factory.yaml`, edited as text so its comments and layout
+ * stay, and checked by parsing it again; a scout is its own file, `scouts/<id>.md`.
  */
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -36,6 +36,12 @@ function yamlLines(value: { [key: string]: Json }, indent: string): string[] {
     if (v && typeof v === "object") return [`${indent}${key}:`, ...yamlLines(v, `${indent}  `)];
     return [`${indent}${key}: ${scalar(v)}`];
   });
+}
+
+/** A scout's file: its settings as frontmatter, without the id its name gives, and its prompt. */
+export function scoutFile(source: { [key: string]: Json }, prompt: string) {
+  const { id: _, type: __, ...settings } = source;
+  return ["---", ...yamlLines(settings, ""), "---", "", prompt.trim(), ""].join("\n");
 }
 
 /** The source as one entry of the `sources` list, its dash at `indent`. */
@@ -164,9 +170,8 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
   const repos = Object.keys((config.repositories as object | undefined) ?? {});
   if (!repos.some((r) => r.toLowerCase() === source.repo.toLowerCase()))
     throw new Error(`${source.repo} is not under repositories in factory.yaml; add it there first`);
-  const scoutFile = `${folder}scouts/${source.id}.md`;
-  if (source.type === "scout" && (await fileExists(repo, scoutFile, base)))
-    throw new Error(`${repo} already has ${scoutFile} on ${base}`);
+  const scoutPath = `${folder}scouts/${source.id}.md`;
+  if (await fileExists(repo, scoutPath, base)) throw new Error(`The factory already has a scout ${source.id}`);
   const branch = `agentgate/factory-source-${source.id}`;
   if (await branchExists(repo, branch)) {
     const open = await openPrFor(repo, branch);
@@ -178,10 +183,10 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
   }
 
   const secret = source.type === "webhook" ? source.signature?.secret.slice("secret:".length) : undefined;
-  const files = {
-    [`${folder}factory.yaml`]: insertSource(yaml, raw),
-    ...(source.type === "scout" && { [scoutFile]: `${parsed.prompt!.trim()}\n` }),
-  };
+  const files =
+    source.type === "scout"
+      ? { [scoutPath]: scoutFile(raw, parsed.prompt!) }
+      : { [`${folder}factory.yaml`]: insertSource(yaml, raw) };
   const title = `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`;
   await pushNewBranch(repo, branch, title, files, base);
   const pr = await openPr(repo, branch, title, prBody(parsed, folder, secret), { base });

@@ -354,7 +354,7 @@ export function setup(f: FactoryRuntime): void {
       "Run one of the factory's scouts now, whatever its schedule. Returns { run }, or { skipped } when its last run has not finished.",
     inputSchema: {
       type: "object",
-      properties: { id: { type: "string", description: "The scout source's id in factory.yaml" } },
+      properties: { id: { type: "string", description: "The scout's id: its file's name in scouts/" } },
       required: ["id"],
     },
     call: async (args) => scoutNow(f, String(args.id ?? "")),

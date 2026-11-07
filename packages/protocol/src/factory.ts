@@ -97,7 +97,8 @@ export const scoutScheduleSchema = z.union([
     .strict(),
 ]);
 export type ScoutSchedule = z.infer<typeof scoutScheduleSchema>;
-/** A scout: on its schedule, a T3 thread follows `scouts/<id>.md` and reports findings, each of which becomes an item. */
+/** A scout: on its schedule, a T3 thread follows `scouts/<id>.md` and reports findings, each of which becomes an item.
+ * The file's frontmatter holds these settings (`scoutFileSchema`), its body the prompt, and its name the id. */
 export const scoutSourceSchema = z
   .object({
     id: name,
@@ -111,6 +112,14 @@ export const scoutSourceSchema = z
     enabled: z.boolean().default(true),
   })
   .strict();
+/** The frontmatter of `scouts/<id>.md`. */
+export const scoutFileSchema = scoutSourceSchema.omit({ id: true, type: true });
+/** A source as `factory.yaml` lists it; scouts have a file each. */
+export const yamlSourceSchema = z.discriminatedUnion("type", [
+  githubSourceSchema,
+  linearSourceSchema,
+  webhookSourceSchema,
+]);
 export const factorySourceSchema = z.discriminatedUnion("type", [
   githubSourceSchema,
   linearSourceSchema,
@@ -150,7 +159,7 @@ export const factoryConfigSchema = z
       })
       .strict()
       .prefault({}),
-    sources: z.array(factorySourceSchema).max(50).default([]),
+    sources: z.array(yamlSourceSchema).max(50).default([]),
     /** Per stage, a note for this project added after the stage's brief, built-in or replaced by stages/<stage>.md. */
     stages: z
       .object({ triage: stageNote, spec: stageNote, implement: stageNote, review: stageNote })
@@ -166,7 +175,8 @@ export const factoryConfigSchema = z
       .prefault({}),
   })
   .strict();
-export type FactoryConfig = z.infer<typeof factoryConfigSchema>;
+/** `factory.yaml` as loaded: its sources, then a scout source for each `scouts/<id>.md`. */
+export type FactoryConfig = Omit<z.infer<typeof factoryConfigSchema>, "sources"> & { sources: FactorySource[] };
 
 /** Frontmatter of stages/<stage>.md; the body replaces the built-in brief. */
 export const stageFileSchema = z

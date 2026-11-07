@@ -325,13 +325,14 @@ export function fakeT3WithMcp(options: Omit<Parameters<typeof fakeT3>[0], "route
 /**
  * The factory machine `a` on an in-memory store with fake time: connected to a `fakeT3WithMcp`, its folder loaded
  * from `folder` (factory.yaml as an object, plus other files), the mirror live, and every repository in
- * `repositories` a real git origin with no T3 project yet. `config` may be a function of the repository's name. `cleanup` collects what a test's afterEach undoes.
+ * `repositories` a real git origin with no T3 project yet. `config` and `files` may be functions of the repository's
+ * name. `cleanup` collects what a test's afterEach undoes.
  */
 export async function factoryNode(
   cleanup: (() => unknown)[],
   folder: {
     config?: Record<string, unknown> | ((repo: string) => Record<string, unknown>);
-    files?: Record<string, string>;
+    files?: Record<string, string> | ((repo: string) => Record<string, string>);
   } = {},
 ) {
   const origin = repos();
@@ -351,7 +352,7 @@ export async function factoryNode(
       ...(typeof folder.config === "function" ? folder.config(repo) : folder.config),
     }),
     "rulings.md": "# Rulings\n\n- Keep public field names.",
-    ...folder.files,
+    ...(typeof folder.files === "function" ? folder.files(repo) : folder.files),
   };
   for (const [file, text] of Object.entries(files)) {
     const path = join(dir, file);

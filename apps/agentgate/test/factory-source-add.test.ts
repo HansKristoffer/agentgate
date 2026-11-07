@@ -5,7 +5,7 @@ import { app, makeCtx } from "../src/daemon.ts";
 import { loadFolder } from "../src/factory/config.ts";
 import { initTemplate } from "../src/factory/init.ts";
 import { runCommand } from "../src/factory/runtime.ts";
-import { insertSource, sourceYaml } from "../src/factory/source-add.ts";
+import { insertSource, scoutFile, sourceYaml } from "../src/factory/source-add.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
@@ -72,13 +72,34 @@ test.each([
   ["sources: []", TEMPLATE.replace(/sources:[\s\S]*$/, "sources: []\n")],
   ["no sources key", TEMPLATE.replace(/sources:[\s\S]*$/, "")],
   ["sources with nothing under them", TEMPLATE.replace(/sources:[\s\S]*$/, "sources:\nlearning:\n  every: 7d\n")],
-])("a scout is added to a factory.yaml with %s, which keeps its comments and loads", (_, yaml) => {
-  const next = insertSource(yaml, scout);
+])("a webhook source is added to a factory.yaml with %s, which keeps its comments and loads", (_, yaml) => {
+  const next = insertSource(yaml, webhook);
   expect(next).toStartWith(yaml.split("\n")[0]!); // the schema comment stays first
   for (const comment of yaml.split("\n").filter((l) => l.startsWith("#"))) expect(next).toContain(comment);
-  const folder = load({ "factory.yaml": next, "scouts/perf.md": "Look at latency." });
-  expect(folder.config.sources.at(-1)).toMatchObject({ id: "perf", type: "scout", repo: REPO, intake: "auto" });
+  const folder = load({ "factory.yaml": next });
+  expect(folder.config.sources.at(-1)).toMatchObject({ id: "desk", type: "webhook", repo: REPO, intake: "hold" });
   expect(next).not.toContain("intake"); // only what was set
+});
+
+test("a scout is one file: its settings as frontmatter, only those set, and its prompt", () => {
+  const file = scoutFile(scout, "Look at latency.\n\n");
+  expect(file).toBe(
+    [
+      "---",
+      "repo: acme/api",
+      "schedule:",
+      '  at: "09:00"',
+      "  days: [mon, thu]",
+      "  timezone: Europe/Copenhagen",
+      "mcp: [railway]",
+      "---",
+      "",
+      "Look at latency.",
+      "",
+    ].join("\n"),
+  );
+  const folder = load({ "factory.yaml": TEMPLATE, "scouts/perf.md": file });
+  expect(folder.config.sources.at(-1)).toMatchObject({ id: "perf", type: "scout", repo: REPO, intake: "auto" });
   expect(folder.scouts.perf!.prompt).toBe("Look at latency.");
 });
 
@@ -202,7 +223,7 @@ function node(ref?: string) {
   return { command, api };
 }
 
-test("POST /sources pushes factory.yaml and the scout's prompt under the folder in one commit, and opens a PR to the factory's branch", async () => {
+test("POST /sources pushes the scout's file under the folder, and opens a PR to the factory's branch", async () => {
   const github = fakeGitHub();
   const res = await node().api({ source: scout, prompt: "Look at latency.\n\n" });
   expect(res).toEqual({
@@ -210,8 +231,8 @@ test("POST /sources pushes factory.yaml and the scout's prompt under the folder 
     body: { prUrl: `https://github.com/${REPO}/pull/9`, branch: "agentgate/factory-source-perf", warnings: [] },
   });
   expect(github.base).toBe("main");
-  expect(github.tree.map((t) => t.path)).toEqual(["factory/factory.yaml", "factory/scouts/perf.md"]);
-  const folder = load(Object.fromEntries(github.tree.map((t) => [t.path.replace("factory/", ""), t.content])));
+  expect(github.tree.map((t) => t.path)).toEqual(["factory/scouts/perf.md"]);
+  const folder = load({ "factory.yaml": TEMPLATE, "scouts/perf.md": github.tree[0]!.content });
   expect(folder.config.sources.map((s) => s.id)).toEqual(["issues", "perf"]);
   expect(github.prs).toEqual([
     expect.objectContaining({
@@ -226,7 +247,7 @@ test("POST /sources pushes factory.yaml and the scout's prompt under the folder 
   );
 });
 
-test("source add reads YAML on stdin; a signed webhook declares its secret and says to set it", async () => {
+test("source add reads YAML on stdin; a signed webhook says to set its secret", async () => {
   const github = fakeGitHub();
   const yaml = [
     "source:",
@@ -279,9 +300,7 @@ test("source add refuses before writing: a taken id, a repository the factory la
   });
 
   github.branches.get("main")!["factory/scouts/perf.md"] = "Old prompt.";
-  expect((await api({ source: scout, prompt: "x" })).body.error).toBe(
-    `${REPO} already has factory/scouts/perf.md on main`,
-  );
+  expect((await api({ source: scout, prompt: "x" })).body.error).toBe("The factory already has a scout perf");
   delete github.branches.get("main")!["factory/scouts/perf.md"];
 
   github.branches.set("agentgate/factory-source-perf", {});
