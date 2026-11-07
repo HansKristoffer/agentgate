@@ -120,6 +120,26 @@ describe("remote MCP endpoints", () => {
     second.ws.close();
   });
 
+  it("connecting and forwarding update the endpoint's row in place, without rewriting its table", async () => {
+    const key = keyOf(14);
+    expect((await put(key, {})).status).toBe(200);
+    const stub = env.ENDPOINTS.getByName(key);
+    // A column the relay never writes survives only if the table is not dropped and created again.
+    await runInDurableObject(stub, (_, state) => {
+      state.storage.sql.exec("alter table meta add column probe integer");
+      state.storage.sql.exec("update meta set probe = 1, lastActive = 0");
+    });
+    const node = await connect(key);
+    const answer = mcp(key);
+    const frame = await node.next();
+    node.ws.send(JSON.stringify({ t: "res", id: frame.id, status: 200, headers: {}, body: "{}" }));
+    expect((await answer).status).toBe(200);
+    const row = await runInDurableObject(stub, (_, state) => state.storage.sql.exec("select * from meta").toArray()[0]);
+    expect(row).toMatchObject({ probe: 1, lastActive: expect.any(Number) });
+    expect(row!.lastActive).toBeGreaterThan(0);
+    node.ws.close();
+  });
+
   it("deleting closes the socket and frees the key; idle endpoints expire", async () => {
     const key = keyOf(4);
     await put(key, {});

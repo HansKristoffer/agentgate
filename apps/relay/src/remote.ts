@@ -117,12 +117,15 @@ export class EndpointCore {
     return row;
   }
 
+  /** Only when the node changes the endpoint. Endpoints created before webhook URLs have no `kind`, which reads as
+   * "mcp", so their table gets the column here. */
   private save(m: Meta) {
-    // The one row is rewritten whole, so the table is too: that adds `kind` to endpoints created before it.
-    this.sql.exec("drop table if exists meta");
     this.sql.exec(
-      "create table meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer, kind text)",
+      "create table if not exists meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer, kind text)",
     );
+    const columns = this.sql.exec("select name from pragma_table_info('meta')").toArray();
+    if (!columns.some((c) => c.name === "kind")) this.sql.exec("alter table meta add column kind text");
+    this.sql.exec("delete from meta");
     this.sql.exec(
       "insert into meta values (?, ?, ?, ?, ?, ?, ?)",
       m.key,
@@ -133,6 +136,11 @@ export class EndpointCore {
       m.admitted,
       m.kind ?? "mcp",
     );
+  }
+
+  /** On the request path: one column of the one row. */
+  private touch(now: number) {
+    this.sql.exec("update meta set lastActive = ?", now);
   }
 
   /** The newest open socket. Older ones are closed on connect, so a late close never affects the current one. */
@@ -167,7 +175,7 @@ export class EndpointCore {
       await this.destroy(m.key);
       return json(200, { ok: true });
     }
-    if (op === "connect") return this.connect(req, m);
+    if (op === "connect") return this.connect(req);
     return json(400, { error: "unknown operation" });
   }
 
@@ -233,7 +241,7 @@ export class EndpointCore {
     });
   }
 
-  private connect(req: Request, m: Meta): Response {
+  private connect(req: Request): Response {
     if (req.headers.get("upgrade") !== "websocket") return json(426, { error: "expected a WebSocket upgrade" });
     const node = relayNode.safeParse(req.headers.get("x-agentgate-node"));
     if (!node.success) return json(400, { error: "invalid node" });
@@ -241,7 +249,7 @@ export class EndpointCore {
     const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
     this.ctx.acceptWebSocket(server);
     server.serializeAttachment({ node: node.data, since: Date.now() } satisfies Attachment);
-    this.save({ ...m, lastActive: Date.now() });
+    this.touch(Date.now());
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -280,7 +288,7 @@ export class EndpointCore {
     const headers: Record<string, string> = {};
     const version = req.headers.get("mcp-protocol-version");
     if (version) headers["mcp-protocol-version"] = version.slice(0, 64);
-    return this.forward(req, m, ws, rpcError, { headers, body });
+    return this.forward(req, ws, rpcError, { headers, body });
   }
 
   /** A webhook delivery: no secret here, because the node checks the sender's signature over the exact body and headers. */
@@ -310,12 +318,11 @@ export class EndpointCore {
     } catch {
       return hookError(415, "the body must be UTF-8 text");
     }
-    return this.forward(req, m, ws, hookError, { headers, body, ...(query && { query }) });
+    return this.forward(req, ws, hookError, { headers, body, ...(query && { query }) });
   }
 
   private forward(
     req: Request,
-    m: Meta,
     ws: WebSocket,
     fail: Fail,
     frame: { headers: Record<string, string>; body: string; query?: string },
@@ -344,7 +351,7 @@ export class EndpointCore {
     } catch {
       this.settle(id, fail(502, "the serving machine disconnected"));
     }
-    this.save({ ...m, lastActive: now });
+    this.touch(now);
     return response;
   }
 
@@ -395,7 +402,7 @@ export class EndpointCore {
     if (!m) return;
     if (!m.admitted) return this.destroy(m.key);
     if (this.socket()) {
-      this.save({ ...m, lastActive: now });
+      this.touch(now);
       return void (await this.ctx.storage.setAlarm(now + this.deps.config.retentionMs));
     }
     const due = m.lastActive + this.deps.config.retentionMs;
