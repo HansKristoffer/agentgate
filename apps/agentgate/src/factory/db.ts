@@ -112,6 +112,8 @@ export interface FactoryRun {
   configCommit: string;
   /** The T3 MCP session a launch was sent under: T3 dedupes `clientRequestId` within one session only. */
   launchSession?: string;
+  /** Launches of this run that failed, so a restart neither forgets an item stuck on them nor starts the count over. */
+  failedLaunches?: number;
   /** A scout run's source, so its schedule finds its runs without reading every scout run. */
   source?: string;
   /** What agentgate's proxies counted for the run's provider sessions, and how many sessions T3 named; they only grow. */
@@ -150,7 +152,8 @@ export function ensureFactoryTables(s: Store) {
     s.db.run(`create table if not exists factory_runs (
       id text primary key, item text, kind text not null, attempt integer not null default 1, state text not null,
       node text, thread_id text, thread_link text, commit_sha text, report text, checked text, verdict text,
-      nudges integer not null default 0, error text, config_commit text not null, launch_session text, source text,
+      nudges integer not null default 0, error text, config_commit text not null, launch_session text,
+      failed_launches integer, source text,
       tokens integer not null default 0, sessions integer not null default 0, measured_at integer,
       queued_at integer not null, started_at integer, ended_at integer)`);
     s.db.run("create index if not exists factory_runs_item on factory_runs(item)");
@@ -235,6 +238,7 @@ const runColumns = {
   error: "error",
   configCommit: "config_commit",
   launchSession: "launch_session",
+  failedLaunches: "failed_launches",
   source: "source",
   tokens: "tokens",
   sessions: "sessions",
@@ -310,6 +314,7 @@ const toRun = (r: Row): FactoryRun => ({
   error: opt(r.error as string | null),
   configCommit: r.config_commit as string,
   launchSession: opt(r.launch_session as string | null),
+  failedLaunches: opt(r.failed_launches as number | null),
   source: opt(r.source as string | null),
   tokens: r.tokens as number,
   sessions: r.sessions as number,

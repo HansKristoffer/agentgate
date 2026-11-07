@@ -641,17 +641,22 @@ test("a running run whose turn ended unseen, as across a restart, is reminded on
   expect(items.list(m.s)[0]!.needsYou).toBeUndefined();
 });
 
-test("a run without an item whose launch fails three times in a row ends failed, so its schedule can queue a fresh one", async () => {
+test("a run without an item whose launch fails three times in a row ends failed, so its schedule can queue a fresh one, though the daemon restarted between", async () => {
   const n = await factoryNode(cleanup);
-  n.mcp.answer("t3_thread_launch", () => {
+  const failing = () => {
     throw new Error("the worktree could not be created");
-  });
+  };
+  n.mcp.answer("t3_thread_launch", failing);
   const run = enqueueRun(n.f, { kind: "learn" });
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < 2; i++) {
     await n.dispatch();
     n.advance(16 * 60_000);
   }
-  expect(runs.get(n.s, run.id)).toMatchObject({
+  // The count of failed launches is the run's, so a restart does not start it over.
+  const m = await n.restart();
+  m.mcp.answer("t3_thread_launch", failing);
+  await m.dispatch();
+  expect(runs.get(m.s, run.id)).toMatchObject({
     state: "failed",
     error: expect.stringContaining("starting it failed 3 times"),
   });

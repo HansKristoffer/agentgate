@@ -106,7 +106,8 @@ interface Memory {
     }
   >;
   /** Launches that failed, retried later rather than every 5 seconds. */
-  retry: Map<string, { failures: number; at: number }>;
+  /** Per run, when its next launch may start after one failed; the count of failures is on the run. */
+  retryAt: Map<string, number>;
   quota?: { waitingUntil?: number };
   projects: Map<string, { projectId: string; root: string; branch?: string }>;
   /** When each queued run last read its item's issue as open and still this machine's, so a run that waits (red CI)
@@ -123,7 +124,7 @@ function memory(f: FactoryRuntime) {
         watching: false,
         seen: new Set(),
         sources: new Map(),
-        retry: new Map(),
+        retryAt: new Map(),
         projects: new Map(),
         openAt: new Map(),
       }),
@@ -661,8 +662,7 @@ async function dispatch(f: FactoryRuntime) {
   for (const queued of runs.list(s, { states: ["queued", "starting"] }).toSorted(byPriority)) {
     const definition = f.runKinds.get(queued.kind);
     if (!definition) continue;
-    const retry = m.retry.get(queued.id);
-    if (retry && retry.at > s.now()) continue;
+    if ((m.retryAt.get(queued.id) ?? 0) > s.now()) continue;
     const stage = isStage(queued.kind);
     if (definition.countsAsWorking !== false) {
       if (counts.stage + counts.other >= limits.threads) continue;
@@ -745,20 +745,21 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       : prepareLaunch(f, queued.id));
     if (!("spec" in ready)) return ready;
     if (!(await start(f, ready.run, ready.item, ready.spec))) return {};
-    m.retry.delete(queued.id);
+    m.retryAt.delete(queued.id);
+    if (runs.get(s, queued.id)?.failedLaunches) runs.update(s, queued.id, { failedLaunches: undefined });
     return { started: true };
   } catch (e) {
     const run = queued;
-    const failures = (m.retry.get(run.id)?.failures ?? 0) + 1;
-    m.retry.set(run.id, {
-      failures,
-      at: s.now() + exponentialBackoff(failures, { baseMs: 30_000, maxMs: 15 * 60_000, jitter: false }),
-    });
-    const current = runs.get(s, run.id);
+    const failures = (runs.get(s, run.id)?.failedLaunches ?? 0) + 1;
+    m.retryAt.set(
+      run.id,
+      s.now() + exponentialBackoff(failures, { baseMs: 30_000, maxMs: 15 * 60_000, jitter: false }),
+    );
+    const current = runs.get(s, run.id) ? runs.update(s, run.id, { failedLaunches: failures }) : undefined;
     // A run without an item has nobody to wait for: after as many failed launches as make an item stuck, it ends, and
     // its schedule (a scout's, learning's) queues a fresh one.
     if (current && !current.item && ACTIVE.includes(current.state) && failures >= STUCK_LAUNCHES) {
-      m.retry.delete(run.id);
+      m.retryAt.delete(run.id);
       endRun(f, current, "failed", { error: `starting it failed ${failures} times: ${shortError(e)}` });
       return {};
     }
@@ -1175,12 +1176,11 @@ const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
  */
 function findStuck(f: FactoryRuntime) {
   const { s } = f;
-  const m = memory(f);
   const mirror = mirrorOf(f);
   for (const item of items.list(s, { open: true })) {
     if (item.needsYou || item.phase === "ready" || item.phase === "held") continue;
     const itemRuns = runs.forItem(s, item.id);
-    const failing = (r: FactoryRun) => (m.retry.get(r.id)?.failures ?? 0) >= STUCK_LAUNCHES;
+    const failing = (r: FactoryRun) => (r.failedLaunches ?? 0) >= STUCK_LAUNCHES;
     if (itemRuns.some((r) => ACTIVE.includes(r.state) && !failing(r))) continue;
     const owner = itemRuns.findLast((r) => r.kind === "implement" && r.threadId);
     if (item.prUrl && owner?.threadId && working(f, mirror.thread(owner.threadId))) continue;
