@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.29.0](https://github.com/HansKristoffer/agentgate/compare/v0.28.0...v0.29.0) (2026-11-07)
+
+
+### Features
+
+* stuck handoffs can be cancelled, and half-finished state no longer wipes tokens or strands relays and threads ([#137](https://github.com/HansKristoffer/agentgate/issues/137)) ([1fd21b2](https://github.com/HansKristoffer/agentgate/commit/1fd21b25134f1ba69fb1e33208bc807fc1afbb98))
+
 ## [0.28.0](https://github.com/HansKristoffer/agentgate/compare/v0.27.2...v0.28.0) (2026-11-03)
 
 
