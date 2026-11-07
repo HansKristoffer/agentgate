@@ -114,9 +114,11 @@ The factory depends on T3 Code interfaces that are not a stable public API, in t
   after the factory moved.
 - **T3 Code's WebSocket RPC**, through the handoff's T3 client: the `orchestration.subscribeShell` stream feeds the
   mirror ([`mirror.ts`](../../apps/agentgate/src/factory/mirror.ts)), which falls back to polling the shell; thread
-  projections give each run's provider sessions and transcript ([`records.ts`](../../apps/agentgate/src/factory/records.ts));
-  and on a machine without the MCP sign-in, `message.dispatch`, `run.interrupt` and `thread.settle` act on a stage
-  thread that was handed there (`/peer/factory/thread`).
+  projections give each run's provider sessions and transcript ([`records.ts`](../../apps/agentgate/src/factory/records.ts)).
+- A run's thread is always on the machine that holds the run. A stage thread a person hands to another machine leaves
+  the factory: its run ends, and the item waits as `handed-off` until the maintainer retries or drops it; a PR it owns
+  is still followed to its merge. Following threads across machines (reports, reminders, tokens and spec cards there)
+  cost more code and edge cases than it was worth.
 
 Behaviors of T3 Code the factory relies on:
 
@@ -234,9 +236,3 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the
   machine that holds the item. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
   out, and the outcome metrics count comments without a factory marker as people's.
-- A stage thread handed to another machine is not reminded when its turn ends without a report, because the controller's
-  watcher sees only the threads in its own machine's mirror.
-- Dropping an item while its thread is being handed off leaves the thread running on the destination.
-- `approve` and `reject` cannot answer a spec card on a thread that moved to another machine, because only the
-  factory machine signs in to T3's MCP and answering a pending request needs it. The card is answered in T3 Code
-  there.

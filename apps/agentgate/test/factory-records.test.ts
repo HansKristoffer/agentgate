@@ -4,16 +4,12 @@ import { items, runs, transcripts } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome, runTokens } from "../src/factory/records.ts";
 import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
-import { connectT3 } from "../src/handoff/t3.ts";
 import { recordSessionUsage } from "../src/llm/sessions.ts";
 import { host } from "../src/logins.ts";
-import { NODE_PROTOCOL } from "../src/remote.ts";
 import type { Store } from "../src/store.ts";
 import { prFactory } from "./fixtures/factory-pr.ts";
-import { removeTmp, tmp } from "./fixtures/git.ts";
-import { startNodes } from "./fixtures/nodes.ts";
-import { fakeT3 } from "./fixtures/t3.ts";
-import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
+import { removeTmp } from "./fixtures/git.ts";
+import { idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -84,39 +80,6 @@ test("a run that ends keeps the start and the newest of its transcript in 256 Ki
   expect(transcript).toEndWith("Opened the draft PR.");
   expect(items.get(n.s, item.id)!.tokens).toBe(6800);
   expect(await runTokens(n.f, recorded)).toBe(6800);
-});
-
-test("a run that moved to another machine is read there through the peer routes, plus what this machine counted before the move", async () => {
-  const a = await factoryNode(cleanup);
-  const [b] = await startNodes("b");
-  cleanup.push(() => b!.stop());
-  const token = crypto.randomUUID();
-  a.s.db.run("insert into peers values (?, ?, ?, 0, ?)", ["b", b!.url, token, a.s.now()]);
-  b!.s.db.run("insert into peers values (?, ?, ?, 0, ?)", ["a", "http://127.0.0.1:1", token, b!.s.now()]);
-  a.s.put("node", "b", { id: "b", protocol: NODE_PROTOCOL });
-  b!.s.put("setting", "settings", { ...b!.s.settings(), factory: a.f.pointer() });
-  const t3 = fakeT3({ claudeDir: tmp() });
-  cleanup.push(t3.stop);
-  await connectT3(b!.s, { url: t3.url, token: t3.pairingToken() });
-
-  expect((await a.command("add", a.repo, "Crash on save")).code).toBe(0);
-  await a.dispatch();
-  const [run] = runs.list(a.s);
-  // The handoff resumed the same session on b.
-  const session = a.t3.threads.get(run!.threadId!)!.sessionId;
-  const moved = t3.addThread({ projectId: t3.addProject(tmp()).id, sessionId: session });
-  const conversation = [{ id: "m1", role: "assistant", text: "Reproduced it on b.", attachments: [] }];
-  moved.conversation = conversation;
-  runs.update(a.s, run!.id, { node: "b", threadId: moved.id });
-  use(a.s, session, "opus", { input: 300, output: 50 });
-  use(b!.s, session, "opus", { input: 1000, output: 150 });
-
-  expect(await runTokens(a.f, runs.get(a.s, run!.id)!)).toBe(1500);
-
-  expect((await a.command("drop", run!.item!)).code).toBe(0);
-  await a.until(() => transcripts.get(a.s, run!.id), "the transcript from b");
-  expect(transcripts.get(a.s, run!.id)).toBe("## assistant\n\nReproduced it on b.");
-  expect(items.get(a.s, run!.item!)!.tokens).toBe(1500);
 });
 
 test("an item over its token budget has its threads interrupted and waits for the maintainer in its phase, and its threads are not read again", async () => {

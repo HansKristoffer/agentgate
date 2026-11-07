@@ -1,15 +1,13 @@
 import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
-import { peerCall } from "../handoff/jobs.ts";
 import { projection, t3Client } from "../handoff/t3.ts";
 import { sessionUsage } from "../llm/sessions.ts";
 import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
-import { elsewhere, interruptItem, setNeedsYou, writeBack } from "./controller.ts";
+import { interruptItem, setNeedsYou, writeBack } from "./controller.ts";
 import { isOpenPhase, items, runs, transcripts, type FactoryItem, type FactoryRun } from "./db.ts";
 import { COLLABORATORS, mergedRevertOf, prView } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import { mirrorOf } from "./mirror.ts";
-import { MOVING } from "./follow.ts";
 import { shortError, withItem, type FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -26,8 +24,6 @@ const TRANSCRIPT_BYTES = 256 * 1024;
 /** The start of a transcript holds the brief and the first steps, which judges and the learning thread read too. */
 const HEAD_BYTES = 64 * 1024;
 const SESSION_ID = /^[\w-]{1,128}$/;
-/** A run on another machine is measured at most this often: this machine's mirror does not show its thread. */
-const REMOTE_EVERY = 10 * MINUTE;
 
 // ---- a thread's sessions and transcript, read on the machine whose T3 holds it
 
@@ -92,30 +88,13 @@ const usageSchema = z.array(
 const total = (rows: z.infer<typeof usageSchema>) =>
   rows.reduce((sum, r) => sum + r.input + r.output + r.cacheRead + r.cacheWrite, 0);
 
-/** Tokens, the number of provider sessions found and, when asked, the transcript of a run's thread. A run handed to
- * another machine keeps its session ids (the handoff resumes the same session there), so the rows this machine's proxy
- * counted before the move add to that machine's. */
+/** Tokens, the number of provider sessions found and, when asked, the transcript of a run's thread, which is always
+ * this machine's: a handoff detaches it. */
 async function measure(f: FactoryRuntime, run: FactoryRun, withTranscript: boolean) {
-  const { s } = f;
-  const thread = run.threadId;
-  if (!thread || thread.startsWith(MOVING)) return undefined;
-  if (!elsewhere(f, run)) {
-    const record = await threadRecord(f, thread, withTranscript);
-    return {
-      tokens: total(sessionUsage(s, record.sessions)),
-      sessions: record.sessions,
-      transcript: record.transcript,
-    };
-  }
-  const { node } = run;
-  const record = threadRecordSchema.parse(
-    await peerCall(s, node, `/factory/threads/${encodeURIComponent(thread)}${withTranscript ? "?transcript=1" : ""}`),
-  );
-  const there = record.sessions.length
-    ? usageSchema.parse(await peerCall(s, node, `/factory/usage?sessions=${record.sessions.join(",")}`))
-    : [];
+  if (!run.threadId) return undefined;
+  const record = await threadRecord(f, run.threadId, withTranscript);
   return {
-    tokens: total(sessionUsage(s, record.sessions)) + total(there),
+    tokens: total(sessionUsage(f.s, record.sessions)),
     sessions: record.sessions,
     transcript: record.transcript,
   };
@@ -181,10 +160,8 @@ export async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
 /** Per run, its provider sessions as T3 last listed them, and when its thread had changed then. */
 const sessionMemory = new WeakMap<FactoryRuntime, Map<string, { changed: number; sessions: string[] }>>();
 
-/** When the run's thread last changed: its own thread's or a subagent's update in this machine's mirror, or, for a
- * thread on another machine, the clock in steps of 10 minutes. */
+/** When the run's thread last changed: its own thread's or a subagent's update in this machine's mirror. */
 function changedAt(f: FactoryRuntime, run: FactoryRun) {
-  if (elsewhere(f, run)) return Math.floor(f.s.now() / REMOTE_EVERY);
   const mirror = mirrorOf(f);
   const ids = [run.threadId!, ...subagents(f, run.threadId!)];
   return Math.max(0, ...ids.map((id) => mirror.thread(id)?.updatedAt ?? 0));
@@ -204,12 +181,7 @@ async function currentTokens(f: FactoryRuntime, run: FactoryRun) {
     return measured;
   }
   const { sessions } = known;
-  const here = total(sessionUsage(f.s, sessions));
-  const there =
-    elsewhere(f, run) && sessions.length
-      ? total(usageSchema.parse(await peerCall(f.s, run.node, `/factory/usage?sessions=${sessions.join(",")}`)))
-      : 0;
-  return { tokens: here + there, sessions };
+  return { tokens: total(sessionUsage(f.s, sessions)), sessions };
 }
 
 /** Threads keep working after their run reports (an implement thread owns its PR), so the runs of open items are
@@ -220,7 +192,7 @@ async function measureOpen(f: FactoryRuntime) {
   for (const item of items.list(f.s, { open: true })) {
     if (item.needsYou) continue;
     for (const run of runs.forItem(f.s, item.id)) {
-      if (!run.threadId || run.threadId.startsWith(MOVING)) continue;
+      if (!run.threadId) continue;
       try {
         const measured = await currentTokens(f, run);
         if (!measured) continue;
@@ -354,20 +326,4 @@ export function setup(f: FactoryRuntime): void {
   });
   // Metrics merge key by key; scorers.ts adds the judges' pass rates.
   f.boardParts.push(async () => ({ metrics: metrics(f) }) as Partial<FactoryBoard>);
-
-  // GET /peer/factory/usage?sessions=a,b -> SessionUsage[]: what this machine's proxy counted for those sessions.
-  f.peer.get("/usage", (c) => {
-    const sessions = (c.req.query("sessions") ?? "").split(",").filter(Boolean);
-    if (sessions.length > 200 || !sessions.every((id) => SESSION_ID.test(id)))
-      return c.json({ error: "sessions must be up to 200 session ids, separated by commas" }, 400);
-    return c.json(sessionUsage(f.s, sessions));
-  });
-  // GET /peer/factory/threads/:id[?transcript=1] -> { sessions, transcript? } for a thread in this machine's T3 Code.
-  f.peer.get("/threads/:id", async (c) => {
-    try {
-      return c.json(await threadRecord(f, c.req.param("id"), c.req.query("transcript") === "1"));
-    } catch (e) {
-      return c.json({ error: shortError(e) }, 502);
-    }
-  });
 }

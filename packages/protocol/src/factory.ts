@@ -263,7 +263,18 @@ export type RunState = (typeof runStates)[number];
 
 export const needsYouSchema = z
   .object({
-    reason: z.enum(["decision", "blocked", "approval", "budget", "stalled", "held", "failed", "orphaned", "stuck"]),
+    reason: z.enum([
+      "decision",
+      "blocked",
+      "approval",
+      "budget",
+      "stalled",
+      "held",
+      "failed",
+      "orphaned",
+      "stuck",
+      "handed-off",
+    ]),
     question: z.string().optional(),
     recommendation: z.string().optional(),
     link: z.string().optional(),

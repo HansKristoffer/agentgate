@@ -47,7 +47,6 @@ import {
   type RunData,
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
-import { handoffOf } from "./follow.ts";
 import { renderComment } from "./markers.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { recordRun } from "./records.ts";
@@ -390,21 +389,12 @@ export async function isBranch(f: FactoryRuntime, repo: string, name: string) {
   return heads.ok && heads.out.trim().length > 0;
 }
 
-/** The run's thread lives on another machine, after a handoff took it there. */
-export const elsewhere = (f: FactoryRuntime, run: FactoryRun): run is FactoryRun & { node: string } =>
-  !!run.node && run.node !== f.s.nodeId;
-
 type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
 
-/** Acts on the run's thread on the machine that holds it: through T3's MCP here, or, for a thread handed to another
- * machine, through that machine's `/peer/factory/thread`. */
+/** Acts on the run's thread through T3's MCP. A run's thread is always this machine's: a handoff detaches it. */
 export async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: ThreadAction): Promise<void> {
   if (!run.threadId) throw new Error(`run ${run.id} has no thread yet`);
   const threadId = run.threadId;
-  if (elsewhere(f, run)) {
-    await peerCall(f.s, run.node, "/factory/thread", { json: { ...action, threadId } });
-    return;
-  }
   const mcp = t3Mcp(f);
   if (action.action === "send") await mcp.call("t3_thread_send", { threadId, message: action.text, mode: "queue" });
   else if (action.action === "interrupt") await mcp.call("t3_thread_interrupt", { threadId, reason: action.text });
@@ -413,8 +403,7 @@ export async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: Th
 
 /** For actions whose caller goes on regardless: the failure is the run's error and a note. */
 const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
-  const where = elsewhere(f, run) ? ` on ${run.node}` : "";
-  const text = `${what} the thread of ${run.id}${where} failed: ${shortError(e)}`;
+  const text = `${what} the thread of ${run.id} failed: ${shortError(e)}`;
   runs.update(f.s, run.id, { error: text });
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
 };
@@ -577,6 +566,7 @@ async function dispatch(f: FactoryRuntime) {
   watch(f);
   // Runs that ended and items that finished since the last pass give their threads' MCP sessions back their tools.
   f.ctx.gateway.toolsChanged();
+  detachHandedOff(f);
   if (isPaused(f)) return;
   const m = memory(f);
   const limits = limitsOf(f);
@@ -782,8 +772,9 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   const run = runs.get(s, id);
   const thread = run?.threadId ? mirrorOf(f).thread(run.threadId) : undefined;
   if (!run || !thread || (run.state !== "running" && run.state !== "waiting")) return;
-  // A thread being handed to another machine stops here: that is its move, not a silent end.
-  if (handoffOf(f, run, thread)) return;
+  // A thread being handed to another machine stops here: that is its move, not a silent end, and the run leaves it.
+  const handoff = handoffOfThread(f, thread.id);
+  if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
     if (run.state === "running") {
@@ -808,6 +799,48 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   }
   if (!m.seen.delete(run.id) && !endedUnseen) return;
   await silentEnd(f, runs.get(s, run.id)!);
+}
+
+// ---- handoffs
+
+/** The handoff that is moving, or moved, this machine's thread, unless it failed and the thread stayed. */
+const handoffOfThread = (f: FactoryRuntime, thread: string) =>
+  f.ctx.handoffs.list("source").find((job) => job.thread === thread && job.step !== "failed");
+
+/**
+ * A stage thread a person handed to another machine leaves the factory: its run ends, and the item waits for the
+ * maintainer, who continues the thread there and then retries here, or drops the item. Its PR is still followed to its
+ * merge or close. Following a thread across machines (its reports, reminders and tokens) cost more than it gave.
+ */
+function detach(f: FactoryRuntime, id: string, to: string) {
+  const run = runs.get(f.s, id);
+  if (!run) return;
+  if (ACTIVE.includes(run.state)) endRun(f, run, "cancelled", { error: `handed off to ${to}` });
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  if (!item || !isOpenPhase(item.phase) || item.needsYou?.reason === "handed-off") return;
+  setNeedsYou(f, item.id, {
+    reason: "handed-off",
+    question: `${item.key}'s ${run.kind} thread was handed to ${to} and no longer works for the factory. Continue it there, then run agentgate factory retry ${item.key} to go on here, or drop it.`,
+    ...(run.threadLink && { link: run.threadLink }),
+  });
+}
+
+/** Handoffs of the threads that work for the factory: an active run's, or the one that owns an open item's PR. The
+ * watcher catches most as the thread stops; this catches one it missed, such as across a restart. */
+function detachHandedOff(f: FactoryRuntime) {
+  for (const job of f.ctx.handoffs.list("source")) {
+    if (job.step === "failed") continue;
+    for (const head of runs.byThreads(f.s, [job.thread])) {
+      const run = runs.get(f.s, head.id);
+      if (!run) continue;
+      const item = run.item ? items.get(f.s, run.item) : undefined;
+      const owner = run.kind === "implement" && run.state === "reported" && !!item?.prUrl && isOpenPhase(item.phase);
+      if (!ACTIVE.includes(run.state) && !(owner && item.needsYou?.reason !== "handed-off")) continue;
+      later(f, run.item ?? run.id, `Detaching ${run.id} from its handed-off thread`, async () =>
+        detach(f, run.id, job.target),
+      );
+    }
+  }
 }
 
 /** One reminder in the same thread; then attempt 2 in a new thread; a silent attempt 2 makes the item wait. */
@@ -1053,7 +1086,7 @@ function findStuck(f: FactoryRuntime) {
     });
   }
   for (const run of runs.list(s, { states: ["running"] })) {
-    const thread = run.threadId && !elsewhere(f, run) ? mirror.thread(run.threadId) : undefined;
+    const thread = run.threadId ? mirror.thread(run.threadId) : undefined;
     if (!thread || thread.needsYou || working(f, thread)) continue;
     if (s.now() - Math.max(thread.updatedAt, run.startedAt ?? 0) < stalledWindow(f, run.configCommit)) continue;
     later(f, run.item ?? run.id, `Ending ${run.id}'s missed turn`, () => threadChanged(f, run.id, true));
@@ -1111,7 +1144,7 @@ export function findItem(f: FactoryRuntime, ref: string) {
 export const ACTIONS = ["approve", "reject", "retry", "drop"] as const;
 type Action = (typeof ACTIONS)[number];
 /** What `retry` takes back: an item that failed, went over its budget, stalled on its PR or got stuck. */
-const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck"];
+const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck", "handed-off"];
 
 /** approve, reject, retry or drop an item, as one step of it. Returns what happened, for the CLI and API. */
 async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason?: string): Promise<string> {
@@ -1148,7 +1181,7 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     if (item.phase === "closed") return reopen(f, item);
     if (!item.needsYou || !RETRYABLE.includes(item.needsYou.reason))
       throw new Error(
-        `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled or is stuck`,
+        `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck or was handed off`,
       );
     return retryStage(f, item);
   }

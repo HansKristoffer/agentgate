@@ -45,6 +45,7 @@ const REASONS: Record<NeedsYou["reason"], string> = {
   failed: "Failed",
   orphaned: "Its machine is unreachable",
   stuck: "Stuck",
+  "handed-off": "Handed to another machine",
 };
 
 /** The T3 Code thread an item points at: the one asking, else its newest run's. */
@@ -84,7 +85,13 @@ export function NeedsYouActions({ item, act, ask }: { item: BoardItem; act: Act;
     );
   if (reason === "blocked")
     buttons.push(button("approve", "Unblock…", async () => ask(item, "approve", `What changed for ${item.key}`)));
-  if (reason === "budget" || reason === "failed" || reason === "stalled" || reason === "stuck")
+  if (
+    reason === "budget" ||
+    reason === "failed" ||
+    reason === "stalled" ||
+    reason === "stuck" ||
+    reason === "handed-off"
+  )
     buttons.push(button("retry", "Retry"));
   if (reason === "orphaned") buttons.push(button("retry", "Take over here"));
   if (reason && reason !== "orphaned")

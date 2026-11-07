@@ -2,7 +2,7 @@ import type { FactoryReport } from "@agentgate/protocol";
 import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, elsewhere, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
+import { closeItem, defaultBranch, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
@@ -153,10 +153,6 @@ const spec = (f: FactoryRuntime) => ({
   async answer(run: FactoryRun, decision: { approve: boolean; reason?: string }) {
     const { threadId } = run;
     if (!threadId) throw new Error(`The spec run ${run.id} has no thread yet`);
-    if (elsewhere(f, run)) {
-      const where = run.threadLink ? `: ${run.threadLink}` : "";
-      throw new Error(`The spec thread runs on ${run.node}; answer its question in T3 Code there${where}`);
-    }
 
     const card = await findCard(f, { ...run, threadId });
     const reason = decision.reason?.trim();

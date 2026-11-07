@@ -9,6 +9,7 @@ import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import { loopTask, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { t3Mcp } from "../src/factory/t3-mcp.ts";
+import type { SourceState } from "../src/handoff/source.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -639,4 +640,41 @@ test("a run without an item whose launch fails three times in a row ends failed,
     state: "failed",
     error: expect.stringContaining("starting it failed 3 times"),
   });
+});
+
+/** A person hands this machine's thread to the machine `b`, as `agentgate handoff` records it. */
+const handOff = (n: Node, thread: string) =>
+  n.ctx.handoffs.create<SourceState>({
+    id: crypto.randomUUID(),
+    role: "source",
+    thread,
+    target: "b",
+    step: "export",
+    state: { warnings: [], timings: [] } as unknown as SourceState,
+  });
+
+test("a stage thread handed to another machine leaves the factory: its run ends, the item waits, and retry starts the stage again here", async () => {
+  const n = await factoryNode(cleanup);
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const thread = run!.threadId!;
+  n.mcp.setThread(thread, { status: "running" });
+  await n.until(() => n.mirror.thread(thread)?.status === "running", "the turn to run");
+
+  handOff(n, thread);
+  // The handoff stops the thread here: that is its move, not a silent end.
+  n.mcp.setThread(thread, { status: "interrupted" });
+  await n.until(() => runs.get(n.s, run!.id)!.state === "cancelled", "the run to end");
+  await idle(n.f);
+  expect(runs.get(n.s, run!.id)!.error).toBe("handed off to b");
+  const item = items.get(n.s, run!.item!)!;
+  expect(item.needsYou).toMatchObject({ reason: "handed-off", question: expect.stringContaining("was handed to b") });
+  expect(sentTo(n, thread)).toEqual([]);
+
+  expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);
+  await n.dispatch();
+  const [, again] = triageRuns(n);
+  expect(again).toMatchObject({ state: "running" });
+  expect(again!.threadId).not.toBe(thread);
 });

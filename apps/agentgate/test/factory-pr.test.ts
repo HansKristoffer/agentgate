@@ -620,3 +620,28 @@ test("a collaborator's comment made after a push but before the follower's next 
   await n.pollPrs();
   expect(n.sent(run.threadId!).filter((m) => m.includes("empty list"))).toHaveLength(1);
 });
+
+test("handing off the thread that owns a PR detaches it, and the PR is still followed to its merge", async () => {
+  const n = await prFactory(cleanup);
+  n.f.runKinds.delete("review");
+  const { item, run, pr } = await n.opened(1);
+  n.ctx.handoffs.create({
+    id: crypto.randomUUID(),
+    role: "source",
+    thread: run.threadId!,
+    target: "b",
+    step: "done",
+    state: { warnings: [], timings: [] },
+  });
+  await n.dispatch();
+  await idle(n.f);
+  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ reason: "handed-off" });
+
+  // Waiting for you, the item gets no nudge, but its merge still ships it.
+  pr.checks = "failing";
+  await n.pollPrs();
+  expect(n.sent(run.threadId!)).toEqual([]);
+  pr.state = "MERGED";
+  await n.pollPrs();
+  expect(items.get(n.s, item.id)!.phase).toBe("shipped");
+});
