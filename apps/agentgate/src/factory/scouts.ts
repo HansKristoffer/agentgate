@@ -8,7 +8,7 @@ import {
 } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, type LoadedFolder } from "./config.ts";
-import { addItem, defaultBranch, enqueueRun, intakeState } from "./controller.ts";
+import { addItem, cancelLaunch, defaultBranch, enqueueRun, intakeState } from "./controller.ts";
 import { ACTIVE, items, runs, type FactoryRun } from "./db.ts";
 import { HELD_LIMIT } from "./hooks.ts";
 import { asInput, runTool, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
@@ -229,9 +229,10 @@ const scoutRun = (f: FactoryRuntime) => ({
 
   model: (run: FactoryRun) => scoutOfRun(f, run)?.scout.model,
 
-  async launch(run: FactoryRun): Promise<LaunchSpec> {
+  async launch(run: FactoryRun): Promise<LaunchSpec | { wait: string }> {
     const found = scoutOfRun(f, run);
-    if (!found) throw new Error(`The factory's folder no longer has the scout ${sourceOfRun(run) ?? "of this run"}`);
+    if (!found)
+      return cancelLaunch(f, run, `the factory's folder no longer has the scout ${sourceOfRun(run) ?? "of this run"}`);
     const { scout, prompt } = found;
     const baseRef = await defaultBranch(f, scout.repo);
     return {

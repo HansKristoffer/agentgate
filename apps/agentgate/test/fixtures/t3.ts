@@ -41,6 +41,9 @@ export type FakeThread = {
   activeOrderKey?: string | null;
   sessionId: string;
   failNextTurn?: boolean;
+  /** The shell state a turn driven through `/mcp` set (fixtures/t3-mcp.ts), which every view of the shell shows: the
+   * stream, a resumed stream's snapshot and a poll. Without it the status comes from `runs`. */
+  shell?: { status: string; needsYou: boolean };
   messages: string[];
   conversation?: Message[];
   background?: { kind: string; description: string }[];
@@ -99,7 +102,9 @@ export function fakeT3(options: {
   };
   const now = () => new Date().toISOString();
   const status = (t: FakeThread) =>
-    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
+    t.shell?.status ??
+    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ??
+    "idle";
   const shellThread = (t: FakeThread) => ({
     id: t.id,
     projectId: t.projectId,
@@ -108,6 +113,9 @@ export function fakeT3(options: {
     branch: t.branch,
     worktreePath: t.worktreePath,
     status: status(t),
+    ...(t.shell?.needsYou && {
+      pendingRuntimeRequest: { id: "request-1", kind: "user-input", createdAt: t.updatedAt },
+    }),
     archivedAt: t.archivedAt,
     updatedAt: t.updatedAt,
     createdAt: t.createdAt,

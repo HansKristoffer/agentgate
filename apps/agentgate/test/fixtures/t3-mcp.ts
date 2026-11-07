@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { app, makeCtx } from "../../src/daemon.ts";
+import { app, makeCtx, type Ctx } from "../../src/daemon.ts";
 import { fetcher } from "../../src/factory/folder.ts";
 import { mirrorOf } from "../../src/factory/mirror.ts";
 import { loopTask, runCommand, type FactoryRuntime } from "../../src/factory/runtime.ts";
@@ -49,10 +49,9 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
 
   // Threads made through `/mcp` reach the shell stream with their status, the way T3's shell shows a turn.
   let sequence = 1_000_000;
-  const statuses = new Map<string, { status: string; needsYou: boolean }>();
   const push = (t: FakeThread, patch: { status?: string; needsYou?: boolean } = {}) => {
-    const state = { status: "idle", needsYou: false, ...statuses.get(t.id), ...patch };
-    statuses.set(t.id, state);
+    const state = { status: "idle", needsYou: false, ...t.shell, ...patch };
+    t.shell = state;
     t.updatedAt = new Date().toISOString();
     fake.shell.push({
       kind: "thread.updated",
@@ -367,36 +366,25 @@ export async function factoryNode(
   s.setLocal("adminToken", "admin-secret");
   s.setLocal("handoff:cloneDir", tmp());
   s.put("node", "a", { id: "a", protocol: 8 });
-  const ctx = makeCtx(s);
   const realT3 = host.t3;
   host.t3 = () => mcp.pairBin;
-  cleanup.push(t3.stop, () => {
-    host.t3 = realT3;
-    fetcher.fetch = realFetch;
-    fetcher.root = realRoot;
+  // Every daemon context this node ran, stopped once each; a restart starts another on the same store.
+  const contexts = new Set<Ctx>();
+  const stop = async (ctx: Ctx) => {
+    if (!contexts.delete(ctx)) return;
     ctx.abort.abort();
     ctx.skills.close();
     ctx.imports.close();
-    return ctx.gateway.close().then(() => s.close());
-  });
-  await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  const f = ctx.factory;
-  const command = async (name: string, ...args: string[]) => {
-    const output: string[] = [];
-    const code = await runCommand(f, name, args, { out: (line) => output.push(line) }).catch((e: Error) => {
-      output.push(e.message);
-      return 1;
-    });
-    return { code, output };
+    await ctx.gateway.close();
   };
-  // No test reaches GitHub: one that needs gh answers stubs it after this.
-  login.gh = async () => undefined;
-  cleanup.push(() => (login.gh = realGh));
-  const used = await command("use", "acme/factory", "--node", "a");
-  if (used.code) throw new Error(`the factory folder did not load: ${used.output.join("\n")}`);
+  cleanup.push(t3.stop, async () => {
+    host.t3 = realT3;
+    fetcher.fetch = realFetch;
+    fetcher.root = realRoot;
+    for (const ctx of [...contexts]) await stop(ctx);
+    s.close();
+  });
   let now = Date.now();
-  s.now = () => now;
-
   const until = async (fn: () => unknown, what: string) => {
     const deadline = Date.now() + 3_000;
     while (!fn()) {
@@ -404,38 +392,77 @@ export async function factoryNode(
       await Bun.sleep(5);
     }
   };
-  const mirror = mirrorOf(f);
-  await until(() => mirror.status().stream === "live", "the shell stream");
-  const loop = (name: string) =>
-    loopTask(
+
+  /** The node's handles, bound to one daemon context. */
+  const bind = async (ctx: Ctx) => {
+    const f = ctx.factory;
+    const command = async (name: string, ...args: string[]) => {
+      const output: string[] = [];
+      const code = await runCommand(f, name, args, { out: (line) => output.push(line) }).catch((e: Error) => {
+        output.push(e.message);
+        return 1;
+      });
+      return { code, output };
+    };
+    const mirror = mirrorOf(f);
+    await until(() => mirror.status().stream === "live", "the shell stream");
+    const loop = (name: string) =>
+      loopTask(
+        f,
+        f.loops.find((l) => l.name === name)!,
+      );
+    const handler = app(ctx);
+    const node = {
+      s,
+      ctx,
       f,
-      f.loops.find((l) => l.name === name)!,
-    );
-  const handler = app(ctx);
-  return {
-    s,
-    ctx,
-    f,
-    t3,
-    mcp,
-    mirror,
-    repo,
-    origin,
-    commit,
-    command,
-    until,
-    advance: (ms: number) => (now += ms),
-    dispatch: loop("factory-dispatch"),
-    intake: loop("factory-intake"),
-    /** A control API request on loopback. */
-    api: (path: string, method = "GET", body?: unknown) =>
-      handler.fetch(
-        new Request(`http://127.0.0.1:7878${path}`, {
-          method,
-          headers: { host: "127.0.0.1:7878", ...(body !== undefined && { "content-type": "application/json" }) },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        }),
-        { listener: "loopback" },
-      ),
+      t3,
+      mcp,
+      mirror,
+      repo,
+      origin,
+      commit,
+      command,
+      until,
+      advance: (ms: number) => (now += ms),
+      dispatch: loop("factory-dispatch"),
+      intake: loop("factory-intake"),
+      /** A control API request on loopback. */
+      api: (path: string, method = "GET", body?: unknown) =>
+        handler.fetch(
+          new Request(`http://127.0.0.1:7878${path}`, {
+            method,
+            headers: { host: "127.0.0.1:7878", ...(body !== undefined && { "content-type": "application/json" }) },
+            body: body === undefined ? undefined : JSON.stringify(body),
+          }),
+          { listener: "loopback" },
+        ),
+      /** The daemon restarting on the same store, T3 Code and clock: a new context and factory runtime, and whatever
+       * the old one held only in memory gone. Returns the node bound to the new daemon. */
+      async restart() {
+        await stop(ctx);
+        return start();
+      },
+    };
+    return node;
   };
+  const start = () => {
+    const ctx = makeCtx(s);
+    contexts.add(ctx);
+    return bind(ctx);
+  };
+
+  const first = makeCtx(s);
+  contexts.add(first);
+  await connectT3(s, { url: t3.url, token: t3.pairingToken() });
+  // No test reaches GitHub: one that needs gh answers stubs it after this.
+  login.gh = async () => undefined;
+  cleanup.push(() => (login.gh = realGh));
+  const output: string[] = [];
+  const used = await runCommand(first.factory, "use", ["acme/factory", "--node", "a"], {
+    out: (line) => output.push(line),
+  }).catch((e: Error) => (output.push(e.message), 1));
+  if (used) throw new Error(`the factory folder did not load: ${output.join("\n")}`);
+  s.now = () => now;
+  return bind(first);
 }

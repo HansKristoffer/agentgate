@@ -315,7 +315,11 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
       prUrl: z.string().url().max(2048),
       commit: commitSha,
       claims: z
-        .array(z.object({ claim: z.string().min(1).max(2000), evidence: z.string().min(1).max(4000) }).strict())
+        .array(
+          z
+            .object({ claim: z.string().trim().min(1).max(2000), evidence: z.string().trim().min(1).max(4000) })
+            .strict(),
+        )
         .max(50),
       notChecked: z.array(z.string().max(2000)).max(50),
     })

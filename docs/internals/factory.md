@@ -50,8 +50,9 @@ taken twice.
   run, and the thread T3 then starts is interrupted and settled.
 
 When an item waits for the maintainer, it keeps its phase and gets `needsYou` with a reason: a question, a silent
-end, a stall, its token budget, an uncertain launch (`stuck`), or a phase that has not moved for four times
-`stalledAfter`. While it waits, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR
+end, a stall, its token budget, an uncertain launch (`stuck`), or nothing moving it for four times `stalledAfter`: no
+active run, no working PR thread, and no run, push, nudge or person's act in that window. A running run whose
+thread sat idle that long ended a turn the watcher missed, such as across a restart, and is reminded. While it waits, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR
 still ends it. There is no `failed` phase, so `retry` knows where to resume, and an item with a PR resumes with it.
 
 ## Items are tables; markers are the shared truth

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { FactorySource, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { currentFolder } from "../src/factory/config.ts";
+import { enqueueRun } from "../src/factory/controller.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import { loopTask, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
@@ -569,4 +570,73 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
   expect((await n.command("drop", items.list(n.s)[0]!.key)).code).toBe(0);
   expect(scope(run!.threadId)).toEqual(others);
   expect(scope(subagent.id)).toEqual(others);
+});
+
+const sentTo = (n: Node, thread: string) =>
+  n.mcp.calls
+    .filter((c) => c.tool === "t3_thread_send" && c.args.threadId === thread)
+    .map((c) => String(c.args.message));
+
+test("after a restart, a launch whose answer was lost finds its thread, and a turn that ended meanwhile is reminded at once", async () => {
+  const n = await factoryNode(cleanup);
+  const lost = loseLaunchAnswers(n);
+  await n.command("add", n.repo, "Crash on save");
+  lost.count = 1;
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const [thread] = threadsOf(n, run!);
+
+  const m = await n.restart();
+  // While the daemon was down, the thread's turn ended without a report.
+  m.mcp.setThread(thread!, { status: "completed" });
+  await m.until(() => m.mirror.thread(thread!)?.status === "completed", "the turn to end");
+  m.advance(30_000);
+  await m.dispatch();
+  await idle(m.f);
+  expect(runs.get(m.s, run!.id)).toMatchObject({ state: "running", threadId: thread, nudges: 1 });
+  expect(sentTo(m, thread!)).toEqual([expect.stringContaining("Your turn ended without a report")]);
+  expect(threadsOf(m, run!)).toHaveLength(1);
+});
+
+test("a running run whose turn ended unseen, as across a restart, is reminded once its thread sat idle for four stalledAfter", async () => {
+  const n = await factoryNode(cleanup, { config: { limits: { stalledAfter: "15m" } } });
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const thread = run!.threadId!;
+  n.mcp.setThread(thread, { status: "running" });
+  await n.until(() => n.mirror.thread(thread)?.status === "running", "the turn to run");
+
+  const m = await n.restart();
+  m.mcp.setThread(thread, { status: "idle" });
+  await m.until(() => m.mirror.thread(thread)?.status === "idle", "the turn to end");
+  await idle(m.f);
+  expect(sentTo(m, thread)).toEqual([]);
+
+  const stuck = () => loopTaskOf(m, "factory-stuck");
+  m.advance(59 * 60_000);
+  await stuck();
+  await idle(m.f);
+  expect(sentTo(m, thread)).toEqual([]);
+  m.advance(2 * 60_000);
+  await stuck();
+  await idle(m.f);
+  expect(sentTo(m, thread)).toEqual([expect.stringContaining("Your turn ended without a report")]);
+  expect(items.list(m.s)[0]!.needsYou).toBeUndefined();
+});
+
+test("a run without an item whose launch fails three times in a row ends failed, so its schedule can queue a fresh one", async () => {
+  const n = await factoryNode(cleanup);
+  n.mcp.answer("t3_thread_launch", () => {
+    throw new Error("the worktree could not be created");
+  });
+  const run = enqueueRun(n.f, { kind: "learn" });
+  for (let i = 0; i < 3; i++) {
+    await n.dispatch();
+    n.advance(16 * 60_000);
+  }
+  expect(runs.get(n.s, run.id)).toMatchObject({
+    state: "failed",
+    error: expect.stringContaining("starting it failed 3 times"),
+  });
 });

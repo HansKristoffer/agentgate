@@ -2,7 +2,7 @@ import type { FactoryReport, StageResult } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import { cancelLaunch, defaultBranch, enqueueRun, sendToThread } from "./controller.ts";
-import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
+import { ACTIVE, dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
 import { prView, type PrView } from "./gh.ts";
 import { defuse } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
@@ -193,15 +193,26 @@ export async function takeReview(f: FactoryRuntime, id: string) {
  * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
  * before. */
 export async function followReview(f: FactoryRuntime, item: FactoryItem, view: PrView, headAt: number) {
+  const max = limitsOf(f, item).reviewRounds;
+  // Review was switched off while the item was in it.
+  if (max === 0) {
+    if (green(f, view, headAt)) await toReady(f, item, view, [], "");
+    return;
+  }
   const last = reviewRuns(f, item).at(-1);
-  if (last?.state !== "reported") return;
+  // The last round ended without a report (it failed twice and was retried, or the budget stopped it): another round
+  // starts once the PR is green, as after a push.
+  if (!last || (last.state !== "reported" && !ACTIVE.includes(last.state))) {
+    if (view.state === "OPEN" && green(f, view, headAt)) enqueueRun(f, { kind: "review", item: item.id });
+    return;
+  }
+  if (last.state !== "reported") return;
   const data = dataOf(last, "review");
   if (!data) {
     await takeReview(f, last.id);
     return;
   }
   if (view.state !== "OPEN") return;
-  const max = limitsOf(f, item).reviewRounds;
   const why =
     data.round >= max
       ? `Review round ${data.round} of ${max} still found problems.`

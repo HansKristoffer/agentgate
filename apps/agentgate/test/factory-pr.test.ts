@@ -500,3 +500,33 @@ test("a review run waiting for quota reads nothing from GitHub until an account 
   await n.dispatch();
   expect(review().state).toBe("running");
 });
+
+test("retry of an item whose review stage failed twice reviews the PR again once it is green", async () => {
+  const n = await prFactory(cleanup);
+  const { item, pr } = await n.opened(1);
+  pr.checks = "passing";
+  await n.pollPrs();
+  await n.dispatch();
+  const review = runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;
+  // As silentEnd leaves it after the second attempt also ended without a report.
+  runs.update(n.s, review.id, { state: "silent", endedAt: n.s.now() });
+  items.update(n.s, item.id, { needsYou: { reason: "failed" } });
+
+  expect((await n.command("retry", n.key(1))).output).toEqual([`Retrying ${n.key(1)} with its PR`]);
+  await n.pollPrs();
+  await n.dispatch();
+  expect(
+    runs
+      .forItem(n.s, item.id)
+      .filter((r) => r.kind === "review")
+      .map((r) => r.state),
+  ).toEqual(["silent", "running"]);
+});
+
+test("a claim whose evidence is only whitespace is refused, so the PR is not stuck waiting for backed claims", async () => {
+  const n = await prFactory(cleanup);
+  const { run } = await n.implementing(1);
+  const pr = n.github.openPr(101, `factory/${n.key(1)}`);
+  const answer = await n.done(run, pr, { claims: [{ claim: "Saving twice no longer crashes", evidence: "  \n" }] });
+  expect(answer.error).toContain("result.claims.0.evidence");
+});

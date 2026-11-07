@@ -516,8 +516,12 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   f.ctx.gateway.toolsChanged();
   if (await endedWhileStarting(f, run.id)) return false;
   runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
-  // T3 may show the turn running before the launch answers, when the run did not know its thread yet.
-  if (working(f, mirrorOf(f).thread(threadId))) memory(f).seen.add(run.id);
+  // T3 may show the turn running before the launch answers, when the run did not know its thread yet. A launch sent
+  // again after a restart can find its turn already over, which the watcher saw before the run knew its thread.
+  const thread = mirrorOf(f).thread(threadId);
+  if (working(f, thread)) memory(f).seen.add(run.id);
+  else if (thread && thread.status !== "idle")
+    later(f, run.item ?? run.id, `Checking ${run.id}'s finished turn`, () => threadChanged(f, run.id, true));
   f.events.emit({
     kind: "run.started",
     run: run.id,
@@ -687,6 +691,13 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       at: s.now() + exponentialBackoff(failures, { baseMs: 30_000, maxMs: 15 * 60_000, jitter: false }),
     });
     const current = runs.get(s, run.id);
+    // A run without an item has nobody to wait for: after as many failed launches as make an item stuck, it ends, and
+    // its schedule (a scout's, learning's) queues a fresh one.
+    if (current && !current.item && ACTIVE.includes(current.state) && failures >= STUCK_LAUNCHES) {
+      m.retry.delete(run.id);
+      endRun(f, current, "failed", { error: `starting it failed ${failures} times: ${shortError(e)}` });
+      return {};
+    }
     if (current && ACTIVE.includes(current.state)) {
       // T3 answered this first send with an error, so no thread exists: the next launch may go under any session.
       // After a send whose answer was lost, the thread may exist: only that session can find it again.
@@ -1023,28 +1034,49 @@ async function intake(f: FactoryRuntime) {
     if (sourceMemory(f, source.id).retryAt <= f.s.now()) await pollSource(f, source.id);
 }
 
-// ---- items nobody moves
+// ---- items and runs nobody moves
 
-/** An item in a stage that has not moved for four times `stalledAfter`, with no thread at work and no question, waits
- * for the maintainer as `stuck`: a launch that keeps failing, or a run the factory lost track of. Waiting for a free
- * thread or for quota is not being stuck. */
+const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
+  4 * durationMs((folderFor(f, configCommit)?.config.limits ?? DEFAULT_LIMITS).stalledAfter);
+
+/**
+ * Progress, not states. An open item that does not wait for the maintainer (`ready` does) must have an active run (a
+ * launch that keeps failing does not count; waiting for a thread or quota does), its PR's thread at work, or a change
+ * within four times `stalledAfter`: a run queued, started or ended, the PR's head moving, a nudge, or a person's act.
+ * Otherwise it waits as `stuck`. And a running run whose thread has sat idle and unchanged that long ended a turn the
+ * watcher missed (a restart, a gap while polling): it takes the silent-end path.
+ */
 function findStuck(f: FactoryRuntime) {
-  if (!f.pointer()) return;
   const { s } = f;
   const m = memory(f);
+  const mirror = mirrorOf(f);
   for (const item of items.list(s, { open: true })) {
-    if (item.needsYou || !["triage", "spec", "implement"].includes(item.phase)) continue;
-    const window = 4 * durationMs((folderFor(f, item.configCommit)?.config.limits ?? DEFAULT_LIMITS).stalledAfter);
-    if (s.now() - item.phaseAt < window) continue;
+    if (item.needsYou || item.phase === "ready" || item.phase === "held") continue;
     const itemRuns = runs.forItem(s, item.id);
-    if (itemRuns.some((r) => r.state === "running" || r.state === "waiting")) continue;
-    const pending = itemRuns.filter((r) => r.state === "queued" || r.state === "starting");
-    if (pending.length && !pending.some((r) => (m.retry.get(r.id)?.failures ?? 0) >= STUCK_LAUNCHES)) continue;
-    const hours = Math.round((s.now() - item.phaseAt) / HOUR);
+    const failing = (r: FactoryRun) => (m.retry.get(r.id)?.failures ?? 0) >= STUCK_LAUNCHES;
+    if (itemRuns.some((r) => ACTIVE.includes(r.state) && !failing(r))) continue;
+    const owner = itemRuns.findLast((r) => r.kind === "implement" && r.threadId);
+    if (item.prUrl && owner?.threadId && working(f, mirror.thread(owner.threadId))) continue;
+    const pr = dataOf(owner, "implement");
+    const last = Math.max(
+      item.phaseAt,
+      item.updatedAt,
+      pr?.headAt ?? 0,
+      pr?.nudgedAt ?? 0,
+      ...itemRuns.map((r) => Math.max(r.queuedAt, r.startedAt ?? 0, r.endedAt ?? 0)),
+    );
+    if (s.now() - last < stalledWindow(f, item.configCommit)) continue;
+    const hours = Math.round((s.now() - last) / HOUR);
     setNeedsYou(f, item.id, {
       reason: "stuck",
-      question: `${item.key} has not moved past ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read what happened with agentgate factory show ${item.key}, then retry or drop it.`,
+      question: `Nothing moved ${item.key} in ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read what happened with agentgate factory show ${item.key}, then retry or drop it.`,
     });
+  }
+  for (const run of runs.list(s, { states: ["running"] })) {
+    const thread = run.threadId && !elsewhere(f, run) ? mirror.thread(run.threadId) : undefined;
+    if (!thread || thread.needsYou || working(f, thread)) continue;
+    if (s.now() - Math.max(thread.updatedAt, run.startedAt ?? 0) < stalledWindow(f, run.configCommit)) continue;
+    later(f, run.item ?? run.id, `Ending ${run.id}'s missed turn`, () => threadChanged(f, run.id, true));
   }
 }
 
