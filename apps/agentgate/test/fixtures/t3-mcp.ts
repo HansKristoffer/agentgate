@@ -322,6 +322,14 @@ export function fakeT3WithMcp(options: Omit<Parameters<typeof fakeT3>[0], "route
   return { t3, mcp };
 }
 
+/** One git origin for the factory tests in a file: making one is ~60 ms of git, and no test changes it. A file's
+ * `afterAll(removeTmp)` deletes it, so the next file makes its own. */
+let shared: ReturnType<typeof repos> | undefined;
+function sharedOrigin() {
+  if (!shared || !existsSync(shared.origin)) shared = repos();
+  return shared;
+}
+
 /**
  * The factory machine `a` on an in-memory store with fake time: connected to a `fakeT3WithMcp`, its folder loaded
  * from `folder` (factory.yaml as an object, plus other files), the mirror live, and every repository in
@@ -335,7 +343,7 @@ export async function factoryNode(
     files?: Record<string, string> | ((repo: string) => Record<string, string>);
   } = {},
 ) {
-  const origin = repos();
+  const origin = sharedOrigin();
   const repo = origin.url.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
   const commit = Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join(
     "",
