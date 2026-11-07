@@ -1,4 +1,4 @@
-import { factoryPrThreadsInputSchema, type MarkerPayload } from "@agentgate/protocol";
+import { factoryPrThreadsInputSchema, type MarkerPayload, type StageResult } from "@agentgate/protocol";
 import { z } from "zod";
 import { fenced } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
@@ -16,7 +16,7 @@ import {
   sourceCheck,
   writeBack,
 } from "./controller.ts";
-import { dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
+import { ACTIVE, dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
 import {
   COLLABORATORS,
   followedPrs,
@@ -35,7 +35,6 @@ import {
 } from "./gh.ts";
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
-import { followReview, lastRound, summaryLine } from "./review.ts";
 import { claimWrite } from "./outbox.ts";
 import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
 
@@ -64,7 +63,7 @@ function failed(f: FactoryRuntime, item: FactoryItem, text: string) {
   f.events.emit({ kind: "note", item: item.id, text });
 }
 
-const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
+export const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
   folderFor(f, item.configCommit)?.config.limits ?? DEFAULT_LIMITS;
 
 /** The implement run that opened the item's PR. */
@@ -146,7 +145,7 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
     lines.push("", `**Not checked:** ${skipped || "nothing listed"}`, "");
   }
   const last = lastRound(f, item);
-  if (!f.runKinds.has("review") || limitsOf(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");
+  if (limitsOf(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");
   else if (!last) lines.push("**Review:** No review round finished.");
   else {
     const rounds = `${last.count} round${last.count === 1 ? "" : "s"}, the last at \`${last.head.slice(0, 12)}\``;
@@ -181,7 +180,7 @@ export function withSummary(body: string, summary: string): string {
 
 /** In `pr` with a green PR and every claim backed: a review run when review rounds are on, otherwise ready. */
 async function advance(f: FactoryRuntime, item: FactoryItem, view: PrState) {
-  if (f.runKinds.has("review") && limitsOf(f, item).reviewRounds > 0) {
+  if (limitsOf(f, item).reviewRounds > 0) {
     moveItem(f, item.id, "review");
     enqueueRun(f, { kind: "review", item: item.id });
     return;
@@ -533,6 +532,151 @@ async function followPrs(f: FactoryRuntime) {
       }
     }
   }
+}
+
+// ---- review rounds: what a reported review means for the PR, and when the next round starts
+
+type ReviewResult = Extract<StageResult, { kind: "review" }>;
+type Finding = ReviewResult["findings"][number];
+/** Pre-existing findings are not this PR's to fix: the summary shows them, but they never hold the PR back. */
+const holds = (f: Finding) => f.severity !== "pre-existing";
+
+export const reviewRuns = (f: FactoryRuntime, item: FactoryItem) =>
+  runs.forItem(f.s, item.id).filter((r) => r.kind === "review");
+export const findingsOf = (run: FactoryRun) =>
+  run.report?.result?.kind === "review" ? run.report.result.findings : [];
+/** Review rounds whose findings counted, oldest first. */
+export const rounds = (f: FactoryRuntime, item: FactoryItem) =>
+  reviewRuns(f, item).filter((r) => r.state === "reported" && dataOf(r, "review") && !dataOf(r, "review")!.stale);
+
+const SEVERITY = { important: "Important", nit: "Nit", "pre-existing": "Pre-existing" };
+export const describe = (finding: Finding) =>
+  `**${SEVERITY[finding.severity]}** ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.text}`;
+/** A finding as the PR's summary lists it: its text defused, since GitHub renders it for everyone. */
+export const summaryLine = (finding: Finding) =>
+  `- ${SEVERITY[finding.severity]}, \`${defuse(`${finding.file}${finding.line ? `:${finding.line}` : ""}`, 300)}\`: ${defuse(finding.text, 1000)}`;
+
+/** The last review round that counted, for the PR's summary: how many rounds counted, the head it reviewed, and what it
+ * reported. */
+export function lastRound(f: FactoryRuntime, item: FactoryItem) {
+  const counted = rounds(f, item);
+  const last = counted.at(-1);
+  const result = last?.report?.result;
+  if (!last || result?.kind !== "review") return undefined;
+  return { count: counted.length, head: dataOf(last, "review")!.head, result };
+}
+
+/** What a reported review means for the item, as a step of it, once: discarded when the PR moved on, otherwise its
+ * findings go to the implement thread, or the item goes to `ready`. */
+export async function takeReview(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id);
+  const item = run?.item ? items.get(f.s, run.item) : undefined;
+  const result = run?.report?.result;
+  if (!run || !item?.prUrl || result?.kind !== "review" || dataOf(run, "review")) return;
+  if (item.phase !== "review") {
+    f.events.emit({ kind: "note", item: item.id, run: run.id, text: `${item.key} left review; the report is unused` });
+    return;
+  }
+  // The report is a claim about one commit, checked against the PR as GitHub has it now.
+  const view = await prView(item.prUrl);
+  const round = rounds(f, item).length + 1;
+  if (!view.headRefOid.startsWith(result.commit.toLowerCase())) {
+    runs.update(f.s, run.id, { checked: { kind: "review", head: result.commit, round, stale: true } });
+    f.events.emit({
+      kind: "note",
+      item: item.id,
+      run: run.id,
+      text: `Discarded ${item.key}'s review of ${result.commit.slice(0, 12)}: the PR is at ${view.headRefOid.slice(0, 12)} now`,
+    });
+    return;
+  }
+  const head = view.headRefOid;
+  const max = limitsOf(f, item).reviewRounds;
+  const open = result.findings.filter(holds);
+  const final = !open.length || round >= max;
+  // Recorded before anything is posted, so a restart never posts this round twice.
+  const checked: RunDataOf<"review"> = { kind: "review", head, round, final };
+  runs.update(f.s, run.id, { commitSha: head, checked });
+  f.events.emit({
+    kind: "note",
+    item: item.id,
+    run: run.id,
+    text: `${item.key}'s review round ${round} of ${max}: ${result.findings.length} finding${result.findings.length === 1 ? "" : "s"}`,
+  });
+  if (final) {
+    await toReady(
+      f,
+      items.get(f.s, item.id)!,
+      view,
+      open.map(describe),
+      `Review round ${round} of ${max} still found problems.`,
+    );
+    return;
+  }
+  const implement = prRun(f, item);
+  if (!implement?.threadId) return;
+  await sendToThread(
+    f,
+    implement,
+    [
+      `The factory's reviewer found these in ${head.slice(0, 12)} (round ${round} of ${max}):`,
+      open.map((o) => `- ${describe(o)}`).join("\n"),
+      `Fix them, push to ${view.headRefName}, and end your turn. Once the checks pass, the factory reviews the new commits. Do not comment on GitHub, mark the PR ready or merge it.`,
+    ].join("\n\n"),
+  ).catch((e) =>
+    f.events.emit({
+      kind: "note",
+      item: item.id,
+      text: `Sending the findings to the implement thread failed: ${shortError(e)}`,
+    }),
+  );
+}
+
+/** For an item in `review`, as part of the PR follower's step: a report not taken yet is taken; the next round starts
+ * once the PR's head moved past the reviewed commit and its checks pass; a stale report gets a new review; and the
+ * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
+ * before. */
+export async function followReview(f: FactoryRuntime, item: FactoryItem, view: PrState, headAt: number) {
+  const max = limitsOf(f, item).reviewRounds;
+  // Review was switched off while the item was in it.
+  if (max === 0) {
+    if (green(f, view, headAt)) await toReady(f, item, view, [], "");
+    return;
+  }
+  const last = reviewRuns(f, item).at(-1);
+  // The last round ended without a report (it failed twice and was retried, or the budget stopped it): another round
+  // starts once the PR is green, as after a push.
+  if (!last || (last.state !== "reported" && !ACTIVE.includes(last.state))) {
+    if (view.state === "OPEN" && green(f, view, headAt)) enqueueRun(f, { kind: "review", item: item.id });
+    return;
+  }
+  if (last.state !== "reported") return;
+  const data = dataOf(last, "review");
+  if (!data) {
+    await takeReview(f, last.id);
+    return;
+  }
+  if (view.state !== "OPEN") return;
+  const why =
+    data.round >= max
+      ? `Review round ${data.round} of ${max} still found problems.`
+      : `The implement thread left round ${data.round}'s findings unanswered.`;
+  const open = () => findingsOf(last).filter(holds).map(describe);
+  if (data.final) {
+    await toReady(f, item, view, open(), why);
+    return;
+  }
+  const moved = !view.headRefOid.startsWith(data.head.toLowerCase());
+  if (data.stale || moved) {
+    if (green(f, view, headAt)) enqueueRun(f, { kind: "review", item: item.id });
+    return;
+  }
+  const implement = prRun(f, item);
+  const thread = implement?.threadId ? mirrorOf(f).thread(implement.threadId) : undefined;
+  const busy = !!thread && (thread.needsYou || isWorkingStatus(thread.status));
+  if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) return;
+  runs.update(f.s, last.id, { checked: { ...data, final: true } });
+  await toReady(f, item, view, open(), why);
 }
 
 export function setup(f: FactoryRuntime): void {

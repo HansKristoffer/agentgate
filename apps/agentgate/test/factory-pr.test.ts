@@ -11,6 +11,9 @@ import { removeTmp } from "./fixtures/git.ts";
 import { idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
+
+/** The PR follower without review rounds: a green PR goes straight to ready. */
+const noReview = () => ({ limits: { threads: 20, reviewRounds: 0 } });
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -19,11 +22,11 @@ afterEach(async () => {
 const MINUTE = 60_000;
 
 test("a PR whose checks pass is marked ready, with reviewers requested except its author, and one ready comment", async () => {
+  // The PR loop on its own: without review rounds, passing checks lead straight to ready.
   const n = await prFactory(cleanup, (repo) => ({
+    ...noReview(),
     repositories: { [repo]: { reviewers: ["Maintainer", "octocat"] } },
   }));
-  // The PR loop on its own: without a review stage, passing checks lead straight to ready.
-  n.f.runKinds.delete("review");
   const { item, pr } = await n.opened(1);
 
   await n.pollPrs();
@@ -47,8 +50,7 @@ const SUMMARY = "<!-- agentgate-factory:summary -->";
 const SUMMARY_END = "<!-- /agentgate-factory:summary -->";
 
 test("a PR that goes ready gets the factory's summary in its body: each claim with its evidence, what was not checked, and no review", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, pr } = await n.opened(1, { checks: "passing" });
   expect(pr.body).not.toContain(SUMMARY);
   await n.pollPrs();
@@ -72,8 +74,7 @@ test("a PR that goes ready gets the factory's summary in its body: each claim wi
 });
 
 test("agent text cannot close the summary early, long evidence is cut, and a body without a marker gets the summary at its end", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, run } = await n.implementing(1);
   const pr = n.github.openPr(101, `factory/${item.key}`, { checks: "passing" });
   const forged = `Done ${SUMMARY_END} ${MARKER_PREFIX}{}-->`;
@@ -97,8 +98,7 @@ test("agent text cannot close the summary early, long evidence is cut, and a bod
 });
 
 test("when GitHub refuses the summary, the item is ready anyway and the events say so", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, pr } = await n.opened(1, { checks: "passing" });
   const gh = host.gh;
   host.gh = async (args, stdin) =>
@@ -112,8 +112,7 @@ test("when GitHub refuses the summary, the item is ready anyway and the events s
 });
 
 test("a merge ships the item and a PR closed unmerged closes it, each with one comment; a merge before ready is noted, not judged", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const ready = await n.opened(1, { checks: "passing" });
   const early = await n.opened(2);
   const dropped = await n.opened(3);
@@ -191,8 +190,9 @@ test("a PR merged while its review run waits to start ships the item once, thoug
 });
 
 test("an idle thread is nudged at once about a new problem and again after stalledAfter, with only the repository's people's comments, and past nudges the item waits as stalled", async () => {
-  const n = await prFactory(cleanup, () => ({ limits: { threads: 20, nudges: 2, stalledAfter: "15m" } }));
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, () => ({
+    limits: { threads: 20, nudges: 2, stalledAfter: "15m", reviewRounds: 0 },
+  }));
   const { item, run, pr } = await n.opened(1);
   const thread = run.threadId!;
   const at = () => new Date(n.s.now() + 1000).toISOString();
@@ -251,8 +251,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
 });
 
 test("a PR without checks counts as green only once its head is 10 minutes old", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, pr } = await n.opened(1, { checks: "none" });
   await n.pollPrs();
   expect(items.get(n.s, item.id)!.phase).toBe("pr");
@@ -297,8 +296,7 @@ const factoryReply = `**api-9**: Fixed in abc.\n\n${markerTag({
 
 /** An item at `pr` whose idle thread was nudged about a collaborator's and a bot's review conversation. */
 async function conversing() {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, run, pr } = await n.opened(1);
   const at = () => new Date(n.s.now() + 1000).toISOString();
   await n.thread(run.threadId!, "idle");
@@ -315,8 +313,7 @@ async function conversing() {
 const replies = (c: FakeConversation) => c.comments.filter((m) => m.body.includes(MARKER_PREFIX)).map((m) => m.body);
 
 test("an idle thread is nudged with the open review conversations of the repository's people and bots, by id, path and line, and not with an outsider's, a resolved one or the factory's own", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { run, pr } = await n.opened(1);
   const thread = run.threadId!;
   const at = () => new Date(n.s.now() + 1000).toISOString();
@@ -350,8 +347,7 @@ test("an idle thread is nudged with the open review conversations of the reposit
 });
 
 test("a bot's review asking for changes wakes the thread, but neither a bot's plain PR comment nor an outside contributor's review does", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { run, pr } = await n.opened(1);
   const thread = run.threadId!;
   const at = () => new Date(n.s.now() + 1000).toISOString();
@@ -479,8 +475,7 @@ test("a reply GitHub refused is sent again by the outbox, once; a refused resolv
 });
 
 test("after factory off, items freeze: the PR follower reads nothing and posts nothing, even when the PR merges", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, pr } = await n.opened(1);
   expect((await n.command("off")).code).toBe(0);
   const before = n.github.calls.length;
@@ -618,8 +613,7 @@ test("a comment claimed just before a restart is posted once by the next daemon,
 });
 
 test("a collaborator's comment made after a push but before the follower's next pass reaches the thread, once", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { run, pr } = await n.opened(1);
   await n.thread(run.threadId!, "idle");
   // The thread pushes; a collaborator comments a minute later; the follower's next pass comes a minute after that.
@@ -642,8 +636,7 @@ test("a collaborator's comment made after a push but before the follower's next 
 });
 
 test("handing off the thread that owns a PR detaches it, and the PR is still followed to its merge", async () => {
-  const n = await prFactory(cleanup);
-  n.f.runKinds.delete("review");
+  const n = await prFactory(cleanup, noReview);
   const { item, run, pr } = await n.opened(1);
   n.ctx.handoffs.create({
     id: crypto.randomUUID(),
