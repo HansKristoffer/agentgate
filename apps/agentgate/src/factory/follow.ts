@@ -1,15 +1,15 @@
-import { parseArgs } from "node:util";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
 import { PeerError, peerCall } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
-import { ACTIONS, findItem } from "./controller.ts";
+import { findItem } from "./controller.ts";
 import { runs } from "./db.ts";
-import { runCommand, runTool, type FactoryRuntime, type ForwardOp } from "./runtime.ts";
+import { runCommand, runOp, runTool, type FactoryRuntime, type ForwardOp } from "./runtime.ts";
 
 /**
- * The factory across machines. Commands and tools on another machine run on the factory machine through
- * `/peer/factory/op`, except those about a run or an item this machine still holds after the factory moved away. A
+ * The factory across machines. Commands, tools and operations on another machine run on the factory machine through
+ * `/peer/factory/op`, except a tool or operation about a run or an item this machine still holds after the factory
+ * moved away. A
  * stage thread handed to another machine leaves the factory (controller.ts), so threads are only ever acted on here.
  */
 
@@ -36,36 +36,29 @@ const opSchema = z.discriminatedUnion("kind", [
       stdin: z.string().optional(),
     })
     .strict(),
+  z.object({ kind: z.literal("op"), name: z.string().min(1).max(100), input: z.unknown() }).strict(),
 ]);
-
-/** Commands that name an item, which the machine that holds it answers. */
-const isItemCommand = (name: string) => name === "show" || (ACTIONS as readonly string[]).includes(name);
 
 /** A call about a run or an item in this machine's tables: after the factory moved away, this machine still drives
  * them, and their threads report here. */
-function heldHere(f: FactoryRuntime, op: ForwardOp) {
+type HeldOp = Exclude<ForwardOp, { kind: "command" }>;
+
+function heldHere(f: FactoryRuntime, op: ForwardOp): op is HeldOp {
   if (op.kind === "tool") return typeof op.args.run === "string" && !!runs.get(f.s, op.args.run);
-  if (!isItemCommand(op.name)) return false;
-  const { positionals } = parseArgs({
-    args: op.args,
-    options: { reason: { type: "string" }, json: { type: "boolean" } },
-    strict: false,
-  });
-  const ref = positionals[0];
-  try {
-    return !!ref && !!findItem(f, ref);
-  } catch {
-    // A reference two items here share: the command here says so.
-    return true;
+  if (op.kind === "op") {
+    const ref = (op.input as { item?: unknown } | null)?.item;
+    if (!f.ops.get(op.name)?.item || typeof ref !== "string") return false;
+    try {
+      return !!findItem(f, ref);
+    } catch {
+      return true;
+    }
   }
+  return false;
 }
 
-async function runHere(f: FactoryRuntime, op: ForwardOp) {
-  if (op.kind === "tool") return f.tools.get(op.name)!.call(op.args, op.caller);
-  const output: string[] = [];
-  const io = { ...(op.stdin !== undefined && { stdin: op.stdin }), out: (line: string) => output.push(line) };
-  const code = await f.commands.get(op.name)!.run(op.args, io);
-  return { code, output };
+async function runHere(f: FactoryRuntime, op: HeldOp) {
+  return op.kind === "tool" ? f.tools.get(op.name)!.call(op.args, op.caller) : f.ops.get(op.name)!.run(op.input);
 }
 
 export function setup(f: FactoryRuntime): void {
@@ -81,8 +74,8 @@ export function setup(f: FactoryRuntime): void {
     }
   };
 
-  // The response is the tool's value, or { code, output } for a command; an error is { error } with its message, as
-  // the caller would have seen it here.
+  // The response is the tool's or operation's value, or { code, output } for a command; an error is { error } with
+  // its message, as the caller would have seen it here.
   f.peer.post("/op", async (c) => {
     const op = opSchema.safeParse(await jsonInput(c.req.raw));
     if (!op.success) return c.json({ error: "invalid factory operation" }, 400);
@@ -99,6 +92,7 @@ export function setup(f: FactoryRuntime): void {
     if (!f.isFactoryNode()) return c.json({ error: `${f.s.nodeId} does not run the factory` }, 409);
     try {
       if (data.kind === "tool") return c.json((await runTool(f, data.name, data.args, data.caller)) ?? null);
+      if (data.kind === "op") return c.json((await runOp(f, data.name, data.input)) ?? null);
       const output: string[] = [];
       const io = { ...(data.stdin !== undefined && { stdin: data.stdin }), out: (line: string) => output.push(line) };
       const code = await runCommand(f, data.name, data.args, io);

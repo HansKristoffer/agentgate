@@ -53,11 +53,13 @@ import { renderComment } from "./markers.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { recordRun } from "./records.ts";
 import {
-  commandRoute,
   later,
   logError,
+  opRoute,
+  runOp,
   shortError,
   withItem,
+  type CommandIO,
   type FactoryRuntime,
   type FactoryTool,
   type IncomingItem,
@@ -1528,7 +1530,7 @@ export function holderOf(f: FactoryRuntime, ref: string): string | undefined {
  * the old machine still drives its items, and every machine reaches them through the factory machine. It asks the
  * machine the board names first, then every other machine seen lately; a machine that does not hold the item answers
  * 409, and one that does answers for it, errors included. Undefined when this machine holds it, or none answers. */
-async function viaHolder(f: FactoryRuntime, name: string, args: string[], ref: string) {
+async function viaHolder(f: FactoryRuntime, name: string, input: unknown, ref: string): Promise<unknown> {
   const { s } = f;
   if (findItem(f, ref)) return undefined;
   const named = holderOf(f, ref);
@@ -1538,10 +1540,7 @@ async function viaHolder(f: FactoryRuntime, name: string, args: string[], ref: s
     .filter((id) => id !== s.nodeId && s.now() - lastSeen(s, id) < ORPHAN_MS);
   for (const node of new Set([...(named ? [named] : []), ...seen])) {
     try {
-      return await peerCall<{ code: number; output: string[] }>(s, node, "/factory/op", {
-        json: { kind: "command", name, args },
-        timeout: 100_000,
-      });
+      return await peerCall<unknown>(s, node, "/factory/op", { json: { kind: "op", name, input }, timeout: 100_000 });
     } catch (e) {
       if (e instanceof PeerError && e.status !== 409) throw e;
     }
@@ -1704,8 +1703,58 @@ export function setup(f: FactoryRuntime): void {
     },
   });
 
+  // The operations the CLI, the routes and other machines share. An item's operations run on the machine that holds it.
+  f.ops.set("add", {
+    run: async (input) => {
+      const item = addManual(f, input);
+      return { id: item.id, key: item.key, repo: item.repo, phase: item.phase };
+    },
+  });
+  const itemRef = z.object({ item: z.string().min(1).max(200) });
+  f.ops.set("show", {
+    item: true,
+    run: async (input) => {
+      const { item: ref } = itemRef.parse(input);
+      const there = await viaHolder(f, "show", input, ref);
+      if (there) return there;
+      const item = findItem(f, ref);
+      if (!item) throw new Error(`${f.s.nodeId} holds no factory item ${ref}`);
+      return itemDetail(f, item);
+    },
+  });
+  for (const action of ACTIONS)
+    f.ops.set(action, {
+      item: true,
+      run: async (input) => {
+        const { item: ref, reason } = itemRef.extend(factoryActionInputSchema.shape).parse(input);
+        const there = await viaHolder(f, action, input, ref);
+        if (there) return there;
+        return { message: await itemAction(f, ref, action, reason) };
+      },
+    });
+  const setPaused = (paused: boolean) => {
+    requireFolder(f);
+    if (paused !== isPaused(f)) {
+      f.s.setLocal(PAUSED, paused ? "1" : undefined);
+      f.events.emit({
+        kind: "note",
+        text: paused ? "The factory was paused: no intake, new threads or nudges" : "The factory resumed",
+      });
+    }
+    return {
+      message: paused
+        ? "Paused: no intake, new threads or nudges until agentgate factory resume. Running threads finish."
+        : "Resumed.",
+    };
+  };
+  f.ops.set("pause", { run: async () => setPaused(true) });
+  f.ops.set("resume", { run: async () => setPaused(false) });
+
+  // The commands format what the operations return; the operations reach the right machine, so the commands run here.
+  const message = (io: CommandIO, result: unknown) => io.out((result as { message: string }).message);
   f.commands.set("add", {
     usage: "add <owner/repo> <title> [--body <text>] [--json]",
+    local: true,
     async run(args, io) {
       const { values, positionals } = parseArgs({
         args,
@@ -1717,7 +1766,12 @@ export function setup(f: FactoryRuntime): void {
         return 2;
       }
       const { json, ...rest } = values;
-      const item = addManual(f, { repo: positionals[0], title: positionals[1], ...rest });
+      const item = (await runOp(f, "add", { repo: positionals[0], title: positionals[1], ...rest })) as {
+        id: string;
+        key: string;
+        repo: string;
+        phase: ItemPhase;
+      };
       io.out(
         json
           ? JSON.stringify({ id: item.id, key: item.key })
@@ -1729,6 +1783,7 @@ export function setup(f: FactoryRuntime): void {
   for (const action of ACTIONS)
     f.commands.set(action, {
       usage: `${action} <item> [--reason <text>]`,
+      local: true,
       async run(args, io) {
         const { values, positionals } = parseArgs({
           args,
@@ -1739,18 +1794,13 @@ export function setup(f: FactoryRuntime): void {
           io.out(`usage: agentgate factory ${action} <item> [--reason <text>]`);
           return 2;
         }
-        // On the machine that holds the item: the factory machine, or one the factory moved away from.
-        const there = await viaHolder(f, action, args, positionals[0]!);
-        if (there) {
-          there.output.forEach((line) => io.out(line));
-          return there.code;
-        }
-        io.out(await itemAction(f, positionals[0]!, action, values.reason));
+        message(io, await runOp(f, action, { item: positionals[0], ...(values.reason && { reason: values.reason }) }));
         return 0;
       },
     });
   f.commands.set("show", {
     usage: "show <item> [--json]",
+    local: true,
     async run(args, io) {
       const { values, positionals } = parseArgs({
         args,
@@ -1761,14 +1811,7 @@ export function setup(f: FactoryRuntime): void {
         io.out("usage: agentgate factory show <item> [--json]");
         return 2;
       }
-      const there = await viaHolder(f, "show", args, positionals[0]!);
-      if (there) {
-        there.output.forEach((line) => io.out(line));
-        return there.code;
-      }
-      const item = findItem(f, positionals[0]!);
-      if (!item) throw new Error(`${f.s.nodeId} holds no factory item ${positionals[0]}`);
-      const detail = itemDetail(f, item);
+      const detail = factoryItemDetailSchema.parse(await runOp(f, "show", { item: positionals[0] }));
       if (values.json) io.out(JSON.stringify(detail));
       else detailText(detail).forEach((line) => io.out(line));
       return 0;
@@ -1776,51 +1819,26 @@ export function setup(f: FactoryRuntime): void {
   });
   f.commands.set("pause", {
     usage: "pause  stop intake, new threads and nudges until resume",
-    async run(_, io) {
-      requireFolder(f);
-      if (!isPaused(f)) {
-        f.s.setLocal(PAUSED, "1");
-        f.events.emit({ kind: "note", text: "The factory was paused: no intake, new threads or nudges" });
-      }
-      io.out("Paused: no intake, new threads or nudges until agentgate factory resume. Running threads finish.");
-      return 0;
-    },
+    local: true,
+    run: async (_, io) => (message(io, await runOp(f, "pause", {})), 0),
   });
   f.commands.set("resume", {
     usage: "resume",
-    async run(_, io) {
-      requireFolder(f);
-      if (isPaused(f)) {
-        f.s.setLocal(PAUSED, undefined);
-        f.events.emit({ kind: "note", text: "The factory resumed" });
-      }
-      io.out("Resumed.");
-      return 0;
-    },
+    local: true,
+    run: async (_, io) => (message(io, await runOp(f, "resume", {})), 0),
   });
 
-  // The routes run the commands, so they reach the factory machine from any machine, as the CLI does.
+  // The routes return what the operations return.
   f.api.post("/items", async (c) => {
-    const input = factoryItemInputSchema.parse(await jsonInput(c.req.raw));
-    const output = await commandRoute(f, "add", [
-      input.repo,
-      input.title,
-      ...(input.body ? ["--body", input.body] : []),
-      "--json",
-    ]);
-    return c.json(z.object({ id: z.string(), key: z.string() }).parse(JSON.parse(output.at(-1)!)));
+    const { id, key } = (await opRoute(f, "add", await jsonInput(c.req.raw))) as { id: string; key: string };
+    return c.json({ id, key });
   });
-  f.api.get("/items/:id", async (c) => {
-    const output = await commandRoute(f, "show", [c.req.param("id"), "--json"]);
-    return c.json(factoryItemDetailSchema.parse(JSON.parse(output.at(-1)!)));
-  });
+  f.api.get("/items/:id", async (c) => c.json(await opRoute(f, "show", { item: c.req.param("id") })));
   f.api.post("/items/:id/:action", async (c) => {
     const action = ACTIONS.find((a) => a === c.req.param("action"));
     if (!action) throw new HTTPException(404, { message: `unknown action; use ${ACTIONS.join(", ")}` });
     const { reason } = factoryActionInputSchema.parse(await jsonInput(c.req.raw));
-    const output = await commandRoute(f, action, [c.req.param("id"), ...(reason ? ["--reason", reason] : [])]);
-    return c.json({ message: output.join("\n") });
+    return c.json(await opRoute(f, action, { item: c.req.param("id"), ...(reason && { reason }) }));
   });
-  for (const name of ["pause", "resume"])
-    f.api.post(`/${name}`, async (c) => c.json({ message: (await commandRoute(f, name, [])).join("\n") }));
+  for (const name of ["pause", "resume"]) f.api.post(`/${name}`, async (c) => c.json(await opRoute(f, name, {})));
 }

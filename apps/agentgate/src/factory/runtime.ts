@@ -111,9 +111,18 @@ export interface RunKindDefinition {
   /** `approve`/`reject` of a waiting run. */
   answer?(run: FactoryRun, decision: { approve: boolean; reason?: string }): Promise<void>;
 }
+/** An operation the CLI, the routes and other machines share: typed input in, JSON out. A command formats its result
+ * for the terminal, a route returns it as it is, and another machine's call is forwarded to the factory machine. */
+export interface FactoryOp {
+  local?: boolean; // never forwarded to the factory machine
+  /** The item the input names, `{ item }`: the machine that holds it answers, which may not be the factory machine. */
+  item?: boolean;
+  run(input: unknown): Promise<unknown>;
+}
 export type ForwardOp =
   | { kind: "tool"; name: string; args: Record<string, unknown>; caller: ToolCaller }
-  | { kind: "command"; name: string; args: string[]; stdin?: string };
+  | { kind: "command"; name: string; args: string[]; stdin?: string }
+  | { kind: "op"; name: string; input: unknown };
 export type Forwarder = (op: ForwardOp) => Promise<unknown>;
 
 export interface FactoryRuntime {
@@ -123,6 +132,7 @@ export interface FactoryRuntime {
   api: Hono<Env>; // mounted at /api/factory, behind management()'s guards
   peer: Hono<Env>; // mounted at /peer/factory, behind the peer token
   commands: Map<string, FactoryCommand>; // `agentgate factory <name> ...`
+  ops: Map<string, FactoryOp>;
   tools: Map<string, FactoryTool>;
   loops: FactoryLoop[];
   runKinds: Map<RunKind, RunKindDefinition>;
@@ -147,6 +157,7 @@ export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
     api: new Hono<Env>(),
     peer: new Hono<Env>(),
     commands: new Map(),
+    ops: new Map(),
     tools: new Map(),
     loops: [],
     runKinds: new Map(),
@@ -174,6 +185,17 @@ export async function runTool(f: FactoryRuntime, name: string, args: Record<stri
   const forwarder = forward(f, tool.local);
   return forwarder ? forwarder({ kind: "tool", name, args, caller }) : tool.call(args, caller);
 }
+
+/** Runs the operation here, or on the factory machine when it runs elsewhere. */
+export async function runOp(f: FactoryRuntime, name: string, input: unknown): Promise<unknown> {
+  const op = f.ops.get(name);
+  if (!op) throw new Error(`unknown factory operation ${name}`);
+  const forwarder = forward(f, op.local);
+  return forwarder ? forwarder({ kind: "op", name, input }) : op.run(input);
+}
+
+/** For routes: the operation's result, with an error as a 400 carrying its message. */
+export const opRoute = (f: FactoryRuntime, name: string, input: unknown) => asInput(() => runOp(f, name, input));
 
 export async function runCommand(f: FactoryRuntime, name: string, args: string[], io: CommandIO) {
   const command = f.commands.get(name);
@@ -237,15 +259,6 @@ export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
       throw error;
     throw new HTTPException(400, { message: getErrorMessage(error) });
   }
-}
-
-/** For routes: the command run as the CLI runs it, forwarded to the factory machine when it runs elsewhere; a command
- * that fails is a 400 with its output. */
-export async function commandRoute(f: FactoryRuntime, name: string, args: string[]) {
-  const output: string[] = [];
-  const code = await asInput(() => runCommand(f, name, args, { out: (line) => output.push(line) }));
-  if (code) throw new HTTPException(400, { message: output.join("\n") || `factory ${name} failed` });
-  return output;
 }
 
 /** The last failure each loop logged, so one that fails every pass says so once until it changes or recovers. */

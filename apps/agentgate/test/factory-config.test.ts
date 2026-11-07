@@ -332,7 +332,7 @@ test("POST /api/factory/reload on another machine reloads the factory machine's 
 
   const res = await reload();
   expect(res.status).toBe(200);
-  expect(((await res.json()) as { message: string }).message).toContain("Factory folder acme/factory, run by b");
+  expect(await res.json()).toMatchObject({ factory: { repo: "acme/factory", node: "b" }, config: { name: "acme" } });
   expect(calls).toHaveLength(fetched + 1);
 
   await b!.stop();

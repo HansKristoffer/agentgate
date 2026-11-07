@@ -24,7 +24,7 @@ import { lastSeen } from "../sync.ts";
 import { items } from "./db.ts";
 import { fetcher, folderPath, pruneFolders } from "./folder.ts";
 import { branchProtected, defaultBranch, prState } from "./gh.ts";
-import { asInput, commandRoute, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { asInput, opRoute, requireFactoryProtocol, runOp, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves, and the
@@ -537,7 +537,12 @@ export function setup(f: FactoryRuntime): void {
     },
   });
   f.commands.set("off", { usage: "off", local: true, run: async (_, io) => print(turnOff(f), io.out) });
-  f.commands.set("reload", { usage: "reload", run: async (_, io) => print(await reloadFactory(f), io.out) });
+  f.ops.set("reload", { run: () => reloadFactory(f) });
+  f.commands.set("reload", {
+    usage: "reload",
+    local: true,
+    run: async (_, io) => print((await runOp(f, "reload", {})) as FactoryStatus, io.out),
+  });
 
   f.api.put("/", async (c) => {
     const body = await jsonInput(c.req.raw);
@@ -548,8 +553,8 @@ export function setup(f: FactoryRuntime): void {
     return c.json(await asInput(() => moveFactory(f, node)));
   });
   f.api.delete("/", async (c) => c.json(await asInput(() => turnOff(f))));
-  // Through the command, which reaches the factory machine from any machine, as the CLI does.
-  f.api.post("/reload", async (c) => c.json({ message: (await commandRoute(f, "reload", [])).join("\n") }));
+  // Through the operation, which reaches the factory machine from any machine, as the CLI does.
+  f.api.post("/reload", async (c) => c.json(await opRoute(f, "reload", {})));
 
   f.loops.push({ name: "factory-folder", everyMs: 2 * 60_000, where: "factory-node", run: () => sync(f) });
   f.boardParts.push(async () => factoryStatus(f));
