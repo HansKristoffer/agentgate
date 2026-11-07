@@ -212,7 +212,7 @@ test("once its item ships, an implement run's transcript is read again: its star
   expect(transcripts.get(n.s, run.id)).toContain("Pushed a fix for the failing check.");
 });
 
-test("the token loop reads a thread's projection only when the thread changed", async () => {
+test("the token loop reads a thread's projections when a subagent starts, not every time the thread changes", async () => {
   const n = await prFactory(cleanup);
   // The implement run reported and its thread owns the PR, so the thread's turns are its own.
   const { run } = await n.opened(1);
@@ -222,12 +222,41 @@ test("the token loop reads a thread's projection only when the thread changed", 
   const first = reads();
   for (let minute = 0; minute < 60; minute++) {
     n.advance(60_000);
+    await n.thread(run.threadId!, minute % 2 ? "idle" : "running");
     await measure();
   }
   expect(reads()).toBe(first);
-  await n.thread(run.threadId!, "idle");
+
+  // A subagent's provider session counts too, so the thread and the subagent are read once.
+  const parent = n.t3.threads.get(run.threadId!)!;
+  const subagent = n.t3.addThread({
+    projectId: parent.projectId,
+    sessionId: crypto.randomUUID(),
+    subagent: true,
+    parentThreadId: parent.id,
+  });
+  n.mcp.setThread(subagent.id, { status: "running" });
+  await n.until(() => n.mirror.thread(subagent.id)?.parentThreadId === parent.id, "the subagent in the mirror");
   await measure();
-  expect(reads()).toBe(first + 1);
+  expect(reads()).toBe(first + 2);
+  await measure();
+  expect(reads()).toBe(first + 2);
+});
+
+test("a run whose tokens cannot be measured is noted once, and its item's tokens show as unknown after 10 minutes", async () => {
+  const n = await prFactory(cleanup);
+  const { run } = await n.implementing(1);
+  const measure = loop(n.f, "factory-tokens");
+  // T3 no longer has the thread, so its projection cannot be read.
+  n.t3.threads.delete(run.threadId!);
+  for (let pass = 0; pass < 3; pass++) {
+    n.advance(5 * 60_000);
+    await measure();
+  }
+  const notes = n.f.events.recent(50).filter((e) => e.text.startsWith(`Measuring the tokens of ${run.id} failed`));
+  expect(notes).toHaveLength(1);
+  const board = await buildBoard(n.f, { includeWebhookUrls: false });
+  expect(board.items.find((i) => i.id === run.item)).toMatchObject({ tokensUnknown: true });
 });
 
 test("outcomes come from each item's PR and stay the item's, and the board shows the week's metrics", async () => {

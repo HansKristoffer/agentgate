@@ -1396,14 +1396,17 @@ function reviewState(item: FactoryItem, itemRuns: FactoryRun[]) {
   return { reviewRound: last.length, ...(open > 0 && { openFindings: open }) };
 }
 
-/** Whether a run's tokens are unknown: its thread has worked for 10 minutes, and no provider session of it was counted,
- * so its sessions do not go through agentgate. */
+/** Whether an item's tokens are unknown: a run that started over 10 minutes ago named no provider session (its sessions
+ * do not go through agentgate), or, while it works, has had no successful measurement in 10 minutes. */
 function tokensUnknown(f: FactoryRuntime, item: FactoryItem) {
+  const before = f.s.now() - 10 * 60_000;
   const row = f.s.db
     .query(
-      "select count(*) as n from factory_runs where item=? and measured_at is not null and sessions=0 and started_at < ?",
+      `select count(*) as n from factory_runs where item=? and started_at < ? and (
+         (measured_at is not null and sessions = 0)
+         or (state in ('running', 'waiting') and (measured_at is null or measured_at < ?)))`,
     )
-    .get(item.id, f.s.now() - 10 * 60_000) as { n: number };
+    .get(item.id, before, before) as { n: number };
   return row.n > 0;
 }
 

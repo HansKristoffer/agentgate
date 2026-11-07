@@ -157,52 +157,66 @@ export async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
       );
 }
 
-/** Per run, its provider sessions as T3 last listed them, and when its thread had changed then. */
-const sessionMemory = new WeakMap<FactoryRuntime, Map<string, { changed: number; sessions: string[] }>>();
-
-/** When the run's thread last changed: its own thread's or a subagent's update in this machine's mirror. */
-function changedAt(f: FactoryRuntime, run: FactoryRun) {
-  const mirror = mirrorOf(f);
-  const ids = [run.threadId!, ...subagents(f, run.threadId!)];
-  return Math.max(0, ...ids.map((id) => mirror.thread(id)?.updatedAt ?? 0));
+interface Measuring {
+  /** Per run, its thread and subagent threads when its sessions were read, and those sessions. */
+  sessions: Map<string, { threads: string; sessions: string[] }>;
+  /** Per run, the failure the event list last heard. */
+  failed: Map<string, string>;
+}
+const measuring = new WeakMap<FactoryRuntime, Measuring>();
+function measuringOf(f: FactoryRuntime) {
+  let m = measuring.get(f);
+  if (!m) measuring.set(f, (m = { sessions: new Map(), failed: new Map() }));
+  return m;
 }
 
-/** The run's tokens now: its sessions are read from T3 only when its thread changed, and the proxies' counts for
- * them, which are cheap, every time. */
+/** The run's tokens now. Its provider sessions are read from T3 (a projection carries every message) only when its
+ * set of threads changed, as when a subagent starts, and again when the run ends; the proxies' counts for them, which
+ * are cheap, every time. */
 async function currentTokens(f: FactoryRuntime, run: FactoryRun) {
-  let memory = sessionMemory.get(f);
-  if (!memory) sessionMemory.set(f, (memory = new Map()));
-  const changed = changedAt(f, run);
+  const { sessions: memory } = measuringOf(f);
+  const threads = [run.threadId!, ...subagents(f, run.threadId!)].sort().join(",");
   const known = memory.get(run.id);
-  if (known?.changed !== changed) {
+  if (known?.threads !== threads) {
     const measured = await measure(f, run, false);
     if (!measured) return undefined;
-    memory.set(run.id, { changed, sessions: measured.sessions });
+    memory.set(run.id, { threads, sessions: measured.sessions });
     return measured;
   }
-  const { sessions } = known;
-  return { tokens: total(sessionUsage(f.s, sessions)), sessions };
+  return { tokens: total(sessionUsage(f.s, known.sessions)), sessions: known.sessions };
 }
 
 /** Threads keep working after their run reports (an implement thread owns its PR), so the runs of open items are
- * measured every minute, reading T3 only for threads that changed. An item that waits for the maintainer is left
- * alone: its threads are stopped or wait for an answer. Failures wait for the next round: the run's end already noted
- * them. */
+ * measured every minute. An item that waits for the maintainer is left alone: its threads are stopped or wait for an
+ * answer. A failure is noted once per run; the board shows the tokens as unknown while a working run goes unmeasured. */
 async function measureOpen(f: FactoryRuntime) {
+  const m = measuringOf(f);
+  const measured = new Set<string>();
+  const budget = (currentFolder(f)?.config.limits ?? DEFAULT_LIMITS).itemTokens;
   for (const item of items.list(f.s, { open: true })) {
     if (item.needsYou) continue;
     for (const run of runs.forItem(f.s, item.id)) {
       if (!run.threadId) continue;
+      measured.add(run.id);
       try {
-        const measured = await currentTokens(f, run);
-        if (!measured) continue;
-        const after = saveTokens(f, run, measured.tokens, measured.sessions.length);
-        if (after && isOpenPhase(after.phase)) await withItem(f, after.id, () => enforceBudget(f, after.id));
-      } catch {
-        sessionMemory.get(f)?.delete(run.id);
+        const now = await currentTokens(f, run);
+        if (!now) continue;
+        m.failed.delete(run.id);
+        const after = saveTokens(f, run, now.tokens, now.sessions.length);
+        // A step of the item only when it went over: under budget, nothing waits behind its other steps.
+        if (after && isOpenPhase(after.phase) && after.tokens > budget)
+          await withItem(f, after.id, () => enforceBudget(f, after.id));
+      } catch (e) {
+        m.sessions.delete(run.id);
+        const text = `Measuring the tokens of ${run.id} failed: ${shortError(e)}`;
+        if (m.failed.get(run.id) !== text) f.events.emit({ kind: "note", item: item.id, run: run.id, text });
+        m.failed.set(run.id, text);
       }
     }
   }
+  // Runs of items that finished or wait are measured again from scratch if they come back.
+  for (const id of m.sessions.keys()) if (!measured.has(id)) m.sessions.delete(id);
+  for (const id of m.failed.keys()) if (!measured.has(id)) m.failed.delete(id);
 }
 
 // ---- outcomes and verdicts
