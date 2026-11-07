@@ -5,7 +5,7 @@ import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import {
   closeQuietly,
   enqueueRun,
-  interruptItem,
+  finishItem,
   isPaused,
   moveItem,
   ownRun,
@@ -35,7 +35,6 @@ import {
 } from "./gh.ts";
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
-import { recordItemEnd } from "./records.ts";
 import { followReview, lastRound, summaryLine } from "./review.ts";
 import { claimWrite } from "./outbox.ts";
 import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
@@ -178,17 +177,6 @@ export function withSummary(body: string, summary: string): string {
   const before = (at < 0 ? rest : rest.slice(0, at)).trimEnd();
   const after = at < 0 ? "" : `\n\n${rest.slice(at)}`;
   return `${before ? `${before}\n\n` : ""}${section}${after}`;
-}
-
-/** Stops and settles the item's threads once its PR is merged or closed. */
-async function release(f: FactoryRuntime, item: FactoryItem, reason: string) {
-  noted.get(f)?.delete(item.id);
-  await interruptItem(f, item.id, reason);
-  // The threads kept working after their runs reported: their tokens are read again, after this step.
-  later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
-    const finished = items.get(f.s, item.id);
-    if (finished) await recordItemEnd(f, finished);
-  });
 }
 
 /** In `pr` with a green PR and every claim backed: a review run when review rounds are on, otherwise ready. */
@@ -364,15 +352,21 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
         item: item.id,
         text: `${item.key}'s PR was merged before the factory called it ready`,
       });
-    moveItem(f, item.id, "shipped", null);
-    writeBack(f, item, "shipped", { text: item.prUrl, commit: view.headRefOid });
-    await release(f, item, "The PR was merged");
+    noted.get(f)?.delete(item.id);
+    await finishItem(f, item, "shipped", {
+      interrupt: true,
+      reason: "The PR was merged",
+      comment: { text: item.prUrl!, commit: view.headRefOid },
+    });
     return;
   }
   if (view.state === "CLOSED") {
-    moveItem(f, item.id, "closed", null);
-    writeBack(f, item, "closed", { text: "The pull request was closed without merging." });
-    await release(f, item, "The PR was closed without merging");
+    noted.get(f)?.delete(item.id);
+    await finishItem(f, item, "closed", {
+      interrupt: true,
+      reason: "The PR was closed without merging",
+      comment: { text: "The pull request was closed without merging." },
+    });
     return;
   }
 

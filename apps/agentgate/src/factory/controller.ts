@@ -51,7 +51,7 @@ import {
 import type { HumanAct } from "./events.ts";
 import { renderComment } from "./markers.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
-import { recordRun } from "./records.ts";
+import { recordItemEnd, recordRun } from "./records.ts";
 import {
   later,
   logError,
@@ -347,12 +347,38 @@ export function cancelLaunch(f: FactoryRuntime, run: FactoryRun, why: string) {
 }
 
 /** Closes an item and cancels its queued runs, with the closed comment. */
-export function closeItem(f: FactoryRuntime, item: FactoryItem, reason: string, report?: FactoryReport) {
-  for (const run of runs.forItem(f.s, item.id)) if (run.state === "queued") endRun(f, run, "cancelled");
-  moveItem(f, item.id, "closed", null);
-  // The item as it was, so the marker names the stage it closed in.
-  writeBack(f, item, "closed", { ...(report && { report }), text: reason });
+/**
+ * The one way an item ends, shipped or closed. Its queued runs are cancelled, and with `interrupt` its threads are
+ * stopped and settled; a report that closes the item comes from a thread mid-turn, which settles once it ends instead.
+ * `comment` is what the issue hears, `note` what the event list does; once the step ends, the threads' tokens are read
+ * again, since a thread can work on after its run reported.
+ */
+export async function finishItem(
+  f: FactoryRuntime,
+  item: FactoryItem,
+  to: "shipped" | "closed",
+  options: {
+    interrupt: boolean;
+    reason: string;
+    comment?: { text: string; report?: FactoryReport; commit?: string };
+    note?: boolean;
+  },
+) {
+  if (options.note) f.events.emit({ kind: "note", item: item.id, text: options.reason });
+  if (options.interrupt) await interruptItem(f, item.id, options.reason);
+  else for (const run of runs.forItem(f.s, item.id)) if (run.state === "queued") endRun(f, run, "cancelled");
+  moveItem(f, item.id, to, null);
+  // The item as it was, so the marker names the stage it ended in.
+  if (options.comment) writeBack(f, item, to, options.comment);
+  later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
+    const finished = items.get(f.s, item.id);
+    if (finished) await recordItemEnd(f, finished);
+  });
 }
+
+/** An item that ends at a report or a rejection: no thread of it is working, or the one reporting settles itself. */
+export const closeItem = (f: FactoryRuntime, item: FactoryItem, reason: string, report?: FactoryReport) =>
+  finishItem(f, item, "closed", { interrupt: false, reason, comment: { text: reason, ...(report && { report }) } });
 
 // ---- write-backs
 
@@ -765,11 +791,8 @@ export async function sourceCheck(
 
 /** The source closed the item, or another machine took it over: no comment (the issue already says so, and this
  * machine's comment would be the issue's newest marker again). Its threads stop. */
-export async function closeQuietly(f: FactoryRuntime, item: FactoryItem, why = `${item.key} was closed at its source`) {
-  f.events.emit({ kind: "note", item: item.id, text: why });
-  await interruptItem(f, item.id, why);
-  moveItem(f, item.id, "closed", null);
-}
+export const closeQuietly = (f: FactoryRuntime, item: FactoryItem, why = `${item.key} was closed at its source`) =>
+  finishItem(f, item, "closed", { interrupt: true, reason: why, note: true });
 
 // ---- watching threads
 
@@ -1025,7 +1048,7 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Tool
   if (item?.needsYou?.reason === "approval") answeredInT3(f, item);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
   const closing = CLOSING[report.outcome];
-  if (item && closing) closeItem(f, item, closing(report), report);
+  if (item && closing) await closeItem(f, item, closing(report), report);
   else if (item && asks) {
     const question = report.blocked?.missing ?? report.decision!.question;
     const after = setNeedsYou(f, item.id, {
@@ -1276,9 +1299,11 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
 
   if (action === "drop") {
     if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
-    await interruptItem(f, item.id, `Dropped by the maintainer${because}`);
-    moveItem(f, item.id, "closed", null);
-    writeBack(f, item, "closed", { text: `The maintainer dropped it${because}.` });
+    await finishItem(f, item, "closed", {
+      interrupt: true,
+      reason: `Dropped by the maintainer${because}`,
+      comment: { text: `The maintainer dropped it${because}.` },
+    });
     return `Dropped ${item.key}`;
   }
 
@@ -1295,7 +1320,7 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
   const approve = action === "approve";
   if (item.phase === "held") {
     if (!approve) {
-      closeItem(f, item, `The maintainer rejected it${because}.`);
+      await closeItem(f, item, `The maintainer rejected it${because}.`);
       touched(f, item, "reject", "rejected while held");
       return `Rejected ${item.key}`;
     }
@@ -1308,7 +1333,7 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
   if (item.needsYou?.reason === "held") {
     const stage = last?.kind ?? item.phase;
     if (!approve) {
-      closeItem(f, item, `The maintainer rejected it${because}.`);
+      await closeItem(f, item, `The maintainer rejected it${because}.`);
       touched(f, item, "reject", `rejected before ${stage}`);
       return `Rejected ${item.key}`;
     }
