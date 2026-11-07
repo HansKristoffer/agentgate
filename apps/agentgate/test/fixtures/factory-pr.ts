@@ -224,8 +224,14 @@ export async function prFactory(
   return withPr(n, fakeGitHub(n.repo, cleanup));
 }
 
-/** The PR helpers, bound to one daemon of the node; the fake GitHub outlives a restart. */
-async function withPr(n: Node, github: ReturnType<typeof fakeGitHub>) {
+/** The node with its PR helpers; a restart keeps the fake GitHub and binds the helpers to the new daemon. */
+async function withPr(n: Node, github: ReturnType<typeof fakeGitHub>): Promise<PrNode> {
+  return { ...(await prHelpers(n, github)), restart: async () => withPr(await n.restart(), github) };
+}
+type PrNode = Awaited<ReturnType<typeof prHelpers>> & { restart(): Promise<PrNode> };
+
+/** The PR helpers, bound to one daemon of the node. */
+async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<typeof fakeGitHub>) {
   const builtin = (await n.ctx.gateway.builtin!()).client;
 
   /** factory_report from the run's own T3 thread: `{ accepted: true }`, or the tool error's text. */
@@ -316,8 +322,6 @@ async function withPr(n: Node, github: ReturnType<typeof fakeGitHub>) {
       await n.until(() => n.mirror.thread(threadId)?.status === status, `the thread to be ${status}`);
     },
   };
-  /** The daemon restarting on the same store, with the same fake GitHub. */
-  const restart = async (): Promise<typeof node> => withPr(await n.restart(), github);
-  return Object.assign(node, { restart });
+  return node;
 }
 type Node = Awaited<ReturnType<typeof factoryNode>>;

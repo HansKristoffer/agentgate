@@ -5,6 +5,7 @@ import { writeBack } from "../src/factory/controller.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import * as gh from "../src/factory/gh.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
+import { loopTask } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
@@ -274,7 +275,7 @@ test("a marker in a comment by another login counts for nothing: not for newestM
   });
 });
 
-test("triage posts one comment with the template, the marker, defused mentions and a capped text; a failed or uncertain post is recorded and never retried", async () => {
+test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one never again", async () => {
   const n = await githubFactory();
   for (const i of [1, 2, 3]) n.github.add(i);
   await n.intake();
@@ -327,9 +328,27 @@ test("triage posts one comment with the template, the marker, defused mentions a
         : undefined;
   await n.report(second!, triaged);
   await n.report(third!, triaged);
-  const writebacks = n.s.db.query("select status from factory_writebacks where moment='triaged' order by status").all();
-  expect(writebacks).toEqual([{ status: "failed" }, { status: "posted" }, { status: "uncertain" }]);
+  const statuses = async () =>
+    (await Promise.all([first!, second!, third!].map((r) => n.command("show", items.get(n.s, r.item!)!.key, "--json"))))
+      .map(({ output }) =>
+        JSON.parse(output.at(-1)!).writebacks.find((w: { moment: string }) => w.moment === "triaged"),
+      )
+      .map((w: { status: string }) => w.status);
+  // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one never.
+  expect(await statuses()).toEqual(["posted", "pending", "uncertain"]);
+  const outbox = loopTask(
+    n.f,
+    n.f.loops.find((l) => l.name === "factory-outbox")!,
+  );
+  for (let pass = 0; pass < 2; pass++) {
+    await outbox();
+    await idle(n.f);
+  }
+  expect(await statuses()).toEqual(["posted", "failed", "uncertain"]);
   const texts = n.f.events.recent(50).map((e) => e.text);
+  expect(texts).toContain(
+    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed); it is tried again`,
+  );
   expect(texts).toContain(
     `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed)`,
   );
@@ -337,10 +356,11 @@ test("triage posts one comment with the template, the marker, defused mentions a
     `The triaged comment on ${n.key(3)}: uncertain (gh could not comment on ${n.repo}#3, and GitHub gave no answer)`,
   );
 
+  // Calling for the same moment again sends nothing: one post, three attempts at the refused one, one uncertain.
   n.github.fail = undefined;
   for (const run of [first!, second!, third!]) writeBack(n.f, items.get(n.s, run.item!)!, "triaged");
   await idle(n.f);
-  expect(n.posts()).toHaveLength(taken + 3);
+  expect(n.posts()).toHaveLength(taken + 5);
 });
 
 test("the issue is re-checked before every stage, and one closed on GitHub closes its item without a comment", async () => {

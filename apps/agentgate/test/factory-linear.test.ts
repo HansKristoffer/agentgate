@@ -3,6 +3,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { writeBack } from "../src/factory/controller.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { linearApi } from "../src/factory/linear.ts";
+import { loopTask } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
@@ -212,7 +213,7 @@ test("a marker in a comment by another Linear user counts for nothing: not for n
   expect(await n.f.sources.get("linear")!.newestMarker!(item)).toBeUndefined();
 });
 
-test("a comment whose request dropped is uncertain, and one Linear refused is failed", async () => {
+test("a comment whose request dropped is uncertain and never sent again, and one Linear refused is tried three times, then failed", async () => {
   const n = await factoryNode(cleanup, { config: linearConfig });
   setSecret(n.s, "LINEAR_KEY", KEY);
   const linear = fakeLinear();
@@ -236,7 +237,14 @@ test("a comment whose request dropped is uncertain, and one Linear refused is fa
   );
   writeBack(n.f, item, "closed", { text: "Out of scope." });
   await idle(n.f);
+  expect(statusOf(n, item.id, "closed")).toBe("pending");
+  const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
+  for (let pass = 0; pass < 2; pass++) {
+    await loopTask(n.f, outbox)();
+    await idle(n.f);
+  }
   expect(statusOf(n, item.id, "closed")).toBe("failed");
+  expect(statusOf(n, item.id, "waiting")).toBe("uncertain");
   expect(texts()).toContain("The closed comment on eng-42: failed (Linear: Argument Validation Error)");
 });
 

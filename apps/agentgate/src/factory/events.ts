@@ -1,4 +1,4 @@
-import type { ItemPhase, Moment, RunState } from "@agentgate/protocol";
+import type { ItemPhase, RunState } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
 import { logError } from "./runtime.ts";
 
@@ -9,7 +9,15 @@ export type FactoryEvent =
   | { kind: "run.queued"; run: string; item?: string; text: string }
   | { kind: "run.started"; run: string; item?: string; text: string }
   | { kind: "run.ended"; run: string; item?: string; state: RunState; text: string }
-  | { kind: "writeback"; item: string; moment: Moment; status: "posted" | "failed" | "uncertain"; text: string }
+  /** `item`, or `run` for a write a run without an item owns (a learning PR's note). */
+  | {
+      kind: "writeback";
+      item?: string;
+      run?: string;
+      moment: string;
+      status: "posted" | "failed" | "uncertain";
+      text: string;
+    }
   | { kind: "config"; commit?: string; error?: string; text: string }
   | { kind: "factory.off"; text: string }
   | { kind: "note"; item?: string; run?: string; text: string }

@@ -64,7 +64,6 @@ export const runDataSchema = z.discriminatedUnion("kind", [
           commit: z.string(), // the PR's head when the thread reported
           note: z.string().optional(),
           seen: z.string(), // GitHub's time of the conversation's newest comment then; a newer trusted one reopens it
-          replied: z.boolean(),
         }),
       )
       .optional(),
@@ -167,11 +166,11 @@ export function ensureFactoryTables(s: Store) {
       seq integer primary key autoincrement, at integer not null, item text, run text, kind text not null,
       text text not null)`);
     s.db.run("create index if not exists factory_events_item on factory_events(item, kind)");
-    // At most one post per item, moment and `ref` (the asking run and question for `waiting`), claimed before it is
-    // sent, so an uncertain post is never repeated. Its own table: the event log is trimmed while items stay open.
+    // The outbox: every write to GitHub or Linear whose outcome can be uncertain, claimed with its body before it is
+    // sent (writes.ts). `item` is the owner: an item, or a run without one. Its own table: the event log is trimmed.
     s.db.run(`create table if not exists factory_writebacks (
-      item text not null, moment text not null, ref text not null, status text not null, at integer not null,
-      primary key (item, moment, ref))`);
+      item text not null, moment text not null, ref text not null, status text not null, body text not null,
+      what text not null, attempts integer not null default 0, at integer not null, primary key (item, moment, ref))`);
   });
 }
 
@@ -523,7 +522,9 @@ export function trimFactory(s: Store) {
     s.db.run("delete from factory_runs where item is null and ended_at < ?", [before]);
     for (const table of ["factory_scores", "factory_transcripts"])
       s.db.run(`delete from ${table} where run not in (select id from factory_runs)`);
-    s.db.run("delete from factory_writebacks where item not in (select id from factory_items)");
+    s.db.run(
+      "delete from factory_writebacks where item not in (select id from factory_items) and item not in (select id from factory_runs)",
+    );
     s.db.run("delete from factory_events where seq <= (select max(seq) from factory_events) - ?", [
       s.settings().logRetention,
     ]);

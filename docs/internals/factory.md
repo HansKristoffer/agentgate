@@ -91,9 +91,13 @@ machine that loses them leaves only its markers, and the work resumes from those
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.
-- A write-back is claimed in `factory_writebacks` before it is posted, so each item and moment is posted at most
-  once, and an uncertain post is never repeated. That table, not the event log, holds the claim, because the event
-  log is trimmed while items stay open.
+- Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation, the note on
+  a flawed learning PR) goes through one outbox ([`outbox.ts`](../../apps/agentgate/src/factory/outbox.ts)): claimed
+  with its body in `factory_writebacks` in the step that decides it, so it is posted at most once. A claim a restart
+  left unsent is sent by the next daemon; one cut off while sending is uncertain and never sent again; one the service
+  refused, which wrote nothing, is tried up to three times. That table, not the event log, holds the claim, because
+  the event log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or
+  the ready summary in the PR body, need no claim; the summary is written before the item moves to `ready`.
 - Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
   user on Linear. Anyone else who can comment on an issue could otherwise forge one, keeping intake away from the
   issue or making `retry` adopt it at a later stage than it reached.

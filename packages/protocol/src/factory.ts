@@ -620,10 +620,11 @@ export const factoryItemDetailSchema = z.object({
       endedAt: z.number().optional(),
     }),
   ),
+  /** The outbox's writes for the item: comments for its moments, and replies in its PR's review conversations. */
   writebacks: z.array(
     z.object({
-      moment: z.enum(writeBackMoments),
-      status: z.enum(["posted", "failed", "uncertain"]),
+      moment: z.enum([...writeBackMoments, "reply"]),
+      status: z.enum(["pending", "sending", "posted", "failed", "uncertain"]),
       at: z.number(),
     }),
   ),

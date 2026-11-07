@@ -22,7 +22,6 @@ import {
   prReady,
   prSetBody,
   prView,
-  replyToConversation,
   resolveConversation,
   type FeedbackComment,
   type PrFeedback,
@@ -32,6 +31,7 @@ import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { recordItemEnd } from "./records.ts";
 import { followReview, lastRound, summaryLine } from "./review.ts";
+import { claimWrite } from "./outbox.ts";
 import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
@@ -96,18 +96,16 @@ export async function toReady(
     failed(f, item, `Marking ${item.key}'s PR ready failed: ${shortError(e)}`);
     return false;
   }
+  // Before the item moves, so a restart between the two writes it again: it replaces its own section. A body a person
+  // edits meanwhile keeps their text, since it is read again just before.
+  await prView(view.url)
+    .then((fresh) => prSetBody(view.url, withSummary(fresh.body, readySummary(f, item))))
+    .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
   const ready = moveItem(f, item.id, "ready", item.needsYou?.reason === "stalled" ? null : undefined);
   const text = open.length
     ? `${view.url}\n\n${why} These findings are still open:\n\n${open.map((o) => `- ${o}`).join("\n")}`
     : view.url;
   writeBack(f, ready, "ready", { text, commit: view.headRefOid });
-  // After this step, reading the body again: the marker write, or a person, may have changed it since `view`.
-  later(f, item.id, `Writing the summary on ${item.key}'s PR`, async () => {
-    const current = items.get(f.s, item.id);
-    if (!current) return;
-    const fresh = await prView(view.url);
-    await prSetBody(view.url, withSummary(fresh.body, readySummary(f, current)));
-  });
   return true;
 }
 
@@ -341,10 +339,8 @@ async function followPr(f: FactoryRuntime, id: string) {
   } catch (e) {
     failed(f, item, `Reading the reviews of ${item.key}'s PR failed: ${shortError(e)}`);
   }
-  // Owed replies go out first, whatever this pass does next; then the run is read again with what they marked.
-  const implement = prRun(f, item);
-  if (implement && feedback) await answerConversations(f, item, implement.id, feedback);
   const run = prRun(f, item);
+  if (run && feedback) await resolveFixed(f, item, run.id, feedback);
 
   // A merge or a close ends the item even while it waits for the maintainer.
   if (view.state === "MERGED") {
@@ -407,29 +403,24 @@ function replyBody(f: FactoryRuntime, item: FactoryItem, c: NonNullable<Implemen
   return `**${item.key}**: ${text}\n\n${markerTag(marker)}`;
 }
 
-/** Replies where the thread's outcome has no reply yet, marking each as it goes, and resolves fixed conversations that
- * GitHub still shows open. A crash between a reply and its mark can post that reply twice; resolving again is harmless. */
-async function answerConversations(f: FactoryRuntime, item: FactoryItem, runId: string, feedback: PrFeedback) {
+/** Resolves the fixed conversations GitHub still shows open, once their reply was posted. Resolving again is harmless,
+ * so it needs no claim; the replies go through the outbox. */
+async function resolveFixed(f: FactoryRuntime, item: FactoryItem, runId: string, feedback: PrFeedback) {
   const owed = dataOf(runs.get(f.s, runId), "implement")?.conversations ?? {};
   for (const [id, c] of Object.entries(owed)) {
     const live = feedback.conversations.find((x) => x.id === id);
-    try {
-      if (!c.replied && live) await replyToConversation(id, replyBody(f, item, c));
-      if (!c.replied) {
-        const data = dataOf(runs.get(f.s, runId), "implement")!;
-        runs.update(f.s, runId, {
-          checked: { ...data, conversations: { ...data.conversations, [id]: { ...c, replied: true } } },
-        });
-      }
-      if (c.outcome !== "fixed" || !live || live.resolved) continue;
-      if (!live.canResolve) {
-        failed(f, item, `The factory may not resolve a review conversation on ${item.key}'s PR; it replied there`);
-        continue;
-      }
-      await resolveConversation(id);
-    } catch (e) {
-      failed(f, item, `Answering a review conversation on ${item.key}'s PR failed: ${shortError(e)}`);
+    if (c.outcome !== "fixed" || !live || live.resolved) continue;
+    const reply = f.s.db
+      .query("select status from factory_writebacks where item=? and moment='reply' and ref=?")
+      .get(item.id, `${id}@${c.commit}`) as { status: string } | null;
+    if (reply && reply.status !== "posted") continue;
+    if (!live.canResolve) {
+      failed(f, item, `The factory may not resolve a review conversation on ${item.key}'s PR; it replied there`);
+      continue;
     }
+    await resolveConversation(id).catch((e) =>
+      failed(f, item, `Resolving a review conversation on ${item.key}'s PR failed: ${shortError(e)}`),
+    );
   }
 }
 
@@ -480,9 +471,17 @@ async function acceptConversations(f: FactoryRuntime, args: unknown, caller: Too
         commit: view.headRefOid,
         ...(c.note && { note: c.note }),
         seen: newest(open.get(c.id)!.comments.map((m) => m.at)),
-        replied: false,
       };
     runs.update(f.s, run.id, { checked: { ...data, conversations } });
+    for (const c of input.conversations)
+      claimWrite(
+        f,
+        item.id,
+        "reply",
+        `${c.id}@${view.headRefOid}`,
+        replyBody(f, item, conversations[c.id]!),
+        `The reply in review conversation ${c.id} on ${item.key}'s PR`,
+      );
     const fixed = input.conversations.filter((c) => c.outcome === "fixed").length;
     f.events.emit({
       kind: "note",
@@ -490,9 +489,10 @@ async function acceptConversations(f: FactoryRuntime, args: unknown, caller: Too
       run: run.id,
       text: `${item.key}'s thread fixed ${fixed} and declined ${input.conversations.length - fixed} review conversation${input.conversations.length > 1 ? "s" : ""}`,
     });
+    // After the replies' sends, which were queued first: the fixed conversations whose reply went out are resolved.
     const url = item.prUrl;
-    later(f, item.id, `Answering the review conversations on ${item.key}'s PR`, async () =>
-      answerConversations(f, item, run.id, await prFeedback(url)),
+    later(f, item.id, `Resolving the fixed review conversations on ${item.key}'s PR`, async () =>
+      resolveFixed(f, item, run.id, await prFeedback(url)),
     );
     return { accepted: input.conversations.length };
   });

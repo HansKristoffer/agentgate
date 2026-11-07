@@ -7,7 +7,7 @@ import { loopTask } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { updateSkill, updateSkills, writeSkillMd } from "../src/skills.ts";
 import { removeTmp, repos } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -92,8 +92,11 @@ async function learnFactory(files: Record<string, string> = {}) {
     learnLoop,
     learnRuns: () => runs.list(n.s, { kinds: ["learn"] }),
     /** factory_report from the run's own thread. */
-    report: async (run: FactoryRun, body: Record<string, unknown>) =>
-      (await tool("factory_report", { run: run.id, ...body }, runs.get(n.s, run.id)!.threadId)).value,
+    report: async (run: FactoryRun, body: Record<string, unknown>) => {
+      const { value } = await tool("factory_report", { run: run.id, ...body }, runs.get(n.s, run.id)!.threadId);
+      await idle(n.f);
+      return value;
+    },
     /** A learn run, dispatched to its thread. */
     async started() {
       await n.dispatch();

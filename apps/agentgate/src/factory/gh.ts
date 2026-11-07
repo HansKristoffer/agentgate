@@ -509,15 +509,17 @@ const REPLY = `mutation ($id: ID!, $body: String!) {
 }`;
 const RESOLVE = `mutation ($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { isResolved } } }`;
 
-// The payloads are required: GraphQL can exit 0 with `errors` and a null payload.
-export async function replyToConversation(id: string, body: string): Promise<void> {
-  await ghJson(
-    "reply in a review conversation",
-    z.object({
-      data: z.object({ addPullRequestReviewThreadReply: z.object({ comment: z.object({ id: z.string() }) }) }),
-    }),
-    ["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`],
-  );
+/** A reply in a review conversation. Like an issue comment: failed when GitHub refused it (nothing was written),
+ * uncertain when no answer said either way. GraphQL can exit 0 with `errors` and a null payload, which is a refusal. */
+export async function replyToConversation(id: string, body: string): Promise<PostResult> {
+  const what = "reply in a review conversation";
+  const r = await host.gh(["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`]);
+  if (!r) return { status: "failed", error: `gh is not installed, so the factory cannot ${what}` };
+  const message = apiMessage(r.out);
+  if (r.ok && !message) return { status: "posted" };
+  return message
+    ? { status: "failed", error: `GitHub refused to ${what}: ${message}` }
+    : { status: "uncertain", error: `gh could not ${what}, and GitHub gave no answer` };
 }
 
 export async function resolveConversation(id: string): Promise<void> {

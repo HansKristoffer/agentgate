@@ -14,8 +14,9 @@ import {
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, type LoadedFolder } from "./config.ts";
 import { defaultBranch, enqueueRun, isBranch } from "./controller.ts";
-import { ACTIVE, items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
-import { postIssueComment, prView } from "./gh.ts";
+import { ACTIVE, dataOf, items, runs, scores, type FactoryItem, type FactoryRun } from "./db.ts";
+import { prView } from "./gh.ts";
+import { claimWrite } from "./outbox.ts";
 import { itemOutcome } from "./records.ts";
 import { asInput, later, runTool, shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
@@ -129,8 +130,10 @@ async function checkPr(f: FactoryRuntime, prUrl: string) {
   return { view, problems };
 }
 
-/** Records the check first, so a restart never comments twice, then comments once on a PR with problems. */
+/** Records the check, and claims one note on a PR with problems in the outbox. The learn loop runs it again for a
+ * reported run whose check a restart or a failed read left undone. */
 async function judgePr(f: FactoryRuntime, run: FactoryRun, prUrl: string) {
+  if (dataOf(runs.get(f.s, run.id), "learn")) return;
   const { view, problems } = await checkPr(f, prUrl);
   const checked = { kind: "learn" as const, pr: view.url, head: view.headRefOid, problems };
   runs.update(f.s, run.id, problems.length ? { verdict: "flawed", checked } : { checked });
@@ -141,12 +144,17 @@ async function judgePr(f: FactoryRuntime, run: FactoryRun, prUrl: string) {
     problems.map((p) => `- ${p[0]!.toUpperCase()}${p.slice(1)}.`).join("\n"),
     `Learning PRs leave \`rulings.md\` to the maintainer and have the sections ${SECTIONS.join(", ")}.`,
   ].join("\n\n");
-  const posted = await postIssueComment(f.pointer()!.repo, view.number, body);
-  f.events.emit({
-    kind: "note",
-    run: run.id,
-    text: `The learning PR ${view.url} is flawed (${problems.join("; ")}); the comment: ${posted.status}${posted.error ? ` (${posted.error})` : ""}`,
-  });
+  f.events.emit({ kind: "note", run: run.id, text: `The learning PR ${view.url} is flawed (${problems.join("; ")})` });
+  claimWrite(f, run.id, "learn", String(view.number), body, `The note on the learning PR ${view.url}`);
+}
+
+/** Learn runs that reported a PR the factory has not checked yet. */
+function checkPending(f: FactoryRuntime) {
+  for (const run of learnRuns(f)) {
+    const prUrl = run.report?.result?.kind === "learn" ? run.report.result.prUrl : undefined;
+    if (run.state === "reported" && prUrl && !dataOf(run, "learn"))
+      later(f, run.id, `Checking the learning PR ${prUrl}`, () => judgePr(f, run, prUrl));
+  }
 }
 
 const learn = (f: FactoryRuntime) => ({
@@ -385,6 +393,7 @@ export function setup(f: FactoryRuntime): void {
     run: async () => {
       if (!installed) skills();
       installed = true;
+      checkPending(f);
       learnWhenDue(f);
     },
   });

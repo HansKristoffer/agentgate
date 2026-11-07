@@ -1,11 +1,14 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { writeBack } from "../src/factory/controller.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, markerTag } from "../src/factory/markers.ts";
 import { withSummary } from "../src/factory/pr.ts";
+import { loopTask, withItem } from "../src/factory/runtime.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakeConversation } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
+import { idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -427,7 +430,7 @@ test("factory_pr_threads refuses a commit that is not the PR's head, a conversat
   expect(pr.conversations.flatMap(replies)).toEqual([]);
 });
 
-test("writes GitHub refused are retried by the next pass without a second reply, even when that pass also nudges, and a merge does not drop them", async () => {
+test("a reply GitHub refused is sent again by the outbox, once; a refused resolve is retried by the next pass, which also nudges, and by one after a merge", async () => {
   const { n, item, run, pr } = await conversing();
   const [member] = pr.conversations as [FakeConversation];
   n.github.refuse = { reply: 1, resolve: 0 };
@@ -437,8 +440,16 @@ test("writes GitHub refused are retried by the next pass without a second reply,
     accepted: 1,
   });
   expect(replies(member)).toEqual([]);
+  // Nothing is resolved before its reply went out.
+  expect(member.isResolved).toBe(false);
 
-  // This pass replies, then has the resolve refused, and nudges about failing checks.
+  // The outbox sends the reply again; this pass then has the resolve refused, and nudges about failing checks.
+  await loopTask(
+    n.f,
+    n.f.loops.find((l) => l.name === "factory-outbox")!,
+  )();
+  await idle(n.f);
+  expect(replies(member)).toHaveLength(1);
   n.github.refuse = { reply: 0, resolve: 1 };
   pr.checks = "failing";
   await n.pollPrs();
@@ -529,4 +540,66 @@ test("a claim whose evidence is only whitespace is refused, so the PR is not stu
   const pr = n.github.openPr(101, `factory/${n.key(1)}`);
   const answer = await n.done(run, pr, { claims: [{ claim: "Saving twice no longer crashes", evidence: "  \n" }] });
   expect(answer.error).toContain("result.claims.0.evidence");
+});
+
+test("a reply GitHub applied but whose gh call failed is uncertain, and never posted again", async () => {
+  const { n, run, pr } = await conversing();
+  const [member] = pr.conversations as [FakeConversation];
+  const realGh = host.gh;
+  host.gh = async (args, stdin) => {
+    const answer = await realGh(args, stdin);
+    // The reply reaches GitHub; the answer does not reach the factory.
+    return args.some((a) => a.includes("addPullRequestReviewThreadReply")) ? { ok: false, out: "" } : answer;
+  };
+  cleanup.push(() => (host.gh = realGh));
+  await n.prThreads(run, { commit: pr.headRefOid, conversations: [{ id: "PRRT_member", outcome: "fixed" }] });
+  for (let pass = 0; pass < 3; pass++) {
+    n.advance(2 * MINUTE);
+    await n.pollPrs();
+    await loopTask(
+      n.f,
+      n.f.loops.find((l) => l.name === "factory-outbox")!,
+    )();
+    await idle(n.f);
+  }
+  expect(replies(member)).toHaveLength(1);
+  const { output } = await n.command("show", n.key(1), "--json");
+  expect(JSON.parse(output.at(-1)!).writebacks).toContainEqual(
+    expect.objectContaining({ moment: "reply", status: "uncertain" }),
+  );
+});
+
+test("a comment claimed just before a restart is posted once by the next daemon, and one cut off while sending is uncertain", async () => {
+  const n = await prFactory(cleanup);
+  const { item } = await n.implementing(1);
+  // The item's steps stall, as a daemon does when it stops: the claimed comment is never sent by this one.
+  void withItem(n.f, item.id, () => new Promise<void>(() => {}));
+  writeBack(n.f, items.get(n.s, item.id)!, "waiting", { text: "Which one?", ref: "q1" });
+
+  const m = await n.restart();
+  await loopTask(
+    m.f,
+    m.f.loops.find((l) => l.name === "factory-outbox")!,
+  )();
+  await idle(m.f);
+  expect(m.github.posted(1).filter((c) => c === "The factory waits for the maintainer.")).toHaveLength(1);
+
+  // A send whose answer never comes, then a restart: it may have reached GitHub, so it is never sent again.
+  const realGh = host.gh;
+  host.gh = (args, stdin) => (args[1]?.endsWith("/1/comments") ? new Promise(() => {}) : realGh(args, stdin));
+  cleanup.push(() => (host.gh = realGh));
+  writeBack(m.f, items.get(m.s, item.id)!, "closed", { text: "Out of scope." });
+  await Bun.sleep(10);
+  const later = await m.restart();
+  host.gh = realGh;
+  await loopTask(
+    later.f,
+    later.f.loops.find((l) => l.name === "factory-outbox")!,
+  )();
+  await idle(later.f);
+  const { output } = await later.command("show", n.key(1), "--json");
+  expect(JSON.parse(output.at(-1)!).writebacks).toContainEqual(
+    expect.objectContaining({ moment: "closed", status: "uncertain" }),
+  );
+  expect(later.github.posted(1)).not.toContain("The factory stopped working on this.");
 });

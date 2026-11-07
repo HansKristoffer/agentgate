@@ -64,6 +64,7 @@ import {
   type SourceAdapter,
   type ToolCaller,
 } from "./runtime.ts";
+import { claimWrite } from "./outbox.ts";
 import { sampleJudges } from "./scorers.ts";
 import { T3McpError, t3Mcp } from "./t3-mcp.ts";
 
@@ -306,7 +307,7 @@ const MOMENT_STAGE: Partial<Record<Moment, StageName>> = {
 function sourceOf(f: FactoryRuntime, item: Pick<FactoryItem, "source" | "configCommit">) {
   return folderFor(f, item.configCommit)?.config.sources.find((x) => x.id === item.source);
 }
-function adapterOf(f: FactoryRuntime, item: FactoryItem): SourceAdapter | undefined {
+export function adapterOf(f: FactoryRuntime, item: FactoryItem): SourceAdapter | undefined {
   const type = item.source === "manual" ? "manual" : sourceOf(f, item)?.type;
   return type ? f.sources.get(type) : undefined;
 }
@@ -316,9 +317,9 @@ export const questionRef = (run: string, question: string) =>
   `${run}:${createHash("sha256").update(question).digest("hex").slice(0, 12)}`;
 
 /**
- * The comment for a moment: claimed now, and posted after the current step of the item. At most once per item, moment
- * and `ref`, even when the post failed or its outcome is unknown: the claim is written before the post, in a table of
- * its own, because the event log is trimmed while items stay open. A source with nothing to post to skips it.
+ * The comment for a moment, claimed in the outbox now and posted after the current step of the item (outbox.ts): at
+ * most once per item, moment and `ref`, and never again once its outcome is uncertain. A source with nothing to post
+ * to skips it.
  */
 export function writeBack(
   f: FactoryRuntime,
@@ -330,11 +331,6 @@ export function writeBack(
   const adapter = adapterOf(f, item);
   if (!adapter?.post) return;
   const ref = input.ref ?? "";
-  const claimed = s.db.run(
-    "insert or ignore into factory_writebacks (item, moment, ref, status, at) values (?, ?, ?, 'uncertain', ?)",
-    [item.id, moment, ref, s.now()],
-  );
-  if (!claimed.changes) return;
   const { report } = input;
   const stage = moment === "taken" ? null : (MOMENT_STAGE[moment] ?? (isStage(item.phase) ? item.phase : null));
   const marker: MarkerPayload = {
@@ -353,23 +349,7 @@ export function writeBack(
     ...(input.text && { extra: input.text }),
     marker,
   });
-  const post = adapter.post.bind(adapter);
-  later(f, item.id, `The ${moment} comment on ${item.key}`, async () => {
-    const result = await post(item, body).catch((e) => ({ status: "uncertain" as const, error: shortError(e) }));
-    s.db.run("update factory_writebacks set status=? where item=? and moment=? and ref=?", [
-      result.status,
-      item.id,
-      moment,
-      ref,
-    ]);
-    f.events.emit({
-      kind: "writeback",
-      item: item.id,
-      moment,
-      status: result.status,
-      text: `The ${moment} comment on ${item.key}: ${result.status}${result.error ? ` (${result.error})` : ""}`,
-    });
-  });
+  claimWrite(f, item.id, moment, ref, body, `The ${moment} comment on ${item.key}`);
 }
 
 // ---- T3
