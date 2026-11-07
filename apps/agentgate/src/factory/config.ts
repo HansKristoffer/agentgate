@@ -35,6 +35,7 @@ export interface LoadedFolder {
   commit: string;
   dir: string; // <agentgate home>/factory/<commit>
   config: FactoryConfig; // factory.yaml with defaults applied
+  secrets: string[]; // the names factory.yaml uses as `secret:NAME`
   stages: Partial<Record<StageName, { file: StageFile; brief: string }>>;
   scorers: Record<string, { file: ScorerFile; rubric: string }>;
   scouts: Record<string, { prompt: string }>; // scouts/<id>.md of each scout source
@@ -100,11 +101,11 @@ const markdownFiles = (dir: string) => {
   }
 };
 
-/** Every `secret:NAME` in the config, with where it is. */
-function secretRefs(value: unknown, path: PropertyKey[] = []): { name: string; path: PropertyKey[] }[] {
-  if (typeof value === "string") return value.startsWith("secret:") ? [{ name: value.slice(7), path }] : [];
-  if (Array.isArray(value)) return value.flatMap((v, i) => secretRefs(v, [...path, i]));
-  if (value && typeof value === "object") return Object.entries(value).flatMap(([k, v]) => secretRefs(v, [...path, k]));
+/** Every `secret:NAME` in the config. */
+function secretRefs(value: unknown): { name: string }[] {
+  if (typeof value === "string") return value.startsWith("secret:") ? [{ name: value.slice(7) }] : [];
+  if (Array.isArray(value)) return value.flatMap((v) => secretRefs(v));
+  if (value && typeof value === "object") return Object.values(value).flatMap((v) => secretRefs(v));
   return [];
 }
 
@@ -130,9 +131,8 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
       throw new FolderError("factory.yaml", `sources[${i}].id`, `${source.id} is also the id of sources[${first}]`);
     ids.set(source.id, i);
   });
-  for (const ref of secretRefs(config))
-    if (!config.secrets.includes(ref.name))
-      throw new FolderError("factory.yaml", fieldPath(ref.path), `secret:${ref.name} is not declared under secrets`);
+  // The secrets are the `secret:NAME` values the file uses; nothing declares them again.
+  const secrets = [...new Set(secretRefs(config).map((ref) => ref.name))];
 
   const scouts: LoadedFolder["scouts"] = {};
   const scoutFiles = new Set(markdownFiles(join(dir, "scouts")));
@@ -182,7 +182,7 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
   const rulings = existsSync(join(dir, "rulings.md")) ? readFileSync(join(dir, "rulings.md"), "utf8").trim() : "";
   const skills = join(dir, "skills");
   const skillsDir = existsSync(skills) && statSync(skills).isDirectory() ? skills : undefined;
-  return { commit, dir, config, stages, scorers, scouts, rulings, ...(skillsDir && { skillsDir }) };
+  return { commit, dir, config, secrets, stages, scorers, scouts, rulings, ...(skillsDir && { skillsDir }) };
 }
 
 // What the factory machine knows about its folder, kept across restarts. `fetched` is the newest commit tried,

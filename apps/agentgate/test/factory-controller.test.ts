@@ -35,7 +35,6 @@ test("items added with the CLI and the API are triaged in a fresh full-access wo
   const secret = "sekret-value-123";
   const n = await factoryNode(cleanup, {
     config: (repo) => ({
-      secrets: ["TEST_SECRET"],
       sources: [{ ...github(repo), webhook: { secret: "secret:TEST_SECRET" } }],
     }),
     // A file in the folder no brief reads, as a careless renderer might pick up.

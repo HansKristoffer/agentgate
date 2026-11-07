@@ -61,7 +61,6 @@ Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys 
 | `description`              |            | Up to 500 characters.                                                                                                                                                                                                                                             |
 | `repositories`             | required   | The repositories the factory works in, as `owner/repo` keys.                                                                                                                                                                                                      |
 | `repositories.*.reviewers` | `[]`       | Up to 10 GitHub logins or `org/team` names to request reviews from when a PR is ready. GitHub refuses to request a review from the PR's author, so that login is left out.                                                                                        |
-| `secrets`                  | `[]`       | The names of the secrets the file uses as `secret:NAME`. Every one used must be declared here. See [Secrets](#secrets).                                                                                                                                           |
 | `limits.threads`           | `3`        | Stage threads working at once (1 to 20). A thread waiting for you, or sitting idle on its PR, does not count.                                                                                                                                                     |
 | `limits.waitForQuota`      | `true`     | Wait to start a thread while no account in the pool for its provider has room. Without accounts for that provider, T3 Code uses its own login and nothing waits.                                                                                                  |
 | `limits.waitingForYou`     | `5`        | Intake pauses while this many items wait for you, PRs ready for your review included (1 to 100).                                                                                                                                                                  |
@@ -136,7 +135,6 @@ repositories:
   acme/api:
     reviewers: [octocat]
   acme/web: {}
-secrets: [LINEAR_KEY, GITHUB_HOOK, DESK_SIGNING]
 limits:
   threads: 2
   stalledAfter: 30m
@@ -391,7 +389,7 @@ prompt: |
 YAML
 ```
 
-Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. The PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments, and adds `scouts/<id>.md` for a scout. A signed webhook's secret name is added under `secrets`; set its value after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
+Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. The PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments, and adds `scouts/<id>.md` for a scout. For a signed webhook, set its secret after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
 
 ### By hand
 
@@ -403,7 +401,7 @@ Agents can do the same with the `agentgate__factory_add` tool, but their items w
 
 ## Secrets
 
-Values that `factory.yaml` names as `secret:NAME`, such as the Linear API key and webhook signing secrets. Names are capital letters, digits and `_`, starting with a letter.
+Values that `factory.yaml` names as `secret:NAME`, such as the Linear API key and webhook signing secrets; nothing declares them separately. Names are capital letters, digits and `_`, starting with a letter.
 
 ```sh
 printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY   # the value comes from stdin, never an argument

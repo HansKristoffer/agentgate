@@ -74,7 +74,7 @@ async function hookedFactory(sources: (repo: string) => unknown[]) {
     delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
   });
   const n = await factoryNode(cleanup, {
-    config: (repo) => ({ secrets: ["ALERT_SECRET", "GH_SECRET", "LINEAR_SECRET"], sources: sources(repo) }),
+    config: (repo) => ({ sources: sources(repo) }),
   });
   cleanup.push(() => n.ctx.remote.close());
   setSecret(n.s, "ALERT_SECRET", "alert-signing-key");

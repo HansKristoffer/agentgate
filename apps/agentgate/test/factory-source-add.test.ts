@@ -82,14 +82,10 @@ test.each([
   expect(folder.scouts.perf!.prompt).toBe("Look at latency.");
 });
 
-test("a signed webhook adds its secret under secrets once, however secrets are written", () => {
-  for (const yaml of [TEMPLATE, `${TEMPLATE}secrets: [LINEAR_KEY]\n`, `${TEMPLATE}secrets:\n  - LINEAR_KEY\n`]) {
-    const next = insertSource(yaml, webhook, "DESK_SIGNING");
-    expect(load({ "factory.yaml": next }).config.secrets.at(-1)).toBe("DESK_SIGNING");
-  }
-  // Declared already: only the reference is new.
-  const declared = insertSource(`${TEMPLATE}secrets: [DESK_SIGNING]\n`, webhook, "DESK_SIGNING");
-  expect(declared.match(/DESK_SIGNING/g)).toHaveLength(2);
+test("a signed webhook's secret is the one its source names, with nothing to declare", () => {
+  const next = insertSource(TEMPLATE, webhook);
+  expect(next.match(/DESK_SIGNING/g)).toHaveLength(1);
+  expect(load({ "factory.yaml": next }).secrets).toEqual(["DESK_SIGNING"]);
 });
 
 test("a factory.yaml it cannot edit is refused with the snippet to add by hand", () => {
@@ -253,7 +249,7 @@ test("source add reads YAML on stdin; a signed webhook declares its secret and s
     ],
   });
   const yamlFile = github.tree.find((t) => t.path === "factory/factory.yaml")!.content;
-  expect(load({ "factory.yaml": yamlFile }).config.secrets).toEqual(["DESK_SIGNING"]);
+  expect(load({ "factory.yaml": yamlFile }).secrets).toEqual(["DESK_SIGNING"]);
   expect(github.prs[0]!.body).toContain("agentgate factory secret set DESK_SIGNING");
 });
 

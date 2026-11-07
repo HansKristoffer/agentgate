@@ -72,17 +72,6 @@ function appendToBlockList(lines: string[], key: string, entry: (indent: string)
   return [...lines.slice(0, last + 1), entry(" ".repeat(itemIndent)), ...lines.slice(last + 1)];
 }
 
-/** `lines` with `key: [...]` on one line holding `name` too, or undefined when it is not written that way. */
-function appendToFlowList(lines: string[], key: string, name: string): string[] | undefined {
-  const at = lines.findIndex((l) => new RegExp(`^${key}:\\s*\\[[^\\]]*\\]\\s*(#.*)?$`).test(l));
-  if (at < 0) return undefined;
-  const line = lines[at]!;
-  const close = line.indexOf("]");
-  const inside = line.slice(line.indexOf("[") + 1, close).trim();
-  const next = `${line.slice(0, line.indexOf("[") + 1)}${inside ? `${inside}, ` : ""}${name}${line.slice(close)}`;
-  return [...lines.slice(0, at), next, ...lines.slice(at + 1)];
-}
-
 const hasTopKey = (lines: string[], key: string) => lines.some((l) => new RegExp(`^${key}:`).test(l));
 
 function withSource(lines: string[], source: { [key: string]: Json }) {
@@ -93,38 +82,21 @@ function withSource(lines: string[], source: { [key: string]: Json }) {
   return appendToBlockList(lines, "sources", entry);
 }
 
-function withSecret(lines: string[], name: string) {
-  if (!hasTopKey(lines, "secrets")) return [...lines, `secrets: [${name}]`];
-  return (
-    appendToFlowList(lines, "secrets", name) ?? appendToBlockList(lines, "secrets", (indent) => `${indent}- ${name}`)
-  );
-}
-
 const parse = (text: string) => (Bun.YAML.parse(text) ?? {}) as Record<string, unknown>;
 
 /**
- * factory.yaml with `source` at the end of `sources`, and `secret` under `secrets` when it is not there. Throws, with
- * the snippet to add by hand, when the file is not laid out in a way this can edit, or the edit would change
- * anything else.
+ * factory.yaml with `source` at the end of `sources`. Throws, with the snippet to add by hand, when the file is not laid
+ * out in a way this can edit, or the edit would change anything else.
  */
-export function insertSource(text: string, source: { [key: string]: Json }, secret?: string): string {
+export function insertSource(text: string, source: { [key: string]: Json }): string {
   const old = parse(text);
-  const oldSecrets = Array.isArray(old.secrets) ? (old.secrets as unknown[]) : [];
-  const addSecret = !!secret && !oldSecrets.includes(secret);
-  const snippet = ["sources:", sourceYaml(source), ...(addSecret ? [`secrets: [..., ${secret}]`] : [])].join("\n");
+  const snippet = ["sources:", sourceYaml(source)].join("\n");
   const refuse = (why: string) =>
     new Error(`factory.yaml could not be edited (${why}); add this to it by hand:\n\n${snippet}`);
 
-  let lines = text.replace(/\n+$/, "").split("\n");
-  const sourced = withSource(lines, source);
+  const sourced = withSource(text.replace(/\n+$/, "").split("\n"), source);
   if (!sourced) throw refuse("its sources are not a block list");
-  lines = sourced;
-  if (addSecret) {
-    const secreted = withSecret(lines, secret);
-    if (!secreted) throw refuse("its secrets are not a list");
-    lines = secreted;
-  }
-  const next = `${lines.join("\n")}\n`;
+  const next = `${sourced.join("\n")}\n`;
 
   let parsed: Record<string, unknown>;
   try {
@@ -133,12 +105,8 @@ export function insertSource(text: string, source: { [key: string]: Json }, secr
     throw refuse("the edit did not parse");
   }
   const oldSources = Array.isArray(old.sources) ? old.sources : [];
-  const expected = {
-    ...old,
-    sources: [...oldSources, source],
-    ...((addSecret || "secrets" in old) && { secrets: addSecret ? [...oldSecrets, secret] : old.secrets }),
-  };
-  if (!Bun.deepEquals(parsed, expected)) throw refuse("the edit changed more than the new source");
+  if (!Bun.deepEquals(parsed, { ...old, sources: [...oldSources, source] }))
+    throw refuse("the edit changed more than the new source");
   return next;
 }
 
@@ -211,7 +179,7 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
 
   const secret = source.type === "webhook" ? source.signature?.secret.slice("secret:".length) : undefined;
   const files = {
-    [`${folder}factory.yaml`]: insertSource(yaml, raw, secret),
+    [`${folder}factory.yaml`]: insertSource(yaml, raw),
     ...(source.type === "scout" && { [scoutFile]: `${parsed.prompt!.trim()}\n` }),
   };
   const title = `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`;

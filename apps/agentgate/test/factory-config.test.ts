@@ -107,11 +107,6 @@ test.each([
     "factory.yaml: sources[2].id: bugs is also the id of sources[0]",
   ],
   [
-    "an undeclared secret reference",
-    edited("factory.yaml", (t) => t.replace("secret:LINEAR_KEY", "secret:LINEAR_TOKEN")),
-    "factory.yaml: sources[1].apiKey: secret:LINEAR_TOKEN is not declared under secrets",
-  ],
-  [
     "an unknown frontmatter key in a stage",
     edited("stages/implement.md", (t) => t.replace("start: manual", "start: manual\ncolor: red")),
     "stages/implement.md: color: unknown key",

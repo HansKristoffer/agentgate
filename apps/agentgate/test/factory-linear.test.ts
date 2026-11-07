@@ -24,7 +24,6 @@ const statusOf = (n: { s: { db: import("bun:sqlite").Database } }, item: string,
     } | null
   )?.status;
 const linearConfig = (repo: string) => ({
-  secrets: ["LINEAR_KEY"],
   sources: [{ id: "eng", type: "linear", repo, team: "ENG", label: "factory", apiKey: "secret:LINEAR_KEY" }],
 });
 

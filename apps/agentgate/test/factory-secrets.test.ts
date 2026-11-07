@@ -115,7 +115,7 @@ test("secret set takes the value from stdin and reaches a peer once every node u
   expect(a!.s.record("secret", "LINEAR_KEY")?.deleted).toBe(1);
 });
 
-test("secret list shows names only, with the declared names this machine lacks, and hides agentgate's hook keys", async () => {
+test("secret list shows names only, with the names factory.yaml uses that this machine lacks, and hides agentgate's hook keys", async () => {
   const { s, f } = node();
   await withFolder(f);
   await command(f, ["set", "LINEAR_KEY"], VALUE);
@@ -127,8 +127,8 @@ test("secret list shows names only, with the declared names this machine lacks, 
     output: [
       "EXTRA",
       "LINEAR_KEY",
-      "GITHUB_HOOK  not set (declared in factory.yaml)",
-      "DESK_SIGNING  not set (declared in factory.yaml)",
+      "GITHUB_HOOK  not set (named in factory.yaml)",
+      "DESK_SIGNING  not set (named in factory.yaml)",
     ],
   });
   expect(secretNames(s)).toEqual(["EXTRA", "LINEAR_KEY"]);

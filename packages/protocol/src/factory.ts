@@ -138,7 +138,6 @@ export const factoryConfigSchema = z
         })
         .strict(),
     ),
-    secrets: z.array(secretNameSchema).max(100).default([]),
     limits: z
       .object({
         threads: z.number().int().min(1).max(20).default(3),

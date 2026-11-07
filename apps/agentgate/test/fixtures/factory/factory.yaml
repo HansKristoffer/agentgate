@@ -6,7 +6,6 @@ repositories:
   acme/api:
     reviewers: [octocat]
   acme/web: {}
-secrets: [LINEAR_KEY, GITHUB_HOOK, DESK_SIGNING]
 limits:
   threads: 2
   stalledAfter: 30m

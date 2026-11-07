@@ -43,7 +43,7 @@ export function resolveSecretRef(s: Store, ref: string) {
 /** The names set, and the names the loaded folder declares that this machine lacks. */
 export function secretList(f: FactoryRuntime) {
   const set = secretNames(f.s);
-  const missing = (currentFolder(f)?.config.secrets ?? []).filter((name) => !set.includes(name));
+  const missing = (currentFolder(f)?.secrets ?? []).filter((name) => !set.includes(name));
   return { set, missing };
 }
 
@@ -92,7 +92,7 @@ export function setup(f: FactoryRuntime): void {
       if (sub === "list" && args.length === 1) {
         const { set, missing } = secretList(f);
         set.forEach((name) => io.out(name));
-        missing.forEach((name) => io.out(`${name}  not set (declared in factory.yaml)`));
+        missing.forEach((name) => io.out(`${name}  not set (named in factory.yaml)`));
         if (!set.length && !missing.length) io.out("No factory secrets.");
         return 0;
       }

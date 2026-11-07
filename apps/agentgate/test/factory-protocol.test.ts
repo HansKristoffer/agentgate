@@ -15,7 +15,6 @@ description: Works Acme's bugs
 repositories:
   acme/api: { reviewers: [alice] }
   acme/web: {}
-secrets: [LINEAR_KEY, GH_HOOK, SENTRY_HOOK]
 limits:
   threads: 5
   waitForQuota: false
@@ -70,7 +69,6 @@ test("a factory.yaml using every key parses, and what it leaves out gets the doc
     version: 1,
     name: "acme",
     repositories: { "acme/api": { reviewers: [] } },
-    secrets: [],
     limits: {
       threads: 3,
       waitForQuota: true,

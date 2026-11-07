@@ -21,12 +21,6 @@
         "additionalProperties": false
       }
     },
-    "secrets": {
-      "default": [],
-      "maxItems": 100,
-      "type": "array",
-      "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{0,63}$" }
-    },
     "limits": {
       "default": {},
       "type": "object",
