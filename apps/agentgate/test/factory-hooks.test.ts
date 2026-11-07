@@ -189,6 +189,30 @@ test("a delivery to a source that takes items without approval is held while int
   ]);
 });
 
+test("a source with only takes the deliveries whose value it names and answers the rest without an item, as Sentry's issue actions need", async () => {
+  const { n } = await hookedFactory((repo) => [
+    {
+      id: "sentry",
+      type: "webhook",
+      repo,
+      title: "{{body.data.issue.title}}",
+      dedupe: "{{body.data.issue.id}}-{{body.action}}",
+      only: { value: "{{body.action}}", in: ["created", "unresolved"] },
+    },
+  ]);
+  const deliver = async (action: string) => {
+    const body = JSON.stringify({ action, data: { issue: { id: "42", title: "TypeError in checkout" } } });
+    const res = await handleHook(n.f, "sentry", new Request("http://hook.invalid/", { method: "POST", body }));
+    return { status: res.status, body: await res.json() };
+  };
+  expect(await deliver("created")).toMatchObject({ status: 202 });
+  expect(await deliver("assigned")).toEqual({ status: 200, body: { ok: true, ignored: true } });
+  expect(await deliver("resolved")).toEqual({ status: 200, body: { ok: true, ignored: true } });
+  // A regression after the fix is new work, though the issue is the same.
+  expect(await deliver("unresolved")).toMatchObject({ status: 202 });
+  expect(items.list(n.s).map((i) => i.dedupe)).toEqual(["42-created", "42-unresolved"]);
+});
+
 test("a source with 20 deliveries waiting for approval refuses the next with 429 until one is approved or rejected", async () => {
   const { n } = await hookedFactory((repo) => [alerts(repo)]);
   const deliver = (id: number) => {

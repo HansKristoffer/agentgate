@@ -7,6 +7,7 @@ import {
   enqueueRun,
   finishItem,
   isPaused,
+  markStopped,
   moveItem,
   ownRun,
   ReportError,
@@ -35,7 +36,7 @@ import {
 } from "./gh.ts";
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
-import { claimWrite } from "./outbox.ts";
+import { claimWrite, fileIssue } from "./outbox.ts";
 import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
 
 /**
@@ -104,11 +105,43 @@ export async function toReady(
     .then((fresh) => prSetBody(view.url, withSummary(fresh.body, readySummary(f, item))))
     .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
   const ready = moveItem(f, item.id, "ready", item.needsYou?.reason === "stalled" ? null : undefined);
+  fileLeftovers(f, ready, view.url);
   const text = open.length
     ? `${view.url}\n\n${why} These findings are still open:\n\n${open.map((o) => `- ${o}`).join("\n")}`
     : view.url;
   writeBack(f, ready, "ready", { text, commit: view.headRefOid });
   return true;
+}
+
+/**
+ * Work the item turned up and leaves alone, each as an issue without a source's label: what the last review round saw
+ * in code the PR did not cause, and the slices its spec left for later. Unfiled, they would end as a line in the PR body
+ * that nobody acts on.
+ */
+function fileLeftovers(f: FactoryRuntime, item: FactoryItem, prUrl: string) {
+  const last = lastRound(f, item);
+  const seen = last?.result.findings.filter((x) => x.severity === "pre-existing") ?? [];
+  seen.forEach((x, i) =>
+    fileIssue(
+      f,
+      item.id,
+      `seen:${last!.head}:${i}`,
+      { repo: item.repo, title: x.text, body: `${x.text}\n\n\`${x.file}${x.line ? `:${x.line}` : ""}\`` },
+      `The factory's review of ${prUrl} found this in code that pull request did not change, so it left it alone.`,
+    ),
+  );
+  const spec = runs.forItem(f.s, item.id).findLast((r) => r.report?.result?.kind === "spec" && r.report.result.approved)
+    ?.report?.result;
+  const later = spec?.kind === "spec" ? (spec.later ?? []) : [];
+  later.forEach((x, i) =>
+    fileIssue(
+      f,
+      item.id,
+      `later:${i}`,
+      { repo: item.repo, ...x },
+      `The spec for ${item.url ?? item.key} left this for later; ${prUrl} does the first part.`,
+    ),
+  );
 }
 
 const SUMMARY_OPEN = "<!-- agentgate-factory:summary -->";
@@ -153,7 +186,7 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
     const seen = last.result.findings.filter((x) => x.severity === "pre-existing");
     if (open.length) lines.push(`**Review:** ${rounds}. Still open:`, ...open.map(summaryLine));
     else lines.push(`**Review:** ${rounds} found nothing to fix.`);
-    if (seen.length) lines.push("Also seen, not this PR's to fix:", ...seen.map(summaryLine));
+    if (seen.length) lines.push("Also seen, not this PR's to fix, each filed as an issue:", ...seen.map(summaryLine));
     const risk = last.result.risk;
     if (risk) {
       const focus = risk.focus.map((x) => defuse(x, 500)).join("; ") || "nothing named";
@@ -265,6 +298,13 @@ async function nudge(
   const thread = run.threadId ? mirrorOf(f).thread(run.threadId) : undefined;
   const idle = !!thread && !thread.needsYou && !isWorkingStatus(thread.status);
   if (!idle) return;
+  // Someone stopped the thread in T3 Code: waking it would undo that. The factory settles the threads it stops itself,
+  // such as on a budget stop, and a retry after a person's stop lets the next nudge through.
+  if (thread.status === "interrupted" && !thread.settled && data.stopSeen !== thread.updatedAt) {
+    runs.update(s, run.id, { checked: { ...data, stopSeen: thread.updatedAt } });
+    markStopped(f, item, run);
+    return;
+  }
   const key = problems.map((p) => p.key).join(" ");
   const limits = limitsOf(f, item);
   if (data.nudged === key && s.now() - (data.nudgedAt ?? 0) < durationMs(limits.stalledAfter)) return;

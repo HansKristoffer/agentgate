@@ -107,6 +107,11 @@ work resumes from those.
   refused, which wrote nothing, is tried up to three times. That table, not the event log, holds the claim, because
   the event log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or
   the ready summary in the PR body, need no claim; the summary is written before the item moves to `ready`.
+- Work the factory turns up and leaves alone (a review's findings in code the PR did not change, a spec's later
+  slices, a learning run's repository fixes) is filed as new issues through the same outbox
+  ([`fileIssue`](../../apps/agentgate/src/factory/outbox.ts)), without a source's label. Labelling one is the
+  maintainer's approval, so the label stays the only gate (D40), and none of it counts toward `waitingForYou`, which
+  held items would and so pause intake.
 - Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
   user on Linear. Anyone else who can comment on an issue could otherwise forge one, keeping intake away from the
   issue or making `retry` adopt it at a later stage than it reached.
@@ -141,6 +146,10 @@ Behaviors of T3 Code the factory relies on:
 - **`t3_thread_launch` answers before the agent starts.** It creates the thread and its run, answers, then prepares
   the worktree and starts the agent in the background (`ThreadLaunchService.prepareInBackground`). So the run knows
   its thread before the agent's MCP shim connects, which the MCP scoping below relies on.
+- **`interrupted` means a person stopped the thread.** T3 continues a turn its own restart cut
+  (`RestartContinuation`), so the factory treats `interrupted` as a person's stop: the run ends and the item waits as
+  `stopped`, where a reminder or a nudge would start the turn they stopped. The factory settles every thread it stops
+  itself, which is how the PR follower tells a budget stop from a person's; a nudge after `retry` goes through.
 - **`waiting` is a working status.** A turn that waits on a command or a subagent shows `waiting` without a pending
   request; a thread that waits for a person has the pending request. The controller also counts a thread whose T3
   subagent thread works (`parentThreadId` in the shell's lineage) as working.
@@ -191,7 +200,7 @@ The mitigations:
   factory replies and resolves them, after checking the reported commit is the PR's head;
 - items an agent adds with `factory_add` wait in `held`, so an agent session cannot start a full-access thread with
   text of its choosing;
-- comments the factory writes defuse mentions and HTML comments, so an agent's summary cannot notify anyone or fake a
+- comments and issues the factory writes defuse mentions and HTML comments, so an agent's summary cannot notify anyone or fake a
   marker.
 
 A webhook source's delivery is outside the label gate entirely, which is why webhook sources default to

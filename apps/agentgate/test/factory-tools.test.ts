@@ -255,7 +255,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
   expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: undefined });
   expect((await n.command("retry", "gh-1")).output).toEqual([
-    "gh-1 has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck or was handed off",
+    "gh-1 has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off or was stopped",
   ]);
   await n.dispatch();
   const [again] = runs.forItem(n.s, run!.item!).filter((r) => r.state === "running");

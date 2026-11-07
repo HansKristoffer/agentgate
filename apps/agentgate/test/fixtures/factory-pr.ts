@@ -59,6 +59,8 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     ci: "success" as "success" | "failure",
     /** How many of the next replies and resolves GitHub refuses. */
     refuse: { reply: 0, resolve: 0 },
+    /** Issues the factory opened, kept apart from \`issues\`: they carry no label, so intake never lists them. */
+    filed: [] as { repo: string; title: string; body: string }[],
     addIssue(number: number) {
       issues.set(number, { title: `Issue ${number}`, state: "OPEN", comments: [] });
     },
@@ -120,6 +122,12 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
         .get(Number(comment[1]))!
         .comments.push({ body, author: { login: "maintainer" }, authorAssociation: "OWNER", createdAt: "2026-11-05" });
       return ok({ id: 1 });
+    }
+    const filed = sub?.match(/^repos\/(.+)\/issues$/);
+    if (command === "api" && filed) {
+      const { title, body } = JSON.parse(stdin!);
+      github.filed.push({ repo: filed[1]!, title, body });
+      return ok({ number: 100 + github.filed.length });
     }
     if (command === "api" && sub === "graphql") return graphql(args);
     const pr = prs.get(args[2]!);
@@ -347,8 +355,8 @@ async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<t
       n.mcp.calls
         .filter((c) => c.tool === "t3_thread_send" && c.args.threadId === threadId)
         .map((c) => String(c.args.message)),
-    /** Ends or starts the thread's turn and waits until the mirror shows it. */
-    async thread(threadId: string, status: "idle" | "running") {
+    /** Ends, starts or stops (`interrupted`) the thread's turn and waits until the mirror shows it. */
+    async thread(threadId: string, status: "idle" | "running" | "interrupted") {
       n.mcp.setThread(threadId, { status });
       await n.until(() => n.mirror.thread(threadId)?.status === status, `the thread to be ${status}`);
     },

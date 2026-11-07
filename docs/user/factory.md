@@ -96,9 +96,9 @@ A note follows the brief, built in or from this file, so a project keeps getting
 | `model` |         | The model the stage's threads use, as T3 Code's thread launch takes it: `provider` (T3 Code's provider instance, such as `claudeAgent` or `codex`), `model`, and optional `options`. The default is T3 Code's own default. |
 | `mcp`   | `[]`    | The MCP servers the stage's threads, and the T3 Code subagents they start, may use, by their name in the repository's mapping (up to 20). agentgate's own tools are always there. Others are neither listed nor callable.  |
 
-`mcp` narrows what a factory thread sees by default, so a stage reaches a cloud or database server only when you name it. It is not a security boundary: the thread runs with your login at full access and could start a process of its own. A stage that should check its work in a browser needs that server named too, such as `mcp: [chrome-devtools]`.
+`mcp` narrows what a factory thread sees by default, so a stage reaches a cloud or database server only when you name it. It is not a security boundary: the thread runs with your login at full access and could start a process of its own. A stage that should check its work in a browser needs that server named too, such as `mcp: [chrome-devtools]`. Threads try their tools before they report `blocked`, so a stage that keeps reporting it is missing access, such as a secrets manager or a deploy log, usually needs that server in its `mcp`.
 
-The built-in briefs are a starting point. The implement thread reads its whole diff as a reviewer would before it opens the PR. The review thread runs focused passes, as subagents where its agent can start them: correctness, tests (with the fix reverted), reuse and simplicity, efficiency, security, and the repository's own rules. It reports only findings it confirmed in the code, and the risk of the change. A `stages/review.md` replaces those passes with your own.
+The built-in briefs are a starting point. Triage closes reports that do not come from production (a CI runner, a developer's machine, test data) or that a third-party outage caused, asks you before anything about accounts, permissions, payments, other people's data, CI, deployment or secrets, and sends changes over about 400 lines to spec, which cuts a first slice. The implement thread fixes the cause everywhere it shows up, checks a change that shows on screen in the running app, stops what it started, and reads its whole diff as a reviewer would before it opens the PR. The review thread runs focused passes, as subagents where its agent can start them: correctness, tests (with the fix reverted), reuse and simplicity, efficiency, security, and the repository's own rules. It reports only findings it confirmed in the code, and the risk of the change. A `stages/review.md` replaces those passes with your own.
 
 ### scorers/\<name\>.md
 
@@ -117,7 +117,7 @@ The sample is picked by run id, so asking again picks the same runs.
 
 ### rulings.md
 
-Your standing decisions for the factory, added to every stage's brief. Only you change it. The learning thread may cite it, and a learning PR that changes it is marked flawed and gets a comment saying so.
+Your standing decisions for the factory, added to every stage's brief. Only you change it. The learning thread may cite it, and a learning PR that changes it is marked flawed and gets a comment saying so. HTML comments (`<!-- -->`) are notes for whoever edits the file and never reach a brief; the file `factory init` writes asks two questions in one: whether the project is greenfield or has live data, and which packages you own, so causes in them are fixed there.
 
 ### skills/\<name\>/SKILL.md
 
@@ -299,6 +299,9 @@ A `webhook` source turns each delivery into an item:
   body: "{{body}}" # default: the whole delivery
   dedupe: "{{body.ticket.id}}" # optional: one item per key
   dedupeWindow: 1h # default
+  only: # optional: only deliveries whose value is listed become items
+    value: "{{body.event}}"
+    in: [ticket.created, ticket.reopened]
   signature: # optional, but without it the URL is the only check
     header: X-Desk-Signature
     encoding: hex # or base64
@@ -306,7 +309,7 @@ A `webhook` source turns each delivery into an item:
     secret: secret:DESK_SIGNING
 ```
 
-Templates fill in `{{body}}` (the delivery as sent), `{{body.a.b}}` (a value from a JSON body), `{{headers.name}}` and `{{query.name}}`; a missing value is empty. A title that comes out empty refuses the delivery. A delivery whose `dedupe` key one of the source's items has, open or finished within `dedupeWindow`, is answered as a duplicate and adds nothing. While intake is paused, or waits because too many items wait for you, a delivery waits for approval even with `intake: auto`. The signature is an HMAC-SHA256 of the exact body with the secret.
+Templates fill in `{{body}}` (the delivery as sent), `{{body.a.b}}` (a value from a JSON body), `{{headers.name}}` and `{{query.name}}`; a missing value is empty. A title that comes out empty refuses the delivery. With `only`, a delivery whose `value` is not one of `in` is answered and adds nothing, for senders that post every change to a record. A delivery whose `dedupe` key one of the source's items has, open or finished within `dedupeWindow`, is answered as a duplicate and adds nothing. While intake is paused, or waits because too many items wait for you, a delivery waits for approval even with `intake: auto`. The signature is an HMAC-SHA256 of the exact body with the secret.
 
 Each webhook source, and each GitHub or Linear source with `webhook`, gets a URL on the relay, `https://<relay>/hook/<key>`. `agentgate factory status` prints it once the factory machine has made it, within a minute of loading the folder; the `/factory` page and agents never see it. Give that URL to the sender:
 
@@ -323,15 +326,18 @@ Sentry alerts can come in the same way, through an integration's webhook for iss
   repo: acme/api
   title: "{{body.data.issue.title}}"
   body: "{{body.data.issue.web_url}}"
-  dedupe: "{{body.data.issue.id}}"
-  dedupeWindow: 30d
+  only:
+    value: "{{body.action}}"
+    in: [created, unresolved]
+  dedupe: "{{body.data.issue.id}}-{{body.action}}"
+  dedupeWindow: 1d
   signature:
     header: Sentry-Hook-Signature
     encoding: hex
     secret: secret:SENTRY_HOOK
 ```
 
-Sentry sends a delivery for every change to an issue (created, resolved, assigned and so on); the dedupe key makes them one item within the window.
+Sentry sends a delivery for every change to an issue (created, resolved, assigned and so on). `only` keeps a new issue and one that came back after it was resolved, which usually means a fix did not hold; the rest add nothing. The dedupe key keeps repeats of one change to one item, and an issue that comes back while its item is still open adds nothing either.
 
 What to expect:
 
@@ -344,14 +350,14 @@ What to expect:
 
 A scout looks for work on a schedule, such as slow endpoints, new errors or outdated dependencies. Each time, a T3 Code thread follows its prompt in a worktree of `repo`, and reports what it finds. Each finding becomes an item that goes through triage, a fix and review like any other.
 
-A scout is one file, `scouts/<id>.md`: its settings as frontmatter, then the prompt. The file's name is the scout's id, which no source in `factory.yaml` may share. `scouts/perf.md`:
+A scout is one file, `scouts/<id>.md`: its settings as frontmatter, then the prompt. The file's name is the scout's id, which no source in `factory.yaml` may share. `scouts/production.md` checks what shipped yesterday:
 
 ```markdown
 ---
 repo: acme/api
 schedule:
   at: "09:00" # quoted, or some YAML tools read it as a number
-  days: [mon, thu] # default: every day
+  days: [mon, tue, wed, thu, fri] # default: every day
   timezone: Europe/Copenhagen # default: UTC
 mcp: [railway] # optional: MCP servers the thread may use
 intake: auto # default; hold makes each finding wait for approve
@@ -362,10 +368,12 @@ model: # optional, like a stage file's
   model: claude-sonnet-5-5
 ---
 
-Look at the p95 latency of every API endpoint over the last week in Railway. File each endpoint that got more than 20% slower, with the numbers and the commits around when it changed. Ignore endpoints with fewer than 100 requests.
+Check the pull requests merged from 30 hours ago up to 6 hours ago (on a Monday, from 78 hours ago) in production. For each, find the Railway deploy that shipped it and compare the errors, logs and call volumes of what it touched before and after. File a fix that did not hold, and anything that got quieter without throwing: a job that stopped running, a webhook or an integration whose calls dropped. File an incident you see on the way too, even when no pull request caused it, with the numbers and their time spans. Say "cause not confirmed" when you cannot tell.
 ```
 
-- **When it runs**: `schedule: { every: 6h }` runs it that long after its last run, and at once the first time (at least `1h`). `at` runs it at that time on those days. A run that cannot start within an hour of its time, because the machine was off or intake was paused, is skipped until the next one. `agentgate factory scout perf` and the **Run now** button run it at once. `enabled: false` keeps it in the folder but runs it only when you ask.
+A check like this finds what tests and error trackers miss, because a job that stops or an email that is never sent throws nothing. The fixed window by the clock lets daily runs cover every merge once, since a run remembers nothing of the last.
+
+- **When it runs**: `schedule: { every: 6h }` runs it that long after its last run, and at once the first time (at least `1h`). `at` runs it at that time on those days. A run that cannot start within an hour of its time, because the machine was off or intake was paused, is skipped until the next one. `agentgate factory scout production` and the **Run now** button run it at once. `enabled: false` keeps it in the folder but runs it only when you ask.
 - **What it can use**: agentgate's tools, the repository, and the servers in `mcp`. A server must also be mapped to the repository's project, as for any session there. The thread changes no code and opens no PRs or issues.
 - **Its tickets**: every finding a run reports is filed; say in the prompt how many are worth a run. Each finding has a key the thread chooses, such as `slow-orders-list`. A finding whose key one of the scout's items has, open or finished within `dedupeWindow`, is skipped, and the thread sees those keys so it can reuse them. A reworded key gets through as a new item. Findings wait for approval with `intake: hold`, and also while intake is paused or waits for you; nothing more is filed while 20 of its items wait.
 - The board shows each scout's schedule, its next run, and what its last run filed, with a link to its thread.
@@ -433,14 +441,15 @@ When an item waits for you, it stays in its stage and the board says why:
 | `stuck`      | Nothing moved the item for four times `limits.stalledAfter`, such as a launch that keeps failing; or a launch may have started a thread before T3 Code's sign-in changed. | Read `show <item>`, look for the thread in T3 Code, then `retry` or `drop`.                     |
 | `orphaned`   | The machine that held the issue is unreachable.                                                                                                                           | `retry owner/repo#42` (or the Linear key) takes it over here.                                   |
 | `handed-off` | You handed its stage thread to another machine, so it left the factory.                                                                                                   | `retry` starts the stage again here; `drop` closes the item.                                    |
+| `stopped`    | Someone stopped one of its threads in T3 Code. The factory never starts a thread you stopped again by itself.                                                             | `retry` goes on: with its PR, or the stage in a new thread; `drop` closes the item.             |
 
 - `reject` on a spec card answers **Change** with your reason as the feedback, and the spec gets another round.
-- `retry` takes an item that waits as `failed`, `budget`, `stalled`, `stuck` or `handed-off` back to work: an item with a PR goes on with that PR, and any other starts its stage again in a new thread. A `closed` item starts again at triage, and a triage that had closed it counts as a wrong call for learning.
+- `retry` takes an item that waits as `failed`, `budget`, `stalled`, `stuck`, `handed-off` or `stopped` back to work: an item with a PR goes on with that PR, and any other starts its stage again in a new thread. A `closed` item starts again at triage, and a triage that had closed it counts as a wrong call for learning.
 - `drop` stops the item's threads and closes it with a comment. Its PR, if it has one, stays open for you to close.
 
 A stage thread whose turn ends without a report is reminded once, then the stage starts again in a new thread; a second silent end makes the item wait for you as `failed`. A turn that waits on a command or a subagent is still working. The factory comments on the item's issue at most once for each moment, even when GitHub or Linear did not confirm the comment.
 
-When the PR goes ready, the factory adds a section to the end of its description: each claim the implementer checked with its evidence, what it did not check, what the last review round left open or saw elsewhere, and the reviewer's risk notes (whether a revert undoes the change, how far a mistake reaches, changes the item did not ask for, and where to look first). It is written once, at ready, and names the commits it covers; later pushes leave it as it is. Review rounds before that stay between the factory's threads. To route sensitive paths, such as auth or billing, to the people who own them, add a `CODEOWNERS` file: GitHub requests code owners when the factory marks the PR ready.
+When the PR goes ready, the factory adds a section to the end of its description: each claim the implementer checked with its evidence, what it did not check, what the last review round left open or saw elsewhere, and the reviewer's risk notes (whether a revert undoes the change, how far a mistake reaches, changes the item did not ask for, and where to look first). It is written once, at ready, and names the commits it covers; later pushes leave it as it is. At the same moment, each problem the last review round found in code the PR did not change, and each slice the spec left for later, becomes an issue in the repository, without your source's label and with a line saying the factory filed it. Labelling one is how you approve it: the factory takes it in like any other issue. Review rounds before that stay between the factory's threads. To route sensitive paths, such as auth or billing, to the people who own them, add a `CODEOWNERS` file: GitHub requests code owners when the factory marks the PR ready.
 
 On the PR, the factory wakes the implement thread itself when the thread sits idle on a problem, and quotes what was written:
 
@@ -454,7 +463,7 @@ The factory wakes the thread once for each new problem, and again after `limits.
 
 ## Learning and judges
 
-- **Learning**: every `learning.every`, or now with `agentgate factory learn`, a thread in a worktree of the factory repository studies the finished runs, judge scores, review comments, reverts and the repositories' own merged PRs, and opens one PR against the folder with the sections Targets, Runs addressed, Evidence and Expected effect. It never merges and never changes `rulings.md`; you review its PR like any other, and the factory loads the change once it is merged.
+- **Learning**: every `learning.every`, or now with `agentgate factory learn`, a thread in a worktree of the factory repository studies the finished runs (their outcomes, judge scores, review findings and the friction threads reported, such as a missing tool or a broken setup), review comments, reverts and the repositories' own merged PRs, and opens one PR against the folder with the sections Targets, Runs addressed, Evidence and Expected effect. It first checks whether earlier learning PRs had their expected effect, judges a file only by runs made under its current wording once at least 10 finished, changes it only for a miss seen twice or once with a person's written reason, and makes at most one change per file and three in all. What a repository needs instead of a brief, such as a check for a mechanical rule or a fix to its setup, it files as issues there, without your source's label. It never merges and never changes `rulings.md`; you review its PR like any other, and the factory loads the change once it is merged.
 - **Judges**: the files in `scorers/`, described above.
 
 ## Several machines

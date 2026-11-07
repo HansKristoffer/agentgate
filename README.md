@@ -247,11 +247,11 @@ The factory takes the issues you label on GitHub or Linear, those a webhook send
 
 Each item goes through these stages:
 
-1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, and chooses between a fix and a spec.
-2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change** in T3 Code.
+1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, closes reports that come from a CI runner, a developer's machine or a third-party outage, and chooses between a fix and a spec.
+2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change** in T3 Code. A large change is cut to a first slice, and the rest becomes issues when the PR is ready.
 3. **Implement** works on the branch `factory/<item>`, reviews its own diff, and opens a draft pull request. The thread keeps the PR, and the factory wakes it when it sits on a failing check, a conflict, or comments from the repository's own people. No fix starts while the default branch fails CI.
 4. **Review**: a fresh thread reviews the PR in focused passes (correctness, tests, reuse, efficiency, security and the repository's own rules) without reading what the implementer said about it. Its findings go to the implement thread, not to GitHub, for up to three rounds by default.
-5. **Ready**: the factory marks the PR ready for review, requests the repository's reviewers, and adds a summary to the PR's description: what the implementer checked and did not, what the last review round left open, and where the risk is. You merge it or close it.
+5. **Ready**: the factory marks the PR ready for review, requests the repository's reviewers, and adds a summary to the PR's description: what the implementer checked and did not, what the last review round left open, and where the risk is. Problems the review found in code the PR did not change, and the slices a spec left for later, become issues without the factory's label: label one to have the factory work it. You merge the PR or close it.
 
 The factory comments on the issue when it takes it in, when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it waits for you.
 
@@ -264,7 +264,7 @@ To start one:
 
 You act in three places:
 
-- **T3 Code**: answer the questions threads ask, including the spec card.
+- **T3 Code**: answer the questions threads ask, including the spec card. A thread you stop stays stopped: its item waits for you until you `retry` or `drop` it.
 - **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, `show <item>` tells what happened to it, `pause` and `resume` stop and restart the whole factory, and `add <owner/repo> <title>` adds an item by hand.
 - **GitHub**: review the PR, ask for changes in a review comment, and merge it.
 
@@ -280,7 +280,7 @@ Things to know:
 
 - **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt. Protect the factory folder's branch on GitHub if your plan allows; `factory use` warns when it is open.
 - **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. An item that passes `limits.itemTokens` in `factory.yaml` (30 million tokens by default) stops and waits for you.
-- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other. AI judges grade a sample of runs.
+- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other, and files issues for checks or setup fixes a repository needs. AI judges grade a sample of runs.
 - Every machine must run this release before you turn the factory on or set a factory secret, because older releases drop them.
 
 ## Commands

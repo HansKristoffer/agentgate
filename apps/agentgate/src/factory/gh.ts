@@ -334,6 +334,10 @@ export async function postIssueComment(repo: string, number: number, body: strin
   return post(`comment on ${repo}#${number}`, `repos/${repo}/issues/${number}/comments`, { body });
 }
 
+export async function createIssue(repo: string, title: string, body: string): Promise<PostResult> {
+  return post(`open an issue on ${repo}`, `repos/${repo}/issues`, { title, body });
+}
+
 export interface PrView {
   number: number;
   url: string;

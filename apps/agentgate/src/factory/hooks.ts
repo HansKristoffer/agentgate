@@ -178,6 +178,9 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
     // Not JSON: `{{body}}` still renders, and every `{{body.x}}` renders empty.
   }
   const delivery = { body, json, headers: req.headers, query: new URL(req.url).searchParams };
+  // A sender that posts every change to a record: only the changes the folder names mean new work.
+  if (source.only && !source.only.in.includes(render(source.only.value, delivery).trim()))
+    return answer(200, { ok: true, ignored: true });
   const title = cut(render(source.title, delivery).trim(), 300);
   if (!title) {
     f.events.emit({ kind: "note", text: `A delivery to ${source.id} was refused: its title template rendered empty` });

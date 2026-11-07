@@ -52,6 +52,7 @@ const REASONS: Record<NeedsYou["reason"], string> = {
   orphaned: "Its machine is unreachable",
   stuck: "Stuck",
   "handed-off": "Handed to another machine",
+  stopped: "Stopped in T3 Code",
 };
 
 /** The T3 Code thread an item points at: the one asking, else its newest run's. */

@@ -48,7 +48,14 @@ export function initTemplate(repo: string): Record<string, string> {
   const rulings = [
     "# Rulings",
     "",
-    "<!-- Your standing decisions for the factory, one per line. The factory adds them to every brief. -->",
+    "<!-- Your standing decisions for the factory, one per line. The factory adds them to every brief and leaves out",
+    "comments like this one. Most projects settle these two; write your answer as a line below.",
+    "",
+    "- Existing data and formats: greenfield, so change schemas freely with no migrations, backfills or compatibility",
+    "  code; or live, so every schema change needs a migration that can run twice.",
+    "- Packages you own (name them): when the cause of a bug lives in one, the fix goes there, as an item in its",
+    "  repository, not around it here.",
+    "-->",
     "",
   ].join("\n");
   return { [`${FOLDER}/factory.yaml`]: yaml, [`${FOLDER}/rulings.md`]: rulings };

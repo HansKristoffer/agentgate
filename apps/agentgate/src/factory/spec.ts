@@ -17,6 +17,7 @@ import { t3Mcp } from "./t3-mcp.ts";
 const SPEC_BRIEF = `You write the spec for one item for AgentGate's software factory.
 
 - Write the behavior, design, interfaces and test plan.
+- When the change is large, spec a first slice that stands alone and is worth shipping, and put the rest in the result's \`later\`: each becomes an issue for the maintainer when the PR goes ready.
 - Have a fresh subagent review the spec, and fix or answer every finding.
 - Ask the maintainer one question card, Approve or Change, showing the spec.
 - Report \`approved\` or the feedback.`;

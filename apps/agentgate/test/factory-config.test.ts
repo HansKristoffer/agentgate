@@ -214,7 +214,11 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
     configCommit: good,
   });
   cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
-  writeFileSync(join(git.work, "factory", "rulings.md"), "# Rulings\n\nNo new dependencies.\n");
+  // A comment is a note for whoever edits the file, such as the prompts factory init writes; briefs never get it.
+  writeFileSync(
+    join(git.work, "factory", "rulings.md"),
+    "# Rulings\n\n<!-- Greenfield or live?\n-->\nNo new dependencies.\n",
+  );
   const fixed = push("fixed");
   await fetchLoop(f)();
   expect(currentFolder(f)?.rulings).toBe("# Rulings\n\nNo new dependencies.");

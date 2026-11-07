@@ -10,22 +10,24 @@ import type { FactoryRuntime } from "./runtime.ts";
 
 export const TRIAGE_BRIEF = `You triage one item for AgentGate's software factory.
 
-- Look for duplicates, and check whether the default branch already fixes the item.
+- Look for duplicates among the repository's issues and PRs and the factory's open items (the \`factory_status\` tool), and check whether the default branch already fixes the item.
+- Report \`not-a-bug\`, naming the reason, when it does not come from production (stack paths on a CI runner or a developer's checkout, seeded or test data), or when it is not ours to fix (a third-party outage or a network blip with nothing on our side to handle better).
+- Report \`needs-decision\` when fixing it means guessing what someone meant, or deciding about accounts, permissions, payments, other people's data, CI, deployment or secrets.
 - Reproduce a bug with a failing test or command, or say why that is not possible.
 - Change no code beyond the reproduction.
-- Choose \`implement\`, or choose \`spec\` when the behavior or design is unclear or the change is large.`;
+- Choose \`implement\`, or choose \`spec\` when the behavior or design is unclear or the change is large: more than about 400 changed lines, or more than one feature.`;
 
 const RESULTS: Record<RunKind, string> = {
   triage:
     '`done` needs `result: { kind: "triage", route: "implement" | "spec", reproduction: { command, failsBefore: true } | { notPossible } }`.',
-  spec: '`done` needs `result: { kind: "spec", spec, review, approved, feedback? }`.',
+  spec: '`done` needs `result: { kind: "spec", spec, review, approved, feedback?, later?: [{ title, body }] }`.',
   implement:
     '`done` needs `result: { kind: "implement", prUrl, commit, claims: [{ claim, evidence }], notChecked: [] }`.',
   review:
     '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`.',
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
   learn:
-    '`done` needs `result: { kind: "learn", prUrl?, lessons }`; report `nothing-to-do` when there is nothing to learn.',
+    '`done` needs `result: { kind: "learn", prUrl?, lessons, issues?: [{ repo, title, body }] }` with a PR or issues; report `nothing-to-do` when there is nothing to learn.',
   scout:
     'Report only `done` or `nothing-to-do`. `done` needs `result: { kind: "scout", findings: [{ key, title, body }] }` with at least one finding; report `nothing-to-do` when nothing needs a ticket.',
 };
@@ -58,6 +60,7 @@ function reportSection(kind: RunKind, run: FactoryRun) {
       "- Outcomes: `done`, `not-a-bug`, `duplicate`, `already-fixed`, `blocked`, `needs-decision` and `nothing-to-do`.",
       "- `blocked` needs `blocked: { missing }`, `needs-decision` needs `decision: { question, recommendation, options? }` with one question, and `duplicate` needs `duplicateOf`.",
       `- ${RESULTS[kind]}`,
+      "- Add `friction`, up to 10 short lines, for whatever slowed you down or you worked around: a missing tool or access, a broken setup, a flaky check. The factory's learning thread reads it.",
       "- Never comment on GitHub or Linear yourself, and never close, label or move issues: the factory writes back for you.",
     ].join("\n"),
   ].join("\n\n");

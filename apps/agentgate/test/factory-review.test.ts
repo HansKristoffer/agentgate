@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { items, newId, runs, type FactoryItem } from "../src/factory/db.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
+import { idle } from "./fixtures/t3-mcp.ts";
 import { removeTmp } from "./fixtures/git.ts";
 
 afterAll(removeTmp);
@@ -198,6 +199,23 @@ test("a stale report is discarded, findings go to the implement thread and not t
 test("a clean review moves the item to ready; findings in the last allowed round go to ready as open findings in the ready comment and the PR's summary", async () => {
   const n = await reviewFactory({ limits: { threads: 20, reviewRounds: 2 } });
   const clean = await n.reviewing(1);
+  // Its approved spec left a slice for later, which becomes an issue when the PR goes ready.
+  const later = { title: "Export more than 10,000 rows", body: "Page the export instead of loading every row." };
+  runs.insert(n.s, {
+    id: newId("run"),
+    item: clean.item.id,
+    kind: "spec",
+    attempt: 1,
+    state: "reported",
+    nudges: 0,
+    configCommit: clean.item.configCommit,
+    report: {
+      run: "x",
+      outcome: "done",
+      summary: "Spec approved.",
+      result: { kind: "spec", spec: "The first slice.", review: "Fine.", approved: true, later: [later] },
+    },
+  });
   expect(await n.report(clean.review, n.reviewed(clean.pr, []))).toEqual({ accepted: true });
   expect(items.get(n.s, clean.item.id)!.phase).toBe("ready");
   expect(clean.pr).toMatchObject({ isDraft: false, reviewers: ["octocat"] });
@@ -208,6 +226,10 @@ test("a clean review moves the item to ready; findings in the last allowed round
   );
   // That round reported no risk, so the summary has no Risk line.
   expect(clean.pr.body).not.toContain("**Risk:**");
+  await idle(n.f);
+  expect(n.github.filed).toHaveLength(1);
+  expect(n.github.filed[0]).toMatchObject({ title: later.title });
+  expect(n.github.filed[0]!.body).toContain(`left this for later; ${clean.pr.url} does the first part`);
 
   const { item, pr, review } = await n.reviewing(2);
   await n.report(review, n.reviewed(pr, [finding]));
@@ -234,8 +256,15 @@ test("a clean review moves the item to ready; findings in the last allowed round
   expect(body).toContain(`**Review:** 2 rounds, the last at \`${head("c").slice(0, 12)}\`. Still open:`);
   expect(body).toContain("- Important, `src/save.ts:12`: The retry loop never ends.");
   expect(body).toContain(
-    "Also seen, not this PR's to fix:\n- Pre-existing, `src/load.ts:10`: The cache is never cleared.",
+    "Also seen, not this PR's to fix, each filed as an issue:\n- Pre-existing, `src/load.ts:10`: The cache is never cleared.",
   );
+  // The pre-existing finding became an issue without the source's label: labelling it is the maintainer's approval.
+  await idle(n.f);
+  expect(n.github.filed).toHaveLength(2);
+  expect(n.github.filed[1]).toMatchObject({ title: "The cache is never cleared." });
+  expect(n.github.filed[1]!.body).toContain("`src/load.ts:10`");
+  expect(n.github.filed[1]!.body).toContain(`The factory's review of ${pr.url} found this`);
+  expect(n.github.filed[1]!.body).toContain("Add the label `factory` to have the factory work it.");
   expect(body).toContain(
     "**Risk:** two-way door, reaches the module. Look first at: the retry in src/save.ts, which runs on every save. Unrelated changes: src/util.ts: renamed a helper.",
   );
