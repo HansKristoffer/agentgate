@@ -14,8 +14,6 @@ import { shortError, type FactoryRuntime, type LaunchSpec, type ToolCaller } fro
  */
 
 const DAY = 86_400_000;
-/** Below this many graded runs in a week, every run is graded: a sample of a few runs tells nothing. */
-const FULL_SAMPLE_BELOW = 20;
 
 const JUDGE_BRIEF = `You grade one finished run of AgentGate's software factory against a rubric.
 
@@ -47,14 +45,13 @@ function grade(file: ScorerFile, label: string) {
 const ASKS = new Set(["blocked", "needs-decision"]);
 
 /** At the end of a reported stage run: a judge run for every scorer of that stage whose sample picks it, once per
- * (run, scorer). While few runs were graded this week, every run is. */
+ * (run, scorer). */
 export function sampleJudges(f: FactoryRuntime, run: FactoryRun) {
   if (run.state !== "reported" || !run.item || !isStage(run.kind)) return;
   if (ASKS.has(run.report?.outcome ?? "")) return;
   const item = items.get(f.s, run.item);
   const folder = item && folderAt(f, item.configCommit);
   if (!folder) return;
-  const few = scores.since(f.s, f.s.now() - 7 * DAY).length < FULL_SAMPLE_BELOW;
   const judged = new Set(
     runs
       .list(f.s, { kinds: ["judge"] })
@@ -62,9 +59,8 @@ export function sampleJudges(f: FactoryRuntime, run: FactoryRun) {
   );
   for (const [scorer, { file }] of Object.entries(folder.scorers)) {
     if (!(file.stages as string[]).includes(run.kind)) continue;
-    // A sample of 0 turns the scorer off, however few runs were graded.
     const rate = file.sample ?? folder.config.scoring.sample;
-    if (rate <= 0 || (!few && !sampled(run.id, rate))) continue;
+    if (rate <= 0 || !sampled(run.id, rate)) continue;
     if (judged.has(scorer)) continue;
     enqueueRun(f, { kind: "judge", configCommit: folder.commit, checked: { kind: "judge", run: run.id, scorer } });
   }

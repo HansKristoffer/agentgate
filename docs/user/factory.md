@@ -71,7 +71,7 @@ Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys 
 | `sources`                  | `[]`       | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
 | `stages.<stage>.note`      |            | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 | `learning.every`           | `7d`       | How often the learning thread runs, counted from the last one. It is skipped while no item finished since.                                                                                                                                                        |
-| `scoring.sample`           | `25`       | The percentage of finished stage runs each judge grades (0 to 100). While fewer than 20 runs were graded in the last 7 days, judges grade every run; `0` turns them off.                                                                                          |
+| `scoring.sample`           | `25`       | The percentage of finished stage runs each judge grades (0 to 100). `0` turns them off.                                                                                                                                                                           |
 
 Repository names are matched without regard to case, and a source names a repository listed under `repositories`.
 

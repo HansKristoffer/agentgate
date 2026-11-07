@@ -18,6 +18,7 @@ export type FolderFetcher = (input: {
   path: string;
   since?: string;
   tree?: string;
+  signal?: AbortSignal;
 }) => Promise<{ commit: string; tree?: string; dir?: string } | null>;
 
 const COMMIT = /^[0-9a-f]{40,64}$/;
@@ -41,7 +42,7 @@ const plain = (text: string) =>
     .join("; ")
     .slice(0, 500);
 
-const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchanged }) => {
+const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchanged, signal }) => {
   const folder = folderPath(path);
   const bin = Bun.which("git");
   if (!bin) throw new Error("the factory needs git on the machine that runs it");
@@ -50,7 +51,8 @@ const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchan
   const auth = ["-c", "credential.helper=", ...(gh ? ["-c", `credential.helper=!"${gh}" auth git-credential`] : [])];
   const url = `https://github.com/${repo}.git`;
   const at = ref ? `${repo} at ${ref}` : repo;
-  const bounded = timeoutSignal(120_000);
+  // A stopping daemon does not wait out a slow clone.
+  const bounded = signal ? AbortSignal.any([timeoutSignal(120_000), signal]) : timeoutSignal(120_000);
   const scratch = mkdtempSync(join(tmpdir(), "agentgate-factory-"));
   const git = async (cwd: string, ...args: string[]) => {
     const { out, err, code } = await runSkillCommand([bin, ...auth, ...args], cwd, bounded);

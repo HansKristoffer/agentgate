@@ -89,39 +89,10 @@ async function judgeFactory(threads = 20) {
   return { ...n, call, report, judgeRuns, verdict, triaged };
 }
 
-/** Grades `count` runs this week, so the judges sample instead of grading every run. */
-function gradedThisWeek(n: Awaited<ReturnType<typeof judgeFactory>>, count: number) {
-  for (let i = 0; i < count; i++)
-    scores.put(n.s, {
-      run: `run_graded_${i}`,
-      scorer: "repro",
-      label: "reproduced",
-      score: 1,
-      passed: true,
-      reasoning: "",
-      judgeRun: `run_judge_${i}`,
-      at: n.s.now(),
-    });
-}
-
-test("while few runs were graded this week every run is judged, then a quarter of reported spec runs are, the same runs every time", async () => {
+test("a quarter of reported spec runs are judged, the same runs every time, and each once", async () => {
   const n = await judgeFactory();
   await n.command("add", n.repo, "Crash on save");
   const item = items.list(n.s)[0]!;
-  const spec = () =>
-    runs.insert(n.s, {
-      id: newId("run"),
-      item: item.id,
-      kind: "spec",
-      attempt: 1,
-      state: "reported",
-      nudges: 0,
-      configCommit: item.configCommit,
-    });
-  for (let i = 0; i < 5; i++) sampleJudges(n.f, spec());
-  expect(n.judgeRuns()).toHaveLength(5);
-
-  gradedThisWeek(n, 20);
   const ended = Array.from({ length: 400 }, () =>
     runs.insert(n.s, {
       id: newId("run"),

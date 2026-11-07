@@ -299,7 +299,9 @@ test("use waits for every machine to understand the factory, and only the machin
   await fetchLoop(a!.ctx.factory)();
   expect(calls).toEqual([]);
   await fetchLoop(b!.ctx.factory)();
-  expect(calls).toEqual([{ repo: "acme/factory", path: "", ref: undefined, since: undefined }]);
+  expect(calls).toEqual([
+    { repo: "acme/factory", path: "", ref: undefined, since: undefined, signal: expect.any(AbortSignal) },
+  ]);
 
   const off: string[] = [];
   b!.ctx.factory.events.on("factory.off", (e) => void off.push(e.text));

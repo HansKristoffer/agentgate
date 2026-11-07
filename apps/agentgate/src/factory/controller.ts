@@ -1554,6 +1554,7 @@ function boardItems(f: FactoryRuntime): BoardItem[] {
   return [...list, ...elsewhereRows(f)];
 }
 
+/** The controller's part of the board; implement.ts adds `capacity.mainRed`. */
 function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
   const limits = limitsOf(f);
   const quota = memory(f).quota;
@@ -1567,7 +1568,6 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
       quota: quota ?? "ok",
       intake: intakeState(f),
       ...(isPaused(f) && { paused: true }),
-      mainRed: [],
     },
     sources: (currentFolder(f)?.config.sources ?? []).map((source) => {
       const st = memory(f).sources.get(source.id);
@@ -1579,7 +1579,7 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
         ...(st?.error && { error: st.error }),
       };
     }),
-  };
+  } as Partial<FactoryBoard>;
 }
 
 /** `agentgate factory show <item>`: the item with its runs, what the factory posted for it, and its events. */

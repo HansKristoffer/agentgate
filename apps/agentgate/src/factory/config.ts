@@ -322,6 +322,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
       ref: pointer.ref,
       path: pointer.path,
       since,
+      signal: f.ctx.abort.signal,
       ...(tree && { tree }),
     });
   } catch (e) {
