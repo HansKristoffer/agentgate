@@ -52,6 +52,8 @@ export interface FactoryTool {
   local?: boolean; // never forwarded to the factory machine
   /** Listed only to a factory run's own threads (`threadScope`). */
   forRuns?: boolean;
+  /** Not listed to agents: a route reaches it through `runTool`, which forwards it to the factory machine. */
+  unlisted?: boolean;
   /** The value is returned as JSON text; a thrown error becomes a tool error. */
   call(args: Record<string, unknown>, caller: ToolCaller): Promise<unknown>;
 }

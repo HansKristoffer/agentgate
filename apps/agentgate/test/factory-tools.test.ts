@@ -379,3 +379,18 @@ test("a thread whose turn waits on background work or a subagent is not taken fo
   await n.until(() => sends().length === 1, "the reminder");
   expect(String(sends()[0]!.args.message)).toContain(`run: "${run!.id}"`);
 });
+
+test("agents see the factory's tools, without the ones only routes call", async () => {
+  const n = await triaging(1);
+  const builtin = (await n.ctx.gateway.builtin!()).client;
+  const names = (await builtin.listTools()).tools.map((t) => t.name).filter((t) => t.startsWith("factory_"));
+  expect(names.sort()).toEqual([
+    "factory_add",
+    "factory_history",
+    "factory_item",
+    "factory_pr_threads",
+    "factory_report",
+    "factory_run",
+    "factory_status",
+  ]);
+});

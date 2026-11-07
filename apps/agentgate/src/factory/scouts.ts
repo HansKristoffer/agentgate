@@ -349,6 +349,7 @@ export function setup(f: FactoryRuntime): void {
 
   f.tools.set("factory_scout", {
     name: "factory_scout",
+    unlisted: true,
     description:
       "Run one of the factory's scouts now, whatever its schedule. Returns { run }, or { skipped } when its last run has not finished.",
     inputSchema: {

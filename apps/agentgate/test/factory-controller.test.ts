@@ -543,7 +543,7 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
     const found = n.ctx.gateway.scope!(thread)!;
     return found.hidden ? { hidden: found.hidden.toSorted() } : found;
   };
-  const others = { hidden: ["factory_item", "factory_pr_threads", "factory_report", "factory_run"] };
+  const others = { hidden: ["factory_history", "factory_item", "factory_pr_threads", "factory_report", "factory_run"] };
   await n.command("add", n.repo, "Crash on save");
   await n.dispatch();
   const [run] = triageRuns(n);

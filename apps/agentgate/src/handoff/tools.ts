@@ -44,8 +44,8 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
         },
       );
     if (f?.pointer())
-      for (const { name, description, inputSchema } of f.tools.values())
-        tools.push({ name, description, inputSchema: inputSchema as Tool["inputSchema"] });
+      for (const { name, description, inputSchema, unlisted } of f.tools.values())
+        if (!unlisted) tools.push({ name, description, inputSchema: inputSchema as Tool["inputSchema"] });
     return { tools };
   });
   server.setRequestHandler("tools/call", async (req) => {

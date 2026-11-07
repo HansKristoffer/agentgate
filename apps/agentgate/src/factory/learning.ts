@@ -404,6 +404,7 @@ export function setup(f: FactoryRuntime): void {
 
   f.tools.set("factory_learn", {
     name: "factory_learn",
+    unlisted: true,
     description:
       "Start the factory's learning thread now. Returns { run }, or { skipped } with why: one is running, or no item finished since the last one.",
     inputSchema: { type: "object", properties: {} },
@@ -411,6 +412,7 @@ export function setup(f: FactoryRuntime): void {
   });
   f.tools.set("factory_history", {
     name: "factory_history",
+    forRuns: true,
     description:
       "The factory's finished items with their runs, outcomes, verdicts, judge scores and T3 thread ids, then its learn runs. Pages of at most 20,000 characters: pass `next` back as cursor.",
     inputSchema: {
