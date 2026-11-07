@@ -29,11 +29,13 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   them), but only a prompt keeps it from reading the PR description, so claims in the body before review would reach
   it.
 - `settings.factory` (the pointer to the folder and the machine that runs it) and the `secret` record kind are gated
-  on every node advertising node protocol 8 (`FACTORY_PROTOCOL`), because older nodes drop the settings field when
-  they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change.
-- One machine runs the factory. Other machines forward commands and agent tools to it through
-  `/peer/factory/op` ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)); `local` commands and tools
-  (`use`, `off`, `status`, `secret`) run where they are called.
+  on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
+  field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and
+  following the init PR write the pointer; the generic settings patch has no `factory`.
+- One machine runs the factory. Other machines forward to it through `/peer/factory/op`
+  ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)): agent tools, text commands, and typed operations
+  (`f.ops`: add, show, the item actions, pause, resume, reload), which the routes return as JSON and the CLI
+  formats. `local` commands and tools (`use`, `move`, `off`, `status`, `secret`) run where they are called.
 
 ## One step at a time per item
 
@@ -80,7 +82,7 @@ work resumes from those.
 
 - Moving the factory moves no item. The old machine keeps driving the items it holds, and keeps its T3 MCP sign-in
   until the last one finishes. Nothing asks other machines what they hold, so an offline machine costs no polling.
-- An item command (`show`, `approve`, `reject`, `retry`, `drop`) for an issue another machine holds goes from the
+- An item operation (`show`, `approve`, `reject`, `retry`, `drop`) for an issue another machine holds goes from the
   factory machine to that machine (`viaHolder` in [`controller.ts`](../../apps/agentgate/src/factory/controller.ts)): it
   asks the machine the board names, then every machine seen lately, and only the holder answers, so routing keeps no
   memory that a restart or a paused intake could lose.
@@ -122,7 +124,8 @@ The factory depends on T3 Code interfaces that are not a stable public API, in t
   after the factory moved.
 - **T3 Code's WebSocket RPC**, through the handoff's T3 client: the `orchestration.subscribeShell` stream feeds the
   mirror ([`mirror.ts`](../../apps/agentgate/src/factory/mirror.ts)), which falls back to polling the shell; thread
-  projections give each run's provider sessions and transcript ([`records.ts`](../../apps/agentgate/src/factory/records.ts)).
+  projections give each run's provider sessions ([`records.ts`](../../apps/agentgate/src/factory/records.ts)), and a
+  judge's `factory_run` reads the graded run's transcript from them when it asks; the factory stores none.
 - A run's thread is always on the machine that holds the run. A stage thread a person hands to another machine leaves
   the factory: its run ends, and the item waits as `handed-off` until the maintainer retries or drops it; a PR it owns
   is still followed to its merge. Following threads across machines (reports, reminders, tokens and spec cards there)
