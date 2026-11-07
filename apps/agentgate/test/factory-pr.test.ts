@@ -452,3 +452,19 @@ test("writes GitHub refused are retried by the next pass without a second reply,
   expect(replies(member)).toHaveLength(1);
   expect(items.get(n.s, item.id)!.phase).toBe("shipped");
 });
+
+test("after factory off, items freeze: the PR follower reads nothing and posts nothing, even when the PR merges", async () => {
+  const n = await prFactory(cleanup);
+  n.f.runKinds.delete("review");
+  const { item, pr } = await n.opened(1);
+  expect((await n.command("off")).code).toBe(0);
+  const before = n.github.calls.length;
+  pr.state = "MERGED";
+  for (let pass = 0; pass < 3; pass++) {
+    n.advance(2 * MINUTE);
+    await n.pollPrs();
+  }
+  expect(n.github.calls.length).toBe(before);
+  expect(items.get(n.s, item.id)!.phase).toBe("pr");
+  expect(n.github.posted(1)).not.toContain("Shipped: the pull request was merged.");
+});

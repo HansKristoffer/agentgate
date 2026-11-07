@@ -103,7 +103,8 @@ export async function proxy(
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
     own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
   const session = provider.session?.(req.headers, json);
-  const usageSession = sessionFromRequest(provider.name, req.headers, json);
+  // Session usage counts the factory's runs; with the factory off nothing reads it, so nothing is written.
+  const usageSession = settings.factory ? sessionFromRequest(provider.name, req.headers, json) : undefined;
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount =
     options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);

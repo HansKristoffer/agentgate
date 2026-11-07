@@ -8,6 +8,7 @@ import {
   type StageName,
 } from "@agentgate/protocol";
 import { z } from "zod";
+import { trimSessionUsage } from "../llm/sessions.ts";
 import type { Store } from "../store.ts";
 
 /** The factory's node-local tables. Never synced: the machine that runs the factory holds its items and runs. */
@@ -473,4 +474,5 @@ export function trimFactory(s: Store) {
       s.settings().logRetention,
     ]);
   });
+  trimSessionUsage(s);
 }

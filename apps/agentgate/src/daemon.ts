@@ -376,10 +376,11 @@ export async function serve(
   }, 2000);
   schedule(async () => {
     s.trimLog();
-    trimFactory(s);
     expireLogins(s);
     rotateLogs();
   }, 3600000);
+  // On its own, so a failed trim never skips the login expiry or log rotation above.
+  schedule(async () => trimFactory(s), 3600000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);

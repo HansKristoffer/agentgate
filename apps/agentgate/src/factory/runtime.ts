@@ -69,6 +69,9 @@ export interface FactoryLoop {
   name: string;
   everyMs: number;
   where: "factory-node" | "every-node";
+  /** Runs while the factory is off too, to undo what it set up there (a T3 sign-in, the shell stream). Every other
+   * loop does nothing without a pointer: off freezes the items where they are. */
+  whenOff?: true;
   run(): Promise<void>;
 }
 export interface IncomingItem {
@@ -248,8 +251,10 @@ export async function commandRoute(f: FactoryRuntime, name: string, args: string
   return output;
 }
 
-/** A loop as the daemon schedules it: a factory-node loop does nothing on other machines. */
+/** A loop as the daemon schedules it: nothing while the factory is off (unless it cleans up), and a factory-node loop
+ * nothing on other machines. */
 export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
+  if (!f.pointer() && !loop.whenOff) return;
   if (loop.where === "factory-node" && !f.isFactoryNode()) return;
   await loop.run();
 };

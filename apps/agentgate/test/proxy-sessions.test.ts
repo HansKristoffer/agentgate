@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { proxy } from "../src/llm/pool.ts";
 import type { Provider } from "../src/llm/provider.ts";
-import { recordSessionUsage, sessionUsage } from "../src/llm/sessions.ts";
-import { tokenUsage, trimTelemetry } from "../src/llm/telemetry.ts";
+import { recordSessionUsage, sessionUsage, trimSessionUsage } from "../src/llm/sessions.ts";
+import { tokenUsage } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
 const cleanup: (() => void)[] = [];
@@ -11,10 +11,12 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
-function fixture() {
+function fixture(factoryOn = true) {
   const s = new Store(":memory:");
   cleanup.push(() => s.close());
   s.setLocal("node", "n");
+  if (factoryOn)
+    s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/factory", path: "", node: "n" } });
   for (const provider of ["claude", "codex"] as const) {
     s.put("account", provider, { id: provider, provider, label: provider, priority: 1 });
     s.put("credential", provider, {
@@ -64,8 +66,13 @@ const adapter = (name: "claude" | "codex"): Provider => ({
   },
 });
 
-async function send(name: "claude" | "codex", headers: Record<string, string>, body: Record<string, unknown> = {}) {
-  const { s, creds } = fixture();
+async function send(
+  name: "claude" | "codex",
+  headers: Record<string, string>,
+  body: Record<string, unknown> = {},
+  factoryOn = true,
+) {
+  const { s, creds } = fixture(factoryOn);
   const url = upstream(name === "claude" ? claudeStream : codexStream);
   const request = new Request("http://127.0.0.1/proxy", {
     method: "POST",
@@ -108,10 +115,17 @@ test("a Codex request counts under its session_id", async () => {
   ]);
 });
 
+test("with the factory off, no session is counted: nothing reads the counts, so a request pays nothing for them", async () => {
+  const s = await send("claude", { "x-claude-code-session-id": "header-session" }, {}, false);
+  expect(tokenUsage(s)).toMatchObject([{ input: 10, output: 42 }]);
+  expect(sessionUsage(s, ["header-session"])).toEqual([]);
+});
+
 test("a request that names no session is not counted", async () => {
   const s = await send("claude", {});
   expect(tokenUsage(s)).toMatchObject([{ input: 10, output: 42 }]);
-  expect(s.db.query("select count(*) as n from session_usage").get()).toEqual({ n: 0 });
+  const table = s.db.query("select 1 from sqlite_master where name = 'session_usage'").get();
+  expect(table ? s.db.query("select count(*) as n from session_usage").get() : { n: 0 }).toEqual({ n: 0 });
 });
 
 test("sessions are summed per model, read together and trimmed after 90 days", () => {
@@ -140,6 +154,6 @@ test("sessions are summed per model, read together and trimmed after 90 days", (
     { session: "b", provider: "codex", model: "gpt", ...tokens, requests: 1, firstAt: now + 2000, lastAt: now + 2000 },
   ]);
   now += 90 * 86_400_000 + 1500;
-  trimTelemetry(s);
+  trimSessionUsage(s);
   expect(sessionUsage(s, ["a", "b", "c"]).map((r) => r.session)).toEqual(["b"]);
 });

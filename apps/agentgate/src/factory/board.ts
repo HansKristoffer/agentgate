@@ -46,7 +46,13 @@ export function setup(f: FactoryRuntime) {
     call: async () => boardText(await boardView(f, { includeWebhookUrls: false }), { short: true }).join("\n"),
   });
   // Starts the mirror once the factory is turned on or T3 Code connected, and stops it when either goes.
-  f.loops.push({ name: "t3-mirror", everyMs: timing.pollMs, where: "every-node", run: async () => void mirrorOf(f) });
+  f.loops.push({
+    name: "t3-mirror",
+    everyMs: timing.pollMs,
+    where: "every-node",
+    whenOff: true,
+    run: async () => void mirrorOf(f),
+  });
 }
 
 /** The board as this machine shows it to the API and CLI: the factory machine's, when that is another machine. */

@@ -12,7 +12,6 @@ import {
 import { clamp, startTimer } from "hanzio";
 import type { Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
-import { trimSessionUsage } from "./sessions.ts";
 
 export class Telemetry {
   readonly request: ProxyRequest;
@@ -307,7 +306,6 @@ export function trimTelemetry(s: Store) {
         s.db.run("delete from proxy_requests where seq=?", [r.seq]);
       }
     }
-    trimSessionUsage(s);
   });
 }
 export type Tokens = Omit<ModelTokens, "provider" | "model">;

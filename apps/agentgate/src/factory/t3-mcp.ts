@@ -116,7 +116,7 @@ export function setup(f: FactoryRuntime) {
   const mcp = client(f);
   f.events.on("factory.off", () => mcp.signOut());
   // Every node: `factory off` emits factory.off only where it ran, and other machines learn of it by sync.
-  f.loops.push({ name: "t3-mcp", everyMs: 60_000, where: "every-node", run: () => mcp.tick() });
+  f.loops.push({ name: "t3-mcp", everyMs: 60_000, where: "every-node", whenOff: true, run: () => mcp.tick() });
   f.boardParts.push(async () => {
     const { mcp: state, expiresAt, error } = mcp.status();
     // Only the sign-in's fields; the board merges them with the stream state it owns.
