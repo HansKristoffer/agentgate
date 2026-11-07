@@ -5,7 +5,8 @@ import { app, makeCtx } from "../src/daemon.ts";
 import { loadFolder } from "../src/factory/config.ts";
 import { initTemplate } from "../src/factory/init.ts";
 import { runCommand } from "../src/factory/runtime.ts";
-import { insertSource, scoutFile, sourceYaml } from "../src/factory/source-add.ts";
+import { factorySourceAddInputSchema } from "@agentgate/protocol";
+import { insertSource, scoutFile, sourceYaml, withoutDefaults } from "../src/factory/source-add.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
@@ -79,6 +80,23 @@ test.each([
   const folder = load({ "factory.yaml": next });
   expect(folder.config.sources.at(-1)).toMatchObject({ id: "desk", type: "webhook", repo: REPO, intake: "hold" });
   expect(next).not.toContain("intake"); // only what was set
+});
+
+test("a source keeps only what differs from its defaults, nested values included", () => {
+  const parse = (value: unknown) => factorySourceAddInputSchema.shape.source.parse(value);
+  const all = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+  expect(
+    withoutDefaults(
+      { ...scout, schedule: { at: "09:00", days: all, timezone: "UTC" }, intake: "auto", enabled: true },
+      parse,
+    ),
+  ).toEqual({ id: "perf", type: "scout", repo: REPO, schedule: { at: "09:00" }, mcp: ["railway"] });
+  expect(
+    withoutDefaults(
+      { ...webhook, body: "{{body}}", intake: "hold", signature: { ...webhook.signature, prefix: "" } },
+      parse,
+    ),
+  ).toEqual({ ...webhook, signature: { header: "X-Desk-Signature", encoding: "hex", secret: "secret:DESK_SIGNING" } });
 });
 
 test("a scout is one file: its settings as frontmatter, only those set, and its prompt", () => {

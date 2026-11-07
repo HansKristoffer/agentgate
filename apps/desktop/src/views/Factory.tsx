@@ -11,7 +11,7 @@ import {
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
-import { ActionButton, Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu } from "../components/ui.tsx";
+import { ActionButton, Badge, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
@@ -545,20 +545,6 @@ export function Factory(props: ViewProps) {
         <Button isIconOnly size="sm" variant="ghost" aria-label="Refresh" onPress={() => void load()}>
           <RefreshCw size={14} />
         </Button>
-        <RowMenu
-          label="More factory actions"
-          items={[
-            {
-              label: "Reload the folder now",
-              onAction: () => void run(() => request(connection, "/factory/reload", "POST"), "Folder reloaded"),
-            },
-            {
-              label: "Start the learning thread now",
-              onAction: () => void run(() => request(connection, "/factory/learn", "POST"), "Learning thread started"),
-            },
-            { label: "Settings", onAction: () => setTab("settings") },
-          ]}
-        />
       </HeaderActions>
       {error && <p className="danger">{error}</p>}
       {paused && (

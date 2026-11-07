@@ -29,8 +29,8 @@ const DAY_LABELS: Record<Weekday, string> = {
 const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 /**
- * The body of POST /factory/sources from the dialog's form: only what the person set, so the folder gets no defaults
- * written into it. The daemon checks it against the same schema.
+ * The body of POST /factory/sources from the dialog's form. The daemon checks it against the same schema, and leaves
+ * out of the folder what equals a default.
  */
 export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): FactorySourceAddInput {
   const optional = (name: string) => field(form, name) || undefined;
@@ -46,14 +46,10 @@ export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): F
         schedule:
           when === "every"
             ? { every: field(form, "every") }
-            : {
-                at: field(form, "at"),
-                ...(days.length !== weekdays.length && { days }),
-                timezone: field(form, "timezone") || "UTC",
-              },
-        ...(intake === "hold" && { intake: "hold" }),
+            : { at: field(form, "at"), days, ...(optional("timezone") && { timezone: field(form, "timezone") }) },
+        intake: intake === "hold" ? "hold" : "auto",
         ...(mcp.length && { mcp }),
-        ...(!form.get("enabled") && { enabled: false }),
+        enabled: !!form.get("enabled"),
       },
       prompt: field(form, "prompt"),
     };
@@ -68,15 +64,15 @@ export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): F
       ...base,
       type: "webhook",
       title: field(form, "title"),
-      ...(body && body !== "{{body}}" && { body }),
+      ...(body && { body }),
       ...(dedupe && { dedupe }),
-      ...(intake === "auto" && { intake: "auto" }),
+      intake: intake === "auto" ? "auto" : "hold",
       ...(header &&
         secret && {
           signature: {
             header,
             encoding: field(form, "encoding") === "base64" ? "base64" : "hex",
-            ...(optional("prefix") && { prefix: field(form, "prefix") }),
+            prefix: field(form, "prefix"),
             secret: `secret:${secret}`,
           },
         }),

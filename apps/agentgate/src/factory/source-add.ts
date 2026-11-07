@@ -138,13 +138,38 @@ function prBody(input: FactorySourceAddInput, folder: string, secret: string | u
   return [...lines, "", "Opened by `agentgate factory source add`."].join("\n");
 }
 
+/** `raw` without the values its schema fills in anyway, so the folder gets only what was set: a key whose removal parses
+ * to the same source is dropped, nested ones included. */
+export function withoutDefaults(raw: { [key: string]: Json }, parse: (value: unknown) => unknown) {
+  const full = parse(raw);
+  const strip = (value: { [key: string]: Json }, rebuild: (next: { [key: string]: Json }) => unknown) => {
+    const kept: { [key: string]: Json } = { ...value };
+    for (const [key, v] of Object.entries(value)) {
+      const { [key]: _, ...without } = kept;
+      let same = false;
+      try {
+        same = Bun.deepEquals(parse(rebuild(without)), full);
+      } catch {
+        // Required: the source does not parse without it.
+      }
+      if (same) delete kept[key];
+      else if (v && typeof v === "object" && !Array.isArray(v))
+        kept[key] = strip(v, (next) => rebuild({ ...kept, [key]: next }));
+    }
+    return kept;
+  };
+  return strip(raw, (next) => next);
+}
+
 /** `agentgate factory source add` and `POST /api/factory/sources`. Refuses before writing anything when the factory is
  * off, the id is taken, the repository is not the factory's, or the branch exists. */
 export async function addSource(f: FactoryRuntime, input: unknown): Promise<FactorySourceAddResult> {
   const parsed = factorySourceAddInputSchema.parse(input);
-  // Written as given, so the folder does not fill up with defaults.
-  const raw = (input as { source: { [key: string]: Json } }).source;
   const { source } = parsed;
+  // What was set, so the folder does not fill up with defaults.
+  const raw = withoutDefaults((input as { source: { [key: string]: Json } }).source, (value) =>
+    factorySourceAddInputSchema.shape.source.parse(value),
+  );
   if (source.type === "scout" && !parsed.prompt) throw new Error(`The scout ${source.id} needs a prompt`);
   if (source.type !== "scout" && parsed.prompt) throw new Error("Only a scout has a prompt");
   const pointer = f.pointer();

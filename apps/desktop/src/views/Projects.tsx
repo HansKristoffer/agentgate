@@ -160,7 +160,8 @@ export function Projects(props: ViewProps) {
                     ),
                 },
                 { label: "Env files", onAction: () => setFiles(p.id) },
-                { label: "Start a factory", onAction: () => setFactoryRepo(p.id) },
+                // One factory at a time: while one is on, its view has its settings.
+                ...(data.settings.factory ? [] : [{ label: "Start a factory", onAction: () => setFactoryRepo(p.id) }]),
                 mirrorItem(p.id),
                 {
                   label: "Delete",
