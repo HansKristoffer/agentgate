@@ -260,16 +260,28 @@ function itemEntry(item: FactoryItem) {
   };
 }
 
-/** Finished items with their runs, then earlier learn runs, so the learner knows what it already proposed. */
+const at = (n: number) => String(n).padStart(15, "0");
+
+/** Finished items, in the order they finished, each with its runs; then earlier learn runs, so the learner knows what
+ * it already proposed. Each entry has a key that sorts in that order and stays put while the learner reads, so an item
+ * that finishes meanwhile is never read twice or pushes another out of a page. */
 function historyEntries(f: FactoryRuntime, repo: string | undefined, since: number) {
-  const entries: object[] = [];
-  for (const item of finishedSince(f, since)) {
+  const entries: { key: string; entry: object }[] = [];
+  const finished = finishedSince(f, since)
+    .map((item) => ({ item, prefix: `1:${at(item.finishedAt ?? 0)}:${at(item.createdAt)}:${item.id}` }))
+    .toSorted((a, b) => (a.prefix < b.prefix ? -1 : 1));
+  for (const { item, prefix } of finished) {
     if (repo && item.repo.toLowerCase() !== repo.toLowerCase()) continue;
-    entries.push(itemEntry(item));
-    for (const run of runs.forItem(f.s, item.id)) entries.push(runEntry(f, run));
+    entries.push({ key: `${prefix}:0000`, entry: itemEntry(item) });
+    runs
+      .forItem(f.s, item.id)
+      .forEach((run, i) =>
+        entries.push({ key: `${prefix}:${String(i + 1).padStart(4, "0")}`, entry: runEntry(f, run) }),
+      );
   }
   for (const run of learnRuns(f))
-    if (ACTIVE.includes(run.state) || (run.endedAt ?? 0) >= since) entries.push(runEntry(f, run));
+    if (ACTIVE.includes(run.state) || (run.endedAt ?? 0) >= since)
+      entries.push({ key: `2:${at(run.queuedAt)}:${run.id}`, entry: runEntry(f, run) });
   return entries;
 }
 
@@ -280,24 +292,26 @@ function parseSince(value: unknown) {
   return at;
 }
 
-/** One page of at most 20,000 characters as the JSON text the gateway returns (indented by 2). The cursor is the index
- * of the next entry; history only grows at the end, so a cursor stays valid while the learner reads. */
+/** One page of at most 20,000 characters as the JSON text the gateway returns (indented by 2). The cursor is the key of
+ * the next entry. */
 function history(f: FactoryRuntime, args: Record<string, unknown>) {
   if (args.repo !== undefined && typeof args.repo !== "string") throw new Error("repo is owner/repo");
-  const cursor = args.cursor === undefined ? 0 : Number(args.cursor);
-  if (!Number.isInteger(cursor) || cursor < 0) throw new Error("cursor is the next value of an earlier page");
-  const entries = historyEntries(f, args.repo, parseSince(args.since));
+  const cursor = args.cursor === undefined ? "" : args.cursor;
+  if (typeof cursor !== "string" || (cursor && !/^[12]:\d{15}:/.test(cursor)))
+    throw new Error("cursor is the next value of an earlier page");
+  const all = historyEntries(f, args.repo, parseSince(args.since));
+  const entries = all.filter((e) => e.key >= cursor);
   const page: object[] = [];
   const pageOf = (next: number) => ({
     entries: page,
-    total: entries.length,
-    ...(next < entries.length && { next: String(next) }),
+    total: all.length,
+    ...(next < entries.length && { next: entries[next]!.key }),
   });
   const fits = (next: number) => JSON.stringify(pageOf(next), null, 2).length <= PAGE_CHARS;
 
-  let next = cursor;
+  let next = 0;
   while (next < entries.length) {
-    page.push(entries[next]!);
+    page.push(entries[next]!.entry);
     if (fits(next + 1)) {
       next++;
       continue;
@@ -305,7 +319,7 @@ function history(f: FactoryRuntime, args: Record<string, unknown>) {
     page.pop();
     // An entry too big for a page of its own is cut to what names it.
     if (!page.length) {
-      const { type, id } = entries[next] as { type: string; id: string };
+      const { type, id } = entries[next]!.entry as { type: string; id: string };
       page.push({ type, id, cut: "too long for a page; read it with factory_item or in its thread" });
       next++;
     }

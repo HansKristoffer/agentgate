@@ -287,7 +287,20 @@ test("factory_history returns finished items with their runs, outcomes, scores a
   const n = await learnFactory();
   const long = "x".repeat(5000);
   const ids: string[] = [];
+  // Taken in before the others, and still open: left out of a page until it finishes.
+  const open = items.insert(n.s, {
+    id: newId("it"),
+    source: "manual",
+    externalId: "open",
+    key: "open-1",
+    repo: n.repo,
+    title: "Still open",
+    snapshot: {},
+    phase: "implement",
+    configCommit: n.commit,
+  });
   for (let i = 1; i <= 12; i++) {
+    n.advance(1000); // pages follow the order items finished in
     const item = n.finish(`gh-${i}`, `Item ${i} ${long}`);
     ids.push(item.id);
     for (const kind of ["triage", "implement"] as const) {
@@ -326,13 +339,6 @@ test("factory_history returns finished items with their runs, outcomes, scores a
     key: "other-1",
     repo: "acme/other",
   });
-  items.insert(n.s, {
-    ...items.get(n.s, ids[0]!)!,
-    id: newId("it"),
-    externalId: "open",
-    key: "open-1",
-    phase: "implement",
-  });
 
   const seen: { type: string; id: string }[] = [];
   let cursor: string | undefined;
@@ -344,6 +350,13 @@ test("factory_history returns finished items with their runs, outcomes, scores a
     seen.push(...page.entries);
     cursor = page.next;
     pages++;
+    // An item that finishes while the learner reads comes after the others, though it was taken in first, and
+    // nothing is read twice or skipped.
+    if (pages === 1) {
+      n.advance(1000);
+      items.update(n.s, open.id, { phase: "shipped" });
+      ids.push(open.id);
+    }
   } while (cursor);
   expect(pages).toBeGreaterThan(1);
   expect(seen.map((e) => e.id)).toEqual(ids);
