@@ -257,6 +257,7 @@ test("factory status and GET /api/factory show one board, with the board parts m
     source: "bugs",
     phase: "implement" as const,
     heldBy: "a",
+    actions: [],
     tokens: 0,
     inPhaseSince: 1,
     updatedAt: 1,

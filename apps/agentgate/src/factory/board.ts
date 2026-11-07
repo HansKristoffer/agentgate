@@ -329,10 +329,14 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   lines.push(capacity.join(", "));
   if (p) lines.push(...metricsText(b.metrics));
 
-  const waiting = b.items.flatMap((i) => (i.needsYou ? [{ ...i, needsYou: i.needsYou }] : []));
+  const waiting = b.items.filter((i) => i.needsYou || i.phase === "ready");
   if (waiting.length) lines.push("", "Needs you:");
-  for (const { key, title, needsYou: n } of waiting)
-    lines.push(`  ${key} ${title}: ${n.reason}${when(n.question, `: ${n.question}`)}${when(n.link, ` ${n.link}`)}`);
+  for (const { key, title, needsYou: n, pr } of waiting)
+    lines.push(
+      n
+        ? `  ${key} ${title}: ${n.reason}${when(n.question, `: ${n.question}`)}${when(n.link, ` ${n.link}`)}`
+        : `  ${key} ${title}: ready for your review${when(pr, ` ${pr?.url}`)}`,
+    );
 
   if (b.items.length) lines.push("", "Items:");
   for (const phase of itemPhases)

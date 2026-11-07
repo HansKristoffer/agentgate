@@ -162,8 +162,14 @@ function render(b) {
 
 	var cards = [];
 	b.items.forEach(function (i) {
-		if (!i.needsYou) return;
+		if (!i.needsYou && i.phase !== "ready") return;
 		var c = el("div", "card");
+		if (!i.needsYou) {
+			c.append(el("div", "reason", "ready for your review"), el("div", "title", i.key + " " + i.title));
+			if (i.pr) c.append(link("Open", i.pr.url));
+			cards.push(c);
+			return;
+		}
 		c.append(el("div", "reason", i.needsYou.reason), el("div", "title", i.key + " " + i.title));
 		if (i.needsYou.question) c.append(el("p", "", i.needsYou.question));
 		if (i.needsYou.recommendation) c.append(el("p", "", "Recommended: " + i.needsYou.recommendation));

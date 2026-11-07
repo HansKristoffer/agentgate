@@ -490,6 +490,10 @@ export const boardThreadSchema = z.object({
 });
 export type BoardThread = z.infer<typeof boardThreadSchema>;
 
+/** What a person can do to an item: `agentgate factory <action> <item>` and POST /api/factory/items/:id/:action. */
+export const itemActions = ["approve", "reject", "retry", "drop"] as const;
+export type ItemAction = (typeof itemActions)[number];
+
 export const boardItemSchema = z.object({
   id: z.string(),
   key: z.string(),
@@ -510,6 +514,8 @@ export const boardItemSchema = z.object({
     })
     .optional(),
   needsYou: needsYouSchema.optional(),
+  /** The actions the holding machine takes for it now; it refuses the others. */
+  actions: z.array(z.enum(itemActions)),
   pr: z
     .object({
       url: z.string(),

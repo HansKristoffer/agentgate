@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, RefreshCw, SquareTerminal } from "lucide-react";
-import { itemPhases, type BoardItem, type FactoryBoard, type ItemPhase, type NeedsYou } from "@agentgate/protocol";
+import {
+  itemPhases,
+  type BoardItem,
+  type FactoryBoard,
+  type ItemAction,
+  type ItemPhase,
+  type NeedsYou,
+} from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { ActionButton, Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu } from "../components/ui.tsx";
@@ -17,7 +24,6 @@ import { Sources } from "./factory/Sources.tsx";
  * `/api/factory`, which reaches the factory machine from whichever machine the app is connected to.
  */
 
-export type ItemAction = "approve" | "reject" | "retry" | "drop";
 /** What the view does to an item, for the queue, the cards and the drawer. */
 export type Act = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, reason?: string) => Promise<void>;
 /** Asks for a reason, then acts. */
@@ -61,15 +67,23 @@ export function OpenInT3({ link, label = "Open in T3 Code" }: { link?: string; l
   );
 }
 
-/** The buttons an item that waits for you gets, by why it waits. */
+/** The buttons an item that waits for you gets: labelled by why it waits, and only for the actions the daemon says it
+ * takes now. */
 export function NeedsYouActions({ item, act, ask }: { item: BoardItem; act: Act; ask: AskReason }) {
   const reason = item.needsYou?.reason;
   const key = (a: string) => `factory:${a}:${item.id}`;
-  const button = (action: ItemAction, label: string, run = () => act(item, action)) => (
-    <ActionButton key={action + label} size="sm" variant="tertiary" pendingKey={key(action)} onPress={() => void run()}>
-      {label}
-    </ActionButton>
-  );
+  const button = (action: ItemAction, label: string, run = () => act(item, action)) =>
+    item.actions.includes(action) && (
+      <ActionButton
+        key={action + label}
+        size="sm"
+        variant="tertiary"
+        pendingKey={key(action)}
+        onPress={() => void run()}
+      >
+        {label}
+      </ActionButton>
+    );
   const buttons: ReactNode[] = [];
   if (reason === "held") buttons.push(button("approve", "Approve"), button("reject", "Reject"));
   if (reason === "approval")
@@ -85,17 +99,8 @@ export function NeedsYouActions({ item, act, ask }: { item: BoardItem; act: Act;
     );
   if (reason === "blocked")
     buttons.push(button("approve", "Unblock…", async () => ask(item, "approve", `What changed for ${item.key}`)));
-  if (
-    reason === "budget" ||
-    reason === "failed" ||
-    reason === "stalled" ||
-    reason === "stuck" ||
-    reason === "handed-off"
-  )
-    buttons.push(button("retry", "Retry"));
-  if (reason === "orphaned") buttons.push(button("retry", "Take over here"));
-  if (reason && reason !== "orphaned")
-    buttons.push(button("drop", "Drop…", async () => ask(item, "drop", `Drop ${item.key}`)));
+  buttons.push(button("retry", reason === "orphaned" ? "Take over here" : "Retry"));
+  if (reason) buttons.push(button("drop", "Drop…", async () => ask(item, "drop", `Drop ${item.key}`)));
   return <>{buttons}</>;
 }
 
@@ -110,13 +115,15 @@ function NeedsYouQueue({
   ask: AskReason;
   open: (id: string) => void;
 }) {
-  const waiting = board.items.filter((i) => i.needsYou);
+  // The daemon's definition: a question, or a PR ready for your review. Intake pauses on the same count.
+  const waiting = board.items.filter((i) => i.needsYou || i.phase === "ready");
+  const { waitingForYou, waitingForYouLimit } = board.capacity;
   return (
     <Panel
       title="Needs you"
       detail={
         waiting.length
-          ? `${waiting.length} item${waiting.length === 1 ? "" : "s"} wait for you; intake pauses at ${board.capacity.waitingForYouLimit}.`
+          ? `${waitingForYou} wait for you; intake pauses at ${waitingForYouLimit}.`
           : "Nothing waits for you."
       }
     >
@@ -125,16 +132,22 @@ function NeedsYouQueue({
           <div className="item factory-waiting" key={item.id}>
             <div className="grow">
               <div className="row">
-                <Badge>{REASONS[item.needsYou!.reason]}</Badge>
+                <Badge>{item.needsYou ? REASONS[item.needsYou.reason] : "Ready for your review"}</Badge>
                 <button type="button" className="factory-link" onClick={() => open(item.id)}>
                   <strong>{item.key}</strong> {item.title}
                 </button>
                 <small className="muted">{PHASE_TITLES[item.phase]}</small>
               </div>
-              {item.needsYou!.question && <p className="factory-question">{item.needsYou!.question}</p>}
-              {item.needsYou!.recommendation && <p className="muted">Recommended: {item.needsYou!.recommendation}</p>}
+              {item.needsYou?.question && <p className="factory-question">{item.needsYou.question}</p>}
+              {item.needsYou?.recommendation && <p className="muted">Recommended: {item.needsYou.recommendation}</p>}
               <div className="row factory-actions">
                 <NeedsYouActions item={item} act={act} ask={ask} />
+                {!item.needsYou && item.pr && (
+                  <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
+                    <GitPullRequest size={14} />
+                    Pull request
+                  </Button>
+                )}
                 <OpenInT3 link={threadOf(item)} />
               </div>
             </div>

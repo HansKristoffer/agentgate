@@ -130,6 +130,8 @@ test("approve and reject answer the waiting card through t3_pending_request, and
   n.mcp.setThread(threadId, { needsYou: true });
   await n.until(() => runs.get(n.s, n.run.id)!.state === "waiting", "the spec run to wait");
   expect(await n.needsYou(n.item)).toMatchObject({ reason: "approval", link: n.run.threadLink });
+  const board = await buildBoard(n.f, { includeWebhookUrls: false });
+  expect(board.items.find((i) => i.id === n.item.id)?.actions).toEqual(["approve", "reject", "drop"]);
 
   expect(await n.command("approve", n.key(1))).toEqual({
     code: 1,

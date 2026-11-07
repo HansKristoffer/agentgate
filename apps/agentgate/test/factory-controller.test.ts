@@ -110,6 +110,9 @@ test("a fourth run waits for one of three working threads, and threads waiting f
   n.mcp.setThread(a!.threadId!, { needsYou: true });
   await n.until(() => runs.get(n.s, a!.id)?.state === "waiting", "the first run to wait");
   expect(items.get(n.s, a!.item!)!.needsYou).toMatchObject({ reason: "approval", link: a!.threadLink });
+  // A triage thread's request is answered in T3 Code: the board offers no approve the daemon would refuse.
+  const row = (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === a!.item);
+  expect(row?.actions).toEqual(["drop"]);
   await n.dispatch();
   expect(runs.get(n.s, d!.id)!.state).toBe("running");
 

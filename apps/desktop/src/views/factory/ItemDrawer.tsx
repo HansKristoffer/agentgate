@@ -49,7 +49,6 @@ export function ItemDrawer({
   // The board's row shows at once; the detail fills in.
   const item = detail?.item ?? board.items.find((i) => i.id === id);
   if (!item) return null;
-  const open = item.phase !== "shipped" && item.phase !== "closed";
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
@@ -78,7 +77,7 @@ export function ItemDrawer({
           </div>
         </Panel>
       )}
-      {open && !item.needsYou && (
+      {item.actions.includes("drop") && !item.needsYou && (
         <div className="row factory-actions">
           <Button size="sm" variant="tertiary" onPress={() => ask(item, "drop", `Drop ${item.key}`)}>
             Drop…

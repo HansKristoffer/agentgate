@@ -6,12 +6,14 @@ import {
   factoryItemDetailSchema,
   factoryItemInputSchema,
   factoryReportSchema,
+  itemActions,
   type BoardItem,
   type FactoryBoard,
   type FactoryItemDetail,
   type FactoryModel,
   type FactoryReport,
   type FactorySource,
+  type ItemAction,
   type ItemPhase,
   type MarkerPayload,
   type Moment,
@@ -1069,6 +1071,7 @@ const elsewhereItem = (source: FactorySource, incoming: IncomingItem, marker: Ma
   source: source.id,
   phase: marker.stage ?? "triage",
   heldBy: marker.node,
+  actions: [],
   tokens: 0,
   inPhaseSince: 0,
   updatedAt: 0,
@@ -1219,10 +1222,30 @@ export function findItem(f: FactoryRuntime, ref: string) {
   return matches[0];
 }
 
-export const ACTIONS = ["approve", "reject", "retry", "drop"] as const;
-type Action = (typeof ACTIONS)[number];
+export const ACTIONS = itemActions;
+type Action = ItemAction;
 /** What `retry` takes back: an item that failed, went over its budget, stalled on its PR or got stuck. */
 const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck", "handed-off"];
+
+/** Whether approve and reject answer something: an item held for approval, a thread's pending request its run kind
+ * can answer, or a stage that reported a question or what blocks it. */
+function answerable(f: FactoryRuntime, item: FactoryItem, last: FactoryRun | undefined) {
+  if (item.phase === "held" || item.needsYou?.reason === "held") return true;
+  if (last?.state === "waiting") return !!f.runKinds.get(last.kind)?.answer;
+  const outcome = last?.report?.outcome;
+  return !!last?.threadId && last.state === "reported" && (outcome === "blocked" || outcome === "needs-decision");
+}
+
+/** The actions `act` takes for the item now, so the app offers no button the daemon refuses. */
+function actionsOf(f: FactoryRuntime, item: FactoryItem, last: FactoryRun | undefined): ItemAction[] {
+  if (item.phase === "shipped") return [];
+  if (item.phase === "closed") return ["retry"];
+  return [
+    ...(answerable(f, item, last) ? (["approve", "reject"] as const) : []),
+    ...(item.needsYou && RETRYABLE.includes(item.needsYou.reason) ? (["retry"] as const) : []),
+    "drop",
+  ];
+}
 
 /** approve, reject, retry or drop an item, as one step of it. Returns what happened, for the CLI and API. */
 async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason?: string): Promise<string> {
@@ -1289,16 +1312,15 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     return `Approved ${item.key}; ${stage} starts`;
   }
   if (last?.state === "waiting") {
-    const answer = f.runKinds.get(last.kind)?.answer;
-    if (!answer)
+    if (!answerable(f, item, last))
       throw new Error(`Answer ${item.key}'s question in T3 Code${last.threadLink ? `: ${last.threadLink}` : ""}`);
-    await answer(last, { approve, ...(reason && { reason }) });
+    await f.runKinds.get(last.kind)!.answer!(last, { approve, ...(reason && { reason }) });
     touched(f, item, action, `${action === "approve" ? "approved" : "rejected"} what the ${last.kind} thread asked`);
     return `${approve ? "Approved" : "Rejected"} for ${item.key}`;
   }
   // A stage that reported a question or what blocks it hears the answer in its own thread, and goes on.
   const outcome = last?.report?.outcome;
-  if (last?.threadId && last.state === "reported" && (outcome === "blocked" || outcome === "needs-decision")) {
+  if (last?.threadId && answerable(f, item, last)) {
     const answer = approve
       ? `The maintainer answered: ${reason ?? (outcome === "needs-decision" ? "go with your recommendation" : "it is resolved")}.`
       : `The maintainer rejected your recommendation${because}.`;
@@ -1457,6 +1479,7 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
       },
     }),
     ...(item.needsYou && { needsYou: item.needsYou }),
+    actions: actionsOf(f, item, run),
     ...(item.prUrl && {
       pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }), ...reviewState(item, itemRuns) },
     }),
@@ -1481,6 +1504,7 @@ function elsewhereRows(f: FactoryRuntime): BoardItem[] {
         ? row
         : {
             ...row,
+            actions: ["retry"],
             needsYou: {
               reason: "orphaned",
               question: `${row.heldBy} is unreachable; take it over here with agentgate factory retry ${row.key}`,
