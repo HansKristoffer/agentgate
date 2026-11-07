@@ -558,6 +558,16 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
   n.mcp.setThread(subagent.id, { status: "running" });
   await n.until(() => n.mirror.thread(subagent.id)?.parentThreadId === parent.id, "the subagent in the mirror");
   expect(scope(subagent.id)).toEqual({ servers: ["docs"] });
+  // The brief asks for review passes as subagents: one may read its run's item, and only the run's thread reports.
+  const builtin = (await n.ctx.gateway.builtin!()).client;
+  const fromSubagent = (name: string, args: Record<string, unknown>) =>
+    builtin.callTool({ name, arguments: args, _meta: { "dev.agentgate/t3Thread": subagent.id } });
+  expect((await fromSubagent("factory_item", { run: run!.id })).isError).toBeFalsy();
+  const report = await fromSubagent("factory_report", { run: run!.id, outcome: "nothing-to-do", summary: "x" });
+  expect(report).toMatchObject({
+    isError: true,
+    content: [{ text: expect.stringContaining("another T3 Code thread") }],
+  });
 
   runs.insert(n.s, {
     id: "run_judge",

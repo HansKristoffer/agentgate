@@ -1,6 +1,6 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
-import { T3Error, t3Client, t3State } from "../handoff/t3.ts";
+import { isWorkingStatus, T3Error, t3Client, t3State } from "../handoff/t3.ts";
 import { logError, type FactoryRuntime } from "./runtime.ts";
 import { needsSignIn } from "./t3-mcp.ts";
 
@@ -25,11 +25,7 @@ export interface MirrorThread {
   worktreePath?: string;
   updatedAt: number;
 }
-/** T3 counts `waiting` as active too: the turn waits on background work, such as a command or a subagent. A thread
- * that waits on a person has a pending request instead (`needsYou`). */
-const WORKING_STATUSES: readonly string[] = ["preparing", "queued", "starting", "running", "waiting"];
-/** A T3 run status whose turn is still going. */
-export const isWorkingStatus = (status: string) => WORKING_STATUSES.includes(status);
+export { isWorkingStatus };
 export interface T3Mirror {
   threads(): MirrorThread[];
   thread(id: string): MirrorThread | undefined;

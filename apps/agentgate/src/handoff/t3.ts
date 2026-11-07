@@ -121,6 +121,10 @@ export type Call = <T = unknown>(method: string, payload: unknown) => Promise<T>
 
 /** Run states that still hold the thread. */
 export const ACTIVE = new Set(["preparing", "starting", "running", "waiting"]);
+/** A thread whose turn is going or about to: the active states, and a turn queued behind one. T3 counts `waiting` as
+ * active too, as the turn waits on background work such as a command or a subagent; a thread that waits on a person
+ * has a pending request instead. */
+export const isWorkingStatus = (status: string) => ACTIVE.has(status) || status === "queued";
 export const TERMINAL = new Set(["completed", "interrupted", "failed", "cancelled", "rolled_back"]);
 
 export class T3 {

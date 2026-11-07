@@ -14,7 +14,7 @@ import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { cancelHandoff, startHandoff, type SourceState } from "./source.ts";
 import type { z } from "zod";
 import {
-  ACTIVE,
+  isWorkingStatus,
   T3Error,
   claudeHomes,
   connectWith,
@@ -49,7 +49,7 @@ async function localThreads(h: Handoffs): Promise<ViewThread[]> {
   });
   const projects = new Map(shell.projects.map((p) => [p.id, projectLabel(p, shell.projects)]));
   return sidebarOrder(listed).map((t) => {
-    const running = ACTIVE.has(t.status) || t.status === "queued";
+    const running = isWorkingStatus(t.status);
     return {
       id: t.id,
       title: t.title,

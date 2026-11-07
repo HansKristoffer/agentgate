@@ -997,14 +997,19 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
 const CLOSING_OUTCOMES: readonly Outcome[] = ["not-a-bug", "duplicate", "already-fixed", "nothing-to-do"];
 
 /** The run, when the caller is its own thread on the machine that holds it (D35: routing, not security). */
-export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller) {
+/** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
+ * thread under it, which may read the run's item but never report for it. Routing, not security (D35). */
+export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller, options: { subagents?: boolean } = {}) {
   const run = runs.get(f.s, id);
   if (!run) throw new ReportError(`${f.s.nodeId} has no factory run ${id}`);
   if (!caller.thread)
     throw new ReportError(
       `This call names no T3 Code thread, so it cannot be matched to run ${id}; make it from the run's thread`,
     );
-  if (caller.thread !== run.threadId || caller.node !== run.node)
+  const thread = mirrorOf(f).thread(caller.thread);
+  const own = caller.thread === run.threadId;
+  const under = !!options.subagents && !!thread && rootOf(f, thread).id === run.threadId;
+  if ((!own && !under) || caller.node !== run.node)
     throw new ReportError(`Run ${id} belongs to another T3 Code thread; report only on your own run`);
   return run;
 }
@@ -1713,7 +1718,7 @@ export function setup(f: FactoryRuntime): void {
     inputSchema: { type: "object", properties: { run: { type: "string" } }, required: ["run"] },
     call: async (args, caller) => {
       if (typeof args.run !== "string") throw new ReportError("run is required");
-      return itemView(f, ownRun(f, args.run, caller));
+      return itemView(f, ownRun(f, args.run, caller, { subagents: true }));
     },
   });
   f.tools.set("factory_add", {
