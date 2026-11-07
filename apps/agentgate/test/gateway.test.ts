@@ -330,6 +330,10 @@ test("a session whose shim names a scoped thread lists and calls only the server
     // The maintainer's session in the same repository: every server, and no tool made for a run's thread.
     const own = await g.session();
     expect(await names(own)).toEqual(["agentgate__factory_status", "other__echo", "up__echo"]);
+    // A listing works the scope out for its sources and its tools, not once per tool.
+    asked.length = 0;
+    await names(own);
+    expect(asked).toEqual([undefined, undefined]);
     expect((await own.callTool({ name: "agentgate__factory_report", arguments: {} })).isError).toBe(true);
     // The per-session servers the shim runs itself are narrowed the same way.
     g.s.put("mcp", "local", newInstance({ id: "local", command: "local-mcp", mode: "perSession" }));

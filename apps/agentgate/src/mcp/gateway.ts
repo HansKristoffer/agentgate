@@ -314,8 +314,9 @@ export function mergedServer(
     onError?: (alias: string, e: unknown) => void;
     /** Finds a call's source without listing every source again. */
     resolveSource?: (alias: string) => Promise<Source | undefined>;
-    /** Whether the session may list and call a source's tool now; asked again on every call. */
-    allow?: (alias: string, tool: string) => boolean;
+    /** Whether the session may list and call a source's tool now: asked once per listing and once per call, and
+     * answers for every tool of that listing or call. */
+    allow?: () => (alias: string, tool: string) => boolean;
     activity?: (change: number) => void;
     signal?: AbortSignal;
     onCall?: (call: CallRecord) => void;
@@ -339,6 +340,7 @@ export function mergedServer(
   }
 
   async function listSources(options: { fresh?: boolean }): Promise<Tool[]> {
+    const allowed = allow?.();
     const next = new Map<string, { alias: string; tool: string }>();
     const all: Tool[] = [];
     const pages = await Promise.all(
@@ -357,7 +359,7 @@ export function mergedServer(
       // No output schema: results pass through unchecked, so a client must not check them against one either.
       for (const { outputSchema: _, ...t } of tools) {
         if (offered && !offered.has(t.name)) continue;
-        if (allow && !allow(src.alias, t.name)) continue;
+        if (allowed && !allowed(src.alias, t.name)) continue;
         const name = toolName(src.alias, t.name);
         if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
         next.set(name, { alias: src.alias, tool: t.name });
@@ -374,7 +376,7 @@ export function mergedServer(
     // A kept list can miss a tool a server added without saying so; ask again once before giving up.
     if (!routes.has(req.params.name)) await list({ fresh: true });
     const route = routes.get(req.params.name);
-    if (!route || (allow && !allow(route.alias, route.tool)))
+    if (!route || (allow && !allow()(route.alias, route.tool)))
       return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
     activity?.(1);
     const started = performance.now();
@@ -646,7 +648,10 @@ export class Gateway {
       onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
       resolveSource: async (alias) =>
         alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias),
-      allow: (alias, tool) => inScope(scope(), alias, tool),
+      allow: () => {
+        const now = scope();
+        return (alias, tool) => inScope(now, alias, tool);
+      },
       activity: (delta) => {
         usage.calls += delta;
         usage.lastUsed = this.s.now();

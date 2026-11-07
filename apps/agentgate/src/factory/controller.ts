@@ -273,7 +273,7 @@ export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, needsYo
     ...(before.phase !== to && { phaseAt: f.s.now() }),
     ...(needsYou !== undefined && { needsYou: needsYou ?? undefined }),
   });
-  if (before.phase !== to)
+  if (before.phase !== to) {
     f.events.emit({
       kind: "item.phase",
       item,
@@ -281,6 +281,9 @@ export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, needsYo
       to,
       text: `${before.key} moved from ${before.phase} to ${to}`,
     });
+    // A finished item's implement thread, kept while its PR is open, loses its stage's servers (`threadScope`).
+    if (!isOpenPhase(to)) f.ctx.gateway.toolsChanged();
+  }
   return after;
 }
 
@@ -321,6 +324,8 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
     state,
     text: `${run.kind} run ${run.id} ended: ${patch.error ?? state}`,
   });
+  // The run's thread gets its project's servers back (`threadScope`).
+  f.ctx.gateway.toolsChanged();
   sampleJudges(f, ended);
   void recordRun(f, ended).catch((e) =>
     f.events.emit({
@@ -618,8 +623,6 @@ async function dispatch(f: FactoryRuntime) {
   const { s } = f;
   if (!f.pointer()) return;
   watch(f);
-  // Runs that ended and items that finished since the last pass give their threads' MCP sessions back their tools.
-  f.ctx.gateway.toolsChanged();
   detachHandedOff(f);
   if (isPaused(f)) return;
   const m = memory(f);
@@ -1325,6 +1328,7 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
       ? `The maintainer answered: ${reason ?? (outcome === "needs-decision" ? "go with your recommendation" : "it is resolved")}.`
       : `The maintainer rejected your recommendation${because}.`;
     const reopened = runs.update(s, last.id, { state: "running", endedAt: undefined });
+    f.ctx.gateway.toolsChanged();
     try {
       await sendToThread(
         f,

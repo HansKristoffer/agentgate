@@ -7,6 +7,7 @@ import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { FACTORY_PAGE } from "./page.ts";
 import { logError, type FactoryRuntime } from "./runtime.ts";
+import { needsSignIn } from "./t3-mcp.ts";
 
 /**
  * The board: every machine's T3 threads and what the factory's features add through `f.boardParts`. One builder serves
@@ -45,7 +46,7 @@ export function setup(f: FactoryRuntime) {
     local: true,
     call: async () => boardText(await boardView(f, { includeWebhookUrls: false }), { short: true }).join("\n"),
   });
-  // Starts the mirror once the factory is turned on or T3 Code connected, and stops it when either goes.
+  // Starts the mirror once this machine drives factory work and T3 Code is connected, and stops it when either goes.
   f.loops.push({
     name: "t3-mirror",
     everyMs: timing.pollMs,
@@ -154,7 +155,7 @@ function pointerRow(f: FactoryRuntime): FactoryBoard["factory"] {
   };
 }
 
-/** This machine first, live from the mirror while the factory is on, then the others. */
+/** This machine first, live from the mirror while it drives factory work, then the others. */
 async function machines(f: FactoryRuntime): Promise<FactoryBoard["machines"]> {
   const [here, others] = await Promise.all([localThreads(f), peerMachines(f)]);
   // A factory run's thread names its item.
@@ -171,7 +172,7 @@ async function machines(f: FactoryRuntime): Promise<FactoryBoard["machines"]> {
 }
 
 async function localThreads(f: FactoryRuntime): Promise<BoardThread[]> {
-  if (!f.pointer()) return (await localView(f.ctx.handoffs)).threads.map(viewThread);
+  if (!needsSignIn(f)) return (await localView(f.ctx.handoffs)).threads.map(viewThread);
   const mirror = mirrorOf(f);
   // What T3's sidebar lists outside Settled and Archived: top-level threads.
   return mirror

@@ -82,9 +82,9 @@ function sessionOf(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 32);
 }
 
-/** A machine signs in while it runs the factory, and after the factory moved away while it still holds items or runs:
- * it drives those to the end. Off is off everywhere. */
-function needsSignIn(f: FactoryRuntime) {
+/** A machine signs in, and mirrors T3's threads, while it runs the factory, and after the factory moved away while it
+ * still holds items or runs: it drives those to the end. Off is off everywhere. */
+export function needsSignIn(f: FactoryRuntime) {
   if (!f.pointer()) return false;
   if (f.isFactoryNode()) return true;
   return items.list(f.s, { open: true }).length > 0 || runs.list(f.s, { states: ACTIVE }).length > 0;

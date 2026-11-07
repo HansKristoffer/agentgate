@@ -2,6 +2,7 @@ import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 import { T3Error, t3Client, t3State } from "../handoff/t3.ts";
 import { logError, type FactoryRuntime } from "./runtime.ts";
+import { needsSignIn } from "./t3-mcp.ts";
 
 /**
  * A live copy of this machine's T3 Code threads, from T3's `orchestration.subscribeShell` stream. While the stream is
@@ -132,10 +133,10 @@ class Mirror implements T3Mirror {
     return () => void this.listeners.delete(listener);
   }
 
-  /** Starts or stops the stream to match the factory setting and the T3 connection. */
+  /** Starts or stops the stream to match the T3 connection and whether this machine drives factory work. */
   reconcile() {
     const abort = this.f.ctx.abort.signal;
-    const want = !abort.aborted && !!this.f.pointer() && t3State(this.f.s).connected;
+    const want = !abort.aborted && needsSignIn(this.f) && t3State(this.f.s).connected;
     if (want && !this.running) {
       this.running = new AbortController();
       void this.run(AbortSignal.any([this.running.signal, abort]));

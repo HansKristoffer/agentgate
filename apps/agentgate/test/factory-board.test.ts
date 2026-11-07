@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { factoryBoardSchema, type FactoryBoard } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { buildBoard } from "../src/factory/board.ts";
+import { items } from "../src/factory/db.ts";
 import { mirrorOf, timing } from "../src/factory/mirror.ts";
 import { FACTORY_PAGE } from "../src/factory/page.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
@@ -143,6 +144,30 @@ test("the mirror follows T3's stream, marks a thread with a pending request, and
   fake.shell.push({ kind: "synchronized" });
   await until(() => mirror.status().stream === "live", "the stream again");
   expect(mirror.status()).toEqual({ stream: "live" });
+});
+
+test("a machine that neither runs the factory nor holds its work opens no stream, and starts one once it holds an item", async () => {
+  timing.pollMs = 50;
+  const { s, f } = fixture();
+  await withT3(s);
+  s.put("node", "b", { id: "b", protocol: 8 });
+  useFactory(s, "b");
+  const mirror = mirrorOf(f);
+  await Bun.sleep(100);
+  expect(mirror.status().stream).toBe("down");
+
+  items.insert(s, {
+    id: "it_1",
+    source: "bugs",
+    externalId: "1",
+    key: "gh-1",
+    repo: "acme/api",
+    title: "Crash",
+    snapshot: {},
+    phase: "implement",
+    configCommit: "c0ffee",
+  });
+  await until(() => mirrorOf(f).status().stream === "live", "the stream");
 });
 
 test("while the stream is down the mirror polls T3's shell on the interval, and the board says polling", async () => {
