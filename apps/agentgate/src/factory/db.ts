@@ -55,6 +55,8 @@ export const runDataSchema = z.discriminatedUnion("kind", [
     /** The problems the factory last nudged the thread about (`problemsOf` keys), and when. */
     nudged: z.string().optional(),
     nudgedAt: z.number().optional(),
+    /** GitHub's time of the newest comment or review a nudge quoted: newer trusted ones are what the thread has not seen. */
+    quotedUntil: z.string().optional(),
     /** What the thread did with each review conversation, by id, and whether the factory has replied on GitHub. */
     conversations: z
       .record(

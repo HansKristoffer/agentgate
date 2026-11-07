@@ -450,7 +450,7 @@ On the PR, the factory wakes the implement thread itself when the thread sits id
 
 - a failing check or a conflict at the PR's head;
 - an open review conversation, a comment on a line, started or answered by the repository's owner, members or collaborators, or by any bot;
-- reviews from those people and bots, and PR comments from those people, since the thread's last push. A bot's plain PR comment, such as a deploy preview, asks for nothing.
+- reviews from those people and bots, and PR comments from those people, that the thread has not been shown yet. A bot's plain PR comment, such as a deploy preview, asks for nothing.
 
 After the thread pushes a fix, it tells the factory which conversations it fixed and which it declined, and why. The factory replies "Fixed in `<commit>`" and resolves each fixed conversation. A declined one gets the thread's reason as a reply and stays open for you; it comes back to the thread only when someone answers it.
 

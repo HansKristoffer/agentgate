@@ -215,7 +215,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
   await n.pollPrs();
   expect(n.sent(thread)).toHaveLength(2);
   expect(n.sent(thread)[1]).toContain(
-    "its checks fail; it conflicts with main; 1 comment from the repository's people or bots came after your last push",
+    "its checks fail; it conflicts with main; 1 comment from the repository's people or bots that you have not seen",
   );
   expect(n.sent(thread)[1]).toContain("Rename this.");
   expect(n.sent(thread)[1]).not.toContain("delete the database");
@@ -361,7 +361,7 @@ test("a bot's review asking for changes wakes the thread, but neither a bot's pl
   pr.reviews.push({ body: "", authorAssociation: "NONE", submittedAt: at(), state: "CHANGES_REQUESTED", bot: true });
   await n.pollPrs();
   expect(n.sent(thread)).toHaveLength(1);
-  expect(n.sent(thread)[0]).toContain("1 comment from the repository's people or bots came after your last push");
+  expect(n.sent(thread)[0]).toContain("1 comment from the repository's people or bots that you have not seen");
   expect(n.sent(thread)[0]).not.toContain("Looks risky.");
 });
 
@@ -602,4 +602,28 @@ test("a comment claimed just before a restart is posted once by the next daemon,
     expect.objectContaining({ moment: "closed", status: "uncertain" }),
   );
   expect(later.github.posted(1)).not.toContain("The factory stopped working on this.");
+});
+
+test("a collaborator's comment made after a push but before the follower's next pass reaches the thread, once", async () => {
+  const n = await prFactory(cleanup);
+  n.f.runKinds.delete("review");
+  const { run, pr } = await n.opened(1);
+  await n.thread(run.threadId!, "idle");
+  // The thread pushes; a collaborator comments a minute later; the follower's next pass comes a minute after that.
+  pr.headRefOid = "b".repeat(40);
+  n.advance(MINUTE);
+  pr.comments.push({
+    body: "This still crashes on an empty list.",
+    author: { login: "colleague" },
+    authorAssociation: "COLLABORATOR",
+    createdAt: new Date(n.s.now()).toISOString(),
+  } as never);
+  n.advance(MINUTE);
+  await n.pollPrs();
+  expect(n.sent(run.threadId!).filter((m) => m.includes("empty list"))).toHaveLength(1);
+  // Shown once: later passes do not quote it again.
+  await n.thread(run.threadId!, "idle");
+  n.advance(30 * MINUTE);
+  await n.pollPrs();
+  expect(n.sent(run.threadId!).filter((m) => m.includes("empty list"))).toHaveLength(1);
 });
