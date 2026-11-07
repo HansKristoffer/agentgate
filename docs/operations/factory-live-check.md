@@ -38,6 +38,8 @@ results in the PR that ships the change: each step, what you saw, and anything t
 3. **A restart mid-launch.** Add an item with `agentgate factory add`, and restart the daemon
    (`agentgate service stop`, then `start`) while the board shows its run `starting`.
    - After the restart, T3 Code shows exactly one thread for the run, and the run is `running`.
+   - Then stop that thread in T3 Code mid-turn. The item waits as `stopped`, the thread gets no reminder, and a T3 Code
+     restart in the middle of another run's turn continues that turn instead of stopping its item.
 4. **A PR merged early.** With an item in `pr` or `review`, merge its PR yourself.
    - The item ends `shipped`, not `closed`, with one shipped comment, and the events say it was merged before the
      factory called it ready. A queued review run is cancelled.

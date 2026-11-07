@@ -673,6 +673,31 @@ const handOff = (n: Node, thread: string) =>
     state: { warnings: [], timings: [] } as unknown as SourceState,
   });
 
+test("a stage thread a person stops in T3 Code is left alone: its run ends, the item waits, and retry starts the stage again", async () => {
+  const n = await factoryNode(cleanup);
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const thread = run!.threadId!;
+  n.mcp.setThread(thread, { status: "running" });
+  await n.until(() => n.mirror.thread(thread)?.status === "running", "the turn to run");
+
+  // A person pressed stop: a reminder would start the turn they stopped.
+  n.mcp.setThread(thread, { status: "interrupted" });
+  await n.until(() => runs.get(n.s, run!.id)!.state === "cancelled", "the run to end");
+  await idle(n.f);
+  expect(runs.get(n.s, run!.id)!.error).toBe("stopped in T3 Code");
+  expect(sentTo(n, thread)).toEqual([]);
+  const item = items.get(n.s, run!.item!)!;
+  expect(item.needsYou).toMatchObject({ reason: "stopped", question: expect.stringContaining("Someone stopped") });
+
+  expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);
+  await n.dispatch();
+  const [, again] = triageRuns(n);
+  expect(again).toMatchObject({ state: "running" });
+  expect(again!.threadId).not.toBe(thread);
+});
+
 test("a stage thread handed to another machine leaves the factory: its run ends, the item waits, and retry starts the stage again here", async () => {
   const n = await factoryNode(cleanup);
   await n.command("add", n.repo, "Crash on save");

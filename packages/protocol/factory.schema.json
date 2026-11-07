@@ -100,7 +100,21 @@
               "title": { "type": "string", "minLength": 1, "maxLength": 2000 },
               "body": { "default": "{{body}}", "type": "string", "minLength": 1, "maxLength": 2000 },
               "dedupe": { "type": "string", "minLength": 1, "maxLength": 2000 },
-              "dedupeWindow": { "default": "1h", "type": "string", "pattern": "^\\d+(m|h|d)$" }
+              "dedupeWindow": { "default": "1h", "type": "string", "pattern": "^\\d+(m|h|d)$" },
+              "only": {
+                "type": "object",
+                "properties": {
+                  "value": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                  "in": {
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+                  }
+                },
+                "required": ["value", "in"],
+                "additionalProperties": false
+              }
             },
             "required": ["id", "type", "repo", "title"],
             "additionalProperties": false

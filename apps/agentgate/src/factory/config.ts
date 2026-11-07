@@ -182,7 +182,12 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
     scorers[name] = { file: scorer, rubric: body };
   }
 
-  const rulings = existsSync(join(dir, "rulings.md")) ? readFileSync(join(dir, "rulings.md"), "utf8").trim() : "";
+  // HTML comments are notes for the person editing the file, such as the prompts `factory init` writes; briefs skip them.
+  const rulings = existsSync(join(dir, "rulings.md"))
+    ? readFileSync(join(dir, "rulings.md"), "utf8")
+        .replace(/<!--[\s\S]*?-->\n?/g, "")
+        .trim()
+    : "";
   const skills = join(dir, "skills");
   const skillsDir = existsSync(skills) && statSync(skills).isDirectory() ? skills : undefined;
   return { commit, dir, config, secrets, stages, scorers, scouts, rulings, ...(skillsDir && { skillsDir }) };

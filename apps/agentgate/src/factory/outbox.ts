@@ -1,8 +1,10 @@
 import type { FactoryRuntime, PostResult } from "./runtime.ts";
 import { later, shortError } from "./runtime.ts";
+import { currentFolder } from "./config.ts";
 import { adapterOf } from "./controller.ts";
 import { items } from "./db.ts";
-import { postIssueComment, replyToConversation } from "./gh.ts";
+import { createIssue, postIssueComment, replyToConversation } from "./gh.ts";
+import { defuse } from "./markers.ts";
 
 /**
  * The outbox: every write to GitHub or Linear whose outcome can be uncertain (a comment on an item's issue, a reply in a
@@ -17,8 +19,9 @@ import { postIssueComment, replyToConversation } from "./gh.ts";
  * Writes that are safe to repeat, such as resolving a conversation or rewriting the PR body, do not need a claim.
  */
 
-/** "reply": `ref` is `<conversation id>@<commit>`. "learn": the owner is the learn run and `ref` its PR's number. Any
- * other moment is a comment on the owning item's source. */
+/** "reply": `ref` is `<conversation id>@<commit>`. "learn": the owner is the learn run and `ref` its PR's number.
+ * "issue": a new issue (`fileIssue`), its body the JSON of repo, title and text. Any other moment is a comment on the
+ * owning item's source. */
 export type WriteMoment = string;
 
 const ATTEMPTS = 3;
@@ -92,6 +95,10 @@ async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, 
 
 async function deliver(f: FactoryRuntime, owner: string, moment: WriteMoment, ref: string, body: string) {
   if (moment === "reply") return replyToConversation(ref.slice(0, ref.lastIndexOf("@")), body);
+  if (moment === "issue") {
+    const issue = JSON.parse(body) as SuggestedIssue;
+    return createIssue(issue.repo, issue.title, issue.body);
+  }
   if (moment === "learn") {
     const repo = f.pointer()?.repo;
     return repo
@@ -102,6 +109,43 @@ async function deliver(f: FactoryRuntime, owner: string, moment: WriteMoment, re
   const post = item && adapterOf(f, item)?.post;
   if (!item || !post) return { status: "failed", error: "its source no longer takes comments" } satisfies PostResult;
   return post(item, body);
+}
+
+export interface SuggestedIssue {
+  repo: string;
+  title: string;
+  body: string;
+}
+
+/** The line that tells a person how to have the factory work an issue it filed in `repo`: a GitHub source's label. */
+function labelHint(f: FactoryRuntime, repo: string) {
+  const source = currentFolder(f)?.config.sources.find(
+    (s) => s.type === "github" && s.repo.toLowerCase() === repo.toLowerCase(),
+  );
+  return source?.type === "github"
+    ? `Add the label \`${source.label}\` to have the factory work it.`
+    : "No factory source takes this repository's issues by label, so it waits for a person.";
+}
+
+/**
+ * Claims an issue for work the factory found but leaves alone, filed without a source's label: labelling it is the
+ * maintainer's approval, through the same gate as any other issue. Once per owner and `ref`, like any claimed write.
+ */
+export function fileIssue(f: FactoryRuntime, owner: string, ref: string, issue: SuggestedIssue, why: string) {
+  const title = defuse(issue.title.split("\n")[0]!.trim(), 200);
+  const body = [
+    defuse(issue.body, 6000),
+    defuse(why, 1000),
+    `Filed by AgentGate's software factory. ${labelHint(f, issue.repo)}`,
+  ].join("\n\n");
+  return claimWrite(
+    f,
+    owner,
+    "issue",
+    ref,
+    JSON.stringify({ repo: issue.repo, title, body }),
+    `The issue "${title.slice(0, 80)}" on ${issue.repo}`,
+  );
 }
 
 /** Sends what a restart left pending, and retries what a service refused. */

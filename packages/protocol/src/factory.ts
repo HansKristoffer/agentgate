@@ -77,6 +77,12 @@ export const webhookSourceSchema = z
     body: template.default("{{body}}"),
     dedupe: template.optional(),
     dedupeWindow: duration.default("1h"),
+    // Only deliveries whose rendered `value` is one of `in` become items; the rest are answered and dropped. Senders
+    // that post every change to a record (Sentry's issue actions) need it to keep the changes that mean new work.
+    only: z
+      .object({ value: template, in: z.array(z.string().min(1).max(200)).min(1).max(50) })
+      .strict()
+      .optional(),
   })
   .strict();
 export const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -283,6 +289,7 @@ export const needsYouSchema = z
       "orphaned",
       "stuck",
       "handed-off",
+      "stopped",
     ]),
     question: z.string().optional(),
     recommendation: z.string().optional(),
@@ -303,6 +310,10 @@ export const outcomes = [
 export type Outcome = (typeof outcomes)[number];
 
 const commitSha = z.string().regex(/^[0-9a-f]{7,64}$/);
+/** Work the factory files as an issue without a source's label, so labelling it is the maintainer's approval. */
+const suggestedIssue = z
+  .object({ title: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(8000) })
+  .strict();
 export const stageResultSchema = z.discriminatedUnion("kind", [
   z
     .object({
@@ -324,6 +335,8 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
         .string()
         .max(64 * 1024)
         .optional(),
+      // Slices the spec leaves for later; each becomes an unlabelled issue when the item's PR goes ready.
+      later: z.array(suggestedIssue).max(10).optional(),
     })
     .strict(),
   z
@@ -388,6 +401,8 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
       kind: z.literal("learn"),
       prUrl: z.string().url().max(2048).optional(),
       lessons: z.array(z.string().min(1).max(2000)).max(50),
+      // Changes a repository needs rather than the folder (a check, a hook, its setup); each becomes an unlabelled issue.
+      issues: z.array(suggestedIssue.extend({ repo }).strict()).max(10).optional(),
     })
     .strict(),
   z
@@ -428,6 +443,8 @@ export const factoryReportSchema = z
       .strict()
       .optional(),
     duplicateOf: z.string().min(1).max(2048).optional(),
+    // What slowed the run down or what it worked around (a missing tool, a broken setup, a flaky check), for learning.
+    friction: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
     result: stageResultSchema.optional(),
   })
   .strict();

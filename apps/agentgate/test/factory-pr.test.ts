@@ -635,6 +635,22 @@ test("a collaborator's comment made after a push but before the follower's next 
   expect(n.sent(run.threadId!).filter((m) => m.includes("empty list"))).toHaveLength(1);
 });
 
+test("a person who stops the thread that owns a PR is not overridden: no nudge wakes it, and after retry the next one does", async () => {
+  const n = await prFactory(cleanup, noReview);
+  const { item, run, pr } = await n.opened(1);
+  const thread = run.threadId!;
+  await n.thread(thread, "interrupted");
+
+  pr.checks = "failing";
+  await n.pollPrs();
+  expect(n.sent(thread)).toEqual([]);
+  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ reason: "stopped", link: run.threadLink });
+
+  expect((await n.command("retry", item.key)).output).toEqual([`Retrying ${item.key} with its PR`]);
+  await n.pollPrs();
+  expect(n.sent(thread)).toEqual([expect.stringContaining("its checks fail")]);
+});
+
 test("handing off the thread that owns a PR detaches it, and the PR is still followed to its merge", async () => {
   const n = await prFactory(cleanup, noReview);
   const { item, run, pr } = await n.opened(1);

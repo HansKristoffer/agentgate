@@ -59,6 +59,8 @@ export const runDataSchema = z.discriminatedUnion("kind", [
     nudgedAt: z.number().optional(),
     /** GitHub's time of the newest comment or review a nudge quoted: newer trusted ones are what the thread has not seen. */
     quotedUntil: z.string().optional(),
+    /** The `updatedAt` of the thread when the factory found it stopped in T3 Code; a later stop is a new one. */
+    stopSeen: z.number().optional(),
     /** What the thread did with each review conversation, by id, and whether the factory has replied on GitHub. */
     conversations: z
       .record(

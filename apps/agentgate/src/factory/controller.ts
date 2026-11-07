@@ -900,7 +900,25 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
     return;
   }
   if (!m.seen.delete(run.id) && !endedUnseen) return;
+  // T3 resumes a turn its own restart cut, so `interrupted` means someone stopped the thread: a reminder would start it
+  // again behind their back.
+  if (thread.status === "interrupted") return stopped(f, runs.get(s, run.id)!);
   await silentEnd(f, runs.get(s, run.id)!);
+}
+
+/** Someone stopped a run's thread in T3 Code. The run ends, and its item waits for the maintainer to retry or drop it. */
+function stopped(f: FactoryRuntime, run: FactoryRun) {
+  endRun(f, run, "cancelled", { error: "stopped in T3 Code" });
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  if (item && isOpenPhase(item.phase)) markStopped(f, item, run);
+}
+
+export function markStopped(f: FactoryRuntime, item: FactoryItem, run: FactoryRun) {
+  setNeedsYou(f, item.id, {
+    reason: "stopped",
+    question: `Someone stopped ${item.key}'s ${run.kind} thread in T3 Code, so the factory leaves it alone. Run agentgate factory retry ${item.key} to go on, or drop it.`,
+    ...(run.threadLink && { link: run.threadLink }),
+  });
 }
 
 // ---- handoffs
@@ -990,7 +1008,7 @@ const REQUIRED: Partial<Record<Outcome, { key: keyof FactoryReport; name: string
   duplicate: { key: "duplicateOf", name: "duplicateOf" },
 };
 const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
-  "not-a-bug": () => "This is not a bug.",
+  "not-a-bug": () => "Triage found nothing here for the factory to fix.",
   duplicate: (r) => `This duplicates ${r.duplicateOf}.`,
   "already-fixed": () => "The default branch already fixes this.",
 };
@@ -1258,7 +1276,7 @@ export function findItem(f: FactoryRuntime, ref: string) {
 export const ACTIONS = itemActions;
 type Action = ItemAction;
 /** What `retry` takes back: an item that failed, went over its budget, stalled on its PR or got stuck. */
-const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck", "handed-off"];
+const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck", "handed-off", "stopped"];
 
 /** Whether approve and reject answer something: an item held for approval, a thread's pending request its run kind
  * can answer, or a stage that reported a question or what blocks it. */
@@ -1317,7 +1335,7 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     if (item.phase === "closed") return reopen(f, item);
     if (!item.needsYou || !RETRYABLE.includes(item.needsYou.reason))
       throw new Error(
-        `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck or was handed off`,
+        `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off or was stopped`,
       );
     return retryStage(f, item);
   }

@@ -34,8 +34,14 @@ async function learnFactory(files: Record<string, string> = {}) {
 
   const prs = new Map<string, { files: string[]; body: string }>();
   const comments: { pr: number; body: string }[] = [];
+  const filed: { repo: string; title: string; body: string }[] = [];
   const realGh = host.gh;
   host.gh = async (args, stdin) => {
+    const issue = args[1]?.match(/^repos\/(.+)\/issues$/);
+    if (args[0] === "api" && issue) {
+      filed.push({ repo: issue[1]!, ...JSON.parse(stdin!) });
+      return { ok: true, out: "{}" };
+    }
     const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
     if (args[0] === "api" && comment) {
       comments.push({ pr: Number(comment[1]), body: JSON.parse(stdin!).body });
@@ -86,6 +92,7 @@ async function learnFactory(files: Record<string, string> = {}) {
     factoryRepo,
     prs,
     comments,
+    filed,
     tool: async (name: string, args: Record<string, unknown> = {}) => (await tool(name, args)).value,
     /** The raw text a history page comes back as. */
     historyText: async (args: Record<string, unknown>) => (await tool("factory_history", args)).text,
@@ -190,7 +197,8 @@ test("a learn run reports nothing-to-do or a PR on the factory repo; a PR that c
   });
 
   expect(await n.report(run, { outcome: "done", summary: "Done." })).toEqual({
-    error: 'The outcome done needs result: { kind: "learn", prUrl, lessons }; report nothing-to-do without a PR',
+    error:
+      'The outcome done needs result: { kind: "learn", prUrl, lessons, issues? } with a PR or issues; report nothing-to-do without either',
   });
   expect(await n.report(run, learned(`https://github.com/${n.repo}/pull/3`))).toEqual({
     error: `The learning PR belongs on ${n.factoryRepo}, not https://github.com/${n.repo}/pull/3`,
@@ -224,6 +232,79 @@ test("a learn run reports nothing-to-do or a PR on the factory repo; a PR that c
   expect(n.comments[0]!.pr).toBe(8);
   expect(n.comments[0]!.body).toContain("- It changes rulings.md, which only the maintainer changes.");
   expect(n.comments[0]!.body).toContain("- It has no Evidence section.");
+});
+
+test("a learn run may report only issues for its repositories, which the factory files without a label; one for another repository is refused", async () => {
+  const n = await learnFactory();
+  n.finish("gh-1");
+  await n.tool("factory_learn");
+  const run = await n.started();
+  const issue = (repo: string) => ({
+    repo,
+    title: "Fail the check when a test file is skipped",
+    body: "Runs gh-1 and gh-2 reported green checks while the database tests skipped.",
+  });
+  const learned = (repo: string) => ({
+    outcome: "done",
+    summary: "One check for the repository.",
+    result: { kind: "learn", lessons: ["Skipped tests must fail the check."], issues: [issue(repo)] },
+  });
+
+  expect(await n.report(run, learned("acme/elsewhere"))).toEqual({
+    error: `Issues go to the factory's repositories (${n.repo}), not acme/elsewhere`,
+  });
+  expect(await n.report(run, learned(n.repo.toUpperCase()))).toEqual({ accepted: true });
+  await idle(n.f);
+  expect(n.filed).toHaveLength(1);
+  expect(n.filed[0]).toMatchObject({ repo: n.repo, title: "Fail the check when a test file is skipped" });
+  expect(n.filed[0]!.body).toContain("database tests skipped");
+  expect(n.filed[0]!.body).toContain(`The factory's learning run ${run.id} proposes this`);
+  expect(n.comments).toEqual([]);
+});
+
+test("factory_history shows the folder commit each run ran under, the review findings' text and the friction a run reported", async () => {
+  const n = await learnFactory();
+  const item = n.finish("gh-1");
+  const run = (kind: "implement" | "review", report: FactoryRun["report"]) =>
+    runs.insert(n.s, {
+      id: newId("run"),
+      item: item.id,
+      kind,
+      attempt: 1,
+      state: "reported",
+      nudges: 0,
+      configCommit: n.commit,
+      report,
+      endedAt: n.s.now(),
+    });
+  run("implement", {
+    run: "x",
+    outcome: "done",
+    summary: "Fixed it.",
+    friction: ["The worktree had no node_modules, so the hooks failed."],
+  });
+  run("review", {
+    run: "x",
+    outcome: "done",
+    summary: "One finding.",
+    result: {
+      kind: "review",
+      prUrl: "https://github.com/acme/api/pull/1",
+      commit: "a".repeat(40),
+      findings: [{ file: "src/save.ts", line: 12, severity: "important", text: "The error is swallowed." }],
+      testsFailWithoutFix: true,
+    },
+  });
+  const entries = (await n.tool("factory_history")).entries as Record<string, unknown>[];
+  const [implement, review] = entries.filter((e) => e.type === "run");
+  expect(implement).toMatchObject({
+    configCommit: n.commit,
+    friction: ["The worktree had no node_modules, so the hooks failed."],
+  });
+  expect(review).toMatchObject({
+    configCommit: n.commit,
+    findings: [{ severity: "important", where: "src/save.ts:12", text: "The error is swallowed." }],
+  });
 });
 
 test("the folder's skills are installed and linked into the factory's repositories, and removed when they leave the folder or the factory turns off", async () => {
