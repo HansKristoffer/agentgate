@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
 import { ExternalLink, GitPullRequest } from "lucide-react";
 import type { Connection, FactoryBoard, FactoryItemDetail } from "@agentgate/protocol";
@@ -28,8 +28,12 @@ export function ItemDrawer({
   const [detail, setDetail] = useState<FactoryItemDetail>();
   const [error, setError] = useState("");
   const capture = useGeneration(connection);
+  // A forwarded read can take longer than the poll; like the board, one at a time.
+  const loading = useRef(false);
   useEffect(() => {
     const load = async () => {
+      if (loading.current) return;
+      loading.current = true;
       const current = capture();
       try {
         const next = await request<FactoryItemDetail>(connection, `/factory/items/${encodeURIComponent(id)}`);
@@ -39,6 +43,8 @@ export function ItemDrawer({
         }
       } catch (e) {
         if (current()) setError(String(e));
+      } finally {
+        loading.current = false;
       }
     };
     void load();
