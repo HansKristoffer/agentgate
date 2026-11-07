@@ -1,5 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { app, makeCtx } from "../src/daemon.ts";
+import { runs } from "../src/factory/db.ts";
 import { loopTask } from "../src/factory/runtime.ts";
 import { t3Mcp, T3McpError } from "../src/factory/t3-mcp.ts";
 import { connectT3, host as t3Host, t3State } from "../src/handoff/t3.ts";
@@ -127,6 +128,29 @@ test("the loop replaces a token within 3 days of its end and revokes the old ses
   expect(stored()!.expiresAt).toBeGreaterThan(first.expiresAt);
   expect(mcp.revoked).toHaveLength(1);
   expect(client.status().mcp).toBe("signed-in");
+});
+
+test("the loop does not renew a token while a launch sent under it waits for its answer", async () => {
+  const { s, mcp, client, tick, advance, stored } = await fixture();
+  await client.signIn();
+  // A launch whose answer did not come: only its session can find the thread again, so the session must stay.
+  runs.insert(s, {
+    id: "run_launching",
+    kind: "learn",
+    attempt: 1,
+    state: "queued",
+    nudges: 0,
+    configCommit: "c",
+    launchSession: client.session(),
+  });
+  advance(27 * DAY);
+  await tick();
+  expect(mcp.tokens).toHaveLength(1);
+
+  runs.update(s, "run_launching", { state: "running", launchSession: undefined });
+  await tick();
+  expect(mcp.tokens).toHaveLength(2);
+  expect(stored()?.token).toBe(mcp.tokens[1]!);
 });
 
 test("turning the factory off revokes the session through T3, or says where to remove it when T3 refuses", async () => {
