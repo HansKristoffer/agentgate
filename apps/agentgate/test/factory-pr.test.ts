@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, markerTag } from "../src/factory/markers.ts";
 import { withSummary } from "../src/factory/pr.ts";
+import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakeConversation } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -467,4 +468,35 @@ test("after factory off, items freeze: the PR follower reads nothing and posts n
   expect(n.github.calls.length).toBe(before);
   expect(items.get(n.s, item.id)!.phase).toBe("pr");
   expect(n.github.posted(1)).not.toContain("Shipped: the pull request was merged.");
+});
+
+test("a review run waiting for quota reads nothing from GitHub until an account has room, then starts", async () => {
+  const n = await prFactory(cleanup);
+  const { item, pr } = await n.opened(1);
+  n.s.put("account", "c1", { id: "c1", provider: "claude", label: "c1", priority: 1 });
+  n.s.put("credential", "c1", {
+    accountId: "c1",
+    accessToken: "access-c1",
+    refreshToken: "refresh-c1",
+    expiresAt: n.s.now() + 36_000_000,
+    holder: "a",
+  });
+  const resetsAt = n.s.now() + 3_600_000;
+  recordUsage(n.s, "c1", { windows: [{ name: "5h", usedPct: 100, resetsAt }], status: "exhausted" });
+  pr.checks = "passing";
+  await n.pollPrs();
+  const review = () => runs.forItem(n.s, item.id).find((r) => r.kind === "review")!;
+  expect(review().state).toBe("queued");
+  const prViews = () => n.github.calls.filter((c) => c.args[0] === "pr" && c.args[1] === "view").length;
+  const before = prViews();
+  for (let pass = 0; pass < 12; pass++) {
+    n.advance(5000);
+    await n.dispatch();
+  }
+  expect(prViews()).toBe(before);
+  expect(review()).toMatchObject({ state: "queued", error: "no claude account has room" });
+
+  n.advance(3_600_000);
+  await n.dispatch();
+  expect(review().state).toBe("running");
 });

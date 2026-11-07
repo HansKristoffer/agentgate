@@ -74,6 +74,11 @@ const judge = (f: FactoryRuntime) => ({
   kind: "judge" as const,
   countsAsWorking: true,
 
+  model(run: FactoryRun) {
+    const checked = judgedOf(run);
+    return checked && scorerOf(f, run, checked.scorer)?.file.model;
+  },
+
   async launch(run: FactoryRun): Promise<LaunchSpec | { wait: string }> {
     const checked = judgedOf(run);
     const judged = checked && runs.get(f.s, checked.run);

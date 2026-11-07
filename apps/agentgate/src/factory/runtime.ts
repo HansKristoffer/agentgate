@@ -108,6 +108,9 @@ export interface RunKindDefinition {
   kind: RunKind;
   countsAsWorking?: boolean; // default true
   launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }>;
+  /** The model a run of a kind that does not take it from its stage file starts with, so dispatch can check quota
+   * before building the launch, whose work (a PR read, a brief) would otherwise repeat every pass while it waits. */
+  model?(run: FactoryRun): FactoryModel | undefined;
   /** An error message, or undefined. */
   validate(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<string | undefined>;
   accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<void>;

@@ -640,18 +640,22 @@ async function prepareLaunch(
     launchUncertain(f, run, item);
     return {};
   }
-  const spec = await definition.launch(run, item);
-  if ("wait" in spec) {
-    note(f, runs.get(s, run.id) ?? run, spec.wait);
-    return {};
-  }
-  const provider = providerOf(spec.model);
+  // Quota first: building the launch reads GitHub and renders the brief, which must not repeat every pass.
+  const model = isStage(run.kind)
+    ? folderFor(f, run.configCommit)?.stages[run.kind]?.file.model
+    : definition.model?.(run);
+  const provider = providerOf(model);
   // Only a pool that exists can be waited for: without accounts here, T3 runs on its own logins.
   const pooled = provider && s.list("account").some((a) => a.provider === provider && a.enabled);
   if (limitsOf(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
     note(f, run, `no ${provider} account has room`);
     return { quota: { ...(until !== undefined && { waitingUntil: until }) } };
+  }
+  const spec = await definition.launch(run, item);
+  if ("wait" in spec) {
+    note(f, runs.get(s, run.id) ?? run, spec.wait);
+    return {};
   }
   // Once the item has a PR, the PR decides: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
   if (item && !item.prUrl && !(await sourceOpen(f, item))) {

@@ -233,6 +233,8 @@ function scoutOfRun(f: FactoryRuntime, run: FactoryRun) {
 const scoutRun = (f: FactoryRuntime) => ({
   kind: "scout" as const,
 
+  model: (run: FactoryRun) => scoutOfRun(f, run)?.scout.model,
+
   async launch(run: FactoryRun): Promise<LaunchSpec> {
     const found = scoutOfRun(f, run);
     if (!found) throw new Error(`The factory's folder no longer has the scout ${sourceOfRun(run) ?? "of this run"}`);
