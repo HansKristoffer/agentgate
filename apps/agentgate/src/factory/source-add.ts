@@ -173,13 +173,11 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
   const scoutPath = `${folder}scouts/${source.id}.md`;
   if (await fileExists(repo, scoutPath, base)) throw new Error(`The factory already has a scout ${source.id}`);
   const branch = `agentgate/factory-source-${source.id}`;
-  if (await branchExists(repo, branch)) {
+  // A branch without an open PR is an earlier attempt that failed after pushing: this one takes it over.
+  const earlier = await branchExists(repo, branch);
+  if (earlier) {
     const open = await openPrFor(repo, branch);
-    throw new Error(
-      open
-        ? `A PR that adds ${source.id} is open: ${open}`
-        : `${repo} has a ${branch} branch already; delete it on GitHub, then add the source again`,
-    );
+    if (open) throw new Error(`A PR that adds ${source.id} is open: ${open}`);
   }
 
   const secret = source.type === "webhook" ? source.signature?.secret.slice("secret:".length) : undefined;
@@ -188,7 +186,7 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
       ? { [scoutPath]: scoutFile(raw, parsed.prompt!) }
       : { [`${folder}factory.yaml`]: insertSource(yaml, raw) };
   const title = `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`;
-  await pushNewBranch(repo, branch, title, files, base);
+  await pushNewBranch(repo, branch, title, files, base, earlier);
   const pr = await openPr(repo, branch, title, prBody(parsed, folder, secret), { base });
   if (secret)
     warnings.push(`Set the signing secret with agentgate factory secret set ${secret} before deliveries arrive`);

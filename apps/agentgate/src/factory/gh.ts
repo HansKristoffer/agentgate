@@ -219,6 +219,8 @@ export async function pushNewBranch(
   message: string,
   files: Record<string, string>,
   base?: string,
+  /** Point an existing branch at the new commit instead: one an earlier, failed attempt of the same command left. */
+  replace = false,
 ) {
   base ??= await defaultBranch(repo);
   const head = await ghJson(
@@ -241,11 +243,18 @@ export async function pushNewBranch(
     tree: tree.sha,
     parents: [head],
   });
-  await gh(
-    `create the branch ${branch} in ${repo}`,
-    ["api", `repos/${repo}/git/refs`, "--method", "POST", "--input", "-"],
-    JSON.stringify({ ref: `refs/heads/${branch}`, sha: commit.sha }),
-  );
+  if (replace)
+    await gh(
+      `move the branch ${branch} in ${repo}`,
+      ["api", `repos/${repo}/git/refs/heads/${branch}`, "--method", "PATCH", "--input", "-"],
+      JSON.stringify({ sha: commit.sha, force: true }),
+    );
+  else
+    await gh(
+      `create the branch ${branch} in ${repo}`,
+      ["api", `repos/${repo}/git/refs`, "--method", "POST", "--input", "-"],
+      JSON.stringify({ ref: `refs/heads/${branch}`, sha: commit.sha }),
+    );
 }
 
 /** Opens a PR from `head` to `base`, or the default branch. */

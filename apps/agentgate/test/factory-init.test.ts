@@ -42,7 +42,10 @@ function fakeGitHub() {
     commit: undefined as { message: string; tree: string; parents: string[] } | undefined,
     calls: [] as string[][],
     /** Calls that write to GitHub. */
-    writes: () => github.calls.filter((c) => c.includes("POST") || (c[0] === "pr" && c[1] === "create")),
+    writes: () =>
+      github.calls.filter((c) => c.includes("POST") || c.includes("PATCH") || (c[0] === "pr" && c[1] === "create")),
+    /** Branches moved to a new commit, as init does with one an earlier, failed init left. */
+    moved: [] as string[],
   };
   host.gh = async (args, stdin) => {
     github.calls.push(args);
@@ -89,6 +92,10 @@ function fakeGitHub() {
     if (path === "git/refs" && post) {
       github.branches.add(JSON.parse(stdin!).ref.replace("refs/heads/", ""));
       return ok({ ref: "created" });
+    }
+    if (path.startsWith("git/refs/heads/") && args.includes("PATCH")) {
+      github.moved.push(path.slice("git/refs/heads/".length));
+      return ok({ ref: "moved" });
     }
     if (path.startsWith("labels/"))
       return github.labels.has(decodeURIComponent(path.slice(7))) ? ok("factory") : notFound;
@@ -216,7 +223,7 @@ test("factory init --json prints what the route answers, and the template parses
   });
 });
 
-test("init refuses before writing anything: a factory on, a folder there, an init branch, an empty repository; a label it cannot create is a warning", async () => {
+test("init refuses before writing anything: a factory on, a folder there, an open init PR, an empty repository; a label it cannot create is a warning", async () => {
   const github = fakeGitHub();
   fakeFetcher(github);
   const a = node();
@@ -232,11 +239,6 @@ test("init refuses before writing anything: a factory on, a folder there, an ini
   github.branches.add(FACTORY_INIT_BRANCH);
   github.prs.set(3, { head: FACTORY_INIT_BRANCH, state: "OPEN", draft: true, title: "x" });
   await refused(`An init PR for ${REPO} is open: https://github.com/${REPO}/pull/3. Merge or close it first`);
-  github.prs.get(3)!.state = "CLOSED";
-  await refused(
-    `${REPO} has a ${FACTORY_INIT_BRANCH} branch from an earlier init; delete it on GitHub, then init again`,
-  );
-  github.branches.delete(FACTORY_INIT_BRANCH);
   github.prs.clear();
 
   github.empty = true;
@@ -246,9 +248,11 @@ test("init refuses before writing anything: a factory on, a folder there, an ini
   expect(github.writes()).toEqual([]);
   github.empty = false;
 
+  // A branch an earlier init left without an open PR, as when opening the PR failed: init moves it to its commit.
   github.labelsFail = true;
   const done = await a.command("init", REPO);
   expect(done.code).toBe(0);
+  expect(github.moved).toEqual([FACTORY_INIT_BRANCH]);
   expect(done.output).toContain(
     "Warning: Creating the factory label failed (gh could not create the label factory in acme/api: Must have admin rights); create it before labelling issues",
   );

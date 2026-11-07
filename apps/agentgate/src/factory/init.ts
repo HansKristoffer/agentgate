@@ -78,16 +78,21 @@ export async function initFactory(f: FactoryRuntime, input: unknown): Promise<Fa
     throw new Error(
       `${repo} already has ${FOLDER}/factory.yaml; turn it on with agentgate factory use ${repo}:${FOLDER}`,
     );
-  if (await branchExists(repo, FACTORY_INIT_BRANCH)) {
+  // A branch without an open PR is an earlier init that failed after pushing: this one takes it over.
+  const earlier = await branchExists(repo, FACTORY_INIT_BRANCH);
+  if (earlier) {
     const open = await openPrFor(repo, FACTORY_INIT_BRANCH);
-    throw new Error(
-      open
-        ? `An init PR for ${repo} is open: ${open}. Merge or close it first`
-        : `${repo} has a ${FACTORY_INIT_BRANCH} branch from an earlier init; delete it on GitHub, then init again`,
-    );
+    if (open) throw new Error(`An init PR for ${repo} is open: ${open}. Merge or close it first`);
   }
 
-  await pushNewBranch(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", initTemplate(repo));
+  await pushNewBranch(
+    repo,
+    FACTORY_INIT_BRANCH,
+    "chore(factory): start a software factory",
+    initTemplate(repo),
+    undefined,
+    earlier,
+  );
   const pr = await openPr(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", prBody(repo), {
     draft: true,
   });
