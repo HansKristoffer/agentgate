@@ -160,12 +160,33 @@ test("a signed delivery through the relay becomes one held item; a bad signature
     ],
   ]);
 
+  // The key blocks while its item is open, and for the window after the item finished.
+  n.advance(2 * 60 * 60_000);
+  expect(JSON.parse((await delivery(body)).body)).toEqual({ ok: true, duplicate: true });
+  expect((await n.command("reject", items.list(n.s)[0]!.key)).code).toBe(0);
   n.advance(59 * 60_000);
   expect(JSON.parse((await delivery(body)).body)).toEqual({ ok: true, duplicate: true });
   expect(items.list(n.s)).toHaveLength(1);
   n.advance(2 * 60_000);
   expect((await delivery(body)).status).toBe(202);
   expect(items.list(n.s)).toHaveLength(2);
+});
+
+test("a delivery to a source that takes items without approval is held while intake is paused", async () => {
+  const { n } = await hookedFactory((repo) => [{ ...alerts(repo), intake: "auto" }]);
+  const deliver = (id: string) => {
+    const body = JSON.stringify({ alert: { id, name: `Alert ${id}`, details: "-" } });
+    const headers = { "x-alert-signature": `v1=${sign("alert-signing-key", body, "base64")}` };
+    return handleHook(n.f, "alerts", new Request("http://hook.invalid/?env=prod", { method: "POST", headers, body }));
+  };
+  await n.command("pause");
+  expect((await deliver("paused")).status).toBe(202);
+  await n.command("resume");
+  expect((await deliver("running")).status).toBe(202);
+  expect(items.list(n.s).map((i) => [i.dedupe, i.phase === "held"])).toEqual([
+    ["paused", true],
+    ["running", false],
+  ]);
 });
 
 test("a source with 20 deliveries waiting for approval refuses the next with 429 until one is approved or rejected", async () => {

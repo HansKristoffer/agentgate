@@ -308,7 +308,7 @@ A `webhook` source turns each delivery into an item:
     secret: secret:DESK_SIGNING
 ```
 
-Templates fill in `{{body}}` (the delivery as sent), `{{body.a.b}}` (a value from a JSON body), `{{headers.name}}` and `{{query.name}}`; a missing value is empty. A title that comes out empty refuses the delivery. A delivery whose `dedupe` key matches an item from the same source within `dedupeWindow` is answered as a duplicate and adds nothing. The signature is an HMAC-SHA256 of the exact body with the secret.
+Templates fill in `{{body}}` (the delivery as sent), `{{body.a.b}}` (a value from a JSON body), `{{headers.name}}` and `{{query.name}}`; a missing value is empty. A title that comes out empty refuses the delivery. A delivery whose `dedupe` key one of the source's items has, open or finished within `dedupeWindow`, is answered as a duplicate and adds nothing. While intake is paused, or waits because too many items wait for you, a delivery waits for approval even with `intake: auto`. The signature is an HMAC-SHA256 of the exact body with the secret.
 
 Each webhook source, and each GitHub or Linear source with `webhook`, gets a URL on the relay, `https://<relay>/hook/<key>`. `agentgate factory status` prints it once the factory machine has made it, within a minute of loading the folder; the `/factory` page and agents never see it. Give that URL to the sender:
 
@@ -371,7 +371,7 @@ Look at the p95 latency of every API endpoint over the last week in Railway. Fil
 
 - **When it runs**: `schedule: { every: 6h }` runs it that long after its last run, and at once the first time (at least `1h`). `at` runs it at that time on those days. A run that cannot start within an hour of its time, because the machine was off or intake was paused, is skipped until the next one. `agentgate factory scout perf`, the **Run now** button and the `agentgate__factory_scout` tool run it at once. `enabled: false` keeps it in the folder but runs it only when you ask.
 - **What it can use**: agentgate's tools, the repository, and the servers in `mcp`. A server must also be mapped to the repository's project, as for any session there. The thread changes no code and opens no PRs or issues.
-- **Its tickets**: every finding a run reports is filed; say in the prompt how many are worth a run. Each finding has a key the thread chooses, such as `slow-orders-list`. A finding whose key one of the scout's items has, open or finished within `dedupeWindow`, is skipped, and the thread sees those keys so it can reuse them. A reworded key gets through as a new item. With `intake: hold`, nothing is filed while 20 of its items wait for approval.
+- **Its tickets**: every finding a run reports is filed; say in the prompt how many are worth a run. Each finding has a key the thread chooses, such as `slow-orders-list`. A finding whose key one of the scout's items has, open or finished within `dedupeWindow`, is skipped, and the thread sees those keys so it can reuse them. A reworded key gets through as a new item. Findings wait for approval with `intake: hold`, and also while intake is paused or waits for you; nothing more is filed while 20 of its items wait.
 - The board shows each scout's schedule, its next run, and what its last run filed, with a link to its thread.
 - Its last run is remembered on the factory's machine, so after the factory moves, an `every` scout runs once at the next chance.
 

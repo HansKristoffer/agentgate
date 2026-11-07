@@ -352,9 +352,15 @@ export const items = {
     const args = filter.finishedSince === undefined ? [] : [filter.finishedSince];
     return (s.db.query(`${ITEMS} ${whereSql(where)} order by i.created_at`).all(...args) as Row[]).map(toItem);
   },
-  /** Whether the source has an item with this dedupe key created since `at`. */
+  /** Whether the source has an item with this dedupe key that is open, or finished since `at`. */
   hasDedupe: (s: Store, source: string, dedupe: string, at: number) =>
-    !!s.db.query("select 1 from factory_items where source=? and dedupe=? and created_at>=?").get(source, dedupe, at),
+    !!s.db
+      .query("select 1 from factory_items where source=? and dedupe=? and (finished_at is null or finished_at>=?)")
+      .get(source, dedupe, at),
+  /** How many of the source's items wait for approval. */
+  heldCount: (s: Store, source: string) =>
+    (s.db.query("select count(*) as n from factory_items where source=? and phase='held'").get(source) as { n: number })
+      .n,
   /** Every key in use, so a new item can take one no other item has. */
   keyTaken: (s: Store, key: string) => !!s.db.query("select 1 from factory_items where key=?").get(key),
   insert: (

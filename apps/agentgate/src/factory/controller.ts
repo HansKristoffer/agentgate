@@ -240,6 +240,28 @@ export function addItem(
   return item;
 }
 
+/** The most of one source's items that wait for approval before it takes no more: a webhook URL that leaked, or a
+ * noisy scout, could otherwise fill the board and pause every other source's intake. */
+export const HELD_LIMIT = 20;
+
+/**
+ * Admission for what arrives outside a poll, a webhook delivery or a scout's finding: one with the dedupe key of the
+ * source's item that is open, or finished within `dedupeWindow`, is a duplicate; it waits for approval when its source
+ * holds items or intake is not on (paused, or too many items wait for the maintainer); and a source that already holds
+ * `HELD_LIMIT` items takes no more.
+ */
+export function admit(
+  f: FactoryRuntime,
+  input: { source: string; repo: string; intake: "auto" | "hold"; dedupeWindow: string; incoming: IncomingItem },
+): FactoryItem | "duplicate" | "full" {
+  const { incoming } = input;
+  const since = f.s.now() - durationMs(input.dedupeWindow);
+  if (incoming.dedupe && items.hasDedupe(f.s, input.source, incoming.dedupe, since)) return "duplicate";
+  const hold = input.intake !== "auto" || intakeState(f) !== "on";
+  if (hold && items.heldCount(f.s, input.source) >= HELD_LIMIT) return "full";
+  return addItem(f, { source: input.source, repo: input.repo, incoming, hold });
+}
+
 /** `needsYou` undefined leaves it as it is; null clears it. */
 export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, needsYou?: NeedsYou | null): FactoryItem {
   const before = items.get(f.s, item);

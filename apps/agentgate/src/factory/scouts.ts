@@ -8,9 +8,8 @@ import {
 } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, type LoadedFolder } from "./config.ts";
-import { addItem, cancelLaunch, defaultBranch, enqueueRun, intakeState } from "./controller.ts";
+import { admit, cancelLaunch, defaultBranch, enqueueRun, HELD_LIMIT, intakeState } from "./controller.ts";
 import { ACTIVE, items, runs, type FactoryRun } from "./db.ts";
-import { HELD_LIMIT } from "./hooks.ts";
 import { asInput, runTool, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
@@ -281,24 +280,15 @@ const scoutRun = (f: FactoryRuntime) => ({
       });
       return;
     }
-    const known = new Set(knownItems(f, scout).map((i) => i.dedupe));
-    const hold = scout.intake !== "auto";
-    let held = items.list(f.s, { open: true }).filter((i) => i.source === id && i.phase === "held").length;
     const filed: string[] = [];
     const duplicates: string[] = [];
     const overHeld: string[] = [];
     for (const finding of findings) {
-      if (known.has(finding.key)) {
-        duplicates.push(finding.key);
-        continue;
-      }
-      if (hold && held >= HELD_LIMIT) {
-        overHeld.push(finding.key);
-        continue;
-      }
-      const item = addItem(f, {
+      const item = admit(f, {
         source: id,
         repo: scout.repo,
+        intake: scout.intake,
+        dedupeWindow: scout.dedupeWindow,
         incoming: {
           externalId: `scout:${id}:${run.id}:${finding.key}`,
           key: `${id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
@@ -306,11 +296,10 @@ const scoutRun = (f: FactoryRuntime) => ({
           snapshot: { title: finding.title, body: finding.body, run: run.id },
           dedupe: finding.key,
         },
-        hold,
       });
-      known.add(finding.key);
-      filed.push(item.key);
-      if (hold) held++;
+      if (item === "duplicate") duplicates.push(finding.key);
+      else if (item === "full") overHeld.push(finding.key);
+      else filed.push(item.key);
     }
     const skipped = [...duplicates, ...overHeld];
     runs.update(f.s, run.id, { checked: { kind: "scout", source: id, filed, skipped } });

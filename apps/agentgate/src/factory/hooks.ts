@@ -6,9 +6,8 @@ import { z } from "zod";
 import { checkRelayUrl, relayUrl } from "../relay.ts";
 import { hookUrl, queueDelete, type HookEndpoint } from "../remote.ts";
 import { serialTask } from "../runtime.ts";
-import { currentFolder, durationMs } from "./config.ts";
-import { addItem, pollSource } from "./controller.ts";
-import { items } from "./db.ts";
+import { currentFolder } from "./config.ts";
+import { admit, HELD_LIMIT, pollSource } from "./controller.ts";
 import type { FactoryRuntime } from "./runtime.ts";
 import { deleteSecret, getSecret, resolveSecretRef, setSecret } from "./secrets.ts";
 
@@ -130,10 +129,6 @@ function render(template: string, delivery: { body: string; json: unknown; heade
 
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
-/** Deliveries of one source waiting for approval before the next one is refused: a URL that leaked, unsigned, could
- * otherwise fill the board and pause every other source's intake. */
-export const HELD_LIMIT = 20;
-
 const answer = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
 /** Sources whose held items reached HELD_LIMIT, so the refusal is noted once. */
 const capped = new WeakMap<FactoryRuntime, Set<string>>();
@@ -188,10 +183,24 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
     f.events.emit({ kind: "note", text: `A delivery to ${source.id} was refused: its title template rendered empty` });
     return answer(422, { error: "the delivery has no title" });
   }
-  const waiting = items.list(f.s, { open: true }).filter((i) => i.source === source.id && i.phase === "held").length;
+  const dedupe = source.dedupe && cut(render(source.dedupe, delivery).trim(), 300);
+  const admitted = admit(f, {
+    source: source.id,
+    repo: source.repo,
+    intake: source.intake,
+    dedupeWindow: source.dedupeWindow,
+    incoming: {
+      externalId: crypto.randomUUID(),
+      key: `${source.id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
+      title,
+      snapshot: { title, body: cut(render(source.body, delivery), 32_000) },
+      ...(dedupe && { dedupe }),
+    },
+  });
   let full = capped.get(f);
   if (!full) capped.set(f, (full = new Set()));
-  if (waiting >= HELD_LIMIT) {
+  if (admitted === "duplicate") return answer(200, { ok: true, duplicate: true });
+  if (admitted === "full") {
     // Once per filling: a flood of deliveries would otherwise flood the event list too.
     if (!full.has(source.id))
       f.events.emit({
@@ -202,23 +211,7 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
     return answer(429, { error: "too many deliveries wait for approval" });
   }
   full.delete(source.id);
-  const dedupe = source.dedupe && cut(render(source.dedupe, delivery).trim(), 300);
-  if (dedupe && items.hasDedupe(f.s, source.id, dedupe, f.s.now() - durationMs(source.dedupeWindow)))
-    return answer(200, { ok: true, duplicate: true });
-  const text = cut(render(source.body, delivery), 32_000);
-  const item = addItem(f, {
-    source: source.id,
-    repo: source.repo,
-    incoming: {
-      externalId: crypto.randomUUID(),
-      key: `${source.id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
-      title,
-      snapshot: { title, body: text },
-      ...(dedupe && { dedupe }),
-    },
-    hold: source.intake !== "auto",
-  });
-  return answer(202, { ok: true, item: item.key });
+  return answer(202, { ok: true, item: admitted.key });
 }
 
 export function setup(f: FactoryRuntime): void {
