@@ -6,7 +6,6 @@ import {
   items,
   runs,
   scores,
-  transcripts,
   trimFactory,
   type FactoryItem,
   type FactoryRun,
@@ -54,7 +53,7 @@ function caller(handler: ReturnType<typeof app>) {
 const useFactory = (s: Store, node: string) =>
   s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/api", node } });
 
-test("items, runs, transcripts and scores keep every field, and the tables survive being created again", () => {
+test("items, runs and scores keep every field, and the tables survive being created again", () => {
   const { s } = fixture();
   ensureFactoryTables(s);
 
@@ -122,8 +121,6 @@ test("items, runs, transcripts and scores keep every field, and the tables survi
   // A value no kind reads is no run data.
   s.db.run("update factory_runs set checked=? where id=?", [JSON.stringify({ checks: "passing" }), "run_1"]);
   expect(runs.get(s, "run_1")!.checked).toBeUndefined();
-  transcripts.put(s, "run_1", "the transcript");
-  expect(transcripts.get(s, "run_1")).toBe("the transcript");
   const learn = runs.insert(s, {
     id: "run_2",
     kind: "learn",
@@ -159,7 +156,7 @@ test("items, runs, transcripts and scores keep every field, and the tables survi
   expect(scores.since(s, 51)).toEqual([]);
 });
 
-test("open items stay; items finished 90 days ago go with their runs, transcripts and scores", () => {
+test("open items stay; items finished 90 days ago go with their runs and scores", () => {
   const { s } = fixture();
   const day = 24 * 3600_000;
   const base = { source: "bugs", repo: "acme/api", title: "t", snapshot: {}, configCommit: "c", tokens: 0 };
@@ -174,7 +171,6 @@ test("open items stay; items finished 90 days ago go with their runs, transcript
       nudges: 0,
       configCommit: "c",
     });
-    transcripts.put(s, `run_${id}`, "transcript");
     scores.put(s, {
       run: `run_${id}`,
       scorer: "x",
@@ -197,8 +193,7 @@ test("open items stay; items finished 90 days ago go with their runs, transcript
   expect(items.list(s).map((i) => i.id)).toEqual(["old-open", "recent-done"]);
   expect(runs.list(s).map((r) => r.id)).toEqual(["run_old-open", "run_recent-done"]);
   expect(scores.forRun(s, "run_old-done")).toEqual([]);
-  expect(transcripts.get(s, "run_old-done")).toBeUndefined();
-  expect(transcripts.get(s, "run_old-open")).toBe("transcript");
+  expect(scores.forRun(s, "run_old-open")).toHaveLength(1);
   expect(items.list(s, { open: true }).map((i) => i.id)).toEqual(["old-open"]);
   expect(items.list(s, { finishedSince: 85 * day }).map((i) => i.id)).toEqual(["old-open"]);
 });

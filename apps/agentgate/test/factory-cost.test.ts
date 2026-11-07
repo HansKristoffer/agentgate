@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { items, newId, runs, transcripts } from "../src/factory/db.ts";
+import { items, newId, runs } from "../src/factory/db.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode } from "./fixtures/t3-mcp.ts";
 
@@ -20,9 +20,8 @@ const timed = async (fn: () => unknown) => {
   return performance.now() - started;
 };
 
-test("with 500 reported runs and their 256 KiB transcripts, a dispatch pass and a board each take under 25 ms", async () => {
+test("with 500 reported runs, a dispatch pass and a board each take under 25 ms", async () => {
   const n = await factoryNode(cleanup, { config: { limits: { threads: 3 } } });
-  const transcript = "x".repeat(256 * 1024);
   for (let i = 0; i < 125; i++) {
     const item = items.insert(n.s, {
       id: newId("it"),
@@ -36,7 +35,7 @@ test("with 500 reported runs and their 256 KiB transcripts, a dispatch pass and 
       configCommit: n.commit,
     });
     for (const kind of ["triage", "implement", "review", "judge"] as const) {
-      const run = runs.insert(n.s, {
+      runs.insert(n.s, {
         id: newId("run"),
         ...(kind !== "judge" && { item: item.id }),
         kind,
@@ -47,7 +46,6 @@ test("with 500 reported runs and their 256 KiB transcripts, a dispatch pass and 
         configCommit: n.commit,
         endedAt: n.s.now(),
       });
-      transcripts.put(n.s, run.id, transcript);
     }
   }
   // An item held before its stage: dispatch looks at its queued run on every pass.

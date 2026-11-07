@@ -1,8 +1,8 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { items, runs, transcripts } from "../src/factory/db.ts";
+import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
-import { itemOutcome, runTokens } from "../src/factory/records.ts";
+import { itemOutcome, runTokens, runTranscript } from "../src/factory/records.ts";
 import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { recordSessionUsage } from "../src/llm/sessions.ts";
 import { host } from "../src/logins.ts";
@@ -31,7 +31,7 @@ const loop = (f: FactoryRuntime, name: string) =>
     f.loops.find((l) => l.name === name)!,
   );
 
-test("a run that ends keeps the start and the newest of its transcript in 256 KiB, and the tokens of its thread and its subagent threads", async () => {
+test("a run that ends records the tokens of its thread and its subagent threads, and its transcript is read live: the start and the newest in 256 KiB", async () => {
   const n = await prFactory(cleanup);
   const { item, run } = await n.implementing(1);
   const thread = n.t3.threads.get(run.threadId!)!;
@@ -72,7 +72,7 @@ test("a run that ends keeps the start and the newest of its transcript in 256 Ki
     checked: { kind: "implement", pr: pr.url, head: pr.headRefOid },
     commitSha: pr.headRefOid,
   });
-  const transcript = transcripts.get(n.s, run.id)!;
+  const transcript = (await runTranscript(n.f, recorded))!;
   expect(new TextEncoder().encode(transcript).length).toBeLessThanOrEqual(256 * KiB);
   // The brief and the first steps stay, and so does the end of the run.
   expect(transcript).toStartWith("## user\n\nImplement gh-1");
@@ -190,26 +190,6 @@ test("a budget stop in pr reads no thread and sends no nudge, a merge still ship
   expect(n.implementRuns(after).map((r) => r.state)).toEqual(["reported"]);
   await n.pollPrs();
   expect(n.sent(retried.run.threadId!)).toEqual([expect.stringContaining("its checks fail")]);
-});
-
-test("once its item ships, an implement run's transcript is read again: its start, and what its thread did after the report", async () => {
-  const n = await prFactory(cleanup);
-  const { item, run, pr } = await n.opened(1);
-  await n.until(() => transcripts.get(n.s, run.id) !== undefined, "the report's transcript");
-  const conversation = [
-    { id: "m1", role: "user", text: "Implement the fix for issue 1", attachments: [] },
-    { id: "m2", role: "assistant", text: "Opened the draft PR.", attachments: [] },
-    { id: "m3", role: "user", text: "Its checks fail.", attachments: [] },
-    { id: "m4", role: "assistant", text: "Pushed a fix for the failing check.", attachments: [] },
-  ];
-  n.t3.threads.get(run.threadId!)!.conversation = conversation;
-  expect(transcripts.get(n.s, run.id)).not.toContain("Pushed a fix");
-
-  pr.state = "MERGED";
-  await n.pollPrs();
-  expect(items.get(n.s, item.id)!.phase).toBe("shipped");
-  expect(transcripts.get(n.s, run.id)).toContain("Implement the fix for issue 1");
-  expect(transcripts.get(n.s, run.id)).toContain("Pushed a fix for the failing check.");
 });
 
 test("the token loop reads a thread's projections when a subagent starts, not every time the thread changes", async () => {

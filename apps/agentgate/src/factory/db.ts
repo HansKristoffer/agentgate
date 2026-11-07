@@ -159,10 +159,6 @@ export function ensureFactoryTables(s: Store) {
     s.db.run("create index if not exists factory_runs_kind on factory_runs(kind, source, queued_at)");
     // The MCP gateway finds a session's run by its thread on every tool call.
     s.db.run("create index if not exists factory_runs_thread on factory_runs(thread_id)");
-    // Kept apart from the runs, which the dispatch loop and the board read often: a transcript is up to 256 KiB.
-    s.db.run(
-      "create table if not exists factory_transcripts (run text primary key, text text not null, at integer not null)",
-    );
     s.db.run(`create table if not exists factory_scores (
       run text not null, scorer text not null, label text not null, score real not null, passed integer not null,
       reasoning text not null, judge_run text not null, at integer not null, primary key (run, scorer))`);
@@ -484,14 +480,6 @@ export const runs = {
     ]),
 };
 
-/** A run's transcript, read only by judges and the learning thread. */
-export const transcripts = {
-  get: (s: Store, run: string) =>
-    (s.db.query("select text from factory_transcripts where run=?").get(run) as { text: string } | null)?.text,
-  put: (s: Store, run: string, text: string) =>
-    s.db.run("insert or replace into factory_transcripts (run, text, at) values (?, ?, ?)", [run, text, s.now()]),
-};
-
 const toScore = (r: Row): FactoryScore => ({
   run: r.run as string,
   scorer: r.scorer as string,
@@ -532,8 +520,7 @@ export function trimFactory(s: Store) {
     s.db.run("delete from factory_runs where item in (select id from factory_items where finished_at < ?)", [before]);
     s.db.run("delete from factory_items where finished_at < ?", [before]);
     s.db.run("delete from factory_runs where item is null and ended_at < ?", [before]);
-    for (const table of ["factory_scores", "factory_transcripts"])
-      s.db.run(`delete from ${table} where run not in (select id from factory_runs)`);
+    s.db.run("delete from factory_scores where run not in (select id from factory_runs)");
     s.db.run(
       "delete from factory_writebacks where item not in (select id from factory_items) and item not in (select id from factory_runs)",
     );

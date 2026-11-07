@@ -3,8 +3,9 @@ import type { FactoryBoard, FactoryReport, ScorerFile } from "@agentgate/protoco
 import { renderBrief } from "./briefs.ts";
 import { folderAt, folderFor } from "./config.ts";
 import { cancelLaunch, defaultBranch, enqueueRun } from "./controller.ts";
-import { dataOf, isStage, items, runs, scores, transcripts, type FactoryRun } from "./db.ts";
-import type { FactoryRuntime, LaunchSpec, ToolCaller } from "./runtime.ts";
+import { dataOf, isStage, items, runs, scores, type FactoryRun } from "./db.ts";
+import { runTranscript } from "./records.ts";
+import { shortError, type FactoryRuntime, type LaunchSpec, type ToolCaller } from "./runtime.ts";
 
 /**
  * AI judges. Each `scorers/<name>.md` grades a sample of the reported runs of its stages in a judge thread of
@@ -150,7 +151,7 @@ const judge = (f: FactoryRuntime) => ({
 });
 
 /** D35: routing, not security. A judge thread reads the run it grades, from the machine that holds the judge run. */
-function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
+async function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
   const head = caller.thread ? runs.byThreads(f.s, [caller.thread]).find((r) => r.kind === "judge") : undefined;
   const found = head && runs.get(f.s, head.id);
   const judgeRun = found?.node === caller.node ? found : undefined;
@@ -177,7 +178,9 @@ function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
     commit: run.commitSha,
     report: run.report,
     checked: run.checked,
-    transcript: transcripts.get(f.s, run.id),
+    transcript: await runTranscript(f, run).catch(
+      (e) => `The factory could not read this run's thread from T3 Code: ${shortError(e)}`,
+    ),
   };
 }
 

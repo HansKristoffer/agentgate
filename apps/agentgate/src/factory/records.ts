@@ -4,7 +4,7 @@ import { projection, t3Client } from "../handoff/t3.ts";
 import { sessionUsage } from "../llm/sessions.ts";
 import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
 import { interruptItem, setNeedsYou, writeBack } from "./controller.ts";
-import { isOpenPhase, items, runs, transcripts, type FactoryItem, type FactoryRun } from "./db.ts";
+import { isOpenPhase, items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { COLLABORATORS, isRevertOf, prState, prView, revertsSince } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import { mirrorOf } from "./mirror.ts";
@@ -21,7 +21,7 @@ const MINUTE = 60_000;
 const HOUR = 3600_000;
 const DAY = 86_400_000;
 const TRANSCRIPT_BYTES = 256 * 1024;
-/** The start of a transcript holds the brief and the first steps, which judges and the learning thread read too. */
+/** The start of a transcript holds the brief and the first steps, which judges read too. */
 const HEAD_BYTES = 64 * 1024;
 const SESSION_ID = /^[\w-]{1,128}$/;
 
@@ -49,8 +49,7 @@ function subagents(f: FactoryRuntime, thread: string) {
   return found;
 }
 
-const threadRecordSchema = z.object({ sessions: z.array(z.string()), transcript: z.string().optional() });
-type ThreadRecord = z.infer<typeof threadRecordSchema>;
+type ThreadRecord = { sessions: string[]; transcript?: string };
 
 /** One read of T3's projections gives both: each provider thread's native session id (a subagent thread has its own
  * session), and the thread's messages. It works on any machine connected to T3 Code, unlike the factory's T3 MCP
@@ -88,21 +87,21 @@ const usageSchema = z.array(
 const total = (rows: z.infer<typeof usageSchema>) =>
   rows.reduce((sum, r) => sum + r.input + r.output + r.cacheRead + r.cacheWrite, 0);
 
-/** Tokens, the number of provider sessions found and, when asked, the transcript of a run's thread, which is always
- * this machine's: a handoff detaches it. */
-async function measure(f: FactoryRuntime, run: FactoryRun, withTranscript: boolean) {
+/** Tokens and the provider sessions found of a run's thread, which is always this machine's: a handoff detaches it. */
+async function measure(f: FactoryRuntime, run: FactoryRun) {
   if (!run.threadId) return undefined;
-  const record = await threadRecord(f, run.threadId, withTranscript);
-  return {
-    tokens: total(sessionUsage(f.s, record.sessions)),
-    sessions: record.sessions,
-    transcript: record.transcript,
-  };
+  const record = await threadRecord(f, run.threadId, false);
+  return { tokens: total(sessionUsage(f.s, record.sessions)), sessions: record.sessions };
 }
 
 /** The run's tokens now, read from T3 and the proxies' counts. */
 export async function runTokens(f: FactoryRuntime, run: FactoryRun): Promise<number> {
-  return (await measure(f, run, false))?.tokens ?? 0;
+  return (await measure(f, run))?.tokens ?? 0;
+}
+
+/** The run's thread as T3 holds it now, for the judge grading it: nothing is stored, so a thread T3 deleted has none. */
+export async function runTranscript(f: FactoryRuntime, run: FactoryRun): Promise<string | undefined> {
+  return run.threadId ? (await threadRecord(f, run.threadId, true)).transcript : undefined;
 }
 
 // ---- recording runs
@@ -127,32 +126,29 @@ async function enforceBudget(f: FactoryRuntime, id: string) {
   writeBack(f, after, "waiting", { text: question, ref: `budget:${budget}` });
 }
 
-/** Stores the run's tokens, and its transcript once it ended; `transcript` reads it again even when it has one. */
-async function record(f: FactoryRuntime, run: FactoryRun, options: { transcript?: boolean } = {}) {
-  const ended = run.endedAt !== undefined;
-  const withTranscript = options.transcript ?? (ended && transcripts.get(f.s, run.id) === undefined);
-  const measured = await measure(f, run, withTranscript);
+/** Stores the run's tokens. */
+async function record(f: FactoryRuntime, run: FactoryRun) {
+  const measured = await measure(f, run);
   if (!measured) return;
-  if (measured.transcript !== undefined) transcripts.put(f.s, run.id, measured.transcript);
   const item = saveTokens(f, run, measured.tokens, measured.sessions.length);
   // A step of its own, queued behind whatever the item is doing; never from inside one (a finished item has no budget).
   if (item && isOpenPhase(item.phase)) await withItem(f, item.id, () => enforceBudget(f, item.id));
 }
 
-/** A run that just ended: its tokens and transcript. */
+/** A run that just ended: its tokens. */
 export const recordRun = (f: FactoryRuntime, run: FactoryRun) => record(f, run);
 
 /** An item that just finished: its threads may have kept working after their runs reported (an implement thread owns
- * its PR), so their transcripts are read again. */
+ * its PR), so their tokens are read again. */
 export async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
   for (const run of runs.forItem(f.s, item.id))
     if (run.threadId && run.state === "reported")
-      await record(f, run, { transcript: true }).catch((e) =>
+      await record(f, run).catch((e) =>
         f.events.emit({
           kind: "note",
           run: run.id,
           item: item.id,
-          text: `Reading the transcript of ${run.id} failed: ${shortError(e)}`,
+          text: `Reading the tokens of ${run.id} failed: ${shortError(e)}`,
         }),
       );
 }
@@ -178,7 +174,7 @@ async function currentTokens(f: FactoryRuntime, run: FactoryRun) {
   const threads = [run.threadId!, ...subagents(f, run.threadId!)].sort().join(",");
   const known = memory.get(run.id);
   if (known?.threads !== threads) {
-    const measured = await measure(f, run, false);
+    const measured = await measure(f, run);
     if (!measured) return undefined;
     memory.set(run.id, { threads, sessions: measured.sessions });
     return measured;

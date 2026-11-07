@@ -184,8 +184,8 @@ export function withSummary(body: string, summary: string): string {
 async function release(f: FactoryRuntime, item: FactoryItem, reason: string) {
   noted.get(f)?.delete(item.id);
   await interruptItem(f, item.id, reason);
-  // The threads kept working after their runs reported: their transcripts are read again, after this step.
-  later(f, item.id, `Reading ${item.key}'s transcripts`, async () => {
+  // The threads kept working after their runs reported: their tokens are read again, after this step.
+  later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
     const finished = items.get(f.s, item.id);
     if (finished) await recordItemEnd(f, finished);
   });

@@ -311,7 +311,7 @@ function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
   touched(f, item, "answer", "answered in T3 Code");
 }
 
-/** Ends a run. Judges then sample it, and its tokens and transcript are read. The event names `patch.error`, when
+/** Ends a run. Judges then sample it, and its tokens are read. The event names `patch.error`, when
  * given, as why the run ended. */
 export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
   const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
@@ -332,7 +332,7 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
       kind: "note",
       run: run.id,
       ...(run.item && { item: run.item }),
-      text: `Recording the transcript and tokens of ${run.id} failed: ${shortError(e)}`,
+      text: `Recording the tokens of ${run.id} failed: ${shortError(e)}`,
     }),
   );
   return ended;
