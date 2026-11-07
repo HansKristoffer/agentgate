@@ -23,6 +23,7 @@ afterEach(async () => {
 /** A relay stand-in: records endpoint PUTs, and forwards a delivery to the socket of the endpoint it names. */
 function fakeRelay() {
   const puts = new Map<string, { kind?: string; enabled: boolean }>();
+  const deletes: string[] = [];
   const sockets = new Map<string, ServerWebSocket<{ key: string }>>();
   const replies = new Map<string, (frame: { status: number; body: string }) => void>();
   const server = Bun.serve<{ key: string }>({
@@ -31,6 +32,10 @@ function fakeRelay() {
       const [, , key] = new URL(req.url).pathname.split("/");
       if (req.method === "PUT") {
         puts.set(key!, (await req.json()) as never);
+        return Response.json({ ok: true });
+      }
+      if (req.method === "DELETE") {
+        deletes.push(key!);
         return Response.json({ ok: true });
       }
       if (srv.upgrade(req, { data: { key: key! } })) return undefined;
@@ -54,7 +59,7 @@ function fakeRelay() {
     sockets.get(key)!.send(JSON.stringify({ t: "req", id, ...delivery }));
     return reply;
   };
-  return { url: `http://127.0.0.1:${server.port}`, puts, sockets, deliver };
+  return { url: `http://127.0.0.1:${server.port}`, puts, deletes, sockets, deliver };
 }
 
 const sign = (secret: string, body: string, encoding: "hex" | "base64" = "hex") =>
@@ -228,6 +233,18 @@ test("a source removed from the folder loses its URL: the ~hook secret goes and 
   expect(getSecret(n.s, "~hook:alerts")).toBeUndefined();
   expect(JSON.parse(n.s.local("remote:delete")!)).toEqual([expect.objectContaining({ key })]);
   await n.until(() => relay.sockets.get(key)?.readyState === WebSocket.CLOSED, "the hook socket to close");
+});
+
+test("when the factory moves to another machine, this one closes its hook socket but leaves the URL at the relay for the next", async () => {
+  const { n, relay, hook } = await hookedFactory((repo) => [alerts(repo)]);
+  const { key } = hook("alerts");
+  await n.until(() => relay.sockets.has(key), "the hook socket");
+  n.s.put("setting", "settings", { ...n.s.settings(), factory: { ...n.s.settings().factory!, node: "b" } });
+  n.ctx.remote.reconcile();
+  await n.until(() => relay.sockets.get(key)?.readyState === WebSocket.CLOSED, "the hook socket to close");
+  await Bun.sleep(50); // a queued deletion is sent without being awaited
+  expect(relay.deletes).toEqual([]);
+  expect(getSecret(n.s, "~hook:alerts")).toBeDefined();
 });
 
 test("no listener serves a hook: a signed delivery to the daemon's own routes adds nothing", async () => {
