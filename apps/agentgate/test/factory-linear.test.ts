@@ -16,13 +16,14 @@ afterEach(async () => {
 
 const KEY = "lin_api_test_key_123";
 
-/** How the item's comment for a moment ended: posted, failed or uncertain. */
-const statusOf = (n: { s: { db: import("bun:sqlite").Database } }, item: string, moment: string) =>
-  (
-    n.s.db.query("select status from factory_writebacks where item=? and moment=?").get(item, moment) as {
-      status: string;
-    } | null
-  )?.status;
+type Node = Awaited<ReturnType<typeof factoryNode>>;
+
+/** How the item's last comment for a moment ended, as `factory show` tells it: posted, failed, uncertain or pending. */
+async function statusOf(n: Node, item: string, moment: string) {
+  const { output } = await n.command("show", item, "--json");
+  const detail = JSON.parse(output.at(-1)!) as { writebacks: { moment: string; status: string }[] };
+  return detail.writebacks.findLast((w) => w.moment === moment)?.status;
+}
 const linearConfig = (repo: string) => ({
   sources: [{ id: "eng", type: "linear", repo, team: "ENG", label: "factory", apiKey: "secret:LINEAR_KEY" }],
 });
@@ -153,7 +154,7 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
 
   writeBack(n.f, item, "waiting", { text: "Which endpoint should keep the old field?", ref: "q1" });
   await idle(n.f);
-  expect(statusOf(n, item.id, "waiting")).toBe("posted");
+  expect(await statusOf(n, item.id, "waiting")).toBe("posted");
   const created = linear.requests.filter((r) => r.operation === "FactoryComment").slice(1);
   expect(created).toHaveLength(1);
   expect(created[0]!.variables.issueId).toBe(linear.issues.get("ENG-42")!.id);
@@ -230,7 +231,7 @@ test("a comment whose request dropped is uncertain and never sent again, and one
   });
   writeBack(n.f, item, "waiting", { text: "Which one?", ref: "q1" });
   await idle(n.f);
-  expect(statusOf(n, item.id, "waiting")).toBe("uncertain");
+  expect(await statusOf(n, item.id, "waiting")).toBe("uncertain");
   expect(texts()).toContain("The waiting comment on eng-42: uncertain (Linear is not reachable)");
   linear.answerWith((operation) =>
     operation === "FactoryComment"
@@ -239,14 +240,14 @@ test("a comment whose request dropped is uncertain and never sent again, and one
   );
   writeBack(n.f, item, "closed", { text: "Out of scope." });
   await idle(n.f);
-  expect(statusOf(n, item.id, "closed")).toBe("pending");
+  expect(await statusOf(n, item.id, "closed")).toBe("pending");
   const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
   for (let pass = 0; pass < 2; pass++) {
     await loopTask(n.f, outbox)();
     await idle(n.f);
   }
-  expect(statusOf(n, item.id, "closed")).toBe("failed");
-  expect(statusOf(n, item.id, "waiting")).toBe("uncertain");
+  expect(await statusOf(n, item.id, "closed")).toBe("failed");
+  expect(await statusOf(n, item.id, "waiting")).toBe("uncertain");
   expect(texts()).toContain("The closed comment on eng-42: failed (Linear: Argument Validation Error)");
 });
 
