@@ -34,7 +34,6 @@ test("with 500 reported runs and their 256 KiB transcripts, a dispatch pass and 
       snapshot: { title: `Item ${i}` },
       phase: "shipped",
       configCommit: n.commit,
-      tokens: 0,
     });
     for (const kind of ["triage", "implement", "review", "judge"] as const) {
       const run = runs.insert(n.s, {

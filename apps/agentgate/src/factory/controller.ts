@@ -149,6 +149,7 @@ export function enqueueRun(
   const run = runs.insert(f.s, {
     id: newId("run"),
     ...(input.item && { item: input.item }),
+    ...(input.checked?.kind === "scout" && { source: input.checked.source }),
     kind: input.kind,
     attempt: input.attempt ?? 1,
     state: "queued",
@@ -199,7 +200,7 @@ export function addItem(
     phase: held ? "held" : "triage",
     ...(held && { needsYou: { reason: "held", question: `Start it with agentgate factory approve ${key}` } }),
     configCommit: folder.commit,
-    tokens: 0,
+    ...(incoming.dedupe && { dedupe: incoming.dedupe }),
   });
   f.events.emit({
     kind: "item.created",
@@ -245,8 +246,7 @@ export function setNeedsYou(f: FactoryRuntime, item: string, needsYou: NeedsYou 
 /** Records something a person did to the item, for the human-touches metric. */
 function touched(f: FactoryRuntime, item: FactoryItem, act: HumanAct, text: string) {
   const current = items.get(f.s, item.id);
-  // Not a change of state: a finished item keeps the time it finished.
-  if (current) items.update(f.s, item.id, { touches: current.touches + 1, updatedAt: current.updatedAt });
+  if (current) items.update(f.s, item.id, { touches: current.touches + 1 });
   f.events.emit({ kind: "human", item: item.id, act, text: `${item.key}: ${text}` });
 }
 
@@ -1308,7 +1308,7 @@ function reviewState(item: FactoryItem, itemRuns: FactoryRun[]) {
 function tokensUnknown(f: FactoryRuntime, item: FactoryItem) {
   const row = f.s.db
     .query(
-      "select count(*) as n from factory_run_tokens t join factory_runs r on r.id = t.run where t.item=? and t.sessions=0 and r.started_at < ?",
+      "select count(*) as n from factory_runs where item=? and measured_at is not null and sessions=0 and started_at < ?",
     )
     .get(item.id, f.s.now() - 10 * 60_000) as { n: number };
   return row.n > 0;
@@ -1423,14 +1423,6 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
 /** `agentgate factory show <item>`: the item with its runs, what the factory posted for it, and its events. */
 function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
   const { s } = f;
-  const tokens = new Map(
-    (
-      s.db.query("select run, tokens from factory_run_tokens where item=?").all(item.id) as {
-        run: string;
-        tokens: number;
-      }[]
-    ).map((r) => [r.run, r.tokens]),
-  );
   const events = s.db
     .query("select seq, at, kind, text from factory_events where item=? order by seq desc limit 100")
     .all(item.id) as { seq: number; at: number; kind: string; text: string }[];
@@ -1444,7 +1436,7 @@ function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
       ...(r.node && { node: r.node }),
       ...(r.threadLink && { threadLink: r.threadLink }),
       ...(r.error && { error: r.error }),
-      tokens: tokens.get(r.id) ?? 0,
+      tokens: r.tokens,
       queuedAt: r.queuedAt,
       ...(r.startedAt && { startedAt: r.startedAt }),
       ...(r.endedAt && { endedAt: r.endedAt }),

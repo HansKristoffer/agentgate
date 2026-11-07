@@ -111,7 +111,6 @@ async function learnFactory(files: Record<string, string> = {}) {
         snapshot: {},
         phase: "shipped",
         configCommit: n.commit,
-        tokens: 0,
       });
     },
   };

@@ -218,7 +218,6 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
     snapshot: {},
     phase: "implement",
     configCommit: good,
-    tokens: 0,
   });
   cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
   writeFileSync(join(git.work, "factory", "rulings.md"), "# Rulings\n\nNo new dependencies.\n");

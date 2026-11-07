@@ -141,9 +141,9 @@ const judge = (f: FactoryRuntime) => ({
 
 /** D35: routing, not security. A judge thread reads the run it grades, from the machine that holds the judge run. */
 function runView(f: FactoryRuntime, id: string, caller: ToolCaller) {
-  const judgeRun = caller.thread
-    ? runs.list(f.s, { kinds: ["judge"] }).find((r) => r.threadId === caller.thread && r.node === caller.node)
-    : undefined;
+  const head = caller.thread ? runs.byThreads(f.s, [caller.thread]).find((r) => r.kind === "judge") : undefined;
+  const found = head && runs.get(f.s, head.id);
+  const judgeRun = found?.node === caller.node ? found : undefined;
   if (!judgeRun) throw new Error("factory_run serves judge threads only; call it from your judge run's thread");
   const graded = judgedOf(judgeRun)?.run;
   if (graded !== id) throw new Error(`Your judge run grades ${graded ?? "no run"}, not ${id}`);

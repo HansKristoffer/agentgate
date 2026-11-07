@@ -121,18 +121,12 @@ const scoutsOf = (folder: LoadedFolder | undefined) =>
 
 const sourceOfRun = (run: FactoryRun) => (run.checked?.kind === "scout" ? run.checked.source : undefined);
 
-const runsOf = (f: FactoryRuntime, id: string) =>
-  runs.list(f.s, { kinds: ["scout"] }).filter((r) => sourceOfRun(r) === id);
-
-const dedupeKey = (snapshot: unknown) =>
-  snapshot && typeof snapshot === "object" ? (snapshot as { dedupe?: unknown }).dedupe : undefined;
+const runsOf = (f: FactoryRuntime, id: string) => runs.list(f.s, { kinds: ["scout"], source: id });
 
 /** The scout's items that block a finding with the same key: open, or finished within its `dedupeWindow`. */
 function knownItems(f: FactoryRuntime, scout: Scout) {
   const since = f.s.now() - durationMs(scout.dedupeWindow);
-  return items
-    .list(f.s, { finishedSince: since })
-    .filter((i) => i.source === scout.id && typeof dedupeKey(i.snapshot) === "string");
+  return items.list(f.s, { finishedSince: since }).filter((i) => i.source === scout.id && i.dedupe !== undefined);
 }
 
 function scoutOf(f: FactoryRuntime, id: string) {
@@ -216,7 +210,7 @@ function context(f: FactoryRuntime, run: FactoryRun, scout: Scout, prompt: strin
     known.length
       ? [
           `The factory skips a finding whose key one of these has: they are open, or finished in the last ${scout.dedupeWindow}. Report a listed problem again only under its own key, and only when it matters that it is still there.`,
-          ...known.map((i) => `- \`${String(dedupeKey(i.snapshot))}\`: ${i.title} (${i.key}, ${i.phase})`),
+          ...known.map((i) => `- \`${i.dedupe}\`: ${i.title} (${i.key}, ${i.phase})`),
         ].join("\n")
       : "This scout has no open tickets and none finished recently.",
   ].join("\n\n");
@@ -286,7 +280,7 @@ const scoutRun = (f: FactoryRuntime) => ({
       });
       return;
     }
-    const known = new Set(knownItems(f, scout).map((i) => dedupeKey(i.snapshot)));
+    const known = new Set(knownItems(f, scout).map((i) => i.dedupe));
     const hold = scout.intake !== "auto";
     let held = items.list(f.s, { open: true }).filter((i) => i.source === id && i.phase === "held").length;
     const filed: string[] = [];
@@ -308,7 +302,8 @@ const scoutRun = (f: FactoryRuntime) => ({
           externalId: `scout:${id}:${run.id}:${finding.key}`,
           key: `${id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
           title: finding.title,
-          snapshot: { title: finding.title, body: finding.body, dedupe: finding.key, run: run.id },
+          snapshot: { title: finding.title, body: finding.body, run: run.id },
+          dedupe: finding.key,
         },
         hold,
       });

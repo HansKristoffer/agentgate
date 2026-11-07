@@ -67,7 +67,7 @@ function learnWhenDue(f: FactoryRuntime) {
   const folder = currentFolder(f);
   if (!folder) return;
   const every = durationMs(folder.config.learning.every);
-  const anchor = lastLearn(f)?.queuedAt ?? Math.min(...finishedSince(f, 0).map((i) => i.updatedAt));
+  const anchor = lastLearn(f)?.queuedAt ?? Math.min(...finishedSince(f, 0).map((i) => i.finishedAt ?? i.updatedAt));
   if (f.s.now() - anchor < every) return;
   const result = learnNow(f);
   if ("run" in result)
@@ -236,7 +236,7 @@ function runEntry(f: FactoryRuntime, run: FactoryRun) {
   };
 }
 
-function itemEntry(f: FactoryRuntime, item: FactoryItem) {
+function itemEntry(item: FactoryItem) {
   return {
     type: "item" as const,
     id: item.id,
@@ -246,9 +246,9 @@ function itemEntry(f: FactoryRuntime, item: FactoryItem) {
     ...(item.url && { url: item.url }),
     phase: item.phase,
     ...(item.prUrl && { prUrl: item.prUrl }),
-    outcome: itemOutcome(f, item),
+    outcome: itemOutcome(item),
     createdAt: item.createdAt,
-    finishedAt: item.updatedAt,
+    finishedAt: item.finishedAt,
   };
 }
 
@@ -257,7 +257,7 @@ function historyEntries(f: FactoryRuntime, repo: string | undefined, since: numb
   const entries: object[] = [];
   for (const item of finishedSince(f, since)) {
     if (repo && item.repo.toLowerCase() !== repo.toLowerCase()) continue;
-    entries.push(itemEntry(f, item));
+    entries.push(itemEntry(item));
     for (const run of runs.forItem(f.s, item.id)) entries.push(runEntry(f, run));
   }
   for (const run of learnRuns(f))

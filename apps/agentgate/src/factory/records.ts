@@ -128,24 +128,10 @@ export async function runTokens(f: FactoryRuntime, run: FactoryRun): Promise<num
 
 // ---- recording runs
 
-/** Tokens only grow: a subagent thread T3 dropped, or a machine that cannot be reached, does not lower the count. */
+/** Records the run's measurement; the item, whose tokens are its runs' sum, when it has one. */
 function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number, sessions: number) {
-  const { s } = f;
-  s.db.run(
-    `insert into factory_run_tokens (run, item, tokens, sessions, at) values (?, ?, ?, ?, ?)
-     on conflict(run) do update set tokens=max(tokens, excluded.tokens), sessions=max(sessions, excluded.sessions), at=excluded.at`,
-    [run.id, run.item ?? null, tokens, sessions, s.now()],
-  );
-  if (!run.item) return undefined;
-  const item = items.get(s, run.item);
-  if (!item) return undefined;
-  const sum = (
-    s.db.query("select coalesce(sum(tokens), 0) as n from factory_run_tokens where item=?").get(item.id) as {
-      n: number;
-    }
-  ).n;
-  // Not a change of state: the item keeps its updatedAt, which tells when a finished item finished.
-  return sum === item.tokens ? item : items.update(s, item.id, { tokens: sum, updatedAt: item.updatedAt });
+  runs.measured(f.s, run.id, tokens, sessions);
+  return run.item ? items.get(f.s, run.item) : undefined;
 }
 
 /** An item over `limits.itemTokens` has its threads stopped and waits for the maintainer, in the phase it reached:
@@ -264,17 +250,16 @@ const prOutcomeSchema = z.object({
 });
 type PrOutcome = z.infer<typeof prOutcomeSchema>;
 
-function storedPr(f: FactoryRuntime, item: string) {
-  const row = f.s.db.query("select pr from factory_outcomes where item=?").get(item) as { pr: string } | null;
-  const parsed = row ? prOutcomeSchema.safeParse(JSON.parse(row.pr)) : undefined;
-  return parsed?.success ? parsed.data : undefined;
+function storedPr(item: FactoryItem) {
+  const parsed = prOutcomeSchema.safeParse(item.outcome);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** The item's outcome: its PR as last read from GitHub, with human touches and tokens as they are now. Hours to merge
  * run from the item entering the factory. Commits on GitHub carry the maintainer's login whether a person or an agent
  * made them, so they are not human touches. */
-export function itemOutcome(f: FactoryRuntime, item: FactoryItem) {
-  const pr = storedPr(f, item.id);
+export function itemOutcome(item: FactoryItem) {
+  const pr = storedPr(item);
   const merged = pr?.mergedAt ? Date.parse(pr.mergedAt) : undefined;
   return {
     ...(pr && { pr }),
@@ -304,17 +289,12 @@ async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome>
 /** The PR is read once its item finished; a merged one is checked for a revert until 14 days passed. */
 async function refreshPr(f: FactoryRuntime, item: FactoryItem) {
   if (!item.prUrl) return;
-  const known = storedPr(f, item.id);
+  const known = storedPr(item);
   let pr = known;
   if (!pr || pr.state === "OPEN") pr = await readPr({ ...item, prUrl: item.prUrl });
   else if (pr.mergedAt && !pr.reverted && f.s.now() - Date.parse(pr.mergedAt) <= 14 * DAY + HOUR)
     pr = { ...pr, reverted: await mergedRevertOf(item.repo, { ...pr, mergedAt: pr.mergedAt }) };
-  if (JSON.stringify(pr) !== JSON.stringify(known))
-    f.s.db.run("insert or replace into factory_outcomes (item, pr, at) values (?, ?, ?)", [
-      item.id,
-      JSON.stringify(pr),
-      f.s.now(),
-    ]);
+  if (JSON.stringify(pr) !== JSON.stringify(known)) items.update(f.s, item.id, { outcome: pr });
 }
 
 const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
@@ -346,7 +326,7 @@ const median = (values: number[]) => {
 function metrics(f: FactoryRuntime): Omit<FactoryBoard["metrics"], "scorers"> {
   const { s } = f;
   const finished = (days: number) =>
-    items.list(s, { open: false, finishedSince: s.now() - days * DAY }).map((item) => itemOutcome(f, item));
+    items.list(s, { open: false, finishedSince: s.now() - days * DAY }).map((item) => itemOutcome(item));
   const week = finished(7);
   const withPr = week.filter((o) => o.pr);
   const merged = week.filter((o) => o.pr?.state === "MERGED");

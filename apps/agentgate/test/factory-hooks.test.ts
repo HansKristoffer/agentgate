@@ -149,12 +149,14 @@ test("a signed delivery through the relay becomes one held item; a bad signature
   expect(items.list(n.s)).toEqual([]);
 
   expect((await delivery(body)).status).toBe(202);
-  expect(items.list(n.s).map((i) => [i.source, i.phase, i.title, i.snapshot])).toEqual([
+  // The dedupe key is agentgate's, so it stays out of the snapshot a thread reads as untrusted data.
+  expect(items.list(n.s).map((i) => [i.source, i.phase, i.title, i.snapshot, i.dedupe])).toEqual([
     [
       "alerts",
       "held",
       "Disk full on prod",
-      { title: "Disk full on prod", body: "/var is at 99% (from pager/2)", dedupe: "a-1" },
+      { title: "Disk full on prod", body: "/var is at 99% (from pager/2)" },
+      "a-1",
     ],
   ]);
 

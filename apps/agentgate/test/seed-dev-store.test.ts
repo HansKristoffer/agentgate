@@ -20,7 +20,6 @@ test("a seeded dev store keeps no factory pointer, factory items or session usag
     phase: "pr",
     prUrl: "https://github.com/acme/api/pull/7",
     configCommit: "a".repeat(40),
-    tokens: 0,
   });
   recordSessionUsage(s, {
     session: "sess-1",

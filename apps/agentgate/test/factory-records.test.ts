@@ -317,7 +317,7 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
   await n.pollPrs();
   await loop(n.f, "factory-outcomes")();
 
-  const outcome = (id: string) => itemOutcome(n.f, items.get(n.s, id)!);
+  const outcome = (id: string) => itemOutcome(items.get(n.s, id)!);
   const verdicts = (id: string) => runs.forItem(n.s, id).map((r) => r.verdict);
   expect(outcome(merged.item.id)).toEqual({
     pr: {

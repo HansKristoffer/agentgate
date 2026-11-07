@@ -124,7 +124,7 @@ test("approving, retrying and adding by hand are each one human touch, and a que
   n.github.addIssue(1);
   await n.intake();
   const [held] = items.list(n.s);
-  const touches = (item: FactoryItem) => itemOutcome(n.f, items.get(n.s, item.id)!).humanTouches;
+  const touches = (item: FactoryItem) => itemOutcome(items.get(n.s, item.id)!).humanTouches;
 
   expect((await n.command("approve", held!.key)).code).toBe(0);
   expect(touches(held!)).toBe(1);

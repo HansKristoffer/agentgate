@@ -72,7 +72,6 @@ test("items, runs, transcripts and scores keep every field, and the tables survi
     prUrl: "https://github.com/acme/api/pull/13",
     prCommit: "abc1234",
     configCommit: "3f2c1a9",
-    tokens: 1200,
   });
   ensureFactoryTables(s);
   expect(item).toMatchObject({ touches: 0, phaseAt: item.createdAt });
@@ -92,6 +91,7 @@ test("items, runs, transcripts and scores keep every field, and the tables survi
     url: undefined,
     touches: 2,
     updatedAt: item.updatedAt + 1000,
+    finishedAt: item.updatedAt + 1000,
   });
 
   const run: FactoryRun = {
@@ -108,6 +108,8 @@ test("items, runs, transcripts and scores keep every field, and the tables survi
     checked: { kind: "implement", pr: "https://github.com/acme/api/pull/13", head: "abc1234", headAt: 4 },
     verdict: "success",
     nudges: 1,
+    tokens: 0,
+    sessions: 0,
     error: "none",
     configCommit: "3f2c1a9",
     launchSession: "session-1",
@@ -414,4 +416,33 @@ test("an item's steps never overlap and a failed one does not hold up the next; 
   while (f.locks.size) await Promise.all([...f.locks.values()]);
   expect(log.slice(-2)).toEqual(["queued", "later"]);
   expect(f.events.recent(1)[0]).toMatchObject({ item: "it_1", text: "Posting failed: GitHub said no" });
+});
+
+test("an item's tokens are its runs' sum and only grow, and a later change to a finished item keeps when it finished", () => {
+  const { s } = fixture();
+  s.now = () => 1000;
+  items.insert(s, {
+    id: "it_t",
+    source: "bugs",
+    externalId: "acme/api#77",
+    key: "api-77",
+    repo: "acme/api",
+    title: "t",
+    snapshot: {},
+    phase: "implement",
+    configCommit: "c",
+  });
+  for (const id of ["run_a", "run_b"])
+    runs.insert(s, { id, item: "it_t", kind: "implement", attempt: 1, state: "running", nudges: 0, configCommit: "c" });
+  runs.measured(s, "run_a", 500, 1);
+  runs.measured(s, "run_b", 700, 2);
+  runs.measured(s, "run_a", 300, 1); // a dropped subagent thread does not lower the count
+  expect(items.get(s, "it_t")!.tokens).toBe(1200);
+
+  s.now = () => 2000;
+  items.update(s, "it_t", { phase: "shipped" });
+  s.now = () => 9000;
+  items.update(s, "it_t", { touches: 1 });
+  expect(items.get(s, "it_t")).toMatchObject({ finishedAt: 2000, updatedAt: 9000 });
+  expect(items.list(s, { finishedSince: 3000 })).toEqual([]);
 });

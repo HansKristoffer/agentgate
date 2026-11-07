@@ -8,7 +8,7 @@ import { hookUrl, queueDelete, type HookEndpoint } from "../remote.ts";
 import { serialTask } from "../runtime.ts";
 import { currentFolder, durationMs } from "./config.ts";
 import { addItem, pollSource } from "./controller.ts";
-import { items, type FactoryItem } from "./db.ts";
+import { items } from "./db.ts";
 import type { FactoryRuntime } from "./runtime.ts";
 import { deleteSecret, getSecret, resolveSecretRef, setSecret } from "./secrets.ts";
 
@@ -203,12 +203,8 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
   }
   full.delete(source.id);
   const dedupe = source.dedupe && cut(render(source.dedupe, delivery).trim(), 300);
-  if (dedupe) {
-    const since = f.s.now() - durationMs(source.dedupeWindow);
-    const sameKey = (i: FactoryItem) => (i.snapshot as { dedupe?: unknown } | null)?.dedupe === dedupe;
-    const seen = items.list(f.s).some((i) => i.source === source.id && i.createdAt >= since && sameKey(i));
-    if (seen) return answer(200, { ok: true, duplicate: true });
-  }
+  if (dedupe && items.hasDedupe(f.s, source.id, dedupe, f.s.now() - durationMs(source.dedupeWindow)))
+    return answer(200, { ok: true, duplicate: true });
   const text = cut(render(source.body, delivery), 32_000);
   const item = addItem(f, {
     source: source.id,
@@ -217,7 +213,8 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
       externalId: crypto.randomUUID(),
       key: `${source.id}-${crypto.randomUUID().replaceAll("-", "").slice(0, 6)}`,
       title,
-      snapshot: { title, body: text, ...(dedupe && { dedupe }) },
+      snapshot: { title, body: text },
+      ...(dedupe && { dedupe }),
     },
     hold: source.intake !== "auto",
   });

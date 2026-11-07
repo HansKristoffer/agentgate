@@ -113,19 +113,21 @@ async function scoutFactory(scout: Record<string, unknown> = {}) {
       tool("factory_report", { run: run.id, ...body }, runs.get(n.s, run.id)!.threadId),
     /** perf's item for a finding, finished `ago` ms before now. */
     finished(key: string, ago: number) {
-      const item = items.insert(n.s, {
+      const now = n.s.now;
+      n.s.now = () => now() - ago;
+      items.insert(n.s, {
         id: newId("it"),
         source: "perf",
         externalId: crypto.randomUUID(),
         key: `perf-${key}`,
         repo: n.repo,
         title: key,
-        snapshot: { title: key, body: "", dedupe: key },
+        snapshot: { title: key, body: "" },
+        dedupe: key,
         phase: "closed",
         configCommit: n.commit,
-        tokens: 0,
       });
-      items.update(n.s, item.id, { updatedAt: n.s.now() - ago });
+      n.s.now = now;
     },
   };
 }
@@ -244,7 +246,7 @@ test("each finding becomes an item in triage, except one whose key the scout has
   expect(await n.report(run, found("orders", "search", "login"))).toEqual({ accepted: true });
 
   const filed = items.list(n.s, { open: true }).filter((i) => i.source === "perf");
-  expect(filed.map((i) => [i.title, i.phase, (i.snapshot as { dedupe: string }).dedupe])).toEqual([
+  expect(filed.map((i) => [i.title, i.phase, i.dedupe])).toEqual([
     ["Slow orders", "triage", "orders"],
     ["Slow login", "triage", "login"],
   ]);

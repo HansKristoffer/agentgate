@@ -80,6 +80,8 @@ export interface IncomingItem {
   title: string;
   url?: string;
   snapshot: unknown;
+  /** A webhook or scout item's dedupe key, which agentgate chose; it never goes into the untrusted snapshot. */
+  dedupe?: string;
 }
 export interface PostResult {
   status: "posted" | "failed" | "uncertain";
