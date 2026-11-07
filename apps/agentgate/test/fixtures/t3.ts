@@ -1,10 +1,11 @@
 import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import type { ServerWebSocket } from "bun";
 import { claudeProjectKey } from "../../src/handoff/session.ts";
 
 /** A fake T3 Code server speaking the subset agentgate uses: token exchange, the shell snapshot, and Effect RPC frames
- * over a WebSocket. Session import follows upstream: only sessions recorded in a project's main checkout, named
- * `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
+ * over a WebSocket, including the `orchestration.subscribeShell` stream that tests drive through `shell`. Session
+ * import follows upstream: only sessions recorded in a project's main checkout, named `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
  * recognised), and a first turn that fails once. */
 
 type Run = {
@@ -32,12 +33,17 @@ export type FakeThread = {
   runs: Run[];
   settledOverride?: "settled" | "active" | null;
   subagent?: boolean;
+  /** A subagent's parent thread, as T3's lineage names it. */
+  parentThreadId?: string;
   createdAt: string;
   pinnedAt?: string | null;
   pinOrderKey?: string | null;
   activeOrderKey?: string | null;
   sessionId: string;
   failNextTurn?: boolean;
+  /** The shell state a turn driven through `/mcp` set (fixtures/t3-mcp.ts), which every view of the shell shows: the
+   * stream, a resumed stream's snapshot and a poll. Without it the status comes from `runs`. */
+  shell?: { status: string; needsYou: boolean };
   messages: string[];
   conversation?: Message[];
   background?: { kind: string; description: string }[];
@@ -49,7 +55,13 @@ type Project = {
   scripts: { id: string; name: string; command: string; icon: string; runOnWorktreeCreate: boolean }[];
 };
 
-export function fakeT3(options: { claudeDir: string; protocol?: number; label?: string }) {
+export function fakeT3(options: {
+  claudeDir: string;
+  protocol?: number;
+  label?: string;
+  /** Tried before the fake's own routes, on the same origin; `undefined` falls through to them. */
+  routes?: (req: Request) => Response | Promise<Response> | undefined;
+}) {
   const threads = new Map<string, FakeThread>();
   const projects: Project[] = [];
   const pairing = new Set<string>();
@@ -58,9 +70,41 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const commands: Record<string, unknown>[] = [];
   const clones: Record<string, unknown>[] = [];
   const protocol = String(options.protocol ?? 2);
+  /** Open `orchestration.subscribeShell` streams, by socket and request id. */
+  const streams = new Set<{ ws: ServerWebSocket<{ ok: true }>; id: string }>();
+  const exitAll = (exit: unknown) => {
+    for (const sub of streams) sub.ws.send(JSON.stringify({ _tag: "Exit", requestId: sub.id, exit }));
+    streams.clear();
+  };
+  const shell = {
+    /** Send a stream item (`thread.updated`, `project.updated`…) to every open subscription. */
+    push(item: unknown) {
+      for (const sub of streams) sub.ws.send(JSON.stringify({ _tag: "Chunk", requestId: sub.id, values: [item] }));
+    },
+    /** End every open subscription successfully. */
+    end() {
+      exitAll({ _tag: "Success", value: null });
+    },
+    /** End every open subscription with a failure. */
+    fail(message: string) {
+      exitAll({
+        _tag: "Failure",
+        cause: [{ _tag: "Fail", error: { _tag: "OrchestrationV2GetShellSnapshotError", message } }],
+      });
+    },
+    /** Close the sockets of every open subscription. */
+    drop() {
+      for (const sub of streams) sub.ws.close();
+      streams.clear();
+    },
+    acks: 0,
+    subscriptions: [] as { afterSequence?: number }[],
+  };
   const now = () => new Date().toISOString();
   const status = (t: FakeThread) =>
-    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
+    t.shell?.status ??
+    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ??
+    "idle";
   const shellThread = (t: FakeThread) => ({
     id: t.id,
     projectId: t.projectId,
@@ -69,6 +113,9 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     branch: t.branch,
     worktreePath: t.worktreePath,
     status: status(t),
+    ...(t.shell?.needsYou && {
+      pendingRuntimeRequest: { id: "request-1", kind: "user-input", createdAt: t.updatedAt },
+    }),
     archivedAt: t.archivedAt,
     updatedAt: t.updatedAt,
     createdAt: t.createdAt,
@@ -76,7 +123,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     pinOrderKey: t.pinOrderKey ?? null,
     activeOrderKey: t.activeOrderKey ?? null,
     settledOverride: t.settledOverride ?? null,
-    lineage: { relationshipToParent: t.subagent ? "subagent" : null },
+    lineage: { parentThreadId: t.parentThreadId ?? null, relationshipToParent: t.subagent ? "subagent" : null },
   });
   const projection = (t: FakeThread) => ({
     thread: {
@@ -104,6 +151,14 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       },
     ],
   });
+  const snapshot = () => {
+    const all = [...threads.values()];
+    return {
+      threads: all.filter((t) => !t.archivedAt).map(shellThread),
+      archivedThreads: all.filter((t) => t.archivedAt).map(shellThread),
+      projects,
+    };
+  };
   const settle = (t: FakeThread, run: Run, outcome: string, ms = 20) =>
     setTimeout(() => {
       run.status = outcome;
@@ -211,6 +266,9 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
         case "thread.unarchive":
           t.archivedAt = null;
           break;
+        case "thread.settle":
+          t.settledOverride = "settled";
+          break;
         case "thread.unsettle":
           t.settledOverride = "active";
           break;
@@ -250,6 +308,8 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
   const server = Bun.serve<{ ok: true }>({
     port: 0,
     async fetch(req, srv) {
+      const routed = await options.routes?.(req);
+      if (routed) return routed;
       const url = new URL(req.url);
       if (url.pathname === "/oauth/token") {
         const form = new URLSearchParams(await req.text());
@@ -278,12 +338,7 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
       if (url.pathname === "/api/orchestration/shell") {
         if (req.headers.get("x-t3-orchestration-protocol") !== protocol)
           return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
-        const all = [...threads.values()];
-        return Response.json({
-          threads: all.filter((t) => !t.archivedAt).map(shellThread),
-          archivedThreads: all.filter((t) => t.archivedAt).map(shellThread),
-          projects,
-        });
+        return Response.json(snapshot());
       }
       return new Response("not found", { status: 404 });
     },
@@ -295,9 +350,26 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
           tag: string;
           payload: Record<string, unknown>;
         };
+        if (frame._tag === "Ping") return void ws.send(JSON.stringify({ _tag: "Pong" }));
+        if (frame._tag === "Ack") return void shell.acks++;
         if (frame._tag !== "Request") return;
+        // Like upstream: a snapshot first, unless the client resumes after a sequence; then live items from `shell`.
+        if (frame.tag === "orchestration.subscribeShell") {
+          const afterSequence = frame.payload.afterSequence as number | undefined;
+          shell.subscriptions.push(afterSequence === undefined ? {} : { afterSequence });
+          streams.add({ ws, id: frame.id });
+          if (afterSequence === undefined) {
+            const item = {
+              kind: "snapshot",
+              snapshot: { schemaVersion: 2, snapshotSequence: commands.length, ...snapshot() },
+            };
+            ws.send(JSON.stringify({ _tag: "Chunk", requestId: frame.id, values: [item] }));
+          }
+          return;
+        }
         try {
           const handler = rpc[frame.tag];
+          api.reads.set(frame.tag, (api.reads.get(frame.tag) ?? 0) + 1);
           if (!handler) throw { _tag: "RpcNotFound", message: `no method ${frame.tag}` };
           const answer = JSON.stringify({
             _tag: "Exit",
@@ -318,6 +390,9 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
           );
         }
       },
+      close(ws) {
+        for (const sub of streams) if (sub.ws === ws) streams.delete(sub);
+      },
     },
   });
   const url = `http://127.0.0.1:${server.port}`;
@@ -328,10 +403,13 @@ export function fakeT3(options: { claudeDir: string; protocol?: number; label?: 
     commands,
     clones,
     server,
+    shell,
     /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
     homePath: options.claudeDir as string | undefined,
     /** Refuse clones for a missing permission. */
     denyClones: false,
+    /** How many times each RPC method was called. */
+    reads: new Map<string, number>(),
     /** Commands that fail when dispatched. */
     failCommands: new Set<string>(),
     /** Answer the next call of this RPC method late. */

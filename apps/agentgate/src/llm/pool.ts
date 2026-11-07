@@ -19,6 +19,7 @@ import {
   resolveModel,
   route,
 } from "./routing.ts";
+import { recordSessionUsage, sessionFromRequest } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
 export const PLACEHOLDER_TOKEN = "agentgate";
@@ -102,6 +103,8 @@ export async function proxy(
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
     own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
   const session = provider.session?.(req.headers, json);
+  // Session usage counts the factory's runs; with the factory off nothing reads it, so nothing is written.
+  const usageSession = settings.factory ? sessionFromRequest(provider.name, req.headers, json) : undefined;
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount =
     options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);
@@ -122,6 +125,14 @@ export async function proxy(
       end: (outcome) => {
         release();
         telemetry.tokens(observer.tokens);
+        if (usageSession)
+          recordSessionUsage(s, {
+            session: usageSession,
+            provider: provider.name,
+            model: telemetry.tokenModel,
+            ...observer.tokens,
+            at: s.now(),
+          });
         const streamOutcome = outcome === "eof" ? (observer.terminal ?? "eof") : outcome;
         telemetry.finish(
           outcome === "cancelled"

@@ -1,0 +1,282 @@
+import { getErrorMessage } from "hanzio";
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { z } from "zod";
+import {
+  ConfigurationConflict,
+  factoryCommandResultSchema,
+  type FactoryBoard,
+  type FactoryModel,
+  type FactoryPointer,
+  type FactoryReport,
+  type FactorySource,
+  type MarkerPayload,
+  type RunKind,
+} from "@agentgate/protocol";
+import type { Ctx, Env, Listener } from "../daemon.ts";
+import type { Store } from "../store.ts";
+import { FactoryEvents } from "./events.ts";
+import type { FactoryItem, FactoryRun } from "./db.ts";
+import { setupFeatures } from "./features.ts";
+
+/**
+ * The factory's shared runtime. Each feature file registers its routes, commands, tools, loops, run kinds, sources and
+ * board parts here in its own `setup`, so features never edit shared files.
+ */
+
+export { FACTORY_PROTOCOL, requireFactoryProtocol } from "../store.ts";
+
+export type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
+/** thread: `_meta["dev.agentgate/t3Thread"]`, a label the shim adds, not proof; node: the machine that received the call. */
+export interface ToolCaller {
+  thread?: string;
+  node: string;
+}
+export interface FactoryTool {
+  name: string; // e.g. "factory_report"
+  description: string;
+  inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+  local?: boolean; // never forwarded to the factory machine
+  /** Listed only to a factory run's own threads (`threadScope`). */
+  forRuns?: boolean;
+  /** Not listed to agents: a route reaches it through `runTool`, which forwards it to the factory machine. */
+  unlisted?: boolean;
+  /** The value is returned as JSON text; a thrown error becomes a tool error. */
+  call(args: Record<string, unknown>, caller: ToolCaller): Promise<unknown>;
+}
+export interface CommandIO {
+  stdin?: string;
+  out(line: string): void;
+}
+export interface FactoryCommand {
+  usage: string;
+  local?: boolean;
+  /** Returns the exit code. */
+  run(args: string[], io: CommandIO): Promise<number>;
+}
+export interface FactoryLoop {
+  name: string;
+  everyMs: number;
+  where: "factory-node" | "every-node";
+  /** Runs while the factory is off too, to undo what it set up there (a T3 sign-in, the shell stream). Every other
+   * loop does nothing without a pointer: off freezes the items where they are. */
+  whenOff?: true;
+  run(): Promise<void>;
+}
+export interface IncomingItem {
+  externalId: string;
+  key: string;
+  title: string;
+  url?: string;
+  snapshot: unknown;
+  /** A webhook or scout item's dedupe key, which agentgate chose; it never goes into the untrusted snapshot. */
+  dedupe?: string;
+  /** When the issue last changed, as its source lists it: a new comment changes it, so its marker is read again. */
+  updatedAt?: string;
+}
+export interface PostResult {
+  status: "posted" | "failed" | "uncertain";
+  error?: string;
+}
+export interface SourceAdapter {
+  type: SourceType;
+  /** Every open, labelled item now; the controller dedupes. */
+  poll?(source: FactorySource): Promise<IncomingItem[]>;
+  /** Read before every stage, and now and then while its PR is followed: whether the issue is open, and its newest
+   * factory marker, which names the machine holding it (a takeover elsewhere fences this one). One read. */
+  check?(item: FactoryItem): Promise<{ open: boolean; newest?: MarkerPayload }>;
+  /** body is already rendered by markers.ts. */
+  post?(item: FactoryItem, body: string): Promise<PostResult>;
+  newestMarker?(item: Pick<FactoryItem, "source" | "externalId" | "repo">): Promise<MarkerPayload | undefined>;
+}
+export interface LaunchSpec {
+  repo: string; // owner/repo; the controller resolves or creates the T3 project
+  title: string;
+  brief: string; // the complete first message
+  baseRef: string;
+  branch: string;
+  startFromOrigin: boolean;
+  model?: FactoryModel;
+}
+export interface RunKindDefinition {
+  kind: RunKind;
+  countsAsWorking?: boolean; // default true
+  launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }>;
+  /** The model a run of a kind that does not take it from its stage file starts with, so dispatch can check quota
+   * before building the launch, whose work (a PR read, a brief) would otherwise repeat every pass while it waits. */
+  model?(run: FactoryRun): FactoryModel | undefined;
+  /** An error message, or undefined. */
+  validate(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<string | undefined>;
+  accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<void>;
+  /** `approve`/`reject` of a waiting run. */
+  answer?(run: FactoryRun, decision: { approve: boolean; reason?: string }): Promise<void>;
+}
+/** An operation the CLI, the routes and other machines share: typed input in, JSON out. A command formats its result
+ * for the terminal, a route returns it as it is, and another machine's call is forwarded to the factory machine. */
+export interface FactoryOp {
+  local?: boolean; // never forwarded to the factory machine
+  /** The item the input names, `{ item }`: the machine that holds it answers, which may not be the factory machine. */
+  item?: boolean;
+  run(input: unknown): Promise<unknown>;
+}
+export type ForwardOp =
+  | { kind: "tool"; name: string; args: Record<string, unknown>; caller: ToolCaller }
+  | { kind: "command"; name: string; args: string[]; stdin?: string }
+  | { kind: "op"; name: string; input: unknown };
+export type Forwarder = (op: ForwardOp) => Promise<unknown>;
+
+export interface FactoryRuntime {
+  ctx: Ctx;
+  s: Store;
+  events: FactoryEvents;
+  api: Hono<Env>; // mounted at /api/factory, behind management()'s guards
+  peer: Hono<Env>; // mounted at /peer/factory, behind the peer token
+  commands: Map<string, FactoryCommand>; // `agentgate factory <name> ...`
+  ops: Map<string, FactoryOp>;
+  tools: Map<string, FactoryTool>;
+  loops: FactoryLoop[];
+  runKinds: Map<RunKind, RunKindDefinition>;
+  sources: Map<SourceType, SourceAdapter>;
+  boardParts: Array<() => Promise<Partial<FactoryBoard>>>;
+  page?: (req: Request, listener: Listener) => Promise<Response>; // set by the board feature
+  forwarder?: Forwarder; // set by the follow feature
+  adopt?: (ref: string) => Promise<FactoryItem | undefined>; // set by the move feature; `retry` calls it for an item this machine does not hold
+  /** Per item, the end of its last queued step (`withItem`). */
+  locks: Map<string, Promise<unknown>>;
+  isFactoryNode(): boolean;
+  pointer(): FactoryPointer | undefined;
+}
+
+/** Creates the runtime and calls every feature's setup. */
+export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
+  const { s } = ctx;
+  const f: FactoryRuntime = {
+    ctx,
+    s,
+    events: new FactoryEvents(s),
+    api: new Hono<Env>(),
+    peer: new Hono<Env>(),
+    commands: new Map(),
+    ops: new Map(),
+    tools: new Map(),
+    loops: [],
+    runKinds: new Map(),
+    sources: new Map(),
+    boardParts: [],
+    locks: new Map(),
+    pointer: () => s.settings().factory,
+    isFactoryNode: () => s.settings().factory?.node === s.nodeId,
+  };
+  setupFeatures(f);
+  return f;
+}
+
+/** Where a call runs: here, unless the factory is on and runs on another machine. */
+function forward(f: FactoryRuntime, local: boolean | undefined) {
+  const pointer = f.pointer();
+  if (local || !pointer || f.isFactoryNode()) return undefined;
+  if (!f.forwarder) throw new Error(`The factory runs on ${pointer.node}, and this machine cannot reach it`);
+  return f.forwarder;
+}
+
+export async function runTool(f: FactoryRuntime, name: string, args: Record<string, unknown>, caller: ToolCaller) {
+  const tool = f.tools.get(name);
+  if (!tool) throw new Error(`unknown factory tool ${name}`);
+  const forwarder = forward(f, tool.local);
+  return forwarder ? forwarder({ kind: "tool", name, args, caller }) : tool.call(args, caller);
+}
+
+/** Runs the operation here, or on the factory machine when it runs elsewhere. */
+export async function runOp(f: FactoryRuntime, name: string, input: unknown): Promise<unknown> {
+  const op = f.ops.get(name);
+  if (!op) throw new Error(`unknown factory operation ${name}`);
+  const forwarder = forward(f, op.local);
+  return forwarder ? forwarder({ kind: "op", name, input }) : op.run(input);
+}
+
+/** For routes: the operation's result, with an error as a 400 carrying its message. */
+export const opRoute = (f: FactoryRuntime, name: string, input: unknown) => asInput(() => runOp(f, name, input));
+
+export async function runCommand(f: FactoryRuntime, name: string, args: string[], io: CommandIO) {
+  const command = f.commands.get(name);
+  if (!command) throw new Error(`unknown factory command ${name}; run agentgate factory help`);
+  const forwarder = forward(f, command.local);
+  if (!forwarder) return command.run(args, io);
+  const result = factoryCommandResultSchema.parse(
+    await forwarder({ kind: "command", name, args, ...(io.stdin !== undefined && { stdin: io.stdin }) }),
+  );
+  result.output.forEach((line) => io.out(line));
+  return result.code;
+}
+
+/** An error's message for a note or a run's error, cut short: an adapter's or T3's message could be long. */
+export function shortError(e: unknown) {
+  const text = getErrorMessage(e);
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
+}
+
+/** Errors whose messages agentgate writes itself and keeps tokens out of (t3-mcp.ts, linear.ts, the report checks), so a
+ * log line can carry the message. Any other error, whose text could hold anything, is logged by its name. */
+const SAFE_ERRORS = new Set(["ReportError", "T3McpError", "T3Error", "FolderError", "LinearError"]);
+export const logError = (e: unknown) =>
+  e instanceof Error
+    ? SAFE_ERRORS.has(e.name) || SAFE_ERRORS.has(e.constructor.name)
+      ? shortError(e)
+      : e.name
+    : "error";
+
+/**
+ * Runs `step` once every earlier step of the same item has settled, so two transitions of one item never interleave
+ * across their awaits: a report, a loop pass, a person's action. A step's failure does not hold up the next one. A
+ * step must not await another `withItem` of its own item, which would wait for itself; it can queue one with `later`.
+ */
+export function withItem<T>(f: FactoryRuntime, item: string, step: () => Promise<T>): Promise<T> {
+  const run = (f.locks.get(item) ?? Promise.resolve()).then(step);
+  const settled = run.then(
+    () => {},
+    () => {},
+  );
+  f.locks.set(item, settled);
+  void settled.then(() => {
+    if (f.locks.get(item) === settled) f.locks.delete(item);
+  });
+  return run;
+}
+
+/** Queues `step` after the item's current step without waiting for it; its failure becomes a note naming `what`. */
+export function later(f: FactoryRuntime, item: string, what: string, step: () => Promise<void>) {
+  void withItem(f, item, step).catch((e) =>
+    f.events.emit({ kind: "note", item, text: `${what} failed: ${shortError(e)}` }),
+  );
+}
+
+/** For routes: what an administrator typed wrong is a 400, like the rest of the control API. */
+export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof z.ZodError || error instanceof HTTPException || error instanceof ConfigurationConflict)
+      throw error;
+    throw new HTTPException(400, { message: getErrorMessage(error) });
+  }
+}
+
+/** The last failure each loop logged, so one that fails every pass says so once until it changes or recovers. */
+const loopFailures = new WeakMap<FactoryRuntime, Map<string, string>>();
+
+/** A loop as the daemon schedules it: nothing while the factory is off (unless it cleans up), and a factory-node loop
+ * nothing on other machines. A failure is logged with the loop's name, once per distinct error. */
+export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
+  if (!f.pointer() && !loop.whenOff) return;
+  if (loop.where === "factory-node" && !f.isFactoryNode()) return;
+  let failures = loopFailures.get(f);
+  if (!failures) loopFailures.set(f, (failures = new Map()));
+  try {
+    await loop.run();
+    failures.delete(loop.name);
+  } catch (e) {
+    const text = logError(e);
+    if (failures.get(loop.name) !== text) console.error(`factory: the ${loop.name} loop failed: ${text}`);
+    failures.set(loop.name, text);
+  }
+};

@@ -8,7 +8,8 @@
     "./remote": "./src/remote.ts"
   },
   "scripts": {
-    "typecheck": "bun check"
+    "typecheck": "bun check",
+    "factory-schema": "bun scripts/factory-schema.ts"
   },
   "dependencies": {
     "hanzio": "^3.4.0",

@@ -1,6 +1,6 @@
 # Agentgate
 
-Agentgate is one daemon per machine. It pools several Claude and Codex subscriptions and moves to the next account when one hits its limit, hosts MCP servers and skills per GitHub repo, and shares all of it between the user's machines over Tailscale or an end-to-end encrypted relay. T3 Code, Claude Code, Codex and Claude Desktop run the sessions; agentgate sits underneath them.
+Agentgate is one daemon per machine. It pools several Claude and Codex subscriptions and moves to the next account when one hits its limit, hosts MCP servers and skills per GitHub repo, and shares all of it between the user's machines over Tailscale or an end-to-end encrypted relay. T3 Code, Claude Code, Codex and Claude Desktop run the sessions; agentgate sits underneath them. It can also run an opt-in software factory, off until `agentgate factory use`, that works labelled issues in T3 Code threads up to a pull request ready for a person to merge. Factory work runs only in scheduled loops, never on a model request's path.
 
 ## What we never compromise on
 
@@ -67,7 +67,7 @@ The most common defect is a change that works on the path you tested and is miss
 
 ## Test data
 
-An empty store is a bad test. With your dev daemon stopped, run `bun run seed-dev-store` (add `--force` to replace an existing one). It copies a read-only snapshot of the live store into the checkout, and keeps accounts, usage, MCP servers, projects, skills, other nodes and activity. It drops credentials, MCP secrets, peers, relay membership, registered checkouts and node-local state, and names the node `dev`. Accounts therefore show as needing login, and the dev daemon cannot refresh a real token, sync with a real machine, or link skills into a real repository. Copy in, never symlink: data flows into the checkout, never back.
+An empty store is a bad test. With your dev daemon stopped, run `bun run seed-dev-store` (add `--force` to replace an existing one). It copies a read-only snapshot of the live store into the checkout, and keeps accounts, usage, MCP servers, projects, skills, other nodes and activity. It drops credentials, MCP secrets, peers, relay membership, registered checkouts, the factory's pointer and items, and node-local state, and names the node `dev`. Accounts therefore show as needing login, and the dev daemon cannot refresh a real token, sync with a real machine, or link skills into a real repository. Copy in, never symlink: data flows into the checkout, never back.
 
 ## Verifying
 
@@ -113,7 +113,7 @@ Architecture and its constraints: [docs/internals/overview.md](docs/internals/ov
 
 ## Where code lives
 
-- `apps/agentgate` (`@agentgate/daemon`) is the daemon and CLI. `llm/` is the provider proxies and pool, `mcp/` the gateway and shims, `operations.ts` the shared operations the CLI and API both call.
+- `apps/agentgate` (`@agentgate/daemon`) is the daemon and CLI. `llm/` is the provider proxies and pool, `mcp/` the gateway and shims, `factory/` the opt-in software factory ([docs/internals/factory.md](docs/internals/factory.md)), `operations.ts` the shared operations the CLI and API both call.
 - `apps/desktop` is the Tauri app. React views in `src/views`, shared UI in `src/components/ui.tsx`, Rust commands in `src-tauri/src/lib.rs`. All HTTP goes through Rust.
 - `apps/relay` is the Cloudflare Worker and Durable Object relay. It stores ciphertext and has no sync logic.
 - `apps/site` is the static Astro landing page.

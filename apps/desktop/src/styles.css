@@ -1040,3 +1040,71 @@ h3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* The factory: stage columns of item cards. */
+.factory-stages {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(200px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+}
+.factory-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.factory-stage h3 {
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+.factory-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.factory-card-key {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.factory-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  color: var(--muted);
+}
+.factory-card-links {
+  display: flex;
+  gap: 2px;
+}
+.factory-waiting .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.factory-question {
+  margin: 0;
+  line-height: 1.5;
+}
+.factory-actions {
+  flex-wrap: wrap;
+}
+.factory-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.factory-link:hover strong {
+  text-decoration: underline;
+}

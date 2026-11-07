@@ -6,7 +6,7 @@ import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
 import { relayInvite, rotateRelay, via } from "./relay.ts";
-import { NODE_PROTOCOL, regenerateAfterUnpair } from "./remote.ts";
+import { regenerateAfterUnpair } from "./remote.ts";
 import { unpair } from "./sync.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
@@ -214,8 +214,12 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   });
 }
 
+/** The node protocol that keeps `healthDashboard` on node records (see NODE_PROTOCOL in remote.ts). Pinned, not
+ * NODE_PROTOCOL: later protocol bumps add nothing the dashboard needs, and must not make turning it on wait for them. */
+const HEALTH_PROTOCOL = 7;
+
 /** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a
- * node record, so turning it on waits until every node reports NODE_PROTOCOL. Turning it off needs no wait: a dropped
+ * node record, so turning it on waits until every node reports HEALTH_PROTOCOL. Turning it off needs no wait: a dropped
  * field reads as off. */
 export function setHealthDashboard(s: Store, node: string, on: boolean) {
   return s.transaction(() => {
@@ -224,7 +228,7 @@ export function setHealthDashboard(s: Store, node: string, on: boolean) {
     if (on) {
       const old = s
         .list("node")
-        .filter((m) => (m.protocol ?? 0) < NODE_PROTOCOL)
+        .filter((m) => (m.protocol ?? 0) < HEALTH_PROTOCOL)
         .map((m) => m.id);
       if (old.length)
         throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the dashboard setting`);

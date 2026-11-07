@@ -3,7 +3,7 @@ import { safeEqual, sha256Hex } from "hanzio/crypto";
 import { remoteKey } from "@agentgate/protocol/remote";
 
 /** What the Worker asks a RemoteEndpoint object to do; workers-only code lives in remote.ts. */
-export type EndpointOp = "mcp" | "connect" | "update" | "delete";
+export type EndpointOp = "mcp" | "hook" | "connect" | "update" | "delete";
 /** What the Worker asks a group's RelayChannel object to do. */
 export type ChannelOp = "call" | "connect";
 import { Hono, type Context } from "hono";
@@ -21,6 +21,18 @@ export interface RelayDeps {
   /** Optional aggregate per-address throttle, e.g. a Workers rate limiting binding. */
   ipLimit?(ipHash: string): Promise<boolean>;
 }
+
+/** Never forwarded to a webhook's machine: they describe this hop, or (cookies) belong to the relay's origin. */
+const NOT_FORWARDED = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+  "host",
+  "cookie",
+]);
 
 const reject = (status: 400 | 413, error: string, code: string) =>
   new HTTPException(status, {
@@ -91,12 +103,14 @@ export function relayApp(deps: RelayDeps) {
     return c.json(reply.body as object, reply.status as 200, headers);
   };
 
-  // Remote MCP endpoints. The public route can't require x-relay-key: clients like Grok only send a bearer token.
+  // Remote endpoints. The public routes can't require x-relay-key: clients like Grok only send a bearer token, and
+  // webhook senders send nothing the relay could check.
   const endpoint = (op: EndpointOp) => async (c: Context) => {
     const key = c.req.param("key");
     if (!deps.endpoint || !remoteKey.safeParse(key).success) return c.json({ error: "not found" }, 404);
     if (
       op !== "mcp" &&
+      op !== "hook" &&
       deps.relayKey &&
       !safeEqual(await sha256Hex(c.req.header("x-relay-key") ?? ""), await sha256Hex(deps.relayKey))
     )
@@ -104,19 +118,32 @@ export function relayApp(deps: RelayDeps) {
     const ipHash = await sha256Hex(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
     if (deps.ipLimit && !(await deps.ipLimit(ipHash)))
       return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
-    // Only the headers the endpoint reads; x-agentgate-* comes from here, never from the caller.
-    const headers = new Headers({ "x-agentgate-op": op, "x-agentgate-key": key!, "x-agentgate-ip": ipHash });
-    for (const name of [
-      "authorization",
-      "content-type",
-      "content-length",
-      "mcp-protocol-version",
-      "upgrade",
-      "x-agentgate-node",
-    ]) {
-      const value = c.req.header(name);
-      if (value !== undefined && (name !== "x-agentgate-node" || op === "connect")) headers.set(name, value);
+    // Only the headers the endpoint reads, or for a webhook every header its sender might sign;
+    // x-agentgate-* comes from here, never from the caller.
+    const headers = new Headers();
+    if (op === "hook") {
+      // Headers that Connection names are hop-by-hop too.
+      const named = (c.req.header("connection") ?? "").split(",").map((n) => n.trim().toLowerCase());
+      for (const [name, value] of c.req.raw.headers) {
+        const dropped = NOT_FORWARDED.has(name) || named.includes(name) || /^(proxy-|x-agentgate-)/.test(name);
+        if (!dropped) headers.set(name, value);
+      }
+    } else {
+      for (const name of [
+        "authorization",
+        "content-type",
+        "content-length",
+        "mcp-protocol-version",
+        "upgrade",
+        "x-agentgate-node",
+      ]) {
+        const value = c.req.header(name);
+        if (value !== undefined && (name !== "x-agentgate-node" || op === "connect")) headers.set(name, value);
+      }
     }
+    headers.set("x-agentgate-op", op);
+    headers.set("x-agentgate-key", key!);
+    headers.set("x-agentgate-ip", ipHash);
     const raw = c.req.raw;
     return deps
       .endpoint(key!)
@@ -128,6 +155,8 @@ export function relayApp(deps: RelayDeps) {
       allow: "POST",
     }),
   );
+  app.post("/hook/:key", endpoint("hook"));
+  app.all("/hook/:key", (c) => c.json({ error: "method not allowed" }, 405, { allow: "POST" }));
   app.put("/e/:key", endpoint("update"));
   app.delete("/e/:key", endpoint("delete"));
   app.get("/e/:key/connect", endpoint("connect"));

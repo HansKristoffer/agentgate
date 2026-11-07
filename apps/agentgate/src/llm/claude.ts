@@ -8,6 +8,7 @@ import { saveAccount } from "../operations.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import type { Provider, Window } from "./provider.ts";
+import { claudeMetadataSession } from "./sessions.ts";
 
 // Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
 export const CLAUDE = {
@@ -68,14 +69,7 @@ export const claude: Provider = {
     return payload.data.flatMap((m: { id?: unknown }) => (typeof m.id === "string" ? [m.id] : []));
   },
   session: (_headers, body) => {
-    const metadata = body?.metadata as { user_id?: string } | undefined;
-    if (typeof metadata?.user_id !== "string") return undefined;
-    try {
-      const parsed = JSON.parse(metadata.user_id);
-      if (typeof parsed.session_id === "string")
-        return new Bun.CryptoHasher("sha256").update(parsed.session_id).digest("hex");
-    } catch {}
-    const id = metadata.user_id.match(/_session_([\w-]{1,128})$/)?.[1];
+    const id = claudeMetadataSession(body);
     return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
   },
   classifyFailure: (status, _headers, body) =>
