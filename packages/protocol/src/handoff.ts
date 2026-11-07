@@ -67,6 +67,11 @@ export const handoffJobSchema = z.object({
 });
 export type HandoffJob = z.infer<typeof handoffJobSchema>;
 
+/** The answer to cancelling a handoff that waits for its destination. `aborted`: the destination stopped its side and
+ * the thread stays on the source. Otherwise the destination could not be reached and may already have the thread. */
+export const handoffCancelSchema = z.object({ aborted: z.boolean(), message: z.string() });
+export type HandoffCancel = z.infer<typeof handoffCancelSchema>;
+
 /** One node's view for listings: its T3 connection, active threads and recent handoffs it drove. */
 export const nodeThreadsSchema = z.object({
   node: z.string(),

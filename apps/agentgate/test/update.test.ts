@@ -182,6 +182,28 @@ test("an update shows while it installs and restarts, clears once the node runs 
   }
 });
 
+test("an update waiting for a restart clears once the node runs any other version", async () => {
+  const peer = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ node: "server", version: "9.9.9", restarting: false }),
+  });
+  try {
+    const s = new Store(":memory:");
+    s.setLocal("node", "laptop");
+    s.put("node", "server", { id: "server", version: "9.9.8" });
+    s.db.run("insert or replace into peers values ('server', ?, 't', 0, null)", [peer.url.origin]);
+    await updateTracked(s, "server");
+    expect(nodeUpdate(s, "server")).toMatchObject({ state: "installed", version: "9.9.9" });
+    expect(nodeUpdate(s, "server")).not.toHaveProperty("from");
+    // Restarted on another release than the one installed (e.g. updated some other way meanwhile).
+    s.put("node", "server", { id: "server", version: "9.9.10" });
+    expect(nodeUpdate(s, "server")).toBeUndefined();
+    s.close();
+  } finally {
+    peer.stop(true);
+  }
+});
+
 test("waiting for an update returns once the node reports the new version, or after the timeout", async () => {
   const s = new Store(":memory:");
   let now = 0;

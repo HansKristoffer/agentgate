@@ -21,14 +21,17 @@ export function cool(s: Store, accountId: string, reason: Failure, retryAt: numb
     key = `${accountId}\0${model ?? ""}`;
   if (m.size >= 5000 && !m.has(key)) m.delete(m.keys().next().value!);
   const prev = m.get(key);
+  // A shorter cooldown cannot cut a longer one short, and the reason stays the longer one's: a rate limit followed by a
+  // brief transient failure is still a rate limit.
+  const kept = prev && prev.retryAt > retryAt ? prev : undefined;
   m.set(
     key,
     cooldownSchema.parse({
       accountId,
       scope: model ? "model" : "account",
       model,
-      reason,
-      retryAt: Math.max(retryAt, prev?.retryAt ?? 0),
+      reason: kept?.reason ?? reason,
+      retryAt: kept?.retryAt ?? retryAt,
       observedAt: s.now(),
     }),
   );

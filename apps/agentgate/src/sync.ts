@@ -230,6 +230,14 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     if (!parsed.success)
       return c.json({ error: "invalid pairing request; both nodes must use the current agentgate sync protocol" }, 400);
     const { code, node, url } = parsed.data;
+    // A joiner whose answer was lost retries with the same code. Until the code would have expired, the node that used
+    // it, from the same URL, gets its token again; anyone else is refused as before.
+    const used = JSON.parse(s.local("pair:used") ?? "null") as { code: string; node: string; expires: number } | null;
+    if (used && safeEqual(used.code, code) && s.now() <= used.expires) {
+      const peer = peers(s).find((p) => p.node === node && p.url === url);
+      if (used.node !== node || !peer) return c.json({ error: "bad or expired code" }, 403);
+      return c.json({ node: s.nodeId, token: peer.token, protocol: SYNC_PROTOCOL });
+    }
     const expected = s.local("pair:code");
     if (!expected || code !== expected || s.now() > Number(s.local("pair:expires") ?? 0))
       return c.json({ error: "bad or expired code" }, 403);
@@ -239,6 +247,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const token = randomToken();
     s.transaction(() => {
       s.setLocal("pair:code", undefined);
+      s.setLocal("pair:used", JSON.stringify({ code, node, expires: Number(s.local("pair:expires") ?? 0) }));
       s.db.run("insert or replace into peers values (?, ?, ?, 0, ?)", [node, url, token, s.now()]);
     });
     return c.json({ node: s.nodeId, token, protocol: SYNC_PROTOCOL });

@@ -226,6 +226,7 @@ test("enabling waits for every node's version; status and backups never show end
 function fakeRelay() {
   const puts: { key: string; auth: string; body: { secretHash: string; enabled: boolean } }[] = [];
   const upgrades: { auth: string | null; node: string | null }[] = [];
+  const deletes: string[] = [];
   let socket: import("bun").ServerWebSocket<unknown> | undefined;
   const frames: any[] = [],
     waiters: (() => void)[] = [];
@@ -241,6 +242,7 @@ function fakeRelay() {
         });
         return Response.json({ ok: true });
       }
+      if (req.method === "DELETE") deletes.push(url.pathname.split("/")[2]!);
       if (url.pathname.endsWith("/connect")) {
         upgrades.push({ auth: req.headers.get("authorization"), node: req.headers.get("x-agentgate-node") });
         if (srv.upgrade(req)) return undefined;
@@ -267,7 +269,7 @@ function fakeRelay() {
     while (!socket) await Bun.sleep(10);
     return socket;
   };
-  return { url: `http://127.0.0.1:${server.port}`, puts, upgrades, next, connected };
+  return { url: `http://127.0.0.1:${server.port}`, puts, upgrades, deletes, next, connected };
 }
 
 test("the serving node pushes the secret hash, answers requests over its socket and re-pushes a new secret", async () => {
@@ -320,4 +322,73 @@ test("the serving node pushes the secret hash, answers requests over its socket 
   for (let i = 0; i < 50 && relay.puts.length < 2; i++) await Bun.sleep(20);
   expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(rotated.secret));
   expect(endpoints.summary(s.get("project", "@grok")!)).toMatchObject({ connected: true, updating: false });
+});
+
+/** One served endpoint on a fake relay, with retries made predictable: the first one comes after 0.5 s. */
+function serving() {
+  process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  const relay = fakeRelay();
+  process.env.AGENTGATE_RELAY_URL = relay.url;
+  const random = Math.random;
+  Math.random = () => 0;
+  cleanup.push(() => {
+    Math.random = random;
+    delete process.env.AGENTGATE_RELAY_URL;
+    delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
+  });
+  const s = store();
+  saveProject(s, "@grok", { mcp: {} });
+  enableRemote(s, "@grok");
+  const gateway = new Gateway(s);
+  cleanup.push(() => gateway.close());
+  const serve = () => {
+    const endpoints = new RemoteEndpoints(s, gateway);
+    cleanup.push(() => endpoints.close());
+    endpoints.reconcile();
+    const error = async (text: string) => {
+      while (!endpoints.summary(s.get("project", "@grok")!)?.error?.includes(text)) await Bun.sleep(5);
+    };
+    return { endpoints, error };
+  };
+  return { s, relay, serve };
+}
+
+test("an endpoint the relay deleted is not pushed again until its record changes, also after a restart", async () => {
+  const { s, relay, serve } = serving();
+  const first = serve();
+  (await relay.connected()).close(4001, "endpoint deleted");
+  await first.error("deleted");
+  await Bun.sleep(700); // past the first retry
+  expect({ puts: relay.puts.length, upgrades: relay.upgrades.length }).toEqual({ puts: 1, upgrades: 1 });
+  first.endpoints.close();
+
+  const restarted = serve();
+  await restarted.error("deleted");
+  expect({ puts: relay.puts.length, upgrades: relay.upgrades.length }).toEqual({ puts: 1, upgrades: 1 });
+
+  // A new secret is a deliberate change to the record: the endpoint is pushed and served again.
+  const { secret } = rotateSecret(s, "@grok");
+  restarted.endpoints.reconcile();
+  while (relay.upgrades.length < 2) await Bun.sleep(5);
+  expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(secret));
+});
+
+test("a connection replaced by another one backs off instead of taking the endpoint straight back", async () => {
+  const { relay, serve } = serving();
+  const { error } = serve();
+  (await relay.connected()).close(4000, "replaced by a newer connection");
+  await error("another connection");
+  await Bun.sleep(700); // a plain drop would have reconnected by now
+  expect(relay.upgrades).toHaveLength(1);
+});
+
+test("a machine that stops serving an endpoint no record names any more deletes it on the relay", async () => {
+  const { s, relay, serve } = serving();
+  const { endpoints } = serve();
+  await relay.connected();
+  const { key } = s.get("project", "@grok")!.remote!;
+  regenerateAfterUnpair(s, "gone"); // as if synced from another machine: the record now names a new key
+  s.setLocal("remote:delete", undefined); // ...whose deletion queue lives on that machine
+  endpoints.reconcile();
+  while (!relay.deletes.includes(key)) await Bun.sleep(5);
 });

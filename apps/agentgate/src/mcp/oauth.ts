@@ -9,7 +9,7 @@ import {
 import { z } from "zod";
 import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
 import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
-import { fetchHeaders } from "../runtime.ts";
+import { fetchHeaders, Unavailable } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
 import { syncAll } from "../relay.ts";
 import { resolve } from "./templates.ts";
@@ -25,17 +25,23 @@ export const headerWait = (method: string | undefined, others: number) =>
 const sessionSchema = z.object({
   id: z.string(),
   loginId: z.string(),
+  /** The stored login's id when this one started: another login finished since replaces this one. */
+  base: z.string().optional(),
+  redirectUri: z.string().optional(),
+  client: z.custom<OAuthClientInformationMixed>((v) => typeof v === "object" && v !== null).optional(),
   expiresAt: z.number(),
   verifier: z.string().optional(),
   discovery: z.custom<OAuthDiscoveryState>((v) => typeof v === "object" && v !== null).optional(),
 });
-export function expireLogins(s: Store) {
+/** Drop expired pending logins, and those of `replaced`: a newer login replaces the ones started here before it. */
+export function expireLogins(s: Store, replaced?: string) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as {
     key: string;
     value: string;
   }[]) {
     const result = sessionSchema.safeParse(safeJsonParse(row.value).data);
-    if (!result.success || result.data.expiresAt <= s.now()) s.setLocal(row.key, undefined);
+    if (!result.success || result.data.expiresAt <= s.now() || result.data.id === replaced)
+      s.setLocal(row.key, undefined);
   }
 }
 
@@ -85,9 +91,17 @@ export class InstanceAuth implements OAuthClientProvider {
     const state = crypto.randomUUID();
     const c = this.credential();
     this.stateValue = state;
+    // The new client and redirect stay with the pending login until it finishes; the stored login keeps working.
     this.s.setLocal(
       `oauth-state:${state}`,
-      JSON.stringify({ id: this.id, loginId: c.loginId, expiresAt: this.s.now() + SESSION_TTL }),
+      JSON.stringify({
+        id: this.id,
+        loginId: c.loginId,
+        base: this.s.get("mcpCredential", this.id)?.loginId,
+        redirectUri: c.redirectUri,
+        client: c.client,
+        expiresAt: this.s.now() + SESSION_TTL,
+      }),
     );
     return state;
   }
@@ -191,8 +205,9 @@ export function authenticatedFetch(s: Store, id: string) {
     if (res.status !== 401 || !c?.tokens) return res;
     await res.body?.cancel();
     const next = await refreshMcp(s, id, true);
-    if (!next.tokens || next.tokens.access_token === c.tokens.access_token)
-      throw new NeedsLogin(`${id}: needs a login`);
+    if (!next.tokens || next.needsLogin) throw new NeedsLogin(`${id}: needs a login`);
+    // The same token back means the refresh is backing off after a failure, not that the login is gone.
+    if (next.tokens.access_token === c.tokens.access_token) throw new Unavailable(`${id}: token refresh failed`);
     return send(next.tokens.access_token); // 401 guarantees the operation was not accepted
   };
 }
@@ -200,17 +215,13 @@ export function authenticatedFetch(s: Store, id: string) {
 export async function startLogin(s: Store, id: string, callbackUrl: string): Promise<URL | undefined> {
   const inst = s.get("mcp", id);
   if (!inst?.url) throw new Error(`${id} is not an HTTP server`);
-  expireLogins(s);
+  expireLogins(s, id);
   // Every login registers a new client. A server may delete a registration (unused ones are swept, a revoked app's
   // goes with it), and its authorize page then shows invalid_client in the browser instead of telling us, so a kept
-  // client id would fail every later login the same way.
-  s.put("mcpCredential", id, {
-    instanceId: id,
-    redirectUri: callbackUrl,
-    holder: s.nodeId,
-    loginId: crypto.randomUUID(),
-  });
-  const provider = new InstanceAuth(s, id, true);
+  // client id would fail every later login the same way. Nothing is stored until the login finishes: an abandoned
+  // browser login must not sign the server out on every machine.
+  const fresh = { instanceId: id, redirectUri: callbackUrl, holder: s.nodeId, loginId: crypto.randomUUID() };
+  const provider = new InstanceAuth(s, id, true, true, undefined, fresh);
   const signal = AbortSignal.timeout(30_000);
   const result = await auth(provider, {
     serverUrl: resolve(inst).url!,
@@ -227,7 +238,7 @@ export async function finishLogin(s: Store, state: string, code: string, iss?: s
     const session = sessionSchema.parse(JSON.parse(raw));
     if (
       session.expiresAt <= s.now() ||
-      session.loginId !== s.get("mcpCredential", session.id)?.loginId ||
+      session.base !== s.get("mcpCredential", session.id)?.loginId ||
       !session.verifier
     )
       throw new Error("login expired; start it again");
@@ -235,7 +246,14 @@ export async function finishLogin(s: Store, state: string, code: string, iss?: s
   });
   const inst = s.get("mcp", pending.id);
   if (!inst?.url) throw new Error(`no MCP instance ${pending.id}`);
-  const provider = new InstanceAuth(s, pending.id, true, true, pending.verifier, undefined, pending.discovery);
+  const fresh = {
+    instanceId: pending.id,
+    redirectUri: pending.redirectUri,
+    client: pending.client,
+    holder: s.nodeId,
+    loginId: pending.loginId,
+  };
+  const provider = new InstanceAuth(s, pending.id, true, true, pending.verifier, fresh, pending.discovery);
   const signal = AbortSignal.timeout(30_000);
   const result = await auth(provider, {
     serverUrl: resolve(inst).url!,
@@ -246,9 +264,9 @@ export async function finishLogin(s: Store, state: string, code: string, iss?: s
   if (result !== "AUTHORIZED" || !provider.staged.tokens) throw new Error("authorization did not issue tokens");
   s.transaction(() => {
     const current = s.get("mcpCredential", pending.id);
-    if (!current || current.loginId !== pending.loginId || !s.get("mcp", pending.id))
+    if (current?.loginId !== pending.base || !s.get("mcp", pending.id))
       throw new Error("login replaced or server deleted; start again");
-    s.put("mcpCredential", pending.id, { ...current, ...provider.staged, holder: s.nodeId, needsLogin: false });
+    s.put("mcpCredential", pending.id, { ...fresh, ...provider.staged, holder: s.nodeId, needsLogin: false });
   });
   return pending.id;
 }

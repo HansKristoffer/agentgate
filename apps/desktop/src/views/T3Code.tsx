@@ -4,6 +4,7 @@ import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
 import { ArrowLeft, ArrowRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
 import {
   firstServer,
+  handoffCancelSchema,
   handoffJobSchema,
   handoffTargets,
   nodeThreadsSchema,
@@ -474,6 +475,27 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
                   <small key={w}>{w}</small>
                 ))}
               </div>
+              {/* A destination that went away leaves the source waiting; giving up lets the thread move again. */}
+              {j.status === "running" && j.step === "await" && (
+                <ActionButton
+                  size="sm"
+                  variant="tertiary"
+                  pendingKey={`handoff-cancel:${j.id}`}
+                  onPress={() =>
+                    void perform(
+                      async () => {
+                        const path = `/handoffs/${j.id}/cancel?node=${encodeURIComponent(j.node)}`;
+                        toast(handoffCancelSchema.parse(await request(conn, path, "POST")).message);
+                        await load();
+                      },
+                      undefined,
+                      `handoff-cancel:${j.id}`,
+                    )
+                  }
+                >
+                  Cancel
+                </ActionButton>
+              )}
               <Badge good={j.status === "imported" || j.status === "done"}>
                 {typedSwitch(j.status, {
                   running: () => "Moving",

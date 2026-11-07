@@ -115,10 +115,15 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
 export function nodeUpdate(s: Store, node: string): NodeUpdate | undefined {
   const raw = s.local(`update:${node}`);
   if (!raw) return undefined;
-  const parsed = nodeUpdateSchema.safeParse(JSON.parse(raw));
+  const value = JSON.parse(raw);
+  const parsed = nodeUpdateSchema.safeParse(value);
   if (!parsed.success) return undefined;
-  const u = parsed.data;
-  if (u.version && s.get("node", node)?.version === u.version) return undefined;
+  const u = parsed.data,
+    running = s.get("node", node)?.version ?? null;
+  if (u.version && running === u.version) return undefined;
+  // Waiting for a restart onto u.version: once the node runs anything other than what it ran then (an older or newer
+  // release, installed some other way), that restart is not coming.
+  if (u.state === "installed" && value.from !== undefined && running !== value.from) return undefined;
   const age = s.now() - u.since;
   if (u.state === "installing" && age > 15 * 60_000) return { ...u, state: "failed", error: `${node} did not answer` };
   if (u.state === "restarting" && age > 3 * 60_000)
@@ -132,13 +137,18 @@ export async function updateTracked(s: Store, node: string) {
   const key = `update:${node}`;
   const running = nodeUpdate(s, node);
   if (running && running.state !== "failed") throw new Error(`${node} is already updating`);
-  const note = (u: Omit<NodeUpdate, "since"> | undefined) =>
+  // `from`: the version the node ran when it installed the update, for `nodeUpdate`. Kept out of NodeUpdate.
+  const note = (u: (Omit<NodeUpdate, "since"> & { from?: string | null }) | undefined) =>
     s.setLocal(key, u && JSON.stringify({ ...u, since: s.now() }));
   note({ state: "installing" });
   try {
     const result = await updateNode(s, node);
     note(
-      !result.version ? undefined : { state: result.restarting ? "restarting" : "installed", version: result.version },
+      !result.version
+        ? undefined
+        : result.restarting
+          ? { state: "restarting", version: result.version }
+          : { state: "installed", version: result.version, from: s.get("node", node)?.version ?? null },
     );
     return result;
   } catch (e) {

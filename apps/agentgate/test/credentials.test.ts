@@ -383,3 +383,93 @@ test("two Bun processes sharing a database cannot independently rotate the same 
     endpoint.stop(true);
   }
 });
+
+test("a copy still carrying a refresh token this node rotated away from cannot overwrite the rotated tokens", async () => {
+  // mac rotates rt-0 and sleeps before srv pulls. srv, still on rt-0, then marks the login dead (or takes it over).
+  await credsFor(mac, () => srv).refresh("a");
+  T += 1000;
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, needsLogin: true });
+  pull(mac, srv);
+  expect(mac.get("credential", "a")).toMatchObject({ refreshToken: "rt-1", holder: "mac", needsLogin: false });
+  // mac's copy now outranks srv's under plain last-writer-wins, so a peer on an older version takes it too.
+  pull(srv, mac);
+  expect(srv.get("credential", "a")).toMatchObject({ refreshToken: "rt-1", needsLogin: false });
+  T += 1000;
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, holder: "srv" });
+  pull(mac, srv);
+  expect(mac.get("credential", "a")).toMatchObject({ refreshToken: "rt-1", holder: "srv" }); // not stale: taken
+  // Settled: nothing is rewritten on another round.
+  const seq = [mac.seq(), srv.seq()];
+  pull(mac, srv);
+  pull(srv, mac);
+  expect([mac.seq(), srv.seq()]).toEqual(seq);
+  // A takeover with the old token is refused the same way; a new login always wins.
+  T += 1000;
+  const stale = { ...srv.get("credential", "a")!, refreshToken: "rt-0", accessToken: "at-0" };
+  srv.put("credential", "a", stale);
+  pull(mac, srv);
+  expect(mac.get("credential", "a")!.refreshToken).toBe("rt-1");
+  T += 1000;
+  srv.put("credential", "a", { ...stale, accessToken: "at-new", refreshToken: "rt-new" });
+  pull(mac, srv);
+  expect(mac.get("credential", "a")!.refreshToken).toBe("rt-new");
+});
+
+test("a 'needs login' for the very tokens being rotated, synced in during the refresh, does not lose the new tokens", async () => {
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r)),
+    started = new Promise<void>((r) => (entered = r));
+  const task = new Credentials(
+    mac,
+    async () => {
+      entered();
+      await gate;
+      return { accessToken: "at-1", refreshToken: "rt-1", expiresAt: T + 8 * 60 * MIN };
+    },
+    async () => {},
+  ).refresh("a");
+  await started;
+  T += 1000;
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, needsLogin: true });
+  pull(mac, srv);
+  release();
+  expect((await task).refreshToken).toBe("rt-1");
+  pull(srv, mac);
+  expect(srv.get("credential", "a")).toMatchObject({ refreshToken: "rt-1", needsLogin: false });
+});
+
+test("a failing refresh backs off for a minute and serves the still-valid token, forced or not", async () => {
+  let calls = 0;
+  const c = new Credentials(
+    mac,
+    async () => {
+      calls++;
+      throw new Error("token endpoint down");
+    },
+    async () => {},
+  );
+  expect((await c.token("a")).accessToken).toBe("at-0");
+  expect((await c.token("a")).accessToken).toBe("at-0");
+  expect((await c.refresh("a")).accessToken).toBe("at-0"); // a 401 or a peer's request forces one
+  expect(calls).toBe(1);
+  T += MIN + 1;
+  expect((await c.refresh("a")).accessToken).toBe("at-0");
+  expect(calls).toBe(2);
+});
+
+test("a refresh failure stops showing once newer tokens arrive", async () => {
+  const c = new Credentials(
+    srv,
+    async () => {
+      throw new Error("token endpoint down");
+    },
+    async () => {},
+  );
+  syncFor(srv, 12 * MIN); // srv takes over, and its refresh fails
+  expect((await c.token("a")).accessToken).toBe("at-0");
+  expect(accountStatus(srv, srv.get("account", "a")!).refreshError).toBe("token refresh failed");
+  // mac comes back and refreshes the login itself.
+  await credsFor(mac, () => srv).refresh("a");
+  pull(srv, mac);
+  expect(accountStatus(srv, srv.get("account", "a")!).refreshError).toBeUndefined();
+});

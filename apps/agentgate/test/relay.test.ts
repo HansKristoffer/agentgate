@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join as path } from "node:path";
 import { Hono } from "hono";
 import { memoryRelay } from "../../relay/test/memory.ts";
+import { NodeChannel } from "../src/channel.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import {
   RelayBusy,
@@ -14,6 +15,7 @@ import {
   installAndJoin,
   joinRelay,
   leaveRelay,
+  makeInvite,
   open,
   parseInvite,
   parseJoin,
@@ -458,43 +460,57 @@ test("a crash after persisting a chunk resumes after restart without counter con
   expect(b.get("account", "acc")!.label).toBe("x");
 });
 
-test("rotation resumes the same invite after interruption; failed cleanup stays visible", async () => {
+/** Shut `a` down in the middle of a rotation, after it saved the new invite: interrupted, not undone. */
+async function interruptRotation(a: Store) {
+  const rotation = rotateRelay(a);
+  await stopRelay(a);
+  await expect(rotation).rejects.toThrow();
+  return JSON.parse(a.local("relay:rotation")!).invite as string;
+}
+
+test("an interrupted rotation resumes with the same invite; one the daemon finishes is flagged until its command is shown", async () => {
   const r = relay();
-  const aFile = file("a");
-  const a = node("a", aFile),
+  const a = node("a", file("a")),
     b = node("b");
   seed(a);
   const old = await createRelay(a, r.url);
   await joinRelay(b, old);
-  r.ctl.mode = "down";
-  await expect(rotateRelay(a)).rejects.toThrow();
-  const pendingInvite = JSON.parse(a.local("relay:rotation")!).invite as string;
+  const pendingInvite = await interruptRotation(a);
   expect(relayInvite(a)).toBe(old); // not switched before seeding succeeds
   expect(relayStatus(a)!.rotating).toBe(true);
+  const daemonCopy = snapshot(a),
+    cliCopy = snapshot(a);
 
-  // A restart (another process on the same file) resumes the same rotation from the daemon loop.
-  const copy = snapshot(a);
-  const restarted = node("a", copy);
+  // After a restart the daemon loop finishes the same rotation. Nobody saw its command, so the status says so.
+  const restarted = node("a", daemonCopy);
   r.ctl.mode = "failDelete";
   await sync(restarted);
   expect(relayInvite(restarted)).toBe(pendingInvite);
-  expect(relayStatus(restarted)).toMatchObject({ rotating: false, cleanupPending: true });
+  expect(relayStatus(restarted)).toMatchObject({
+    rotating: false,
+    cleanupPending: true,
+    rotatedAt: expect.any(Number),
+  });
+  expect(await createRelay(restarted)).toBe(pendingInvite); // `pair --relay` shows the command
+  expect(relayStatus(restarted)!.rotatedAt).toBeUndefined();
 
-  // The original process resumes the same rotation too, and returns the same command.
-  const result = await rotateRelay(a);
+  // A repeated rotate resumes the same rotation too, and returns its command.
+  const resumed = node("a", cliCopy);
+  const result = await rotateRelay(resumed);
   expect(result.command).toBe(`agentgate join ${pendingInvite}`);
   expect(result.cleanupPending).toBe(true);
+  expect(relayStatus(resumed)!.rotatedAt).toBeUndefined();
 
   // The new group works; retained machines rejoin it.
   await leaveRelay(b);
   await joinRelay(b, pendingInvite);
-  a.put("account", "acc", { id: "acc", provider: "claude", label: "after rotation" });
-  await sync(a);
+  resumed.put("account", "acc", { id: "acc", provider: "claude", label: "after rotation" });
+  await sync(resumed);
   await sync(b);
   expect(b.get("account", "acc")!.label).toBe("after rotation");
 
   r.ctl.mode = "ok";
-  expect((await cleanupRelay(a, false)).cleanupPending).toBe(false);
+  expect((await cleanupRelay(resumed, false)).cleanupPending).toBe(false);
   const oldGroup = await groupOf(old);
   expect(
     (
@@ -511,10 +527,7 @@ test("a pending rotation never uploads to the old group, even after a restart", 
     b = node("b");
   const old = await createRelay(a, r.url);
   await joinRelay(b, old);
-  r.ctl.mode = "down";
-  await expect(rotateRelay(a)).rejects.toThrow();
-  r.ctl.mode = "ok";
-  r.ctl.blocked = await groupOf(JSON.parse(a.local("relay:rotation")!).invite); // the new group stays unreachable
+  r.ctl.blocked = await groupOf(await interruptRotation(a)); // the new group stays unreachable
   b.put("account", "fromB", { id: "fromB", provider: "claude", label: "b" });
   await sync(b);
   a.put("credential", "acc", {
@@ -685,18 +698,91 @@ test("after a sleep, the relay is retried within seconds even if it failed for h
   expect(a.get("account", "fresh")).toBeDefined();
 });
 
-test("a rotation that cannot create its new group says why uploads wait", async () => {
+test("a failed rotation changes nothing, so a retried removal rotates again from the start", async () => {
   const r = relay();
   const a = node("a"),
     b = node("b");
-  await joinRelay(b, await createRelay(a, r.url));
-  r.config.newGroupsDisabled = true; // the operator stops new groups, then a machine is removed
-  await expect(rotateRelay(a)).rejects.toThrow();
+  const old = await createRelay(a, r.url);
+  await joinRelay(b, old);
   await sync(a);
-  expect(relayStatus(a)).toMatchObject({
+  r.config.newGroupsDisabled = true; // the operator stops new groups, then a machine is removed
+  await expect(rotateRelay(a)).rejects.toThrow("not accepting new groups");
+  expect(relayInvite(a)).toBe(old);
+  expect(via(a, "b")).toContain("relay"); // so removing b again still rotates
+  a.put("account", "acc", { id: "acc", provider: "claude", label: "after the failure" });
+  await sync(a);
+  expect(relayStatus(a)).toMatchObject({ rotating: false, pushError: undefined, cleanupPending: false });
+  await sync(b);
+  expect(b.get("account", "acc")!.label).toBe("after the failure"); // uploads to the old group go on
+
+  r.config.newGroupsDisabled = false;
+  const { command } = await rotateRelay(a);
+  expect(command).toBe(`agentgate join ${relayInvite(a)}`);
+  expect(relayInvite(a)).not.toBe(old);
+});
+
+test("a pending rotation says why uploads wait", async () => {
+  const r = relay();
+  const a = node("a", file("a")),
+    b = node("b");
+  await joinRelay(b, await createRelay(a, r.url));
+  await interruptRotation(a);
+  r.config.newGroupsDisabled = true;
+  const restarted = node("a", snapshot(a));
+  await sync(restarted);
+  expect(relayStatus(restarted)).toMatchObject({
     rotating: true,
     pushError: expect.stringContaining("Uploads wait for the new relay group"),
   });
+});
+
+test("backoff earned against a group that was left does not delay the next one", async () => {
+  const r = relay();
+  const a = node("a"),
+    b = node("b");
+  let T = Date.now();
+  a.now = () => T;
+  await joinRelay(b, await createRelay(a, r.url));
+  r.ctl.mode = "down";
+  a.put("account", "first", { id: "first", provider: "claude", label: "first" });
+  await relaySync(a); // the upload fails and backs off for at least 11 s
+  r.ctl.mode = "ok";
+  await leaveRelay(a);
+  await leaveRelay(b);
+  const invite = await createRelay(a, r.url);
+  await joinRelay(b, invite);
+  a.put("account", "fresh", { id: "fresh", provider: "claude", label: "fresh" });
+  T += 1000;
+  await relaySync(a);
+  await sync(b);
+  expect(b.get("account", "fresh")).toBeDefined();
+});
+
+test("the node channel reconnects when the relay service key changes", async () => {
+  const keys: (string | null)[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(req, srv) {
+      keys.push(req.headers.get("x-relay-key"));
+      return srv.upgrade(req) ? undefined : new Response("no", { status: 400 });
+    },
+    websocket: { message() {} },
+  });
+  servers.push(server);
+  const a = node("a");
+  a.setLocal("relay:invite", makeInvite(`http://127.0.0.1:${server.port}`));
+  setServiceKey(a, "key-one");
+  const channel = new NodeChannel(a, async () => new Response());
+  try {
+    await channel.reconcile();
+    while (!channel.connected) await Bun.sleep(5);
+    setServiceKey(a, "key-two");
+    await channel.reconcile();
+    while (keys.length < 2) await Bun.sleep(5);
+    expect(keys).toEqual(["key-one", "key-two"]);
+  } finally {
+    channel.close();
+  }
 });
 
 test("an oversized record is left out and reported, and the records after it still reach the group", async () => {

@@ -116,6 +116,7 @@ agentgate threads                    # active threads on every machine
 agentgate handoff <thread>           # to the first available always-on machine
 agentgate handoff <thread> --to here # bring a thread to the machine you are on
 agentgate handoffs                   # recent handoffs, with step timings
+agentgate handoffs cancel <id>       # give up a handoff stuck waiting for the other machine
 ```
 
 In the app, the **T3 Code** page shows every machine's threads with **To server** or **To here**. An agent can hand itself off with the `agentgate__handoff_thread` tool, which appears in sessions once T3 Code is connected.
@@ -129,6 +130,7 @@ What to expect:
 - The first time a thread arrives on a machine, T3 Code fails the first message sent to it there. agentgate sends that message for you, asking the agent to reply "Ready", and sends it again when it fails, so your own first message works. A thread that was working then gets "Continue where you left off.", and messages you had queued are queued again behind it, in order. Background tasks such as a command watching a PR are stopped on the machine the thread leaves, and the agent is told which ones were running so it can start them again. Later trips to the same machine reuse the thread and skip this.
 - A thread that comes back to a machine shows the messages it got on your other machines in the meantime. T3 Code cannot add them to a thread itself, so agentgate writes them into T3 Code's own database, which T3 Code does not support. If T3 Code misbehaves after a handoff, turn this off with `agentgate t3 history off` or **Show messages from other machines** on the T3 Code page: the thread then shows only what happened on that machine, and the agent still has the whole conversation. Threads that left a machine before this release come back without them.
 - The first time a thread arrives on a machine, T3 Code's import also picks up other recent Claude sessions run in that project's main checkout, so threads that ran there can show up twice. Threads in worktrees are not affected, and later trips skip the import.
+- A handoff that fails before the other machine has the thread leaves it where it was, and your queued messages are queued there again. One left waiting for a machine that went away can be cancelled with **Cancel** under **Recent handoffs** or `agentgate handoffs cancel <id>`. If that machine cannot be reached, it may already have the thread: check it before you carry on where you are.
 - Through the relay, a handoff can move up to 512 MiB of code and session; the relay sees only encrypted data, its size and timing. Pair over Tailscale for larger repositories.
 - Claude Code threads only. Attachments, including those on queued messages, and earlier turns' diffs stay behind.
 - agentgate's T3 Code token lasts 30 days. `agentgate t3` and the app show when to pair again.

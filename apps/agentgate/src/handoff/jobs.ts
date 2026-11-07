@@ -140,6 +140,9 @@ const fromRow = <S>({ state, error, created_at, updated_at, ...rest }: Row): Job
 export class Handoffs {
   private loops = new Map<string, () => Promise<void>>();
   private running = new Set<Promise<void>>();
+  /** Source jobs `startHandoff` is still resolving, which the tick leaves alone: the agent is interrupted only after the
+   * caller has the job id. */
+  starting = new Set<string>();
   /** Setup scripts started on this node, per job, with their outcome; the destination waits for them before continuing the agent. */
   setups = new Map<string, Promise<{ warnings: string[]; timings: Timing[] }>>();
   /** Their processes, stopped on close: a restart runs an unfinished setup again. */
@@ -191,12 +194,15 @@ export class Handoffs {
     ]);
     return this.load<S>(job.role, job.id)!;
   }
-  /** The job's step loop is the only writer after creation; a job that failed (an abort) is never brought back. */
-  save<S>(job: Job<S>) {
+  /** The job's step loop is the only writer after creation; a job that failed (an abort) is never brought back.
+   * Returns false when it had failed already. */
+  save<S>(job: Job<S>): boolean {
     job.updatedAt = this.s.now();
-    this.s.db.run(
-      "update handoffs set thread = ?, step = ?, state = ?, error = ?, updated_at = ? where role = ? and id = ? and step != 'failed'",
-      [job.thread, job.step, JSON.stringify(job.state), job.error ?? null, job.updatedAt, job.role, job.id],
+    return (
+      this.s.db.run(
+        "update handoffs set thread = ?, step = ?, state = ?, error = ?, updated_at = ? where role = ? and id = ? and step != 'failed'",
+        [job.thread, job.step, JSON.stringify(job.state), job.error ?? null, job.updatedAt, job.role, job.id],
+      ).changes > 0
     );
   }
 
@@ -218,7 +224,7 @@ export class Handoffs {
   /** Resume unfinished jobs after a restart, and give up on prepares whose source never started. */
   tick() {
     for (const job of this.list()) {
-      if (TERMINAL_STEPS.has(job.step)) continue;
+      if (TERMINAL_STEPS.has(job.step) || this.starting.has(job.id)) continue;
       const waiting =
         job.role === "destination" &&
         (job.step === "prepare" || job.step === "prepared") &&
@@ -236,11 +242,23 @@ export class Handoffs {
     this.save(job);
   }
 
-  fail<S>(job: Job<S>, error: string) {
+  /** Returns false when the job had failed already, so only one caller acts on its failure. */
+  fail<S>(job: Job<S>, error: string): boolean {
     job.step = "failed";
     job.error = error;
-    this.save(job);
+    const failed = this.save(job);
     rmSync(this.dir(job.id), { recursive: true, force: true });
+    return failed;
+  }
+
+  /** A warning for a job that already failed, which `save` no longer writes. */
+  warnFailed(job: Job<{ warnings: string[] }>, warning: string) {
+    job.state.warnings.push(warning);
+    this.s.db.run("update handoffs set state = ? where role = ? and id = ?", [
+      JSON.stringify(job.state),
+      job.role,
+      job.id,
+    ]);
   }
 
   /** Mark activity without taking the step loop's place as the writer (a received chunk keeps a slow upload alive). */
