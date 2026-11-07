@@ -109,7 +109,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
       );
     if (command === "issue" && sub === "view") {
       const issue = issues.get(Number(args[2]))!;
-      return ok(flag(args, "--json") === "state" ? { state: issue.state } : { comments: issue.comments });
+      return ok({ state: issue.state, comments: issue.comments });
     }
     // The factory acts as the maintainer's own login (D42).
     if (command === "api" && sub === "user") return ok({ login: "maintainer" });

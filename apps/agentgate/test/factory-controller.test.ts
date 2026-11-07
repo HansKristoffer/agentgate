@@ -242,7 +242,7 @@ function fakeSource(n: Node, sources: Record<string, IncomingItem[] | Error>) {
       if (answer instanceof Error) throw answer;
       return answer;
     },
-    isOpen: async (item: FactoryItem) => !closed.has(item.externalId),
+    check: async (item: FactoryItem) => ({ open: !closed.has(item.externalId) }),
     newestMarker: async ({ externalId }) => markers.get(externalId),
     post: async (item, body) => {
       posts.push({ item: item.key, body });

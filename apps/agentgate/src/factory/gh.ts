@@ -109,16 +109,6 @@ export async function openLabelledIssues(
   );
 }
 
-export async function issueState(repo: string, number: number): Promise<"OPEN" | "CLOSED"> {
-  // Issues and pull requests share numbers, so a number can answer MERGED.
-  const view = await ghJson(
-    `read the state of ${repo}#${number}`,
-    z.object({ state: z.enum(["OPEN", "CLOSED", "MERGED"]) }),
-    ["issue", "view", String(number), "--repo", repo, "--json", "state"],
-  );
-  return view.state === "OPEN" ? "OPEN" : "CLOSED";
-}
-
 let viewer: Promise<string> | undefined;
 
 /** The login this machine's `gh` acts as, which is the factory's own account (D42). Read once per process; a failed
@@ -136,6 +126,20 @@ export async function viewerLogin(): Promise<string> {
 
 // A deleted account's comments come without an author.
 const issueComment = comment.extend({ author: login.nullish() });
+
+/** An issue's state and every comment, oldest first, in one read. Issues and pull requests share numbers, so a number
+ * can answer MERGED, which counts as closed. */
+export async function issueStateAndComments(repo: string, number: number) {
+  const view = await ghJson(
+    `read ${repo}#${number}`,
+    z.object({ state: z.enum(["OPEN", "CLOSED", "MERGED"]), comments: z.array(issueComment) }),
+    ["issue", "view", String(number), "--repo", repo, "--json", "state,comments"],
+  );
+  return {
+    open: view.state === "OPEN",
+    comments: view.comments.map(({ author, ...rest }) => ({ ...rest, author: author?.login ?? "" })),
+  };
+}
 
 /** Every comment, oldest first: `gh` pages through them when `comments` is asked for. Zod drops the other fields. */
 export async function issueComments(

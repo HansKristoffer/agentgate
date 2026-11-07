@@ -33,6 +33,8 @@ export interface FactoryItem {
   dedupe?: string;
   /** Its PR as last read once the item finished (records.ts). */
   outcome?: unknown;
+  /** The machine it was taken over from with `retry`, whose branches it must not reuse. */
+  adoptedFrom?: string;
   /** Things a person did to the item (approve, reject, retry, answer, add), for the human-touches metric. */
   touches: number;
   /** When the item entered its phase. */
@@ -138,7 +140,7 @@ export function ensureFactoryTables(s: Store) {
     s.db.run(`create table if not exists factory_items (
       id text primary key, source text not null, external_id text not null, key text not null, repo text not null,
       title text not null, url text, snapshot text not null, phase text not null, needs_you text, pr_url text,
-      pr_commit text, config_commit text not null, dedupe text, outcome text,
+      pr_commit text, config_commit text not null, dedupe text, outcome text, adopted_from text,
       touches integer not null default 0, phase_at integer not null, created_at integer not null,
       updated_at integer not null, finished_at integer)`);
     s.db.run("create unique index if not exists factory_items_external on factory_items(external_id)");
@@ -212,6 +214,7 @@ const itemColumns = {
   configCommit: "config_commit",
   dedupe: "dedupe",
   outcome: "outcome",
+  adoptedFrom: "adopted_from",
   touches: "touches",
   phaseAt: "phase_at",
   createdAt: "created_at",
@@ -277,6 +280,7 @@ const toItem = (r: Row): FactoryItem => ({
   tokens: r.tokens as number,
   dedupe: opt(r.dedupe as string | null),
   outcome: json(r.outcome),
+  adoptedFrom: opt(r.adopted_from as string | null),
   touches: r.touches as number,
   phaseAt: r.phase_at as number,
   createdAt: r.created_at as number,

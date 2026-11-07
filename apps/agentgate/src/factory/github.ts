@@ -1,6 +1,6 @@
 import { currentFolder } from "./config.ts";
 import type { FactoryItem } from "./db.ts";
-import { issueComments, issueState, openLabelledIssues, postIssueComment, viewerLogin } from "./gh.ts";
+import { issueComments, issueStateAndComments, openLabelledIssues, postIssueComment, viewerLogin } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
 
@@ -26,6 +26,13 @@ function issueOf(item: Pick<FactoryItem, "externalId">) {
   return { repo: m[1]!, number: Number(m[2]) };
 }
 
+/** The newest marker in the factory's own comments: anyone who can comment could otherwise forge one. */
+const newestOf = (comments: { body: string; author: string }[], viewer: string) =>
+  comments
+    .filter((c) => c.author.toLowerCase() === viewer.toLowerCase())
+    .flatMap((c) => parseMarkers(c.body))
+    .at(-1);
+
 export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   type: "github",
   async poll(source) {
@@ -39,9 +46,10 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
       snapshot: { title: issue.title, body: issue.body, url: issue.url },
     }));
   },
-  async isOpen(item) {
+  async check(item) {
     const { repo, number } = issueOf(item);
-    return (await issueState(repo, number)) === "OPEN";
+    const [{ open, comments }, viewer] = await Promise.all([issueStateAndComments(repo, number), viewerLogin()]);
+    return { open, newest: newestOf(comments, viewer) };
   },
   async post(item, body) {
     const { repo, number } = issueOf(item);
@@ -51,10 +59,7 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   async newestMarker(item) {
     const { repo, number } = issueOf(item);
     const [comments, viewer] = await Promise.all([issueComments(repo, number), viewerLogin()]);
-    return comments
-      .filter((c) => c.author.toLowerCase() === viewer.toLowerCase())
-      .flatMap((c) => parseMarkers(c.body))
-      .at(-1);
+    return newestOf(comments, viewer);
   },
 });
 

@@ -36,9 +36,11 @@ function ciOf(f: FactoryRuntime) {
 const folderOf = (f: FactoryRuntime, item: FactoryItem) => folderFor(f, item.configCommit);
 
 /** The first implement run of an item works on `factory/<key>`. A later one gets a branch of its own, so it never
- * meets the worktree or the pushed branch of the run before it. */
+ * meets the worktree or the pushed branch of the run before it, nor, for an item taken over from another machine,
+ * that machine's. */
 function branchOf(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
-  const n = runs.forItem(f.s, item.id).filter((r) => r.kind === "implement" && r.queuedAt <= run.queuedAt).length;
+  const before = runs.forItem(f.s, item.id).filter((r) => r.kind === "implement" && r.queuedAt <= run.queuedAt).length;
+  const n = before + (item.adoptedFrom ? 1 : 0);
   return n > 1 ? `factory/${item.key}-${n}` : `factory/${item.key}`;
 }
 

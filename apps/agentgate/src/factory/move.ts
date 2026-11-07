@@ -1,7 +1,7 @@
 import type { FactorySource } from "@agentgate/protocol";
 import { lastSeen } from "../sync.ts";
 import { currentFolder } from "./config.ts";
-import { addItem, enqueueRun, moveItem } from "./controller.ts";
+import { addItem, enqueueRun, moveItem, ORPHAN_MS } from "./controller.ts";
 import { isOpenPhase, items, type FactoryItem } from "./db.ts";
 import { issueKey } from "./github.ts";
 import type { FactoryRuntime, IncomingItem, SourceAdapter } from "./runtime.ts";
@@ -13,9 +13,6 @@ import type { FactoryRuntime, IncomingItem, SourceAdapter } from "./runtime.ts";
  * reached shows as orphaned, and `retry <issue>` takes it over here at the stage its marker names. Webhook and manual
  * items have no issue to mark, so they stay with their machine.
  */
-
-/** A machine that answered sync within this long drives its own items. */
-const ONLINE_MS = 2 * 60_000;
 
 /** The source and issue a `retry` reference names: `owner/repo#n`, a Linear key such as `ENG-42`, or a GitHub item
  * key such as `api-42`. */
@@ -71,22 +68,32 @@ async function adopt(f: FactoryRuntime, ref: string): Promise<FactoryItem | unde
   // Intake skips an issue the factory finished, so taking it again starts over.
   const finished = marker.state === "finished";
   const holder = marker.node;
-  if (!finished && holder !== s.nodeId && s.now() - lastSeen(s, holder) < ONLINE_MS)
+  if (!finished && holder !== s.nodeId && s.now() - lastSeen(s, holder) < ORPHAN_MS)
     throw new Error(`${holder} still holds ${incoming.key} and finishes it there`);
 
-  const stage = finished ? "triage" : (marker.stage ?? "triage");
-  // Held first, so intake's triage run is not queued; then started at the marked stage. A closed item here reopens.
-  const item = addItem(f, { source: source.id, repo: source.repo, incoming, hold: true });
-  moveItem(f, item.id, stage, null);
-  enqueueRun(f, { kind: stage, item: item.id });
+  // With a PR, the item waits for the maintainer with it: no thread here owns it, and the follower ships or closes the
+  // item when it merges or closes. The marker this machine posts now fences the old one should it wake.
+  const pr = finished ? undefined : (marker.pr ?? undefined);
+  const adopted = addItem(f, {
+    source: source.id,
+    repo: source.repo,
+    incoming,
+    adoptedFrom: holder,
+    ...(pr && { prUrl: pr }),
+  });
+  const stage = pr ? "ready" : finished ? "triage" : (marker.stage ?? "triage");
+  moveItem(f, adopted.id, stage, null);
+  if (stage !== "ready") enqueueRun(f, { kind: stage, item: adopted.id });
   f.events.emit({
     kind: "note",
-    item: item.id,
+    item: adopted.id,
     text: finished
       ? `${incoming.key} was taken again after the factory finished it; it restarts at triage`
-      : `${incoming.key} was taken over from ${holder}; it restarts at ${stage}`,
+      : pr
+        ? `${incoming.key} was taken over from ${holder} with its PR, which waits for you`
+        : `${incoming.key} was taken over from ${holder}; it restarts at ${stage}`,
   });
-  return items.get(s, item.id);
+  return items.get(s, adopted.id);
 }
 
 export function setup(f: FactoryRuntime): void {

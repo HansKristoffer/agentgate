@@ -473,6 +473,8 @@ export const markerPayloadSchema = z.object({
   factory: z.string().min(1), // the factory folder's commit
   node: z.string().min(1),
   state: z.enum(["open", "finished"]),
+  /** The item's PR, so a machine that takes the issue over keeps it. */
+  pr: z.string().nullish(),
 });
 export type MarkerPayload = z.infer<typeof markerPayloadSchema>;
 

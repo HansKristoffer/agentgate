@@ -82,10 +82,12 @@ function fakeLinear() {
     }
     const issue = find(variables.id ?? variables.issueId);
     if (!issue) return Response.json({ errors: [{ message: "Entity not found: Issue" }] });
-    if (operation === "FactoryIssueState") return data({ issue: { state: { type: issue.state } } });
     if (operation === "FactoryIssueId") return data({ issue: { id: issue.id } });
     if (operation === "FactoryComments")
-      return data({ viewer: { id: FACTORY_USER }, issue: { comments: { nodes: issue.comments } } });
+      return data({
+        viewer: { id: FACTORY_USER },
+        issue: { state: { type: issue.state }, comments: { nodes: issue.comments } },
+      });
     if (operation === "FactoryComment") {
       // Like Linear's, each comment is newer than the last, even within one millisecond.
       issue.comments.push({
@@ -179,6 +181,7 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
     factory: item.configCommit.slice(0, 7),
     node: "a",
     state: "open",
+    pr: null,
   });
 });
 

@@ -167,8 +167,6 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
 }
 
 // `issue(id:)` takes the identifier (ENG-42) as well as the UUID; `commentCreate` is documented with the UUID.
-const stateSchema = z.object({ issue: z.object({ state: z.object({ type: z.string() }) }) });
-const STATE = `query FactoryIssueState($id: String!) { issue(id: $id) { state { type } } }`;
 const idSchema = z.object({ issue: z.object({ id: z.string().min(1) }) });
 const ID = `query FactoryIssueId($id: String!) { issue(id: $id) { id } }`;
 const createdSchema = z.object({ commentCreate: z.object({ success: z.boolean() }) });
@@ -179,6 +177,7 @@ const CREATE = `mutation FactoryComment($issueId: String!, $body: String!) {
 const commentsSchema = z.object({
   viewer: z.object({ id: z.string().min(1) }),
   issue: z.object({
+    state: z.object({ type: z.string() }),
     comments: z.object({
       nodes: z.array(
         z.object({ body: z.string(), createdAt: z.string(), user: z.object({ id: z.string() }).nullish() }),
@@ -188,8 +187,20 @@ const commentsSchema = z.object({
 });
 const COMMENTS = `query FactoryComments($id: String!) {
   viewer { id }
-  issue(id: $id) { comments(last: 100) { nodes { body createdAt user { id } } } }
+  issue(id: $id) { state { type } comments(last: 100) { nodes { body createdAt user { id } } } }
 }`;
+
+/** The newest marker in the API key user's own comments: anyone who can comment could otherwise forge one. */
+function newestOf({ viewer, issue }: z.infer<typeof commentsSchema>) {
+  const newest = issue.comments.nodes
+    .filter((c) => c.user?.id === viewer.id)
+    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const comment of newest) {
+    const marker = markerOf(comment.body);
+    if (marker) return marker;
+  }
+  return undefined;
+}
 
 /** markers.ts's hidden marker becomes a visible last line. A backtick in a value would end the code span early. */
 function visibleMarker(body: string) {
@@ -239,24 +250,16 @@ export function setup(f: FactoryRuntime): void {
   f.sources.set("linear", {
     type: "linear",
     poll: (source) => poll(f, source),
-    async isOpen(item) {
+    async check(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source, item.configCommit));
-      const { issue } = await graphql(f, apiKey, stateSchema, STATE, { id: item.externalId });
-      return !CLOSED.includes(issue.state.type);
+      const answer = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
+      return { open: !CLOSED.includes(answer.issue.state.type), newest: newestOf(answer) };
     },
     post: (item, body) => post(f, item, body),
     /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */
     async newestMarker(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source));
-      const { viewer, issue } = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
-      const newest = issue.comments.nodes
-        .filter((c) => c.user?.id === viewer.id)
-        .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
-      for (const comment of newest) {
-        const marker = markerOf(comment.body);
-        if (marker) return marker;
-      }
-      return undefined;
+      return newestOf(await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId }));
     },
   });
 }

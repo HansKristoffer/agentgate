@@ -67,10 +67,16 @@ What other machines need to know travels on the item's source instead. Each fact
 naming the item, the machine holding it, the last stage reached and whether it is open or finished. Linear drops HTML
 comments, so there the marker is a visible last line in a code span. Intake posts the first marker, the `taken`
 comment, in the step that adds the item, so an issue is marked before its triage starts. Intake skips an issue another
-machine marked open, and the board shows it as that machine's (`orphaned` once the machine has not been seen for a
-minute). `retry <owner/repo#n>` adopts an orphan at the stage its marker names, and refuses while its machine is
-online ([`move.ts`](../../apps/agentgate/src/factory/move.ts)). So the tables are a cache that can be lost. A
-machine that loses them leaves only its markers, and the work resumes from those.
+machine marked open, and the board shows it as that machine's (`orphaned` once the machine has not been seen for 30
+minutes, past a laptop's sleep). `retry <owner/repo#n>` adopts an orphan, and refuses while its machine is online
+([`move.ts`](../../apps/agentgate/src/factory/move.ts)): with the PR its marker names, the item waits for the
+maintainer in `ready` and the follower ships or closes it; without one, it restarts at the marked stage on a branch
+of its own. So the tables are a cache that can be lost. A machine that loses them leaves only its markers, and the
+work resumes from those.
+
+- A machine that wakes after its issue was taken over stands down: before every stage, and every 15 minutes while it
+  follows the item's PR, it reads the issue (its state and newest factory marker, in one read), and closes the item
+  without a comment when the marker names another machine. A comment from it would make its marker the newest again.
 
 - Moving the factory moves no item. The old machine keeps driving the items it holds, and keeps its T3 MCP sign-in
   until the last one finishes. Nothing asks other machines what they hold, so an offline machine costs no polling.

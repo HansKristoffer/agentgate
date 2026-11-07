@@ -91,8 +91,9 @@ export interface SourceAdapter {
   type: SourceType;
   /** Every open, labelled item now; the controller dedupes. */
   poll?(source: FactorySource): Promise<IncomingItem[]>;
-  /** Re-checked before every stage. */
-  isOpen?(item: FactoryItem): Promise<boolean>;
+  /** Read before every stage, and now and then while its PR is followed: whether the issue is open, and its newest
+   * factory marker, which names the machine holding it (a takeover elsewhere fences this one). One read. */
+  check?(item: FactoryItem): Promise<{ open: boolean; newest?: MarkerPayload }>;
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
   newestMarker?(item: Pick<FactoryItem, "source" | "externalId" | "repo">): Promise<MarkerPayload | undefined>;

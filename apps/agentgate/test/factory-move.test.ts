@@ -37,7 +37,7 @@ function fakeGitHub(repo: string) {
       return ok([...issues.values()].map((i) => ({ number: i.number, title: i.title, body: "", url: url(i.number) })));
     if (args[0] === "issue" && args[1] === "view") {
       const issue = issues.get(Number(args[2]))!;
-      return ok(args.at(-1) === "state" ? { state: "OPEN" } : { comments: issue.comments });
+      return ok({ state: "OPEN", comments: issue.comments });
     }
     // Every machine's gh acts as the maintainer's login (D42), so each one's markers count on the others.
     if (args[0] === "api" && args[1] === "user") return ok({ login: "maintainer" });
@@ -295,4 +295,65 @@ test("after a move, show, approve and drop on b reach the item a still holds, al
   await expect(runCommand(bf, "drop", [key(2)], { out: () => {} })).rejects.toThrow(
     `b holds no factory item ${key(2)}`,
   );
+});
+
+test("an issue taken over with an open PR waits for you in ready with that PR, and starts no thread", async () => {
+  const { a, bf, github, key, moveToB, stopA, aGoesQuiet } = await twoMachines();
+  github.open(5, { stage: "review", pr: `https://github.com/${a.repo}/pull/9` });
+  await moveToB();
+  stopA();
+  aGoesQuiet();
+  await loop(bf, "factory-intake");
+
+  const output: string[] = [];
+  expect(await runCommand(bf, "retry", [`${a.repo}#5`], { out: (line) => output.push(line) })).toBe(0);
+  expect(output).toEqual([`Took over ${key(5)}; it starts at ready`]);
+  const [item] = items.list(bf.s);
+  expect(item).toMatchObject({ phase: "ready", prUrl: `https://github.com/${a.repo}/pull/9`, adoptedFrom: "a" });
+  expect(runs.forItem(bf.s, item!.id)).toEqual([]);
+  // b's marker carries the PR, so a machine that takes the issue over from b keeps it too.
+  expect(parseMarkers(github.issues.get(5)!.comments.at(-1)!.body)).toEqual([
+    expect.objectContaining({ node: "b", state: "open", pr: `https://github.com/${a.repo}/pull/9` }),
+  ]);
+});
+
+test("a machine that wakes after another took its issue over stands down instead of launching beside it", async () => {
+  const { a, bf, github, key, moveToB, aGoesQuiet, report } = await twoMachines();
+  github.open(1);
+  await a.intake();
+  await a.dispatch();
+  await idle(a.f);
+  const [triage] = runs.list(a.s);
+  // a's triage reports; its implement run is queued when a falls asleep.
+  await report(triage!.id, {
+    outcome: "done",
+    summary: "Reproduced.",
+    result: { kind: "triage", route: "implement", reproduction: { command: "bun test", failsBefore: true } },
+  });
+  await moveToB();
+  aGoesQuiet();
+  expect(await runCommand(bf, "retry", [`${a.repo}#1`], { out: () => {} })).toBe(0);
+  await idle(bf);
+
+  // a wakes: before it launches, it reads the issue and finds b's marker on it.
+  const launches = () => a.mcp.calls.filter((c) => c.tool === "t3_thread_launch").length;
+  const before = launches();
+  await a.dispatch();
+  await idle(a.f);
+  expect(launches()).toBe(before);
+  expect(items.byKey(a.s, key(1))!.phase).toBe("closed");
+  expect(a.f.events.recent(20).map((e) => e.text)).toContain(
+    `${key(1)} was taken over by b, which holds its issue now`,
+  );
+  expect(items.byKey(bf.s, key(1))!.phase).toBe("triage");
+});
+
+test("retry takes over an issue only once its machine has been out of reach for 30 minutes", async () => {
+  const { a, bf, github, moveToB } = await twoMachines();
+  github.open(5, { stage: "implement" });
+  await moveToB();
+  bf.s.db.run("update peers set last_seen = ? where node = 'a'", [bf.s.now() - 20 * 60_000]);
+  await expect(runCommand(bf, "retry", [`${a.repo}#5`], { out: () => {} })).rejects.toThrow("a still holds");
+  bf.s.db.run("update peers set last_seen = ? where node = 'a'", [bf.s.now() - 31 * 60_000]);
+  expect(await runCommand(bf, "retry", [`${a.repo}#5`], { out: () => {} })).toBe(0);
 });

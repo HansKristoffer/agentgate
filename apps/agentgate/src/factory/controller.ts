@@ -97,6 +97,9 @@ interface Memory {
   retry: Map<string, { failures: number; at: number }>;
   quota?: { waitingUntil?: number };
   projects: Map<string, { projectId: string; root: string; branch?: string }>;
+  /** When each queued run last read its item's issue as open and still this machine's, so a run that waits (red CI)
+   * reads it every 2 minutes, not every pass; every new run reads it before it starts. */
+  openAt: Map<string, number>;
 }
 const memories = new WeakMap<FactoryRuntime, Memory>();
 function memory(f: FactoryRuntime) {
@@ -104,7 +107,14 @@ function memory(f: FactoryRuntime) {
   if (!m)
     memories.set(
       f,
-      (m = { watching: false, seen: new Set(), sources: new Map(), retry: new Map(), projects: new Map() }),
+      (m = {
+        watching: false,
+        seen: new Set(),
+        sources: new Map(),
+        retry: new Map(),
+        projects: new Map(),
+        openAt: new Map(),
+      }),
     );
   return m;
 }
@@ -178,7 +188,15 @@ function freeKey(f: FactoryRuntime, key: string) {
  * its issue hears that this machine took it: the marker other machines' intake skips. */
 export function addItem(
   f: FactoryRuntime,
-  input: { source: string; repo: string; incoming: IncomingItem; hold?: boolean },
+  input: {
+    source: string;
+    repo: string;
+    incoming: IncomingItem;
+    hold?: boolean;
+    /** Taken over from another machine (move.ts), which then places it: no triage run is queued. */
+    adoptedFrom?: string;
+    prUrl?: string;
+  },
 ): FactoryItem {
   const { s } = f;
   const { incoming } = input;
@@ -201,6 +219,8 @@ export function addItem(
     ...(held && { needsYou: { reason: "held", question: `Start it with agentgate factory approve ${key}` } }),
     configCommit: folder.commit,
     ...(incoming.dedupe && { dedupe: incoming.dedupe }),
+    ...(input.adoptedFrom && { adoptedFrom: input.adoptedFrom }),
+    ...(input.prUrl && { prUrl: input.prUrl }),
   });
   f.events.emit({
     kind: "item.created",
@@ -208,7 +228,7 @@ export function addItem(
     text: `${item.key} entered from ${item.source}${held ? " and waits for approval" : ""}: ${item.title}`,
   });
   writeBack(f, item, "taken", held ? { text: "It starts once the maintainer approves it." } : {});
-  if (!held) enqueueRun(f, { kind: "triage", item: item.id });
+  if (!held && !input.adoptedFrom) enqueueRun(f, { kind: "triage", item: item.id });
   return item;
 }
 
@@ -261,6 +281,7 @@ function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
 export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
   const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
   memory(f).seen.delete(run.id);
+  memory(f).openAt.delete(run.id);
   f.events.emit({
     kind: "run.ended",
     run: run.id,
@@ -342,6 +363,7 @@ export function writeBack(
     factory: item.configCommit.slice(0, 7),
     node: s.nodeId,
     state: moment === "shipped" || moment === "closed" ? "finished" : "open",
+    pr: item.prUrl ?? null,
   };
   const body = renderComment(moment, item, {
     ...(report?.summary && { summary: report.summary }),
@@ -626,15 +648,24 @@ async function prepareLaunch(
     note(f, run, `no ${provider} account has room`);
     return { quota: { ...(until !== undefined && { waitingUntil: until }) } };
   }
+  const openAt = memory(f).openAt;
+  if (item && s.now() - (openAt.get(run.id) ?? 0) >= 2 * 60_000) {
+    const state = await sourceCheck(f, item);
+    if (state === "open") openAt.set(run.id, s.now());
+    // A machine that slept past the orphan threshold may wake to find the issue taken over: it stands down.
+    if (typeof state === "object") {
+      await closeQuietly(f, item, `${item.key} was taken over by ${state.takenBy}, which holds its issue now`);
+      return {};
+    }
+    // Once the item has a PR, the PR decides: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
+    if (state === "closed" && !item.prUrl) {
+      await closeQuietly(f, item);
+      return {};
+    }
+  }
   const spec = await definition.launch(run, item);
   if ("wait" in spec) {
     note(f, runs.get(s, run.id) ?? run, spec.wait);
-    return {};
-  }
-  // Once the item has a PR, the PR decides: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
-  if (item && !item.prUrl && !(await sourceOpen(f, item))) {
-    f.events.emit({ kind: "note", item: item.id, text: `${item.key} was closed at its source` });
-    await closeQuietly(f, item);
     return {};
   }
   return { run, ...(item && { item }), spec };
@@ -682,14 +713,24 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
   }
 }
 
-async function sourceOpen(f: FactoryRuntime, item: FactoryItem) {
-  const isOpen = adapterOf(f, item)?.isOpen;
-  return isOpen ? isOpen(item) : true;
+/** Reads the item's issue: closed, taken over by another machine (its newest factory marker names that machine), or
+ * still this machine's. Items without an issue are always this machine's and open. */
+export async function sourceCheck(
+  f: FactoryRuntime,
+  item: FactoryItem,
+): Promise<"open" | "closed" | { takenBy: string }> {
+  const check = adapterOf(f, item)?.check;
+  if (!check) return "open";
+  const { open, newest } = await check(item);
+  if (newest && newest.node !== f.s.nodeId) return { takenBy: newest.node };
+  return open ? "open" : "closed";
 }
 
-/** The source closed the item: no comment, since the issue already says so. Its threads stop. */
-async function closeQuietly(f: FactoryRuntime, item: FactoryItem) {
-  await interruptItem(f, item.id, `${item.key} was closed at its source`);
+/** The source closed the item, or another machine took it over: no comment (the issue already says so, and this
+ * machine's comment would be the issue's newest marker again). Its threads stop. */
+export async function closeQuietly(f: FactoryRuntime, item: FactoryItem, why = `${item.key} was closed at its source`) {
+  f.events.emit({ kind: "note", item: item.id, text: why });
+  await interruptItem(f, item.id, why);
   moveItem(f, item.id, "closed", null);
 }
 
@@ -1386,13 +1427,17 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
   };
 }
 
+/** How long a machine that holds issues may go without syncing before they count as orphaned and `retry` takes them
+ * over: past a laptop's sleep, since a holder that wakes after a takeover only stands down at its next check. */
+export const ORPHAN_MS = 30 * 60_000;
+
 /** Issues other machines marked as theirs. One whose machine cannot be reached is orphaned: `retry` takes it here. */
 function elsewhereRows(f: FactoryRuntime): BoardItem[] {
   const { s } = f;
   return [...memory(f).sources.values()]
     .flatMap((st) => st.elsewhere)
     .map((row) =>
-      s.now() - lastSeen(s, row.heldBy) < 60_000
+      s.now() - lastSeen(s, row.heldBy) < ORPHAN_MS
         ? row
         : {
             ...row,

@@ -79,7 +79,8 @@ function fakeGitHub(repo: string) {
         );
       if (args[0] === "issue" && args[1] === "view") {
         const i = issues.get(Number(args[2]))!;
-        return ok(flag(args, "--json") === "state" ? { state: i.state } : { comments: i.comments });
+        const fields = flag(args, "--json")!.split(",");
+        return ok({ ...(fields.includes("state") && { state: i.state }), comments: i.comments });
       }
       if (args[0] === "api" && args[1] === "user") return ok({ login: FACTORY_LOGIN });
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
@@ -311,6 +312,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
       factory: n.commit.slice(0, 7),
       node: "a",
       state: "open",
+      pr: null,
     },
   ]);
   // The comment is now the issue's newest marker, so another machine would leave the issue to this one.
@@ -384,7 +386,8 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
     validate: async () => undefined,
     accept: async () => {},
   });
-  const stateChecks = () => n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state");
+  const stateChecks = () =>
+    n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state,comments");
 
   await n.intake();
   n.github.issues.get(2)!.state = "CLOSED";
@@ -403,7 +406,8 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
   await n.dispatch();
   expect(stateChecks().map((c) => c.args[2])).toEqual(["1", "2", "1"]);
   expect(items.get(n.s, one!.id)!.phase).toBe("closed");
-  expect(implementLaunches).toEqual([n.key(1)]);
+  // The issue is read before the launch is built, so a closed one costs no launch work.
+  expect(implementLaunches).toEqual([]);
   expect(runs.list(n.s, { kinds: ["implement"] }).map((r) => r.state)).toEqual(["cancelled"]);
   // The taken comments and the triaged one: the issue already says it is closed.
   await idle(n.f);
@@ -527,7 +531,8 @@ function recordedGh(overrides: Record<string, unknown> = {}) {
   const answers: Record<string, (args: string[]) => unknown> = {
     "repo view": () => recorded.repoView,
     "issue list": () => recorded.issueList,
-    "issue view": (args) => (flag(args, "--json") === "state" ? { state: "OPEN" } : recorded.issueComments),
+    "issue view": (args) =>
+      flag(args, "--json") === "state,comments" ? { state: "OPEN", ...recorded.issueComments } : recorded.issueComments,
     "pr view": (args) => (flag(args, "--json") === "author" ? { author: recorded.prView.author } : recorded.prView),
     "run list": () => recorded.runList,
     "pr list": () => recorded.revertList,
@@ -544,7 +549,7 @@ test("each gh.ts read parses a recorded gh answer", async () => {
   recordedGh();
   expect(await gh.defaultBranch(REPO)).toBe("trunk");
   expect(await gh.openLabelledIssues(REPO, "factory")).toEqual(recorded.issueList);
-  expect(await gh.issueState(REPO, 7)).toBe("OPEN");
+  expect(await gh.issueStateAndComments(REPO, 7)).toMatchObject({ open: true, comments: [expect.anything()] });
   expect(await gh.issueComments(REPO, 7)).toEqual([
     {
       body: "Thanks for reporting this, @S-zhi!",
@@ -581,7 +586,7 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
   const reads: [string, () => Promise<unknown>][] = [
     ["repo view", () => gh.defaultBranch(REPO)],
     ["issue list", () => gh.openLabelledIssues(REPO, "factory")],
-    ["issue view", () => gh.issueState(REPO, 7)],
+    ["issue view", () => gh.issueStateAndComments(REPO, 7)],
     ["issue view", () => gh.issueComments(REPO, 7)],
     ["pr view", () => gh.prView(PR)],
     ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
