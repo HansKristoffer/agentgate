@@ -662,6 +662,8 @@ export const factoryUseInputSchema = z
     node: factoryPointerSchema.shape.node.optional(),
   })
   .strict();
+/** POST /api/factory/move, `agentgate factory move` */
+export const factoryMoveInputSchema = z.object({ node: factoryPointerSchema.shape.node }).strict();
 /** POST /api/factory/init, `agentgate factory init` */
 export const factoryInitInputSchema = z.object({ repo, node: factoryPointerSchema.shape.node.optional() }).strict();
 export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;

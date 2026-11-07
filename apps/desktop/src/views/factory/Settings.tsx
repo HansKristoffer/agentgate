@@ -215,16 +215,7 @@ export function FactorySettings({
               e.preventDefault();
               const node = field(new FormData(e.currentTarget), "node");
               setMoving(false);
-              void run(
-                () =>
-                  request(connection, "/factory", "PUT", {
-                    repo: pointer.repo,
-                    path: pointer.path,
-                    node,
-                    ...(pointer.ref && { ref: pointer.ref }),
-                  }),
-                `The factory runs on ${node}`,
-              );
+              void run(() => request(connection, "/factory/move", "POST", { node }), `The factory runs on ${node}`);
             }}
           >
             <Choice

@@ -41,7 +41,7 @@ import {
   factoryCommandInputSchema,
   type FactoryCommandResult,
 } from "@agentgate/protocol";
-import { requireFactoryProtocol, runCommand } from "./factory/runtime.ts";
+import { runCommand } from "./factory/runtime.ts";
 import packageInfo from "../../../package.json";
 import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
@@ -908,7 +908,6 @@ export function management(ctx: Ctx) {
       .object({ revision: z.string().length(64), patch: settingsPatchSchema })
       .strict()
       .parse(await json(c.req.raw));
-    if (f.patch.factory) input(() => requireFactoryProtocol(s));
     return c.json(patchSettings(s, f.patch, f.revision));
   });
   app.get("/backup", (c) => {

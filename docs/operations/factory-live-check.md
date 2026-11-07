@@ -41,10 +41,10 @@ results in the PR that ships the change: each step, what you saw, and anything t
 4. **A PR merged early.** With an item in `pr` or `review`, merge its PR yourself.
    - The item ends `shipped`, not `closed`, with one shipped comment, and the events say it was merged before the
      factory called it ready. A queued review run is cancelled.
-5. **A move and back.** With an item in `implement`, run `agentgate factory use <folder> --node <laptop>`.
+5. **A move and back.** With an item in `implement`, run `agentgate factory move <laptop>`.
    - The server keeps its T3 Code sign-in (`agentgate factory t3` on the server) and finishes the item; the laptop's
      board shows it as held by the server.
-   - A new labelled issue is taken by the laptop. Move the factory back with `--node <server>` once the item shipped,
+   - A new labelled issue is taken by the laptop. Move the factory back with `agentgate factory move <server>` once the item shipped,
      and check that the server takes the next issue.
 6. **A signed webhook.** Send one delivery to the webhook source's URL from `agentgate factory status`, signed with
    its secret, and one with a wrong signature.

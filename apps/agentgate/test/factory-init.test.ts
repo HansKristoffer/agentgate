@@ -292,6 +292,31 @@ test("once the init PR merges, the factory follows the default branch even thoug
   expect(views()).toBe(before);
 });
 
+test("moving the factory keeps the init PR it waits on, so the machine it lands on still follows the merge", async () => {
+  const github = fakeGitHub();
+  fakeFetcher(github);
+  const { s, f, api, command } = node();
+  await api("/init", { repo: REPO });
+  s.put("node", "b", { id: "b", protocol: 8 });
+
+  expect((await command("move", "b")).code).toBe(0);
+  expect(s.settings().factory).toEqual({
+    repo: REPO,
+    path: "factory",
+    ref: FACTORY_INIT_BRANCH,
+    init: { pr: 7 },
+    node: "b",
+  });
+  expect((await command("move", "nowhere")).output).toEqual([
+    "No machine is named nowhere; agentgate status lists them",
+  ]);
+
+  expect((await api("/move", { node: "a" })).status).toBe(200);
+  github.prs.get(7)!.state = "MERGED";
+  await folderLoop(f);
+  expect(s.settings().factory).toEqual({ repo: REPO, path: "factory", node: "a" });
+});
+
 test("a closed init PR leaves the factory on its branch, says so, and stops asking", async () => {
   const github = fakeGitHub();
   fakeFetcher(github);

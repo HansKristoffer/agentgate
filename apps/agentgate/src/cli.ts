@@ -452,7 +452,6 @@ async function main() {
       if (sub !== "set") die("settings show | settings set --file patch.json");
       const expected = revision(s, "setting", "settings");
       const patch = await Bun.file(str("file") ?? die("--file patch.json is required")).json();
-      if (patch?.factory) (await import("./factory/runtime.ts")).requireFactoryProtocol(s);
       return console.log(JSON.stringify(patchSettings(s, patch, expected), null, 2));
     }
     case "proxy": {

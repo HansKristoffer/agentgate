@@ -190,11 +190,6 @@ export const settingsPatchSchema = z
     codexQuotaPolling: settingsSchema.shape.codexQuotaPolling.removeDefault().optional(),
     t3ProjectSync: settingsSchema.shape.t3ProjectSync.removeDefault().optional(),
     t3HandoffHistory: settingsSchema.shape.t3HandoffHistory.removeDefault().optional(),
-    // null turns the factory off; the patch is spread over the saved settings, so it becomes undefined there.
-    factory: factoryPointerSchema
-      .nullable()
-      .transform((v) => v ?? undefined)
-      .optional(),
   })
   .strict();
 export type Account = z.infer<typeof accountSchema>;

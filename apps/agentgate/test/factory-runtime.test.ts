@@ -344,31 +344,15 @@ test("on another machine, commands go to the factory machine, and fail clearly w
   expect(await run("t3")).toEqual({ status: 200, body: { code: 0, output: ["local"] } });
 });
 
-test("the factory setting waits until every machine understands it, and null turns it off", async () => {
+test("the generic settings patch cannot write the factory pointer", async () => {
   const { s, ctx } = fixture();
-  s.put("node", "old", { id: "old", protocol: 7 });
   const call = caller(app(ctx));
-  const patch = (value: unknown) =>
-    call("/api/settings", "PATCH", { revision: revision(s, "setting", "settings"), patch: { factory: value } });
-  const pointer = { repo: "acme/api", node: "a" };
-
-  const refused = await patch(pointer);
-  expect(refused.status).toBe(400);
-  expect(await refused.json()).toEqual({
-    error: "Update agentgate on old first: older versions cannot sync factory settings and secrets",
+  const res = await call("/api/settings", "PATCH", {
+    revision: revision(s, "setting", "settings"),
+    patch: { factory: { repo: "acme/api", node: "a" } },
   });
+  expect(res.status).toBe(400);
   expect(s.settings().factory).toBeUndefined();
-
-  s.put("node", "old", { id: "old", protocol: 8 });
-  expect((await patch(pointer)).status).toBe(200);
-  expect(s.settings().factory).toEqual({ ...pointer, path: "" });
-
-  await call("/api/settings", "PATCH", { revision: revision(s, "setting", "settings"), patch: { threshold: 90 } });
-  expect(s.settings().factory).toEqual({ ...pointer, path: "" });
-
-  expect((await patch(null)).status).toBe(200);
-  expect(s.settings().factory).toBeUndefined();
-  expect(s.settings().threshold).toBe(90);
 });
 
 test("an item's steps never overlap and a failed one does not hold up the next; steps of two items run side by side", async () => {

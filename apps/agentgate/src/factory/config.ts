@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   factoryConfigSchema,
+  factoryMoveInputSchema,
   factoryUseInputSchema,
   scorerFileSchema,
   stageFileSchema,
@@ -16,7 +17,6 @@ import {
 } from "@agentgate/protocol";
 import { exponentialBackoff, getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
-import { patchSettings, revision } from "../configuration.ts";
 import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
@@ -283,7 +283,7 @@ async function followInit(f: FactoryRuntime): Promise<boolean> {
   if (state === "OPEN") return false;
   const { init, ref, ...rest } = pointer;
   const merged = state === "MERGED";
-  patchSettings(s, { factory: merged ? rest : { ...rest, ...(ref && { ref }) } }, revision(s, "setting", "settings"));
+  setPointer(s, merged ? rest : { ...rest, ...(ref && { ref }) });
   f.events.emit({
     kind: "note",
     text: merged
@@ -396,9 +396,17 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
 /** An always-on machine is the natural host; otherwise this one. */
 export const defaultNode = (s: Store) => s.list("node").find((n) => n.alwaysOn)?.id ?? s.nodeId;
 
-/** `agentgate factory use` and `PUT /api/factory`. On the factory machine, the folder is fetched before it returns. */
+/** The pointer is written only here: `use`, `move`, `off` and following the init PR. The generic settings patch has no
+ * `factory`, so nothing else can drop `init` or skip the protocol check. */
+function setPointer(s: Store, pointer: FactoryPointer | undefined) {
+  s.transaction(() => {
+    const { factory: _, ...rest } = s.settings();
+    s.put("setting", "settings", pointer ? { ...rest, factory: pointer } : rest);
+  });
+}
+
 /** `agentgate factory use` and `PUT /api/factory`; `factory init` adds the PR whose merge moves it to the default
- * branch. */
+ * branch. On the factory machine, the folder is fetched before it returns. */
 export async function useFactory(f: FactoryRuntime, input: unknown, extra: { init?: { pr: number } } = {}) {
   const { s } = f;
   const parsed = factoryUseInputSchema.parse(input);
@@ -412,9 +420,22 @@ export async function useFactory(f: FactoryRuntime, input: unknown, extra: { ini
     node,
     ...(extra.init && { init: extra.init }),
   };
-  patchSettings(s, { factory: pointer }, revision(s, "setting", "settings"));
+  setPointer(s, pointer);
   await sync(f, true);
   return { ...factoryStatus(f), ...(await protectionWarning(pointer)) };
+}
+
+/** `agentgate factory move <machine>` and `POST /api/factory/move`: the same folder on another machine, keeping the
+ * ref and the init PR it waits on. */
+export async function moveFactory(f: FactoryRuntime, node: string) {
+  const { s } = f;
+  const pointer = f.pointer();
+  if (!pointer) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
+  if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);
+  requireFactoryProtocol(s);
+  setPointer(s, { ...pointer, node });
+  await sync(f, true);
+  return factoryStatus(f);
 }
 
 /** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
@@ -436,7 +457,7 @@ export async function protectionWarning(pointer: { repo: string; ref?: string })
 function turnOff(f: FactoryRuntime) {
   const { s } = f;
   if (!f.pointer()) return factoryStatus(f);
-  patchSettings(s, { factory: null }, revision(s, "setting", "settings"));
+  setPointer(s, undefined);
   s.setLocal(STATE_KEY, undefined);
   prune(f);
   f.events.emit({ kind: "factory.off", text: "The factory was turned off" });
@@ -486,12 +507,24 @@ export function setup(f: FactoryRuntime): void {
       return print(await useFactory(f, { repo, path: path.join(":"), ...values }), io.out);
     },
   });
+  f.commands.set("move", {
+    usage: "move <machine>",
+    local: true,
+    run: async (args, io) => {
+      if (args.length !== 1) throw new Error("usage: agentgate factory move <machine>");
+      return print(await moveFactory(f, args[0]!), io.out);
+    },
+  });
   f.commands.set("off", { usage: "off", local: true, run: async (_, io) => print(turnOff(f), io.out) });
   f.commands.set("reload", { usage: "reload", run: async (_, io) => print(await reloadFactory(f), io.out) });
 
   f.api.put("/", async (c) => {
     const body = await jsonInput(c.req.raw);
     return c.json(await asInput(() => useFactory(f, body)));
+  });
+  f.api.post("/move", async (c) => {
+    const { node } = factoryMoveInputSchema.parse(await jsonInput(c.req.raw));
+    return c.json(await asInput(() => moveFactory(f, node)));
   });
   f.api.delete("/", async (c) => c.json(await asInput(() => turnOff(f))));
   // Through the command, which reaches the factory machine from any machine, as the CLI does.
