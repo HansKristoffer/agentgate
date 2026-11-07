@@ -88,10 +88,18 @@ export async function branchProtected(repo: string, branch: string): Promise<boo
 export async function openLabelledIssues(
   repo: string,
   label: string,
-): Promise<Array<{ number: number; title: string; body: string; url: string }>> {
+): Promise<Array<{ number: number; title: string; body: string; url: string; updatedAt?: string }>> {
   return ghJson(
     `list the open issues labelled "${label}" in ${repo}`,
-    z.array(z.object({ number: z.number().int(), title: z.string(), body: z.string(), url: z.string() })),
+    z.array(
+      z.object({
+        number: z.number().int(),
+        title: z.string(),
+        body: z.string(),
+        url: z.string(),
+        updatedAt: z.string().optional(),
+      }),
+    ),
     [
       "issue",
       "list",
@@ -104,7 +112,7 @@ export async function openLabelledIssues(
       "--limit",
       "200",
       "--json",
-      "number,title,body,url",
+      "number,title,body,url,updatedAt",
     ],
   );
 }

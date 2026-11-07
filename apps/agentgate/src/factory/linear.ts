@@ -120,6 +120,7 @@ const issuesSchema = z.object({
         title: z.string(),
         description: z.string().nullish(),
         url: z.string(),
+        updatedAt: z.string().optional(),
       }),
     ),
     pageInfo: z.object({ hasNextPage: z.boolean(), endCursor: z.string().nullish() }),
@@ -131,7 +132,7 @@ const ISSUES = `query FactoryIssues($team: String!, $label: String!, $after: Str
     labels: { name: { eqIgnoreCase: $label } }
     state: { type: { nin: ${JSON.stringify(CLOSED)} } }
   }) {
-    nodes { identifier title description url }
+    nodes { identifier title description url updatedAt }
     pageInfo { hasNextPage endCursor }
   }
 }`;
@@ -157,6 +158,7 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
         title: issue.title,
         url: issue.url,
         snapshot: { title: issue.title, description: issue.description ?? "", url: issue.url },
+        ...(issue.updatedAt && { updatedAt: issue.updatedAt }),
       });
     more = issues.pageInfo.hasNextPage && !!issues.pageInfo.endCursor;
     if (!more) break;

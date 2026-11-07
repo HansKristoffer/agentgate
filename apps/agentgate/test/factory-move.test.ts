@@ -4,7 +4,7 @@ import { app } from "../src/daemon.ts";
 import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { createFactoryRuntime, loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -20,6 +20,7 @@ afterEach(async () => {
 interface Issue {
   number: number;
   title: string;
+  updatedAt: string;
   comments: { body: string; author: { login: string }; authorAssociation: string; createdAt: string }[];
 }
 
@@ -34,7 +35,15 @@ function fakeGitHub(repo: string) {
     calls.push(args);
     const url = (n: number) => `https://github.com/${repo}/issues/${n}`;
     if (args[0] === "issue" && args[1] === "list")
-      return ok([...issues.values()].map((i) => ({ number: i.number, title: i.title, body: "", url: url(i.number) })));
+      return ok(
+        [...issues.values()].map((i) => ({
+          number: i.number,
+          title: i.title,
+          body: "",
+          url: url(i.number),
+          updatedAt: i.updatedAt,
+        })),
+      );
     if (args[0] === "issue" && args[1] === "view") {
       const issue = issues.get(Number(args[2]))!;
       return ok({ state: "OPEN", comments: issue.comments });
@@ -44,9 +53,14 @@ function fakeGitHub(repo: string) {
     const comment = args[1]?.match(/\/issues\/(\d+)\/comments$/);
     if (args[0] === "api" && comment) {
       const { body } = JSON.parse(stdin!);
-      issues
-        .get(Number(comment[1]))!
-        .comments.push({ body, author: { login: "maintainer" }, authorAssociation: "OWNER", createdAt: "2026-11-05" });
+      const issue = issues.get(Number(comment[1]))!;
+      issue.comments.push({
+        body,
+        author: { login: "maintainer" },
+        authorAssociation: "OWNER",
+        createdAt: "2026-11-05",
+      });
+      issue.updatedAt = new Date().toISOString() + issue.comments.length;
       return ok({ id: 1 });
     }
     throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
@@ -76,7 +90,7 @@ function fakeGitHub(repo: string) {
             },
           ]
         : [];
-      issues.set(number, { number, title: `Issue ${number}`, comments });
+      issues.set(number, { number, title: `Issue ${number}`, comments, updatedAt: "2026-11-02T10:00:00Z" });
     },
   };
 }
@@ -218,7 +232,7 @@ test("with a quiet, b shows a's marked issues as orphaned and adopts one at its 
   expect(keys(bf)).toEqual([key(5), key(6)]);
 });
 
-test("retry refuses an issue whose machine is online, since it finishes the issue itself", async () => {
+test("retry on an issue a machine that is online holds reaches that machine, which answers for it", async () => {
   const { a, bf, github, key, moveToB } = await twoMachines();
   github.open(1);
   await a.intake();
@@ -227,7 +241,7 @@ test("retry refuses an issue whose machine is online, since it finishes the issu
 
   const output: string[] = [];
   await expect(runCommand(bf, "retry", [`${a.repo}#1`], { out: (line) => output.push(line) })).rejects.toThrow(
-    `a still holds ${key(1)} and finishes it there`,
+    `${key(1)} has nothing to retry`,
   );
   expect(keys(bf)).toEqual([]);
 });
@@ -356,4 +370,32 @@ test("retry takes over an issue only once its machine has been out of reach for 
   await expect(runCommand(bf, "retry", [`${a.repo}#5`], { out: () => {} })).rejects.toThrow("a still holds");
   bf.s.db.run("update peers set last_seen = ? where node = 'a'", [bf.s.now() - 31 * 60_000]);
   expect(await runCommand(bf, "retry", [`${a.repo}#5`], { out: () => {} })).toBe(0);
+});
+
+test("intake reads an issue another machine holds once, and again only when the issue changed", async () => {
+  const { bf, github, moveToB } = await twoMachines();
+  for (let i = 1; i <= 3; i++) github.open(i, { node: "a" });
+  await moveToB();
+  const reads = () => github.calls.filter((c) => c[0] === "issue" && c[1] === "view" && c.at(-1) === "comments").length;
+  for (let pass = 0; pass < 3; pass++) await loop(bf, "factory-intake");
+  expect(reads()).toBe(3);
+  github.issues.get(2)!.updatedAt = "2026-11-06T10:00:00Z";
+  await loop(bf, "factory-intake");
+  expect(reads()).toBe(4);
+});
+
+test("after a restart while intake is paused, an item command still reaches the machine that holds the item", async () => {
+  const { a, b, github, key, moveToB } = await twoMachines();
+  github.open(1);
+  await a.intake();
+  await a.dispatch();
+  await idle(a.f);
+  await moveToB();
+  // b restarts paused: it has read no source since, so it knows no holder.
+  b.s.setLocal("factory:paused", "1");
+  const fresh = createFactoryRuntime(b.ctx);
+  await loop(fresh, "factory-intake");
+  const output: string[] = [];
+  expect(await runCommand(fresh, "show", [key(1)], { out: (line) => output.push(line) })).toBe(0);
+  expect(output[0]).toStartWith(`${key(1)} Issue 1`);
 });

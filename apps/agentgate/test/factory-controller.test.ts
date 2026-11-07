@@ -162,8 +162,11 @@ test("a triage stage with start: manual holds new items until approve, and intak
   expect(triageRuns(n)).toEqual([]);
   await n.dispatch();
   expect(launches(n)).toEqual([]);
+  // Paused for the maintainer, intake still reads the source (other machines' issues show on the board), and adds nothing.
+  const before = items.list(n.s).length;
   await n.intake();
-  expect(polled).toEqual([]);
+  expect(polled).toEqual(["bugs"]);
+  expect(items.list(n.s)).toHaveLength(before);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity).toMatchObject({
     waitingForYou: 1,
     waitingForYouLimit: 1,
@@ -179,7 +182,7 @@ test("a triage stage with start: manual holds new items until approve, and intak
   await n.dispatch();
   expect(launches(n)).toHaveLength(1);
   await n.intake();
-  expect(polled).toEqual(["bugs"]);
+  expect(polled).toEqual(["bugs", "bugs"]);
 });
 
 test("an implement stage with start: manual holds a triaged item, named on the board, until approve starts it", async () => {
@@ -329,11 +332,11 @@ test("PRs ready for the maintainer count toward waitingForYou: five of them paus
   const n = await factoryNode(cleanup, {
     config: (repo) => ({ limits: { waitingForYou: 5 }, sources: [github(repo)] }),
   });
-  const { polled } = fakeSource(n, {});
+  fakeSource(n, {});
   for (const title of ["one", "two", "three", "four", "five"]) await n.command("add", n.repo, title);
   for (const item of items.list(n.s)) items.update(n.s, item.id, { phase: "ready" });
   await n.intake();
-  expect(polled).toEqual([]);
+  expect(items.list(n.s)).toHaveLength(5);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity).toMatchObject({
     waitingForYou: 5,
     intake: "paused-for-you",

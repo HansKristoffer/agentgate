@@ -44,6 +44,7 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
       title: issue.title,
       url: issue.url,
       snapshot: { title: issue.title, body: issue.body, url: issue.url },
+      ...(issue.updatedAt && { updatedAt: issue.updatedAt }),
     }));
   },
   async check(item) {

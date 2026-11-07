@@ -82,6 +82,8 @@ export interface IncomingItem {
   snapshot: unknown;
   /** A webhook or scout item's dedupe key, which agentgate chose; it never goes into the untrusted snapshot. */
   dedupe?: string;
+  /** When the issue last changed, as its source lists it: a new comment changes it, so its marker is read again. */
+  updatedAt?: string;
 }
 export interface PostResult {
   status: "posted" | "failed" | "uncertain";

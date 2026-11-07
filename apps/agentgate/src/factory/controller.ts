@@ -26,7 +26,7 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
 import { cloneProject, findProject } from "../handoff/destination.ts";
-import { peerCall } from "../handoff/jobs.ts";
+import { PeerError, peerCall } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
 import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
@@ -91,7 +91,15 @@ interface Memory {
   seen: Set<string>;
   sources: Map<
     string,
-    { lastPollAt?: number; error?: string; failures: number; retryAt: number; elsewhere: BoardItem[] }
+    {
+      lastPollAt?: number;
+      error?: string;
+      failures: number;
+      retryAt: number;
+      elsewhere: BoardItem[];
+      /** Each listed issue's newest factory marker as last read, kept while the issue's `updatedAt` stays the same. */
+      markers: Map<string, { updatedAt: string; marker: MarkerPayload | undefined }>;
+    }
   >;
   /** Launches that failed, retried later rather than every 5 seconds. */
   retry: Map<string, { failures: number; at: number }>;
@@ -1016,7 +1024,7 @@ const SOURCE_BACKOFF = { baseMs: 2 * 60_000, maxMs: 3600_000, jitter: false };
 function sourceMemory(f: FactoryRuntime, id: string) {
   const sources = memory(f).sources;
   let st = sources.get(id);
-  if (!st) sources.set(id, (st = { failures: 0, retryAt: 0, elsewhere: [] }));
+  if (!st) sources.set(id, (st = { failures: 0, retryAt: 0, elsewhere: [], markers: new Map() }));
   return st;
 }
 
@@ -1044,7 +1052,8 @@ const elsewhereItem = (source: FactorySource, incoming: IncomingItem, marker: Ma
   updatedAt: 0,
 });
 
-/** One intake pass for one source now. It stops adding while intake is paused. */
+/** One intake pass for one source now. While intake is not on, it still reads which issues other machines hold, for
+ * the board, and adds nothing. A marker is read again only when its issue changed. */
 export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<void> {
   const { s } = f;
   const source = currentFolder(f)?.config.sources.find((x) => x.id === sourceId);
@@ -1054,23 +1063,27 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
   const st = sourceMemory(f, source.id);
   try {
     const elsewhere: BoardItem[] = [];
+    const markers: typeof st.markers = new Map();
+    let on = intakeState(f) === "on";
     for (const incoming of await adapter.poll(source)) {
       if (items.byExternal(s, incoming.externalId)) continue;
-      if (intakeState(f) !== "on") break;
-      const marker = await adapter.newestMarker?.({
-        source: source.id,
-        externalId: incoming.externalId,
-        repo: source.repo,
-      });
+      const cached = st.markers.get(incoming.externalId);
+      const marker =
+        incoming.updatedAt && cached?.updatedAt === incoming.updatedAt
+          ? cached.marker
+          : await adapter.newestMarker?.({ source: source.id, externalId: incoming.externalId, repo: source.repo });
+      if (incoming.updatedAt) markers.set(incoming.externalId, { updatedAt: incoming.updatedAt, marker });
       // Another machine holds it: leave it there, and show where.
       if (marker?.state === "open" && marker.node !== s.nodeId) {
         elsewhere.push(elsewhereItem(source, incoming, marker));
         continue;
       }
       // The factory finished it, here before the trim or on another machine; `retry` takes it again.
-      if (marker?.state === "finished") continue;
+      if (marker?.state === "finished" || !on) continue;
       addItem(f, { source: source.id, repo: source.repo, incoming, hold: source.intake === "hold" });
+      on = intakeState(f) === "on";
     }
+    st.markers = markers;
     if (st.failures) console.log(`factory: the source ${source.id} works again`);
     Object.assign(st, { lastPollAt: s.now(), error: undefined, failures: 0, retryAt: 0, elsewhere });
   } catch (e) {
@@ -1081,9 +1094,11 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
   }
 }
 
+/** Every source's poll. Paused for the maintainer (too many items wait), it still reads which issues other machines
+ * hold, and adds nothing; paused by the maintainer, it reads nothing. */
 async function intake(f: FactoryRuntime) {
   const folder = currentFolder(f);
-  if (!folder || intakeState(f) !== "on") return;
+  if (!folder || intakeState(f) === "off") return;
   for (const source of folder.config.sources)
     if (sourceMemory(f, source.id).retryAt <= f.s.now()) await pollSource(f, source.id);
 }
@@ -1457,16 +1472,28 @@ export function holderOf(f: FactoryRuntime, ref: string): string | undefined {
 }
 
 /** An item command for an item this machine does not hold, sent to the machine that does: after the factory moved,
- * the old machine still drives its items, and every machine reaches them through the factory machine. Undefined when
- * this machine holds it, or no reachable machine does. */
+ * the old machine still drives its items, and every machine reaches them through the factory machine. It asks the
+ * machine the board names first, then every other machine seen lately; a machine that does not hold the item answers
+ * 409, and one that does answers for it, errors included. Undefined when this machine holds it, or none answers. */
 async function viaHolder(f: FactoryRuntime, name: string, args: string[], ref: string) {
+  const { s } = f;
   if (findItem(f, ref)) return undefined;
-  const holder = holderOf(f, ref);
-  if (!holder) return undefined;
-  return peerCall<{ code: number; output: string[] }>(f.s, holder, "/factory/op", {
-    json: { kind: "command", name, args },
-    timeout: 100_000,
-  });
+  const named = holderOf(f, ref);
+  const seen = s
+    .list("node")
+    .map((n) => n.id)
+    .filter((id) => id !== s.nodeId && s.now() - lastSeen(s, id) < ORPHAN_MS);
+  for (const node of new Set([...(named ? [named] : []), ...seen])) {
+    try {
+      return await peerCall<{ code: number; output: string[] }>(s, node, "/factory/op", {
+        json: { kind: "command", name, args },
+        timeout: 100_000,
+      });
+    } catch (e) {
+      if (e instanceof PeerError && e.status !== 409) throw e;
+    }
+  }
+  return undefined;
 }
 
 function boardItems(f: FactoryRuntime): BoardItem[] {
