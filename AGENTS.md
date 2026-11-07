@@ -67,7 +67,7 @@ The most common defect is a change that works on the path you tested and is miss
 
 ## Test data
 
-An empty store is a bad test. With your dev daemon stopped, run `bun run seed-dev-store` (add `--force` to replace an existing one). It copies a read-only snapshot of the live store into the checkout, and keeps accounts, usage, MCP servers, projects, skills, other nodes and activity. It drops credentials, MCP secrets, peers, relay membership, registered checkouts and node-local state, and names the node `dev`. Accounts therefore show as needing login, and the dev daemon cannot refresh a real token, sync with a real machine, or link skills into a real repository. Copy in, never symlink: data flows into the checkout, never back.
+An empty store is a bad test. With your dev daemon stopped, run `bun run seed-dev-store` (add `--force` to replace an existing one). It copies a read-only snapshot of the live store into the checkout, and keeps accounts, usage, MCP servers, projects, skills, other nodes and activity. It drops credentials, MCP secrets, peers, relay membership, registered checkouts, the factory's pointer and items, and node-local state, and names the node `dev`. Accounts therefore show as needing login, and the dev daemon cannot refresh a real token, sync with a real machine, or link skills into a real repository. Copy in, never symlink: data flows into the checkout, never back.
 
 ## Verifying
 
