@@ -21,7 +21,7 @@ export type FactoryEvent =
   | { kind: "config"; commit?: string; error?: string; text: string }
   | { kind: "factory.off"; text: string }
   | { kind: "note"; item?: string; run?: string; text: string }
-  /** Something a person did to the item; records.ts counts these as human touches. */
+  /** Something a person did to the item; `touched` in controller.ts also counts it on the item as a human touch. */
   | { kind: "human"; item: string; act: HumanAct; text: string };
 
 export type HumanAct = "approve" | "reject" | "retry" | "answer" | "add";
