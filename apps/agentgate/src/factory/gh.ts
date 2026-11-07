@@ -10,11 +10,18 @@ import type { PostResult } from "./runtime.ts";
 
 const DAY = 86_400_000;
 
-/** GitHub's own explanation, when `gh api` printed an error response. */
+/** GitHub's own explanation, when `gh api` printed an error response: REST's `message`, or GraphQL's first error. */
 function apiMessage(out: string) {
   try {
-    const message = z.object({ message: z.string() }).safeParse(JSON.parse(out));
-    if (message.success) return message.data.message.slice(0, 200);
+    const json = JSON.parse(out);
+    const message = z
+      .union([
+        z.object({ message: z.string() }),
+        z.object({ errors: z.tuple([z.object({ message: z.string() })]).rest(z.unknown()) }),
+      ])
+      .safeParse(json);
+    if (message.success)
+      return ("message" in message.data ? message.data.message : message.data.errors[0].message).slice(0, 200);
   } catch {
     // Not a GitHub API error response.
   }
@@ -382,6 +389,145 @@ export async function prView(url: string): Promise<PrView> {
     checks: rollup(statusCheckRollup),
     files: files.map((file) => file.path),
   };
+}
+
+/** A comment in a review or a review conversation; `bot` when a GitHub App wrote it, whatever its association. */
+export interface FeedbackComment {
+  body: string;
+  at: string;
+  association: string;
+  bot: boolean;
+}
+export interface ReviewConversation {
+  id: string;
+  resolved: boolean;
+  outdated: boolean;
+  path: string;
+  line: number | null;
+  canResolve: boolean;
+  comments: FeedbackComment[];
+}
+export interface PrFeedback {
+  reviews: Array<FeedbackComment & { state: string }>;
+  conversations: ReviewConversation[];
+}
+
+// `gh pr view` cannot tell a bot from a person (both are plain logins), and has no review conversations.
+const FEEDBACK = `query ($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
+      reviewThreads(first: 100) {
+        nodes {
+          id isResolved isOutdated path line originalLine viewerCanResolve
+          comments(first: 50) { nodes { body createdAt authorAssociation author { __typename } } }
+        }
+      }
+    }
+  }
+}`;
+const author = z.object({ __typename: z.string() }).nullable(); // null for a deleted account
+const feedbackSchema = z.object({
+  data: z.object({
+    repository: z.object({
+      pullRequest: z.object({
+        reviews: z.object({
+          nodes: z.array(
+            z.object({
+              body: z.string(),
+              state: z.string(),
+              submittedAt: z.string().nullable(), // null while pending
+              authorAssociation: z.string(),
+              author,
+            }),
+          ),
+        }),
+        reviewThreads: z.object({
+          nodes: z.array(
+            z.object({
+              id: z.string(),
+              isResolved: z.boolean(),
+              isOutdated: z.boolean(),
+              path: z.string(),
+              line: z.number().nullable(),
+              originalLine: z.number().nullable(),
+              viewerCanResolve: z.boolean(),
+              comments: z.object({
+                nodes: z.array(
+                  z.object({ body: z.string(), createdAt: z.string(), authorAssociation: z.string(), author }),
+                ),
+              }),
+            }),
+          ),
+        }),
+      }),
+    }),
+  }),
+});
+
+/** A PR's reviews and review conversations, with which comments bots wrote. The last 100 reviews, the first 100
+ * conversations and the first 50 comments of each. */
+export async function prFeedback(url: string): Promise<PrFeedback> {
+  const { repo, number } = prOf(url);
+  const [owner, name] = repo.split("/") as [string, string];
+  const answer = await ghJson(`read the reviews of ${repo}#${number}`, feedbackSchema, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${FEEDBACK}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+    "-F",
+    `number=${number}`,
+  ]);
+  const { reviews, reviewThreads } = answer.data.repository.pullRequest;
+  const comment = (c: { body: string; authorAssociation: string; author: { __typename: string } | null }) => ({
+    body: c.body,
+    association: c.authorAssociation,
+    bot: c.author?.__typename === "Bot",
+  });
+  return {
+    reviews: reviews.nodes.flatMap((r) =>
+      r.submittedAt ? [{ ...comment(r), at: r.submittedAt, state: r.state }] : [],
+    ),
+    conversations: reviewThreads.nodes.map((t) => ({
+      id: t.id,
+      resolved: t.isResolved,
+      outdated: t.isOutdated,
+      path: t.path,
+      line: t.line ?? t.originalLine,
+      canResolve: t.viewerCanResolve,
+      comments: t.comments.nodes.map((c) => ({ ...comment(c), at: c.createdAt })),
+    })),
+  };
+}
+
+const REPLY = `mutation ($id: ID!, $body: String!) {
+  addPullRequestReviewThreadReply(input: { pullRequestReviewThreadId: $id, body: $body }) { comment { id } }
+}`;
+const RESOLVE = `mutation ($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { isResolved } } }`;
+
+// The payloads are required: GraphQL can exit 0 with `errors` and a null payload.
+export async function replyToConversation(id: string, body: string): Promise<void> {
+  await ghJson(
+    "reply in a review conversation",
+    z.object({
+      data: z.object({ addPullRequestReviewThreadReply: z.object({ comment: z.object({ id: z.string() }) }) }),
+    }),
+    ["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`],
+  );
+}
+
+export async function resolveConversation(id: string): Promise<void> {
+  await ghJson(
+    "resolve a review conversation",
+    z.object({
+      data: z.object({ resolveReviewThread: z.object({ thread: z.object({ isResolved: z.literal(true) }) }) }),
+    }),
+    ["api", "graphql", "-f", `query=${RESOLVE}`, "-f", `id=${id}`],
+  );
 }
 
 export async function prReady(url: string): Promise<void> {

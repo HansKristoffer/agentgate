@@ -868,7 +868,7 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
 const CLOSING_OUTCOMES: readonly Outcome[] = ["not-a-bug", "duplicate", "already-fixed", "nothing-to-do"];
 
 /** The run, when the caller is its own thread on the machine that holds it (D35: routing, not security). */
-function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller) {
+export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller) {
   const run = runs.get(f.s, id);
   if (!run) throw new ReportError(`${f.s.nodeId} has no factory run ${id}`);
   if (!caller.thread)

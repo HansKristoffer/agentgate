@@ -11,6 +11,16 @@ const sha = () =>
   Array.from(crypto.getRandomValues(new Uint8Array(20)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 type Comment = { body: string; author?: { login: string }; authorAssociation: string; createdAt: string };
+/** A review conversation, in GraphQL's field names; `bot` stands for an author whose __typename is Bot. */
+export interface FakeConversation {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  path: string;
+  line: number | null;
+  viewerCanResolve: boolean;
+  comments: { body: string; createdAt: string; authorAssociation: string; bot?: boolean }[];
+}
 export interface FakePr {
   number: number;
   url: string;
@@ -23,7 +33,8 @@ export interface FakePr {
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   body: string;
   comments: Comment[];
-  reviews: { body: string; authorAssociation: string; submittedAt: string; state: string }[];
+  reviews: { body: string; authorAssociation: string; submittedAt: string; state: string; bot?: boolean }[];
+  conversations: FakeConversation[];
   reviewers: string[];
 }
 
@@ -46,6 +57,8 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     calls,
     /** The conclusion of the newest push run on `main`. */
     ci: "success" as "success" | "failure",
+    /** How many of the next replies and resolves GitHub refuses. */
+    refuse: { reply: 0, resolve: 0 },
     addIssue(number: number) {
       issues.set(number, { title: `Issue ${number}`, state: "OPEN", comments: [] });
     },
@@ -65,6 +78,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
         body: "Fixes #1",
         comments: [],
         reviews: [],
+        conversations: [],
         reviewers: [],
         ...patch,
       };
@@ -107,6 +121,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
         .comments.push({ body, author: { login: "maintainer" }, authorAssociation: "OWNER", createdAt: "2026-11-05" });
       return ok({ id: 1 });
     }
+    if (command === "api" && sub === "graphql") return graphql(args);
     const pr = prs.get(args[2]!);
     if (command === "pr" && pr) {
       if (sub === "view" && flag(args, "--json") === "author") return ok({ author: { login: pr.author } });
@@ -145,6 +160,44 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
   };
   cleanup.push(() => (host.gh = realGh));
+
+  const author = (bot?: boolean) => ({ __typename: bot ? "Bot" : "User" });
+  /** `gh api graphql`: the reviews read, and the reply and resolve mutations. */
+  function graphql(args: string[]): Answer {
+    const vars = Object.fromEntries(
+      args.flatMap((a, i) =>
+        args[i - 1] === "-f" || args[i - 1] === "-F" ? [[a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)]] : [],
+      ),
+    ) as Record<string, string>;
+    if (vars.query!.includes("reviewThreads")) {
+      const pr = [...prs.values()].find((p) => p.number === Number(vars.number))!;
+      const reviews = pr.reviews.map(({ bot, ...r }) => ({ ...r, author: author(bot) }));
+      const threads = pr.conversations.map(({ comments, line, ...c }) => ({
+        ...c,
+        line,
+        originalLine: line,
+        comments: { nodes: comments.map(({ bot, ...m }) => ({ ...m, author: author(bot) })) },
+      }));
+      return ok({
+        data: { repository: { pullRequest: { reviews: { nodes: reviews }, reviewThreads: { nodes: threads } } } },
+      });
+    }
+    const conversation = [...prs.values()].flatMap((p) => p.conversations).find((c) => c.id === vars.id)!;
+    const refused = { ok: false, out: JSON.stringify({ errors: [{ message: "Something went wrong" }] }) };
+    if (vars.query!.includes("addPullRequestReviewThreadReply")) {
+      if (github.refuse.reply && github.refuse.reply--) return refused;
+      conversation.comments.push({ body: vars.body!, createdAt: "2026-11-05T00:00:00Z", authorAssociation: "OWNER" });
+      return ok({
+        data: { addPullRequestReviewThreadReply: { comment: { id: `reply-${conversation.comments.length}` } } },
+      });
+    }
+    if (vars.query!.includes("resolveReviewThread")) {
+      if (github.refuse.resolve && github.refuse.resolve--) return refused;
+      conversation.isResolved = true;
+      return ok({ data: { resolveReviewThread: { thread: { isResolved: true } } } });
+    }
+    throw new Error(`the fake GitHub has no answer for this GraphQL query: ${vars.query}`);
+  }
   return github;
 }
 
@@ -177,6 +230,17 @@ export async function prFactory(
       name: "factory_report",
       arguments: { run: run.id, ...body },
       _meta: { "dev.agentgate/t3Thread": run.threadId },
+    });
+    const text = (result.content as { text: string }[])[0]!.text;
+    await idle(n.f);
+    return result.isError ? { error: text } : JSON.parse(text);
+  };
+  /** factory_pr_threads from the run's own T3 thread, or from `thread`: the answer, or the tool error's text. */
+  const prThreads = async (run: FactoryRun, body: Record<string, unknown>, thread = run.threadId) => {
+    const result = await builtin.callTool({
+      name: "factory_pr_threads",
+      arguments: { run: run.id, ...body },
+      _meta: { "dev.agentgate/t3Thread": thread },
     });
     const text = (result.content as { text: string }[])[0]!.text;
     await idle(n.f);
@@ -224,6 +288,7 @@ export async function prFactory(
     /** The item key intake gives issue `number`: the repository's name and the number. */
     key: (number: number) => `${n.repo.split("/")[1]!.toLowerCase()}-${number}`,
     report,
+    prThreads,
     done,
     implementing,
     opened,

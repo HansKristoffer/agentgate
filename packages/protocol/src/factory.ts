@@ -412,6 +412,28 @@ export const factoryReportSchema = z
   .strict();
 export type FactoryReport = z.infer<typeof factoryReportSchema>;
 
+/** What an implement thread sends through `factory_pr_threads` after it pushed fixes for review conversations. A
+ * declined conversation needs a note: the factory replies with it. */
+export const factoryPrThreadsInputSchema = z
+  .object({
+    run: z.string().min(1).max(100),
+    commit: commitSha, // the PR's head after the push
+    conversations: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1).max(200),
+            outcome: z.enum(["fixed", "declined"]),
+            note: z.string().trim().min(1).max(2000).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+  })
+  .strict();
+export type FactoryPrThreadsInput = z.infer<typeof factoryPrThreadsInputSchema>;
+
 /** The moments the factory writes back to an item's source, at most once each (`waiting` once per question). */
 export const writeBackMoments = [
   "taken",

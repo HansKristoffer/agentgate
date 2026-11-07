@@ -159,14 +159,22 @@ names no thread.
 ### Untrusted text after the label gate (D40)
 
 The label is the gate. Only someone who can label issues in the repository, or the Linear team, starts an item. Text
-that arrives after it is an accepted, named risk. It covers an issue body edited after labelling, and, in a
-repository with `watchPullRequests`, PR comments from people outside the repository, which T3's PR watch wakes the
-implement thread with. The mitigations:
+that arrives after it is an accepted, named risk. It covers:
+
+- an issue body edited after labelling;
+- in a repository with `watchPullRequests`, PR comments from people outside the repository, which T3's PR watch wakes
+  the implement thread with;
+- reviews and review conversations from any bot. A bot is any GitHub App installed on the repository, and the
+  maintainer chose to trust them all for now ([`pr.ts`](../../apps/agentgate/src/factory/pr.ts)).
+
+The mitigations:
 
 - stages read the intake snapshot through `factory_item`, not the live issue;
 - briefs fence the item, and any other live text, as untrusted data ([`briefs.ts`](../../apps/agentgate/src/factory/briefs.ts));
-- by default the PR follower is the thread's only waker, and it quotes only comments from the repository's owner,
-  members and collaborators, fenced;
+- by default the PR follower is the thread's only waker. It quotes, fenced, only comments from the repository's owner,
+  members and collaborators, and bots' reviews and review conversations, never a bot's plain PR comment;
+- a thread never writes to GitHub: it tells the factory which review conversations it fixed or declined, and the
+  factory replies and resolves them, after checking the reported commit is the PR's head;
 - items an agent adds with `factory_add` wait in `held`, so an agent session cannot start a full-access thread with
   text of its choosing;
 - comments the factory writes defuse mentions and HTML comments, so an agent's summary cannot notify anyone or fake a
