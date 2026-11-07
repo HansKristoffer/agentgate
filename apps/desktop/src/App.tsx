@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useChanges } from "./useChanges.ts";
 import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
@@ -157,6 +158,11 @@ export function App() {
       if (newerThanShown()) setError(String(e));
     }
   }, []);
+  // Refreshes as soon as the daemon reports a change.
+  const changes = useChanges(connection, ready);
+  useEffect(() => {
+    if (changes) void refresh();
+  }, [changes, refresh]);
   // Polls, every second while something is under way so it shows as it happens, and refreshes on focus and on every
   // page change, so a view never opens on stale data.
   const live = !!data && underWay(data, desktop);
@@ -213,7 +219,7 @@ export function App() {
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
-  const props = data && { data, connection, perform, local, desktop };
+  const props = data && { data, connection, perform, local, desktop, changes };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,

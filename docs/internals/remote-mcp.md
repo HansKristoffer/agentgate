@@ -26,6 +26,18 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
 - The public `/mcp/:key` route does not require `RELAY_KEY`, because clients like Grok only send a bearer
   token. Creating, connecting and deleting endpoints do.
 - `export --no-secrets` drops the whole `remote` field.
+- A virtual project's `factoryTools` adds the factory's tools under the reserved `factory` prefix
+  ([`factory/remote-tools.ts`](../../apps/agentgate/src/factory/remote-tools.ts)). They call the factory's typed
+  operations, which reach the factory machine or an item's holder, so any node can serve the endpoint. Turning it on
+  is gated on node protocol 9, since older nodes drop the field when they save the project. Unlike the agent tool
+  `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
+  control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.
+- The endpoint's `factoryWebhook` gets factory updates from every machine, each posting what its own event log holds
+  for the items it drives ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), since items live in
+  node-local tables. Each machine keeps a cursor per URL; a new URL starts at the newest event and a removed one's
+  cursor is forgotten, so setting one never replays history. Delivery is at least once. The URL is a capability, so
+  the API shows its origin only, logs show a status or an error's name, and backups without secrets and the seeded dev
+  store drop it.
 - The factory's webhook URLs reuse this machinery as endpoints of kind `hook`, served at `POST /hook/:key`
   ([factory](factory.md#hook-endpoints-hookkey)). Like `/mcp/:key`, the route needs neither a bearer token nor
   `RELAY_KEY`, because senders such as GitHub cannot send them. The serving machine checks the sender's signature

@@ -34,6 +34,15 @@ export function scrubDevStore(s: Store) {
         row.id,
       ]);
     }
+    // Every machine posts its factory updates to a virtual project's webhook; a dev daemon must not post to a real one.
+    for (const row of s.db.query("select id, data from records where kind = 'project' and deleted = 0").all() as {
+      id: string;
+      data: string;
+    }[]) {
+      const { factoryWebhook, ...project } = JSON.parse(row.data);
+      if (factoryWebhook)
+        s.db.run("update records set data = ? where kind = 'project' and id = ?", [JSON.stringify(project), row.id]);
+    }
     const settings = s.db.query("select data from records where kind = 'setting' and id = 'settings'").get() as {
       data: string;
     } | null;

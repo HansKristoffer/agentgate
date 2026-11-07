@@ -25,6 +25,8 @@ import { resolve } from "./templates.ts";
 export const VERSION = "0.1.0";
 /** The tool prefix of agentgate's own tools in local sessions (thread handoff); reserved in project mappings. */
 export const BUILTIN_ALIAS = "agentgate";
+/** The tool prefix of the factory's tools on a virtual project's endpoint (`factoryTools`); reserved there. */
+export const FACTORY_ALIAS = "factory";
 const IDLE_CLOSE = 10 * 60_000;
 const MAX_TOOL_NAME = 64; // Codex's limit
 
@@ -486,6 +488,8 @@ export class Gateway {
   /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
   builtin?: () => Promise<Source>;
   private builtinSource?: Promise<Source>;
+  /** The software factory's tools for a virtual project's endpoint that offers them, set by the daemon. */
+  factoryTools?: (project: string) => Promise<Source>;
   /** A session's scope from the T3 Code thread its shim names, if any; set by the daemon. Without it, or without a
    * scope, a session uses every server its project maps. */
   scope?: (thread: string | undefined) => SessionScope | undefined;
@@ -706,7 +710,8 @@ export class Gateway {
 
   /**
    * The endpoint of a virtual project, for remote clients through the relay: stateless JSON, one server and
-   * transport per POST, shared instances plus the built-in skill tools. Never reachable through an HTTP listener.
+   * transport per POST, shared instances plus the built-in skill tools, and the factory's tools when the project offers
+   * them. Never reachable through an HTTP listener.
    */
   async handleRemote(
     project: string,
@@ -730,10 +735,15 @@ export class Gateway {
     if (Array.isArray(message)) return error(400, -32600, "JSON-RPC batches are not supported");
     const failed = new Set<string>();
     const skills = await skillsSource(this.s, project);
+    // Read once per request, like the skills: a switch turned off stops the next request.
+    const factory =
+      this.s.get("project", project)?.factoryTools && this.factoryTools ? await this.factoryTools(project) : undefined;
+    const builtins = [skills, ...(factory ? [factory] : [])];
+    const builtin = (alias: string) => builtins.find((src) => src.alias === alias);
     const sources = async (): Promise<Source[]> => {
       const out = await Promise.all(
         Object.keys(aliasesFor(this.s, project))
-          .filter((alias) => alias !== skills.alias)
+          .filter((alias) => !builtin(alias))
           .map(async (alias) => {
             try {
               return await this.source(project, alias);
@@ -744,12 +754,12 @@ export class Gateway {
             }
           }),
       );
-      return [...out.filter(isTruthy), skills];
+      return [...out.filter(isTruthy), ...builtins];
     };
     // A connect error carries the server's stderr and local details: logged here, never sent to the public client.
     const resolveSource = (alias: string) =>
-      alias === skills.alias
-        ? Promise.resolve(skills)
+      builtin(alias)
+        ? Promise.resolve(builtin(alias))
         : this.source(project, alias).catch((e) => {
             failed.add(alias);
             if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
@@ -797,7 +807,7 @@ export class Gateway {
       };
     } finally {
       await server.close().catch(() => {});
-      await skills.client.close().catch(() => {});
+      for (const src of builtins) await src.client.close().catch(() => {});
     }
   }
 

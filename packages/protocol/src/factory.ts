@@ -571,7 +571,14 @@ export const factoryBoardSchema = z.object({
     })
     .nullable(),
   config: z
-    .object({ commit: z.string(), name: z.string(), loadedAt: z.number(), error: z.string().optional() })
+    .object({
+      commit: z.string(),
+      name: z.string(),
+      loadedAt: z.number(),
+      error: z.string().optional(),
+      /** The repositories the folder names, which `factory add` accepts. */
+      repositories: z.array(z.string()).optional(),
+    })
     .nullable(),
   t3: z.object({
     stream: z.enum(["live", "polling", "down"]),

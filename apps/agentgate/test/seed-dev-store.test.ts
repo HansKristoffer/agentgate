@@ -4,7 +4,7 @@ import { ensureFactoryTables, items } from "../src/factory/db.ts";
 import { recordSessionUsage, sessionUsage } from "../src/llm/sessions.ts";
 import { Store } from "../src/store.ts";
 
-test("a seeded dev store keeps no factory pointer, factory items or session usage, so a dev daemon cannot act on the live factory", () => {
+test("a seeded dev store keeps no factory pointer, factory items, webhooks or session usage, so a dev daemon cannot act on the live factory", () => {
   const s = new Store(":memory:");
   s.setLocal("node", "srv");
   s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/factory", path: "", node: "srv" } });
@@ -21,6 +21,7 @@ test("a seeded dev store keeps no factory pointer, factory items or session usag
     prUrl: "https://github.com/acme/api/pull/7",
     configCommit: "a".repeat(40),
   });
+  s.put("project", "@grok", { id: "@grok", factoryTools: true, factoryWebhook: "https://bot.example/hook" });
   recordSessionUsage(s, {
     session: "sess-1",
     provider: "claude",
@@ -35,6 +36,9 @@ test("a seeded dev store keeps no factory pointer, factory items or session usag
   scrubDevStore(s);
 
   expect(s.settings().factory).toBeUndefined();
+  // Every machine posts its factory updates to a webhook; a dev daemon must not post to a real one.
+  expect(s.get("project", "@grok")).toMatchObject({ factoryTools: true });
+  expect(s.get("project", "@grok")!.factoryWebhook).toBeUndefined();
   expect(items.list(s)).toEqual([]);
   expect(sessionUsage(s, ["sess-1"])).toEqual([]);
   expect(s.nodeId).toBe("dev");

@@ -237,9 +237,13 @@ agentgate project set @grok linear=linear posthog=posthog-lullu
 agentgate skills projects release-notes @grok
 agentgate remote enable @grok        # prints the URL and Authorization header
 agentgate remote secret @grok        # new secret, same URL
+agentgate remote factory @grok on    # also let Grok see and steer the software factory
+agentgate remote webhook @grok https://bot.example/agentgate?token=…   # post factory updates there
 ```
 
-Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
+With the **Software factory** switch on (or `remote factory @grok on`), Grok can also follow and steer the [software factory](#software-factory) from anywhere: `factory__status` shows the board and the repositories it works, `factory__show` one item, and `factory__add` adds a task in any of those repositories, which starts at triage without waiting for your approval. Grok can also approve, reject, retry and drop items, and pause or resume the factory. To hear about changes without asking, set an **updates webhook** in the app, with `remote webhook`, or let Grok set one with `factory__webhook`: every machine then posts each item it adds, moves to another phase or starts waiting for you on as JSON (`{ "type": "agentgate.factory.updates", "node", "updates": [{ "seq", "at", "kind", "text", "item" }] }`). Put the receiver's token in the URL's path or query; the app shows only its host. A failed post is sent again, so dedupe by `node` and `seq`. Every machine must run a release that knows the switch; turning it on names the machines to update.
+
+Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. With the factory switch on, that includes starting full-access T3 Code threads on your machines with text they choose. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
 
 ## Software factory
 

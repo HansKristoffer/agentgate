@@ -47,6 +47,7 @@ import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import { createFactoryRuntime, loopTask, type FactoryRuntime } from "./factory/runtime.ts";
 import { threadScope } from "./factory/controller.ts";
+import { factoryToolsSource } from "./factory/remote-tools.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import packageInfo from "../../../package.json";
 
@@ -133,6 +134,7 @@ export function makeCtx(
   // After the features, whose peer routes the relay serves too.
   ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
   gateway.builtin = () => handoffSource(handoffs, ctx.factory);
+  gateway.factoryTools = (project) => factoryToolsSource(ctx.factory, project);
   gateway.scope = (thread) => threadScope(ctx.factory, thread);
   return ctx;
 }

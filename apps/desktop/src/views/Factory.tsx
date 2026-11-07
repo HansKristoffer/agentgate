@@ -484,6 +484,9 @@ export function Factory(props: ViewProps) {
     const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
   }, [connection]);
+  useEffect(() => {
+    if (props.changes) void load();
+  }, [props.changes]);
 
   /** An action, then the board as it is after it. */
   const run = (task: () => Promise<unknown>, message?: string, key?: string) =>
@@ -591,6 +594,7 @@ export function Factory(props: ViewProps) {
       {selected && (
         <ItemDrawer
           connection={connection}
+          changes={props.changes ?? 0}
           id={selected}
           board={board}
           act={act}

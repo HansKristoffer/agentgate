@@ -412,6 +412,7 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
         name: folder.config.name,
         loadedAt: state.loadedAt ?? 0,
         ...(error && { error }),
+        repositories: Object.keys(folder.config.repositories),
       },
     };
   // Nothing good loaded yet: the commit that failed, if git got that far.

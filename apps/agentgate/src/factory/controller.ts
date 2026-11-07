@@ -294,8 +294,9 @@ export function setNeedsYou(f: FactoryRuntime, item: string, needsYou: NeedsYou 
   const after = items.update(f.s, item, { needsYou: needsYou ?? undefined });
   if (needsYou)
     f.events.emit({
-      kind: "note",
+      kind: "item.needs-you",
       item,
+      reason: needsYou.reason,
       text: `${after.key} needs you (${needsYou.reason})${needsYou.question ? `: ${needsYou.question}` : ""}`,
     });
   return after;
@@ -1657,7 +1658,7 @@ function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
 
 const time = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
 
-function detailText(d: FactoryItemDetail): string[] {
+export function detailText(d: FactoryItemDetail): string[] {
   const { item } = d;
   const lines = [`${item.key} ${item.title} (${item.repo}, ${item.phase})`];
   if (item.needsYou) lines.push(`Needs you (${item.needsYou.reason}): ${item.needsYou.question ?? ""}`);

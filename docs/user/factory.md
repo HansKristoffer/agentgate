@@ -403,7 +403,7 @@ Either one opens a PR on the factory's folder, with the `gh` login of the machin
 agentgate factory add acme/api "Exports time out for large accounts" --body "Seen on accounts with over 10,000 rows."
 ```
 
-Agents can do the same with the `agentgate__factory_add` tool, but their items wait for `approve` before triage starts a full-access thread on them. Items added by hand are named `m-<6 characters>`; they have no issue to comment on, so the board and the PR are where you follow them.
+Agents can do the same with the `agentgate__factory_add` tool, but their items wait for `approve` before triage starts a full-access thread on them. Grok, or another assistant that takes a server URL, can follow and steer the factory through a virtual project's endpoint with its factory switch on (`agentgate remote factory @grok on`); its tasks start at triage, and it can approve, reject, retry and drop items, so treat that URL and secret like your own login. An updates webhook on that endpoint (`agentgate remote webhook @grok <https-url>`) gets each item added, moved or waiting for you. See [Your MCP servers and skills in Grok](../../README.md#your-mcp-servers-and-skills-in-grok). Items added by hand are named `m-<6 characters>`; they have no issue to comment on, so the board and the PR are where you follow them.
 
 ## Secrets
 

@@ -40,6 +40,8 @@ import {
   removeNode,
   renameInstance,
   saveProject,
+  setFactoryTools,
+  setFactoryWebhook,
   setAccount,
   setHealthDashboard,
   tuneInstance,
@@ -102,6 +104,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
                                              replace a newer version than the one cat printed (cat | shasum -a 256)
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
+  remote factory @name on|off                 let the endpoint see and steer the software factory: the board, items,
+                                             adding tasks, approve/reject/retry/drop, pause and resume
+  remote webhook @name <https-url>|off        post the factory's updates (items added, moved, waiting for you) there
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
@@ -886,7 +891,7 @@ async function main() {
         for (const p of s.list("project"))
           if (p.remote)
             console.log(
-              `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}`,
+              `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}${p.factoryTools ? " +factory" : ""}${p.factoryWebhook ? ` +webhook ${new URL(p.factoryWebhook).origin}` : ""}`,
             );
         return;
       }
@@ -899,6 +904,22 @@ async function main() {
         if (sub === "disable") {
           disableRemote(s, id);
           return console.log("ok");
+        }
+        if (sub === "factory") {
+          const on = rest[1] === "on" ? true : rest[1] === "off" ? false : die("remote factory @name on|off");
+          setFactoryTools(s, id, on);
+          return console.log(
+            on
+              ? `${id} offers the factory's tools. Anyone with its URL and secret can add tasks and approve, retry or drop items.`
+              : `${id} no longer offers the factory's tools.`,
+          );
+        }
+        if (sub === "webhook") {
+          const url = rest[1] ?? die("remote webhook @name <https-url>|off");
+          setFactoryWebhook(s, id, url === "off" ? undefined : url);
+          return console.log(
+            url === "off" ? "Updates are no longer posted." : "Every machine posts its factory updates there.",
+          );
         }
       } catch (e) {
         return die(getErrorMessage(e));

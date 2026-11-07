@@ -23,8 +23,9 @@ import type { Store } from "./store.ts";
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
  * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
  * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts), 8 the factory setting and `secret`
- * records (factory/runtime.ts). A feature waits until every node reports its protocol. */
-export const NODE_PROTOCOL = 8;
+ * records (factory/runtime.ts), 9 `factoryTools` on virtual projects (factory/remote-tools.ts). A feature waits until
+ * every node reports its protocol. */
+export const NODE_PROTOCOL = 9;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
@@ -505,8 +506,13 @@ function hookRequest(frame: RequestFrame, signal: AbortSignal) {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, files, ...rest } = p;
+  const { remote, files, factoryWebhook, ...rest } = p;
   const summary = endpoints.summary(p);
   const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
-  return { ...rest, ...shown, ...(summary && { remote: summary }) };
+  return {
+    ...rest,
+    ...shown,
+    ...(summary && { remote: summary }),
+    ...(factoryWebhook && { factoryWebhook: new URL(factoryWebhook).origin }),
+  };
 }

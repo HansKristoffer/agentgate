@@ -622,7 +622,8 @@ export function exportBackup(s: Store, secrets = true) {
       if (!secrets && r.kind === "project") {
         delete data.remote;
         delete data.files;
-      } // endpoint keys and env files are secrets
+        delete data.factoryWebhook;
+      } // endpoint keys, env files and webhook URLs are secrets
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };

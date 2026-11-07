@@ -199,7 +199,8 @@ The mitigations:
 - a thread never writes to GitHub: it tells the factory which review conversations it fixed or declined, and the
   factory replies and resolves them, after checking the reported commit is the PR's head;
 - items an agent adds with `factory_add` wait in `held`, so an agent session cannot start a full-access thread with
-  text of its choosing;
+  text of its choosing. A virtual project's endpoint with `factoryTools` on is the deliberate exception
+  ([remote MCP endpoints](remote-mcp.md));
 - comments and issues the factory writes defuse mentions and HTML comments, so an agent's summary cannot notify anyone or fake a
   marker.
 

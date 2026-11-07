@@ -12,6 +12,7 @@ import { NeedsYouActions, OpenInT3, type Act, type AskReason } from "../Factory.
  * `GET /api/factory/items/:id`, which reaches the machine that holds the item. */
 export function ItemDrawer({
   connection,
+  changes,
   id,
   board,
   act,
@@ -19,6 +20,8 @@ export function ItemDrawer({
   close,
 }: {
   connection: Connection;
+  /** useChanges: the item is read again when it goes up. */
+  changes: number;
   id: string;
   board: FactoryBoard;
   act: Act;
@@ -50,7 +53,7 @@ export function ItemDrawer({
     void load();
     const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
-  }, [connection, id]);
+  }, [connection, id, changes]);
 
   // The board's row shows at once; the detail fills in.
   const item = detail?.item ?? board.items.find((i) => i.id === id);

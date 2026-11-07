@@ -20,6 +20,7 @@ import { setup as init } from "./init.ts";
 import { setup as scouts } from "./scouts.ts";
 import { setup as sourceAdd } from "./source-add.ts";
 import { setup as outbox } from "./outbox.ts";
+import { setup as notify } from "./notify.ts";
 
 /** Every feature. Each registers its routes, commands, tools, loops, run kinds, sources and board parts on the
  * runtime; none replaces or wraps another's, so the order only orders the board's parts and the help text. */
@@ -45,6 +46,7 @@ const features = [
   scouts,
   sourceAdd,
   outbox,
+  notify,
 ];
 
 export function setupFeatures(f: FactoryRuntime) {

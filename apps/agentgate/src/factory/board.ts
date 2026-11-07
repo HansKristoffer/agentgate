@@ -319,6 +319,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   }
   if (b.config)
     lines.push(`Config: ${b.config.name} at ${b.config.commit}${when(b.config.error, `, ${b.config.error}`)}`);
+  if (b.config?.repositories?.length) lines.push(`Repositories: ${b.config.repositories.join(", ")}`);
   lines.push(`T3 Code: stream ${b.t3.stream}, MCP ${b.t3.mcp}${when(b.t3.error, ` (${b.t3.error})`)}`);
   const c = b.capacity;
   const capacity = [
