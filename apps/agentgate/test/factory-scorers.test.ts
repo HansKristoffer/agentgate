@@ -146,7 +146,8 @@ test("while few runs were graded this week every run is judged, then a quarter o
   expect(first.length).toBeGreaterThan(400 * 0.15);
   expect(first.length).toBeLessThan(400 * 0.35);
   expect(first).toEqual(first.map(() => expect.objectContaining({ scorer: "specs" })));
-  expect(judged()).toEqual(first);
+  // A run is judged once per scorer, however often it ends.
+  expect(judged()).toEqual([]);
 });
 
 test("a reported triage run gets a judge thread on the scorer's model that reads the run through factory_run, and its label is stored with score, pass flag and reasoning", async () => {
@@ -196,6 +197,25 @@ test("a reported triage run gets a judge thread on the scorer's model that reads
   ]);
   // The judge run has no item: its end leaves the item's phase and runs alone.
   expect(items.get(n.s, triage.item!)!.phase).toBe("implement");
+});
+
+test("a run that asked the maintainer is judged once, on the report after the answer", async () => {
+  const n = await judgeFactory();
+  const asks = {
+    outcome: "needs-decision",
+    summary: "Two ways.",
+    decision: { question: "Keep v1?", recommendation: "Yes" },
+  };
+  const triage = await n.triaged(asks);
+  expect(triage.state).toBe("reported");
+  expect(n.judgeRuns()).toEqual([]);
+
+  expect((await n.command("approve", items.list(n.s)[0]!.key)).code).toBe(0);
+  expect(await n.report(triage, implement)).toEqual({ accepted: true });
+  n.mcp.setThread(triage.threadId!, { status: "running" });
+  n.mcp.setThread(triage.threadId!, { status: "idle" });
+  await n.until(() => runs.get(n.s, triage.id)?.state === "reported", "the triage run to end again");
+  expect(n.judgeRuns().map((r) => r.checked)).toEqual([{ kind: "judge", run: triage.id, scorer: "repro" }]);
 });
 
 test("a label outside the scorer's list is refused, and a failing grade makes the run it grades flawed", async () => {

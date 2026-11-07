@@ -42,19 +42,29 @@ function grade(file: ScorerFile, label: string) {
   return found && { score: found.score, passed: found.score >= file.pass };
 }
 
-/** At the end of a reported stage run: a judge run for every scorer of that stage whose sample picks it. While few
- * runs were graded this week, every run is. */
+/** Outcomes that ask the maintainer: an answer reopens the run, and its next report is the one worth judging. */
+const ASKS = new Set(["blocked", "needs-decision"]);
+
+/** At the end of a reported stage run: a judge run for every scorer of that stage whose sample picks it, once per
+ * (run, scorer). While few runs were graded this week, every run is. */
 export function sampleJudges(f: FactoryRuntime, run: FactoryRun) {
   if (run.state !== "reported" || !run.item || !isStage(run.kind)) return;
+  if (ASKS.has(run.report?.outcome ?? "")) return;
   const item = items.get(f.s, run.item);
   const folder = item && folderAt(f, item.configCommit);
   if (!folder) return;
   const few = scores.since(f.s, f.s.now() - 7 * DAY).length < FULL_SAMPLE_BELOW;
+  const judged = new Set(
+    runs
+      .list(f.s, { kinds: ["judge"] })
+      .flatMap((j) => (j.checked?.kind === "judge" && j.checked.run === run.id ? [j.checked.scorer] : [])),
+  );
   for (const [scorer, { file }] of Object.entries(folder.scorers)) {
     if (!(file.stages as string[]).includes(run.kind)) continue;
     // A sample of 0 turns the scorer off, however few runs were graded.
     const rate = file.sample ?? folder.config.scoring.sample;
     if (rate <= 0 || (!few && !sampled(run.id, rate))) continue;
+    if (judged.has(scorer)) continue;
     enqueueRun(f, { kind: "judge", configCommit: folder.commit, checked: { kind: "judge", run: run.id, scorer } });
   }
 }
