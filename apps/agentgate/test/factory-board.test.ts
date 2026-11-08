@@ -51,7 +51,7 @@ async function withT3(s: Store, routes?: (req: Request) => Response | undefined)
 }
 
 const useFactory = (s: Store, node: string) =>
-  s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/api", node } });
+  s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: "acme/api", node } });
 
 function caller(handler: ReturnType<typeof app>) {
   return (path: string, init: { method?: string; body?: unknown; listener?: Listener; headers?: object } = {}) =>

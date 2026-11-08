@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, RefreshCw, SquareTerminal } from "lucide-react";
 import {
+  folderLabel,
   itemPhases,
   type BoardItem,
   type FactoryBoard,
@@ -268,11 +269,7 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
 function Status({ board }: { board: FactoryBoard }) {
   const c = board.capacity;
   const rows: [string, ReactNode][] = [
-    [
-      "Folder",
-      board.factory &&
-        `${board.factory.repo}${board.factory.path ? `:${board.factory.path}` : ""}${board.factory.ref ? ` at ${board.factory.ref}` : ""}`,
-    ],
+    ["Folder", board.factory && folderLabel(board.factory)],
     ["Runs on", board.factory && `${board.factory.node}${board.factory.online ? "" : " (offline)"}`],
     [
       "Loaded",

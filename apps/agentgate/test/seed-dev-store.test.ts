@@ -7,7 +7,10 @@ import { Store } from "../src/store.ts";
 test("a seeded dev store keeps no factory pointer, factory items, webhooks or session usage, so a dev daemon cannot act on the live factory", () => {
   const s = new Store(":memory:");
   s.setLocal("node", "srv");
-  s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/factory", path: "", node: "srv" } });
+  s.put("setting", "settings", {
+    ...s.settings(),
+    factory: { store: "github", repo: "acme/factory", path: "", node: "srv" },
+  });
   ensureFactoryTables(s);
   items.insert(s, {
     id: "it_1",

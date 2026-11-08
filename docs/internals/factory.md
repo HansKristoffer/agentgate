@@ -28,8 +28,16 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   It is written only at ready on purpose. The reviewer is blind to the implementer's claims and decisions (`factory_item`
   hides them), but only a prompt keeps it from reading the PR description, so either in the body before review would
   reach it.
-- `settings.factory` (the pointer to the folder and the machine that runs it) and the `secret` record kind are gated
-  on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
+- A folder may live outside every repository, as the one synced `factoryFolder` record
+  ([`stored.ts`](../../apps/agentgate/src/factory/stored.ts)), for projects that may not hold it; the pointer's
+  `store` says which. Its commit is the SHA-256 of its files, written to `<home>/factory/<commit>` like a fetched
+  commit, so items, judges and pruning treat both the same. Unlike a push, every write checks that the folder loads and
+  refuses one that does not: other machines only ever see the newest record, so a broken one would leave a new factory
+  machine nothing to run. Two saves at once keep the later, like any record. With no repository to open a PR on, a
+  learn run reports the files it would change; the factory keeps each file's text from that moment, and `apply`
+  refuses a file edited since, so a proposal never overwrites a newer edit.
+- `settings.factory` (the pointer to the folder and the machine that runs it), the `secret` and the `factoryFolder`
+  record kinds are gated on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
   field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and
   following the init PR write the pointer; the generic settings patch has no `factory`.
 - One machine runs the factory. Other machines forward to it through `/peer/factory/op`
@@ -251,7 +259,8 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - Untrusted text after the label gate reaches threads, fenced (D40, above).
 - The folder loads whatever is pushed to its ref, and a full-access thread can push there or edit the loaded folder
   on disk (`<home>/factory/<commit>/`). Branch protection is the remedy where the GitHub plan allows it, so `use`
-  warns when the branch is unprotected; a check inside the factory would also refuse the maintainer's own pushes.
+  warns when the branch is unprotected; a check inside the factory would also refuse the maintainer's own pushes. A
+  stored folder has no such remedy: a thread can write it through the control API with the admin token on disk.
 - Token budgets count what agentgate's proxy saw for a run's T3 sessions. A thread whose sessions bypass the proxy
   counts nothing, so the board shows its item's tokens as unknown after 10 minutes.
 - The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the

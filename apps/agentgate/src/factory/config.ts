@@ -5,6 +5,7 @@ import {
   factoryConfigSchema,
   factoryMoveInputSchema,
   factoryUseInputSchema,
+  folderLabel,
   scorerFileSchema,
   scoutFileSchema,
   stageFileSchema,
@@ -22,14 +23,14 @@ import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { items } from "./db.ts";
-import { fetcher, folderPath, pruneFolders } from "./folder.ts";
+import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFetch, storedFiles } from "./folder.ts";
 import { branchProtected, defaultBranch, prState } from "./gh.ts";
 import { asInput, opRoute, requireFactoryProtocol, runOp, type FactoryRuntime } from "./runtime.ts";
 
 /**
- * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves, and the
- * loader that checks it as a whole. A broken commit never replaces the last good folder; items finish under the
- * commit they started with (`folderAt`).
+ * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves (or reads
+ * the folder agentgate stores, stored.ts), and the loader that checks it as a whole. A broken commit never replaces the
+ * last good folder; items finish under the commit they started with (`folderAt`).
  */
 
 export interface LoadedFolder {
@@ -206,7 +207,8 @@ interface FolderState {
   error?: string; // why `fetched` did not load
   fetchError?: string; // why the last fetch failed
 }
-const sourceOf = (p: FactoryPointer) => JSON.stringify([p.repo.toLowerCase(), p.path, p.ref ?? null]);
+const sourceOf = (p: FactoryPointer) =>
+  JSON.stringify(p.store === "github" ? [p.repo.toLowerCase(), p.path, p.ref ?? null] : [p.store]);
 
 function readState(s: Store, pointer: FactoryPointer): FolderState {
   const state = safeJsonParse<FolderState>(s.local(STATE_KEY) ?? "{}").data;
@@ -287,7 +289,7 @@ function sync(f: FactoryRuntime, force = false): Promise<void> {
 async function followInit(f: FactoryRuntime): Promise<boolean> {
   const { s } = f;
   const pointer = f.pointer();
-  if (!pointer?.init || !f.isFactoryNode()) return false;
+  if (pointer?.store !== "github" || !pointer.init || !f.isFactoryNode()) return false;
   const state = await prState(pointer.repo, pointer.init.pr).catch(() => "OPEN" as const);
   if (state === "OPEN") return false;
   const { init, ref, ...rest } = pointer;
@@ -308,7 +310,8 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   if (await followInit(f)) Object.assign(m, { failures: 0, retryAt: 0 });
   const pointer = f.pointer();
   if (!pointer || !f.isFactoryNode()) return;
-  if (!force && m.retryAt > s.now() && !pointer.init) return;
+  // Reading the stored folder costs nothing, so it never backs off.
+  if (!force && m.retryAt > s.now() && pointer.store === "github" && !pointer.init) return;
 
   const state = readState(s, pointer);
   const save = (next: FolderState) => {
@@ -322,14 +325,17 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   let fetched: Awaited<ReturnType<typeof fetcher.fetch>>;
   try {
     const tree = currentFolder(f) ? state.tree : undefined;
-    fetched = await fetcher.fetch({
-      repo: pointer.repo,
-      ref: pointer.ref,
-      path: pointer.path,
-      since,
-      signal: f.ctx.abort.signal,
-      ...(tree && { tree }),
-    });
+    fetched =
+      pointer.store === "agentgate"
+        ? storedFetch(s, since)
+        : await fetcher.fetch({
+            repo: pointer.repo,
+            ref: pointer.ref,
+            path: pointer.path,
+            since,
+            signal: f.ctx.abort.signal,
+            ...(tree && { tree }),
+          });
   } catch (e) {
     const error = getErrorMessage(e);
     m.failures++;
@@ -343,7 +349,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
     return;
   }
 
-  if (m.failures) console.log(`factory: fetching ${pointer.repo} works again`);
+  if (m.failures) console.log(`factory: fetching ${folderLabel(pointer)} works again`);
   m.failures = 0;
   m.retryAt = 0;
   if (!fetched) {
@@ -440,7 +446,14 @@ export async function useFactory(f: FactoryRuntime, input: unknown, extra: { ini
   requireFactoryProtocol(s);
   const node = parsed.node ?? defaultNode(s);
   if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);
+  if (parsed.store === "agentgate") {
+    if (!storedFiles(s)) throw new Error(NO_STORED_FOLDER);
+    setPointer(s, { store: "agentgate", node });
+    await sync(f, true);
+    return factoryStatus(f);
+  }
   const pointer = {
+    store: "github" as const,
     repo: parsed.repo,
     path: folderPath(parsed.path ?? ""),
     ...(parsed.ref && { ref: parsed.ref }),
@@ -450,6 +463,12 @@ export async function useFactory(f: FactoryRuntime, input: unknown, extra: { ini
   setPointer(s, pointer);
   await sync(f, true);
   return { ...factoryStatus(f), ...(await protectionWarning(pointer)) };
+}
+
+/** Loads the stored folder now on the factory machine, after a change to it; other machines load it within the folder
+ * loop's 2 minutes. */
+export async function storedChanged(f: FactoryRuntime) {
+  if (f.pointer()?.store === "agentgate" && f.isFactoryNode()) await sync(f, true);
 }
 
 /** `agentgate factory move <machine>` and `POST /api/factory/move`: the same folder on another machine, keeping the
@@ -503,10 +522,8 @@ async function reloadFactory(f: FactoryRuntime) {
 
 function describe({ factory, config, warning }: FactoryStatus & { warning?: string }) {
   if (!factory) return ["The factory is off."];
-  const path = factory.path ? `:${factory.path}` : "";
-  const ref = factory.ref ? ` at ${factory.ref}` : "";
   const offline = factory.online ? "" : " (offline)";
-  const lines = [`Factory folder ${factory.repo}${path}${ref}, run by ${factory.node}${offline}.`];
+  const lines = [`Factory folder ${folderLabel(factory)}, run by ${factory.node}${offline}.`];
   if (config?.name) lines.push(`Loaded ${config.name} at ${short(config.commit)}.`);
   if (config?.error) lines.push(`Error: ${config.error}`);
   if (!config) lines.push("Not loaded on this machine yet.");
@@ -521,17 +538,25 @@ const print = (status: FactoryStatus & { warning?: string }, out: (line: string)
 
 export function setup(f: FactoryRuntime): void {
   f.commands.set("use", {
-    usage: "use <owner/repo>[:<path>] [--ref <branch|tag>] [--node <machine>]",
+    usage:
+      "use <owner/repo>[:<path>] [--ref <branch|tag>] [--node <machine>] | use --store agentgate [--node <machine>]",
     local: true,
     run: async (args, io) => {
       const { values, positionals } = parseArgs({
         args,
-        options: { ref: { type: "string" }, node: { type: "string" } },
+        options: { ref: { type: "string" }, node: { type: "string" }, store: { type: "string" } },
         allowPositionals: true,
       });
+      const { store, ...rest } = values;
+      if (store === "agentgate") {
+        if (positionals.length || rest.ref)
+          throw new Error("usage: agentgate factory use --store agentgate [--node <machine>]");
+        return print(await useFactory(f, { store, ...(rest.node && { node: rest.node }) }), io.out);
+      }
+      if (store !== undefined && store !== "github") throw new Error("--store is github or agentgate");
       if (positionals.length !== 1) throw new Error("usage: agentgate factory use <owner/repo>[:<path>]");
       const [repo, ...path] = positionals[0]!.split(":");
-      return print(await useFactory(f, { repo, path: path.join(":"), ...values }), io.out);
+      return print(await useFactory(f, { repo, path: path.join(":"), ...rest }), io.out);
     },
   });
   f.commands.set("move", {

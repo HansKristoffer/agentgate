@@ -179,7 +179,7 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
     code: 0,
     output: [`Factory folder ${repo}:factory, run by a.`, `Loaded acme at ${good.slice(0, 7)}.`],
   });
-  expect(s.settings().factory).toEqual({ repo, path: "factory", node: "a" });
+  expect(s.settings().factory).toEqual({ store: "github", repo, path: "factory", node: "a" });
   expect(readdirSync(join(fetcher.root, good)).sort()).toEqual([
     "factory.yaml",
     "rulings.md",
@@ -199,6 +199,7 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
     name: "acme",
     loadedAt: expect.any(Number),
     error: expect.stringMatching(/^factory\.yaml: invalid YAML/),
+    repositories: ["acme/api", "acme/web"],
   });
   expect(f.events.recent(1)[0]!.text).toStartWith(`${broken.slice(0, 7)} is broken, so kept ${good.slice(0, 7)}`);
 
@@ -222,7 +223,12 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
   const fixed = push("fixed");
   await fetchLoop(f)();
   expect(currentFolder(f)?.rulings).toBe("# Rulings\n\nNo new dependencies.");
-  expect((await board(f)).config).toEqual({ commit: fixed, name: "acme", loadedAt: expect.any(Number) });
+  expect((await board(f)).config).toEqual({
+    commit: fixed,
+    name: "acme",
+    loadedAt: expect.any(Number),
+    repositories: ["acme/api", "acme/web"],
+  });
   expect(readdirSync(fetcher.root).sort()).toEqual([fixed, good].sort());
   expect(folderAt(f, good)?.rulings).toStartWith("# Rulings\n\n- Public API");
 
@@ -299,7 +305,7 @@ test("use waits for every machine to understand the factory, and only the machin
     b!.s,
     peers(b!.s).find((p) => p.node === "a")!,
   );
-  expect(b!.s.settings().factory).toEqual({ repo: "acme/factory", path: "", node: "b" });
+  expect(b!.s.settings().factory).toEqual({ store: "github", repo: "acme/factory", path: "", node: "b" });
   await fetchLoop(a!.ctx.factory)();
   expect(calls).toEqual([]);
   await fetchLoop(b!.ctx.factory)();
@@ -336,7 +342,10 @@ test("POST /api/factory/reload on another machine reloads the factory machine's 
 
   const res = await reload();
   expect(res.status).toBe(200);
-  expect(await res.json()).toMatchObject({ factory: { repo: "acme/factory", node: "b" }, config: { name: "acme" } });
+  expect(await res.json()).toMatchObject({
+    factory: { store: "github", repo: "acme/factory", node: "b" },
+    config: { name: "acme" },
+  });
   expect(calls).toHaveLength(fetched + 1);
 
   await b!.stop();
@@ -393,8 +402,16 @@ test("the use command and PUT /api/factory set the same pointer, and the board s
   expect(s.settings().factory).toEqual(byCommand!);
 
   const status = {
-    factory: { repo: "acme/factory", path: "factory", ref: "live", node: "a", online: true, lastSeenAt: 1_000 },
-    config: { commit, name: "acme", loadedAt: 1_000 },
+    factory: {
+      store: "github",
+      repo: "acme/factory",
+      path: "factory",
+      ref: "live",
+      node: "a",
+      online: true,
+      lastSeenAt: 1_000,
+    },
+    config: { commit, name: "acme", loadedAt: 1_000, repositories: ["acme/api", "acme/web"] },
   };
   expect(await res.json()).toEqual(status);
   expect(await board(f)).toMatchObject(status);

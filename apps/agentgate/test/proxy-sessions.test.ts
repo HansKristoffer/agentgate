@@ -16,7 +16,10 @@ function fixture(factoryOn = true) {
   cleanup.push(() => s.close());
   s.setLocal("node", "n");
   if (factoryOn)
-    s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/factory", path: "", node: "n" } });
+    s.put("setting", "settings", {
+      ...s.settings(),
+      factory: { store: "github", repo: "acme/factory", path: "", node: "n" },
+    });
   for (const provider of ["claude", "codex"] as const) {
     s.put("account", provider, { id: provider, provider, label: provider, priority: 1 });
     s.put("credential", provider, {

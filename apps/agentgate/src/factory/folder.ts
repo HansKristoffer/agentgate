@@ -1,13 +1,24 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { timeoutSignal } from "hanzio";
 import { runSkillCommand } from "../skill-import.ts";
-import { CONFIG_DIR } from "../store.ts";
+import { CONFIG_DIR, type Store } from "../store.ts";
 
 /**
- * Fetches the factory's folder from GitHub into one directory per commit, `<agentgate home>/factory/<commit>/`, so an
- * item keeps reading the folder it started with while newer commits arrive.
+ * Puts the factory's folder into one directory per commit, `<agentgate home>/factory/<commit>/`, so an item keeps
+ * reading the folder it started with while newer commits arrive. A folder on GitHub is fetched with git; one agentgate
+ * stores is written from its record, and its commit is the SHA-256 of its files.
  */
 
 /** Resolves null when the ref is still at `since`. `tree` is the folder's git tree; a commit whose folder has the
@@ -109,6 +120,50 @@ const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchan
     rmSync(scratch, { recursive: true, force: true });
   }
 };
+
+/** The stored folder's files by path, or undefined when agentgate stores none. */
+export type FolderFiles = Record<string, string>;
+export const STORED_FOLDER = "folder"; // the id of the one `factoryFolder` record
+export const NO_STORED_FOLDER =
+  "agentgate stores no factory folder; start one with agentgate factory init <owner/repo> --store agentgate";
+export function storedFiles(s: Store): FolderFiles | undefined {
+  const record = s.get("factoryFolder", STORED_FOLDER);
+  return record && Object.fromEntries(record.files.map((file) => [file.path, file.text]));
+}
+
+/** The files in path order, as the record keeps them. */
+export const sortedFiles = (files: FolderFiles) =>
+  Object.keys(files)
+    .sort()
+    .map((path) => ({ path, text: files[path]! }));
+
+/** A stored folder's commit: the same files always give the same one, on every machine. */
+export const storedCommit = (files: FolderFiles) =>
+  new Bun.CryptoHasher("sha256").update(JSON.stringify(sortedFiles(files))).digest("hex");
+
+export function writeFiles(dir: string, files: FolderFiles) {
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, path)), { recursive: true });
+    writeFileSync(join(dir, path), text);
+  }
+}
+
+/** The stored folder as the folder loop takes a fetch: null when it is still at `since`. Its paths were checked when it
+ * was saved (`factoryFolderSchema`), so none leaves the directory. */
+export function storedFetch(s: Store, since?: string) {
+  const files = storedFiles(s);
+  if (!files) throw new Error(NO_STORED_FOLDER);
+  const commit = storedCommit(files);
+  if (commit === since) return null;
+  const dir = join(fetcher.root, commit);
+  if (!existsSync(dir)) {
+    mkdirSync(fetcher.root, { recursive: true });
+    const partial = join(fetcher.root, `.${commit}-${crypto.randomUUID()}`);
+    writeFiles(partial, files);
+    renameSync(partial, dir);
+  }
+  return { commit, dir };
+}
 
 /** Tests replace `fetch` and point `root` at a temporary folder. */
 export const fetcher: { root: string; fetch: FolderFetcher } = {

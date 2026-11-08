@@ -207,7 +207,7 @@ function node(ref?: string) {
   s.put("node", "a", { id: "a", protocol: 8 });
   s.put("setting", "settings", {
     ...s.settings(),
-    factory: { repo: REPO, path: "factory", node: "a", ...(ref && { ref }) },
+    factory: { store: "github", repo: REPO, path: "factory", node: "a", ...(ref && { ref }) },
   });
   const ctx = makeCtx(s);
   cleanup.push(async () => {

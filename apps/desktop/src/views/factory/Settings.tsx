@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import type { FactoryBoard } from "@agentgate/protocol";
+import { folderLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
 import { ActionButton, Badge, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
+import { Proposals, StoredFolder } from "./Folder.tsx";
 
-type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
+export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 
 /** The secrets factory.yaml names, set and delete. Loopback only, like the routes: values never cross the network from
  * the app. */
@@ -138,9 +139,7 @@ export function FactorySettings({
           <div className="grow">
             <strong>Folder</strong>
             <small className="muted">
-              {pointer.repo}
-              {pointer.path ? `:${pointer.path}` : ""}
-              {pointer.ref ? ` at ${pointer.ref}` : ""}
+              {folderLabel(pointer)}
               {board.config ? ` · ${board.config.name} at ${board.config.commit.slice(0, 7)}` : ""}
             </small>
           </div>
@@ -167,7 +166,10 @@ export function FactorySettings({
         <div className="item">
           <div className="grow">
             <strong>Learning</strong>
-            <small className="muted">A thread studies finished runs and proposes folder changes in a PR.</small>
+            <small className="muted">
+              A thread studies finished runs and proposes folder changes
+              {pointer.store === "agentgate" ? " for you to apply here" : " in a PR"}.
+            </small>
           </div>
           <ActionButton
             size="sm"
@@ -207,6 +209,8 @@ export function FactorySettings({
           </Button>
         </div>
       </Panel>
+      {pointer.store === "agentgate" && <StoredFolder connection={connection} run={run} />}
+      <Proposals connection={connection} board={board} run={run} />
       <Secrets connection={connection} local={local} run={run} />
       {moving && (
         <Modal title="Move the factory" close={() => setMoving(false)}>

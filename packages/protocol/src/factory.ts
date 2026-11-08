@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { safePath } from "./skills.ts";
 
 /**
  * The software factory: the folder format that defines one (`factory.yaml`, `stages/`, `scorers/`), the records and
@@ -223,19 +224,78 @@ export const scorerFileSchema = z
   .strict();
 export type ScorerFile = z.infer<typeof scorerFileSchema>;
 
+const pointerNode = z.string().min(1).max(512); // the machine that runs the factory
 /**
- * `settings.factory`: where the factory's folder lives and which machine runs it. Not strict, like the settings record
- * it sits in, so an older node keeps reading it after a newer one adds a field.
+ * `settings.factory`: where the factory's folder lives and which machine runs it. `github` fetches it from a folder of a
+ * repository; `agentgate` reads the synced `factoryFolder` record, for a project whose repository must not hold the
+ * folder. Not strict, like the settings record it sits in, so an older node keeps reading it after a newer one adds a
+ * field.
  */
-export const factoryPointerSchema = z.object({
-  repo,
-  path: z.string().max(200).default(""), // folder inside the repo; "" is the root
-  ref: z.string().min(1).max(200).optional(), // default: the repo's default branch
-  node: z.string().min(1).max(512), // the machine that runs the factory
-  // Set by `factory init`: the PR that adds the folder. Once it merges, the factory follows the default branch.
-  init: z.object({ pr: z.number().int().positive() }).optional(),
-});
+export const factoryPointerSchema = z.discriminatedUnion("store", [
+  z.object({
+    store: z.literal("github"),
+    repo,
+    path: z.string().max(200).default(""), // folder inside the repo; "" is the root
+    ref: z.string().min(1).max(200).optional(), // default: the repo's default branch
+    node: pointerNode,
+    // Set by `factory init`: the PR that adds the folder. Once it merges, the factory follows the default branch.
+    init: z.object({ pr: z.number().int().positive() }).optional(),
+  }),
+  z.object({ store: z.literal("agentgate"), node: pointerNode }),
+]);
 export type FactoryPointer = z.infer<typeof factoryPointerSchema>;
+const factoryStores = ["github", "agentgate"] as const;
+export type FactoryStore = (typeof factoryStores)[number];
+
+/** Where the folder is, for a person: `owner/repo:path at ref`, or that agentgate stores it. */
+export const folderLabel = (p: { store: FactoryStore; repo?: string; path?: string; ref?: string }) =>
+  p.store === "agentgate"
+    ? "stored in agentgate"
+    : `${p.repo}${p.path ? `:${p.path}` : ""}${p.ref ? ` at ${p.ref}` : ""}`;
+
+/** The relay's record limit is 1 MiB, so a stored folder stays under it with room for the envelope. */
+const MAX_STORED_FOLDER = 900 * 1024;
+const folderFilePath = z
+  .string()
+  .min(1)
+  .max(200)
+  .refine(safePath, "not a path inside the folder")
+  .refine((path) => !path.startsWith(".") && !path.includes("/."), "a file or folder name starts with a dot");
+/** The synced `factoryFolder` record (id `folder`): the factory folder agentgate stores, one text file per path. Its
+ * commit is the SHA-256 of its files (`storedCommit` in factory/stored.ts). */
+export const factoryFolderSchema = z
+  .object({
+    files: z
+      .array(z.object({ path: folderFilePath, text: z.string().max(MAX_STORED_FOLDER) }))
+      .min(1)
+      .max(500),
+    from: pointerNode, // the machine that saved it
+  })
+  .superRefine((folder, ctx) => {
+    const paths = new Set(folder.files.map((file) => file.path.toLowerCase()));
+    if (paths.size < folder.files.length)
+      ctx.addIssue({ code: "custom", path: ["files"], message: "two files share a path" });
+    const dirs = [...paths].flatMap((path) =>
+      path
+        .split("/")
+        .slice(0, -1)
+        .map((_, i, parts) => parts.slice(0, i + 1).join("/")),
+    );
+    if (dirs.some((dir) => paths.has(dir)))
+      ctx.addIssue({ code: "custom", path: ["files"], message: "a file has the path of a folder" });
+    if (folder.files.reduce((n, file) => n + file.text.length + file.path.length, 0) > MAX_STORED_FOLDER)
+      ctx.addIssue({ code: "custom", path: ["files"], message: "the folder is larger than 900 KiB" });
+  });
+/** GET /api/factory/folder: the stored folder, or no files when there is none. */
+export const storedFolderViewSchema = z.object({
+  commit: z.string().optional(),
+  files: z.array(z.object({ path: z.string(), text: z.string() })),
+});
+export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
+/** PUT /api/factory/folder: files to write by path, `null` to delete one. The result must load as a folder. */
+export const storedFolderChangeSchema = z
+  .object({ files: z.record(folderFilePath, z.string().max(MAX_STORED_FOLDER).nullable()) })
+  .strict();
 
 /** The branch `factory init` pushes the template to. */
 export const FACTORY_INIT_BRANCH = "agentgate/factory-init";
@@ -411,7 +471,15 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("learn"),
-      prUrl: z.string().url().max(2048).optional(),
+      prUrl: z.string().url().max(2048).optional(), // a folder on GitHub
+      // A folder agentgate stores: the files to write (null deletes one), which the maintainer applies or discards.
+      proposal: z
+        .object({
+          files: z.record(z.string().min(1).max(200), z.string().max(MAX_STORED_FOLDER).nullable()),
+          body: z.string().min(1).max(16_000), // the sections a learning PR's body has
+        })
+        .strict()
+        .optional(),
       lessons: z.array(z.string().min(1).max(2000)).max(50),
       // Changes a repository needs rather than the folder (a check, a hook, its setup); each becomes an unlabelled issue.
       issues: z.array(suggestedIssue.extend({ repo }).strict()).max(10).optional(),
@@ -574,8 +642,9 @@ export const factoryBoardSchema = z.object({
   node: z.string(), // the machine answering
   factory: z
     .object({
-      repo: z.string(),
-      path: z.string(),
+      store: z.enum(factoryStores),
+      repo: z.string().optional(), // store github: the folder's repository, path and ref
+      path: z.string().optional(),
       ref: z.string().optional(),
       node: z.string(),
       online: z.boolean(),
@@ -659,6 +728,8 @@ export const factoryBoardSchema = z.object({
   events: z.array(
     z.object({ seq: z.number(), at: z.number(), item: z.string().optional(), kind: z.string(), text: z.string() }),
   ), // the newest 50
+  /** Learning runs' changes to a folder agentgate stores, waiting for the maintainer to apply or discard them. */
+  proposals: z.array(z.object({ run: z.string(), at: z.number(), files: z.array(z.string()) })).optional(),
 });
 export type FactoryBoard = z.infer<typeof factoryBoardSchema>;
 
@@ -692,10 +763,12 @@ export const factoryItemDetailSchema = z.object({
 });
 export type FactoryItemDetail = z.infer<typeof factoryItemDetailSchema>;
 
-/** What `factory init` did: the draft PR with the template, and the factory, already on at its branch. */
+/** What `factory init` did: the draft PR with the template and the factory, already on at its branch; or the folder
+ * agentgate stores, and the factory on it. */
 export const factoryInitResultSchema = z.object({
-  prUrl: z.string().url(),
-  branch: z.literal(FACTORY_INIT_BRANCH),
+  // A folder on GitHub: the PR that adds it. A stored folder is written at once and has none.
+  prUrl: z.string().url().optional(),
+  branch: z.literal(FACTORY_INIT_BRANCH).optional(),
   /** What init could not set up, each a sentence for the person. */
   warnings: z.array(z.string()),
   factory: factoryBoardSchema.shape.factory,
@@ -703,21 +776,38 @@ export const factoryInitResultSchema = z.object({
 });
 export type FactoryInitResult = z.infer<typeof factoryInitResultSchema>;
 
-/** PUT /api/factory */
-export const factoryUseInputSchema = z
-  .object({
-    repo,
-    path: factoryPointerSchema.shape.path.removeDefault().optional(),
-    ref: factoryPointerSchema.shape.ref,
-    node: factoryPointerSchema.shape.node.optional(),
-  })
-  .strict();
+/** `factory folder proposal <run>`: what a learning run proposes for a stored folder, each file as a line diff. */
+export const folderProposalSchema = z.object({
+  run: z.string(),
+  state: z.enum(["open", "applied", "discarded"]),
+  at: z.number(),
+  body: z.string(),
+  files: z.array(z.object({ path: z.string(), change: z.enum(["added", "changed", "deleted"]), diff: z.string() })),
+});
+export type FolderProposal = z.infer<typeof folderProposalSchema>;
+
+/** PUT /api/factory: a folder on GitHub (`store` may be left out), or the one agentgate stores. */
+export const factoryUseInputSchema = z.union([
+  z
+    .object({
+      store: z.literal("github").optional(),
+      repo,
+      path: z.string().max(200).optional(),
+      ref: z.string().min(1).max(200).optional(),
+      node: pointerNode.optional(),
+    })
+    .strict(),
+  z.object({ store: z.literal("agentgate"), node: pointerNode.optional() }).strict(),
+]);
 /** POST /api/factory/move, `agentgate factory move` */
-export const factoryMoveInputSchema = z.object({ node: factoryPointerSchema.shape.node }).strict();
-/** POST /api/factory/init, `agentgate factory init` */
-export const factoryInitInputSchema = z.object({ repo, node: factoryPointerSchema.shape.node.optional() }).strict();
+export const factoryMoveInputSchema = z.object({ node: pointerNode }).strict();
+/** POST /api/factory/init, `agentgate factory init`: `store` is where the new folder goes, GitHub by default. */
+export const factoryInitInputSchema = z
+  .object({ repo, node: pointerNode.optional(), store: z.enum(factoryStores).optional() })
+  .strict();
 export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;
-/** POST /api/factory/sources, `agentgate factory source add`: a PR on the factory folder that adds a source. */
+/** POST /api/factory/sources, `agentgate factory source add`: a PR on the factory folder that adds a source, or the
+ * change itself when agentgate stores the folder. */
 export const factorySourceAddInputSchema = z
   .object({
     source: z.discriminatedUnion("type", [webhookSourceSchema, scoutSourceSchema]),
@@ -726,8 +816,9 @@ export const factorySourceAddInputSchema = z
   .strict();
 export type FactorySourceAddInput = z.input<typeof factorySourceAddInputSchema>;
 export const factorySourceAddResultSchema = z.object({
-  prUrl: z.string().url(),
-  branch: z.string(),
+  // A folder on GitHub; a stored folder has the source at once.
+  prUrl: z.string().url().optional(),
+  branch: z.string().optional(),
   /** Each a sentence for the person: a tag the factory follows, a secret to set. */
   warnings: z.array(z.string()),
 });

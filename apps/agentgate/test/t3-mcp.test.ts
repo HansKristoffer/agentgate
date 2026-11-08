@@ -41,7 +41,7 @@ async function fixture() {
     return ctx.gateway.close().then(() => s.close());
   });
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/api", node: "a" } });
+  s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: "acme/api", node: "a" } });
   let now = Date.now();
   s.now = () => now;
   const f = ctx.factory;
