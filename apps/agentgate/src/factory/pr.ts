@@ -71,8 +71,11 @@ export const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
 export const prRun = (f: FactoryRuntime, item: FactoryItem) =>
   runs.forItem(f.s, item.id).findLast((r) => r.kind === "implement" && r.report?.result?.kind === "implement");
 
+/** The follower's read of a PR without its reviews and conversations. */
+type Followed = Omit<FollowedPr, "feedback">;
+
 /** Checks pass, or there are none on a head old enough to have them, and nothing conflicts with the base branch. */
-export function green(f: FactoryRuntime, view: PrState, headAt: number) {
+export function green(f: FactoryRuntime, view: Pick<Followed, "checks" | "mergeable">, headAt: number) {
   const checks = view.checks === "passing" || (view.checks === "none" && f.s.now() - headAt >= CHECKS_SETTLE);
   return checks && view.mergeable !== "CONFLICTING";
 }
@@ -243,6 +246,10 @@ const trusted = (c: FeedbackComment) =>
 
 const newest = (times: string[]) => times.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
 
+/** Check names for a nudge: the first ten, then how many more. */
+const listed = (names: string[]) =>
+  names.length > 10 ? `${names.slice(0, 10).join(", ")} and ${names.length - 10} more` : names.join(", ");
+
 /** Open review conversations with a trusted comment the thread has not answered: never reported, or with a trusted
  * comment newer than the newest one when it reported. Outdated ones count, since moved lines answer nothing. */
 function openConversations(feedback: PrFeedback, data: Implement) {
@@ -259,9 +266,10 @@ function openConversations(feedback: PrFeedback, data: Implement) {
  * of its people and bots that no nudge has quoted yet, and open review conversations. Times compare on GitHub's clock
  * only, so a comment made between a push and the follower's next pass is not lost. Plain PR comments from bots never
  * count: deploy previews and coverage reports ask for nothing. */
-function problemsOf(view: PrState, feedback: PrFeedback, data: Implement) {
+function problemsOf(view: Followed, feedback: PrFeedback, data: Implement) {
   const problems: Problem[] = [];
-  if (view.checks === "failing") problems.push({ key: `checks@${view.headRefOid}`, text: "its checks fail" });
+  if (view.checks === "failing")
+    problems.push({ key: `checks@${view.headRefOid}`, text: `its checks fail: ${listed(view.failing)}` });
   if (view.mergeable === "CONFLICTING")
     problems.push({ key: `conflict@${view.headRefOid}`, text: `it conflicts with ${view.baseRefName}` });
   const asked = [
@@ -295,7 +303,7 @@ async function nudge(
   f: FactoryRuntime,
   item: FactoryItem,
   run: FactoryRun,
-  view: PrState,
+  view: Followed,
   feedback: PrFeedback,
   data: Implement,
 ) {
@@ -687,7 +695,7 @@ export async function takeReview(f: FactoryRuntime, id: string) {
  * once the PR's head moved past the reviewed commit and its checks pass; a stale report gets a new review; and the
  * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
  * before. */
-export async function followReview(f: FactoryRuntime, item: FactoryItem, view: PrState, headAt: number) {
+export async function followReview(f: FactoryRuntime, item: FactoryItem, view: Followed, headAt: number) {
   const max = limitsOf(f, item).reviewRounds;
   // Review was switched off while the item was in it.
   if (max === 0) {

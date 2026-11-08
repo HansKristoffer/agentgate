@@ -235,7 +235,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
   await n.pollPrs();
   expect(n.sent(thread)).toHaveLength(2);
   expect(n.sent(thread)[1]).toContain(
-    "its checks fail; it conflicts with main; 1 comment from the repository's people or bots that you have not seen",
+    "its checks fail: test; it conflicts with main; 1 comment from the repository's people or bots that you have not seen",
   );
   expect(n.sent(thread)[1]).toContain("Rename this.");
   expect(n.sent(thread)[1]).not.toContain("delete the database");
@@ -266,6 +266,29 @@ test("a PR without checks counts as green only once its head is 10 minutes old",
   await n.pollPrs();
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
   expect(pr.isDraft).toBe(false);
+});
+
+test("when the base branch requires checks, the PR waits for those alone: one not reported yet holds it however old its head, a failing preview does not, and a failing required one wakes the thread with the failed checks named", async () => {
+  const n = await prFactory(cleanup, noReview);
+  n.github.required = ["All checks"];
+  const { item, run, pr } = await n.opened(1, { checkRuns: { Lint: "SUCCESS", Preview: "FAILURE" } });
+  const thread = run.threadId!;
+  await n.thread(thread, "idle");
+
+  await n.pollPrs();
+  n.advance(10 * MINUTE);
+  await n.pollPrs();
+  expect(items.get(n.s, item.id)!.phase).toBe("pr");
+  expect(n.sent(thread)).toEqual([]);
+
+  pr.checkRuns = { Lint: "SUCCESS", "All checks": "FAILURE", "Unit tests": "FAILURE", Preview: "FAILURE" };
+  await n.pollPrs();
+  expect(n.sent(thread)).toHaveLength(1);
+  expect(n.sent(thread)[0]).toContain("its checks fail: All checks, Preview, Unit tests.");
+
+  Object.assign(pr, { headRefOid: "f".repeat(40), checkRuns: { "All checks": "SUCCESS", Preview: "FAILURE" } });
+  await n.pollPrs();
+  expect(items.get(n.s, item.id)!.phase).toBe("ready");
 });
 
 /** A review conversation with one comment per entry: [body, association, bot]. */
