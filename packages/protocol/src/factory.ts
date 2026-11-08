@@ -35,8 +35,9 @@ export const modelSchema = z
 export type FactoryModel = z.infer<typeof modelSchema>;
 
 const intake = z.enum(["auto", "hold"]); // hold: new items wait for `agentgate factory approve`
-/** MCP server aliases a factory thread may use besides agentgate's own tools. */
-const mcpAliases = z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/)).max(20);
+/** MCP server aliases a factory thread may use besides agentgate's own tools, written as the repository's mapping has
+ * them: an alias may have capitals there (`validId` in mcp/templates.ts), and the gateway matches it exactly. */
+const mcpAliases = z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(20);
 export const githubSourceSchema = z
   .object({
     id: name,

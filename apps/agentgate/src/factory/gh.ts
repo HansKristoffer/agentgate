@@ -349,7 +349,6 @@ export interface PrView {
   headRefOid: string;
   baseRefName: string;
   mergedAt?: string;
-  checks: "pending" | "passing" | "failing" | "none";
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   body: string;
   files: string[];
@@ -357,22 +356,72 @@ export interface PrView {
   reviews: Array<{ body: string; authorAssociation: string; submittedAt: string; state: string }>;
 }
 
+export type CheckState = "pending" | "passing" | "failing" | "none";
+
 const FAILED = ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"];
 const check = z.union([
-  z.object({ __typename: z.literal("CheckRun"), status: z.string(), conclusion: z.string().nullable() }),
-  z.object({ __typename: z.literal("StatusContext"), state: z.string() }),
+  z.object({
+    __typename: z.literal("CheckRun"),
+    name: z.string(),
+    status: z.string(),
+    conclusion: z.string().nullable(),
+  }),
+  z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string() }),
 ]);
+type Check = z.infer<typeof check>;
+const CHECK_FIELDS = "__typename ... on CheckRun { name status conclusion } ... on StatusContext { context state }";
+const checkName = (c: Check) => (c.__typename === "CheckRun" ? c.name : c.context);
+const outcomeOf = (c: Check) =>
+  c.__typename === "StatusContext" ? c.state : c.status === "COMPLETED" ? (c.conclusion ?? "") : "PENDING";
 
-/** One summary of a PR's check runs and commit statuses: any failure wins, then anything not finished. */
-function rollup(checks: z.infer<typeof check>[]): PrView["checks"] {
+/** One summary of check runs and commit statuses: any failure wins, then anything not finished. */
+function rollup(checks: Check[]): CheckState {
   if (!checks.length) return "none";
-  const outcomes = checks.map((c) => {
-    if (c.__typename === "StatusContext") return c.state;
-    return c.status === "COMPLETED" ? (c.conclusion ?? "") : "PENDING";
-  });
+  const outcomes = checks.map(outcomeOf);
   if (outcomes.some((o) => FAILED.includes(o))) return "failing";
   if (outcomes.some((o) => o === "PENDING" || o === "EXPECTED" || o === "")) return "pending";
   return "passing";
+}
+
+/** The checks a branch requires, as GitHub shows them to anyone who can read the repository: `refUpdateRule` for a
+ * protection rule, `rules` for the rulesets that apply to the branch. */
+const REQUIRED_FIELDS = `refUpdateRule { requiredStatusCheckContexts }
+      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }`;
+const requiring = z.object({
+  refUpdateRule: z.object({ requiredStatusCheckContexts: z.array(z.string().nullable()).nullable() }).nullable(),
+  rules: z.object({
+    nodes: z.array(
+      z.object({
+        parameters: z
+          .object({ requiredStatusChecks: z.array(z.object({ context: z.string() })).optional() })
+          .nullable(),
+      }),
+    ),
+  }),
+});
+
+function requiredChecks(ref: z.infer<typeof requiring> | null): string[] {
+  const names = [
+    ...(ref?.refUpdateRule?.requiredStatusCheckContexts ?? []),
+    ...(ref?.rules.nodes.flatMap((n) => n.parameters?.requiredStatusChecks?.map((c) => c.context) ?? []) ?? []),
+  ];
+  return [...new Set(names.filter((n): n is string => !!n))];
+}
+
+/** The checks that count: the ones the branch requires, or every check when it requires none. */
+const counted = (contexts: Check[], required: string[]) =>
+  required.length ? contexts.filter((c) => required.includes(checkName(c))) : contexts;
+
+/**
+ * A PR head's checks as the follower judges them: the ones that count, and a required one not reported yet is
+ * pending, as GitHub has it. A preview deploy or an app build the branch does not require holds nothing back.
+ * `failing` names every check that failed, for the thread.
+ */
+function judgeChecks(contexts: Check[], required: string[]): { checks: CheckState; failing: string[] } {
+  const failing = [...new Set(contexts.filter((c) => FAILED.includes(outcomeOf(c))).map(checkName))].sort();
+  const state = rollup(counted(contexts, required));
+  const unreported = required.some((name) => !contexts.some((c) => checkName(c) === name));
+  return { checks: state !== "failing" && unreported ? "pending" : state, failing };
 }
 
 const prViewSchema = z.object({
@@ -386,7 +435,6 @@ const prViewSchema = z.object({
   headRefOid: z.string(),
   baseRefName: z.string(),
   mergedAt: z.string().nullable(),
-  statusCheckRollup: z.array(check),
   mergeable: z.enum(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
   body: z.string(),
   files: z.array(z.object({ path: z.string() })),
@@ -406,12 +454,11 @@ export async function prView(url: string): Promise<PrView> {
     "--json",
     PR_FIELDS,
   ]);
-  const { statusCheckRollup, mergedAt, author, files, ...rest } = pr;
+  const { mergedAt, author, files, ...rest } = pr;
   return {
     ...rest,
     author: author.login,
     ...(mergedAt && { mergedAt }),
-    checks: rollup(statusCheckRollup),
     files: files.map((file) => file.path),
   };
 }
@@ -527,10 +574,11 @@ export async function prFeedback(url: string): Promise<PrFeedback> {
   return toFeedback(answer.data.repository.pullRequest);
 }
 
-/** A PR's state and head, checks and mergeability, and plain comments: what the follower decides on. */
+/** A PR's state and head, mergeability, and plain comments. */
 export type PrState = Omit<PrView, "body" | "files" | "reviews">;
-/** The follower's read of a PR: its state, with the reviews and conversations of `prFeedback`. */
-export type FollowedPr = PrState & { feedback: PrFeedback };
+/** The follower's read of a PR: its state, its head's checks as `judgeChecks` has them, and the reviews and
+ * conversations of `prFeedback`. Only this read knows which checks the base branch requires. */
+export type FollowedPr = PrState & { checks: CheckState; failing: string[]; feedback: PrFeedback };
 
 const REVIEWS_AND_THREADS = `reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
     reviewThreads(first: 100) {
@@ -541,9 +589,8 @@ const REVIEWS_AND_THREADS = `reviews(last: 100) { nodes { body state submittedAt
     }`;
 const FOLLOWED = `fragment Followed on PullRequest {
     number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable
-    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-      __typename ... on CheckRun { status conclusion } ... on StatusContext { state }
-    } } } } } }
+    baseRef { ${REQUIRED_FIELDS} }
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ${CHECK_FIELDS} } } } } } }
     comments(last: 100) { nodes { body authorAssociation createdAt } }
     ${REVIEWS_AND_THREADS}
   }`;
@@ -559,6 +606,7 @@ const followedSchema = z.object({
   baseRefName: z.string(),
   mergedAt: z.string().nullable(),
   mergeable: z.enum(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
+  baseRef: requiring.nullable(), // null once the base branch is deleted
   commits: z.object({
     nodes: z.array(
       z.object({
@@ -607,13 +655,13 @@ async function followedBatch(repo: string, batch: number[]): Promise<FollowedPr[
   );
   return Object.values(answer.data.repository).flatMap((pr) => {
     if (!pr) return [];
-    const { commits, comments, reviews, reviewThreads, mergedAt, author, ...rest } = pr;
+    const { commits, comments, reviews, reviewThreads, mergedAt, author, baseRef, ...rest } = pr;
     return [
       {
         ...rest,
         author: author?.login ?? "ghost",
         ...(mergedAt && { mergedAt }),
-        checks: rollup(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? []),
+        ...judgeChecks(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [], requiredChecks(baseRef)),
         comments: comments.nodes,
         feedback: toFeedback({ reviews, reviewThreads }),
       },
@@ -674,33 +722,47 @@ export async function prSetBody(url: string, body: string): Promise<void> {
   await gh(`edit the body of ${repo}#${number}`, ["pr", "edit", url, "--body-file", "-"], body);
 }
 
-/** The workflow runs of the newest commit pushed to the default branch. Scheduled and manual runs do not count. */
-export async function defaultBranchCi(repo: string): Promise<"passing" | "failing" | "pending" | "none"> {
-  const branch = await defaultBranch(repo);
-  const list = await ghJson(
-    `list the CI runs on ${branch} in ${repo}`,
-    z.array(z.object({ headSha: z.string(), status: z.string(), conclusion: z.string() })),
-    [
-      "run",
-      "list",
-      "--repo",
-      repo,
-      "--branch",
-      branch,
-      "--event",
-      "push",
-      "--limit",
-      "30",
-      "--json",
-      "headSha,status,conclusion",
-    ],
-  );
-  const newest = list[0]?.headSha;
-  if (!newest) return "none";
-  const latest = list.filter((r) => r.headSha === newest);
-  if (latest.some((r) => ["failure", "timed_out", "startup_failure"].includes(r.conclusion))) return "failing";
-  if (latest.some((r) => r.status !== "completed")) return "pending";
-  return "passing";
+const DEFAULT_BRANCH_CHECKS = `query ($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) {
+    defaultBranchRef {
+      ${REQUIRED_FIELDS}
+      target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { ${CHECK_FIELDS} } } } } }
+    }
+  }
+}`;
+const defaultBranchChecks = z.object({
+  data: z.object({
+    repository: z.object({
+      defaultBranchRef: requiring
+        .extend({
+          target: z
+            .object({ statusCheckRollup: z.object({ contexts: z.object({ nodes: z.array(check) }) }).nullish() })
+            .nullable(),
+        })
+        .nullable(), // an empty repository has no branch
+    }),
+  }),
+});
+
+/**
+ * The default branch's CI at its newest commit: the checks that count there. A required check that does not run on the
+ * default branch, as PR-only CI does not, is left out rather than waited for.
+ */
+export async function defaultBranchCi(repo: string): Promise<CheckState> {
+  const [owner, name] = repo.split("/") as [string, string];
+  const answer = await ghJson(`read the checks on the default branch of ${repo}`, defaultBranchChecks, [
+    "api",
+    "graphql",
+    "-f",
+    `query=${DEFAULT_BRANCH_CHECKS}`,
+    "-f",
+    `owner=${owner}`,
+    "-f",
+    `name=${name}`,
+  ]);
+  const ref = answer.data.repository.defaultBranchRef;
+  if (!ref) return "none";
+  return rollup(counted(ref.target?.statusCheckRollup?.contexts.nodes ?? [], requiredChecks(ref)));
 }
 
 const revertSchema = z.object({ number: z.number().int(), title: z.string(), body: z.string(), mergedAt: z.string() });

@@ -40,6 +40,9 @@ const implement = {
   result: { kind: "triage", route: "implement", reproduction: { command: "bun test", failsBefore: true } },
 };
 
+/** `main` as the default branch's checks read finds it: no required checks, nothing run yet. */
+const MAIN = { refUpdateRule: null, rules: { nodes: [] }, target: { statusCheckRollup: null } };
+
 /** The factory machine with three scorers: `repro` judges every triage run, `never` none, and `specs` a quarter of
  * spec runs. */
 async function judgeFactory(threads = 20) {
@@ -51,12 +54,11 @@ async function judgeFactory(threads = 20) {
       "scorers/specs.md": scorer(["spec"], 25),
     },
   });
-  // Implement reads the default branch's CI before it starts: no runs there. Nothing else reaches gh.
+  // Implement reads the default branch's CI before it starts: no checks there. Nothing else reaches gh.
   const realGh = host.gh;
   host.gh = async (args) => {
-    if (args[0] === "repo" && args[1] === "view")
-      return { ok: true, out: JSON.stringify({ defaultBranchRef: { name: "main" } }) };
-    if (args[0] === "run" && args[1] === "list") return { ok: true, out: "[]" };
+    if (args[0] === "api" && args[1] === "graphql")
+      return { ok: true, out: JSON.stringify({ data: { repository: { defaultBranchRef: MAIN } } }) };
     throw new Error(`no gh in this test: ${args.join(" ")}`);
   };
   cleanup.push(() => (host.gh = realGh));

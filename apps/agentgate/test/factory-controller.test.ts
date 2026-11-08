@@ -189,12 +189,10 @@ test("a triage stage with start: manual holds new items until approve, and intak
 
 test("an implement stage with start: manual holds a triaged item, named on the board, until approve starts it", async () => {
   const n = await factoryNode(cleanup, { files: { "stages/implement.md": "---\nstart: manual\n---\n" } });
-  // Implement reads the default branch's CI before it starts: no runs there.
+  // Implement reads the default branch's CI before it starts: no checks there.
   const realGh = host.gh;
-  host.gh = async (args) => ({
-    ok: true,
-    out: JSON.stringify(args[0] === "repo" ? { defaultBranchRef: { name: "main" } } : []),
-  });
+  const main = { refUpdateRule: null, rules: { nodes: [] }, target: { statusCheckRollup: null } };
+  host.gh = async () => ({ ok: true, out: JSON.stringify({ data: { repository: { defaultBranchRef: main } } }) });
   cleanup.push(() => (host.gh = realGh));
   await n.command("add", n.repo, "Crash on save");
   await n.dispatch();
@@ -536,8 +534,8 @@ test("a stage's note from factory.yaml follows its brief, whether built in or re
   );
 });
 
-test("a stage thread and the T3 subagents under it may use the servers its stage names, a judge thread none, and every other thread every server but not the run tools", async () => {
-  const n = await factoryNode(cleanup, { files: { "stages/triage.md": "---\nmcp: [docs]\n---\n" } });
+test("a stage thread and the T3 subagents under it may use the servers its stage names, as the mapping spells them, a judge thread none, and every other thread every server but not the run tools", async () => {
+  const n = await factoryNode(cleanup, { files: { "stages/triage.md": "---\nmcp: [docs, Acme-Prod]\n---\n" } });
   const scope = (thread: string | undefined) => {
     const found = n.ctx.gateway.scope!(thread)!;
     return found.hidden ? { hidden: found.hidden.toSorted() } : found;
@@ -546,7 +544,7 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
   await n.command("add", n.repo, "Crash on save");
   await n.dispatch();
   const [run] = triageRuns(n);
-  expect(scope(run!.threadId)).toEqual({ servers: ["docs"] });
+  expect(scope(run!.threadId)).toEqual({ servers: ["docs", "Acme-Prod"] });
 
   const parent = n.t3.threads.get(run!.threadId!)!;
   const subagent = n.t3.addThread({
@@ -557,7 +555,7 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
   });
   n.mcp.setThread(subagent.id, { status: "running" });
   await n.until(() => n.mirror.thread(subagent.id)?.parentThreadId === parent.id, "the subagent in the mirror");
-  expect(scope(subagent.id)).toEqual({ servers: ["docs"] });
+  expect(scope(subagent.id)).toEqual({ servers: ["docs", "Acme-Prod"] });
   // The brief asks for review passes as subagents: one may read its run's item, and only the run's thread reports.
   const builtin = (await n.ctx.gateway.builtin!()).client;
   const fromSubagent = (name: string, args: Record<string, unknown>) =>

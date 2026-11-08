@@ -30,6 +30,8 @@ export interface FakePr {
   headRefName: string;
   headRefOid: string;
   checks: "pending" | "passing" | "failing" | "none";
+  /** Named check runs at the head, by conclusion (null while running), in place of `checks`. */
+  checkRuns?: Record<string, string | null>;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   body: string;
   comments: Comment[];
@@ -39,14 +41,21 @@ export interface FakePr {
 }
 
 const ROLLUP = {
-  none: [],
-  passing: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS" }],
-  failing: [{ __typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE" }],
-  pending: [{ __typename: "CheckRun", status: "IN_PROGRESS", conclusion: null }],
+  none: {},
+  passing: { test: "SUCCESS" },
+  failing: { test: "FAILURE" },
+  pending: { test: null },
 };
+const checkRuns = (runs: Record<string, string | null>) =>
+  Object.entries(runs).map(([name, conclusion]) => ({
+    __typename: "CheckRun",
+    name,
+    status: conclusion ? "COMPLETED" : "IN_PROGRESS",
+    conclusion,
+  }));
 
 /** GitHub for one repository with default branch `main`, answering the gh commands gh.ts sends in the shapes gh 2.102
- * prints: labelled issues and their comments, pull requests, and the default branch's push runs. */
+ * prints: labelled issues and their comments, pull requests, and the default branch's checks. */
 function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
   const issues = new Map<number, { title: string; state: "OPEN" | "CLOSED"; comments: Comment[] }>();
   const prs = new Map<string, FakePr>();
@@ -55,8 +64,9 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     issues,
     prs,
     calls,
-    /** The conclusion of the newest push run on `main`. */
-    ci: "success" as "success" | "failure",
+    /** The checks `main` requires to merge, and the check runs at its newest commit. */
+    required: [] as string[],
+    mainChecks: {} as Record<string, string | null>,
     /** How many of the next replies and resolves GitHub refuses. */
     refuse: { reply: 0, resolve: 0 },
     /** Issues the factory opened, kept apart from \`issues\`: they carry no label, so intake never lists them. */
@@ -96,8 +106,6 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     calls.push({ args, ...(stdin !== undefined && { stdin }) });
     const [command, sub] = args;
     if (command === "repo" && sub === "view") return ok({ defaultBranchRef: { name: "main" } });
-    if (command === "run" && sub === "list")
-      return ok([{ headSha: "abc1234", status: "completed", conclusion: github.ci }]);
     if (command === "issue" && sub === "list")
       return ok(
         [...issues]
@@ -145,7 +153,6 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
           headRefOid: pr.headRefOid,
           baseRefName: "main",
           mergedAt: pr.state === "MERGED" ? "2026-11-05T12:00:00Z" : null,
-          statusCheckRollup: ROLLUP[pr.checks],
           mergeable: pr.mergeable,
           body: pr.body,
           files: [{ path: "src/a.ts" }],
@@ -170,6 +177,18 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
   cleanup.push(() => (host.gh = realGh));
 
   const author = (bot?: boolean) => ({ __typename: bot ? "Bot" : "User" });
+  /** `main`'s rules as GraphQL has them: the required checks as a ruleset's, beside a rule without parameters. */
+  const requiring = () => ({
+    refUpdateRule: null,
+    rules: {
+      nodes: [
+        { parameters: null },
+        ...(github.required.length
+          ? [{ parameters: { requiredStatusChecks: github.required.map((context) => ({ context })) } }]
+          : []),
+      ],
+    },
+  });
   /** `gh api graphql`: the reviews read, and the reply and resolve mutations. */
   function graphql(args: string[]): Answer {
     const vars = Object.fromEntries(
@@ -208,7 +227,16 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
               baseRefName: "main",
               mergedAt: pr.state === "MERGED" ? "2026-11-05T12:00:00Z" : null,
               mergeable: pr.mergeable,
-              commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: ROLLUP[pr.checks] } } } }] },
+              baseRef: requiring(),
+              commits: {
+                nodes: [
+                  {
+                    commit: {
+                      statusCheckRollup: { contexts: { nodes: checkRuns(pr.checkRuns ?? ROLLUP[pr.checks]) } },
+                    },
+                  },
+                ],
+              },
               comments: { nodes: pr.comments.map(({ author: _, ...c }) => c) },
               ...feedback(pr),
             },
@@ -216,6 +244,10 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
         }),
       );
       return ok({ data: { repository } });
+    }
+    if (vars.query!.includes("defaultBranchRef")) {
+      const target = { statusCheckRollup: { contexts: { nodes: checkRuns(github.mainChecks) } } };
+      return ok({ data: { repository: { defaultBranchRef: { ...requiring(), target } } } });
     }
     if (vars.query!.includes("reviewThreads")) {
       const pr = [...prs.values()].find((p) => p.number === Number(vars.number))!;

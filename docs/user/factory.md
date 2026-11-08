@@ -475,7 +475,9 @@ On the PR, the factory wakes the implement thread itself when the thread sits id
 
 After the thread pushes a fix, it tells the factory which conversations it fixed and which it declined, and why. The factory replies "Fixed in `<commit>`" and resolves each fixed conversation. A declined one gets the thread's reason as a reply and stays open for you; it comes back to the thread only when someone answers it.
 
-The factory wakes the thread once for each new problem, and again after `limits.stalledAfter`; after `limits.nudges` times the item waits for you as `stalled`. Nobody else's comments reach the thread. A PR without checks counts as passing once its head is 10 minutes old. If you merge a PR before the factory calls it ready, the item ships and the event list says so.
+The factory wakes the thread once for each new problem, and again after `limits.stalledAfter`; after `limits.nudges` times the item waits for you as `stalled`. Nobody else's comments reach the thread. If you merge a PR before the factory calls it ready, the item ships and the event list says so.
+
+When a branch requires checks, through a branch protection rule or a ruleset, only those count; otherwise every check does. The PR waits until each check that counts has passed, so a failing check the branch does not require, such as a preview deploy, holds nothing back, and a PR without checks counts as passing once its head is 10 minutes old. A new fix waits while a check that counts fails on the default branch's newest commit; a required check that runs only on pull requests is not waited for there.
 
 ## Learning and judges
 

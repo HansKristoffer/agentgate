@@ -511,11 +511,34 @@ const recorded = {
     title: "Clarify which hosts use GH_ENTERPRISE_TOKEN",
     url: PR,
   },
-  runList: [
-    { conclusion: "success", headSha: "eeb44bc", status: "completed", workflowName: "Lint" },
-    { conclusion: "success", headSha: "eeb44bc", status: "completed", workflowName: "Unit and Integration Tests" },
-    { conclusion: "failure", headSha: "0ld5ha", status: "completed", workflowName: "Lint" },
-  ],
+  // `gh api graphql`, the follower's read of one PR (gh.followedPrs), without its checks and base branch.
+  followed: {
+    number: 42,
+    url: PR,
+    title: "Clarify which hosts use GH_ENTERPRISE_TOKEN",
+    state: "OPEN",
+    isDraft: true,
+    author: { login: "BagToad" },
+    headRefName: "bagtoad/gh-help-environment-fix",
+    headRefOid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2",
+    baseRefName: "trunk",
+    mergedAt: null,
+    mergeable: "MERGEABLE",
+    comments: { nodes: [] },
+    reviews: { nodes: [] },
+    reviewThreads: { nodes: [] },
+  },
+  // `gh api graphql`, the default branch's checks (gh.defaultBranchCi): a ruleset that only asks for pull requests,
+  // whose rules without required checks come back as {} and null.
+  defaultBranchRef: {
+    refUpdateRule: null,
+    rules: { nodes: [{ parameters: {} }, { parameters: null }] },
+    target: {
+      statusCheckRollup: {
+        contexts: { nodes: [{ __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" }] },
+      },
+    },
+  },
   revertList: [
     {
       body: "## Description\r\n\r\nReverts acme/app#42\r\n",
@@ -534,7 +557,7 @@ function recordedGh(overrides: Record<string, unknown> = {}) {
     "issue view": (args) =>
       flag(args, "--json") === "state,comments" ? { state: "OPEN", ...recorded.issueComments } : recorded.issueComments,
     "pr view": (args) => (flag(args, "--json") === "author" ? { author: recorded.prView.author } : recorded.prView),
-    "run list": () => recorded.runList,
+    "api graphql": () => ({ data: { repository: { defaultBranchRef: recorded.defaultBranchRef } } }),
     "pr list": () => recorded.revertList,
   };
   return stubGh((args) => {
@@ -569,7 +592,6 @@ test("each gh.ts read parses a recorded gh answer", async () => {
     headRefOid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2",
     baseRefName: "trunk",
     mergedAt: "2026-11-03T17:40:14Z",
-    checks: "passing",
     mergeable: "UNKNOWN",
     body: "Fixes #7",
     files: ["pkg/cmd/api/api.go"],
@@ -589,7 +611,7 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     ["issue view", () => gh.issueComments(REPO, 7)],
     ["pr view", () => gh.prView(PR)],
     ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
-    ["run list", () => gh.defaultBranchCi(REPO)],
+    ["api graphql", () => gh.defaultBranchCi(REPO)],
     ["pr list", () => gh.revertsSince(REPO, Date.parse("2026-11-03T17:40:14Z"))],
   ];
   for (const [command, read] of reads) {
@@ -606,30 +628,91 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
   await expect(gh.prView("https://example.com/pull/1")).rejects.toThrow("is not a GitHub pull request URL");
 });
 
-test("PR checks sum up to failing over pending over passing, and a merged PR with a revert in 14 days is reverted", async () => {
-  const run = (status: string, conclusion: string | null) => ({ __typename: "CheckRun", status, conclusion });
-  const checks = async (rollup: unknown[]) => {
-    recordedGh({ "pr view": { ...recorded.prView, statusCheckRollup: rollup } });
-    return (await gh.prView(PR)).checks;
-  };
-  expect(await checks([])).toBe("none");
-  expect(await checks([run("COMPLETED", "SUCCESS"), run("COMPLETED", "SKIPPED")])).toBe("passing");
-  expect(await checks([run("COMPLETED", "SUCCESS"), run("IN_PROGRESS", null)])).toBe("pending");
-  expect(await checks([run("IN_PROGRESS", null), { __typename: "StatusContext", state: "ERROR" }])).toBe("failing");
-  expect(await checks([{ __typename: "StatusContext", state: "PENDING" }])).toBe("pending");
+const checkRun = (name: string, status: string, conclusion: string | null) => ({
+  __typename: "CheckRun",
+  name,
+  status,
+  conclusion,
+});
+const commitStatus = (context: string, state: string) => ({ __typename: "StatusContext", context, state });
+/** A branch's rules as GitHub's GraphQL answers them: a pull request rule ({}), the required checks, a rule without
+ * parameters (null). */
+const requiring = (...contexts: string[]) => ({
+  refUpdateRule: null,
+  rules: {
+    nodes: [
+      { parameters: {} },
+      { parameters: { requiredStatusChecks: contexts.map((context) => ({ context })) } },
+      { parameters: null },
+    ],
+  },
+});
 
-  const ci = async (list: unknown[]) => {
-    const calls = recordedGh({ "run list": list });
-    const result = await gh.defaultBranchCi(REPO);
-    const runList = calls.find((c) => c.args[0] === "run")!.args;
-    expect([flag(runList, "--branch"), flag(runList, "--event")]).toEqual(["trunk", "push"]);
-    return result;
+test("a PR's checks sum up to failing over pending over passing; when its base branch requires checks only those count, and one not reported yet is pending", async () => {
+  const read = async (contexts: unknown[], baseRef: unknown = requiring()) => {
+    const commits = { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }] };
+    recordedGh({ "api graphql": { data: { repository: { p42: { ...recorded.followed, baseRef, commits } } } } });
+    const pr = (await gh.followedPrs(REPO, [42])).get(42)!;
+    if (pr instanceof Error) throw pr;
+    return [pr.checks, pr.failing];
   };
-  expect(await ci([])).toBe("none");
-  expect(await ci([{ headSha: "new", status: "in_progress", conclusion: "" }, ...recorded.runList])).toBe("pending");
-  expect(await ci([{ headSha: "new", status: "completed", conclusion: "failure" }, ...recorded.runList])).toBe(
+  // Without required checks, every check counts.
+  expect(await read([])).toEqual(["none", []]);
+  expect(await read([checkRun("lint", "COMPLETED", "SUCCESS"), checkRun("e2e", "COMPLETED", "SKIPPED")])).toEqual([
+    "passing",
+    [],
+  ]);
+  expect(await read([checkRun("lint", "COMPLETED", "SUCCESS"), checkRun("e2e", "IN_PROGRESS", null)])).toEqual([
+    "pending",
+    [],
+  ]);
+  expect(await read([checkRun("e2e", "IN_PROGRESS", null), commitStatus("ci/deploy", "ERROR")])).toEqual([
     "failing",
-  );
+    ["ci/deploy"],
+  ]);
+  expect(await read([commitStatus("ci/deploy", "PENDING")])).toEqual(["pending", []]);
+
+  // A failing preview the branch does not require holds nothing back, though it is named.
+  const preview = checkRun("Preview", "COMPLETED", "FAILURE");
+  const gate = requiring("All checks");
+  expect(await read([checkRun("All checks", "COMPLETED", "SUCCESS"), preview], gate)).toEqual(["passing", ["Preview"]]);
+  // A required check not reported yet is pending: there are checks, so no wait for them to register makes it green.
+  expect(await read([checkRun("Lint", "COMPLETED", "SUCCESS"), preview], gate)).toEqual(["pending", ["Preview"]]);
+  expect(await read([], gate)).toEqual(["pending", []]);
+  // A failing required check fails the PR, and every failed check is named for the thread.
+  const failed = [
+    checkRun("All checks", "COMPLETED", "FAILURE"),
+    checkRun("Unit tests", "COMPLETED", "FAILURE"),
+    preview,
+  ];
+  expect(await read(failed, gate)).toEqual(["failing", ["All checks", "Preview", "Unit tests"]]);
+  // A protection rule requires checks the same way, and a base branch GitHub no longer has requires none.
+  const rule = { refUpdateRule: { requiredStatusCheckContexts: ["ci/build"] }, rules: { nodes: [] } };
+  expect(await read([commitStatus("ci/build", "SUCCESS"), preview], rule)).toEqual(["passing", ["Preview"]]);
+  expect(await read([commitStatus("ci/build", "SUCCESS"), preview], null)).toEqual(["failing", ["Preview"]]);
+});
+
+test("the default branch's CI is the checks at its newest commit that count there, every one or the required ones that run there; and a merged PR with a revert in 14 days is reverted", async () => {
+  const ci = async (defaultBranchRef: unknown) => {
+    recordedGh({ "api graphql": { data: { repository: { defaultBranchRef } } } });
+    return gh.defaultBranchCi(REPO);
+  };
+  const head = (rules: unknown, ...nodes: unknown[]) => ({
+    ...(rules as object),
+    target: { statusCheckRollup: { contexts: { nodes } } },
+  });
+  const release = checkRun("Release", "COMPLETED", "FAILURE");
+  // Without required checks, every check at the head counts.
+  expect(await ci(head(requiring()))).toBe("none");
+  expect(await ci(head(requiring(), checkRun("lint", "COMPLETED", "SUCCESS"), release))).toBe("failing");
+  expect(await ci(head(requiring(), checkRun("lint", "IN_PROGRESS", null)))).toBe("pending");
+  expect(await ci(null)).toBe("none");
+  // With required checks, a failing release or deploy is not failing CI, and a required check that runs only on pull
+  // requests leaves nothing to wait for.
+  const rules = requiring("All checks", "build");
+  expect(await ci(head(rules, release))).toBe("none");
+  expect(await ci(head(rules, checkRun("build", "COMPLETED", "FAILURE")))).toBe("failing");
+  expect(await ci(head(rules, checkRun("build", "COMPLETED", "SUCCESS"), release))).toBe("passing");
 
   const reverted = async (revert: Partial<(typeof recorded.revertList)[number]>) => {
     const reverts = [{ ...recorded.revertList[0]!, ...revert }];

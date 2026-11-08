@@ -12,7 +12,7 @@ afterEach(async () => {
 
 test("route implement starts a run on factory/<key> from the default branch, and waits while that branch's CI fails", async () => {
   const n = await prFactory(cleanup);
-  n.github.ci = "failure";
+  n.github.mainChecks = { test: "FAILURE" };
   const { item, run } = await n.implementing(1);
   const implementLaunches = () =>
     n.mcp.calls.filter((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id);
@@ -22,7 +22,7 @@ test("route implement starts a run on factory/<key> from the default branch, and
   expect(implementLaunches()).toEqual([]);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.mainRed).toEqual([n.repo]);
 
-  n.github.ci = "success";
+  n.github.mainChecks = { test: "SUCCESS" };
   n.advance(2 * 60_000);
   await n.dispatch();
   expect(implementLaunches()).toHaveLength(1);
@@ -37,6 +37,21 @@ test("route implement starts a run on factory/<key> from the default branch, and
   expect(brief).toContain("Put `Fixes #1` in its body.");
   expect(brief).toContain(`run: "${run.id}"`);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.mainRed).toEqual([]);
+});
+
+test("when the default branch requires checks, only a failing one of those holds implement back, not a failing release", async () => {
+  const n = await prFactory(cleanup);
+  Object.assign(n.github, { required: ["All checks", "build"], mainChecks: { build: "FAILURE" } });
+  const { run } = await n.implementing(1);
+  const implementLaunches = () =>
+    n.mcp.calls.filter((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id);
+  expect(runs.get(n.s, run.id)).toMatchObject({ state: "queued", error: expect.stringContaining("fails CI") });
+
+  // The required checks run only on pull requests, and a release failed at the newest commit.
+  n.github.mainChecks = { Release: "FAILURE" };
+  n.advance(2 * 60_000);
+  await n.dispatch();
+  expect(implementLaunches()).toHaveLength(1);
 });
 
 test("a done report missing prUrl, commit, claims, notChecked or decisions is refused, naming what is missing", async () => {
