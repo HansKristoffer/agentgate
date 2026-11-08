@@ -32,10 +32,26 @@ Whatever reaches that branch changes every later brief, and factory threads push
 
 `off` stops the factory and signs it out of T3 Code's MCP. Its items stay in the machine's tables.
 
+### Keeping the folder in agentgate
+
+Some repositories must not hold the factory's folder. `agentgate factory init acme/api --store agentgate`, or **In agentgate, outside the repository** in the app's **Start a factory**, keeps the same template in agentgate instead: nothing is pushed, the `factory` label is still created, and the factory turns on at once. The folder is copied to every paired machine and kept in backups. `factory off` leaves it, so `agentgate factory use --store agentgate` turns it on again.
+
+Edit it under **Stored folder** in the app's Factory settings, or from the CLI. Every save is checked like a new commit, and one that leaves a broken folder is refused with the file and field, so the stored folder always loads. Each change is a new folder commit, named by the SHA-256 of its files, and items finish under the commit they started with. When two machines save at the same moment, the later save wins.
+
+```sh
+agentgate factory folder ls                                   # its files and commit
+agentgate factory folder cat stages/implement.md
+agentgate factory folder put stages/implement.md < implement.md   # add or replace a file; the first put starts a folder
+agentgate factory folder rm stages/implement.md
+agentgate factory folder delete                               # only while the factory runs elsewhere or is off
+```
+
+To move a folder you have on GitHub into agentgate, `put` its files one at a time, starting with `factory.yaml`, then run `use --store agentgate`.
+
 ## The folder
 
 ```text
-factory/                  any folder in a git repository
+factory/                  any folder in a git repository, or the one agentgate keeps
   factory.yaml            required
   rulings.md              your standing rulings, added to every brief
   stages/<stage>.md       replaces a stage's built-in brief: triage, spec, implement or review
@@ -395,7 +411,7 @@ prompt: |
 YAML
 ```
 
-Either one opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. For a webhook, the PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments; for a scout, it adds `scouts/<id>.md`. For a signed webhook, set its secret after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
+For a folder kept in agentgate, either one changes the folder at once, and the source starts within 2 minutes. Otherwise it opens a PR on the factory's folder, with the `gh` login of the machine that runs the command. For a webhook, the PR adds the source at the end of `sources` in `factory.yaml`, keeping the file's comments; for a scout, it adds `scouts/<id>.md`. For a signed webhook, set its secret after the merge with `agentgate factory secret set`. The source starts when you merge the PR. The PR goes to the branch the factory follows. When the factory follows a tag, it goes to the default branch instead, with a warning. A `factory.yaml` it cannot edit safely, such as one with `sources` written on one line, is refused with the YAML to paste in yourself.
 
 ### By hand
 
@@ -463,7 +479,7 @@ The factory wakes the thread once for each new problem, and again after `limits.
 
 ## Learning and judges
 
-- **Learning**: every `learning.every`, or now with `agentgate factory learn`, a thread in a worktree of the factory repository studies the finished runs (their outcomes, judge scores, review findings and the friction threads reported, such as a missing tool or a broken setup), review comments, reverts and the repositories' own merged PRs, and opens one PR against the folder with the sections Targets, Runs addressed, Evidence and Expected effect. It first checks whether earlier learning PRs had their expected effect, judges a file only by runs made under its current wording once at least 10 finished, changes it only for a miss seen twice or once with a person's written reason, and makes at most one change per file and three in all. What a repository needs instead of a brief, such as a check for a mechanical rule or a fix to its setup, it files as issues there, without your source's label. It never merges and never changes `rulings.md`; you review its PR like any other, and the factory loads the change once it is merged.
+- **Learning**: every `learning.every`, or now with `agentgate factory learn`, a thread in a worktree of the factory repository studies the finished runs (their outcomes, judge scores, review findings and the friction threads reported, such as a missing tool or a broken setup), review comments, reverts and the repositories' own merged PRs, and opens one PR against the folder with the sections Targets, Runs addressed, Evidence and Expected effect. It first checks whether earlier learning PRs had their expected effect, judges a file only by runs made under its current wording once at least 10 finished, changes it only for a miss seen twice or once with a person's written reason, and makes at most one change per file and three in all. What a repository needs instead of a brief, such as a check for a mechanical rule or a fix to its setup, it files as issues there, without your source's label. It never merges and never changes `rulings.md`; you review its PR like any other, and the factory loads the change once it is merged. A folder kept in agentgate has no repository to open a PR on: the thread runs in a worktree of the folder's first repository and hands the files it would change to the factory, which refuses a proposal that touches `rulings.md`, lacks a section or leaves a broken folder. The proposal waits under **Learning proposals** in the app's Factory settings, and in `agentgate factory status`. `agentgate factory proposal <run>` shows it as a diff, and `proposal apply <run>` or `proposal discard <run>` settles it. Apply refuses when a file it changes was edited since the run proposed it.
 - **Judges**: the files in `scorers/`, described above.
 
 ## Several machines
@@ -475,22 +491,25 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 
 ## Commands
 
-| Command                                                                      | What it does                                                                      |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `factory init <owner/repo> [--node <machine>] [--json]`                      | Start a factory in a repository: a template PR, and the factory on at its branch. |
-| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]` | Turn the factory on, or point it at another folder or machine.                    |
-| `factory move <machine>`                                                     | Run the same folder on another machine.                                           |
-| `factory off`                                                                | Turn it off.                                                                      |
-| `factory reload`                                                             | Fetch and check the folder now.                                                   |
-| `factory status [--json]`                                                    | The board, with the webhook URLs.                                                 |
-| `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                                              |
-| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                                                  |
-| `factory show <item> [--json]`                                               | An item's runs, comments and events.                                              |
-| `factory pause` / `resume`                                                   | Stop intake, new threads and nudges, and start them again.                        |
-| `factory secret set <NAME>` / `list` / `delete <NAME>`                       | Manage secrets; `set` reads the value from stdin.                                 |
-| `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                                           |
-| `factory learn`                                                              | Start the learning thread now.                                                    |
-| `factory scout <id>`                                                         | Run a scout now.                                                                  |
-| `factory source add [--json] < source.yaml`                                  | Open a PR that adds a webhook source or scout.                                    |
+| Command                                                                             | What it does                                                                                                         |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `factory init <owner/repo> [--store github\|agentgate] [--node <machine>] [--json]` | Start a factory for a repository: a template PR and the factory on at its branch, or the template kept in agentgate. |
+| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]`        | Turn the factory on, or point it at another folder or machine.                                                       |
+| `factory use --store agentgate [--node <machine>]`                                  | Turn the factory on with the folder agentgate keeps.                                                                 |
+| `factory folder ls\|cat <path>\|put <path>\|rm <path>\|delete`                      | Read and edit the folder agentgate keeps; `put` reads the file from stdin.                                           |
+| `factory proposal [apply\|discard] <run>`                                           | Show, apply or discard a learning run's proposal for that folder.                                                    |
+| `factory move <machine>`                                                            | Run the same folder on another machine.                                                                              |
+| `factory off`                                                                       | Turn it off.                                                                                                         |
+| `factory reload`                                                                    | Fetch and check the folder now.                                                                                      |
+| `factory status [--json]`                                                           | The board, with the webhook URLs.                                                                                    |
+| `factory add <owner/repo> <title> [--body <text>]`                                  | Add an item by hand.                                                                                                 |
+| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`                     | Answer, restart or stop an item.                                                                                     |
+| `factory show <item> [--json]`                                                      | An item's runs, comments and events.                                                                                 |
+| `factory pause` / `resume`                                                          | Stop intake, new threads and nudges, and start them again.                                                           |
+| `factory secret set <NAME>` / `list` / `delete <NAME>`                              | Manage secrets; `set` reads the value from stdin.                                                                    |
+| `factory t3 [sign-in]`                                                              | The factory's sign-in to T3 Code's MCP.                                                                              |
+| `factory learn`                                                                     | Start the learning thread now.                                                                                       |
+| `factory scout <id>`                                                                | Run a scout now.                                                                                                     |
+| `factory source add [--json] < source.yaml`                                         | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                      |
 
 The control API has the same operations under `/api/factory`.

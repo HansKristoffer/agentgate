@@ -7,6 +7,7 @@ import {
   quotaWindowSchema,
   providerSchema,
   secretRecordSchema,
+  factoryFolderSchema,
   MAX_RECORD,
 } from "@agentgate/protocol";
 import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
@@ -195,13 +196,15 @@ export const schemas = {
   }),
   /** A factory secret by name, or agentgate's own `~hook:<source>` webhook key, shared with every node (factory/secrets.ts). */
   secret: secretRecordSchema,
+  /** The factory folder agentgate stores (id `folder`), for a factory whose pointer says `store: agentgate` (factory/stored.ts). */
+  factoryFolder: factoryFolderSchema,
 };
 
-/** Every node must advertise this before `settings.factory` or a `secret` record is written: older nodes drop the
- * setting when they save settings, and stall on the unknown record kind. */
+/** Every node must advertise this before `settings.factory`, a `secret` or the `factoryFolder` record is written: older
+ * nodes drop the setting when they save settings, and stall on an unknown record kind. */
 export const FACTORY_PROTOCOL = 8;
 
-/** Throws, naming the nodes too old to sync `settings.factory` and factory secrets. */
+/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
 export function requireFactoryProtocol(s: Store) {
   const old = s
     .list("node")
@@ -637,7 +640,7 @@ export function importBackup(s: Store, input: unknown) {
     })
     .parse(input);
   const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
-  if (records.some((r) => r.kind === "secret")) requireFactoryProtocol(s);
+  if (records.some((r) => r.kind === "secret" || r.kind === "factoryFolder")) requireFactoryProtocol(s);
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {

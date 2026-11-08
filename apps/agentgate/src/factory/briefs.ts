@@ -27,7 +27,7 @@ const RESULTS: Record<RunKind, string> = {
     '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`.',
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
   learn:
-    '`done` needs `result: { kind: "learn", prUrl?, lessons, issues?: [{ repo, title, body }] }` with a PR or issues; report `nothing-to-do` when there is nothing to learn.',
+    '`done` needs `result: { kind: "learn", prUrl? or proposal?, lessons, issues?: [{ repo, title, body }] }` with a PR, a proposal or issues, as this run\'s section says; report `nothing-to-do` when there is nothing to learn.',
   scout:
     'Report only `done` or `nothing-to-do`. `done` needs `result: { kind: "scout", findings: [{ key, title, body }] }` with at least one finding; report `nothing-to-do` when nothing needs a ticket.',
 };

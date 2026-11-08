@@ -1,4 +1,4 @@
-import { itemPhases, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { folderLabel, itemPhases, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
@@ -148,9 +148,12 @@ function pointerRow(f: FactoryRuntime): FactoryBoard["factory"] {
   if (!pointer) return null;
   const seen = lastSeen(f.s, pointer.node);
   return {
-    repo: pointer.repo,
-    path: pointer.path,
-    ...(pointer.ref && { ref: pointer.ref }),
+    store: pointer.store,
+    ...(pointer.store === "github" && {
+      repo: pointer.repo,
+      path: pointer.path,
+      ...(pointer.ref && { ref: pointer.ref }),
+    }),
     node: pointer.node,
     online: f.s.now() - seen < 60_000,
     ...(seen > 0 && { lastSeenAt: seen }),
@@ -314,8 +317,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   const p = b.factory;
   if (!p) lines.push("Factory: off");
   else {
-    const folder = `${p.repo}${when(p.path, `:${p.path}`)}${when(p.ref, ` at ${p.ref}`)}`;
-    lines.push(`Factory: ${folder} on ${p.node}${here(p.node)}, ${p.online ? "online" : "offline"}`);
+    lines.push(`Factory: ${folderLabel(p)} on ${p.node}${here(p.node)}, ${p.online ? "online" : "offline"}`);
   }
   if (b.config)
     lines.push(`Config: ${b.config.name} at ${b.config.commit}${when(b.config.error, `, ${b.config.error}`)}`);
@@ -341,6 +343,10 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
         ? `  ${key} ${title}: ${n.reason}${when(n.question, `: ${n.question}`)}${when(n.link, ` ${n.link}`)}`
         : `  ${key} ${title}: ready for your review${when(pr, ` ${pr?.url}`)}`,
     );
+
+  if (b.proposals?.length) lines.push("", "Learning proposals for the stored folder:");
+  for (const { run, files } of b.proposals ?? [])
+    lines.push(`  ${run}: ${files.join(", ")} (agentgate factory proposal ${run})`);
 
   if (b.items.length) lines.push("", "Items:");
   for (const phase of itemPhases)

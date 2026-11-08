@@ -3,18 +3,21 @@ import {
   FACTORY_INIT_BRANCH,
   factoryInitInputSchema,
   factoryInitResultSchema,
+  folderLabel,
   type FactoryInitResult,
 } from "@agentgate/protocol";
 import { jsonInput } from "../http.ts";
 import { defaultNode, protectionWarning, useFactory } from "./config.ts";
+import { storedFiles } from "./folder.ts";
 import { branchExists, ensureLabel, fileExists, openPr, openPrFor, pushNewBranch } from "./gh.ts";
 import { asInput, requireFactoryProtocol, shortError, type FactoryRuntime } from "./runtime.ts";
+import { changeStored } from "./stored.ts";
 
 /**
  * `agentgate factory init`: a factory for one repository, from nothing. The template goes to a branch of the
  * repository with a draft PR, through this machine's `gh` login and without a checkout, and the factory is turned on at
  * that branch at once. When the PR merges, the folder loop moves the factory to the default branch (`followInit` in
- * config.ts).
+ * config.ts). With `--store agentgate` the template becomes the folder agentgate stores, and nothing is pushed.
  */
 
 const FOLDER = "factory";
@@ -72,15 +75,23 @@ function prBody(repo: string) {
   ].join("\n");
 }
 
+/** Creates the label the template's source takes; a label it cannot create is a warning, not a failed init. */
+const labelWarnings = (repo: string) =>
+  ensureLabel(repo, LABEL, "5319e7", "Issues the AgentGate software factory works").then(
+    (): string[] => [],
+    (e) => [`Creating the ${LABEL} label failed (${shortError(e)}); create it before labelling issues`],
+  );
+
 /** `agentgate factory init` and `POST /api/factory/init`. Refuses before writing anything when a factory is on, the
  * machine is unknown, or the repository already has a factory folder or an init branch. */
 export async function initFactory(f: FactoryRuntime, input: unknown): Promise<FactoryInitResult> {
   const { s } = f;
-  const { repo, node = defaultNode(s) } = factoryInitInputSchema.parse(input);
+  const { repo, node = defaultNode(s), store = "github" } = factoryInitInputSchema.parse(input);
   const on = f.pointer();
-  if (on) throw new Error(`The factory is on, at ${on.repo}; turn it off with agentgate factory off before init`);
+  if (on) throw new Error(`The factory is on, ${folderLabel(on)}; turn it off with agentgate factory off before init`);
   requireFactoryProtocol(s);
   if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);
+  if (store === "agentgate") return initStored(f, repo, node);
   if (await fileExists(repo, `${FOLDER}/factory.yaml`))
     throw new Error(
       `${repo} already has ${FOLDER}/factory.yaml; turn it on with agentgate factory use ${repo}:${FOLDER}`,
@@ -103,10 +114,7 @@ export async function initFactory(f: FactoryRuntime, input: unknown): Promise<Fa
   const pr = await openPr(repo, FACTORY_INIT_BRANCH, "chore(factory): start a software factory", prBody(repo), {
     draft: true,
   });
-  const warnings: string[] = [];
-  await ensureLabel(repo, LABEL, "5319e7", "Issues the AgentGate software factory works").catch((e) =>
-    warnings.push(`Creating the ${LABEL} label failed (${shortError(e)}); create it before labelling issues`),
-  );
+  const warnings = await labelWarnings(repo);
   const status = await useFactory(
     f,
     { repo, path: FOLDER, ref: FACTORY_INIT_BRANCH, node },
@@ -124,27 +132,53 @@ export async function initFactory(f: FactoryRuntime, input: unknown): Promise<Fa
   });
 }
 
+/** The template as the folder agentgate stores, the label, and the factory on it. Refuses while a stored folder
+ * exists, which `use --store agentgate` turns on instead. */
+async function initStored(f: FactoryRuntime, repo: string, node: string): Promise<FactoryInitResult> {
+  if (storedFiles(f.s))
+    throw new Error(
+      "agentgate already stores a factory folder; turn it on with agentgate factory use --store agentgate, or remove it with agentgate factory folder delete",
+    );
+  const files = Object.fromEntries(
+    Object.entries(initTemplate(repo)).map(([path, text]) => [path.slice(FOLDER.length + 1), text]),
+  );
+  await changeStored(f, files);
+  const warnings = await labelWarnings(repo);
+  const status = await useFactory(f, { store: "agentgate", node });
+  return factoryInitResultSchema.parse({ warnings, factory: status.factory, config: status.config });
+}
+
 export function setup(f: FactoryRuntime): void {
   f.commands.set("init", {
-    usage: "init <owner/repo> [--node <machine>] [--json]  start a factory in a repository: a template PR, turned on",
+    usage:
+      "init <owner/repo> [--store github|agentgate] [--node <machine>] [--json]  start a factory for a repository: a template PR (or a folder agentgate stores), turned on",
     local: true,
     async run(args, io) {
       const { values, positionals } = parseArgs({
         args,
-        options: { node: { type: "string" }, json: { type: "boolean" } },
+        options: { node: { type: "string" }, store: { type: "string" }, json: { type: "boolean" } },
         allowPositionals: true,
       });
       if (positionals.length !== 1) {
-        io.out("usage: agentgate factory init <owner/repo> [--node <machine>] [--json]");
+        io.out("usage: agentgate factory init <owner/repo> [--store github|agentgate] [--node <machine>] [--json]");
         return 2;
       }
-      const result = await initFactory(f, { repo: positionals[0], ...(values.node && { node: values.node }) });
+      const result = await initFactory(f, {
+        repo: positionals[0],
+        ...(values.node && { node: values.node }),
+        ...(values.store && { store: values.store }),
+      });
       if (values.json) io.out(JSON.stringify(result));
       else {
-        io.out(`Opened ${result.prUrl}`);
-        io.out(
-          `The factory runs ${positionals[0]}:${FOLDER} at ${FACTORY_INIT_BRANCH} on ${result.factory?.node}; merging the PR moves it to the default branch.`,
-        );
+        if (result.prUrl) {
+          io.out(`Opened ${result.prUrl}`);
+          io.out(
+            `The factory runs ${positionals[0]}:${FOLDER} at ${FACTORY_INIT_BRANCH} on ${result.factory?.node}; merging the PR moves it to the default branch.`,
+          );
+        } else
+          io.out(
+            `The factory runs on ${result.factory?.node} with a folder agentgate stores; edit it with agentgate factory folder.`,
+          );
         for (const warning of result.warnings) io.out(`Warning: ${warning}`);
       }
       return 0;

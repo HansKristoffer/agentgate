@@ -180,8 +180,16 @@ test("init pushes the template to its branch in one commit, opens a draft PR, cr
     prUrl: `https://github.com/${REPO}/pull/7`,
     branch: FACTORY_INIT_BRANCH,
     warnings: [],
-    factory: { repo: REPO, path: "factory", ref: FACTORY_INIT_BRANCH, node: "a", online: true, lastSeenAt: 1_000 },
-    config: { commit: "a".repeat(40), name: "api", loadedAt: 1_000 },
+    factory: {
+      store: "github",
+      repo: REPO,
+      path: "factory",
+      ref: FACTORY_INIT_BRANCH,
+      node: "a",
+      online: true,
+      lastSeenAt: 1_000,
+    },
+    config: { commit: "a".repeat(40), name: "api", loadedAt: 1_000, repositories: [REPO] },
   });
   expect(github.tree.map((t) => t.path)).toEqual(["factory/factory.yaml", "factory/rulings.md"]);
   expect(github.commit).toEqual({
@@ -192,6 +200,7 @@ test("init pushes the template to its branch in one commit, opens a draft PR, cr
   expect(github.prs.get(7)).toMatchObject({ head: FACTORY_INIT_BRANCH, draft: true, state: "OPEN" });
   expect(github.labels.has("factory")).toBe(true);
   expect(s.settings().factory).toEqual({
+    store: "github",
     repo: REPO,
     path: "factory",
     ref: FACTORY_INIT_BRANCH,
@@ -264,7 +273,9 @@ test("init refuses before writing anything: a factory on, a folder there, an ope
   const asked = github.calls.length;
   expect(await a.command("init", REPO)).toEqual({
     code: 1,
-    output: [`The factory is on, at ${REPO}; turn it off with agentgate factory off before init`],
+    output: [
+      `The factory is on, ${REPO}:factory at ${FACTORY_INIT_BRANCH}; turn it off with agentgate factory off before init`,
+    ],
   });
   expect(github.calls).toHaveLength(asked);
 });
@@ -287,7 +298,7 @@ test("once the init PR merges, the factory follows the default branch even thoug
   github.prs.get(7)!.state = "MERGED";
   fetched.length = 0;
   await folderLoop(f);
-  expect(s.settings().factory).toEqual({ repo: REPO, path: "factory", node: "a" });
+  expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });
   expect(fetched).toEqual([undefined]);
   expect(f.events.recent(10).map((e) => e.text)).toContain(
     `The init PR #7 merged; the factory follows ${REPO}'s default branch`,
@@ -308,6 +319,7 @@ test("moving the factory keeps the init PR it waits on, so the machine it lands 
 
   expect((await command("move", "b")).code).toBe(0);
   expect(s.settings().factory).toEqual({
+    store: "github",
     repo: REPO,
     path: "factory",
     ref: FACTORY_INIT_BRANCH,
@@ -321,7 +333,7 @@ test("moving the factory keeps the init PR it waits on, so the machine it lands 
   expect((await api("/move", { node: "a" })).status).toBe(200);
   github.prs.get(7)!.state = "MERGED";
   await folderLoop(f);
-  expect(s.settings().factory).toEqual({ repo: REPO, path: "factory", node: "a" });
+  expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });
 });
 
 test("a closed init PR leaves the factory on its branch, says so, and stops asking", async () => {
@@ -331,7 +343,13 @@ test("a closed init PR leaves the factory on its branch, says so, and stops aski
   await api("/init", { repo: REPO });
   github.prs.get(7)!.state = "CLOSED";
   await folderLoop(f);
-  expect(s.settings().factory).toEqual({ repo: REPO, path: "factory", ref: FACTORY_INIT_BRANCH, node: "a" });
+  expect(s.settings().factory).toEqual({
+    store: "github",
+    repo: REPO,
+    path: "factory",
+    ref: FACTORY_INIT_BRANCH,
+    node: "a",
+  });
   expect(f.events.recent(10).map((e) => e.text)).toContain(
     `The init PR #7 was closed without merging; the factory still runs ${FACTORY_INIT_BRANCH}`,
   );

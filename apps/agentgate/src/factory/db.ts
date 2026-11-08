@@ -46,7 +46,7 @@ export interface FactoryItem {
 }
 
 /** What the factory recorded about a run as it went: the PR an implement run opened and its nudges, a review round,
- * the run a judge grades, a learning PR's check. Stored as JSON in `checked`. */
+ * the run a judge grades, a learning PR's check or proposal. Stored as JSON in `checked`. */
 export const runDataSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("implement"),
@@ -84,7 +84,20 @@ export const runDataSchema = z.discriminatedUnion("kind", [
     final: z.boolean().optional(),
   }),
   z.object({ kind: z.literal("judge"), run: z.string(), scorer: z.string() }),
-  z.object({ kind: z.literal("learn"), pr: z.string(), head: z.string(), problems: z.array(z.string()) }),
+  z.object({
+    kind: z.literal("learn"),
+    /** A folder on GitHub: the learning PR the factory checked, at its head. */
+    pr: z.string().optional(),
+    head: z.string().optional(),
+    problems: z.array(z.string()),
+    /** A stored folder: each proposed file's text when the run reported (null: absent), and what the maintainer did. */
+    proposal: z
+      .object({
+        before: z.record(z.string(), z.string().nullable()),
+        state: z.enum(["open", "applied", "discarded"]),
+      })
+      .optional(),
+  }),
   /** Set when queued; `filed` (item keys) and `skipped` (finding keys) once the report is accepted. */
   z.object({
     kind: z.literal("scout"),

@@ -91,6 +91,7 @@ function SourceDialog({
 }: Pick<ViewProps, "data" | "connection" | "perform"> & { board: FactoryBoard; kind: Kind; close: () => void }) {
   const [when, setWhen] = useState<"every" | "at">("every");
   const repos = [...new Set(board.sources.map((s) => s.repo))];
+  const stored = board.factory?.store === "agentgate";
   return (
     <Modal title={kind === "scout" ? "New scout" : "New webhook"} close={close} size="lg">
       <form
@@ -101,18 +102,27 @@ function SourceDialog({
             const result = await request<FactorySourceAddResult>(connection, "/factory/sources", "POST", input);
             close();
             for (const warning of result.warnings) toast(warning);
-            toast(`A PR adds ${input.source.id}`, {
-              description: "It starts once the PR merges.",
-              actionProps: { children: "Open PR", onPress: () => void openExternal(result.prUrl) },
-            });
+            const prUrl = result.prUrl;
+            if (prUrl)
+              toast(`A PR adds ${input.source.id}`, {
+                description: "It starts once the PR merges.",
+                actionProps: { children: "Open PR", onPress: () => void openExternal(prUrl) },
+              });
+            else toast(`${input.source.id} is added`, { description: "It starts within 2 minutes." });
           });
         }}
       >
         <p className="muted">
           {kind === "scout"
             ? "On its schedule, a T3 Code thread follows your prompt in a worktree of the repository and reports what it finds. Each finding becomes an item that goes through triage, a fix and review."
-            : "Each request to the webhook's URL becomes an item. Its URL shows under Sources once the PR merges."}{" "}
-          Saving opens a PR on the factory folder with the <code>gh</code> login of {data.node}.
+            : `Each request to the webhook's URL becomes an item. Its URL shows under Sources once ${stored ? "it starts" : "the PR merges"}.`}{" "}
+          {stored ? (
+            "Saving adds it to the folder agentgate stores."
+          ) : (
+            <>
+              Saving opens a PR on the factory folder with the <code>gh</code> login of {data.node}.
+            </>
+          )}
         </p>
         <div className="row">
           <Field

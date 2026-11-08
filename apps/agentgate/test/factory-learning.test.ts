@@ -157,7 +157,7 @@ test("a learn run starts every learning.every, on learn, factory_learn and POST 
   expect(brief).toContain(`The factory works in \`${n.repo}\``);
   for (const section of ["## Targets", "## Runs addressed", "## Evidence", "## Expected effect"])
     expect(brief).toContain(section);
-  expect(brief).toContain("never change `rulings.md`");
+  expect(brief).toContain("Never change `rulings.md`");
   expect(brief).toContain("- Keep public field names."); // the rulings, cited
   expect(await n.report(weekly, nothingToDo)).toEqual({ accepted: true });
 

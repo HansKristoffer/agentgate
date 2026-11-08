@@ -51,7 +51,7 @@ function caller(handler: ReturnType<typeof app>) {
 }
 
 const useFactory = (s: Store, node: string) =>
-  s.put("setting", "settings", { ...s.settings(), factory: { repo: "acme/api", node } });
+  s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: "acme/api", node } });
 
 test("items, runs and scores keep every field, and the tables survive being created again", () => {
   const { s } = fixture();
@@ -344,7 +344,7 @@ test("the generic settings patch cannot write the factory pointer", async () => 
   const call = caller(app(ctx));
   const res = await call("/api/settings", "PATCH", {
     revision: revision(s, "setting", "settings"),
-    patch: { factory: { repo: "acme/api", node: "a" } },
+    patch: { factory: { store: "github", repo: "acme/api", node: "a" } },
   });
   expect(res.status).toBe(400);
   expect(s.settings().factory).toBeUndefined();

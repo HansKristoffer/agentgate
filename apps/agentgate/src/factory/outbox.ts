@@ -100,7 +100,8 @@ async function deliver(f: FactoryRuntime, owner: string, moment: WriteMoment, re
     return createIssue(issue.repo, issue.title, issue.body);
   }
   if (moment === "learn") {
-    const repo = f.pointer()?.repo;
+    const pointer = f.pointer();
+    const repo = pointer?.store === "github" ? pointer.repo : undefined;
     return repo
       ? postIssueComment(repo, Number(ref), body)
       : ({ status: "failed", error: "the factory is off" } satisfies PostResult);

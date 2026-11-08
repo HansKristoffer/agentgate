@@ -1,6 +1,7 @@
 import type { FactoryRuntime } from "./runtime.ts";
 import { setup as board } from "./board.ts";
 import { setup as config } from "./config.ts";
+import { setup as stored } from "./stored.ts";
 import { setup as t3Mcp } from "./t3-mcp.ts";
 import { setup as controller } from "./controller.ts";
 import { setup as secrets } from "./secrets.ts";
@@ -27,6 +28,7 @@ import { setup as notify } from "./notify.ts";
 const features = [
   board,
   config,
+  stored,
   init,
   t3Mcp,
   controller,
