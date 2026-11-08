@@ -318,6 +318,10 @@ async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<t
         commit: pr.headRefOid,
         claims: [{ claim: "Saving twice no longer crashes", evidence: "bun test test/save.test.ts passes" }],
         notChecked: ["Windows"],
+        decisions: [
+          { decision: "The save lock lives in memory, not on disk", confidence: "high" },
+          { decision: "A second save waits for the first instead of failing", confidence: "low" },
+        ],
         ...result,
       },
     });

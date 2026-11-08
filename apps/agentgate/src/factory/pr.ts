@@ -154,6 +154,8 @@ const REACH = {
   data: "reaches stored data",
 };
 
+const SURE = { low: 0, medium: 1, high: 2 };
+
 /** Lines joined within `max` characters; what does not fit becomes one "…and N more" line. */
 function within(lines: string[], max: number) {
   let out = "";
@@ -165,9 +167,10 @@ function within(lines: string[], max: number) {
 }
 
 /** The factory's summary of an item going ready, from its runs: what its PR-owning implement run checked and did not
- * check, at the commit it reported; the review rounds, with the last counted round's head, open and pre-existing
- * findings, and risk. Each piece defused, the whole within 20,000 characters. Written once, at ready, so the blind
- * reviewer never sees the implementer's claims in the PR. */
+ * check, at the commit it reported, and what it decided where the item was silent, least sure first; the review
+ * rounds, with the last counted round's head, open and pre-existing findings, and risk. Each piece defused, the whole
+ * within 20,000 characters. Written once, at ready, so the blind reviewer never sees the implementer's claims or
+ * decisions in the PR. */
 export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
   const lines = ["## What the factory checked", ""];
   const result = prRun(f, item)?.report?.result;
@@ -176,6 +179,14 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
     for (const c of result.claims) lines.push(`- ${defuse(c.claim, 1000)}: ${defuse(c.evidence, 2000)}`);
     const skipped = result.notChecked.map((n) => defuse(n, 500)).join("; ");
     lines.push("", `**Not checked:** ${skipped || "nothing listed"}`, "");
+    const decided = result.decisions.toSorted((a, b) => SURE[a.confidence] - SURE[b.confidence]);
+    if (decided.length)
+      lines.push(
+        "**Decided where the item was silent**, least sure first:",
+        ...decided.map((d) => `- ${d.confidence} confidence: ${defuse(d.decision, 1000)}`),
+        "",
+      );
+    else lines.push("**Decided where the item was silent:** nothing listed", "");
   }
   const last = lastRound(f, item);
   if (limitsOf(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");

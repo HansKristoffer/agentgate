@@ -39,12 +39,12 @@ test("route implement starts a run on factory/<key> from the default branch, and
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.mainRed).toEqual([]);
 });
 
-test("a done report missing prUrl, commit, claims or notChecked is refused, naming what is missing", async () => {
+test("a done report missing prUrl, commit, claims, notChecked or decisions is refused, naming what is missing", async () => {
   const n = await prFactory(cleanup);
   const { item, run } = await n.implementing(1);
 
   expect(await n.report(run, { outcome: "done", summary: "Done." })).toEqual({
-    error: 'The outcome done needs result: { kind: "implement", prUrl, commit, claims, notChecked }',
+    error: 'The outcome done needs result: { kind: "implement", prUrl, commit, claims, notChecked, decisions }',
   });
   const partial = await n.report(run, {
     outcome: "done",

@@ -352,6 +352,18 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
         )
         .max(50),
       notChecked: z.array(z.string().max(2000)).max(50),
+      /** Calls the item, the spec and the rulings left open, for the person who merges: the PR's summary lists them
+       * least confident first. */
+      decisions: z
+        .array(
+          z
+            .object({
+              decision: z.string().trim().min(1).max(2000),
+              confidence: z.enum(["low", "medium", "high"]),
+            })
+            .strict(),
+        )
+        .max(50),
     })
     .strict(),
   z
