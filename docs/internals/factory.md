@@ -25,9 +25,9 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   guarantees.
 - Review rounds stay between the factory's threads: findings go to the implement thread, never to GitHub, and the
   person reads one summary that `toReady` writes into the PR body (`readySummary` in [`pr.ts`](../../apps/agentgate/src/factory/pr.ts)).
-  It is written only at ready on purpose. The reviewer is blind to the implementer's claims (`factory_item` hides
-  them), but only a prompt keeps it from reading the PR description, so claims in the body before review would reach
-  it.
+  It is written only at ready on purpose. The reviewer is blind to the implementer's claims and decisions (`factory_item`
+  hides them), but only a prompt keeps it from reading the PR description, so either in the body before review would
+  reach it.
 - `settings.factory` (the pointer to the folder and the machine that runs it) and the `secret` record kind are gated
   on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
   field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and

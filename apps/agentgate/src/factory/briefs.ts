@@ -22,7 +22,7 @@ const RESULTS: Record<RunKind, string> = {
     '`done` needs `result: { kind: "triage", route: "implement" | "spec", reproduction: { command, failsBefore: true } | { notPossible } }`.',
   spec: '`done` needs `result: { kind: "spec", spec, review, approved, feedback?, later?: [{ title, body }] }`.',
   implement:
-    '`done` needs `result: { kind: "implement", prUrl, commit, claims: [{ claim, evidence }], notChecked: [] }`.',
+    '`done` needs `result: { kind: "implement", prUrl, commit, claims: [{ claim, evidence }], notChecked: [], decisions: [{ decision, confidence: "low" | "medium" | "high" }] }`.',
   review:
     '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`.',
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',

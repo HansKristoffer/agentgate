@@ -33,8 +33,9 @@ const LEARN_BRIEF = `You are the learning thread of AgentGate's software factory
 - First check each merged learning PR since the last learn run: did its Expected effect show in the runs after it? Say so in your PR, and undo a change that did not help.
 - Judge a file only by the runs made under its current wording, and leave it alone until at least 10 of them finished. Change it for a miss seen in two runs, or in one with a person's written reason, such as a review comment, a revert or a rejection. A judge's failing score counts only when its reasoning holds up against the code.
 - Fix the general cause, never the wording of one run. Make at most one change per file and three in all, and rewrite a piece of guidance as a whole instead of appending to it, so it stays short and consistent.
+- Put a lesson about how code should be written in the review brief or a scorer, not the implement brief: the reviewer reads one diff with room to hold it to a rule, while the implementer is busy finding its way.
 - A mechanical rule (a pattern, a command, where a file goes) belongs in a check, not in a brief. Report it under \`issues\` for its repository with what the check must catch and the runs that missed it, and report setup problems runs worked around the same way. The factory files each as an issue for the maintainer.
-- Open one PR against the factory repo with the sections Targets, Runs addressed, Evidence and Expected effect. Report \`nothing-to-do\` when the evidence supports no change.
+- Open one PR against the factory repo with the sections Targets, Runs addressed, Evidence and Expected effect. Write the Expected effect as what should change in which runs, and what would show that it did not help. Report \`nothing-to-do\` when the evidence supports no change.
 - Never push to the base branch, never merge, and never change \`rulings.md\`: only the maintainer decides it. You may cite it.`;
 
 /** Headings the learning PR's body must have, in this order of importance for the maintainer. */

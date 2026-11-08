@@ -19,6 +19,7 @@ const REVIEW_BRIEF = `You review one pull request for AgentGate's software facto
 
 - Check out the PR in this worktree, and read the item and spec with the \`factory_item\` tool. Never read the PR's description or comments: judge the change, not what anyone says about it.
 - Revert the fix locally, keeping the new tests, and run them to show they fail without it. Tests that pass without the fix are an Important finding.
+- Ask what makes the fix hold for every input, not only the item's. A raised timeout or limit, a bigger buffer, or a special case sized to the reported input leaves the cause in place: that is an Important finding.
 - In round 2 and later, review only the diff since the reviewed commit, and do not repeat the findings you are given.
 - Review in focused passes, each as a subagent if you can start one, otherwise one after another: correctness, including how failures surface; tests, with the revert check above; reuse and simplicity; efficiency; security; and the repository's own rules (its AGENTS.md, CLAUDE.md or CONTRIBUTING.md, and the rulings). Merge their findings and drop duplicates.
 - Report a finding only once you have confirmed it in the code, naming the file and line you read. A problem in code the PR did not change is Pre-existing, unless the change causes it.
