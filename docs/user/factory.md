@@ -10,6 +10,7 @@ On the machine that runs the factory:
 - **`gh`** is signed in to an account that can read the factory repository and push to its repositories. Everything the factory writes on GitHub carries that login.
 - **`git`** is installed. The factory fetches its folder with it, through `gh`'s login, so a private factory repository works.
 - **agentgate's MCP server** is in the Claude Code or Codex that T3 Code runs (`agentgate setup --primary`, or `setup --mcp`). Stage threads report through it, and tokens are only counted for sessions that go through agentgate.
+- **Worktree cleanup** is on in T3 Code (**Settings → Worktree cleanup**) for the repositories the factory works. Every stage runs in a worktree of its own, set up like any T3 Code thread, and the factory settles a stage's thread when it finishes; T3 Code removes the worktree only when told to remove worktrees after their thread settles, or once their PR merged. Without it, a large repository's worktrees fill the disk.
 
 Every paired machine must run a release that knows the factory before you turn it on or set a secret, since older releases drop the setting and stall on secret records. `agentgate factory use` names the machines to update.
 

@@ -59,7 +59,8 @@ a:hover { text-decoration: underline; }
 .card .reason { font-size: 12px; font-weight: 600; color: var(--warning); }
 .card .title { font-weight: 600; margin: 2px 0 4px; }
 .card p { margin: 4px 0; color: var(--ink-2); }
-.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(200px, 1fr); gap: 8px; overflow-x: auto; }
+.board { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; align-items: start; }
+.pipeline { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--ink-2); }
 .column { padding: 8px; min-height: 80px; }
 .column h3 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 2px 4px 8px; }
 .item { padding: 8px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; background: var(--page); }
@@ -228,8 +229,16 @@ function render(b) {
 		fill("judges", [judges]);
 	}
 
-	var columns = PHASES.filter(function (phase) {
+	// Every stage in one line, and a column only for those that hold items: all of them at a card's width do not fit.
+	var phases = PHASES.filter(function (phase) {
 		return OPEN.indexOf(phase) >= 0 || b.items.some(function (i) { return i.phase === phase; });
+	});
+	var pipeline = el("div", "pipeline");
+	phases.forEach(function (phase) {
+		pipeline.append(el("span", "", phase + " " + b.items.filter(function (i) { return i.phase === phase; }).length));
+	});
+	var columns = [pipeline].concat(phases.filter(function (phase) {
+		return b.items.some(function (i) { return i.phase === phase; });
 	}).map(function (phase) {
 		var col = el("div", "column");
 		var here = b.items.filter(function (i) { return i.phase === phase; });
@@ -246,7 +255,7 @@ function render(b) {
 			col.append(card);
 		});
 		return col;
-	});
+	}));
 	fill("items", columns);
 
 	fill("machines", b.machines.map(function (m) {

@@ -31,13 +31,16 @@ export function ItemDrawer({
   const [detail, setDetail] = useState<FactoryItemDetail>();
   const [error, setError] = useState("");
   const capture = useGeneration(connection);
-  // A forwarded read can take longer than the poll; like the board, one at a time.
-  const loading = useRef(false);
+  // A forwarded read can take longer than the poll; like the board, one at a time for the item shown. A read for
+  // another item or connection neither holds back this one nor lands in it.
+  const loading = useRef<() => boolean>(undefined);
   useEffect(() => {
+    let live = true;
     const load = async () => {
-      if (loading.current) return;
-      loading.current = true;
-      const current = capture();
+      if (loading.current?.()) return;
+      const generation = capture();
+      const current = () => live && generation();
+      loading.current = current;
       try {
         const next = await request<FactoryItemDetail>(connection, `/factory/items/${encodeURIComponent(id)}`);
         if (current()) {
@@ -47,12 +50,15 @@ export function ItemDrawer({
       } catch (e) {
         if (current()) setError(String(e));
       } finally {
-        loading.current = false;
+        if (loading.current === current) loading.current = undefined;
       }
     };
     void load();
     const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
   }, [connection, id, changes]);
 
   // The board's row shows at once; the detail fills in.

@@ -278,10 +278,15 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   await idle(n.f);
   expect(item(n, run!)).toMatchObject({ phase: "closed" });
   expect(runs.get(n.s, again!.id)!.state).toBe("cancelled");
-  const calls = n.mcp.calls.map((c) => [c.tool, c.args.threadId]);
-  expect(calls).toContainEqual(["t3_thread_interrupt", again!.threadId]);
-  expect(calls).toContainEqual(["t3_thread_organize", again!.threadId]);
-  expect(calls).toContainEqual(["t3_thread_organize", run!.threadId]);
+  const calls = () => n.mcp.calls.map((c) => [c.tool, c.args.threadId]);
+  expect(calls()).toContainEqual(["t3_thread_interrupt", again!.threadId]);
+  // The running thread settles once the interrupt has stopped its turn; T3 refuses to settle it before.
+  await n.until(
+    () => calls().some(([tool, thread]) => tool === "t3_thread_organize" && thread === again!.threadId),
+    "the dropped thread to settle",
+  );
+  expect(runs.get(n.s, again!.id)!.error).toBeUndefined();
+  expect(calls()).toContainEqual(["t3_thread_organize", run!.threadId]);
   expect(n.markers("gh-1").at(-1)).toMatchObject({ state: "finished" });
   expect(n.posts.at(-1)!.body).toContain("The maintainer dropped it: not now.");
 

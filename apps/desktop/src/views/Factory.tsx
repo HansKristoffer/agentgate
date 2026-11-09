@@ -247,9 +247,22 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
           <p>Every open item, and those that finished in the last 7 days.</p>
         </div>
       </div>
+      {/* Every stage in one line, and a column only for those that hold items: seven columns at a card's width
+          do not fit the page, and the ones out of view were the ones waiting for you. */}
+      <div className="factory-pipeline">
+        {phases.map((phase) => {
+          const count = board.items.filter((i) => i.phase === phase).length;
+          return (
+            <span key={phase} className={count ? undefined : "muted"}>
+              {PHASE_TITLES[phase]} <strong>{count}</strong>
+            </span>
+          );
+        })}
+      </div>
       <div className="factory-stages">
         {phases.map((phase) => {
           const here = board.items.filter((i) => i.phase === phase);
+          if (!here.length) return null;
           return (
             <div className="factory-stage" key={phase}>
               <h3>
@@ -318,7 +331,6 @@ function Machines({ board }: { board: FactoryBoard }) {
                   <small className="muted">
                     {t.needsYou ? "needs you" : t.status}
                     {t.project ? ` · ${t.project}` : ""}
-                    {t.item ? ` · ${t.item}` : ""}
                   </small>
                 </div>
                 <OpenInT3 link={t.link} label="Open" />
@@ -457,12 +469,14 @@ export function Factory(props: ViewProps) {
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<{ item: Pick<BoardItem, "id" | "key">; action: ItemAction; title: string }>();
   const capture = useGeneration(connection);
-  const loading = useRef(false);
+  // One read at a time, for the connection shown: a read whose answer would be dropped (another connection, or the
+  // first of StrictMode's two mounts) must not hold back the next for five seconds.
+  const loading = useRef<() => boolean>(undefined);
 
   const load = async () => {
-    if (loading.current) return;
-    loading.current = true;
+    if (loading.current?.()) return;
     const current = capture();
+    loading.current = current;
     try {
       const next = await request<FactoryBoard>(connection, "/factory");
       if (current()) {
@@ -472,7 +486,7 @@ export function Factory(props: ViewProps) {
     } catch (e) {
       if (current()) setError(String(e));
     } finally {
-      loading.current = false;
+      if (loading.current === current) loading.current = undefined;
     }
   };
   useEffect(() => {

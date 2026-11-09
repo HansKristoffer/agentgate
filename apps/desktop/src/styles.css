@@ -1042,13 +1042,18 @@ h3 {
 }
 
 /* The factory: stage columns of item cards. */
+.factory-pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
 .factory-stages {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(200px, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
-  overflow-x: auto;
-  padding-bottom: 8px;
+  align-items: start;
 }
 .factory-stage {
   display: flex;

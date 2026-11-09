@@ -106,7 +106,9 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
     return { ok: true };
   });
   answers.set("t3_thread_interrupt", (args) => {
-    push(thread(args), { status: "interrupted" });
+    // Like T3: the call answers, and the turn stops a moment later.
+    const t = thread(args);
+    setTimeout(() => push(t, { status: "interrupted" }), 20);
     return { ok: true };
   });
   answers.set("t3_thread_organize", (args) => {

@@ -93,6 +93,8 @@ interface Memory {
   watching: boolean;
   /** Runs whose thread was seen working since the factory last sent it a message. */
   seen: Set<string>;
+  /** Threads the factory interrupted, to settle once T3 shows their turn stopped. */
+  stopping: Set<string>;
   sources: Map<
     string,
     {
@@ -123,6 +125,7 @@ function memory(f: FactoryRuntime) {
       (m = {
         watching: false,
         seen: new Set(),
+        stopping: new Set(),
         sources: new Map(),
         retryAt: new Map(),
         projects: new Map(),
@@ -315,6 +318,12 @@ function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
   touched(f, item, "answer", "answered in T3 Code");
 }
 
+/** How events name a run: by its item's key where it has one, which is what a person knows it by. */
+const runName = (f: FactoryRuntime, run: FactoryRun) => {
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  return item ? `${item.key}'s ${run.kind}` : `${run.kind} run ${run.id}`;
+};
+
 /** Ends a run. Judges then sample it, and its tokens are read. The event names `patch.error`, when
  * given, as why the run ended. */
 export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
@@ -326,7 +335,7 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
     run: run.id,
     ...(run.item && { item: run.item }),
     state,
-    text: `${run.kind} run ${run.id} ended: ${patch.error ?? state}`,
+    text: `${runName(f, run)} ended: ${patch.error ?? state}`,
   });
   // The run's thread gets its project's servers back (`threadScope`).
   f.ctx.gateway.toolsChanged();
@@ -492,7 +501,7 @@ export async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: Th
 
 /** For actions whose caller goes on regardless: the failure is the run's error and a note. */
 const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
-  const text = `${what} the thread of ${run.id} failed: ${shortError(e)}`;
+  const text = `${what} the thread of ${runName(f, run)} failed: ${shortError(e)}`;
   runs.update(f.s, run.id, { error: text });
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
 };
@@ -511,14 +520,19 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
   for (const run of all) if (active.has(run.id)) endRun(f, run, "cancelled");
   for (const run of all) {
     if (!run.threadId) continue;
+    const thread = mirror.thread(run.threadId);
     // A reported run's thread can still work: the implement thread owns its PR until the item ships.
-    if (active.has(run.id) || working(f, mirror.thread(run.threadId)))
+    if (active.has(run.id) || working(f, thread)) {
+      // T3 settles a thread only once its turn stopped, which the mirror shows a moment after the interrupt.
+      const turn = !thread || isWorkingStatus(thread.status);
+      if (turn) memory(f).stopping.add(run.threadId);
       await actOnThread(f, run, { action: "interrupt", text: reason.slice(0, 2000) }).catch(
         threadFailed(f, run, "Interrupting"),
       );
+      if (turn) continue;
+    }
     // The mirror shows this machine's threads only; settling a settled thread on another machine changes nothing.
-    if (!mirror.thread(run.threadId)?.settled)
-      await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
+    if (!thread?.settled) await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   }
 }
 
@@ -529,10 +543,11 @@ const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().op
 async function endedWhileStarting(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id)!;
   if (run.state === "starting") return false;
+  // Settled once the mirror shows the turn stopped (`settleFinished`).
+  memory(f).stopping.add(run.threadId!);
   await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
     threadFailed(f, run, "Interrupting"),
   );
-  await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   return true;
 }
 
@@ -864,7 +879,7 @@ async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: Mirr
   // A subagent's change can end its parent's turn: the run belongs to the parent.
   const thread = rootOf(f, changed);
   const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
-  if (!run) return settleReported(f, thread);
+  if (!run) return settleFinished(f, thread);
   // A turn that ended while this daemon was not watching shows first as a finished status.
   const endedUnseen = thread === changed && !previous && thread.status !== "idle";
   await withItem(f, run.item ?? run.id, () => threadChanged(f, run.id, endedUnseen));
@@ -1084,7 +1099,7 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Tool
     });
     writeBack(f, after, "waiting", { report, text: question, ref: questionRef(run.id, question) });
   } else if (!closing && !asks) await definition.accept(report, reported, item);
-  // The thread settles once the turn that reported ends (`settleReported`).
+  // The thread settles once the turn that reported ends (`settleFinished`).
   return { accepted: true };
 }
 
@@ -1097,13 +1112,14 @@ const settlesAfterReport = (run: FactoryRun) =>
   run.report.outcome !== "needs-decision" &&
   !(run.kind === "implement" && run.report.outcome === "done");
 
-/** Settles a reported run's thread once its turn ended: a report always comes from a turn still running, and T3
- * refuses to settle a running thread. */
-async function settleReported(f: FactoryRuntime, thread: MirrorThread) {
+/** Settles a thread once its turn ended, since T3 refuses to settle a running thread: a finished stage's, whose report
+ * came from that turn, and one the factory interrupted. */
+async function settleFinished(f: FactoryRuntime, thread: MirrorThread) {
   if (thread.settled || working(f, thread)) return;
   const head = runs.byThreads(f.s, [thread.id]).at(-1);
   const run = head && runs.get(f.s, head.id);
-  if (!run || !settlesAfterReport(run)) return;
+  const stopped = memory(f).stopping.delete(thread.id);
+  if (!run || (!stopped && !settlesAfterReport(run))) return;
   await withItem(f, run.item ?? run.id, () =>
     actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
   );
