@@ -1354,7 +1354,7 @@ async function main() {
         );
         for (const th of n.threads)
           console.log(
-            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}`,
+            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}${th.link ? `  ${th.link}` : ""}`,
           );
       }
       return;
