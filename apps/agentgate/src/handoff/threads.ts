@@ -20,6 +20,7 @@ import {
   connectWith,
   createPairingLink,
   disconnectT3,
+  hostedThreadLink,
   t3Client,
   t3State,
   type connectInput,
@@ -39,7 +40,15 @@ export type ViewThread = T3Thread & { needsYou?: boolean };
 async function localThreads(h: Handoffs): Promise<ViewThread[]> {
   const t3 = t3Client(h.s);
   const claudeIds = () => t3.rpc(async (call) => (await claudeHomes(call, h.options.claudeDir)).map(([id]) => id));
-  const [shell, claude] = await Promise.all([t3.shell(), h.cache.getOrSet("claude", claudeIds, { ttlMs: CACHE })]);
+  // Without the environment id the threads are listed without links rather than not at all.
+  const environment = h.cache
+    .getOrSet(`environment:${t3.url}`, () => t3.environmentId(), { ttlMs: CACHE })
+    .catch(() => undefined);
+  const [shell, claude, environmentId] = await Promise.all([
+    t3.shell(),
+    h.cache.getOrSet("claude", claudeIds, { ttlMs: CACHE }),
+    environment,
+  ]);
 
   // What T3's sidebar lists outside Settled: top-level threads. Subagents move with their parent.
   const listed = shell.threads.filter((t) => {
@@ -62,6 +71,7 @@ async function localThreads(h: Handoffs): Promise<ViewThread[]> {
       node: h.s.nodeId,
       lastActivity: t.latestUserMessageAt ?? t.updatedAt,
       ...(running && t.activityRunStartedAt && { workingSince: t.activityRunStartedAt }),
+      ...(environmentId && { link: hostedThreadLink(environmentId, t.id) }),
       needsYou: t.pendingRuntimeRequest != null,
     };
   });

@@ -16,6 +16,14 @@ const PROTOCOL_HEADER = "x-t3-orchestration-protocol";
 const REPAIR_AHEAD = 3 * 86_400_000;
 const STREAM_PING_MS = 15_000;
 
+const hostedSegment = (id: string) =>
+  encodeURIComponent(id).replace(/[.!~*'()]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+/** The link T3 gives MCP clients outside it (its shared `hostedThreadLink`): app.t3.codes offers the desktop app, the
+ * mobile app or itself, so it opens a thread on any machine from any machine. A T3 Code started with
+ * `T3CODE_HOSTED_APP_URL` links to that host instead; agentgate cannot see the setting and keeps app.t3.codes. */
+export const hostedThreadLink = (environmentId: string, threadId: string) =>
+  `https://app.t3.codes/threads/${hostedSegment(environmentId)}/${hostedSegment(threadId)}`;
+
 export class T3Error extends Error {}
 /** T3 Code refused a call because agentgate's token lacks a permission. Newer T3 Code splits permissions finer (in
  * October 2026 cloning moved to `source-control:write`) and never widens a token it issued, so only a new pairing helps. */
@@ -161,6 +169,12 @@ export class T3 {
 
   async shell() {
     return shellSchema.parse(await this.request("/api/orchestration/shell"));
+  }
+
+  /** The id T3's thread links name this T3 Code by. */
+  async environmentId() {
+    const environment = z.object({ environmentId: z.string().min(1) }).passthrough();
+    return environment.parse(await this.request("/.well-known/t3/environment")).environmentId;
   }
 
   /** A WebSocket to T3's Effect RPC endpoint, opened with a single-use ticket. */
