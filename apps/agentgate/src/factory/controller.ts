@@ -864,7 +864,7 @@ async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: Mirr
   // A subagent's change can end its parent's turn: the run belongs to the parent.
   const thread = rootOf(f, changed);
   const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
-  if (!run) return;
+  if (!run) return settleReported(f, thread);
   // A turn that ended while this daemon was not watching shows first as a finished status.
   const endedUnseen = thread === changed && !previous && thread.status !== "idle";
   await withItem(f, run.item ?? run.id, () => threadChanged(f, run.id, endedUnseen));
@@ -1084,14 +1084,29 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Tool
     });
     writeBack(f, after, "waiting", { report, text: question, ref: questionRef(run.id, question) });
   } else if (!closing && !asks) await definition.accept(report, reported, item);
-
-  // A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
-  // its PR until the item ships.
-  if (!asks && !(run.kind === "implement" && report.outcome === "done") && run.threadId)
-    later(f, run.item ?? run.id, `Settling the thread of ${run.id}`, () =>
-      actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
-    );
+  // The thread settles once the turn that reported ends (`settleReported`).
   return { accepted: true };
+}
+
+/** A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
+ * its PR until the item ships. */
+const settlesAfterReport = (run: FactoryRun) =>
+  run.state === "reported" &&
+  !!run.report &&
+  run.report.outcome !== "blocked" &&
+  run.report.outcome !== "needs-decision" &&
+  !(run.kind === "implement" && run.report.outcome === "done");
+
+/** Settles a reported run's thread once its turn ended: a report always comes from a turn still running, and T3
+ * refuses to settle a running thread. */
+async function settleReported(f: FactoryRuntime, thread: MirrorThread) {
+  if (thread.settled || working(f, thread)) return;
+  const head = runs.byThreads(f.s, [thread.id]).at(-1);
+  const run = head && runs.get(f.s, head.id);
+  if (!run || !settlesAfterReport(run)) return;
+  await withItem(f, run.item ?? run.id, () =>
+    actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
+  );
 }
 
 // ---- intake

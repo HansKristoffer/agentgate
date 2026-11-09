@@ -130,7 +130,7 @@ export function ItemDrawer({
       {!!detail?.writebacks.length && (
         <Panel
           title="Comments"
-          detail="What the factory posted on the issue and in its PR's review conversations, at most once each."
+          detail="What the factory posted on the issue and in its PR's review conversations, and the issues it filed, at most once each."
         >
           {detail.writebacks.map((w) => (
             <div className="item" key={`${w.moment}${w.at}`}>

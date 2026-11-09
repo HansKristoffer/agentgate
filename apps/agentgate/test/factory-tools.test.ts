@@ -157,9 +157,20 @@ test("each outcome moves its item as the state table says, with one comment carr
   expect(n.posts[3]!.body).toContain("This duplicates #9.");
   expect(n.posts[7]!.body).toContain("Keep v1 alive?");
 
-  // Stages that finished are settled in T3; one that asked a question keeps its thread for the answer.
-  const settled = n.mcp.calls.filter((c) => c.tool === "t3_thread_organize").map((c) => c.args.threadId);
-  expect(settled).toEqual(n.started.slice(0, 6).map((r) => r.threadId));
+  // Stages that finished are settled in T3 once the turn that reported ends, since T3 refuses to settle a running
+  // thread; one that asked a question keeps its thread for the answer.
+  const settles = () => n.mcp.calls.filter((c) => c.tool === "t3_thread_organize").map((c) => c.args.threadId);
+  expect(settles()).toEqual([]);
+  for (const run of n.started) n.mcp.setThread(run.threadId!, { status: "idle" });
+  await n.until(() => settles().length >= 6, "the finished threads to settle");
+  await idle(n.f);
+  expect(settles().sort()).toEqual(
+    n.started
+      .slice(0, 6)
+      .map((r) => r.threadId!)
+      .sort(),
+  );
+  for (const run of n.started.slice(0, 6)) expect(runs.get(n.s, run.id)!.error).toBeUndefined();
 });
 
 test("an answered question goes back to its thread, and a second question is posted too, once", async () => {

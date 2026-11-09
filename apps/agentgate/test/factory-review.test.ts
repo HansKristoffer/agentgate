@@ -237,7 +237,13 @@ test("a clean review moves the item to ready; findings in the last allowed round
   await n.pollReviews();
   await n.dispatch();
   const last = { ...finding, text: "The retry loop never ends." };
-  const old = { file: "src/load.ts", line: 10, severity: "pre-existing", text: "The cache is never cleared." };
+  const old = {
+    file: "src/load.ts",
+    line: 10,
+    severity: "pre-existing",
+    text: "The cache is never cleared.",
+    title: "Cache never cleared",
+  };
   await n.report(n.latest(item), n.reviewed(pr, [last, old], pr.headRefOid, { risk }));
 
   expect(n.reviews).toEqual([]);
@@ -261,7 +267,7 @@ test("a clean review moves the item to ready; findings in the last allowed round
   // The pre-existing finding became an issue without the source's label: labelling it is the maintainer's approval.
   await idle(n.f);
   expect(n.github.filed).toHaveLength(2);
-  expect(n.github.filed[1]).toMatchObject({ title: "The cache is never cleared." });
+  expect(n.github.filed[1]).toMatchObject({ title: "Cache never cleared" });
   expect(n.github.filed[1]!.body).toContain("`src/load.ts:10`");
   expect(n.github.filed[1]!.body).toContain(`The factory's review of ${pr.url} found this`);
   expect(n.github.filed[1]!.body).toContain("Add the label `factory` to have the factory work it.");

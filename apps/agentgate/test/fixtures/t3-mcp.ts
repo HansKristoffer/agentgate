@@ -111,6 +111,9 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
   });
   answers.set("t3_thread_organize", (args) => {
     const t = thread(args);
+    // Like T3: a turn must end, or be stopped, before its thread settles.
+    if (args.action === "settle" && t.shell?.status === "running")
+      throw new Error(`Thread ${t.id} is still running. Stop it before settling.`);
     if (args.action === "settle") t.settledOverride = "settled";
     push(t);
     return { ok: true };

@@ -65,7 +65,7 @@ test("a PR that goes ready gets the factory's summary in its body: each claim wi
       `**The implementer checked** at \`${pr.headRefOid.slice(0, 12)}\`:`,
       "- Saving twice no longer crashes: bun test test/save.test.ts passes",
       "",
-      "**Not checked:** Windows",
+      "**Not checked:** Windows; Linux",
       "",
       "**Decided where the item was silent**, least sure first:",
       "- low confidence: A second save waits for the first instead of failing",

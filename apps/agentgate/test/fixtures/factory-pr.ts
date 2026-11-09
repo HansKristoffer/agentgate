@@ -348,8 +348,9 @@ async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<t
         kind: "implement",
         prUrl: pr.url,
         commit: pr.headRefOid,
-        claims: [{ claim: "Saving twice no longer crashes", evidence: "bun test test/save.test.ts passes" }],
-        notChecked: ["Windows"],
+        // Written as sentences, the way agents do: the summary joins them without a doubled full stop.
+        claims: [{ claim: "Saving twice no longer crashes.", evidence: "bun test test/save.test.ts passes" }],
+        notChecked: ["Windows.", "Linux"],
         decisions: [
           { decision: "The save lock lives in memory, not on disk", confidence: "high" },
           { decision: "A second save waits for the first instead of failing", confidence: "low" },

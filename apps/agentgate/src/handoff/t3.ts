@@ -393,6 +393,8 @@ export async function createPairingLink(
       ...(options.scopes ?? []).flatMap((scope) => ["--scope", scope]),
     ],
     {
+      // Run inside a T3 worktree, `t3 pair` looks for a server in the worktree's own `.t3` and finds none.
+      cwd: homedir(),
       stdin: "ignore",
       stdout: "pipe",
       stderr: "pipe",

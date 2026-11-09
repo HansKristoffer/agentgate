@@ -129,7 +129,7 @@ function fileLeftovers(f: FactoryRuntime, item: FactoryItem, prUrl: string) {
       f,
       item.id,
       `seen:${last!.head}:${i}`,
-      { repo: item.repo, title: x.text, body: `${x.text}\n\n\`${x.file}${x.line ? `:${x.line}` : ""}\`` },
+      { repo: item.repo, title: x.title ?? x.text, body: `${x.text}\n\n\`${x.file}${x.line ? `:${x.line}` : ""}\`` },
       `The factory's review of ${prUrl} found this in code that pull request did not change, so it left it alone.`,
     ),
   );
@@ -159,6 +159,9 @@ const REACH = {
 
 const SURE = { low: 0, medium: 1, high: 2 };
 
+/** Agents write each claim as a sentence; joined with ": " or "; " its own full stop would read ".:" or ".;". */
+const clause = (text: string) => text.replace(/[\s.;:]+$/, "");
+
 /** Lines joined within `max` characters; what does not fit becomes one "…and N more" line. */
 function within(lines: string[], max: number) {
   let out = "";
@@ -179,8 +182,8 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
   const result = prRun(f, item)?.report?.result;
   if (result?.kind === "implement") {
     lines.push(`**The implementer checked** at \`${result.commit.slice(0, 12)}\`:`);
-    for (const c of result.claims) lines.push(`- ${defuse(c.claim, 1000)}: ${defuse(c.evidence, 2000)}`);
-    const skipped = result.notChecked.map((n) => defuse(n, 500)).join("; ");
+    for (const c of result.claims) lines.push(`- ${clause(defuse(c.claim, 1000))}: ${defuse(c.evidence, 2000)}`);
+    const skipped = result.notChecked.map((n) => clause(defuse(n, 500))).join("; ");
     lines.push("", `**Not checked:** ${skipped || "nothing listed"}`, "");
     const decided = result.decisions.toSorted((a, b) => SURE[a.confidence] - SURE[b.confidence]);
     if (decided.length)
