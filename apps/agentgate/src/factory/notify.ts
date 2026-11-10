@@ -4,9 +4,10 @@ import type { FactoryRuntime } from "./runtime.ts";
 
 /**
  * Factory updates posted to the webhooks of virtual projects that offer the factory's tools (`factoryWebhook`), so an
- * assistant such as Grok hears about them without asking. Every machine posts the updates of the items it drives, from
- * its own event log: an item added, moved to another phase, or waiting for the maintainer. Each URL keeps a cursor in
- * this machine's local state. A failed post is sent again with the same updates after a backoff, so a receiver may see
+ * assistant such as Grok hears about them without asking. Every machine posts the updates in its own event log: an
+ * item added, moved to another phase, or waiting for the maintainer. Only the factory machine drives items, so they
+ * happen in its log; a machine the factory left still posts what it had not sent yet. Each URL keeps a cursor in this
+ * machine's local state. A failed post is sent again with the same updates after a backoff, so a receiver may see
  * an update twice and dedupes by `node` and `seq`. A URL seen for the first time starts at the newest event, and a
  * removed URL's cursor is forgotten, so setting a webhook never replays the history.
  */

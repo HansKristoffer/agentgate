@@ -156,12 +156,10 @@ test("one pass reads every followed PR of a repository with one query, and a PR 
   const n = await prFactory(cleanup);
   const opened = [await n.opened(1), await n.opened(2), await n.opened(3)];
   const reads = () => n.github.calls.filter((c) => c.args.some((a) => a.includes("fragment Followed")));
-  // Besides the issue check every 15 minutes, which tells whether another machine took the item over.
-  const prCalls = () => n.github.calls.filter((c) => c.args[0] !== "issue").length;
-  const before = { reads: reads().length, calls: prCalls() };
+  const before = { reads: reads().length, calls: n.github.calls.length };
   await n.pollPrs();
   expect(reads().length - before.reads).toBe(1);
-  expect(prCalls() - before.calls).toBe(1);
+  expect(n.github.calls.length - before.calls).toBe(1);
 
   n.github.prs.delete(opened[1]!.pr.url);
   opened[2]!.pr.state = "MERGED";

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import { folderLabel, type FactoryBoard } from "@agentgate/protocol";
+import { folderLabel, movingLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
-import { ActionButton, Badge, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
+import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 import { StoredFolder } from "./Folder.tsx";
 
@@ -163,7 +163,11 @@ export function FactorySettings({
         <div className="item">
           <div className="grow">
             <strong>Runs on {pointer.node}</strong>
-            <small className="muted">Each machine finishes the items it holds when the factory moves.</small>
+            <small className="muted">
+              {pointer.moving
+                ? `${movingLabel(pointer.moving)}, and takes in nothing new until then.`
+                : "A move waits until its open items have finished."}
+            </small>
           </div>
           <Button size="sm" variant="tertiary" onPress={() => setMoving(true)}>
             Move…
@@ -203,17 +207,30 @@ export function FactorySettings({
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const node = field(new FormData(e.currentTarget), "node");
+              const form = new FormData(e.currentTarget);
+              const node = field(form, "node");
+              const now = form.has("now");
               setMoving(false);
-              void run(() => request(connection, "/factory/move", "POST", { node }), `The factory runs on ${node}`);
+              void run(
+                () => request(connection, "/factory/move", "POST", { node, ...(now && { now }) }),
+                node === pointer.node ? `The factory stays on ${node}` : `The factory moves to ${node}`,
+              );
             }}
           >
             <Choice
               label="Machine"
               name="node"
-              defaultValue={pointer.node}
+              defaultValue={pointer.moving?.to ?? pointer.node}
               options={data.nodes.map((n) => ({ id: n.id, label: `${n.id}${n.online ? "" : " (offline)"}` }))}
             />
+            <p className="muted">
+              {pointer.node} first finishes the items it has open, and takes in nothing new until the factory has moved.
+              Choose {pointer.node} to cancel a move that waits.
+            </p>
+            <Check name="now">
+              Move now. The open items stay frozen on {pointer.node} until the factory moves back or you drop them
+              there.
+            </Check>
             <Button type="submit" size="sm">
               Move
             </Button>

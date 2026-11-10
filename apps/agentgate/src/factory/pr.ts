@@ -3,7 +3,6 @@ import { z } from "zod";
 import { fenced } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import {
-  closeQuietly,
   enqueueRun,
   finishItem,
   isPaused,
@@ -14,7 +13,6 @@ import {
   repositoryOf,
   sendToThread,
   setNeedsYou,
-  sourceCheck,
   writeBack,
 } from "./controller.ts";
 import { ACTIVE, dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
@@ -375,28 +373,11 @@ async function nudge(
   );
 }
 
-const FENCE_EVERY = 15 * 60_000;
-const fenceReads = new WeakMap<FactoryRuntime, Map<string, number>>();
-
-/** Whether another machine took the item's issue over (move.ts), read at most every 15 minutes while its PR is
- * followed: a machine that slept past the orphan threshold stands down instead of driving the PR beside the new one. */
-async function takenOver(f: FactoryRuntime, item: FactoryItem) {
-  let last = fenceReads.get(f);
-  if (!last) fenceReads.set(f, (last = new Map()));
-  if (f.s.now() - (last.get(item.id) ?? 0) < FENCE_EVERY) return false;
-  last.set(item.id, f.s.now());
-  const state = await sourceCheck(f, item).catch(() => "open" as const);
-  if (typeof state !== "object") return false;
-  await closeQuietly(f, item, `${item.key} was taken over by ${state.takenBy}, which holds its issue now`);
-  return true;
-}
-
 /** One pass over an item's PR, as a step of the item, with the PR as the follower's read for this pass found it. */
 async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error) {
   const { s } = f;
   const item = items.get(s, id);
   if (!item?.prUrl || !isOpenPhase(item.phase) || !["pr", "review", "ready"].includes(item.phase)) return;
-  if (await takenOver(f, item)) return;
   if (read instanceof Error) {
     failed(f, item, `Reading ${item.key}'s PR failed: ${shortError(read)}`);
     return;
@@ -750,6 +731,5 @@ export function setup(f: FactoryRuntime): void {
     inputSchema: z.toJSONSchema(factoryPrThreadsInputSchema, { io: "input" }) as FactoryTool["inputSchema"],
     call: (args, caller) => acceptConversations(f, args, caller),
   });
-  // Every machine follows the PRs of the items in its own tables.
-  f.loops.push({ name: "factory-prs", everyMs: 2 * 60_000, where: "every-node", run: () => followPrs(f) });
+  f.loops.push({ name: "factory-prs", everyMs: 2 * 60_000, where: "factory-node", run: () => followPrs(f) });
 }

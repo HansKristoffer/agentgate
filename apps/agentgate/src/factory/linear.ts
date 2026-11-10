@@ -276,7 +276,7 @@ export function setup(f: FactoryRuntime): void {
     async check(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source, item.configCommit));
       const answer = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
-      return { open: !CLOSED.includes(answer.issue.state.type), newest: newestOf(answer) };
+      return { open: !CLOSED.includes(answer.issue.state.type) };
     },
     post: (item, body) => post(f, item, body),
     /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */

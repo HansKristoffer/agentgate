@@ -33,8 +33,8 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
   `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
   control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.
 - The endpoint's `factoryWebhook` gets factory updates from every machine, each posting what its own event log holds
-  for the items it drives ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), since items live in
-  node-local tables. Each machine keeps a cursor per URL; a new URL starts at the newest event and a removed one's
+  ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), since items live in the node-local tables of
+  the machine that runs the factory. Each machine keeps a cursor per URL; a new URL starts at the newest event and a removed one's
   cursor is forgotten, so setting one never replays history. Delivery is at least once. The URL is a capability, so
   the API shows its origin only, logs show a status or an error's name, and backups without secrets and the seeded dev
   store drop it.

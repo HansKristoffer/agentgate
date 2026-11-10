@@ -5,7 +5,7 @@ import { z } from "zod";
 import { createPairingLink, parsePairing, t3State, T3Error } from "../handoff/t3.ts";
 import { VERSION } from "../mcp/gateway.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
-import { ACTIVE, items, runs } from "./db.ts";
+import { runs } from "./db.ts";
 import { runCommand, type FactoryRuntime } from "./runtime.ts";
 
 /** The factory drives T3 Code through its own `/mcp`, signed in like any outside MCP client: OAuth with PKCE, approved
@@ -104,13 +104,9 @@ function sessionOf(token: string): string {
   return createHash("sha256").update(token).digest("hex").slice(0, 32);
 }
 
-/** A machine signs in, and mirrors T3's threads, while it runs the factory, and after the factory moved away while it
- * still holds items or runs: it drives those to the end. Off is off everywhere. */
-export function needsSignIn(f: FactoryRuntime) {
-  if (!f.pointer()) return false;
-  if (f.isFactoryNode()) return true;
-  return items.list(f.s, { open: true }).length > 0 || runs.list(f.s, { states: ACTIVE }).length > 0;
-}
+/** A machine signs in, and mirrors T3's threads, only while it runs the factory: no other machine drives items, and
+ * the open ones a machine has left when the factory moves away stay frozen. */
+export const needsSignIn = (f: FactoryRuntime) => f.isFactoryNode();
 
 /** A launch whose answer has not come: renewing the session now would make it impossible to send again safely. */
 const launching = (f: FactoryRuntime) =>
@@ -362,7 +358,7 @@ function create(f: FactoryRuntime) {
         }
       });
     },
-    /** The loop. On a machine with nothing left to drive, sign out a token left from when the factory ran here.
+    /** The loop. On a machine that does not run the factory, sign out a token left from when it ran here.
      * Otherwise renew a token close to its end, unless a launch's answer is still out, and read tools/list until it
      * has every required tool and input (T3 may be updated meanwhile); reading it also finds a token T3 stopped
      * accepting. */

@@ -190,7 +190,7 @@ export function setup(f: FactoryRuntime): void {
   f.loops.push({
     name: "factory-outbox",
     everyMs: EVERY,
-    where: "every-node",
+    where: "factory-node",
     run: async () => {
       if (!started) settleInterrupted(f);
       started = true;

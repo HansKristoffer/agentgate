@@ -64,6 +64,8 @@ export const readsStdin = (command: Pick<FactoryCommand, "stdin"> | undefined, a
 export interface FactoryLoop {
   name: string;
   everyMs: number;
+  /** `factory-node`: only on the machine the pointer names, which alone drives items. `every-node` is for what a
+   * machine does about itself whoever runs the factory: its T3 Code sign-in and stream, and posting its own events. */
   where: "factory-node" | "every-node";
   /** Runs while the factory is off too, to undo what it set up there (a T3 sign-in, the shell stream). Every other
    * loop does nothing without a pointer: off freezes the items where they are. */
@@ -92,9 +94,8 @@ export interface SourceAdapter {
   type: SourceType;
   /** Every open, labelled item now; the controller dedupes. */
   poll?(source: FactorySource): Promise<IncomingItem[]>;
-  /** Read before every stage, and now and then while its PR is followed: whether the issue is open, and its newest
-   * factory marker, which names the machine holding it (a takeover elsewhere fences this one). One read. */
-  check?(item: FactoryItem): Promise<{ open: boolean; newest?: MarkerPayload }>;
+  /** Read before every stage: whether the issue is still open. */
+  check?(item: FactoryItem): Promise<{ open: boolean }>;
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
   newestMarker?(item: Pick<FactoryItem, "source" | "externalId" | "repo">): Promise<MarkerPayload | undefined>;
@@ -124,8 +125,9 @@ export interface RunKindDefinition {
  * for the terminal, a route returns it as it is, and another machine's call is forwarded to the factory machine. */
 export interface FactoryOp {
   local?: boolean; // never forwarded to the factory machine
-  /** The item the input names, `{ item }`: the machine that holds it answers, which may not be the factory machine. */
-  item?: boolean;
+  /** Whether this input is answered here though another machine runs the factory: it names an item frozen in this
+   * machine's tables, which no other machine can reach. */
+  here?(input: unknown): boolean;
   run(input: unknown): Promise<unknown>;
 }
 export type ForwardOp =
@@ -149,7 +151,6 @@ export interface FactoryRuntime {
   boardParts: Array<() => Promise<Partial<FactoryBoard>>>;
   page?: (req: Request, listener: Listener) => Promise<Response>; // set by the board feature
   forwarder?: Forwarder; // set by the follow feature
-  adopt?: (ref: string) => Promise<FactoryItem | undefined>; // set by the move feature; `retry` calls it for an item this machine does not hold
   /** Per item, the end of its last queued step (`withItem`). */
   locks: Map<string, Promise<unknown>>;
   isFactoryNode(): boolean;
@@ -199,7 +200,7 @@ export async function runTool(f: FactoryRuntime, name: string, args: Record<stri
 export async function runOp(f: FactoryRuntime, name: string, input: unknown): Promise<unknown> {
   const op = f.ops.get(name);
   if (!op) throw new Error(`unknown factory operation ${name}`);
-  const forwarder = forward(f, op.local);
+  const forwarder = forward(f, op.local || op.here?.(input));
   return forwarder ? forwarder({ kind: "op", name, input }) : op.run(input);
 }
 
@@ -274,7 +275,8 @@ export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
 const loopFailures = new WeakMap<FactoryRuntime, Map<string, string>>();
 
 /** A loop as the daemon schedules it: nothing while the factory is off (unless it cleans up), and a factory-node loop
- * nothing on other machines. A failure is logged with the loop's name, once per distinct error. */
+ * nothing on other machines, whose open items stay frozen as `factory off` leaves them. A failure is logged with the
+ * loop's name, once per distinct error. */
 export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
   if (!f.pointer() && !loop.whenOff) return;
   if (loop.where === "factory-node" && !f.isFactoryNode()) return;

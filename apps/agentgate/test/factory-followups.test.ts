@@ -37,20 +37,18 @@ function markerComment(number: number, marker: Partial<MarkerPayload>) {
   };
 }
 
-test("intake leaves out an open issue the factory finished on another machine, and retry takes it in again at triage", async () => {
+test("intake leaves out an open issue the factory finished on another machine, and takes in one that machine left open, from triage", async () => {
   const n = await prFactory(cleanup);
   n.github.addIssue(1);
   n.github.issues.get(1)!.comments.push(markerComment(1, { state: "finished" }));
+  // Only the factory machine drives items, so an open marker here belongs to an item that is frozen or lost elsewhere.
+  n.github.addIssue(2);
+  n.github.issues.get(2)!.comments.push(markerComment(2, { state: "open", stage: "review" }));
 
   await n.intake();
-  expect(items.list(n.s)).toEqual([]);
-
-  expect(await n.command("retry", `${n.repo}#1`)).toEqual({
-    code: 0,
-    output: [`Took over ${n.key(1)}; it starts at triage`],
-  });
-  const [item] = items.list(n.s);
-  expect(item).toMatchObject({ key: n.key(1), phase: "triage" });
+  const [item, ...rest] = items.list(n.s);
+  expect(rest).toEqual([]);
+  expect(item).toMatchObject({ key: n.key(2), phase: "triage" });
   expect(runs.forItem(n.s, item!.id).map((r) => [r.kind, r.state])).toEqual([["triage", "queued"]]);
 });
 

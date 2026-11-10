@@ -43,11 +43,17 @@ results in the PR that ships the change: each step, what you saw, and anything t
 4. **A PR merged early.** With an item in `pr` or `review`, merge its PR yourself.
    - The item ends `shipped`, not `closed`, with one shipped comment, and the events say it was merged before the
      factory called it ready. A queued review run is cancelled.
-5. **A move and back.** With an item in `implement`, run `agentgate factory move <laptop>`.
-   - The server keeps its T3 Code sign-in (`agentgate factory t3` on the server) and finishes the item; the laptop's
-     board shows it as held by the server.
-   - A new labelled issue is taken by the laptop. Move the factory back with `agentgate factory move <server>` once the item shipped,
-     and check that the server takes the next issue.
+5. **A move that waits, and one that does not.** With an item in `implement`, label a second issue and run
+   `agentgate factory move <laptop>` on the laptop.
+   - `agentgate factory status` on both machines says "Moving to <laptop> once 1 item finishes". The server goes on
+     with its item and does not take the second issue.
+   - When the item has shipped, the factory moves within a minute: the server signs out of T3 Code
+     (`agentgate factory t3` there), and the laptop takes the second issue.
+   - Once that issue's item is in `pr` on the laptop, run `agentgate factory move <server> --now`. The laptop's
+     `agentgate factory status` lists the item as frozen, and its thread gets no further message. The server takes the
+     issue in again from triage, and its implement thread works on `factory/<repo>-<n>-2`.
+   - `agentgate factory drop <key>` on the laptop closes the frozen item without a comment on the issue. Close the
+     draft PR it left.
 6. **A signed webhook.** Send one delivery to the webhook source's URL from `agentgate factory status`, signed with
    its secret, and one with a wrong signature.
    - The signed one answers `202` and adds a `held` item; the other answers `401` and adds nothing.
@@ -56,8 +62,8 @@ results in the PR that ships the change: each step, what you saw, and anything t
    repository.
    - A draft PR adds `factory/factory.yaml` and `factory/rulings.md` on `agentgate/factory-init`, the `factory` label
      exists, and the board shows the factory on at that branch.
-   - Label an issue: it shows under Needs you or a stage, and **Open in T3 Code** opens its thread. Try it on a thread
-     another machine holds, and record whether that opens.
+   - Label an issue: it shows under Needs you or a stage, and **Open in T3 Code** opens its thread. Try it from the
+     app on another machine than the thread's, and record whether that opens.
    - Merge the PR: within 2 minutes the events say the factory follows the default branch.
 
 ## Things to record

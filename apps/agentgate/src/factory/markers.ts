@@ -3,8 +3,8 @@ import type { FactoryItem } from "./db.ts";
 
 /**
  * What the factory writes on an item's source: fixed text, the agent's summary made harmless, and a hidden marker. A
- * comment that carries a marker is the factory's own; the marker tells any machine that the issue is taken, by which
- * machine, and the last stage reached.
+ * comment that carries a marker is the factory's own, and the newest one tells intake on any machine whether the
+ * factory finished the issue.
  */
 
 export const MARKER_PREFIX = "<!-- agentgate-factory:1 ";

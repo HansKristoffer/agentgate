@@ -11,7 +11,8 @@ import { z } from "zod";
 import { trimSessionUsage } from "../llm/sessions.ts";
 import type { Store } from "../store.ts";
 
-/** The factory's node-local tables. Never synced: the machine that runs the factory holds its items and runs. */
+/** The factory's node-local tables. Never synced: only the machine that runs the factory drives the items and runs in
+ * its tables, and a machine the factory left keeps its open ones frozen. */
 
 export interface FactoryItem {
   id: string;
@@ -33,8 +34,6 @@ export interface FactoryItem {
   dedupe?: string;
   /** Its PR as last read once the item finished (records.ts). */
   outcome?: unknown;
-  /** The machine it was taken over from with `retry`, whose branches it must not reuse. */
-  adoptedFrom?: string;
   /** Things a person did to the item (approve, reject, retry, answer, add), for the human-touches metric. */
   touches: number;
   /** When the item entered its phase. */
@@ -100,7 +99,7 @@ export interface FactoryRun {
   kind: RunKind;
   attempt: number;
   state: RunState;
-  node?: string; // machine whose T3 holds the thread; changes on handoff
+  node?: string; // the machine whose T3 Code holds the thread: the one that launched it
   threadId?: string;
   threadLink?: string;
   report?: FactoryReport;
@@ -114,6 +113,8 @@ export interface FactoryRun {
   failedLaunches?: number;
   /** A scout run's source, so its schedule finds its runs without reading every scout run. */
   source?: string;
+  /** The branch an implement run was given at its launch (implement.ts), which its PR must come from. */
+  branch?: string;
   /** What agentgate's proxies counted for the run's provider sessions, and how many sessions T3 named; they only grow. */
   tokens: number;
   sessions: number;
@@ -129,7 +130,7 @@ export function ensureFactoryTables(s: Store) {
     s.db.run(`create table if not exists factory_items (
       id text primary key, source text not null, external_id text not null, key text not null, repo text not null,
       title text not null, url text, snapshot text not null, phase text not null, needs_you text, pr_url text,
-      pr_commit text, config_commit text not null, dedupe text, outcome text, adopted_from text,
+      pr_commit text, config_commit text not null, dedupe text, outcome text,
       touches integer not null default 0, phase_at integer not null, created_at integer not null,
       updated_at integer not null, finished_at integer)`);
     s.db.run("create unique index if not exists factory_items_external on factory_items(external_id)");
@@ -140,7 +141,7 @@ export function ensureFactoryTables(s: Store) {
       id text primary key, item text, kind text not null, attempt integer not null default 1, state text not null,
       node text, thread_id text, thread_link text, report text, checked text, nudges integer not null default 0,
       error text, config_commit text not null, launch_session text, failed_launches integer, source text,
-      tokens integer not null default 0, sessions integer not null default 0, measured_at integer,
+      branch text, tokens integer not null default 0, sessions integer not null default 0, measured_at integer,
       queued_at integer not null, started_at integer, ended_at integer)`);
     s.db.run("create index if not exists factory_runs_item on factory_runs(item)");
     // Dispatch, the follow loop and the board ask for runs by state every few seconds.
@@ -198,7 +199,6 @@ const itemColumns = {
   configCommit: "config_commit",
   dedupe: "dedupe",
   outcome: "outcome",
-  adoptedFrom: "adopted_from",
   touches: "touches",
   phaseAt: "phase_at",
   createdAt: "created_at",
@@ -223,6 +223,7 @@ const runColumns = {
   launchSession: "launch_session",
   failedLaunches: "failed_launches",
   source: "source",
+  branch: "branch",
   tokens: "tokens",
   sessions: "sessions",
   measuredAt: "measured_at",
@@ -263,7 +264,6 @@ const toItem = (r: Row): FactoryItem => ({
   tokens: r.tokens as number,
   dedupe: opt(r.dedupe as string | null),
   outcome: json(r.outcome),
-  adoptedFrom: opt(r.adopted_from as string | null),
   touches: r.touches as number,
   phaseAt: r.phase_at as number,
   createdAt: r.created_at as number,
@@ -297,6 +297,7 @@ const toRun = (r: Row): FactoryRun => ({
   launchSession: opt(r.launch_session as string | null),
   failedLaunches: opt(r.failed_launches as number | null),
   source: opt(r.source as string | null),
+  branch: opt(r.branch as string | null),
   tokens: r.tokens as number,
   sessions: r.sessions as number,
   measuredAt: opt(r.measured_at as number | null),
@@ -465,6 +466,10 @@ export const runs = {
       id,
     ]),
 };
+
+/** Whether the outbox (outbox.ts) still has a write to send, or one in flight. */
+export const hasUnsentWrites = (s: Store) =>
+  !!s.db.query("select 1 from factory_writebacks where status in ('pending', 'sending', 'unreachable')").get();
 
 const KEEP_MS = 90 * 24 * 3600_000;
 

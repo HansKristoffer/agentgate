@@ -146,9 +146,18 @@ function tile(value, label) {
 
 function render(b) {
 	var f = b.factory;
-	document.getElementById("pointer").textContent = f
+	var pointer = f
 		? (f.store === "agentgate" ? "stored in agentgate" : f.repo + (f.path ? ":" + f.path : "") + (f.ref ? " at " + f.ref : "")) + " on " + f.node + (f.online ? "" : " (offline)")
 		: "The factory is off. Turn it on with agentgate factory use <owner/repo>.";
+	if (f && f.moving) {
+		var open = f.moving.open;
+		pointer += ". Moving to " + f.moving.to + " once " + (open === undefined ? "its open items finish" : open === 0 ? "its last comments are posted" : open === 1 ? "1 item finishes" : open + " items finish");
+	}
+	var frozen = b.frozen || [];
+	if (f && frozen.length) {
+		pointer += ". Frozen on " + b.node + " until the factory moves back or you drop them: " + frozen.map(function (i) { return i.key; }).join(", ");
+	}
+	document.getElementById("pointer").textContent = pointer;
 
 	var status = [
 		pill("T3 stream " + b.t3.stream, b.t3.stream === "live" ? "good" : b.t3.stream === "polling" ? "warn" : "bad"),
@@ -228,7 +237,7 @@ function render(b) {
 			var card = el("div", "item");
 			card.append(el("div", "key", i.key + " · " + i.repo), link(i.title, i.url));
 			var sub = [];
-			if (i.run) sub.push(i.run.kind + " " + i.run.state + (i.run.node && i.run.node !== i.heldBy ? " on " + i.run.node : ""));
+			if (i.run) sub.push(i.run.kind + " " + i.run.state);
 			if (i.pr) sub.push("PR" + (i.pr.openFindings ? ", " + i.pr.openFindings + " findings" : ""));
 			if (i.tokensUnknown) sub.push("tokens unknown");
 			sub.push("since " + ago(i.inPhaseSince));

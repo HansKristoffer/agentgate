@@ -20,7 +20,7 @@ const HOUR = 3600_000;
 const DAY = 86_400_000;
 const SESSION_ID = /^[\w-]{1,128}$/;
 
-// ---- a thread's sessions, read on the machine whose T3 holds it
+// ---- a thread's sessions
 
 /** The thread's subagents, and theirs, from this machine's mirror. */
 function subagents(f: FactoryRuntime, thread: string) {
@@ -299,8 +299,7 @@ function metrics(f: FactoryRuntime): FactoryBoard["metrics"] {
 // ---- setup
 
 export function setup(f: FactoryRuntime): void {
-  // Every machine measures the runs in its own tables, like it dispatches them.
-  f.loops.push({ name: "factory-tokens", everyMs: MINUTE, where: "every-node", run: () => measureOpen(f) });
+  f.loops.push({ name: "factory-tokens", everyMs: MINUTE, where: "factory-node", run: () => measureOpen(f) });
   f.loops.push({
     name: "factory-outcomes",
     everyMs: HOUR,

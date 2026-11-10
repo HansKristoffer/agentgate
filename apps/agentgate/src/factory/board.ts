@@ -1,8 +1,9 @@
-import { folderLabel, itemPhases, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { folderLabel, itemPhases, movingLabel, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
 import { lastSeen } from "../sync.ts";
+import { frozenItems } from "./controller.ts";
 import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { FACTORY_PAGE } from "./page.ts";
@@ -56,7 +57,8 @@ export function setup(f: FactoryRuntime) {
   });
 }
 
-/** The board as this machine shows it to the API and CLI: the factory machine's, when that is another machine. */
+/** The board as this machine shows it to the API and CLI: the factory machine's, when that is another machine, with
+ * the items frozen in this machine's own tables, which that machine's board cannot know. */
 export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: boolean }): Promise<FactoryBoard> {
   const pointer = f.pointer();
   if (!pointer || f.isFactoryNode()) return buildBoard(f, opts);
@@ -64,7 +66,8 @@ export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: b
     // A paired machine's own board, passed through: parsing it here again would show a newer factory machine, whose
     // board has a field or value this one does not know, as offline.
     const board = await peerCall<FactoryBoard>(f.s, pointer.node, "/factory/board", { timeout: 8000 });
-    return strip({ ...board, node: f.s.nodeId }, opts);
+    const frozen = frozenItems(f);
+    return strip({ ...board, node: f.s.nodeId, frozen: frozen.length ? frozen : undefined }, opts);
   } catch {
     // The factory machine is unreachable or runs an older agentgate: show this machine's board, the factory offline.
     const board = await buildBoard(f, opts);
@@ -312,6 +315,16 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   if (!p) lines.push("Factory: off");
   else {
     lines.push(`Factory: ${folderLabel(p)} on ${p.node}${here(p.node)}, ${p.online ? "online" : "offline"}`);
+    if (p.moving) lines.push(`${movingLabel(p.moving)}; nothing new is taken in until then`);
+  }
+  if (p && b.frozen?.length) {
+    const [count, them] = b.frozen.length === 1 ? ["1 item", "it"] : [`${b.frozen.length} items`, "them"];
+    lines.push(
+      `Frozen on ${b.node}: ${count}. The factory now runs on ${p.node}, so nothing works on ${them}. agentgate factory move ${b.node} resumes ${them}; agentgate factory drop <id>, run on ${b.node}, closes one.`,
+    );
+    // By id: a key names the factory machine's item, which may be a new item of the same issue.
+    for (const i of b.frozen)
+      lines.push(`  ${i.phase.padEnd(9)} ${i.key} ${i.title} (${i.id})${when(i.pr, ` ${i.pr?.url}`)}`);
   }
   if (b.config)
     lines.push(`Config: ${b.config.name} at ${b.config.commit}${when(b.config.error, `, ${b.config.error}`)}`);

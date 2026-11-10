@@ -18,9 +18,9 @@ import { runOp, shortError, type FactoryRuntime } from "./runtime.ts";
  * The factory's tools on a virtual project's public endpoint (`factoryTools`), for assistants such as Grok: the board,
  * one item, adding work to any of the folder's repositories, the item actions, pause and resume, and the webhook the
  * factory posts its updates to (notify.ts). Each but the webhook calls the operation the CLI calls, which reaches the
- * factory machine or the item's holder from whichever machine serves the endpoint. Adds start at triage like
- * `factory add`, not held like the agent tool `factory_add`: the maintainer chose to give the endpoint full control, and
- * the URL and secret are the only gate.
+ * factory machine from whichever machine serves the endpoint. Adds start at triage like `factory add`, not held like
+ * the agent tool `factory_add`: the maintainer chose to give the endpoint full control, and the URL and secret are the
+ * only gate.
  */
 
 const item = z.object({

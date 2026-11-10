@@ -146,16 +146,12 @@ test("the mirror follows T3's stream, marks a thread with a pending request, and
   expect(mirror.status()).toEqual({ stream: "live" });
 });
 
-test("a machine that neither runs the factory nor holds its work opens no stream, and starts one once it holds an item", async () => {
+test("a machine that does not run the factory opens no stream, even with open items in its tables, and starts one once the factory runs on it", async () => {
   timing.pollMs = 50;
   const { s, f } = fixture();
   await withT3(s);
   s.put("node", "b", { id: "b", protocol: 8 });
   useFactory(s, "b");
-  const mirror = mirrorOf(f);
-  await Bun.sleep(100);
-  expect(mirror.status().stream).toBe("down");
-
   items.insert(s, {
     id: "it_1",
     source: "bugs",
@@ -167,6 +163,11 @@ test("a machine that neither runs the factory nor holds its work opens no stream
     phase: "implement",
     configCommit: "c0ffee",
   });
+  const mirror = mirrorOf(f);
+  await Bun.sleep(100);
+  expect(mirror.status().stream).toBe("down");
+
+  useFactory(s, "a");
   await until(() => mirrorOf(f).status().stream === "live", "the stream");
 });
 
@@ -281,7 +282,6 @@ test("factory status and GET /api/factory show one board, with the board parts m
     title,
     source: "bugs",
     phase: "implement" as const,
-    heldBy: "a",
     actions: [],
     tokens: 0,
     inPhaseSince: 1,

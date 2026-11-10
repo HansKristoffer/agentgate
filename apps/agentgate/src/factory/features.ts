@@ -11,7 +11,6 @@ import { setup as linear } from "./linear.ts";
 import { setup as hooks } from "./hooks.ts";
 import { setup as implement } from "./implement.ts";
 import { setup as pr } from "./pr.ts";
-import { setup as move } from "./move.ts";
 import { setup as review } from "./review.ts";
 import { setup as records } from "./records.ts";
 import { setup as spec } from "./spec.ts";
@@ -38,7 +37,6 @@ const features = [
   hooks,
   implement,
   pr,
-  move,
   review,
   records,
   spec,

@@ -40,8 +40,10 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   following the init PR write the pointer; the generic settings patch has no `factory`.
 - One machine runs the factory. Other machines forward to it through `/peer/factory/op`
   ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)): agent tools, text commands, and typed operations
-  (`f.ops`: add, show, the item actions, pause, resume, reload), which the routes return as JSON and the CLI
-  formats. `local` commands and tools (`use`, `move`, `off`, `status`, `secret`) run where they are called.
+  (`f.ops`: add, show, the item actions, pause, resume, reload, move), which the routes return as JSON and the CLI
+  formats. `local` commands and tools (`use`, `off`, `status`, `secret`) run where they are called. A machine that does
+  not run the factory answers `/peer/factory/op` with a 409, so two machines that disagree on where it runs never
+  forward to each other in a loop.
 
 ## One step at a time per item
 
@@ -67,42 +69,61 @@ still ends it. There is no `failed` phase, so `retry` knows where to resume, and
 
 Items, runs, events and write-backs are node-local SQLite tables
 ([`db.ts`](../../apps/agentgate/src/factory/db.ts)), not synced records. They change every few seconds, and an item
-must have exactly one machine driving its threads, which last-writer-wins records cannot promise. Every machine
-drives the items in its own tables (dispatch, the PR follower, and the token and stuck loops run on every node) and no
-others.
+must have exactly one machine driving its threads, which last-writer-wins records cannot promise. So only the factory
+machine drives items: every loop that moves one, or talks to T3 Code, GitHub or Linear for one, runs only on the
+machine the pointer names (`where: "factory-node"`). A machine that has open items in its tables and does not run the
+factory leaves them frozen, exactly as `factory off` does, and signs out of T3 Code's MCP like any other machine.
 
-What other machines need to know travels on the item's source instead. Each factory comment ends with a marker, `<!-- agentgate-factory:1 {...} -->` ([`markers.ts`](../../apps/agentgate/src/factory/markers.ts)),
-naming the item, the machine holding it, the last stage reached and whether it is open or finished. Linear drops HTML
-comments, so there the marker is a visible last line in a code span. Intake posts the first marker, the `taken`
-comment, in the step that adds the item, so an issue is marked before its triage starts. Intake skips an issue another
-machine marked open, and the board shows it as that machine's (`orphaned` once the machine has not been seen for 30
-minutes, past a laptop's sleep). `retry <owner/repo#n>` adopts an orphan, and refuses while its machine is online
-([`move.ts`](../../apps/agentgate/src/factory/move.ts)): with the PR its marker names, the item waits for the
-maintainer in `ready` and the follower ships or closes it; without one, it restarts at the marked stage on a branch
-of its own. So the tables are a cache that can be lost. A machine that loses them leaves only its markers, and the
-work resumes from those.
+Moving the factory therefore drains first ([`config.ts`](../../apps/agentgate/src/factory/config.ts)). `move` is an
+operation on the factory machine, the only one that knows what it has open. With open items it writes `moveTo` into the
+pointer. While that is set, intake is off, the open items go on as usual, and the `factory-move` loop moves the pointer
+once none is open and the outbox has sent what it owed: no other machine can post those comments, and an issue whose
+`closed` comment never arrived looks open to the next machine's intake. The loop decides from the pointer and the
+tables on every pass, so a restart, or a settings write from another machine that wins over the loop's, costs one more
+pass. `move --now` writes the pointer on the machine it is typed on, for a factory machine that is gone or whose items
+are not worth the wait.
 
-- A machine that wakes after its issue was taken over stands down: before every stage, and every 15 minutes while it
-  follows the item's PR, it reads the issue (its state and newest factory marker, in one read), and closes the item
-  without a comment when the marker names another machine. A comment from it would make its marker the newest again.
+- What `--now` leaves on the old machine stays frozen in its tables. That machine's board lists it apart from the
+  factory machine's items (`frozen`), and an item operation that names a frozen item by its id is the one thing a
+  machine that does not run the factory answers itself (`here` on the operation). Only by id: the new machine may have
+  taken the issue in again under the same key, and a key must name that item. `drop` closes a frozen item without a
+  comment, because a `finished` marker from the old machine would keep the new one's intake away from the issue, and
+  without a call to T3 Code, which the machine is signed out of.
+  A report from a frozen thread is forwarded to the factory machine, which has no such run and refuses it. Moving the
+  factory back resumes the items the way a restart does: the mirror starts again, and a thread whose turn ended
+  meanwhile is reminded to report.
+- Nothing fences two machines that both believe they run the factory. That lasts only until the pointer syncs, and
+  needs `--now` typed while the old machine is cut off but still working: until it hears, it keeps driving its items,
+  and the new machine takes their issues in again.
+- A move waits for items only. A scout run in flight when the pointer moves cannot report, so its findings are lost,
+  and the new machine runs the scout by its own schedule.
 
-- Moving the factory moves no item. The old machine keeps driving the items it holds, and keeps its T3 MCP sign-in
-  until the last one finishes. Nothing asks other machines what they hold, so an offline machine costs no polling.
-- An item operation (`show`, `approve`, `reject`, `retry`, `drop`) for an issue another machine holds goes from the
-  factory machine to that machine (`viaHolder` in [`controller.ts`](../../apps/agentgate/src/factory/controller.ts)): it
-  asks the machine the board names, then every machine seen lately, and only the holder answers, so routing keeps no
-  memory that a restart or a paused intake could lose.
-  `/peer/factory/op` answers for an item or run the machine still holds even when it no longer runs the factory;
-  everything else there it refuses, so two machines that disagree on where the factory runs never forward to each
-  other in a loop.
+Each factory comment ends with a marker, `<!-- agentgate-factory:1 {...} -->`
+([`markers.ts`](../../apps/agentgate/src/factory/markers.ts)), naming the item, the machine that wrote it, the last
+stage reached and whether the item is open or finished. Linear drops HTML comments, so there the marker is a visible
+last line in a code span. Intake posts the first marker, the `taken` comment, in the step that adds the item.
+
+- Intake reads one thing from a marker: it skips an issue whose newest one says `finished`, on whichever machine the
+  factory finished it. An `open` marker keeps nothing away. By the rule above it can only belong to an item that is
+  frozen on a machine the factory left, or that was lost with its tables, so the issue is taken in again from triage.
+  That is also why the tables are a cache that can be lost: a machine that loses them takes its open issues in again at
+  the next poll, and only what it had done on them is gone.
+- An issue can therefore be taken in again while the branch of its earlier item is still on origin. An implement run
+  takes the first of `factory/<key>`, `-2`, `-3`… that origin does not have (`branchFor` in
+  [`implement.ts`](../../apps/agentgate/src/factory/implement.ts)), decided at its launch and kept on the run, and its
+  report is checked against that branch. Origin is all it asks. Nothing stops a frozen thread, which finishes its turn,
+  so one that pushes `factory/<key>` only after the new run was given that name has its push refused by git, or the
+  other way round.
+- `retry` takes a finished item in again only on the machine whose tables still have it. An issue the factory finished
+  on another machine, or longer ago than the tables keep items, stays out until its `finished` comment is deleted.
+- Webhook, scout and manual items have no source to hold a marker. They live only in their machine's tables, so after
+  `move --now` nothing takes them in again, and they wait there for the factory to move back or for `drop`.
+- Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
+  user on Linear. Anyone else who can comment on an issue could otherwise forge one and keep intake away from it.
 - `factory init` keeps its PR's number in the pointer (`init.pr`). The folder loop asks GitHub about that PR before
   it fetches, and while a failed fetch backs off, because GitHub usually deletes a merged PR's branch: once it merged,
   the pointer drops its ref and follows the default branch. Matching the number, not the branch name, keeps an old
   merged init PR from moving a new factory.
-- A `taken` comment that fails leaves its issue unmarked, and after a move another machine's intake would take it
-  too. The write-back shows as failed in `factory show`.
-- Webhook, scout and manual items have no source to hold a marker, so they live only in their machine's tables and
-  never move.
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.
@@ -124,9 +145,6 @@ work resumes from those.
   ([`fileIssue`](../../apps/agentgate/src/factory/outbox.ts)), without a source's label. Labelling one is the
   maintainer's approval, so the label stays the only gate (D40), and none of it counts toward `waitingForYou`, which
   held items would and so pause intake.
-- Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
-  user on Linear. Anyone else who can comment on an issue could otherwise forge one, keeping intake away from the
-  issue or making `retry` adopt it at a later stage than it reached.
 
 ## T3 Code coupling
 
@@ -140,12 +158,11 @@ The factory depends on T3 Code interfaces that are not a stable public API, in t
   in T3's `runtime/service-state.json` (`activeT3` in [`handoff/t3.ts`](../../apps/agentgate/src/handoff/t3.ts)),
   because a `t3` on PATH can be an older launcher whose codes the server refuses and which has no `--scope`. T3 issues
   no refresh token, so the factory signs in again three days before
-  the 30 days end. The token is node-local: the factory machine holds one, and so does a machine still finishing items
-  after the factory moved.
+  the 30 days end. The token is node-local, and only the factory machine holds one.
 - **T3 Code's WebSocket RPC**, through the handoff's T3 client: the `orchestration.subscribeShell` stream feeds the
   mirror ([`mirror.ts`](../../apps/agentgate/src/factory/mirror.ts)), which falls back to polling the shell; thread
   projections give each run's provider sessions ([`records.ts`](../../apps/agentgate/src/factory/records.ts)).
-- A run's thread is always on the machine that holds the run. A stage thread a person hands to another machine leaves
+- A run's thread is always on the factory machine. A stage thread a person hands to another machine leaves
   the factory: its run ends, and the item waits as `handed-off` until the maintainer retries or drops it; a PR it owns
   is still followed to its merge. Following threads across machines (reports, reminders, tokens and spec cards there)
   cost more code and edge cases than it was worth.
@@ -273,5 +290,5 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - Token budgets count what agentgate's proxy saw for a run's T3 sessions. A thread whose sessions bypass the proxy
   counts nothing, so the board shows its item's tokens as unknown after 10 minutes.
 - The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the
-  machine that holds the item. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
+  factory machine. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
   out.

@@ -226,7 +226,7 @@ Summarize the change for users in one sentence.
 
 Every source has an `id` (up to 40 lowercase letters, digits and dashes, unique in the file), a `type` and the `repo` its items are fixed in. `intake: hold` makes each new item wait for `agentgate factory approve <item>` before triage; `agentgate factory reject <item>` turns it away.
 
-The factory polls every source every 2 minutes, and backs off while one fails. An issue the factory has finished does not come back by itself; `agentgate factory retry owner/repo#42` takes it in again.
+The factory polls every source every 2 minutes, and backs off while one fails. An issue the factory has finished does not come back by itself. `agentgate factory retry api-42` takes it in again while the machine that runs the factory still has the item: items are kept for 90 days, and stay behind when the factory moves to another machine.
 
 ### GitHub
 
@@ -240,9 +240,9 @@ The factory polls every source every 2 minutes, and backs off while one fails. A
     secret: secret:GITHUB_HOOK
 ```
 
-Items are named after the repository and the issue, such as `api-42`, or `acme-api-42` when two of the folder's repositories share a name; the branch is `factory/api-42`. The PR says `Fixes #<number>`, so merging it closes the issue. An issue that carries the labels of two sources is one item.
+Items are named after the repository and the issue, such as `api-42`, or `acme-api-42` when two of the folder's repositories share a name; the branch is `factory/api-42`, or `factory/api-42-2` when GitHub already has a branch of that name. The PR says `Fixes #<number>`, so merging it closes the issue. An issue that carries the labels of two sources is one item.
 
-When the factory takes an issue in, it comments "The factory took this." with the marker that keeps your other machines' intake away from it. Until that comment is posted the issue stays unmarked. While this machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed.
+When the factory takes an issue in, it comments "The factory took this." While its machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed.
 
 ### Linear
 
@@ -258,7 +258,7 @@ When the factory takes an issue in, it comments "The factory took this." with th
     secret: secret:LINEAR_HOOK
 ```
 
-Create a personal API key in Linear's settings and store it with `agentgate factory secret set LINEAR_KEY`. Items are named after the Linear issue, such as `web-42`, and the PR's title starts with the issue's key so Linear links it. Linear drops hidden HTML comments, so the factory's comments end with a visible line, `agentgate-factory:1 {...}`, that tells your machines which one holds the issue. Leave it in place. Only the first 1,000 open labelled issues are read per poll; the board's source row says so when a team has more.
+Create a personal API key in Linear's settings and store it with `agentgate factory secret set LINEAR_KEY`. Items are named after the Linear issue, such as `web-42`, and the PR's title starts with the issue's key so Linear links it. Linear drops hidden HTML comments, so the factory's comments end with a visible line, `agentgate-factory:1 {...}`, that tells the factory what it has done with the issue. Leave it in place. Only the first 1,000 open labelled issues are read per poll; the board's source row says so when a team has more.
 
 ### Webhooks
 
@@ -351,7 +351,7 @@ A check like this finds what tests and error trackers miss, because a job that s
 - **What it can use**: agentgate's tools, the repository, and the servers in `mcp`. A server must also be mapped to the repository's project, as for any session there. The thread changes no code and opens no PRs or issues.
 - **Its tickets**: every finding a run reports is filed; say in the prompt how many are worth a run. Each finding has a key the thread chooses, such as `slow-orders-list`. A finding whose key one of the scout's items has, open or finished within `dedupeWindow`, is skipped, and the thread sees those keys so it can reuse them. A reworded key gets through as a new item. Findings wait for approval with `intake: hold`, and also while intake is paused or waits for you; nothing more is filed while 20 of its items wait.
 - The board shows each scout's schedule, its next run, and what its last run filed, with a link to its thread.
-- Its last run is remembered on the factory's machine, so after the factory moves, an `every` scout runs once at the next chance.
+- Its last run is remembered on the factory's machine, so after the factory moves, an `every` scout runs once at the next chance. A move does not wait for a scout that is running, and what that run finds is lost.
 
 ### Adding a webhook or a scout
 
@@ -413,7 +413,6 @@ When an item waits for you, it stays in its stage and the board says why:
 | `budget`     | The item went over `limits.itemTokens` and its threads were stopped.                                                                                                      | Raise the limit, then `retry`, or `drop`.                                                       |
 | `failed`     | A stage ended twice without reporting, or you asked for spec changes twice.                                                                                               | Read the thread, then `retry` or `drop`.                                                        |
 | `stuck`      | Nothing moved the item for four times `limits.stalledAfter`, such as a launch that keeps failing; or a launch may have started a thread before T3 Code's sign-in changed. | Read `show <item>`, look for the thread in T3 Code, then `retry` or `drop`.                     |
-| `orphaned`   | The machine that held the issue is unreachable.                                                                                                                           | `retry owner/repo#42` (or the Linear key) takes it over here.                                   |
 | `handed-off` | You handed its stage thread to another machine, so it left the factory.                                                                                                   | `retry` starts the stage again here; `drop` closes the item.                                    |
 | `stopped`    | Someone stopped one of its threads in T3 Code, or deleted the thread of a stage that was still working. The factory never starts a thread you stopped again by itself.    | `retry` goes on: with its PR, or the stage in a new thread; `drop` closes the item.             |
 
@@ -439,20 +438,21 @@ When a branch requires checks, through a branch protection rule or a ruleset, on
 
 ## Several machines
 
-One machine runs the factory. It polls the sources, starts the threads in its T3 Code, and holds the items. On your other machines, `agentgate factory` commands and the agents' factory tools reach it over Tailscale or the relay, and `status` shows its board.
+One machine runs the factory. It polls the sources, starts the threads in its T3 Code and follows the PRs, and no other machine works on an item. On your other machines, `agentgate factory` commands and the agents' factory tools reach it over Tailscale or the relay, and `status` shows its board.
 
 - **Handing off a stage thread** (`agentgate handoff`) takes it out of the factory: it becomes your thread on the other machine, and the item waits for you as `handed-off`. When you are done with it, `retry` starts the stage again here, or `drop` closes the item. A PR the thread opened is still followed: merging it ships the item.
-- **Moving the factory**: `agentgate factory move <machine>`, or **Move…** in the app's Settings, keeps the folder, its ref and an init PR it waits on. Each machine finishes the items it already holds, and keeps its T3 Code sign-in until the last one is done. The new machine's intake leaves alone every issue another machine marked as taken, and its board shows them with the machine that holds them. Show, approve, reject, retry and drop on such an issue reach the machine that holds it, from any machine. One whose machine has not been seen for 30 minutes shows as `orphaned`, and `agentgate factory retry owner/repo#42` (or its key) takes it over: an item with a PR waits for you in `ready` with that PR, and any other starts again at the stage it reached. `retry` refuses while that machine is online, and a machine that wakes up after its issue was taken over stops working on it. Webhook and hand-added items have no issue to mark, so they stay with their machine.
+- **Moving the factory**: `agentgate factory move <machine>`, or **Move…** in the app's Settings, keeps the folder, its ref and an init PR it waits on. With no item open, the factory moves at once. Otherwise the machine that runs it finishes its open items first. It takes in no new issues, and a webhook delivery or a scout's finding waits for your approval, as while paused. The board and `status` say "Moving to srv once 3 items finish", and when the last one has shipped or closed and its last comment is posted, the factory moves by itself. An item that waits for you is open too, a PR ready for your review included, so answer it, merge it or `drop` it. `agentgate factory move` to the machine that runs it now cancels a move that waits.
+- **Moving it now**: `agentgate factory move <machine> --now`, or **Move now** in the same dialog, does not wait. It is for when the machine that runs the factory is gone, or its items are not worth the wait. What that machine has open stays frozen there: a thread that is working finishes its turn, nothing more is started or followed for those items, and they are not on the new machine's board. The new machine takes their issues in again from triage, and a draft PR the old item opened stays open for you to close. On the old machine, `agentgate factory status` and the app list what is frozen, each with its id. Move the factory back to go on with those items where they stopped, or run `agentgate factory drop <id>` on that machine to close one; an item's key names the item on the machine that runs the factory. An item from a webhook, a scout or `factory add` has no issue, so nothing takes it in again: it waits on the old machine until you do one or the other.
 
 ## Commands
 
 | Command                                                                             | What it does                                                                                                         |
 | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `factory init <owner/repo> [--store github\|agentgate] [--node <machine>] [--json]` | Start a factory for a repository: a template PR and the factory on at its branch, or the template kept in agentgate. |
-| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]`        | Turn the factory on, or point it at another folder or machine.                                                       |
+| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]`        | Turn the factory on, or change its folder. Another `--node` moves it at once, like `move --now`.                     |
 | `factory use --store agentgate [--node <machine>]`                                  | Turn the factory on with the folder agentgate keeps.                                                                 |
 | `factory folder ls\|cat <path>\|put <path>\|rm <path>\|delete`                      | Read and edit the folder agentgate keeps; `put` reads the file from stdin.                                           |
-| `factory move <machine>`                                                            | Run the same folder on another machine.                                                                              |
+| `factory move <machine> [--now]`                                                    | Run the same folder on another machine once the open items finish; `--now` does not wait, and leaves them frozen.    |
 | `factory off`                                                                       | Turn it off.                                                                                                         |
 | `factory reload`                                                                    | Fetch and check the folder now.                                                                                      |
 | `factory status [--json]`                                                           | The board, with the webhook URLs.                                                                                    |

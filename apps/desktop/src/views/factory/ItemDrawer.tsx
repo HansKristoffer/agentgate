@@ -50,7 +50,7 @@ const WRITES: Record<string, string> = {
 };
 
 /** One item: its runs with their T3 Code threads and errors, what the factory posted for it, and its events. Read from
- * `GET /api/factory/items/:id`, which reaches the machine that holds the item. */
+ * `GET /api/factory/items/:id`, which reaches the factory machine. */
 export function ItemDrawer({
   connection,
   changes,
@@ -109,7 +109,6 @@ export function ItemDrawer({
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
         <Pill tone={toneOf(item)}>{item.needsYou ? "Needs you" : statusOf(item)}</Pill>
-        {item.heldBy !== board.factory?.node && <Badge>on {item.heldBy}</Badge>}
         {item.url && (
           <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.url!)}>
             <ExternalLink size={14} />
@@ -158,7 +157,6 @@ export function ItemDrawer({
                     {r.attempt > 1 ? ` (attempt ${r.attempt})` : ""}
                   </strong>
                   <Pill tone={RUN_TONES[r.state] ?? "held"}>{RUN_STATES[r.state] ?? r.state}</Pill>
-                  {r.node && r.node !== item.heldBy && <small className="muted">on {r.node}</small>}
                 </div>
                 {/* An error on a run that reported is housekeeping, not why it stopped. */}
                 <small className={r.error && r.state !== "reported" ? "danger" : "muted"}>
@@ -200,7 +198,7 @@ export function ItemDrawer({
         </details>
       )}
       <p className="muted">
-        Actions reach the machine that holds the item. <code>agentgate factory show {item.key}</code> shows the same.
+        Actions reach the factory machine. <code>agentgate factory show {item.key}</code> shows the same.
       </p>
     </Modal>
   );

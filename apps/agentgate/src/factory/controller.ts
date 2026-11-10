@@ -12,7 +12,6 @@ import {
   type FactoryItemDetail,
   type FactoryModel,
   type FactoryReport,
-  type FactorySource,
   type ItemAction,
   type ItemPhase,
   type MarkerPayload,
@@ -28,12 +27,10 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
 import { cloneProject, findProject } from "../handoff/destination.ts";
-import { PeerError, peerCall } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
 import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
-import { lastSeen } from "../sync.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
 import { currentFolder, DEFAULT_LIMITS, durationMs, folderFor, type LoadedFolder } from "./config.ts";
 import {
@@ -101,7 +98,6 @@ interface Memory {
       error?: string;
       failures: number;
       retryAt: number;
-      elsewhere: BoardItem[];
       /** Each listed issue's newest factory marker as last read, kept while the issue's `updatedAt` stays the same. */
       markers: Map<string, { updatedAt: string; marker: MarkerPayload | undefined }>;
     }
@@ -111,8 +107,8 @@ interface Memory {
   retryAt: Map<string, number>;
   quota?: { waitingUntil?: number };
   projects: Map<string, { projectId: string; root: string; branch?: string }>;
-  /** When each queued run last read its item's issue as open and still this machine's, so a run that waits (red CI)
-   * reads it every 2 minutes, not every pass; every new run reads it before it starts. */
+  /** When each queued run last read its item's issue as open, so a run that waits (red CI) reads it every 2 minutes,
+   * not every pass; every new run reads it before it starts. */
   openAt: Map<string, number>;
 }
 const memories = new WeakMap<FactoryRuntime, Memory>();
@@ -200,18 +196,10 @@ function freeKey(f: FactoryRuntime, key: string) {
 }
 
 /** One item per issue, whichever source took it in. A new item is held, or enters triage with a queued triage run, and
- * its issue hears that this machine took it: the marker other machines' intake skips. */
+ * its issue hears that the factory took it. */
 export function addItem(
   f: FactoryRuntime,
-  input: {
-    source: string;
-    repo: string;
-    incoming: IncomingItem;
-    hold?: boolean;
-    /** Taken over from another machine (move.ts), which then places it: no triage run is queued. */
-    adoptedFrom?: string;
-    prUrl?: string;
-  },
+  input: { source: string; repo: string; incoming: IncomingItem; hold?: boolean },
 ): FactoryItem {
   const { s } = f;
   const { incoming } = input;
@@ -234,8 +222,6 @@ export function addItem(
     ...(held && { needsYou: { reason: "held", question: `Start it with agentgate factory approve ${key}` } }),
     configCommit: folder.commit,
     ...(incoming.dedupe && { dedupe: incoming.dedupe }),
-    ...(input.adoptedFrom && { adoptedFrom: input.adoptedFrom }),
-    ...(input.prUrl && { prUrl: input.prUrl }),
   });
   f.events.emit({
     kind: "item.created",
@@ -243,7 +229,7 @@ export function addItem(
     text: `${item.key} entered from ${item.source}${held ? " and waits for approval" : ""}: ${item.title}`,
   });
   writeBack(f, item, "taken", held ? { text: "It starts once the maintainer approves it." } : {});
-  if (!held && !input.adoptedFrom) enqueueRun(f, { kind: "triage", item: item.id });
+  if (!held) enqueueRun(f, { kind: "triage", item: item.id });
   return item;
 }
 
@@ -475,6 +461,14 @@ export async function defaultBranch(f: FactoryRuntime, repo: string) {
   if (!branch) throw new Error(`git cannot read the default branch of ${repo} in ${p.root}`);
   p.branch = branch;
   return branch;
+}
+
+/** The branches origin has under `prefix`, asked of origin itself: the checkout's own copy of them can be stale. */
+export async function originBranches(f: FactoryRuntime, repo: string, prefix: string): Promise<string[]> {
+  const { root } = await project(f, repo);
+  const listed = await git(root, ["ls-remote", "--heads", "origin", `refs/heads/${prefix}*`]);
+  if (!listed.ok) throw new Error(`git cannot list the branches of ${repo} in ${root}`);
+  return listed.out.split("\n").flatMap((line) => line.match(/\trefs\/heads\/(.+)$/)?.[1] ?? []);
 }
 
 type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
@@ -715,16 +709,15 @@ async function prepareLaunch(
   }
   const openAt = memory(f).openAt;
   if (item && s.now() - (openAt.get(run.id) ?? 0) >= 2 * 60_000) {
-    const state = await sourceCheck(f, item);
-    if (state === "open") openAt.set(run.id, s.now());
-    // A machine that slept past the orphan threshold may wake to find the issue taken over: it stands down.
-    if (typeof state === "object") {
-      await closeQuietly(f, item, `${item.key} was taken over by ${state.takenBy}, which holds its issue now`);
-      return {};
-    }
-    // Once the item has a PR, the PR decides: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
-    if (state === "closed" && !item.prUrl) {
-      await closeQuietly(f, item);
+    if (await issueOpen(f, item)) openAt.set(run.id, s.now());
+    else if (!item.prUrl) {
+      // The source closed it, so the item closes without a comment: the issue already says so. Once the item has a
+      // PR, the PR decides instead: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
+      await finishItem(f, item, "closed", {
+        interrupt: true,
+        reason: `${item.key} was closed at its source`,
+        note: true,
+      });
       return {};
     }
   }
@@ -779,23 +772,11 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
   }
 }
 
-/** Reads the item's issue: closed, taken over by another machine (its newest factory marker names that machine), or
- * still this machine's. Items without an issue are always this machine's and open. */
-export async function sourceCheck(
-  f: FactoryRuntime,
-  item: FactoryItem,
-): Promise<"open" | "closed" | { takenBy: string }> {
+/** Whether the item's issue is still open at its source. An item without an issue always is. */
+async function issueOpen(f: FactoryRuntime, item: FactoryItem) {
   const check = adapterOf(f, item)?.check;
-  if (!check) return "open";
-  const { open, newest } = await check(item);
-  if (newest && newest.node !== f.s.nodeId) return { takenBy: newest.node };
-  return open ? "open" : "closed";
+  return !check || (await check(item)).open;
 }
-
-/** The source closed the item, or another machine took it over: no comment (the issue already says so, and this
- * machine's comment would be the issue's newest marker again). Its threads stop. */
-export const closeQuietly = (f: FactoryRuntime, item: FactoryItem, why = `${item.key} was closed at its source`) =>
-  finishItem(f, item, "closed", { interrupt: true, reason: why, note: true });
 
 // ---- watching threads
 
@@ -1064,7 +1045,6 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
   "already-fixed": () => "The default branch already fixes this.",
 };
 
-/** The run, when the caller is its own thread on the machine that holds it (D35: routing, not security). */
 /** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
  * thread under it, which may read the run's item but never report for it. Routing, not security (D35). */
 export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller, options: { subagents?: boolean } = {}) {
@@ -1165,7 +1145,7 @@ const SOURCE_BACKOFF = { baseMs: 2 * 60_000, maxMs: 3600_000, jitter: false };
 function sourceMemory(f: FactoryRuntime, id: string) {
   const sources = memory(f).sources;
   let st = sources.get(id);
-  if (!st) sources.set(id, (st = { failures: 0, retryAt: 0, elsewhere: [], markers: new Map() }));
+  if (!st) sources.set(id, (st = { failures: 0, retryAt: 0, markers: new Map() }));
   return st;
 }
 
@@ -1173,29 +1153,19 @@ function sourceMemory(f: FactoryRuntime, id: string) {
 const waitingForYou = (f: FactoryRuntime) =>
   items.list(f.s, { open: true }).filter((i) => i.needsYou || i.phase === "ready").length;
 
+/** Off, too, while the factory waits to move (`factory move`): its machine takes nothing new and finishes what is open. */
 export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
-  if (!f.pointer() || !f.isFactoryNode() || !currentFolder(f) || isPaused(f)) return "off";
+  if (!f.isFactoryNode() || f.pointer()?.moveTo || !currentFolder(f) || isPaused(f)) return "off";
   return waitingForYou(f) >= limitsOf(f).waitingForYou ? "paused-for-you" : "on";
 }
 
-/** The board row of an issue another machine marked as its own. */
-const elsewhereItem = (source: FactorySource, incoming: IncomingItem, marker: MarkerPayload): BoardItem => ({
-  id: marker.item,
-  key: incoming.key,
-  repo: source.repo,
-  title: incoming.title,
-  ...(incoming.url && { url: incoming.url }),
-  source: source.id,
-  phase: marker.stage ?? "triage",
-  heldBy: marker.node,
-  actions: [],
-  tokens: 0,
-  inPhaseSince: 0,
-  updatedAt: 0,
-});
-
-/** One intake pass for one source now. While intake is not on, it still reads which issues other machines hold, for
- * the board, and adds nothing. A marker is read again only when its issue changed. */
+/**
+ * One intake pass for one source now; it adds nothing while intake is not on. An issue is left out only when its newest
+ * factory marker says `finished`, here before the trim or on another machine. An `open` marker keeps nothing away: only
+ * the factory machine drives items, so an open marker on an issue this machine has no item for belongs to an item that
+ * is frozen on a machine the factory left, or was lost with its tables, and the issue is taken in again from triage. A
+ * marker is read again only when its issue changed.
+ */
 export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<void> {
   const { s } = f;
   const source = currentFolder(f)?.config.sources.find((x) => x.id === sourceId);
@@ -1204,9 +1174,7 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
   if (!adapter?.poll) return;
   const st = sourceMemory(f, source.id);
   try {
-    const elsewhere: BoardItem[] = [];
     const markers: typeof st.markers = new Map();
-    let on = intakeState(f) === "on";
     for (const incoming of await adapter.poll(source)) {
       if (items.byExternal(s, incoming.externalId)) continue;
       const cached = st.markers.get(incoming.externalId);
@@ -1215,19 +1183,13 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
           ? cached.marker
           : await adapter.newestMarker?.({ source: source.id, externalId: incoming.externalId, repo: source.repo });
       if (incoming.updatedAt) markers.set(incoming.externalId, { updatedAt: incoming.updatedAt, marker });
-      // Another machine holds it: leave it there, and show where.
-      if (marker?.state === "open" && marker.node !== s.nodeId) {
-        elsewhere.push(elsewhereItem(source, incoming, marker));
-        continue;
-      }
-      // The factory finished it, here before the trim or on another machine; `retry` takes it again.
-      if (marker?.state === "finished" || !on) continue;
+      // Intake is asked after the read: the item before, a pause or a move may have ended it meanwhile.
+      if (marker?.state === "finished" || intakeState(f) !== "on") continue;
       addItem(f, { source: source.id, repo: source.repo, incoming, hold: source.intake === "hold" });
-      on = intakeState(f) === "on";
     }
     st.markers = markers;
     if (st.failures) console.log(`factory: the source ${source.id} works again`);
-    Object.assign(st, { lastPollAt: s.now(), error: undefined, failures: 0, retryAt: 0, elsewhere });
+    Object.assign(st, { lastPollAt: s.now(), error: undefined, failures: 0, retryAt: 0 });
   } catch (e) {
     const error = shortError(e);
     if (st.error !== error) console.error(`factory: the source ${source.id} failed: ${error}`);
@@ -1236,8 +1198,8 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
   }
 }
 
-/** Every source's poll. Paused for the maintainer (too many items wait), it still reads which issues other machines
- * hold, and adds nothing; paused by the maintainer, it reads nothing. */
+/** Every source's poll. Paused for the maintainer (too many items wait), it still reads each source, so its row on the
+ * board stays current, and adds nothing; paused by the maintainer, or waiting to move, it reads nothing. */
 async function intake(f: FactoryRuntime) {
   const folder = currentFolder(f);
   if (!folder || intakeState(f) === "off") return;
@@ -1379,16 +1341,7 @@ function actionsOf(f: FactoryRuntime, item: FactoryItem, last: FactoryRun | unde
 /** approve, reject, retry or drop an item, as one step of it. Returns what happened, for the CLI and API. */
 async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason?: string): Promise<string> {
   const found = findItem(f, ref);
-  if (!found) {
-    if (action === "retry" && f.adopt) {
-      const adopted = await f.adopt(ref);
-      if (adopted) {
-        touched(f, adopted, "retry", "taken over with retry");
-        return `Took over ${adopted.key}; it starts at ${adopted.phase}`;
-      }
-    }
-    throw new Error(`${f.s.nodeId} holds no factory item ${ref}`);
-  }
+  if (!found) throw new Error(`${f.s.nodeId} has no factory item ${ref}`);
   return withItem(f, found.id, () => act(f, found.id, action, reason));
 }
 
@@ -1400,6 +1353,17 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
 
   if (action === "drop") {
     if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
+    if (frozenHere(f)) {
+      // This machine is signed out of T3 Code, so the item's threads are left as they are. And no comment: the issue
+      // is the factory machine's to take in again, which a `finished` marker from here would stop.
+      for (const run of runs.forItem(s, item.id)) if (ACTIVE.includes(run.state)) endRun(f, run, "cancelled");
+      await finishItem(f, item, "closed", {
+        interrupt: false,
+        reason: `${item.key} was dropped while frozen on ${s.nodeId}${because}`,
+        note: true,
+      });
+      return `Dropped ${item.key}, which was frozen on ${s.nodeId}`;
+    }
     await finishItem(f, item, "closed", {
       interrupt: true,
       reason: `Dropped by the maintainer${because}`,
@@ -1407,6 +1371,12 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     });
     return `Dropped ${item.key}`;
   }
+
+  // Any other action would start or wake a thread, which only the factory machine does.
+  if (frozenHere(f))
+    throw new Error(
+      `${item.key} is frozen on ${s.nodeId} while the factory runs on ${f.pointer()!.node}; move the factory back to go on with it, or drop it`,
+    );
 
   if (action === "retry") {
     if (item.phase === "shipped") throw new Error(`${item.key} shipped; there is nothing to retry`);
@@ -1597,7 +1567,6 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
     ...(item.url && { url: item.url }),
     source: item.source,
     phase: item.phase,
-    heldBy: s.nodeId,
     ...(run && {
       run: {
         id: run.id,
@@ -1609,7 +1578,7 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
       },
     }),
     ...(item.needsYou && { needsYou: item.needsYou }),
-    actions: actionsOf(f, item, run),
+    actions: frozenHere(f) ? (isOpenPhase(item.phase) ? ["drop"] : []) : actionsOf(f, item, run),
     ...(item.prUrl && {
       pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }), ...reviewState(item, itemRuns) },
     }),
@@ -1620,73 +1589,42 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
   };
 }
 
-/** How long a machine that holds issues may go without syncing before they count as orphaned and `retry` takes them
- * over: past a laptop's sleep, since a holder that wakes after a takeover only stands down at its next check. */
-export const ORPHAN_MS = 30 * 60_000;
-
-/** Issues other machines marked as theirs. One whose machine cannot be reached is orphaned: `retry` takes it here. */
-function elsewhereRows(f: FactoryRuntime): BoardItem[] {
-  const { s } = f;
-  return [...memory(f).sources.values()]
-    .flatMap((st) => st.elsewhere)
-    .map((row) =>
-      s.now() - lastSeen(s, row.heldBy) < ORPHAN_MS
-        ? row
-        : {
-            ...row,
-            actions: ["retry"],
-            needsYou: {
-              reason: "orphaned",
-              question: `${row.heldBy} is unreachable; take it over here with agentgate factory retry ${row.key}`,
-            },
-          },
-    );
+/**
+ * Whether this machine's open items are frozen: another machine runs the factory, so no loop here moves them, starts
+ * their threads or follows their PRs, as after `factory off`. They go on when the factory moves back, and `drop` on
+ * this machine closes one.
+ */
+function frozenHere(f: FactoryRuntime) {
+  return !!f.pointer() && !f.isFactoryNode();
 }
 
-/** The machine another machine's marker says holds `ref` (a board row's id, or its key), while it answers. */
-export function holderOf(f: FactoryRuntime, ref: string): string | undefined {
-  const lower = ref.toLowerCase();
-  const row = elsewhereRows(f).find((r) => r.id === ref || r.key === lower);
-  return row && !row.needsYou ? row.heldBy : undefined;
+/** Whether an item operation's input names an item frozen here, which only this machine can answer for. By its id
+ * alone: a key or an issue names the factory machine's item, which may be a new item of the same issue. */
+function namesFrozen(f: FactoryRuntime, input: unknown) {
+  const ref = (input as { item?: unknown } | null)?.item;
+  const item = frozenHere(f) && typeof ref === "string" ? items.get(f.s, ref) : undefined;
+  return !!item && isOpenPhase(item.phase);
 }
 
-/** An item command for an item this machine does not hold, sent to the machine that does: after the factory moved,
- * the old machine still drives its items, and every machine reaches them through the factory machine. It asks the
- * machine the board names first, then every other machine seen lately; a machine that does not hold the item answers
- * 409, and one that does answers for it, errors included. Undefined when this machine holds it, or none answers. */
-async function viaHolder(f: FactoryRuntime, name: string, input: unknown, ref: string): Promise<unknown> {
-  const { s } = f;
-  if (findItem(f, ref)) return undefined;
-  const named = holderOf(f, ref);
-  const seen = s
-    .list("node")
-    .map((n) => n.id)
-    .filter((id) => id !== s.nodeId && s.now() - lastSeen(s, id) < ORPHAN_MS);
-  for (const node of new Set([...(named ? [named] : []), ...seen])) {
-    try {
-      return await peerCall<unknown>(s, node, "/factory/op", { json: { kind: "op", name, input }, timeout: 100_000 });
-    } catch (e) {
-      if (e instanceof PeerError && e.status !== 409) throw e;
-    }
-  }
-  return undefined;
-}
-
-function boardItems(f: FactoryRuntime): BoardItem[] {
-  const list = items.list(f.s, { finishedSince: f.s.now() - 7 * DAY }).map((item) => boardItem(f, item));
-  return [...list, ...elsewhereRows(f)];
-}
+/** This machine's frozen items as board rows, whose one action is `drop`. */
+export const frozenItems = (f: FactoryRuntime): BoardItem[] =>
+  frozenHere(f) ? items.list(f.s, { open: true }).map((item) => boardItem(f, item)) : [];
 
 /** The controller's part of the board; implement.ts adds `capacity.mainRed`. */
 function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
+  const { s } = f;
   const limits = limitsOf(f);
   const quota = memory(f).quota;
+  // While another machine runs the factory, the items are on its board, and this machine's open ones are frozen.
+  const elsewhere = frozenHere(f);
+  const frozen = frozenItems(f);
   return {
-    items: boardItems(f),
+    items: elsewhere ? [] : items.list(s, { finishedSince: s.now() - 7 * DAY }).map((item) => boardItem(f, item)),
+    ...(frozen.length && { frozen }),
     capacity: {
       threads: limits.threads,
-      working: f.pointer() ? workingCount(f) : 0,
-      waitingForYou: waitingForYou(f),
+      working: f.isFactoryNode() ? workingCount(f) : 0,
+      waitingForYou: elsewhere ? 0 : waitingForYou(f),
       waitingForYouLimit: limits.waitingForYou,
       quota: quota ?? "ok",
       intake: intakeState(f),
@@ -1793,9 +1731,8 @@ export function setup(f: FactoryRuntime): void {
   f.runKinds.set("triage", triage(f));
 
   f.loops.push({ name: "factory-intake", everyMs: 2 * 60_000, where: "factory-node", run: () => intake(f) });
-  // Every machine drives the items in its own tables.
-  f.loops.push({ name: "factory-dispatch", everyMs: 5000, where: "every-node", run: () => dispatch(f) });
-  f.loops.push({ name: "factory-stuck", everyMs: 5 * 60_000, where: "every-node", run: async () => findStuck(f) });
+  f.loops.push({ name: "factory-dispatch", everyMs: 5000, where: "factory-node", run: () => dispatch(f) });
+  f.loops.push({ name: "factory-stuck", everyMs: 5 * 60_000, where: "factory-node", run: async () => findStuck(f) });
   f.boardParts.push(async () => boardPart(f));
 
   f.tools.set("factory_report", {
@@ -1829,7 +1766,7 @@ export function setup(f: FactoryRuntime): void {
     },
   });
 
-  // The operations the CLI, the routes and other machines share. An item's operations run on the machine that holds it.
+  // The operations the CLI, the routes and other machines share.
   f.ops.set("add", {
     run: async (input) => {
       const item = addManual(f, input);
@@ -1837,24 +1774,21 @@ export function setup(f: FactoryRuntime): void {
     },
   });
   const itemRef = z.object({ item: z.string().min(1).max(200) });
+  const frozen = { here: (input: unknown) => namesFrozen(f, input) };
   f.ops.set("show", {
-    item: true,
+    ...frozen,
     run: async (input) => {
       const { item: ref } = itemRef.parse(input);
-      const there = await viaHolder(f, "show", input, ref);
-      if (there) return there;
       const item = findItem(f, ref);
-      if (!item) throw new Error(`${f.s.nodeId} holds no factory item ${ref}`);
+      if (!item) throw new Error(`${f.s.nodeId} has no factory item ${ref}`);
       return itemDetail(f, item);
     },
   });
   for (const action of ACTIONS)
     f.ops.set(action, {
-      item: true,
+      ...frozen,
       run: async (input) => {
         const { item: ref, reason } = itemRef.extend(factoryActionInputSchema.shape).parse(input);
-        const there = await viaHolder(f, action, input, ref);
-        if (there) return there;
         return { message: await itemAction(f, ref, action, reason) };
       },
     });

@@ -3,6 +3,7 @@ import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import {
   folderLabel,
+  movingLabel,
   type BoardItem,
   type FactoryBoard,
   type ItemAction,
@@ -21,7 +22,8 @@ import { Sources } from "./factory/Sources.tsx";
 
 /**
  * The software factory: what waits for you first, then every stage. Everything here goes through
- * `/api/factory`, which reaches the factory machine from whichever machine the app is connected to.
+ * `/api/factory`, which reaches the factory machine from whichever machine the app is connected to. Only the items
+ * frozen on the connected machine itself are that machine's to show and drop.
  */
 
 /** What the view does to an item, for the queue, the cards and the drawer. */
@@ -49,7 +51,6 @@ const REASONS: Record<NeedsYou["reason"], string> = {
   budget: "Over its token budget",
   stalled: "Stalled on its PR",
   failed: "Failed",
-  orphaned: "Its machine is unreachable",
   stuck: "Stuck",
   "handed-off": "Handed to another machine",
   stopped: "Stopped in T3 Code",
@@ -127,7 +128,7 @@ export function NeedsYouActions({ item, act, ask }: { item: BoardItem; act: Act;
     );
   if (reason === "blocked")
     buttons.push(button("approve", "Unblock…", async () => ask(item, "approve", `What changed for ${item.key}`)));
-  buttons.push(button("retry", reason === "orphaned" ? "Take over here" : "Retry"));
+  buttons.push(button("retry", "Retry"));
   if (reason) buttons.push(button("drop", "Drop…", async () => ask(item, "drop", `Drop ${item.key}`)));
   return <>{buttons}</>;
 }
@@ -227,17 +228,7 @@ export function statusOf(item: BoardItem): string {
   }
 }
 
-function ItemCard({
-  item,
-  here,
-  showRepo,
-  open,
-}: {
-  item: BoardItem;
-  here?: string;
-  showRepo: boolean;
-  open: (id: string) => void;
-}) {
+function ItemCard({ item, showRepo, open }: { item: BoardItem; showRepo: boolean; open: (id: string) => void }) {
   const link = threadOf(item);
   return (
     <Card className="factory-card factory-toned" style={toneStyle(toneOf(item))} onClick={() => open(item.id)}>
@@ -248,7 +239,6 @@ function ItemCard({
       <strong>{item.title}</strong>
       <div className="factory-card-meta">
         <Pill tone={toneOf(item)}>{item.needsYou ? REASONS[item.needsYou.reason] : statusOf(item)}</Pill>
-        {here && item.heldBy !== here && <small>on {item.heldBy}</small>}
         {item.tokens > 0 && <small>{tokens(item.tokens)} tokens</small>}
         {item.inPhaseSince > 0 && <small>{ago(item.inPhaseSince)}</small>}
       </div>
@@ -337,7 +327,7 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
                   {PHASE_TITLES[phase]} <span className="muted">{here.length}</span>
                 </h3>
                 {here.map((item) => (
-                  <ItemCard key={item.id} item={item} here={board.factory?.node} showRepo={showRepo} open={open} />
+                  <ItemCard key={item.id} item={item} showRepo={showRepo} open={open} />
                 ))}
               </div>
             );
@@ -364,8 +354,41 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
   );
 }
 
+/** The connected machine's own open items while another machine runs the factory: nothing works on them, so the one
+ * thing to do here is drop them. */
+function Frozen({ board, ask }: { board: FactoryBoard; ask: AskReason }) {
+  if (!board.frozen?.length || !board.factory) return null;
+  return (
+    <Panel
+      title={`Frozen on ${board.node}`}
+      detail={`The factory now runs on ${board.factory.node}, so nothing works on these. Move it back to ${board.node} under Settings to resume them, or drop them.`}
+    >
+      {board.frozen.map((item) => (
+        <div className="item" key={item.id}>
+          <div className="grow">
+            <strong>
+              {item.key} {item.title}
+            </strong>
+            <small className="muted">{PHASE_TITLES[item.phase]}</small>
+          </div>
+          {item.pr && (
+            <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
+              <GitPullRequest size={14} />
+              Pull request
+            </Button>
+          )}
+          <Button size="sm" variant="tertiary" onPress={() => ask(item, "drop", `Drop ${item.key}`)}>
+            Drop…
+          </Button>
+        </div>
+      ))}
+    </Panel>
+  );
+}
+
 function Status({ board }: { board: FactoryBoard }) {
   const c = board.capacity;
+  const moving = board.factory?.moving;
   const t3 = board.t3.stream === "live" && board.t3.mcp === "signed-in";
   // A row's tone says at a glance whether it is fine; rows that only inform have none.
   const rows: [string, ReactNode, Tone?][] = [
@@ -375,7 +398,11 @@ function Status({ board }: { board: FactoryBoard }) {
         ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}${board.factory ? `, ${folderLabel(board.factory)}` : ""}`
         : "Not loaded yet",
     ],
-    ["Runs on", board.factory && `${board.factory.node}${board.factory.online ? "" : " (offline)"}`],
+    [
+      "Runs on",
+      board.factory &&
+        `${board.factory.node}${board.factory.online ? "" : " (offline)"}${moving ? `. ${movingLabel(moving)}` : ""}`,
+    ],
     [
       "T3 Code",
       t3 ? "Connected" : `Stream ${board.t3.stream}, MCP ${board.t3.mcp}${board.t3.error ? `: ${board.t3.error}` : ""}`,
@@ -390,7 +417,9 @@ function Status({ board }: { board: FactoryBoard }) {
           ? "Taken in"
           : c.intake === "paused-for-you"
             ? "Paused until fewer wait for you"
-            : "Off",
+            : moving
+              ? "Stopped until the factory has moved"
+              : "Off",
       !c.paused && c.intake === "on" ? "ready" : "you",
     ],
     [
@@ -670,6 +699,11 @@ export function Factory(props: ViewProps) {
           Paused: no intake, new threads or nudges until you resume. Running threads finish their turn.
         </p>
       )}
+      {board.factory.moving && (
+        <p className="muted">
+          {movingLabel(board.factory.moving)}. Nothing new is taken in until then; Settings can move it now or cancel.
+        </p>
+      )}
       <Tabs className="segmented" selectedKey={tab} onSelectionChange={(key) => setTab(String(key))}>
         <Tabs.ListContainer>
           <Tabs.List aria-label="Factory sections">
@@ -689,6 +723,7 @@ export function Factory(props: ViewProps) {
       </Tabs>
       {tab === "items" && (
         <>
+          <Frozen board={board} ask={ask} />
           <NeedsYouQueue board={board} act={act} ask={ask} open={setSelected} />
           <Stages board={board} open={setSelected} />
         </>

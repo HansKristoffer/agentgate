@@ -2,7 +2,7 @@ import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { prFactory } from "./fixtures/factory-pr.ts";
-import { removeTmp } from "./fixtures/git.ts";
+import { removeTmp, sh } from "./fixtures/git.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -113,4 +113,26 @@ test("a mismatch the thread leaves uncorrected counts as a silent end, and the n
   expect(retry).toMatchObject({ attempt: 2, state: "running" });
   const launch = n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === retry!.id);
   expect(launch!.args.workspaceStrategy).toMatchObject({ branch: `factory/${n.key(1)}-2` });
+});
+
+test("an implement run takes the first branch name free on origin, and its report is checked against the branch it was given", async () => {
+  const n = await prFactory(cleanup);
+  // An earlier item of the same issue, frozen on another machine or lost with its tables, left its branches behind.
+  const branch = (suffix = "") => `factory/${n.key(7)}${suffix}`;
+  const pushed = [branch(), branch("-2")];
+  cleanup.push(() => pushed.forEach((name) => sh(n.origin.origin, "branch", "-D", name)));
+  for (const name of pushed) sh(n.origin.origin, "branch", name, "main");
+
+  const { item, run } = await n.implementing(7);
+  const launch = n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id)!;
+  expect(launch.args.workspaceStrategy).toMatchObject({ branch: branch("-3") });
+  expect(String(launch.args.message)).toContain(`Your branch is \`${branch("-3")}\``);
+
+  // The thread pushes its branch, so that name is no longer free: the run still answers for the one it was given.
+  sh(n.origin.origin, "branch", branch("-3"), "main");
+  pushed.push(branch("-3"));
+  const old = n.github.openPr(107, branch());
+  expect((await n.done(run, old)).error).toContain(`its branch is ${branch()}, not ${branch("-3")}`);
+  expect(await n.done(run, n.github.openPr(108, branch("-3")))).toEqual({ accepted: true });
+  expect(items.get(n.s, item.id)!.phase).toBe("pr");
 });

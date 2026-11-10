@@ -29,7 +29,7 @@ function cappedOf(f: FactoryRuntime) {
 
 /** `<repository name>-<number>`, such as `api-42`, or `<owner>-<name>-<number>` when another of the folder's
  * repositories has the same name. Lowercase, with anything a branch name should not hold made a dash. */
-export function issueKey(f: FactoryRuntime, repo: string, number: number) {
+function issueKey(f: FactoryRuntime, repo: string, number: number) {
   const [owner, name] = repo.toLowerCase().split("/") as [string, string];
   const repos = Object.keys(currentFolder(f)?.config.repositories ?? {}).map((r) => r.toLowerCase());
   const clash = repos.some((r) => r !== repo.toLowerCase() && r.split("/")[1] === name);
@@ -69,8 +69,7 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   },
   async check(item) {
     const { repo, number } = issueOf(item);
-    const [{ open, comments }, viewer] = await Promise.all([issueStateAndComments(repo, number), viewerLogin()]);
-    return { open, newest: newestOf(comments, viewer) };
+    return { open: (await issueStateAndComments(repo, number)).open };
   },
   async post(item, body) {
     const { repo, number } = issueOf(item);

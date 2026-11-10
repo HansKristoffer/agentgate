@@ -332,7 +332,12 @@ test("moving the factory keeps the init PR it waits on, so the machine it lands 
     "No machine is named nowhere; agentgate status lists them",
   ]);
 
-  expect((await api("/move", { node: "a" })).status).toBe(200);
+  // b cannot be asked what it still has open, so only a move that does not wait brings the factory back.
+  expect(await (await api("/move", { node: "a" })).json()).toEqual({
+    error:
+      "The factory runs on b, and this machine cannot reach it; agentgate factory move a --now moves it without waiting for that machine",
+  });
+  expect((await api("/move", { node: "a", now: true })).status).toBe(200);
   github.prs.get(7)!.state = "MERGED";
   await folderLoop(f);
   expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });

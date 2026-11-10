@@ -140,12 +140,12 @@ const triaged = {
   result: { kind: "triage", route: "implement", reproduction: { command: "bun test", failsBefore: true } },
 } as const;
 
-test("open issues with the label enter once as <repository>-<n> and hear that the factory took them, and closed, unlabelled or elsewhere-held issues do not", async () => {
+test("open issues with the label enter once as <repository>-<n> and hear that the factory took them, and closed, unlabelled or finished issues do not", async () => {
   const n = await githubFactory();
   n.github.add(1, { title: "Crash on save", body: "Click save twice." });
   n.github.add(2, { state: "CLOSED" });
   n.github.add(3, { labels: ["question"] });
-  const elsewhere = `${MARKER_PREFIX}${JSON.stringify({
+  const finished = `${MARKER_PREFIX}${JSON.stringify({
     item: "it_b",
     key: "gh-4",
     stage: "implement",
@@ -154,7 +154,7 @@ test("open issues with the label enter once as <repository>-<n> and hear that th
     commit: null,
     factory: "3f2c1a9",
     node: "b",
-    state: "open",
+    state: "finished",
   })} -->`;
   n.github.add(4, {
     comments: [
@@ -165,7 +165,7 @@ test("open issues with the label enter once as <repository>-<n> and hear that th
         createdAt: "2026-11-01T10:00:00Z",
       },
       {
-        body: `Taken.\n\n${elsewhere}`,
+        body: `Closed.\n\n${finished}`,
         author: { login: FACTORY_LOGIN },
         authorAssociation: "OWNER",
         createdAt: "2026-11-02T10:00:00Z",
@@ -186,13 +186,6 @@ test("open issues with the label enter once as <repository>-<n> and hear that th
       snapshot: { title: "Crash on save", body: "Click save twice.", url: `https://github.com/${n.repo}/issues/1` },
     },
   ]);
-  const board = await buildBoard(n.f, { includeWebhookUrls: false });
-  // b has not been heard from, so its issue is orphaned here: retry would take it over.
-  expect(board.items.find((i) => i.key === n.key(4))).toMatchObject({
-    heldBy: "b",
-    phase: "implement",
-    needsYou: { reason: "orphaned" },
-  });
   await idle(n.f);
   expect(n.posts().map((c) => c.args[1])).toEqual([`repos/${n.repo}/issues/1/comments`]);
   expect(parseMarkers(n.github.issues.get(1)!.comments[0]!.body)).toEqual([
@@ -236,7 +229,7 @@ test("an issue of a repository whose name another repository shares is keyed <ow
   expect(items.get(n.s, other.id)!.phase).not.toBe("closed");
 });
 
-test("a marker in a comment by another login counts for nothing: not for newestMarker, intake or retry", async () => {
+test("a marker in a comment by another login counts for nothing: not for newestMarker or intake", async () => {
   const n = await githubFactory();
   const forged = (number: number, marker: Partial<MarkerPayload>) => ({
     body: `Taken.\n\n${MARKER_PREFIX}${JSON.stringify({
@@ -258,12 +251,7 @@ test("a marker in a comment by another login counts for nothing: not for newestM
   n.github.add(1, { comments: [forged(1, {})] });
   n.github.add(2, { comments: [forged(2, { state: "finished" })] });
 
-  // Read as the factory's, the first would be adopted at review.
-  expect(await n.command("retry", `${n.repo}#1`)).toEqual({
-    code: 1,
-    output: [`No machine has marked ${n.key(1)} as taken; intake adds it`],
-  });
-  // Read as the factory's, the first would show as held by b and the second as finished.
+  // Read as the factory's, the second would count as finished, and intake would leave it out.
   await n.intake();
   expect(items.list(n.s).map((i) => [i.key, i.phase])).toEqual([
     [n.key(1), "triage"],
@@ -335,7 +323,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
       pr: null,
     },
   ]);
-  // The comment is now the issue's newest marker, so another machine would leave the issue to this one.
+  // The comment is now the issue's newest marker, read back from the factory's own login.
   expect(await n.f.sources.get("github")!.newestMarker!(items.get(n.s, first!.item!)!)).toMatchObject({
     node: "a",
     state: "open",

@@ -165,7 +165,7 @@ test("a triage stage with start: manual holds new items until approve, and intak
   expect(triageRuns(n)).toEqual([]);
   await n.dispatch();
   expect(launches(n)).toEqual([]);
-  // Paused for the maintainer, intake still reads the source (other machines' issues show on the board), and adds nothing.
+  // Paused for the maintainer, intake still reads the source, so its row on the board stays current, and adds nothing.
   const before = items.list(n.s).length;
   await n.intake();
   expect(polled).toEqual(["bugs"]);
@@ -265,7 +265,7 @@ const issue = (repo: string, number: number): IncomingItem => ({
   snapshot: { number, body: `body ${number}` },
 });
 
-test("intake adds each new issue once and marks it taken, leaves one another machine holds, and closes an item whose issue closed before its stage", async () => {
+test("intake adds each new issue once and marks it taken, leaves one the factory finished, and closes an item whose issue closed before its stage", async () => {
   const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
   const [one, two, three] = [1, 2, 3].map((i) => issue(n.repo, i));
   const source = fakeSource(n, { bugs: [one!, two!, three!] });
@@ -278,7 +278,7 @@ test("intake adds each new issue once and marks it taken, leaves one another mac
     commit: null,
     factory: "3f2c1a9",
     node: "b",
-    state: "open",
+    state: "finished",
   });
 
   await n.intake();
@@ -288,10 +288,9 @@ test("intake adds each new issue once and marks it taken, leaves one another mac
     ["gh-3", "bugs", three!.externalId],
   ]);
   const board = await buildBoard(n.f, { includeWebhookUrls: false });
-  expect(board.items.find((i) => i.key === "gh-2")).toMatchObject({ heldBy: "b", phase: "implement" });
   expect(board.sources).toEqual([{ id: "bugs", type: "github", repo: n.repo, lastPollAt: n.s.now() }]);
 
-  // Each issue taken hears it at once, with the marker that keeps other machines' intake away.
+  // Each issue taken hears it at once.
   await idle(n.f);
   expect(source.posts.map((p) => [p.item, p.body.split("\n")[0]])).toEqual([
     ["gh-1", "**gh-1**: The factory took this."],

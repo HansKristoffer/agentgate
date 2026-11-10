@@ -194,6 +194,9 @@ export const stageFileSchema = z
 export type StageFile = z.infer<typeof stageFileSchema>;
 
 const pointerNode = z.string().min(1).max(512); // the machine that runs the factory
+/** Set by `factory move` while the factory machine still has open items: the machine the factory moves to once they
+ * finish. Until then intake takes nothing new, and the factory machine moves the pointer itself. */
+const pointerMoveTo = pointerNode.optional();
 /**
  * `settings.factory`: where the factory's folder lives and which machine runs it. `github` fetches it from a folder of a
  * repository; `agentgate` reads the synced `factoryFolder` record, for a project whose repository must not hold the
@@ -207,10 +210,11 @@ export const factoryPointerSchema = z.discriminatedUnion("store", [
     path: z.string().max(200).default(""), // folder inside the repo; "" is the root
     ref: z.string().min(1).max(200).optional(), // default: the repo's default branch
     node: pointerNode,
+    moveTo: pointerMoveTo,
     // Set by `factory init`: the PR that adds the folder. Once it merges, the factory follows the default branch.
     init: z.object({ pr: z.number().int().positive() }).optional(),
   }),
-  z.object({ store: z.literal("agentgate"), node: pointerNode }),
+  z.object({ store: z.literal("agentgate"), node: pointerNode, moveTo: pointerMoveTo }),
 ]);
 export type FactoryPointer = z.infer<typeof factoryPointerSchema>;
 const factoryStores = ["github", "agentgate"] as const;
@@ -221,6 +225,20 @@ export const folderLabel = (p: { store: FactoryStore; repo?: string; path?: stri
   p.store === "agentgate"
     ? "stored in agentgate"
     : `${p.repo}${p.path ? `:${p.path}` : ""}${p.ref ? ` at ${p.ref}` : ""}`;
+
+/** What a board says while `factory move` waits for the factory machine's open items, and after the last one for the
+ * comments it has not posted yet. */
+export const movingLabel = ({ to, open }: { to: string; open?: number }) => {
+  const when =
+    open === undefined
+      ? "its open items finish"
+      : open === 0
+        ? "its last comments are posted"
+        : open === 1
+          ? "1 item finishes"
+          : `${open} items finish`;
+  return `Moving to ${to} once ${when}`;
+};
 
 /** The relay's record limit is 1 MiB, so a stored folder stays under it with room for the envelope. */
 const MAX_STORED_FOLDER = 900 * 1024;
@@ -315,7 +333,6 @@ export const needsYouSchema = z
       "stalled",
       "held",
       "failed",
-      "orphaned",
       "stuck",
       "handed-off",
       "stopped",
@@ -513,7 +530,9 @@ export type Moment = (typeof writeBackMoments)[number];
 
 /**
  * The JSON in `<!-- agentgate-factory:1 {...} -->`, read back from issues and PRs. Not strict: a newer factory may add
- * a field, and an older one must still recognize its comments.
+ * a field, and an older one must still recognize its comments. A comment that carries one is the factory's own, and
+ * intake reads its `state`: an issue whose newest marker says `finished` is not taken in again. The rest says what the
+ * comment was about, for whoever reads its source.
  */
 export const markerPayloadSchema = z.object({
   item: z.string().min(1),
@@ -525,8 +544,7 @@ export const markerPayloadSchema = z.object({
   factory: z.string().min(1), // the factory folder's commit
   node: z.string().min(1),
   state: z.enum(["open", "finished"]),
-  /** The item's PR, so a machine that takes the issue over keeps it. */
-  pr: z.string().nullish(),
+  pr: z.string().nullish(), // the item's PR, once it has one
 });
 export type MarkerPayload = z.infer<typeof markerPayloadSchema>;
 
@@ -554,7 +572,6 @@ export const boardItemSchema = z.object({
   url: z.string().optional(),
   source: z.string(),
   phase: z.enum(itemPhases),
-  heldBy: z.string(), // the machine whose tables hold it
   run: z
     .object({
       id: z.string(),
@@ -566,7 +583,7 @@ export const boardItemSchema = z.object({
     })
     .optional(),
   needsYou: needsYouSchema.optional(),
-  /** The actions the holding machine takes for it now; it refuses the others. */
+  /** The actions the daemon takes for it now; it refuses the others. */
   actions: z.array(z.enum(itemActions)),
   pr: z
     .object({
@@ -595,6 +612,9 @@ export const factoryBoardSchema = z.object({
       node: z.string(),
       online: z.boolean(),
       lastSeenAt: z.number().optional(),
+      /** `factory move` waits: the factory moves to `to` once the `open` items of its machine finish, and it has
+       * posted its last comments. Only that machine knows the count. */
+      moving: z.object({ to: z.string(), open: z.number().optional() }).optional(),
     })
     .nullable(),
   config: z
@@ -625,6 +645,9 @@ export const factoryBoardSchema = z.object({
     mainRed: z.array(z.string()), // repositories whose default branch is red
   }),
   items: z.array(boardItemSchema), // open items, plus items finished in the last 7 days
+  /** Open items in the tables of the machine answering, while another machine runs the factory: nothing drives them
+   * until the factory moves back, and `drop` on this machine closes one. */
+  frozen: z.array(boardItemSchema).optional(),
   machines: z.array(z.object({ node: z.string(), online: z.boolean(), threads: z.array(boardThreadSchema) })),
   sources: z.array(
     z.object({
@@ -727,8 +750,9 @@ export const factoryUseInputSchema = z.union([
     .strict(),
   z.object({ store: z.literal("agentgate"), node: pointerNode.optional() }).strict(),
 ]);
-/** POST /api/factory/move, `agentgate factory move` */
-export const factoryMoveInputSchema = z.object({ node: pointerNode }).strict();
+/** POST /api/factory/move, `agentgate factory move`. Without `now`, the factory machine finishes its open items
+ * first; with it, the factory moves at once and they stay frozen there. */
+export const factoryMoveInputSchema = z.object({ node: pointerNode, now: z.boolean().optional() }).strict();
 /** POST /api/factory/init, `agentgate factory init`: `store` is where the new folder goes, GitHub by default. */
 export const factoryInitInputSchema = z
   .object({ repo, node: pointerNode.optional(), store: z.enum(factoryStores).optional() })

@@ -1,15 +1,15 @@
 import type { FactoryBoard, FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, moveItem, writeBack } from "./controller.ts";
+import { closeItem, defaultBranch, moveItem, originBranches, writeBack } from "./controller.ts";
 import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
 import { defaultBranchCi, prView, type PrView } from "./gh.ts";
 import { shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
- * The implement stage. The thread works on `factory/<key>` and opens a draft PR; the factory checks that PR on GitHub
- * before the item moves to `pr`. From there the PR follower (pr.ts) takes it to ready or shipped, and the thread keeps
- * owning the PR.
+ * The implement stage. The thread works on a `factory/<key>` branch and opens a draft PR; the factory checks that PR on
+ * GitHub before the item moves to `pr`. From there the PR follower (pr.ts) takes it to ready or shipped, and the thread
+ * keeps owning the PR.
  */
 
 const IMPLEMENT_BRIEF = `You implement one item for AgentGate's software factory.
@@ -38,13 +38,24 @@ function ciOf(f: FactoryRuntime) {
 
 const folderOf = (f: FactoryRuntime, item: FactoryItem) => folderFor(f, item.configCommit);
 
-/** The first implement run of an item works on `factory/<key>`. A later one gets a branch of its own, so it never
- * meets the worktree or the pushed branch of the run before it, nor, for an item taken over from another machine,
- * that machine's. */
-function branchOf(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
-  const before = runs.forItem(f.s, item.id).filter((r) => r.kind === "implement" && r.queuedAt <= run.queuedAt).length;
-  const n = before + (item.adoptedFrom ? 1 : 0);
-  return n > 1 ? `factory/${item.key}-${n}` : `factory/${item.key}`;
+/**
+ * The branch a run starts on: the first of `factory/<key>`, `factory/<key>-2`, `-3`… that origin does not have and no
+ * other run of the item was given. Origin can still have one from before: an issue is taken in again while the branch
+ * of an item that is frozen on another machine, or was lost with its tables, is there. And a run that never pushed left
+ * a worktree on its branch, which the next attempt must not meet. Decided once, at the launch, and kept on the run, so
+ * a launch sent again and the report check (`validate`) both name the branch the thread was given.
+ */
+async function branchFor(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
+  if (run.branch) return run.branch;
+  const base = `factory/${item.key}`;
+  const taken = new Set([
+    ...(await originBranches(f, item.repo, base)),
+    ...runs.forItem(f.s, item.id).flatMap((r) => r.branch ?? []),
+  ]);
+  let branch = base;
+  for (let n = 2; taken.has(branch); n++) branch = `${base}-${n}`;
+  runs.update(f.s, run.id, { branch });
+  return branch;
 }
 
 /** How the PR names its source, so the source links to it. */
@@ -80,7 +91,7 @@ const implement = (f: FactoryRuntime) => ({
     if ((await defaultCi(f, item.repo)) === "failing")
       return { wait: `the default branch of ${item.repo} fails CI; the fix starts once it passes` };
     const baseRef = await defaultBranch(f, item.repo);
-    const branch = branchOf(f, run, item);
+    const branch = await branchFor(f, run, item);
     const model = folderOf(f, item)?.stages.implement?.file.model;
     const wakes =
       "the factory wakes you with what the PR needs: failing checks, a conflict, or the review comments of the repository's people and bots";
@@ -118,7 +129,7 @@ const implement = (f: FactoryRuntime) => ({
     } catch (e) {
       return `The factory could not read ${result.prUrl} on GitHub (${shortError(e)}). Fix the URL, or report again in a minute`;
     }
-    const branch = branchOf(f, run, item);
+    const { branch } = run;
     const problems = [
       !result.prUrl.toLowerCase().startsWith(`https://github.com/${item.repo.toLowerCase()}/pull/`) &&
         `it is not a PR in ${item.repo}`,

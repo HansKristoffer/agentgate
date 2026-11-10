@@ -261,7 +261,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   const [run] = n.started;
   items.update(n.s, run!.item!, { needsYou: { reason: "failed" } });
   runs.update(n.s, run!.id, { state: "silent" });
-  expect((await n.command("retry", "gh-2")).output).toEqual(["a holds no factory item gh-2"]);
+  expect((await n.command("retry", "gh-2")).output).toEqual(["a has no factory item gh-2"]);
 
   expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
   expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: undefined });
@@ -290,7 +290,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   expect(n.markers("gh-1").at(-1)).toMatchObject({ state: "finished" });
   expect(n.posts.at(-1)!.body).toContain("The maintainer dropped it: not now.");
 
-  expect(await n.command("retry", "gh-404")).toEqual({ code: 1, output: ["a holds no factory item gh-404"] });
+  expect(await n.command("retry", "gh-404")).toEqual({ code: 1, output: ["a has no factory item gh-404"] });
 });
 
 test("retry takes in again an item its triage closed, and the issue hears the factory took it again", async () => {

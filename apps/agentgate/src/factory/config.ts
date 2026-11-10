@@ -6,6 +6,7 @@ import {
   factoryMoveInputSchema,
   factoryUseInputSchema,
   folderLabel,
+  movingLabel,
   scoutFileSchema,
   stageFileSchema,
   stageNames,
@@ -17,10 +18,11 @@ import {
 } from "@agentgate/protocol";
 import { exponentialBackoff, getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
+import { PeerError } from "../handoff/jobs.ts";
 import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
-import { items } from "./db.ts";
+import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFetch, storedFiles } from "./folder.ts";
 import { branchProtected, defaultBranch, prState } from "./gh.ts";
 import { asInput, opRoute, requireFactoryProtocol, runOp, type FactoryRuntime } from "./runtime.ts";
@@ -28,7 +30,8 @@ import { asInput, opRoute, requireFactoryProtocol, runOp, type FactoryRuntime } 
 /**
  * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves (or reads
  * the folder agentgate stores, stored.ts), and the loader that checks it as a whole. A broken commit never replaces the
- * last good folder; items finish under the commit they started with (`folderAt`).
+ * last good folder; items finish under the commit they started with (`folderAt`). And the pointer itself: which machine
+ * runs the factory, and moving it to another (`moveFactory`).
  */
 
 export interface LoadedFolder {
@@ -381,15 +384,20 @@ function prune(f: FactoryRuntime) {
 /** What the board shows about the pointer and the folder. */
 type FactoryStatus = Pick<FactoryBoard, "factory" | "config">;
 
+const openItems = (f: FactoryRuntime) => items.list(f.s, { open: true }).length;
+
 function factoryStatus(f: FactoryRuntime): FactoryStatus {
   const { s } = f;
   const pointer = f.pointer();
   if (!pointer) return { factory: null, config: null };
   const seen = lastSeen(s, pointer.node);
+  const { moveTo, ...rest } = pointer;
   const factory = {
-    ...pointer,
+    ...rest,
     online: pointer.node === s.nodeId || s.now() - seen < 60_000,
     ...(seen > 0 && { lastSeenAt: seen }),
+    // Only the factory machine knows how many of its items are open.
+    ...(moveTo && { moving: { to: moveTo, ...(f.isFactoryNode() && { open: openItems(f) }) } }),
   };
   const state = readState(s, pointer);
   const folder = currentFolder(f);
@@ -414,7 +422,7 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
 export const defaultNode = (s: Store) => s.list("node").find((n) => n.alwaysOn)?.id ?? s.nodeId;
 
 /** The pointer is written only here: `use`, `move`, `off` and following the init PR. The generic settings patch has no
- * `factory`, so nothing else can drop `init` or skip the protocol check. */
+ * `factory`, so nothing else can drop `init` or `moveTo`, or skip the protocol check. */
 function setPointer(s: Store, pointer: FactoryPointer | undefined) {
   s.transaction(() => {
     const { factory: _, ...rest } = s.settings();
@@ -428,11 +436,15 @@ export async function useFactory(f: FactoryRuntime, input: unknown, extra: { ini
   const { s } = f;
   const parsed = factoryUseInputSchema.parse(input);
   requireFactoryProtocol(s);
-  const node = parsed.node ?? defaultNode(s);
+  // Another folder is no reason to change machines, which would freeze the open items of the one it runs on, nor to
+  // forget a move that waits.
+  const current = f.pointer();
+  const node = parsed.node ?? current?.node ?? defaultNode(s);
+  const moveTo = node === current?.node ? current.moveTo : undefined;
   if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);
   if (parsed.store === "agentgate") {
     if (!storedFiles(s)) throw new Error(NO_STORED_FOLDER);
-    setPointer(s, { store: "agentgate", node });
+    setPointer(s, { store: "agentgate", node, ...(moveTo && { moveTo }) });
     await sync(f, true);
     return factoryStatus(f);
   }
@@ -442,6 +454,7 @@ export async function useFactory(f: FactoryRuntime, input: unknown, extra: { ini
     path: folderPath(parsed.path ?? ""),
     ...(parsed.ref && { ref: parsed.ref }),
     node,
+    ...(moveTo && { moveTo }),
     ...(extra.init && { init: extra.init }),
   };
   setPointer(s, pointer);
@@ -455,17 +468,79 @@ export async function storedChanged(f: FactoryRuntime) {
   if (f.pointer()?.store === "agentgate" && f.isFactoryNode()) await sync(f, true);
 }
 
-/** `agentgate factory move <machine>` and `POST /api/factory/move`: the same folder on another machine, keeping the
- * ref and the init PR it waits on. */
-export async function moveFactory(f: FactoryRuntime, node: string) {
+/** The pointer that `node` can take, and apart from it the machine a move already waits for. */
+function movable(f: FactoryRuntime, node: string) {
   const { s } = f;
-  const pointer = f.pointer();
-  if (!pointer) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
+  const current = f.pointer();
+  if (!current) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
   if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);
   requireFactoryProtocol(s);
-  setPointer(s, { ...pointer, node });
-  await sync(f, true);
+  const { moveTo, ...pointer } = current;
+  return { pointer, moveTo };
+}
+
+/** Whether the factory can leave this machine: no item is open, and the outbox has sent what it owed. No other machine
+ * can send those comments, and an issue whose `closed` comment never arrived looks open to the next machine's intake. */
+const drained = (f: FactoryRuntime) => !openItems(f) && !hasUnsentWrites(f.s);
+
+/**
+ * The `move` operation, on the factory machine: the same folder on another machine, keeping the ref and the init PR it
+ * waits on. Only the factory machine drives items, so it finishes the open ones first: the pointer records where the
+ * factory goes (`moveTo`), intake takes nothing new, and `finishMove` moves the pointer once the machine is drained.
+ * Drained already, it moves at once, and naming the machine that already runs it cancels a move it waits for.
+ */
+function startMove(f: FactoryRuntime, input: unknown) {
+  const { s } = f;
+  const { node } = factoryMoveInputSchema.parse(input);
+  const { pointer, moveTo } = movable(f, node);
+  if (node === pointer.node) {
+    if (moveTo) {
+      setPointer(s, pointer);
+      f.events.emit({ kind: "note", text: `The factory's move to ${moveTo} was cancelled` });
+    }
+  } else if (drained(f)) {
+    setPointer(s, { ...pointer, node });
+  } else if (node !== moveTo) {
+    setPointer(s, { ...pointer, moveTo: node });
+    const text = `${movingLabel({ to: node, open: openItems(f) })}; nothing new is taken in until then`;
+    f.events.emit({ kind: "note", text });
+  }
   return factoryStatus(f);
+}
+
+/** The move loop: the machine is drained, so the factory goes where `move` said. */
+function finishMove(f: FactoryRuntime) {
+  const pointer = f.pointer();
+  if (!pointer?.moveTo || !drained(f)) return;
+  const { moveTo, ...rest } = pointer;
+  setPointer(f.s, { ...rest, node: moveTo });
+  f.events.emit({ kind: "note", text: `The last open item finished, so the factory moved to ${moveTo}` });
+}
+
+/**
+ * `agentgate factory move <machine> [--now]` and `POST /api/factory/move`. Without `now` the factory machine decides
+ * (`startMove`), since only it knows what it has open. With `now` the pointer moves at once, from any machine, for when
+ * the factory machine is gone or its items are not worth the wait: they stay frozen in its tables.
+ */
+async function moveFactory(f: FactoryRuntime, input: unknown): Promise<FactoryStatus> {
+  const { node, now } = factoryMoveInputSchema.parse(input);
+  // Checked here first, so a mistyped machine is refused the same way whichever machine is asked.
+  const { pointer } = movable(f, node);
+  if (now) {
+    setPointer(f.s, { ...pointer, node });
+    // On the machine it moved to, the folder loads before this answers.
+    await sync(f, true);
+    return factoryStatus(f);
+  }
+  try {
+    return (await runOp(f, "move", { node })) as FactoryStatus;
+  } catch (e) {
+    // The factory machine's own answer, or this machine's when it runs the factory.
+    if (e instanceof PeerError || f.isFactoryNode()) throw e;
+    throw new Error(
+      `${getErrorMessage(e)}; agentgate factory move ${node} --now moves it without waiting for that machine`,
+    );
+  }
 }
 
 /** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
@@ -508,6 +583,10 @@ function describe({ factory, config, warning }: FactoryStatus & { warning?: stri
   if (!factory) return ["The factory is off."];
   const offline = factory.online ? "" : " (offline)";
   const lines = [`Factory folder ${folderLabel(factory)}, run by ${factory.node}${offline}.`];
+  if (factory.moving)
+    lines.push(
+      `${movingLabel(factory.moving)}; nothing new is taken in until then. agentgate factory move ${factory.moving.to} --now does not wait, and leaves the open items frozen on ${factory.node}; agentgate factory move ${factory.node} cancels.`,
+    );
   if (config?.name) lines.push(`Loaded ${config.name} at ${short(config.commit)}.`);
   if (config?.error) lines.push(`Error: ${config.error}`);
   if (!config) lines.push("Not loaded on this machine yet.");
@@ -543,12 +622,18 @@ export function setup(f: FactoryRuntime): void {
       return print(await useFactory(f, { repo, path: path.join(":"), ...rest }), io.out);
     },
   });
+  f.ops.set("move", { run: async (input) => startMove(f, input) });
   f.commands.set("move", {
-    usage: "move <machine>",
+    usage: "move <machine> [--now]  once its open items finish; --now does not wait, and leaves them frozen",
     local: true,
     run: async (args, io) => {
-      if (args.length !== 1) throw new Error("usage: agentgate factory move <machine>");
-      return print(await moveFactory(f, args[0]!), io.out);
+      const { values, positionals } = parseArgs({
+        args,
+        options: { now: { type: "boolean" } },
+        allowPositionals: true,
+      });
+      if (positionals.length !== 1) throw new Error("usage: agentgate factory move <machine> [--now]");
+      return print(await moveFactory(f, { node: positionals[0], ...(values.now && { now: true }) }), io.out);
     },
   });
   f.commands.set("off", { usage: "off", local: true, run: async (_, io) => print(turnOff(f), io.out) });
@@ -564,13 +649,14 @@ export function setup(f: FactoryRuntime): void {
     return c.json(await asInput(() => useFactory(f, body)));
   });
   f.api.post("/move", async (c) => {
-    const { node } = factoryMoveInputSchema.parse(await jsonInput(c.req.raw));
-    return c.json(await asInput(() => moveFactory(f, node)));
+    const body = await jsonInput(c.req.raw);
+    return c.json(await asInput(() => moveFactory(f, body)));
   });
   f.api.delete("/", async (c) => c.json(await asInput(() => turnOff(f))));
   // Through the operation, which reaches the factory machine from any machine, as the CLI does.
   f.api.post("/reload", async (c) => c.json(await opRoute(f, "reload", {})));
 
   f.loops.push({ name: "factory-folder", everyMs: 2 * 60_000, where: "factory-node", run: () => sync(f) });
+  f.loops.push({ name: "factory-move", everyMs: 30_000, where: "factory-node", run: async () => finishMove(f) });
   f.boardParts.push(async () => factoryStatus(f));
 }
