@@ -185,10 +185,13 @@ export function ensureFactoryTables(s: Store) {
       text text not null)`);
     s.db.run("create index if not exists factory_events_item on factory_events(item, kind)");
     // The outbox: every write to GitHub or Linear whose outcome can be uncertain, claimed with its body before it is
-    // sent (writes.ts). `item` is the owner: an item, or a run without one. Its own table: the event log is trimmed.
+    // sent (outbox.ts). `item` is the owner: an item, or a run without one. `refusals` counts the times the service
+    // said no, `claimed` is when it was claimed and `at` when it was last sent. Its own table: the event log is
+    // trimmed.
     s.db.run(`create table if not exists factory_writebacks (
       item text not null, moment text not null, ref text not null, status text not null, body text not null,
-      what text not null, attempts integer not null default 0, at integer not null, primary key (item, moment, ref))`);
+      what text not null, refusals integer not null default 0, claimed integer not null, at integer not null,
+      primary key (item, moment, ref))`);
   });
 }
 

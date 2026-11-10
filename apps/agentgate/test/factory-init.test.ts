@@ -9,6 +9,7 @@ import { initTemplate } from "../src/factory/init.ts";
 import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
+import { recorded } from "./fixtures/gh.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 
 const REPO = "acme/api";
@@ -26,9 +27,9 @@ afterEach(async () => {
 afterAll(removeTmp);
 
 const ok = (value: unknown) => ({ ok: true, out: typeof value === "string" ? value : JSON.stringify(value) });
-const notFound = { ok: false, out: JSON.stringify({ message: "Not Found", status: "404" }) };
 
-/** GitHub for one repository, answering the gh calls `factory init` and the folder loop make. */
+/** GitHub for one repository, answering the gh calls `factory init` and the folder loop make. What is not there, and
+ * a repository without commits, are answered as GitHub was recorded answering them (fixtures/gh-recorded.json). */
 function fakeGitHub() {
   const github = {
     files: new Set<string>(),
@@ -50,7 +51,8 @@ function fakeGitHub() {
   host.gh = async (args, stdin) => {
     github.calls.push(args);
     const [cmd, sub] = args;
-    if (cmd === "repo" && sub === "view") return ok({ defaultBranchRef: { name: "main" } });
+    if (cmd === "repo" && sub === "view")
+      return github.empty ? recorded("repoView.empty") : ok({ defaultBranchRef: { name: "main" } });
     if (cmd === "pr" && sub === "create") {
       const number = 7 + github.prs.size;
       const flag = (name: string) => args[args.indexOf(name) + 1]!;
@@ -71,15 +73,18 @@ function fakeGitHub() {
     if (cmd !== "api") throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
     const path = sub!.replace(`repos/${REPO}/`, "");
     const post = args.includes("POST");
-    if (path.startsWith("contents/")) return github.files.has(path.slice(9)) ? ok(path.slice(9)) : notFound;
+    if (path.startsWith("contents/")) {
+      if (github.empty) return recorded("fileExists.empty");
+      return github.files.has(path.slice(9)) ? ok(path.slice(9)) : recorded("fileExists.missing");
+    }
     if (path.startsWith("branches/")) {
       const branch = decodeURIComponent(path.slice(9));
-      return github.branches.has(branch) ? ok({ name: branch, protected: branch === "main" }) : notFound;
+      if (github.empty) return recorded("branchExists.empty");
+      return github.branches.has(branch)
+        ? ok({ name: branch, protected: branch === "main" })
+        : recorded("branchExists.missing");
     }
-    if (path === "git/ref/heads/main")
-      return github.empty
-        ? { ok: false, out: JSON.stringify({ message: "Git Repository is empty." }) }
-        : ok({ object: { sha: "base" } });
+    if (path === "git/ref/heads/main") return ok({ object: { sha: "base" } });
     if (path === "git/commits/base") return ok({ tree: { sha: "base-tree" } });
     if (path === "git/trees" && post) {
       github.tree = JSON.parse(stdin!).tree;
@@ -98,7 +103,7 @@ function fakeGitHub() {
       return ok({ ref: "moved" });
     }
     if (path.startsWith("labels/"))
-      return github.labels.has(decodeURIComponent(path.slice(7))) ? ok("factory") : notFound;
+      return github.labels.has(decodeURIComponent(path.slice(7))) ? ok("factory") : recorded("label.missing");
     if (path === "labels" && post) {
       if (github.labelsFail) return { ok: false, out: JSON.stringify({ message: "Must have admin rights" }) };
       github.labels.add(JSON.parse(stdin!).name);
@@ -254,10 +259,7 @@ test("init refuses before writing anything: a factory on, a folder there, an ope
   github.prs.clear();
 
   github.empty = true;
-  const empty = await a.command("init", REPO);
-  expect(empty.code).toBe(1);
-  expect(empty.output[0]).toContain("an empty repository has none");
-  expect(github.writes()).toEqual([]);
+  await refused(`${REPO} has no commits yet; push a first commit, then try again`);
   github.empty = false;
 
   // A branch an earlier init left without an open PR, as when opening the PR failed: init moves it to its commit.

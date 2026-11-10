@@ -1044,8 +1044,9 @@ export function management(ctx: Ctx) {
     return c.json({ ok: true });
   });
   // `agentgate factory <name> ...`: the factory's features register their commands, and the CLI only relays them.
+  // `stdin` tells it which of them to read stdin for (`readsStdin`).
   app.get("/factory/commands", (c) =>
-    c.json(Array.from(ctx.factory.commands, ([name, { usage }]) => ({ name, usage }))),
+    c.json(Array.from(ctx.factory.commands, ([name, { usage, stdin }]) => ({ name, usage, stdin }))),
   );
   // Commands include setting secrets, so like the secret routes they are loopback only; the app uses typed routes.
   app.post("/factory/command", async (c) => {

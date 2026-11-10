@@ -18,7 +18,8 @@ const KEY = "lin_api_test_key_123";
 
 type Node = Awaited<ReturnType<typeof factoryNode>>;
 
-/** How the item's last comment for a moment ended, as `factory show` tells it: posted, failed, uncertain or pending. */
+/** How the item's last comment for a moment stands, as `factory show` tells it: posted, failed, unreachable,
+ * uncertain or pending. */
 async function statusOf(n: Node, item: string, moment: string) {
   const { output } = await n.command("show", item, "--json");
   const detail = JSON.parse(output.at(-1)!) as { writebacks: { moment: string; status: string }[] };
@@ -216,7 +217,7 @@ test("a marker in a comment by another Linear user counts for nothing: not for n
   expect(await n.f.sources.get("linear")!.newestMarker!(item)).toBeUndefined();
 });
 
-test("a comment whose request dropped is uncertain and never sent again, and one Linear refused is tried three times, then failed", async () => {
+test("a comment Linear never received is sent again until it goes through; one whose mutation dropped is uncertain and never sent again; one Linear refused is tried three times, then failed", async () => {
   const n = await factoryNode(cleanup, { config: linearConfig });
   setSecret(n.s, "LINEAR_KEY", KEY);
   const linear = fakeLinear();
@@ -225,14 +226,44 @@ test("a comment whose request dropped is uncertain and never sent again, and one
   await idle(n.f);
   const item = items.byExternal(n.s, "ENG-42")!;
   const texts = () => n.f.events.recent(50).map((e) => e.text);
+  const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
+  const pass = async () => {
+    await loopTask(n.f, outbox)();
+    await idle(n.f);
+  };
+  const comments = () => linear.issues.get("ENG-42")!.comments.length;
+  const taken = comments();
 
+  // No connection opened, as Bun's fetch reports it: nothing was sent.
+  linear.answerWith(() => {
+    throw Object.assign(new TypeError("ECONNREFUSED: Unable to connect"), { code: "ECONNREFUSED" });
+  });
+  writeBack(n.f, item, "triaged");
+  await idle(n.f);
+  expect(await statusOf(n, item.id, "triaged")).toBe("unreachable");
+  expect(texts()).toContain("The triaged comment on eng-42: unreachable (Linear is not reachable); it is tried again");
+  // The read that comes before the mutation dropped: whatever became of it, no comment was written.
+  linear.answerWith((operation) => {
+    if (operation === "FactoryIssueId") throw new TypeError("socket hang up");
+  });
+  writeBack(n.f, item, "ready");
+  await idle(n.f);
+  expect(await statusOf(n, item.id, "ready")).toBe("unreachable");
+  for (let again = 0; again < 4; again++) await pass();
+  expect(comments()).toBe(taken);
+  linear.answerWith(undefined);
+  await pass();
+  expect([await statusOf(n, item.id, "triaged"), await statusOf(n, item.id, "ready")]).toEqual(["posted", "posted"]);
+  expect(comments()).toBe(taken + 2);
+
+  // The mutation itself dropped after it was sent: Linear may have the comment.
   linear.answerWith((operation) => {
     if (operation === "FactoryComment") throw new TypeError("socket hang up");
   });
   writeBack(n.f, item, "waiting", { text: "Which one?", ref: "q1" });
   await idle(n.f);
   expect(await statusOf(n, item.id, "waiting")).toBe("uncertain");
-  expect(texts()).toContain("The waiting comment on eng-42: uncertain (Linear is not reachable)");
+  expect(texts()).toContain("The waiting comment on eng-42: uncertain (Linear did not answer)");
   linear.answerWith((operation) =>
     operation === "FactoryComment"
       ? Response.json({ errors: [{ message: "Argument Validation Error" }] }, { status: 400 })
@@ -241,11 +272,7 @@ test("a comment whose request dropped is uncertain and never sent again, and one
   writeBack(n.f, item, "closed", { text: "Out of scope." });
   await idle(n.f);
   expect(await statusOf(n, item.id, "closed")).toBe("pending");
-  const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
-  for (let pass = 0; pass < 2; pass++) {
-    await loopTask(n.f, outbox)();
-    await idle(n.f);
-  }
+  for (let again = 0; again < 2; again++) await pass();
   expect(await statusOf(n, item.id, "closed")).toBe("failed");
   expect(await statusOf(n, item.id, "waiting")).toBe("uncertain");
   expect(texts()).toContain("The closed comment on eng-42: failed (Linear: Argument Validation Error)");

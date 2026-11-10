@@ -1,6 +1,6 @@
 import type { ItemPhase, NeedsYou, RunState } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
-import { logError } from "./runtime.ts";
+import { logError, type PostResult } from "./runtime.ts";
 
 /** What happened in the factory, for the board's event list, and for features that react to each other's changes. */
 export type FactoryEvent =
@@ -17,7 +17,7 @@ export type FactoryEvent =
       item?: string;
       run?: string;
       moment: string;
-      status: "posted" | "failed" | "uncertain";
+      status: PostResult["status"];
       text: string;
     }
   | { kind: "config"; commit?: string; error?: string; text: string }

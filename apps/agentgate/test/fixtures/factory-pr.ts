@@ -1,10 +1,10 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { items, runs, type FactoryItem, type FactoryRun } from "../../src/factory/db.ts";
 import { loopTask } from "../../src/factory/runtime.ts";
-import { host } from "../../src/logins.ts";
+import { host, type GhAnswer } from "../../src/logins.ts";
 import { factoryNode, idle } from "./t3-mcp.ts";
 
-type Answer = { ok: boolean; out: string } | undefined;
+type Answer = GhAnswer | undefined;
 const ok = (value: unknown): Answer => ({ ok: true, out: JSON.stringify(value) });
 const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
 const sha = () =>
@@ -46,13 +46,18 @@ const ROLLUP = {
   failing: { test: "FAILURE" },
   pending: { test: null },
 };
-const checkRuns = (runs: Record<string, string | null>) =>
-  Object.entries(runs).map(([name, conclusion]) => ({
-    __typename: "CheckRun",
-    name,
-    status: conclusion ? "COMPLETED" : "IN_PROGRESS",
-    conclusion,
-  }));
+/** A commit's checks as GraphQL answers `contexts(first: 100)`: one page, and whether there are more. */
+const checkRuns = (runs: Record<string, string | null>) => ({
+  nodes: Object.entries(runs)
+    .slice(0, 100)
+    .map(([name, conclusion]) => ({
+      __typename: "CheckRun",
+      name,
+      status: conclusion ? "COMPLETED" : "IN_PROGRESS",
+      conclusion,
+    })),
+  pageInfo: { hasNextPage: Object.keys(runs).length > 100 },
+});
 
 /** GitHub for one repository with default branch `main`, answering the gh commands gh.ts sends in the shapes gh 2.102
  * prints: labelled issues and their comments, pull requests, and the default branch's checks. */
@@ -110,6 +115,8 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
       return ok(
         [...issues]
           .filter(([, i]) => i.state === "OPEN")
+          // gh lists no more than --limit.
+          .slice(0, Number(flag(args, "--limit")))
           .map(([number, i]) => ({
             number,
             title: i.title,
@@ -203,7 +210,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
           ...c,
           line,
           originalLine: line,
-          comments: { nodes: comments.map(({ bot, ...m }) => ({ ...m, author: author(bot) })) },
+          comments: { nodes: comments.map(({ bot, ...m }) => ({ ...m, state: "SUBMITTED", author: author(bot) })) },
         })),
       },
     });
@@ -232,7 +239,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
                 nodes: [
                   {
                     commit: {
-                      statusCheckRollup: { contexts: { nodes: checkRuns(pr.checkRuns ?? ROLLUP[pr.checks]) } },
+                      statusCheckRollup: { contexts: checkRuns(pr.checkRuns ?? ROLLUP[pr.checks]) },
                     },
                   },
                 ],
@@ -246,7 +253,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
       return ok({ data: { repository } });
     }
     if (vars.query!.includes("defaultBranchRef")) {
-      const target = { statusCheckRollup: { contexts: { nodes: checkRuns(github.mainChecks) } } };
+      const target = { statusCheckRollup: { contexts: checkRuns(github.mainChecks) } };
       return ok({ data: { repository: { defaultBranchRef: { ...requiring(), target } } } });
     }
     if (vars.query!.includes("reviewThreads")) {

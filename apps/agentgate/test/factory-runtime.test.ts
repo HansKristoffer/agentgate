@@ -1,4 +1,5 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
+import { join } from "node:path";
 import { revision } from "../src/configuration.ts";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import {
@@ -10,8 +11,12 @@ import {
   type FactoryItem,
   type FactoryRun,
 } from "../src/factory/db.ts";
-import { later, loopTask, withItem, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
+import { later, loopTask, readsStdin, withItem, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
+import { getSecret } from "../src/factory/secrets.ts";
 import { Store } from "../src/store.ts";
+import { removeTmp, tmp } from "./fixtures/git.ts";
+
+afterAll(removeTmp);
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -337,6 +342,69 @@ test("on another machine, commands go to the factory machine, and fail clearly w
   expect(await run("status")).toEqual({ status: 200, body: { code: 2, output: ["from b"] } });
   expect(sent).toEqual([{ kind: "command", name: "status", args: ["--json"] }]);
   expect(await run("t3")).toEqual({ status: 200, body: { code: 0, output: ["local"] } });
+});
+
+test("only the commands that take input on stdin are said to read it", async () => {
+  const { ctx } = fixture();
+  const listed = await caller(app(ctx))("/api/factory/commands");
+  const commands = (await listed.json()) as { name: string; stdin?: string[] }[];
+  const reads = (line: string) => {
+    const [name, ...args] = line.split(" ");
+    return readsStdin(
+      commands.find((c) => c.name === name),
+      args,
+    );
+  };
+
+  expect(
+    [
+      "status",
+      "status --json",
+      "reload",
+      "secret list",
+      "secret delete LINEAR_KEY",
+      "secret set LINEAR_KEY",
+      "folder ls",
+      "folder cat put",
+      "folder put factory.yaml",
+      "source add",
+      "source --json add",
+      "nonesuch add",
+    ].filter(reads),
+  ).toEqual(["secret set LINEAR_KEY", "folder put factory.yaml", "source add", "source --json add"]);
+});
+
+test("the CLI answers a command while its stdin stays open and silent, and still pipes a value to one that takes it", async () => {
+  const { s, ctx } = fixture();
+  const handler = app(ctx);
+  const daemon = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: (req) => handler.fetch(req, { listener: "loopback" }),
+  });
+  cleanup.push(() => daemon.stop(true));
+  // The CLI from this checkout, pointed at the daemon above and at an empty home of its own.
+  const cli = (...args: string[]) => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli.ts"), "factory", ...args], {
+      env: { ...process.env, AGENTGATE_HOME: tmp(), AGENTGATE_PORT: String(daemon.port), AGENTGATE_DEV: "1" },
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    cleanup.push(async () => child.kill());
+    return child;
+  };
+
+  // As under an agent or a cron job: stdin is a pipe nobody writes to or closes.
+  const status = cli("status");
+  const set = cli("secret", "set", "LINEAR_KEY");
+  set.stdin.write("blue\n");
+  set.stdin.end();
+
+  expect(await status.exited).toBe(0);
+  expect(await new Response(status.stdout).text()).toStartWith("Factory: off\n");
+  expect(await set.exited).toBe(0);
+  expect(getSecret(s, "LINEAR_KEY")).toBe("blue");
 });
 
 test("the generic settings patch cannot write the factory pointer", async () => {

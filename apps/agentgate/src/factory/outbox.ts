@@ -11,10 +11,13 @@ import { defuse } from "./markers.ts";
  * review conversation, the note on a flawed learning PR) goes through one claim. A write is claimed with its body,
  * once per owner, moment and `ref`, in the step that decides it, and sent after that step:
  *
- * - `pending` was never attempted, so it is sent, by the step after the claim or by the loop after a restart;
+ * - `pending` is sent, by the step after the claim or by the loop: it was never attempted, or the service refused
+ *   it, which wrote nothing, fewer than three times;
  * - `sending` was attempted, and a restart then leaves it as `uncertain`;
+ * - `unreachable` certainly never reached the service (`gh` is logged out, the machine is offline), so the loop
+ *   sends it again until it goes through, however many passes that takes;
  * - `uncertain` (the request may have been applied) is never sent again;
- * - `failed` (the service refused it, so nothing was written) goes back to `pending` until three attempts failed.
+ * - `failed` is given up on: refused three times, or still unreachable a day after it was claimed.
  *
  * Writes that are safe to repeat, such as resolving a conversation or rewriting the PR body, do not need a claim.
  */
@@ -24,7 +27,10 @@ import { defuse } from "./markers.ts";
  * owning item's source. */
 export type WriteMoment = string;
 
-const ATTEMPTS = 3;
+/** How many refusals end a write. */
+const REFUSALS = 3;
+/** How long after its claim an unreachable write is still sent: past a day, its moment has passed. */
+const GIVE_UP = 86_400_000;
 const EVERY = 2 * 60_000;
 
 /** The writes this daemon is sending now, by owner, moment and ref. */
@@ -45,8 +51,8 @@ export function claimWrite(
   what: string,
 ) {
   const claimed = f.s.db.run(
-    "insert or ignore into factory_writebacks (item, moment, ref, status, body, what, at) values (?, ?, ?, 'pending', ?, ?, ?)",
-    [owner, moment, ref, body, what, f.s.now()],
+    "insert or ignore into factory_writebacks (item, moment, ref, status, body, what, claimed, at) values (?, ?, ?, 'pending', ?, ?, ?, ?)",
+    [owner, moment, ref, body, what, f.s.now(), f.s.now()],
   );
   if (!claimed.changes) return false;
   later(f, owner, what, () => sendWrite(f, owner, moment, ref));
@@ -57,39 +63,50 @@ interface Row {
   status: string;
   body: string;
   what: string;
-  attempts: number;
+  refusals: number;
+  claimed: number;
 }
 
-/** Sends a pending write as a step of its owner. */
+/** The statuses the loop sends. */
+const UNSENT = ["pending", "unreachable"];
+
+/** Sends an unsent write as a step of its owner. */
 async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, ref: string) {
   const { s } = f;
   const key = [owner, moment, ref];
   const row = s.db
-    .query("select status, body, what, attempts from factory_writebacks where item=? and moment=? and ref=?")
+    .query("select status, body, what, refusals, claimed from factory_writebacks where item=? and moment=? and ref=?")
     .get(...key) as Row | null;
-  if (row?.status !== "pending") return;
-  s.db.run(
-    "update factory_writebacks set status='sending', attempts=attempts+1 where item=? and moment=? and ref=?",
-    key,
-  );
+  if (!row || !UNSENT.includes(row.status)) return;
+  s.db.run("update factory_writebacks set status='sending' where item=? and moment=? and ref=?", key);
   const id = JSON.stringify(key);
   flying(f).add(id);
   const result = await deliver(f, owner, moment, ref, row.body)
     .catch((e): PostResult => ({ status: "uncertain", error: shortError(e) }))
     .finally(() => flying(f).delete(id));
-  const retry = result.status === "failed" && row.attempts + 1 < ATTEMPTS;
-  s.db.run("update factory_writebacks set status=?, at=? where item=? and moment=? and ref=?", [
-    retry ? "pending" : result.status,
+  // A refusal wrote nothing, so the write goes back to pending until the service has refused it REFUSALS times. One
+  // that never arrived stays unreachable, for the loop to send, until its claim is GIVE_UP old.
+  const refusals = row.refusals + (result.status === "failed" ? 1 : 0);
+  const expired = result.status === "unreachable" && s.now() - row.claimed >= GIVE_UP;
+  const again = result.status === "failed" ? refusals < REFUSALS : result.status === "unreachable" && !expired;
+  const status = expired ? "failed" : result.status === "failed" && again ? "pending" : result.status;
+  s.db.run("update factory_writebacks set status=?, refusals=?, at=? where item=? and moment=? and ref=?", [
+    status,
+    refusals,
     s.now(),
     ...key,
   ]);
+  // The loop sends an unreachable write every pass: its history says so when that starts, not each time.
+  if (status === "unreachable" && row.status === "unreachable") return;
   const item = items.get(s, owner);
   f.events.emit({
     kind: "writeback",
     ...(item ? { item: owner } : { run: owner }),
     moment,
     status: result.status,
-    text: `${row.what}: ${result.status}${result.error ? ` (${result.error})` : ""}${retry ? "; it is tried again" : ""}`,
+    text: `${row.what}: ${result.status}${result.error ? ` (${result.error})` : ""}${
+      again ? "; it is tried again" : expired ? "; a day after it was claimed, it is given up" : ""
+    }`,
   });
 }
 
@@ -149,9 +166,11 @@ export function fileIssue(f: FactoryRuntime, owner: string, ref: string, issue: 
   );
 }
 
-/** Sends what a restart left pending, and retries what a service refused. */
+/** Sends what a restart left pending, and again what a service refused or never received. */
 function drain(f: FactoryRuntime) {
-  const rows = f.s.db.query("select item, moment, ref from factory_writebacks where status='pending'").all() as {
+  const rows = f.s.db
+    .query("select item, moment, ref from factory_writebacks where status in ('pending', 'unreachable')")
+    .all() as {
     item: string;
     moment: string;
     ref: string;

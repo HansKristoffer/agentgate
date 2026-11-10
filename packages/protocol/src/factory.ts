@@ -757,11 +757,12 @@ export const factoryItemDetailSchema = z.object({
     }),
   ),
   /** The outbox's writes for the item: comments for its moments, replies in its PR's review conversations, and the
-   * issues it filed for work it left alone. */
+   * issues it filed for work it left alone. `unreachable` is sent again until it goes through; `uncertain` may have
+   * been written and is never sent again; `failed` was refused, or stayed unreachable for a day. */
   writebacks: z.array(
     z.object({
       moment: z.enum([...writeBackMoments, "reply", "issue"]),
-      status: z.enum(["pending", "sending", "posted", "failed", "uncertain"]),
+      status: z.enum(["pending", "sending", "posted", "failed", "unreachable", "uncertain"]),
       at: z.number(),
     }),
   ),

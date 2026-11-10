@@ -70,6 +70,7 @@ export function setup(f: FactoryRuntime): void {
   f.commands.set("secret", {
     usage: USAGE,
     local: true,
+    stdin: ["set"],
     async run(args, io) {
       const [sub, name] = args;
       const named = name !== undefined && args.length === 2;

@@ -248,6 +248,7 @@ export function setup(f: FactoryRuntime): void {
     usage:
       "source add [--json] < source.yaml  add a webhook source or scout, in a PR on a folder on GitHub; the YAML has source and prompt",
     local: true,
+    stdin: ["add"],
     async run(args, io) {
       const { values, positionals } = parseArgs({
         args,

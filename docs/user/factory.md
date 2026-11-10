@@ -285,7 +285,7 @@ The factory polls every source every 2 minutes, and backs off while one fails. A
 
 Items are named after the repository and the issue, such as `api-42`, or `acme-api-42` when two of the folder's repositories share a name; the branch is `factory/api-42`. The PR says `Fixes #<number>`, so merging it closes the issue. An issue that carries the labels of two sources is one item.
 
-When the factory takes an issue in, it comments "The factory took this." with the marker that keeps your other machines' intake away from it. If that comment fails, the issue stays unmarked, and `agentgate factory show <item>` lists the comment as failed.
+When the factory takes an issue in, it comments "The factory took this." with the marker that keeps your other machines' intake away from it. Until that comment is posted the issue stays unmarked. While this machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed.
 
 ### Linear
 
@@ -458,7 +458,7 @@ When an item waits for you, it stays in its stage and the board says why:
 | `stuck`      | Nothing moved the item for four times `limits.stalledAfter`, such as a launch that keeps failing; or a launch may have started a thread before T3 Code's sign-in changed. | Read `show <item>`, look for the thread in T3 Code, then `retry` or `drop`.                     |
 | `orphaned`   | The machine that held the issue is unreachable.                                                                                                                           | `retry owner/repo#42` (or the Linear key) takes it over here.                                   |
 | `handed-off` | You handed its stage thread to another machine, so it left the factory.                                                                                                   | `retry` starts the stage again here; `drop` closes the item.                                    |
-| `stopped`    | Someone stopped one of its threads in T3 Code. The factory never starts a thread you stopped again by itself.                                                             | `retry` goes on: with its PR, or the stage in a new thread; `drop` closes the item.             |
+| `stopped`    | Someone stopped one of its threads in T3 Code, or deleted the thread of a stage that was still working. The factory never starts a thread you stopped again by itself.    | `retry` goes on: with its PR, or the stage in a new thread; `drop` closes the item.             |
 
 - `reject` on a spec card answers **Change** with your reason as the feedback, and the spec gets another round.
 - `retry` takes an item that waits as `failed`, `budget`, `stalled`, `stuck`, `handed-off` or `stopped` back to work: an item with a PR goes on with that PR, and any other starts its stage again in a new thread. A `closed` item starts again at triage, and a triage that had closed it counts as a wrong call for learning.
@@ -478,7 +478,7 @@ After the thread pushes a fix, it tells the factory which conversations it fixed
 
 The factory wakes the thread once for each new problem, and again after `limits.stalledAfter`; after `limits.nudges` times the item waits for you as `stalled`. Nobody else's comments reach the thread. If you merge a PR before the factory calls it ready, the item ships and the event list says so.
 
-When a branch requires checks, through a branch protection rule or a ruleset, only those count; otherwise every check does. The PR waits until each check that counts has passed, so a failing check the branch does not require, such as a preview deploy, holds nothing back, and a PR without checks counts as passing once its head is 10 minutes old. A new fix waits while a check that counts fails on the default branch's newest commit; a required check that runs only on pull requests is not waited for there.
+When a branch requires checks, through a branch protection rule or a ruleset, only those count; otherwise every check does. The PR waits until each check that counts has passed, so a failing check the branch does not require, such as a preview deploy, holds nothing back, and a PR without checks counts as passing once its head is 10 minutes old. The factory reads a commit's first 100 checks, so a commit with more never counts as passing, though a failure among those 100 still counts. A new fix waits while a check that counts fails on the default branch's newest commit; a required check that runs only on pull requests is not waited for there.
 
 ## Learning and judges
 

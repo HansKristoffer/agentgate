@@ -1,6 +1,13 @@
 import { currentFolder } from "./config.ts";
 import type { FactoryItem } from "./db.ts";
-import { issueComments, issueStateAndComments, openLabelledIssues, postIssueComment, viewerLogin } from "./gh.ts";
+import {
+  ISSUE_LIMIT,
+  issueComments,
+  issueStateAndComments,
+  openLabelledIssues,
+  postIssueComment,
+  viewerLogin,
+} from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
 import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
 
@@ -9,6 +16,16 @@ import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
  * id `owner/repo#<n>`. The controller polls, dedupes, backs off and re-checks the issue before every stage; this file
  * only talks to GitHub through gh.ts.
  */
+
+const CAPPED = `Only the newest ${ISSUE_LIMIT} open labelled issues are read; the rest wait until fewer are open`;
+
+/** Sources whose last poll found more than ISSUE_LIMIT issues, which their board row says. */
+const cappedSources = new WeakMap<FactoryRuntime, Set<string>>();
+function cappedOf(f: FactoryRuntime) {
+  let set = cappedSources.get(f);
+  if (!set) cappedSources.set(f, (set = new Set()));
+  return set;
+}
 
 /** `<repository name>-<number>`, such as `api-42`, or `<owner>-<name>-<number>` when another of the folder's
  * repositories has the same name. Lowercase, with anything a branch name should not hold made a dash. */
@@ -36,8 +53,11 @@ const newestOf = (comments: { body: string; author: string }[], viewer: string) 
 export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   type: "github",
   async poll(source) {
+    // Cleared first, so a failed poll shows its own error instead.
+    cappedOf(f).delete(source.id);
     if (source.type !== "github") return [];
-    const issues = await openLabelledIssues(source.repo, source.label);
+    const { issues, more } = await openLabelledIssues(source.repo, source.label);
+    if (more) cappedOf(f).add(source.id);
     return issues.map((issue) => ({
       externalId: `${source.repo}#${issue.number}`,
       key: issueKey(f, source.repo, issue.number),
@@ -65,5 +85,11 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
 });
 
 export function setup(f: FactoryRuntime): void {
+  // Merged into the controller's row for the source, which comes earlier.
+  f.boardParts.push(async () => ({
+    sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
+      cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],
+    ),
+  }));
   f.sources.set("github", githubSource(f));
 }

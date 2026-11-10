@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { T3NodeState, T3PairingLink } from "@agentgate/protocol";
@@ -357,26 +357,49 @@ export const connectInput = z.union([
   z.object({ create: z.literal(true) }).strict(),
 ]);
 export async function connectWith(s: Store, input: z.infer<typeof connectInput>) {
-  if ("create" in input)
-    return connectT3(s, parsePairing((await createPairingLink(s, { label: `agentgate ${s.nodeId}` })).url));
+  if ("create" in input) {
+    const { bin, link } = await pair(s, { label: `agentgate ${s.nodeId}` });
+    return connectT3(s, parsePairing(link.url), bin);
+  }
   return connectT3(s, "pairingUrl" in input ? parsePairing(input.pairingUrl) : input);
 }
 
-/** T3 Code's own CLI: `t3` on PATH on a server, or the launcher T3 Code's desktop app writes. Tests point it elsewhere. */
+/** The `t3` of the T3 Code server that runs from `home`, T3's own folder (normally ~/.t3), or undefined when it keeps
+ * no versions there. A T3 Code service that updates itself keeps every version in a folder of its own and names the
+ * one it runs as `activeVersion` in `runtime/service-state.json`, a file of T3's that is no public interface. */
+export function activeT3(home: string) {
+  try {
+    const state = JSON.parse(readFileSync(join(home, "runtime", "service-state.json"), "utf8"));
+    const { activeVersion } = z.object({ activeVersion: z.string().regex(/^\w[\w.+-]*$/) }).parse(state);
+    return [join(home, "runtime", "versions", activeVersion, "t3")].find((p) => existsSync(p));
+  } catch {
+    return undefined; // no state file, or one agentgate cannot read
+  }
+}
+
+/** T3 Code's own CLI: the running server's own binary first, because the `t3` on PATH can be an older launcher whose
+ * pairing tokens the server refuses and which lacks `--scope`; then `t3` on PATH, then the launcher T3 Code's desktop
+ * app writes. Tests point it elsewhere. */
 export const host = {
-  t3: () => Bun.which("t3") ?? [join(homedir(), ".t3", "bin", "t3")].find((p) => existsSync(p)),
+  t3: () =>
+    activeT3(process.env.T3CODE_HOME || join(homedir(), ".t3")) ??
+    Bun.which("t3") ??
+    [join(homedir(), ".t3", "bin", "t3")].find((p) => existsSync(p)),
 };
 
 export const pairingLinkInput = z.object({ tailscale: z.boolean().optional() }).strict();
+type PairOptions = { label?: string; tailscale?: boolean; scopes?: string[] };
 
 /** A new single-use pairing link from the T3 Code server running on this machine, made by its `t3 pair`, which writes
  * straight into T3's own state: no token of ours is needed, so it also works when agentgate's token expired. With
  * `tailscale`, T3 Code publishes itself over Tailscale Serve (a lasting change T3 reports in the notes) so the link
  * works from other machines. `scopes` replaces T3's default set of permissions for the link. */
-export async function createPairingLink(
-  s: Store,
-  options: { label?: string; tailscale?: boolean; scopes?: string[] } = {},
-): Promise<T3PairingLink> {
+export async function createPairingLink(s: Store, options: PairOptions = {}): Promise<T3PairingLink> {
+  return (await pair(s, options)).link;
+}
+
+/** The link, and the `t3` binary that made it. */
+async function pair(s: Store, options: PairOptions) {
   const bin = host.t3();
   if (!bin)
     throw new T3Error(
@@ -408,10 +431,16 @@ export async function createPairingLink(
   ]);
   const line = (key: string) => out.match(new RegExp(`^${key}: (.+)$`, "m"))?.[1]?.trim();
   const url = line("Pairing URL");
-  // stdout holds the token; only stderr may go into an error.
-  if (code !== 0 || !url)
-    throw new T3Error(`t3 pair failed on ${s.nodeId}: ${err.trim().split("\n").at(-1) || `exit ${code}`}`);
-  return { url, expiresAt: line("Expires"), notes: [...out.matchAll(/^Note: (.+)$/gm)].map((m) => m[1]!.trim()) };
+  // stdout holds the token; only stderr may go into an error. The binary is named so that a `t3` that is not the
+  // running server's shows: an older one prints its usage for a flag it does not know.
+  if (code !== 0 || !url) {
+    const why = err.trim().split("\n").at(-1)?.slice(0, 300) || (code ? `exit ${code}` : "it printed no pairing link");
+    throw new T3Error(`t3 pair failed on ${s.nodeId} (${bin}): ${why}`);
+  }
+  return {
+    bin,
+    link: { url, expiresAt: line("Expires"), notes: [...out.matchAll(/^Note: (.+)$/gm)].map((m) => m[1]!.trim()) },
+  };
 }
 
 /** `http://host:port/pair#token=XXXX`, the pairing link from T3 Code's Settings → Connections. */
@@ -440,8 +469,9 @@ function loopback(link: string): string {
   return `http://127.0.0.1:${u.port}`;
 }
 
-/** Exchange a single-use pairing token for a 30-day bearer token. */
-export async function connectT3(s: Store, input: { url: string; token: string }) {
+/** Exchange a single-use pairing token for a 30-day bearer token. `mintedBy` is the `t3` binary that made the token a
+ * moment ago, when agentgate ran it itself: a refusal then points at the binary, as the token is neither used nor old. */
+export async function connectT3(s: Store, input: { url: string; token: string }, mintedBy?: string) {
   const url = loopback(input.url);
 
   const res = await fetchHeaders(`${url}/oauth/token`, {
@@ -460,7 +490,11 @@ export async function connectT3(s: Store, input: { url: string; token: string })
   });
   const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(15_000)));
   if (res.status === 400 || res.status === 401)
-    throw new T3Error("T3 Code rejected the pairing token; it is single-use and expires, so create a new pairing link");
+    throw new T3Error(
+      mintedBy
+        ? `T3 Code on ${s.nodeId} rejected the pairing token ${mintedBy} had just created, so that t3 may not belong to the running T3 Code; create a pairing link in its Settings → Connections and connect with that`
+        : "T3 Code rejected the pairing token; it is single-use and expires, so create a new pairing link",
+    );
   if (!res.ok) throw new T3Error(`T3 Code answered ${res.status} to the pairing`);
 
   const token = z

@@ -110,11 +110,17 @@ work resumes from those.
   issue make one item.
 - Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation, the note on
   a flawed learning PR) goes through one outbox ([`outbox.ts`](../../apps/agentgate/src/factory/outbox.ts)): claimed
-  with its body in `factory_writebacks` in the step that decides it, so it is posted at most once. A claim a restart
-  left unsent is sent by the next daemon; one cut off while sending is uncertain and never sent again; one the service
-  refused, which wrote nothing, is tried up to three times. That table, not the event log, holds the claim, because
-  the event log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or
-  the ready summary in the PR body, need no claim; the summary is written before the item moves to `ready`.
+  with its body in `factory_writebacks` in the step that decides it, so it is posted at most once. What happens to a
+  claim next depends on whether the request can have arrived, which the `gh` boundary
+  ([`ask` in `gh.ts`](../../apps/agentgate/src/factory/gh.ts)) and the Linear adapter decide from the HTTP status,
+  `gh`'s exit code and the kind of network error, never from the wording of a message. One that certainly never
+  reached the service (`gh` is not installed or logged out, no connection opened) is `unreachable`: the loop sends it
+  again every pass until it goes through, and fails it once its claim is a day old. One the service refused with a
+  4xx, which wrote nothing, is tried up to three times. Anything else, a 5xx and a send that a restart or `gh`'s
+  deadline cut off included, is `uncertain` and never sent again, because a second send could post it twice. A claim
+  a restart left unsent is sent by the next daemon. That table, not the event log, holds the claim, because the event
+  log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or the ready
+  summary in the PR body, need no claim; the summary is written before the item moves to `ready`.
 - Work the factory turns up and leaves alone (a review's findings in code the PR did not change, a spec's later
   slices, a learning run's repository fixes) is filed as new issues through the same outbox
   ([`fileIssue`](../../apps/agentgate/src/factory/outbox.ts)), without a source's label. Labelling one is the
@@ -132,7 +138,10 @@ The factory depends on T3 Code interfaces that are not a stable public API, in t
   launching threads, sending, interrupting, settling and answering pending requests. `REQUIRED_T3_INPUTS` names each tool and the inputs the factory sends, and a
   sign-in checks them against `tools/list`, so a renamed input fails with "update T3 Code" instead of a launch that
   does something else. The sign-in is OAuth with PKCE and `resource: <url>/mcp`, approved with a pairing code from the
-  local `t3 pair` at full-access scopes. T3 issues no refresh token, so the factory signs in again three days before
+  local `t3 pair` at full-access scopes. That `t3` is the running server's own binary, found through `activeVersion`
+  in T3's `runtime/service-state.json` (`activeT3` in [`handoff/t3.ts`](../../apps/agentgate/src/handoff/t3.ts)),
+  because a `t3` on PATH can be an older launcher whose codes the server refuses and which has no `--scope`. T3 issues
+  no refresh token, so the factory signs in again three days before
   the 30 days end. The token is node-local: the factory machine holds one, and so does a machine still finishing items
   after the factory moved.
 - **T3 Code's WebSocket RPC**, through the handoff's T3 client: the `orchestration.subscribeShell` stream feeds the

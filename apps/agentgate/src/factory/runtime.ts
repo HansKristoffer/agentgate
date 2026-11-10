@@ -51,9 +51,16 @@ export interface CommandIO {
 export interface FactoryCommand {
   usage: string;
   local?: boolean;
+  /** The subcommands that take input on stdin, such as `set` of `secret set`. */
+  stdin?: string[];
   /** Returns the exit code. */
   run(args: string[], io: CommandIO): Promise<number>;
 }
+/** Whether `agentgate factory <command> <args>` takes input on stdin: its subcommand, the first argument that is not
+ * an option, is one the command names. The CLI reads stdin only then: under an agent or a cron job stdin stays open
+ * and silent, so reading it would wait forever, and in a `while read` loop it would swallow the loop's input. */
+export const readsStdin = (command: Pick<FactoryCommand, "stdin"> | undefined, args: string[]) =>
+  !!command?.stdin?.includes(args.find((arg) => !arg.startsWith("-")) ?? "");
 export interface FactoryLoop {
   name: string;
   everyMs: number;
@@ -74,8 +81,11 @@ export interface IncomingItem {
   /** When the issue last changed, as its source lists it: a new comment changes it, so its marker is read again. */
   updatedAt?: string;
 }
+/** How a write to a source ended, which decides what the outbox does next (outbox.ts). `failed`: the service refused
+ * it, so nothing was written. `unreachable`: the request certainly never reached the service, so sending it again is
+ * safe. `uncertain`: no answer said either way, so it may have been written. */
 export interface PostResult {
-  status: "posted" | "failed" | "uncertain";
+  status: "posted" | "failed" | "unreachable" | "uncertain";
   error?: string;
 }
 export interface SourceAdapter {

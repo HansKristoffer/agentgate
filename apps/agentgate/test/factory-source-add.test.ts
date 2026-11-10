@@ -9,6 +9,7 @@ import { factorySourceAddInputSchema } from "@agentgate/protocol";
 import { insertSource, scoutFile, sourceYaml, withoutDefaults } from "../src/factory/source-add.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
+import { recorded } from "./fixtures/gh.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 
 const REPO = "acme/api";
@@ -138,9 +139,9 @@ test("a factory.yaml it cannot edit is refused with the snippet to add by hand",
 });
 
 const ok = (value: unknown) => ({ ok: true, out: typeof value === "string" ? value : JSON.stringify(value) });
-const notFound = { ok: false, out: JSON.stringify({ message: "Not Found", status: "404" }) };
 
-/** GitHub for the factory's repository: files by branch, branches, and the tree, commit and PR a source add writes. */
+/** GitHub for the factory's repository: files by branch, branches, and the tree, commit and PR a source add writes.
+ * A file or branch that is not there is answered as GitHub was recorded answering it (fixtures/gh-recorded.json). */
 function fakeGitHub(files: Record<string, string> = { "factory/factory.yaml": TEMPLATE }) {
   const github = {
     branches: new Map<string, Record<string, string>>([["main", files]]),
@@ -172,12 +173,12 @@ function fakeGitHub(files: Record<string, string> = { "factory/factory.yaml": TE
     const ref = new URLSearchParams(query).get("ref") ?? "main";
     if (route!.startsWith("contents/")) {
       const content = github.branches.get(ref)?.[route!.slice(9)];
-      if (content === undefined) return notFound;
+      if (content === undefined) return recorded(args.includes("--jq") ? "fileExists.missing" : "readFile.missing");
       return ok(args.includes("--jq") ? route!.slice(9) : content);
     }
     if (route!.startsWith("branches/")) {
       const branch = decodeURIComponent(route!.slice(9));
-      return github.branches.has(branch) ? ok({ name: branch }) : notFound;
+      return github.branches.has(branch) ? ok({ name: branch }) : recorded("branchExists.missing");
     }
     const head = route!.match(/^git\/ref\/heads\/(.+)$/);
     if (head) {

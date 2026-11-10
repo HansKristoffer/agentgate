@@ -210,6 +210,7 @@ export function setup(f: FactoryRuntime): void {
   f.commands.set("folder", {
     usage: `${FOLDER_USAGE}  the factory folder agentgate stores`,
     local: true,
+    stdin: ["put"],
     async run(args, io) {
       const [verb, path, ...extra] = args;
       const usage = () => {

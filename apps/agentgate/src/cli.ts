@@ -1411,11 +1411,13 @@ async function main() {
     case "factory": {
       // The daemon owns every factory command. Arguments go as typed, since each command parses its own options.
       const [name, ...args] = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
-      if (!name || name === "help") {
-        const commands = await management<{ name: string; usage: string }[]>("/factory/commands");
+      const commands = await management<{ name: string; usage: string; stdin?: string[] }[]>("/factory/commands");
+      if (!name || name === "help")
         return console.log(commands.map((c) => `  factory ${c.usage}`).join("\n") || "No factory commands yet.");
-      }
-      const stdin = process.stdin.isTTY ? undefined : await Bun.stdin.text();
+      // Stdin is read only for a command that takes it: any other must answer while its stdin stays open and silent.
+      const { readsStdin } = await import("./factory/runtime.ts");
+      const command = commands.find((c) => c.name === name);
+      const stdin = !process.stdin.isTTY && readsStdin(command, args) ? await Bun.stdin.text() : undefined;
       const result = await management<import("@agentgate/protocol").FactoryCommandResult>("/factory/command", "POST", {
         name,
         args,

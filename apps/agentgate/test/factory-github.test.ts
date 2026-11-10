@@ -6,7 +6,8 @@ import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import * as gh from "../src/factory/gh.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
 import { loopTask } from "../src/factory/runtime.ts";
-import { host } from "../src/logins.ts";
+import { ghAnswer, host, type GhAnswer } from "../src/logins.ts";
+import { recorded, recordedJson, replayGh } from "./fixtures/gh.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
@@ -17,7 +18,7 @@ afterEach(async () => {
 });
 
 const realGh = host.gh;
-type Answer = { ok: boolean; out: string } | undefined;
+type Answer = GhAnswer | undefined;
 /** Stubs `host.gh` until the test ends, recording every call. */
 function stubGh(answer: (args: string[], stdin?: string) => Answer) {
   const calls: { args: string[]; stdin?: string }[] = [];
@@ -43,12 +44,15 @@ interface Issue {
   comments: { body: string; author: { login: string }; authorAssociation: string; createdAt: string }[];
 }
 
+/** `gh` stopped at its deadline, as `host.gh` hands that on: no answer says whether the request arrived. */
+const noAnswer = ghAnswer({ exit: 143, stdout: "", stderr: "" });
+
 /** GitHub for one repository, answering the gh commands gh.ts sends as the real gh does. */
 function fakeGitHub(repo: string) {
   const issues = new Map<number, Issue>();
   const github: {
     issues: typeof issues;
-    /** A failure for gh commands that match, as gh shows one: a non-zero exit and GitHub's answer, if any, on stdout. */
+    /** A failure for gh commands that match: an answer recorded from the real gh. */
     fail?: (args: string[]) => Answer;
     add(number: number, patch?: Partial<Issue>): void;
     calls: ReturnType<typeof stubGh>;
@@ -75,6 +79,8 @@ function fakeGitHub(repo: string) {
             // gh lists open issues unless --state says otherwise.
             .filter((i) => (args.includes("--state") && flag(args, "--state") !== "open") || i.state === "OPEN")
             .filter((i) => i.labels.includes(flag(args, "--label")!))
+            // gh lists no more than --limit, 30 unless it is given.
+            .slice(0, Number(flag(args, "--limit")))
             .map((i) => ({ body: i.body, number: i.number, title: i.title, url: url(i) })),
         );
       if (args[0] === "issue" && args[1] === "view") {
@@ -276,6 +282,20 @@ test("a marker in a comment by another login counts for nothing: not for newestM
   });
 });
 
+/** How the item's comment for a moment stands in the outbox, as `factory show` tells it. */
+async function writeStatus(n: Awaited<ReturnType<typeof githubFactory>>, key: string, moment: string) {
+  const { output } = await n.command("show", key, "--json");
+  const writes: { moment: string; status: string }[] = JSON.parse(output.at(-1)!).writebacks;
+  return writes.find((w) => w.moment === moment)?.status;
+}
+const outboxPass = async (n: Awaited<ReturnType<typeof githubFactory>>) => {
+  await loopTask(
+    n.f,
+    n.f.loops.find((l) => l.name === "factory-outbox")!,
+  )();
+  await idle(n.f);
+};
+
 test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one never again", async () => {
   const n = await githubFactory();
   for (const i of [1, 2, 3]) n.github.add(i);
@@ -321,41 +341,29 @@ test("triage posts one comment with the template, the marker, defused mentions a
     state: "open",
   });
 
-  // GitHub refused the second; the third got no answer at all, so it may exist.
+  // GitHub refused the second with a 4xx; the third got no answer at all, so it may exist.
   n.github.fail = (args) =>
     args[1]?.endsWith("/2/comments")
-      ? { ok: false, out: JSON.stringify({ message: "Validation Failed", status: "422" }) }
+      ? recorded("badToken.branchExists")
       : args[1]?.endsWith("/3/comments")
-        ? { ok: false, out: "" }
+        ? noAnswer
         : undefined;
   await n.report(second!, triaged);
   await n.report(third!, triaged);
-  const statuses = async () =>
-    (await Promise.all([first!, second!, third!].map((r) => n.command("show", items.get(n.s, r.item!)!.key, "--json"))))
-      .map(({ output }) =>
-        JSON.parse(output.at(-1)!).writebacks.find((w: { moment: string }) => w.moment === "triaged"),
-      )
-      .map((w: { status: string }) => w.status);
+  const statuses = () => Promise.all([1, 2, 3].map((i) => writeStatus(n, n.key(i), "triaged")));
   // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one never.
   expect(await statuses()).toEqual(["posted", "pending", "uncertain"]);
-  const outbox = loopTask(
-    n.f,
-    n.f.loops.find((l) => l.name === "factory-outbox")!,
-  );
-  for (let pass = 0; pass < 2; pass++) {
-    await outbox();
-    await idle(n.f);
-  }
+  for (let pass = 0; pass < 2; pass++) await outboxPass(n);
   expect(await statuses()).toEqual(["posted", "failed", "uncertain"]);
   const texts = n.f.events.recent(50).map((e) => e.text);
   expect(texts).toContain(
-    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed); it is tried again`,
+    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Bad credentials); it is tried again`,
   );
   expect(texts).toContain(
-    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Validation Failed)`,
+    `The triaged comment on ${n.key(2)}: failed (GitHub refused to comment on ${n.repo}#2: Bad credentials)`,
   );
   expect(texts).toContain(
-    `The triaged comment on ${n.key(3)}: uncertain (gh could not comment on ${n.repo}#3, and GitHub gave no answer)`,
+    `The triaged comment on ${n.key(3)}: uncertain (gh could not comment on ${n.repo}#3, though GitHub may have taken it: gh gave no reason (exit 143))`,
   );
 
   // Calling for the same moment again sends nothing: one post, three attempts at the refused one, one uncertain.
@@ -363,6 +371,54 @@ test("triage posts one comment with the template, the marker, defused mentions a
   for (const run of [first!, second!, third!]) writeBack(n.f, items.get(n.s, run.item!)!, "triaged");
   await idle(n.f);
   expect(n.posts()).toHaveLength(taken + 5);
+});
+
+test("a comment claimed while gh is offline or logged out is sent once gh reaches GitHub again, and one still unsent a day after its claim is failed", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  n.github.add(2);
+  n.github.fail = (args) =>
+    args[1]?.endsWith("/1/comments")
+      ? recorded("offline.branchExists")
+      : args[1]?.endsWith("/2/comments")
+        ? recorded("loggedOut.branchExists")
+        : undefined;
+  await n.intake();
+  await idle(n.f);
+  const statuses = () => Promise.all([1, 2].map((i) => writeStatus(n, n.key(i), "taken")));
+  expect(await statuses()).toEqual(["unreachable", "unreachable"]);
+
+  // Nothing was written, so the loop sends both again on every pass, however many that takes.
+  for (let pass = 0; pass < 5; pass++) {
+    n.advance(2 * 60_000);
+    await outboxPass(n);
+  }
+  expect(await statuses()).toEqual(["unreachable", "unreachable"]);
+  expect(n.posts()).toHaveLength(12);
+  // The item's history says so once, not on every pass.
+  const said = () => n.f.events.recent(50).map((e) => e.text);
+  expect(said().filter((text) => text.startsWith(`The taken comment on ${n.key(2)}`))).toEqual([
+    `The taken comment on ${n.key(2)}: unreachable (gh could not comment on ${n.repo}#2: gh is not logged in on this machine (gh auth login)); it is tried again`,
+  ]);
+
+  // The network is back, and the first comment goes through.
+  n.github.fail = (args) => (args[1]?.endsWith("/2/comments") ? recorded("loggedOut.branchExists") : undefined);
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["posted", "unreachable"]);
+  expect(parseMarkers(n.github.issues.get(1)!.comments[0]!.body)).toEqual([
+    expect.objectContaining({ key: n.key(1), state: "open" }),
+  ]);
+
+  // A day after its claim the second is given up, and logging in later does not post it.
+  n.advance(86_400_000);
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["posted", "failed"]);
+  expect(said()).toContain(
+    `The taken comment on ${n.key(2)}: unreachable (gh could not comment on ${n.repo}#2: gh is not logged in on this machine (gh auth login)); a day after it was claimed, it is given up`,
+  );
+  n.github.fail = undefined;
+  await outboxPass(n);
+  expect(n.github.issues.get(2)!.comments).toEqual([]);
 });
 
 test("the issue is re-checked before every stage, and one closed on GitHub closes its item without a comment", async () => {
@@ -418,7 +474,7 @@ test("a failing gh shows on its source's row and backs off, while the other sour
   const n = await githubFactory((repo) => [source(repo), source(repo, "broken", "urgent")]);
   n.github.add(1);
   n.github.fail = (args) =>
-    args[1] === "list" && flag(args, "--label") === "urgent" ? { ok: false, out: "" } : undefined;
+    args[1] === "list" && flag(args, "--label") === "urgent" ? recorded("loggedOut.issueList") : undefined;
   const polled = () => n.github.calls.filter((c) => c.args[1] === "list").map((c) => flag(c.args, "--label"));
 
   await n.intake();
@@ -430,7 +486,7 @@ test("a failing gh shows on its source's row and backs off, while the other sour
     id: "broken",
     type: "github",
     repo: n.repo,
-    error: `gh could not list the open issues labelled "urgent" in ${n.repo}: check gh auth status on this machine`,
+    error: `gh could not list the open issues labelled "urgent" in ${n.repo}: gh is not logged in on this machine (gh auth login)`,
   });
   expect(rows.find((r) => r.id === "bugs")).toMatchObject({ lastPollAt: n.s.now() });
 
@@ -443,187 +499,259 @@ test("a failing gh shows on its source's row and backs off, while the other sour
   );
 });
 
-// ---- gh.ts against recorded gh output (gh 2.102, trimmed)
+test("a source with more open labelled issues than one poll reads says so on its board row", async () => {
+  const n = await githubFactory();
+  for (let number = 1; number <= gh.ISSUE_LIMIT + 1; number++) n.github.add(number);
+  const row = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).sources.find((r) => r.id === "bugs")!;
 
-const REPO = "acme/app";
-const PR = `https://github.com/${REPO}/pull/42`;
+  await n.intake();
+  expect(n.github.calls.find((c) => c.args[1] === "list")!.args).toContain(String(gh.ISSUE_LIMIT + 1));
+  expect((await row()).error).toBe(
+    "Only the newest 200 open labelled issues are read; the rest wait until fewer are open",
+  );
 
-const recorded = {
-  repoView: { defaultBranchRef: { name: "trunk" } },
-  issueList: [
-    { body: "\n### Describe the bug\n", number: 7, title: "Crash on save", url: `https://github.com/${REPO}/issues/7` },
-  ],
-  issueComments: {
-    comments: [
-      {
-        id: "IC_kwDODKw3uc8AAAABLBWqZg",
-        author: { login: "babakks" },
-        authorAssociation: "MEMBER",
-        body: "Thanks for reporting this, @S-zhi!",
-        createdAt: "2026-07-21T13:23:07Z",
-        includesCreatedEdit: false,
-        isMinimized: false,
-        minimizedReason: "",
-        reactionGroups: [],
-        url: `https://github.com/${REPO}/issues/7#issuecomment-5034584678`,
-        viewerDidAuthor: false,
-      },
-    ],
-  },
-  prView: {
-    author: { id: "MDQ6VXNlcjQ3Mzk0MjAw", is_bot: false, login: "BagToad", name: "Kynan Ware" },
-    baseRefName: "trunk",
-    body: "Fixes #7",
-    comments: [],
-    files: [{ path: "pkg/cmd/api/api.go", additions: 4, deletions: 2, changeType: "MODIFIED" }],
-    headRefName: "bagtoad/gh-help-environment-fix",
-    headRefOid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2",
-    isDraft: false,
-    mergeable: "UNKNOWN",
-    mergedAt: "2026-11-03T17:40:14Z",
-    number: 42,
-    reviews: [
-      {
-        id: "PRR_kwDODKw3uc8AAAABVyGoqg",
-        author: { login: "babakks" },
-        authorAssociation: "MEMBER",
-        body: "",
-        submittedAt: "2026-11-03T17:32:31Z",
-        includesCreatedEdit: false,
-        reactionGroups: [],
-        state: "APPROVED",
-        commit: { oid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2" },
-      },
-    ],
-    state: "MERGED",
-    statusCheckRollup: [
-      {
-        __typename: "CheckRun",
-        completedAt: "2026-11-03T17:32:33Z",
-        conclusion: "SUCCESS",
-        detailsUrl: "https://github.com/cli/cli/actions/runs/41684918597/job/126088020830",
-        name: "lint",
-        startedAt: "2026-11-03T17:30:40Z",
-        status: "COMPLETED",
-        workflowName: "Lint",
-      },
-    ],
-    title: "Clarify which hosts use GH_ENTERPRISE_TOKEN",
-    url: PR,
-  },
-  // `gh api graphql`, the follower's read of one PR (gh.followedPrs), without its checks and base branch.
-  followed: {
-    number: 42,
-    url: PR,
-    title: "Clarify which hosts use GH_ENTERPRISE_TOKEN",
-    state: "OPEN",
-    isDraft: true,
-    author: { login: "BagToad" },
-    headRefName: "bagtoad/gh-help-environment-fix",
-    headRefOid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2",
-    baseRefName: "trunk",
-    mergedAt: null,
-    mergeable: "MERGEABLE",
-    comments: { nodes: [] },
-    reviews: { nodes: [] },
-    reviewThreads: { nodes: [] },
-  },
-  // `gh api graphql`, the default branch's checks (gh.defaultBranchCi): a ruleset that only asks for pull requests,
-  // whose rules without required checks come back as {} and null.
-  defaultBranchRef: {
-    refUpdateRule: null,
-    rules: { nodes: [{ parameters: {} }, { parameters: null }] },
-    target: {
-      statusCheckRollup: {
-        contexts: { nodes: [{ __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SUCCESS" }] },
-      },
-    },
-  },
-  revertList: [
+  // Exactly as many as a poll reads is not more.
+  n.github.issues.get(1)!.state = "CLOSED";
+  n.advance(60_000);
+  await n.intake();
+  expect((await row()).error).toBe(undefined);
+});
+
+// ---- gh.ts against what gh really answered (fixtures/gh-recorded.json)
+
+const SCRATCH = "HansKristoffer/factory-scratch";
+const EMPTY = "aldevvv/zerolabs";
+const GONE = "HansKristoffer/no-such-repo-agentgate";
+const PR = `https://github.com/${SCRATCH}/pull/6`;
+/** A cli/cli PR and the revert recorded for it. */
+const REVERTED = { number: 14437, title: "Use internal Apple codesign action", mergedAt: "2026-09-15T13:00:00Z" };
+
+test("each gh.ts read parses what gh really answered", async () => {
+  replayGh(
+    cleanup,
+    "repoView",
+    "branch",
+    "branchExists",
+    "fileExists",
+    "readFile",
+    "label",
+    "issueList",
+    "issueView",
+    "issueView.comments",
+    "prList",
+    "prState",
+    "prView",
+    "feedback",
+    "followed",
+    "mainChecks",
+    "reverts",
+  );
+  expect(await gh.defaultBranch(SCRATCH)).toBe("main");
+  expect(await gh.branchProtected(SCRATCH, "main")).toBe(false);
+  expect(await gh.branchExists(SCRATCH, "main")).toBe(true);
+  expect(await gh.fileExists(SCRATCH, "README.md")).toBe(true);
+  expect(await gh.readFile(SCRATCH, "README.md", "main")).toStartWith("# factory-scratch\n");
+  // A label the repository has is left as it is: creating one would be a call nothing was recorded for.
+  await gh.ensureLabel(SCRATCH, "factory", "5319e7", "Issues the AgentGate software factory works");
+
+  const listed = await gh.openLabelledIssues(SCRATCH, "factory");
+  expect(listed.more).toBe(false);
+  expect(listed.issues).toEqual([
     {
-      body: "## Description\r\n\r\nReverts acme/app#42\r\n",
-      mergedAt: "2026-11-10T14:11:21Z",
-      number: 50,
-      title: 'Revert "Use internal Apple codesign action"',
-    },
-  ],
-};
-
-/** Answers by gh subcommand, as recorded; `api` answers by path. */
-function recordedGh(overrides: Record<string, unknown> = {}) {
-  const answers: Record<string, (args: string[]) => unknown> = {
-    "repo view": () => recorded.repoView,
-    "issue list": () => recorded.issueList,
-    "issue view": (args) =>
-      flag(args, "--json") === "state,comments" ? { state: "OPEN", ...recorded.issueComments } : recorded.issueComments,
-    "pr view": (args) => (flag(args, "--json") === "author" ? { author: recorded.prView.author } : recorded.prView),
-    "api graphql": () => ({ data: { repository: { defaultBranchRef: recorded.defaultBranchRef } } }),
-    "pr list": () => recorded.revertList,
-  };
-  return stubGh((args) => {
-    const key = `${args[0]} ${args[1]}`;
-    if (key in overrides) return { ok: true, out: JSON.stringify(overrides[key]) };
-    const answer = answers[key];
-    return answer ? ok(answer(args)) : { ok: true, out: "" };
-  });
-}
-
-test("each gh.ts read parses a recorded gh answer", async () => {
-  recordedGh();
-  expect(await gh.defaultBranch(REPO)).toBe("trunk");
-  expect(await gh.openLabelledIssues(REPO, "factory")).toEqual(recorded.issueList);
-  expect(await gh.issueStateAndComments(REPO, 7)).toMatchObject({ open: true, comments: [expect.anything()] });
-  expect(await gh.issueComments(REPO, 7)).toEqual([
-    {
-      body: "Thanks for reporting this, @S-zhi!",
-      author: "babakks",
-      authorAssociation: "MEMBER",
-      createdAt: "2026-07-21T13:23:07Z",
+      number: 4,
+      title: "Slugs should handle non-English titles",
+      body: expect.stringContaining("Crème brûlée"),
+      url: `https://github.com/${SCRATCH}/issues/4`,
+      updatedAt: "2026-11-10T08:45:18Z",
     },
   ]);
+  const issue = await gh.issueStateAndComments(SCRATCH, 4);
+  expect(issue.open).toBe(true);
+  expect(issue.comments[0]).toMatchObject({ author: "HansKristoffer", authorAssociation: "OWNER" });
+  expect(parseMarkers(issue.comments[0]!.body)).toEqual([
+    expect.objectContaining({ key: "factory-scratch-4", stage: null, state: "open" }),
+  ]);
+  expect(await gh.issueComments(SCRATCH, 5)).toEqual([]);
+
+  expect(await gh.openPrFor(SCRATCH, "agentgate/factory-init")).toBe(`https://github.com/${SCRATCH}/pull/1`);
+  expect(await gh.prState(SCRATCH, 3)).toBe("MERGED");
   expect(await gh.prView(PR)).toEqual({
-    number: 42,
+    number: 6,
     url: PR,
-    title: "Clarify which hosts use GH_ENTERPRISE_TOKEN",
-    state: "MERGED",
+    title: "feat: add truncate(text, max) helper (m-566044)",
+    state: "OPEN",
     isDraft: false,
-    author: "BagToad",
-    headRefName: "bagtoad/gh-help-environment-fix",
-    headRefOid: "f44bd1dcc58a718327a4d1df89ea3d1145c827b2",
-    baseRefName: "trunk",
-    mergedAt: "2026-11-03T17:40:14Z",
-    mergeable: "UNKNOWN",
-    body: "Fixes #7",
-    files: ["pkg/cmd/api/api.go"],
+    author: "HansKristoffer",
+    headRefName: "factory/m-566044",
+    headRefOid: "02239b4d97f2f8a9e489e903fe904726c700d0d5",
+    baseRefName: "main",
+    mergeable: "MERGEABLE",
+    body: expect.stringContaining("<!-- agentgate-factory:summary -->"),
+    files: ["src/truncate.test.ts", "src/truncate.ts"],
     comments: [],
-    reviews: [{ body: "", authorAssociation: "MEMBER", submittedAt: "2026-11-03T17:32:31Z", state: "APPROVED" }],
+    reviews: [
+      { body: "", authorAssociation: "OWNER", submittedAt: "2026-11-10T08:39:55Z", state: "COMMENTED" },
+      { body: "", authorAssociation: "OWNER", submittedAt: "2026-11-10T08:41:13Z", state: "COMMENTED" },
+    ],
   });
-  expect(await gh.defaultBranchCi(REPO)).toBe("passing");
-  const reverts = await gh.revertsSince(REPO, Date.parse("2026-11-03T17:40:14Z"));
-  expect(gh.isRevertOf(reverts, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" })).toBe(true);
+  const feedback = await gh.prFeedback(PR);
+  expect(feedback.reviews.map((r) => [r.state, r.association, r.bot])).toEqual([
+    ["COMMENTED", "OWNER", false],
+    ["COMMENTED", "OWNER", false],
+  ]);
+  expect(feedback.conversations).toEqual([
+    {
+      id: "PRRT_kwDOVpGbC861ncLB",
+      resolved: true,
+      outdated: false,
+      path: "src/truncate.ts",
+      line: 1,
+      canResolve: false,
+      comments: [
+        expect.objectContaining({ association: "OWNER", bot: false, at: "2026-11-10T08:39:55Z" }),
+        expect.objectContaining({ body: expect.stringContaining("Fixed in 02239b4d97f2."), bot: false }),
+      ],
+    },
+  ]);
+
+  const followed = await gh.followedPrs(SCRATCH, [1, 3, 6, 7, 8]);
+  expect([...followed].map(([number, pr]) => (pr instanceof Error ? pr : [number, pr.state, pr.isDraft]))).toEqual([
+    [1, "OPEN", true],
+    [3, "MERGED", false],
+    [6, "OPEN", false],
+    [7, "OPEN", false],
+    [8, "OPEN", true],
+  ]);
+  expect(followed.get(3)).toMatchObject({ mergedAt: "2026-11-10T08:39:57Z", checks: "passing", failing: [] });
+  // The follower's read carries the same feedback as the read of one PR.
+  expect(followed.get(6)).toMatchObject({ author: "HansKristoffer", checks: "passing", comments: [], feedback });
+  expect(await gh.defaultBranchCi(SCRATCH)).toBe("passing");
+
+  const reverts = await gh.revertsSince("cli/cli", Date.parse("2026-09-01T00:00:00Z"));
+  expect(gh.isRevertOf(reverts, REVERTED)).toBe(true);
+});
+
+test("a missing branch, file or repository is told from a failure by GitHub's 404, however it words it, and a repository without commits says so", async () => {
+  replayGh(
+    cleanup,
+    "branchExists.missing",
+    "fileExists.missing",
+    "fileExists.noRef",
+    "readFile.missing",
+    "branchExists.noRepo",
+    "fileExists.noRepo",
+    "repoView.noRepo",
+    "issueList.noRepo",
+    "issueView.missing",
+    "prState.missing",
+    "mainChecks.noRepo",
+    "repoView.empty",
+    "fileExists.empty",
+    "branchExists.empty",
+    "mainChecks.empty",
+  );
+  // The branches API words its 404 "Branch not found", contents "Not Found" or "No commit found for the ref …".
+  expect(await gh.branchExists(SCRATCH, "no-such-branch")).toBe(false);
+  expect(await gh.fileExists(SCRATCH, "factory/no-such-file.yaml")).toBe(false);
+  expect(await gh.fileExists(SCRATCH, "README.md", "no-such-branch")).toBe(false);
+  expect(await gh.readFile(SCRATCH, "factory/no-such-file.yaml", "main")).toBe(undefined);
+
+  // A repository GitHub does not show has no branch and no file either; the reads that need it pass on gh's reason.
+  expect(await gh.branchExists(GONE, "main")).toBe(false);
+  expect(await gh.fileExists(GONE, "factory/factory.yaml")).toBe(false);
+  const noRepo = `Could not resolve to a Repository with the name '${GONE}'.`;
+  await expect(gh.defaultBranch(GONE)).rejects.toThrow(
+    `gh could not read the default branch of ${GONE}: GraphQL: ${noRepo} (repository)`,
+  );
+  await expect(gh.openLabelledIssues(GONE, "factory")).rejects.toThrow(
+    `gh could not list the open issues labelled "factory" in ${GONE}: GraphQL: ${noRepo} (repository)`,
+  );
+  await expect(gh.defaultBranchCi(GONE)).rejects.toThrow(
+    `gh could not read the checks on the default branch of ${GONE}: ${noRepo}`,
+  );
+  await expect(gh.issueStateAndComments(SCRATCH, 999)).rejects.toThrow(
+    `gh could not read ${SCRATCH}#999: GraphQL: Could not resolve to an issue or pull request with the number of 999. (repository.issue)`,
+  );
+  await expect(gh.prState(SCRATCH, 999)).rejects.toThrow(
+    `gh could not read the state of ${SCRATCH}#999: GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)`,
+  );
+
+  // A repository without commits: no file, no branch, no checks, and no default branch to start from.
+  expect(await gh.fileExists(EMPTY, "factory/factory.yaml")).toBe(false);
+  expect(await gh.branchExists(EMPTY, "agentgate/factory-init")).toBe(false);
+  expect(await gh.defaultBranchCi(EMPTY)).toBe("none");
+  await expect(gh.defaultBranch(EMPTY)).rejects.toThrow(
+    `${EMPTY} has no commits yet; push a first commit, then try again`,
+  );
+});
+
+test("a gh that is offline, logged out or holds a dead token is never read as a missing branch, and each read says why it failed", async () => {
+  const scenarios = [
+    ["offline", "proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused"],
+    ["noDns", "error connecting to proxy.invalid"],
+    ["loggedOut", "gh is not logged in on this machine (gh auth login)"],
+  ] as const;
+  for (const [scenario, why] of scenarios) {
+    replayGh(cleanup, `${scenario}.branchExists`, `${scenario}.repoView`);
+    const branch = await gh.branchExists(SCRATCH, "main").catch((e: Error) => e.message);
+    expect(branch).toStartWith(`gh could not read the branch main of ${SCRATCH}: `);
+    expect(branch).toEndWith(why);
+    const view = await gh.defaultBranch(SCRATCH).catch((e: Error) => e.message);
+    expect(view).toStartWith(`gh could not read the default branch of ${SCRATCH}: `);
+    expect(view).toEndWith(why);
+  }
+  replayGh(cleanup, "offline.issueList", "offline.prView", "offline.followed");
+  const offline =
+    'Post "https://api.github.com/graphql": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused';
+  await expect(gh.openLabelledIssues(SCRATCH, "factory")).rejects.toThrow(
+    `gh could not list the open issues labelled "factory" in ${SCRATCH}: ${offline}`,
+  );
+  await expect(gh.prView(PR)).rejects.toThrow(`gh could not read pull request ${SCRATCH}#6: ${offline}`);
+  expect((await gh.followedPrs(SCRATCH, [6])).get(6)).toEqual(
+    new Error(`gh could not read the pull requests the factory follows in ${SCRATCH}: ${offline}`),
+  );
+
+  // GitHub answered a token it does not know with a 401: its own message, from `gh api` and from `gh repo view`.
+  replayGh(cleanup, "badToken.branchExists", "badToken.repoView");
+  await expect(gh.branchExists(SCRATCH, "main")).rejects.toThrow(
+    `gh could not read the branch main of ${SCRATCH}: Bad credentials`,
+  );
+  await expect(gh.defaultBranch(SCRATCH)).rejects.toThrow(
+    `gh could not read the default branch of ${SCRATCH}: HTTP 401: Bad credentials (https://api.github.com/graphql)`,
+  );
+
+  // GitHub fails a whole query for one PR it cannot show, so each PR is then read on its own.
+  replayGh(cleanup, "followed.missing", "followed.missing.6", "followed.missing.999");
+  const found = await gh.followedPrs(SCRATCH, [6, 999]);
+  expect(found.get(6)).toMatchObject({ number: 6, checks: "passing" });
+  expect(found.get(999)).toEqual(
+    new Error(
+      `gh could not read the pull requests the factory follows in ${SCRATCH}: Could not resolve to a PullRequest with the number of 999.`,
+    ),
+  );
 });
 
 test("each gh.ts read rejects a malformed answer with an error naming the repository", async () => {
-  const reads: [string, () => Promise<unknown>][] = [
-    ["repo view", () => gh.defaultBranch(REPO)],
-    ["issue list", () => gh.openLabelledIssues(REPO, "factory")],
-    ["issue view", () => gh.issueStateAndComments(REPO, 7)],
-    ["issue view", () => gh.issueComments(REPO, 7)],
-    ["pr view", () => gh.prView(PR)],
-    ["pr view", () => gh.prAddReviewers(PR, ["octocat"])],
-    ["api graphql", () => gh.defaultBranchCi(REPO)],
-    ["pr list", () => gh.revertsSince(REPO, Date.parse("2026-11-03T17:40:14Z"))],
+  const reads: (() => Promise<unknown>)[] = [
+    () => gh.defaultBranch(SCRATCH),
+    () => gh.openLabelledIssues(SCRATCH, "factory"),
+    () => gh.issueStateAndComments(SCRATCH, 4),
+    () => gh.issueComments(SCRATCH, 4),
+    () => gh.prView(PR),
+    () => gh.prAddReviewers(PR, ["octocat"]),
+    () => gh.defaultBranchCi(SCRATCH),
+    () => gh.revertsSince(SCRATCH, Date.parse("2026-11-03T17:40:14Z")),
   ];
-  for (const [command, read] of reads) {
-    recordedGh({ [command]: { surprise: [{ number: "seven" }] } });
-    await expect(read()).rejects.toThrow(REPO);
+  for (const read of reads) {
+    stubGh(() => ok({ surprise: [{ number: "seven" }] }));
+    await expect(read()).rejects.toThrow(SCRATCH);
     // Not JSON at all, as when gh prints a table.
     stubGh(() => ({ ok: true, out: "7\tCrash on save\tOPEN" }));
-    await expect(read()).rejects.toThrow(REPO);
+    await expect(read()).rejects.toThrow(SCRATCH);
   }
   stubGh(() => undefined);
-  await expect(gh.defaultBranch(REPO)).rejects.toThrow(
-    `gh is not installed, so the factory cannot read the default branch of ${REPO}`,
+  await expect(gh.defaultBranch(SCRATCH)).rejects.toThrow(
+    `gh could not read the default branch of ${SCRATCH}: gh is not installed`,
   );
   await expect(gh.prView("https://example.com/pull/1")).rejects.toThrow("is not a GitHub pull request URL");
 });
@@ -635,6 +763,8 @@ const checkRun = (name: string, status: string, conclusion: string | null) => ({
   conclusion,
 });
 const commitStatus = (context: string, state: string) => ({ __typename: "StatusContext", context, state });
+/** One page of a commit's checks, as GraphQL answers `contexts(first: 100)`. */
+const page = (nodes: unknown[], hasNextPage = false) => ({ contexts: { nodes, pageInfo: { hasNextPage } } });
 /** A branch's rules as GitHub's GraphQL answers them: a pull request rule ({}), the required checks, a rule without
  * parameters (null). */
 const requiring = (...contexts: string[]) => ({
@@ -649,12 +779,15 @@ const requiring = (...contexts: string[]) => ({
 });
 
 test("a PR's checks sum up to failing over pending over passing; when its base branch requires checks only those count, and one not reported yet is pending", async () => {
+  // The follower's recorded read of factory-scratch#6, with other checks at its head and another base branch.
   const read = async (contexts: unknown[], baseRef: unknown = requiring()) => {
-    const commits = { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: contexts } } } }] };
-    recordedGh({ "api graphql": { data: { repository: { p42: { ...recorded.followed, baseRef, commits } } } } });
-    const pr = (await gh.followedPrs(REPO, [42])).get(42)!;
-    if (pr instanceof Error) throw pr;
-    return [pr.checks, pr.failing];
+    const pr = recordedJson("followed").data.repository.p6;
+    pr.baseRef = baseRef;
+    pr.commits.nodes[0].commit.statusCheckRollup = page(contexts);
+    stubGh(() => ok({ data: { repository: { p6: pr } } }));
+    const followed = (await gh.followedPrs(SCRATCH, [6])).get(6)!;
+    if (followed instanceof Error) throw followed;
+    return [followed.checks, followed.failing];
   };
   // Without required checks, every check counts.
   expect(await read([])).toEqual(["none", []]);
@@ -692,14 +825,67 @@ test("a PR's checks sum up to failing over pending over passing; when its base b
   expect(await read([commitStatus("ci/build", "SUCCESS"), preview], null)).toEqual(["failing", ["Preview"]]);
 });
 
+test("a commit with more checks than one read returns never passes on those: it stays pending, and a failure among them still fails it", async () => {
+  // pytorch/pytorch#203997 as recorded: the 100 checks GitHub returned all passed or were skipped, and it has more.
+  replayGh(cleanup, "followed.manyChecks");
+  const recordedPage =
+    recordedJson("followed.manyChecks").data.repository.p203997.commits.nodes[0].commit.statusCheckRollup.contexts;
+  expect(recordedPage.nodes).toHaveLength(100);
+  expect(recordedPage.pageInfo).toEqual({ hasNextPage: true });
+  expect((await gh.followedPrs("pytorch/pytorch", [203997])).get(203997)).toMatchObject({
+    checks: "pending",
+    failing: [],
+  });
+
+  // One of the checks that were read failed: that needs no second page.
+  const body = recordedJson("followed.manyChecks");
+  const [first] = body.data.repository.p203997.commits.nodes[0].commit.statusCheckRollup.contexts.nodes;
+  first.conclusion = "FAILURE";
+  stubGh(() => ok(body));
+  expect((await gh.followedPrs("pytorch/pytorch", [203997])).get(203997)).toMatchObject({
+    checks: "failing",
+    failing: [first.name],
+  });
+
+  // The default branch's checks are read the same way.
+  const main = recordedJson("mainChecks");
+  main.data.repository.defaultBranchRef.target.statusCheckRollup.contexts.pageInfo.hasNextPage = true;
+  stubGh(() => ok(main));
+  expect(await gh.defaultBranchCi(SCRATCH)).toBe("pending");
+});
+
+test("a review a person started and has not submitted is left out, with its comments", async () => {
+  // A pending review cannot be recorded without starting one: gh's source answers its `submittedAt` as null, and
+  // GraphQL marks its comments PENDING. Both are added here to what was recorded for factory-scratch#6.
+  const view = recordedJson("prView");
+  view.reviews.push({ ...view.reviews[0], body: "Rename this before merging", submittedAt: null, state: "PENDING" });
+  stubGh(() => ok(view));
+  expect((await gh.prView(PR)).reviews.map((r) => r.state)).toEqual(["COMMENTED", "COMMENTED"]);
+
+  const feedback = recordedJson("feedback");
+  const { reviews, reviewThreads } = feedback.data.repository.pullRequest;
+  reviews.nodes.push({ ...reviews.nodes[0], body: "Rename this before merging", submittedAt: null, state: "PENDING" });
+  const [thread] = reviewThreads.nodes;
+  const draft = { ...thread.comments.nodes[0], body: "Not sent yet", state: "PENDING" };
+  thread.comments.nodes.push(draft);
+  reviewThreads.nodes.push({ ...thread, id: "PRRT_draft", comments: { nodes: [draft] } });
+  stubGh(() => ok(feedback));
+  const read = await gh.prFeedback(PR);
+  expect(read.reviews.map((r) => r.state)).toEqual(["COMMENTED", "COMMENTED"]);
+  // The conversation keeps its two submitted comments, and the one that holds only a draft is not shown.
+  expect(read.conversations.map((c) => [c.id, c.comments.map((m) => m.body.slice(0, 12))])).toEqual([
+    ["PRRT_kwDOVpGbC861ncLB", ["Please count", "**m-566044**"]],
+  ]);
+});
+
 test("the default branch's CI is the checks at its newest commit that count there, every one or the required ones that run there; and a merged PR with a revert in 14 days is reverted", async () => {
   const ci = async (defaultBranchRef: unknown) => {
-    recordedGh({ "api graphql": { data: { repository: { defaultBranchRef } } } });
-    return gh.defaultBranchCi(REPO);
+    stubGh(() => ok({ data: { repository: { defaultBranchRef } } }));
+    return gh.defaultBranchCi(SCRATCH);
   };
   const head = (rules: unknown, ...nodes: unknown[]) => ({
     ...(rules as object),
-    target: { statusCheckRollup: { contexts: { nodes } } },
+    target: { statusCheckRollup: page(nodes) },
   });
   const release = checkRun("Release", "COMPLETED", "FAILURE");
   // Without required checks, every check at the head counts.
@@ -714,44 +900,97 @@ test("the default branch's CI is the checks at its newest commit that count ther
   expect(await ci(head(rules, checkRun("build", "COMPLETED", "FAILURE")))).toBe("failing");
   expect(await ci(head(rules, checkRun("build", "COMPLETED", "SUCCESS"), release))).toBe("passing");
 
-  const reverted = async (revert: Partial<(typeof recorded.revertList)[number]>) => {
-    const reverts = [{ ...recorded.revertList[0]!, ...revert }];
-    return gh.isRevertOf(reverts, { number: 42, title: "Speed up save", mergedAt: "2026-11-03T17:40:14Z" });
-  };
-  expect(await reverted({ body: "", title: 'Revert "Speed up save"' })).toBe(true);
-  expect(await reverted({ body: "Reverts acme/app#421" })).toBe(false);
-  expect(await reverted({ title: "Undo the codesign action" })).toBe(false);
-  expect(await reverted({ mergedAt: "2026-11-18T17:40:14Z" })).toBe(false);
+  const [revert]: gh.MergedRevert[] = recordedJson("reverts");
+  const reverted = (patch: Partial<gh.MergedRevert>) => gh.isRevertOf([{ ...revert!, ...patch }], REVERTED);
+  expect(reverted({})).toBe(true);
+  expect(reverted({ body: "" })).toBe(true);
+  expect(reverted({ body: "Reverts cli/cli#144370", title: "Revert the codesign action" })).toBe(false);
+  expect(reverted({ body: "", title: "Undo the codesign action" })).toBe(false);
+  expect(reverted({ mergedAt: "2026-09-30T14:11:21Z" })).toBe(false);
 });
 
-test("gh.ts writes: refused or unsent posts fail, and review requests skip the PR's author", async () => {
-  stubGh(() => undefined);
-  expect(await gh.postIssueComment(REPO, 7, "Hello")).toEqual({
+test("gh.ts writes: a post GitHub refused failed, one that never left this machine is unreachable, and only one nothing answered is uncertain", async () => {
+  const comment = (answer: Answer) => {
+    stubGh(() => answer);
+    return gh.postIssueComment(SCRATCH, 4, "Hello");
+  };
+  const could = `gh could not comment on ${SCRATCH}#4`;
+  // Certainly not sent: no gh, no login, no connection.
+  expect(await comment(undefined)).toEqual({ status: "unreachable", error: `${could}: gh is not installed` });
+  expect(await comment(recorded("loggedOut.branchExists"))).toEqual({
+    status: "unreachable",
+    error: `${could}: gh is not logged in on this machine (gh auth login)`,
+  });
+  expect(await comment(recorded("offline.branchExists"))).toEqual({
+    status: "unreachable",
+    error: `${could}: Get "https://api.github.com/repos/${SCRATCH}/branches/main": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused`,
+  });
+  expect(await comment(recorded("noDns.branchExists"))).toEqual({
+    status: "unreachable",
+    error: `${could}: error connecting to proxy.invalid`,
+  });
+  // GitHub said no with a 4xx, a 404 included.
+  expect(await comment(recorded("badToken.branchExists"))).toEqual({
     status: "failed",
-    error: `gh is not installed, so the factory cannot comment on ${REPO}#7`,
+    error: `GitHub refused to comment on ${SCRATCH}#4: Bad credentials`,
+  });
+  expect(await comment(recorded("label.missing"))).toEqual({
+    status: "failed",
+    error: `GitHub refused to comment on ${SCRATCH}#4: Not Found`,
+  });
+  // A 5xx, written here as `gh api` prints an error since none could be recorded, and a gh stopped at its deadline.
+  const outage = ghAnswer({ exit: 1, stdout: '{"message":"Server Error"}', stderr: "gh: Server Error (HTTP 502)\n" });
+  expect(await comment(outage)).toEqual({
+    status: "uncertain",
+    error: `${could}, though GitHub may have taken it: Server Error`,
+  });
+  expect(await comment(noAnswer)).toEqual({
+    status: "uncertain",
+    error: `${could}, though GitHub may have taken it: gh gave no reason (exit 143)`,
   });
 
-  let calls = stubGh(() => ({ ok: false, out: JSON.stringify({ message: "Unprocessable Entity", status: "422" }) }));
-  expect(await gh.postIssueComment(REPO, 7, "Hello")).toEqual({
+  // A reply is a GraphQL mutation: an answer with `errors` is a refusal, as recorded for a query.
+  const reply = (answer: Answer) => {
+    stubGh(() => answer);
+    return gh.replyToConversation("PRRT_kwDOVpGbC861ncLB", "Fixed.");
+  };
+  expect(await reply(recorded("followed.noRepo"))).toEqual({
     status: "failed",
-    error: `GitHub refused to comment on ${REPO}#7: Unprocessable Entity`,
+    error: `GitHub refused to reply in a review conversation: Could not resolve to a Repository with the name '${GONE}'.`,
   });
-  expect(calls[0]!.args[1]).toBe(`repos/${REPO}/issues/7/comments`);
+  expect((await reply(recorded("offline.followed"))).status).toBe("unreachable");
+  expect((await reply(noAnswer)).status).toBe("uncertain");
+});
 
-  calls = recordedGh();
-  await gh.prAddReviewers(PR, ["bagtoad", "octocat"]);
-  expect(calls.at(-1)!.args).toEqual(["pr", "edit", PR, "--add-reviewer", "octocat"]);
-  calls = recordedGh();
-  await gh.prAddReviewers(PR, ["BagToad"]);
-  expect(calls.map((c) => c.args[1])).toEqual(["view"]);
+test("review requests skip the PR's author, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {
+  const pr = (calls: ReturnType<typeof stubGh>) => calls.filter((c) => c.args[1] !== "view").map((c) => c.args);
+  const author = (args: string[]): Answer => (args[1] === "view" ? recorded("prView.author") : { ok: true, out: "" });
+  let calls = stubGh(author);
+  await gh.prAddReviewers(PR, ["hanskristoffer", "octocat"]);
+  expect(pr(calls)).toEqual([["pr", "edit", PR, "--add-reviewer", "octocat"]]);
+  calls = stubGh(author);
+  await gh.prAddReviewers(PR, ["HansKristoffer"]);
+  expect(pr(calls)).toEqual([]);
 
-  calls = recordedGh();
-  await gh.prSetBody(PR, "Fixes #7");
+  calls = stubGh(author);
+  await gh.prSetBody(PR, "Fixes #4");
   await gh.prReady(PR);
   expect(calls).toEqual([
-    { args: ["pr", "edit", PR, "--body-file", "-"], stdin: "Fixes #7" },
+    { args: ["pr", "edit", PR, "--body-file", "-"], stdin: "Fixes #4" },
     { args: ["pr", "ready", PR] },
   ]);
-  stubGh(() => ({ ok: false, out: "" }));
-  await expect(gh.prReady(PR)).rejects.toThrow(`gh could not mark ${REPO}#42 ready for review`);
+
+  stubGh(() =>
+    ghAnswer({
+      exit: 1,
+      stdout: "",
+      stderr:
+        'Post "https://octocat:hunter2@proxy.example/graphql": refused for ghp_0123456789abcdefghijABCDEFGHIJ012345\nUsage: gh pr ready\n',
+    }),
+  );
+  await expect(gh.prReady(PR)).rejects.toThrow(
+    new Error(
+      `gh could not mark ${SCRATCH}#6 ready for review: Post "https://proxy.example/graphql": refused for [redacted]`,
+    ),
+  );
 });

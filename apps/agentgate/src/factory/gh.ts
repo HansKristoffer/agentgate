@@ -3,40 +3,90 @@ import { host } from "../logins.ts";
 import type { PostResult } from "./runtime.ts";
 
 /**
- * Every GitHub call the factory makes, through this machine's `gh` login (`host.gh`). Output is parsed with zod, and
- * errors name the repository and what was asked, never the command line or its environment: `gh` keeps its own
- * stderr, and a GitHub API error contributes only its `message`.
+ * Every GitHub call the factory makes, through this machine's `gh` login (`host.gh`). Each call is classified once, in
+ * `ask`, and output is parsed with zod. Errors name the repository and what was asked, never the command line or its
+ * environment: the reason is GitHub's own `message`, or the first line `gh` printed to stderr (`ghAnswer`).
  */
 
 const DAY = 86_400_000;
 
-/** GitHub's own explanation, when `gh api` printed an error response: REST's `message`, or GraphQL's first error. */
-function apiMessage(out: string) {
+/**
+ * What one `gh` call came to:
+ *
+ * - `missing`: GitHub answered 404;
+ * - `refused`: GitHub answered another 4xx or a GraphQL error, so it did nothing;
+ * - `unreachable`: the request certainly never reached GitHub, because `gh` is not installed or not logged in, or no
+ *   connection opened (a dial, DNS or proxy error);
+ * - `unknown`: anything else, a 5xx and a `gh` stopped at its deadline included. A write may have been applied.
+ */
+type GhResult =
+  { kind: "ok"; out: string } | { kind: "missing" | "refused" | "unreachable" | "unknown"; message: string };
+
+/** An error response as `gh api` prints it to stdout: REST's `message` and `status`, or GraphQL's `errors`. */
+function errorBody(out: string) {
   try {
-    const json = JSON.parse(out);
-    const message = z
-      .union([
-        z.object({ message: z.string() }),
-        z.object({ errors: z.tuple([z.object({ message: z.string() })]).rest(z.unknown()) }),
-      ])
-      .safeParse(json);
-    if (message.success)
-      return ("message" in message.data ? message.data.message : message.data.errors[0].message).slice(0, 200);
+    const body = z
+      .object({
+        message: z.string().optional(),
+        status: z.string().optional(),
+        errors: z.array(z.unknown()).optional(),
+      })
+      .parse(JSON.parse(out));
+    const first = z.object({ message: z.string() }).safeParse(body.errors?.[0]);
+    return {
+      message: (body.message ?? (first.success ? first.data.message : undefined))?.slice(0, 200),
+      status: Number(body.status) || undefined,
+      errors: !!body.errors?.length,
+    };
   } catch {
     // Not a GitHub API error response.
+    return { errors: false };
   }
-  return undefined;
 }
 
-async function gh(what: string, args: string[], stdin?: string) {
+/** The HTTP status `gh` prints with a refusal: `gh: Not Found (HTTP 404)` from `gh api`, `HTTP 404: Not Found (…)`
+ * from the other commands. */
+const printedStatus = (err: string) => {
+  const m = /\(HTTP (\d{3})\)$|^(?:gh: )?HTTP (\d{3})\b/.exec(err);
+  return m ? Number(m[1] ?? m[2]) : undefined;
+};
+
+/** `gh` could not open a connection, as Go and `gh` word it: nothing was sent. */
+const NO_CONNECTION = /\bdial tcp\b|\bproxyconnect\b|\bno such host\b|^error connecting to /;
+/** `gh`'s exit code when it has no login to use. */
+const NOT_LOGGED_IN = 4;
+
+/** Runs `gh` and classifies the outcome from the HTTP status, the exit code and the error's shape, never from the
+ * wording of GitHub's message. */
+async function ask(args: string[], stdin?: string): Promise<GhResult> {
   const r = await host.gh(args, stdin);
-  if (!r) throw new Error(`gh is not installed, so the factory cannot ${what}`);
-  if (!r.ok) {
-    const message = apiMessage(r.out);
-    throw new Error(`gh could not ${what}: ${message ?? "check gh auth status on this machine"}`);
-  }
-  return r.out;
+  if (!r) return { kind: "unreachable", message: "gh is not installed" };
+  // GraphQL refuses with `errors` in an answer that is otherwise a success. Any other successful stdout is the
+  // answer itself, and a file read as raw text can hold anything.
+  const graphql = args[0] === "api" && args[1] === "graphql";
+  const body = !r.ok || graphql ? errorBody(r.out) : { errors: false };
+  if (r.ok && !body.errors) return { kind: "ok", out: r.out };
+
+  const err = r.err ?? "";
+  const message =
+    body.message ?? (err.replace(/^gh: /, "") || `gh gave no reason${r.exit === undefined ? "" : ` (exit ${r.exit})`}`);
+  const status = printedStatus(err) ?? body.status;
+  if (status === 404) return { kind: "missing", message };
+  if (status && status >= 400 && status < 500) return { kind: "refused", message };
+  if (status) return { kind: "unknown", message };
+  if (r.exit === NOT_LOGGED_IN)
+    return { kind: "unreachable", message: "gh is not logged in on this machine (gh auth login)" };
+  if (NO_CONNECTION.test(err)) return { kind: "unreachable", message };
+  return { kind: graphql && body.errors ? "refused" : "unknown", message };
 }
+
+/** The output of a call that went through; any other outcome is an error naming what was asked and why it failed. */
+function output(what: string, r: GhResult) {
+  if (r.kind === "ok") return r.out;
+  throw new Error(`gh could not ${what}: ${r.message}`);
+}
+
+const gh = async (what: string, args: string[], stdin?: string) => output(what, await ask(args, stdin));
 
 async function ghJson<T extends z.ZodType>(what: string, schema: T, args: string[], stdin?: string) {
   const out = await gh(what, args, stdin);
@@ -67,12 +117,14 @@ export const COLLABORATORS = ["OWNER", "MEMBER", "COLLABORATOR"];
 const login = z.object({ login: z.string() });
 const comment = z.object({ body: z.string(), authorAssociation: z.string(), createdAt: z.string() });
 
+/** The default branch. A repository without commits has none, which `gh repo view` answers as an empty name. */
 export async function defaultBranch(repo: string): Promise<string> {
   const view = await ghJson(
     `read the default branch of ${repo}`,
-    z.object({ defaultBranchRef: z.object({ name: z.string().min(1) }) }),
+    z.object({ defaultBranchRef: z.object({ name: z.string() }) }),
     ["repo", "view", repo, "--json", "defaultBranchRef"],
   );
+  if (!view.defaultBranchRef.name) throw new Error(`${repo} has no commits yet; push a first commit, then try again`);
   return view.defaultBranchRef.name;
 }
 
@@ -85,11 +137,19 @@ export async function branchProtected(repo: string, branch: string): Promise<boo
   return view.protected;
 }
 
+/** The most open labelled issues one poll reads. */
+export const ISSUE_LIMIT = 200;
+
+/** The open issues with the label, newest first, and whether there are more than `ISSUE_LIMIT`: one more is asked
+ * for, so a repository with exactly that many is not said to have more. */
 export async function openLabelledIssues(
   repo: string,
   label: string,
-): Promise<Array<{ number: number; title: string; body: string; url: string; updatedAt?: string }>> {
-  return ghJson(
+): Promise<{
+  issues: Array<{ number: number; title: string; body: string; url: string; updatedAt?: string }>;
+  more: boolean;
+}> {
+  const issues = await ghJson(
     `list the open issues labelled "${label}" in ${repo}`,
     z.array(
       z.object({
@@ -110,11 +170,12 @@ export async function openLabelledIssues(
       "--state",
       "open",
       "--limit",
-      "200",
+      String(ISSUE_LIMIT + 1),
       "--json",
       "number,title,body,url,updatedAt",
     ],
   );
+  return { issues: issues.slice(0, ISSUE_LIMIT), more: issues.length > ISSUE_LIMIT };
 }
 
 let viewer: Promise<string> | undefined;
@@ -166,46 +227,44 @@ export async function issueComments(
   return view.comments.map(({ author, ...rest }) => ({ ...rest, author: author?.login ?? "" }));
 }
 
-/** A POST whose outcome decides between failed (GitHub refused it, or it never left) and uncertain (it may exist). */
-async function post(what: string, path: string, payload: unknown): Promise<PostResult> {
-  const r = await host.gh(["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload));
-  if (!r) return { status: "failed", error: `gh is not installed, so the factory cannot ${what}` };
-  if (r.ok) return { status: "posted" };
-  const message = apiMessage(r.out);
-  return message
-    ? { status: "failed", error: `GitHub refused to ${what}: ${message}` }
-    : { status: "uncertain", error: `gh could not ${what}, and GitHub gave no answer` };
+/** A write's outcome for the outbox: GitHub refused it, it never left this machine, or nothing says whether it was
+ * applied. */
+function written(what: string, r: GhResult): PostResult {
+  if (r.kind === "ok") return { status: "posted" };
+  if (r.kind === "unreachable") return { status: "unreachable", error: `gh could not ${what}: ${r.message}` };
+  if (r.kind === "unknown")
+    return { status: "uncertain", error: `gh could not ${what}, though GitHub may have taken it: ${r.message}` };
+  return { status: "failed", error: `GitHub refused to ${what}: ${r.message}` };
 }
 
-// ---- starting a factory folder in a repository (factory init)
+const post = async (what: string, path: string, payload: unknown) =>
+  written(what, await ask(["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload)));
 
-/** Whether GitHub answered a read with "Not Found". */
-const notFound = (r: { ok: boolean; out: string } | undefined) => !!r && !r.ok && apiMessage(r.out) === "Not Found";
+// ---- starting a factory folder in a repository (factory init)
 
 const contents = (repo: string, path: string, ref?: string) =>
   `repos/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
 
-/** Whether a file exists on `ref`, or the default branch. */
+/** Whether a file exists on `ref`, or the default branch. A repository without commits has no file. */
 export async function fileExists(repo: string, path: string, ref?: string): Promise<boolean> {
-  const r = await host.gh(["api", contents(repo, path, ref), "--jq", ".path"]);
-  if (notFound(r)) return false;
-  await gh(`read ${path} in ${repo}`, ["api", contents(repo, path, ref), "--jq", ".path"]);
+  const r = await ask(["api", contents(repo, path, ref), "--jq", ".path"]);
+  if (r.kind === "missing") return false;
+  output(`read ${path} in ${repo}`, r);
   return true;
 }
 
 /** A text file's content on `ref`, or undefined when there is none. */
 export async function readFile(repo: string, path: string, ref: string): Promise<string | undefined> {
-  const args = ["api", "-H", "Accept: application/vnd.github.raw+json", contents(repo, path, ref)];
-  const r = await host.gh(args);
-  if (notFound(r)) return undefined;
-  return gh(`read ${path} at ${ref} in ${repo}`, args);
+  const r = await ask(["api", "-H", "Accept: application/vnd.github.raw+json", contents(repo, path, ref)]);
+  if (r.kind === "missing") return undefined;
+  return output(`read ${path} at ${ref} in ${repo}`, r);
 }
 
 /** Whether a branch exists. */
 export async function branchExists(repo: string, branch: string): Promise<boolean> {
-  const r = await host.gh(["api", `repos/${repo}/branches/${encodeURIComponent(branch)}`, "--jq", ".name"]);
-  if (notFound(r)) return false;
-  await gh(`read the branch ${branch} of ${repo}`, ["api", `repos/${repo}/branches/${encodeURIComponent(branch)}`]);
+  const r = await ask(["api", `repos/${repo}/branches/${encodeURIComponent(branch)}`, "--jq", ".name"]);
+  if (r.kind === "missing") return false;
+  output(`read the branch ${branch} of ${repo}`, r);
   return true;
 }
 
@@ -309,10 +368,11 @@ export async function openPrFor(repo: string, branch: string): Promise<string | 
 
 /** Creates a label unless the repository has it. */
 export async function ensureLabel(repo: string, name: string, color: string, description: string) {
-  const r = await host.gh(["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"]);
-  if (r?.ok) return;
-  if (!notFound(r))
-    await gh(`read the label ${name} in ${repo}`, ["api", `repos/${repo}/labels/${encodeURIComponent(name)}`]);
+  const r = await ask(["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"]);
+  if (r.kind !== "missing") {
+    output(`read the label ${name} in ${repo}`, r);
+    return;
+  }
   await gh(
     `create the label ${name} in ${repo}`,
     ["api", `repos/${repo}/labels`, "--method", "POST", "--input", "-"],
@@ -369,7 +429,13 @@ const check = z.union([
   z.object({ __typename: z.literal("StatusContext"), context: z.string(), state: z.string() }),
 ]);
 type Check = z.infer<typeof check>;
-const CHECK_FIELDS = "__typename ... on CheckRun { name status conclusion } ... on StatusContext { context state }";
+/** A commit's first 100 checks, and whether it has more. */
+const CONTEXTS = `contexts(first: 100) {
+        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }
+        pageInfo { hasNextPage }
+      }`;
+const contextsPage = z.object({ nodes: z.array(check), pageInfo: z.object({ hasNextPage: z.boolean() }) });
+type ContextsPage = z.infer<typeof contextsPage>;
 const checkName = (c: Check) => (c.__typename === "CheckRun" ? c.name : c.context);
 const outcomeOf = (c: Check) =>
   c.__typename === "StatusContext" ? c.state : c.status === "COMPLETED" ? (c.conclusion ?? "") : "PENDING";
@@ -412,16 +478,25 @@ function requiredChecks(ref: z.infer<typeof requiring> | null): string[] {
 const counted = (contexts: Check[], required: string[]) =>
   required.length ? contexts.filter((c) => required.includes(checkName(c))) : contexts;
 
+/** The checks past the first 100 are not read, and one of them may have failed or still run: the ones that were
+ * read can fail the commit, but cannot pass it. */
+const unreadIsPending = (state: CheckState, page: ContextsPage | null | undefined): CheckState =>
+  state !== "failing" && page?.pageInfo.hasNextPage ? "pending" : state;
+
 /**
  * A PR head's checks as the follower judges them: the ones that count, and a required one not reported yet is
  * pending, as GitHub has it. A preview deploy or an app build the branch does not require holds nothing back.
  * `failing` names every check that failed, for the thread.
  */
-function judgeChecks(contexts: Check[], required: string[]): { checks: CheckState; failing: string[] } {
+function judgeChecks(
+  page: ContextsPage | null | undefined,
+  required: string[],
+): { checks: CheckState; failing: string[] } {
+  const contexts = page?.nodes ?? [];
   const failing = [...new Set(contexts.filter((c) => FAILED.includes(outcomeOf(c))).map(checkName))].sort();
   const state = rollup(counted(contexts, required));
   const unreported = required.some((name) => !contexts.some((c) => checkName(c) === name));
-  return { checks: state !== "failing" && unreported ? "pending" : state, failing };
+  return { checks: unreadIsPending(state !== "failing" && unreported ? "pending" : state, page), failing };
 }
 
 const prViewSchema = z.object({
@@ -440,7 +515,12 @@ const prViewSchema = z.object({
   files: z.array(z.object({ path: z.string() })),
   comments: z.array(comment),
   reviews: z.array(
-    z.object({ body: z.string(), authorAssociation: z.string(), submittedAt: z.string(), state: z.string() }),
+    z.object({
+      body: z.string(),
+      authorAssociation: z.string(),
+      submittedAt: z.string().nullable(), // null while pending
+      state: z.string(),
+    }),
   ),
 });
 const PR_FIELDS = Object.keys(prViewSchema.shape).join(",");
@@ -454,12 +534,13 @@ export async function prView(url: string): Promise<PrView> {
     "--json",
     PR_FIELDS,
   ]);
-  const { mergedAt, author, files, ...rest } = pr;
+  const { mergedAt, author, files, reviews, ...rest } = pr;
   return {
     ...rest,
     author: author.login,
     ...(mergedAt && { mergedAt }),
     files: files.map((file) => file.path),
+    reviews: reviews.flatMap((r) => (r.submittedAt ? [{ ...r, submittedAt: r.submittedAt }] : [])),
   };
 }
 
@@ -484,17 +565,20 @@ export interface PrFeedback {
   conversations: ReviewConversation[];
 }
 
+/** A PR's reviews and review conversations. A review a person has started and not submitted, and its comments,
+ * show to that person's own login, which is the factory's: `submittedAt` and `state` tell them apart. */
+const REVIEWS_AND_THREADS = `reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
+    reviewThreads(first: 100) {
+      nodes {
+        id isResolved isOutdated path line originalLine viewerCanResolve
+        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }
+      }
+    }`;
 // `gh pr view` cannot tell a bot from a person (both are plain logins), and has no review conversations.
 const FEEDBACK = `query ($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
-      reviewThreads(first: 100) {
-        nodes {
-          id isResolved isOutdated path line originalLine viewerCanResolve
-          comments(first: 50) { nodes { body createdAt authorAssociation author { __typename } } }
-        }
-      }
+      ${REVIEWS_AND_THREADS}
     }
   }
 }`;
@@ -522,7 +606,15 @@ const feedbackShape = {
         originalLine: z.number().nullable(),
         viewerCanResolve: z.boolean(),
         comments: z.object({
-          nodes: z.array(z.object({ body: z.string(), createdAt: z.string(), authorAssociation: z.string(), author })),
+          nodes: z.array(
+            z.object({
+              body: z.string(),
+              createdAt: z.string(),
+              authorAssociation: z.string(),
+              state: z.string(), // PENDING until its review is submitted
+              author,
+            }),
+          ),
         }),
       }),
     ),
@@ -542,15 +634,23 @@ function toFeedback({ reviews, reviewThreads }: z.infer<z.ZodObject<typeof feedb
     reviews: reviews.nodes.flatMap((r) =>
       r.submittedAt ? [{ ...comment(r), at: r.submittedAt, state: r.state }] : [],
     ),
-    conversations: reviewThreads.nodes.map((t) => ({
-      id: t.id,
-      resolved: t.isResolved,
-      outdated: t.isOutdated,
-      path: t.path,
-      line: t.line ?? t.originalLine,
-      canResolve: t.viewerCanResolve,
-      comments: t.comments.nodes.map((c) => ({ ...comment(c), at: c.createdAt })),
-    })),
+    conversations: reviewThreads.nodes.flatMap((t) => {
+      const comments = t.comments.nodes
+        .filter((c) => c.state !== "PENDING")
+        .map((c) => ({ ...comment(c), at: c.createdAt }));
+      if (!comments.length) return [];
+      return [
+        {
+          id: t.id,
+          resolved: t.isResolved,
+          outdated: t.isOutdated,
+          path: t.path,
+          line: t.line ?? t.originalLine,
+          canResolve: t.viewerCanResolve,
+          comments,
+        },
+      ];
+    }),
   };
 }
 
@@ -580,17 +680,12 @@ export type PrState = Omit<PrView, "body" | "files" | "reviews">;
  * conversations of `prFeedback`. Only this read knows which checks the base branch requires. */
 export type FollowedPr = PrState & { checks: CheckState; failing: string[]; feedback: PrFeedback };
 
-const REVIEWS_AND_THREADS = `reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }
-    reviewThreads(first: 100) {
-      nodes {
-        id isResolved isOutdated path line originalLine viewerCanResolve
-        comments(first: 50) { nodes { body createdAt authorAssociation author { __typename } } }
-      }
-    }`;
 const FOLLOWED = `fragment Followed on PullRequest {
     number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable
     baseRef { ${REQUIRED_FIELDS} }
-    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes { ${CHECK_FIELDS} } } } } } }
+    commits(last: 1) { nodes { commit { statusCheckRollup {
+      ${CONTEXTS}
+    } } } }
     comments(last: 100) { nodes { body authorAssociation createdAt } }
     ${REVIEWS_AND_THREADS}
   }`;
@@ -611,7 +706,7 @@ const followedSchema = z.object({
     nodes: z.array(
       z.object({
         commit: z.object({
-          statusCheckRollup: z.object({ contexts: z.object({ nodes: z.array(check) }) }).nullable(),
+          statusCheckRollup: z.object({ contexts: contextsPage }).nullable(),
         }),
       }),
     ),
@@ -661,7 +756,7 @@ async function followedBatch(repo: string, batch: number[]): Promise<FollowedPr[
         ...rest,
         author: author?.login ?? "ghost",
         ...(mergedAt && { mergedAt }),
-        ...judgeChecks(commits.nodes[0]?.commit.statusCheckRollup?.contexts.nodes ?? [], requiredChecks(baseRef)),
+        ...judgeChecks(commits.nodes[0]?.commit.statusCheckRollup?.contexts, requiredChecks(baseRef)),
         comments: comments.nodes,
         feedback: toFeedback({ reviews, reviewThreads }),
       },
@@ -674,17 +769,12 @@ const REPLY = `mutation ($id: ID!, $body: String!) {
 }`;
 const RESOLVE = `mutation ($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { isResolved } } }`;
 
-/** A reply in a review conversation. Like an issue comment: failed when GitHub refused it (nothing was written),
- * uncertain when no answer said either way. GraphQL can exit 0 with `errors` and a null payload, which is a refusal. */
+/** A reply in a review conversation, with an issue comment's outcomes. */
 export async function replyToConversation(id: string, body: string): Promise<PostResult> {
-  const what = "reply in a review conversation";
-  const r = await host.gh(["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`]);
-  if (!r) return { status: "failed", error: `gh is not installed, so the factory cannot ${what}` };
-  const message = apiMessage(r.out);
-  if (r.ok && !message) return { status: "posted" };
-  return message
-    ? { status: "failed", error: `GitHub refused to ${what}: ${message}` }
-    : { status: "uncertain", error: `gh could not ${what}, and GitHub gave no answer` };
+  return written(
+    "reply in a review conversation",
+    await ask(["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`]),
+  );
 }
 
 export async function resolveConversation(id: string): Promise<void> {
@@ -726,7 +816,9 @@ const DEFAULT_BRANCH_CHECKS = `query ($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef {
       ${REQUIRED_FIELDS}
-      target { ... on Commit { statusCheckRollup { contexts(first: 100) { nodes { ${CHECK_FIELDS} } } } } }
+      target { ... on Commit { statusCheckRollup {
+        ${CONTEXTS}
+      } } }
     }
   }
 }`;
@@ -735,9 +827,7 @@ const defaultBranchChecks = z.object({
     repository: z.object({
       defaultBranchRef: requiring
         .extend({
-          target: z
-            .object({ statusCheckRollup: z.object({ contexts: z.object({ nodes: z.array(check) }) }).nullish() })
-            .nullable(),
+          target: z.object({ statusCheckRollup: z.object({ contexts: contextsPage }).nullish() }).nullable(),
         })
         .nullable(), // an empty repository has no branch
     }),
@@ -762,7 +852,8 @@ export async function defaultBranchCi(repo: string): Promise<CheckState> {
   ]);
   const ref = answer.data.repository.defaultBranchRef;
   if (!ref) return "none";
-  return rollup(counted(ref.target?.statusCheckRollup?.contexts.nodes ?? [], requiredChecks(ref)));
+  const page = ref.target?.statusCheckRollup?.contexts;
+  return unreadIsPending(rollup(counted(page?.nodes ?? [], requiredChecks(ref))), page);
 }
 
 const revertSchema = z.object({ number: z.number().int(), title: z.string(), body: z.string(), mergedAt: z.string() });

@@ -35,14 +35,21 @@ type LinearSource = Extract<FactorySource, { type: "linear" }>;
 
 class LinearError extends Error {
   override name = "LinearError";
-  /** True when Linear may have applied a mutation although the call did not say so. */
+  /**
+   * What became of the call. `refused`: Linear answered no, so it applied nothing. `unreachable`: the request
+   * certainly never reached Linear. `unknown`: no answer said either way, so a mutation may have been applied.
+   */
   constructor(
     message: string,
-    readonly maybeApplied = false,
+    readonly outcome: "refused" | "unreachable" | "unknown" = "refused",
   ) {
     super(message);
   }
 }
+
+/** `fetch`'s error codes for a connection that never opened: nothing was sent. A timeout or a reset is not among
+ * them, because the request may have arrived first. */
+const NO_CONNECTION = ["ECONNREFUSED", "ENOTFOUND"];
 
 const graphqlResponse = z.object({
   data: z.unknown().optional(),
@@ -74,10 +81,16 @@ async function graphql<T>(
     });
     status = res.status;
     text = await res.text();
-  } catch {
-    // The request may have reached Linear; the error itself could name the request, so it is not repeated.
-    const problem = status ? `Linear's answer did not arrive (HTTP ${status})` : "Linear is not reachable";
-    throw new LinearError(problem, true);
+  } catch (e) {
+    // The error itself could name the request, so only its code is read.
+    const code = e instanceof Error && "code" in e ? e.code : undefined;
+    if (!status && typeof code === "string" && NO_CONNECTION.includes(code))
+      throw new LinearError("Linear is not reachable", "unreachable");
+    // The request may have reached Linear.
+    throw new LinearError(
+      status ? `Linear's answer did not arrive (HTTP ${status})` : "Linear did not answer",
+      "unknown",
+    );
   }
   let body: z.infer<typeof graphqlResponse> | undefined;
   try {
@@ -88,13 +101,13 @@ async function graphql<T>(
   // A GraphQL error or a 4xx means Linear did not apply the call; a 5xx or a 2xx we cannot read might have.
   const ok = status >= 200 && status < 300;
   const message = body?.errors?.find((e) => e.message)?.message;
-  if (message) throw new LinearError(`Linear: ${scrub(message, apiKey)}`, status >= 500);
+  if (message) throw new LinearError(`Linear: ${scrub(message, apiKey)}`, status >= 500 ? "unknown" : "refused");
 
   const data = schema.safeParse(body?.data);
   if (ok && data.success) return data.data;
 
   const problem = ok ? "Linear answered in an unexpected shape" : `Linear answered HTTP ${status}`;
-  throw new LinearError(problem, ok || status >= 500);
+  throw new LinearError(problem, ok || status >= 500 ? "unknown" : "refused");
 }
 
 /** The item's source as its folder commit declared it, or as the current folder does. */
@@ -109,7 +122,10 @@ function apiKeyOf(f: FactoryRuntime, source: LinearSource) {
   const key = resolveSecretRef(f.s, source.apiKey);
   if (key) return key;
   const name = source.apiKey.replace(/^secret:/, "");
-  throw new LinearError(`The Linear API key ${name} is not set; set it with agentgate factory secret set ${name}`);
+  throw new LinearError(
+    `The Linear API key ${name} is not set; set it with agentgate factory secret set ${name}`,
+    "unreachable",
+  );
 }
 
 const issuesSchema = z.object({
@@ -229,16 +245,21 @@ function markerOf(body: string) {
 }
 
 async function post(f: FactoryRuntime, item: FactoryItem, body: string): Promise<PostResult> {
+  // Until the mutation is sent, nothing can have been written.
+  let mutating = false;
   try {
     const apiKey = apiKeyOf(f, sourceFor(f, item.source, item.configCommit));
     const issueId = (await graphql(f, apiKey, idSchema, ID, { id: item.externalId })).issue.id;
+    mutating = true;
     const { commentCreate } = await graphql(f, apiKey, createdSchema, CREATE, { issueId, body: visibleMarker(body) });
     return commentCreate.success
       ? { status: "posted" }
       : { status: "failed", error: "Linear did not create the comment" };
   } catch (e) {
     if (!(e instanceof LinearError)) throw e;
-    return { status: e.maybeApplied ? "uncertain" : "failed", error: e.message };
+    if (e.outcome === "refused") return { status: "failed", error: e.message };
+    // Anything else is safe to send again, unless the mutation may have arrived.
+    return { status: e.outcome === "unknown" && mutating ? "uncertain" : "unreachable", error: e.message };
   }
 }
 
