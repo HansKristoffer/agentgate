@@ -3,15 +3,13 @@ import { z } from "zod";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
-import { lastSeen } from "../sync.ts";
-import { frozenItems } from "./controller.ts";
 import { runs } from "./db.ts";
-import { folderStore } from "./folder-store.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { needsYouLines } from "./needs-you.ts";
 import { FACTORY_PAGE } from "./page.ts";
 import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
 import { needsSignIn } from "./t3-mcp.ts";
+import { frozenItems } from "./view.ts";
 
 /**
  * The board: every machine's T3 threads and what the factory's features add through `f.boardParts`. One builder serves
@@ -89,7 +87,7 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
   const { stream, error } = mirrorOf(f).status();
   const base: FactoryBoard = {
     node: f.s.nodeId,
-    factory: pointerRow(f),
+    factory: null, // config.ts's part
     config: null,
     t3: { stream, mcp: "off", ...(error && { error }) },
     capacity: {
@@ -123,7 +121,7 @@ const defined = <T extends object>(o: T | undefined) =>
 
 /** Arrays add up (items by id, the later part winning), sources by id key by key, `t3` and `capacity` merge key by
  * key, and any other key is the later part's. `t3` merges because the mirror and the T3 sign-in each report half of
- * it, and a source row because the controller reports its polls and the webhooks its URL. */
+ * it, and a source row because intake reports its polls and the webhooks its URL. */
 function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
   const { items, sources, machines, events, t3, capacity, ...rest } = part;
   const byId = new Map(board.sources.map((row) => [row.id, row]));
@@ -148,19 +146,6 @@ function strip(board: FactoryBoard, { includeWebhookUrls }: { includeWebhookUrls
     sources: board.sources.map(({ webhook, ...source }) =>
       webhook ? { ...source, webhook: { configured: webhook.configured } } : source,
     ),
-  };
-}
-
-function pointerRow(f: FactoryRuntime): FactoryBoard["factory"] {
-  const pointer = f.pointer();
-  if (!pointer) return null;
-  const seen = lastSeen(f.s, pointer.node);
-  const { moveTo: _, ...rest } = pointer;
-  return {
-    ...rest,
-    label: folderStore(f, pointer).label,
-    online: f.s.now() - seen < 60_000,
-    ...(seen > 0 && { lastSeenAt: seen }),
   };
 }
 
@@ -210,10 +195,15 @@ const viewThread = (t: ViewThread): BoardThread => ({
   updatedAt: Date.parse(t.updatedAt) || 0,
 });
 
-const peerCache = new WeakMap<FactoryRuntime, { at: number; machines: Promise<FactoryBoard["machines"]> }>();
+/** The last read of the other machines' threads, and of the page's board: each is read again once it is old. */
+const cache = (f: FactoryRuntime) =>
+  f.memory("board cache", () => ({
+    peers: undefined as { at: number; machines: Promise<FactoryBoard["machines"]> } | undefined,
+    page: undefined as { at: number; board: Promise<FactoryBoard> } | undefined,
+  }));
 
 function peerMachines(f: FactoryRuntime) {
-  const cached = peerCache.get(f);
+  const cached = cache(f).peers;
   if (cached && f.s.now() - cached.at < PEER_EVERY) return cached.machines;
   const machines = Promise.all(
     f.s
@@ -225,7 +215,7 @@ function peerMachines(f: FactoryRuntime) {
         return { node: n.id, online: !view.error, threads: view.threads.map(viewThread) };
       }),
   );
-  peerCache.set(f, { at: f.s.now(), machines });
+  cache(f).peers = { at: f.s.now(), machines };
   return machines;
 }
 
@@ -247,15 +237,13 @@ async function respond(f: FactoryRuntime, req: Request, listener: Listener) {
   }
 }
 
-const pageCache = new WeakMap<FactoryRuntime, { at: number; board: Promise<FactoryBoard> }>();
-
 /** The page's board, built at most every 5 seconds however many pages are open. */
 function pageBoard(f: FactoryRuntime) {
-  const cached = pageCache.get(f);
+  const cached = cache(f).page;
   if (cached && f.s.now() - cached.at < PAGE_EVERY) return cached.board;
   const board = buildBoard(f, { includeWebhookUrls: false });
-  pageCache.set(f, { at: f.s.now(), board });
-  board.catch(() => pageCache.delete(f));
+  cache(f).page = { at: f.s.now(), board };
+  board.catch(() => (cache(f).page = undefined));
   return board;
 }
 

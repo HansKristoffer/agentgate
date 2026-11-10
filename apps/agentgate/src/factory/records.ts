@@ -7,7 +7,7 @@ import { ask, interruptItem } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { isRevertOf, prState, prView, revertsSince } from "./gh.ts";
 import { mirrorOf } from "./mirror.ts";
-import { shortError, withItem, type FactoryRuntime } from "./runtime.ts";
+import { later, SayOnce, shortError, withItem, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * What each run cost and how each item turned out. A run's tokens are the `session_usage` rows of the provider sessions
@@ -96,7 +96,7 @@ async function enforceBudget(f: FactoryRuntime, id: string) {
   await interruptItem(f, item.id, `The item went over the factory's token budget of ${budget}`);
 }
 
-/** Stores the run's tokens. */
+/** Stores the run's tokens: when it ends, when its item finishes, and every minute while its item is open. */
 async function record(f: FactoryRuntime, run: FactoryRun) {
   const measured = await measure(f, run);
   if (!measured) return;
@@ -105,12 +105,9 @@ async function record(f: FactoryRuntime, run: FactoryRun) {
   if (item && isOpenPhase(item.phase)) await withItem(f, item.id, () => enforceBudget(f, item.id));
 }
 
-/** A run that just ended: its tokens. */
-export const recordRun = (f: FactoryRuntime, run: FactoryRun) => record(f, run);
-
 /** An item that just finished: its threads may have kept working after their runs reported (an implement thread owns
  * its PR), so their tokens are read again. */
-export async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
+async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
   for (const run of runs.forItem(f.s, item.id))
     if (run.threadId && run.state === "reported")
       await record(f, run).catch((e) =>
@@ -123,18 +120,13 @@ export async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
       );
 }
 
-interface Measuring {
-  /** Per run, its thread and subagent threads when its sessions were read, and those sessions. */
-  sessions: Map<string, { threads: string; sessions: string[] }>;
-  /** Per run, the failure the event list last heard. */
-  failed: Map<string, string>;
-}
-const measuring = new WeakMap<FactoryRuntime, Measuring>();
-function measuringOf(f: FactoryRuntime) {
-  let m = measuring.get(f);
-  if (!m) measuring.set(f, (m = { sessions: new Map(), failed: new Map() }));
-  return m;
-}
+/** Per run, its thread and subagent threads when its sessions were read, and those sessions; and the failure the
+ * event list last heard. */
+const measuringOf = (f: FactoryRuntime) =>
+  f.memory("token measuring", () => ({
+    sessions: new Map<string, { threads: string; sessions: string[] }>(),
+    failed: new SayOnce(),
+  }));
 
 /** The run's tokens now. Its provider sessions are read from T3 (a projection carries every message) only when its
  * set of threads changed, as when a subagent starts, and again when the run ends; the proxies' counts for them, which
@@ -167,7 +159,7 @@ async function measureOpen(f: FactoryRuntime) {
       try {
         const now = await currentTokens(f, run);
         if (!now) continue;
-        m.failed.delete(run.id);
+        m.failed.clear(run.id);
         const after = saveTokens(f, run, now.tokens, now.sessions.length);
         // A step of the item only when it went over: under budget, nothing waits behind its other steps.
         if (after && isOpenPhase(after.phase) && after.tokens > budget)
@@ -175,14 +167,13 @@ async function measureOpen(f: FactoryRuntime) {
       } catch (e) {
         m.sessions.delete(run.id);
         const text = `Measuring the tokens of ${run.id} failed: ${shortError(e)}`;
-        if (m.failed.get(run.id) !== text) f.events.emit({ kind: "note", item: item.id, run: run.id, text });
-        m.failed.set(run.id, text);
+        if (m.failed.fresh(run.id, text)) f.events.emit({ kind: "note", item: item.id, run: run.id, text });
       }
     }
   }
   // Runs of items that finished or wait are measured again from scratch if they come back.
   for (const id of m.sessions.keys()) if (!measured.has(id)) m.sessions.delete(id);
-  for (const id of m.failed.keys()) if (!measured.has(id)) m.failed.delete(id);
+  m.failed.keepOnly((id) => measured.has(id));
 }
 
 // ---- outcomes
@@ -232,17 +223,13 @@ async function refreshPr(item: FactoryItem, url: string, known: PrOutcome | unde
   return readPr(url);
 }
 
-const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
-
 /** Items that finished in the last 14 days, the window a revert counts in. Merged PRs are checked for a revert with one
  * search per repository. */
 async function refreshOutcomes(f: FactoryRuntime) {
   const { s } = f;
-  let errors = noted.get(f);
-  if (!errors) noted.set(f, (errors = new Map()));
+  const errors = f.memory("outcome failures said", () => new SayOnce());
   const note = (key: string, text: string, item?: string) => {
-    if (errors.get(key) !== text) f.events.emit({ kind: "note", ...(item && { item }), text });
-    errors.set(key, text);
+    if (errors.fresh(key, text)) f.events.emit({ kind: "note", ...(item && { item }), text });
   };
   const watching: { item: FactoryItem; pr: PrOutcome & { mergedAt: string } }[] = [];
   for (const item of items.list(s, { open: false, finishedSince: s.now() - 14 * DAY })) {
@@ -251,7 +238,7 @@ async function refreshOutcomes(f: FactoryRuntime) {
     let pr = known;
     try {
       pr = await refreshPr(item, item.pr.url, known);
-      errors.delete(item.id);
+      errors.clear(item.id);
     } catch (e) {
       note(item.id, `Reading the outcome of ${item.key}'s PR failed: ${shortError(e)}`, item.id);
     }
@@ -263,7 +250,7 @@ async function refreshOutcomes(f: FactoryRuntime) {
     const mine = watching.filter((w) => w.item.repo === repo);
     try {
       const reverts = await revertsSince(repo, Math.min(...mine.map((w) => Date.parse(w.pr.mergedAt))));
-      errors.delete(repo);
+      errors.clear(repo);
       for (const { item, pr } of mine)
         if (isRevertOf(reverts, pr)) items.update(s, item.id, { outcome: { ...pr, reverted: true } });
     } catch (e) {
@@ -300,6 +287,27 @@ function metrics(f: FactoryRuntime): FactoryBoard["metrics"] {
 // ---- setup
 
 export function setup(f: FactoryRuntime): void {
+  f.events.on("run.ended", (event) => {
+    const run = runs.get(f.s, event.run);
+    if (!run) return;
+    void record(f, run).catch((e) =>
+      f.events.emit({
+        kind: "note",
+        run: run.id,
+        ...(run.item && { item: run.item }),
+        text: `Recording the tokens of ${run.id} failed: ${shortError(e)}`,
+      }),
+    );
+  });
+  // Read once the step that finished the item has ended.
+  f.events.on("item.phase", (event) => {
+    const item = isOpenPhase(event.to) ? undefined : items.get(f.s, event.item);
+    if (item)
+      later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
+        const finished = items.get(f.s, item.id);
+        if (finished) await recordItemEnd(f, finished);
+      });
+  });
   f.loops.push({ name: "factory-tokens", everyMs: MINUTE, where: "factory-node", run: () => measureOpen(f) });
   f.loops.push({
     name: "factory-outcomes",

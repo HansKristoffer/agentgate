@@ -4,7 +4,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { factoryFolderSchema, storedFolderChangeSchema, type StoredFolderView } from "@agentgate/protocol";
 import { z } from "zod";
-import { loadFolder, storedChanged } from "./config.ts";
+import { loadFolder, runsOnStoredFolder, storedChanged } from "./config.ts";
 import {
   NO_STORED_FOLDER,
   sortedFiles,
@@ -14,7 +14,6 @@ import {
   writeFiles,
   type FolderFiles,
 } from "./folder.ts";
-import { runsOnStoredFolder } from "./folder-store.ts";
 import { noWords, operation, requireFactoryProtocol, UsageError, type FactoryRuntime } from "./runtime.ts";
 
 /**

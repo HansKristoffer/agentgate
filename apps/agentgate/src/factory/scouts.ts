@@ -9,9 +9,10 @@ import {
 import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, type LoadedFolder } from "./config.ts";
-import { admit, cancelLaunch, defaultBranch, enqueueRun, HELD_LIMIT, intakeState } from "./controller.ts";
+import { cancelLaunch, defaultBranch, enqueueRun, intakeState } from "./controller.ts";
+import { admit, HELD_LIMIT } from "./intake.ts";
 import { ACTIVE, items, runs, type FactoryRun } from "./db.ts";
-import { operation, UsageError, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
+import { operation, SayOnce, UsageError, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
 
 /**
  * Scouts: a `scout` source runs a T3 thread on its schedule, or on `agentgate factory scout <id>`, that follows the
@@ -147,9 +148,6 @@ export function scoutNow(f: FactoryRuntime, id: string): { run: string } | { ski
   return { run: enqueueRun(f, { kind: "scout", checked: { kind: "scout", source: id } }).id };
 }
 
-/** Slots already noted as waiting on intake, so each is noted once. */
-const noted = new WeakMap<FactoryRuntime, Set<string>>();
-
 /** Queues each enabled scout that is due while intake is on. */
 function scoutWhenDue(f: FactoryRuntime) {
   const now = f.s.now();
@@ -161,16 +159,13 @@ function scoutWhenDue(f: FactoryRuntime) {
     if (!due) continue;
     const intake = intakeState(f);
     if (intake !== "on") {
-      let seen = noted.get(f);
-      if (!seen) noted.set(f, (seen = new Set()));
-      const key = `${scout.id}@${slot}`;
-      if (slot !== undefined && !seen.has(key)) {
-        seen.add(key);
+      // Each slot is noted once.
+      const said = f.memory("scout slots said", () => new SayOnce());
+      if (slot !== undefined && said.fresh(`${scout.id}@${slot}`))
         f.events.emit({
           kind: "note",
           text: `The ${scout.id} scout's run (${scheduleText(scout.schedule)}) waits while intake is ${intake}; it is skipped if that lasts an hour`,
         });
-      }
       continue;
     }
     const run = enqueueRun(f, { kind: "scout", checked: { kind: "scout", source: scout.id } });
@@ -246,7 +241,6 @@ const scoutRun = (f: FactoryRuntime) => ({
       }),
       baseRef,
       branch: `factory/scout-${run.id}`,
-      startFromOrigin: true,
       ...(scout.model && { model: scout.model }),
     };
   },

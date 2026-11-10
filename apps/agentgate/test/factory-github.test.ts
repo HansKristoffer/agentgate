@@ -1,7 +1,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import type { FactoryReport, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
-import { writeBack } from "../src/factory/controller.ts";
+import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import * as gh from "../src/factory/gh.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
@@ -232,7 +232,7 @@ test("an issue of a repository whose name another repository shares is keyed <ow
   expect(items.get(n.s, other.id)!.phase).not.toBe("closed");
 });
 
-test("a marker in a comment by another login counts for nothing: not for newestMarker or intake", async () => {
+test("a marker in a comment by another login counts for nothing: not for check or intake", async () => {
   const n = await githubFactory();
   const forged = (number: number, marker: Partial<MarkerPayload>) => ({
     body: `Taken.\n\n${MARKER_PREFIX}${JSON.stringify({
@@ -266,7 +266,7 @@ test("a marker in a comment by another login counts for nothing: not for newestM
   writeBack(n.f, item, "waiting", { text: "Which save path?", ref: "q1" });
   await idle(n.f);
   n.github.issues.get(1)!.comments.push(forged(1, { state: "finished" }));
-  expect(await n.f.sources.get("github")!.newestMarker!(item)).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(item)).marker).toMatchObject({
     item: item.id,
     node: "a",
     state: "open",
@@ -327,7 +327,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
     },
   ]);
   // The comment is now the issue's newest marker, read back from the factory's own login.
-  expect(await n.f.sources.get("github")!.newestMarker!(items.get(n.s, first!.item!)!)).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(items.get(n.s, first!.item!)!)).marker).toMatchObject({
     node: "a",
     state: "open",
   });
@@ -427,16 +427,18 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
         brief: "Fix it.",
         baseRef: "main",
         branch: `factory/${item!.key}`,
-        startFromOrigin: true,
       };
     },
     validate: async () => undefined,
     accept: async () => {},
   });
+  // Intake reads each new issue too, for its marker; only the reads after it count here.
+  let fromIntake = 0;
   const stateChecks = () =>
-    n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state,comments");
+    n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state,comments").slice(fromIntake);
 
   await n.intake();
+  fromIntake = stateChecks().length;
   n.github.issues.get(2)!.state = "CLOSED";
   await n.dispatch();
   expect(stateChecks().map((c) => c.args[2])).toEqual(["1", "2"]);

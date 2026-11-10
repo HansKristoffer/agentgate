@@ -10,6 +10,8 @@ export type FactoryEvent =
   | { kind: "item.needs-you"; item: string; cause: NeedsYouCause; text: string }
   | { kind: "run.queued"; run: string; item?: string; text: string }
   | { kind: "run.started"; run: string; item?: string; text: string }
+  /** A reported run's thread goes on with the person's answer (actions.ts), and takes a report again. */
+  | { kind: "run.resumed"; run: string; item: string; text: string }
   | { kind: "run.ended"; run: string; item?: string; state: RunState; text: string }
   | { kind: "writeback"; item: string; moment: string; status: PostResult["status"]; text: string }
   | { kind: "config"; commit?: string; error?: string; text: string }

@@ -115,17 +115,13 @@ const launching = (f: FactoryRuntime) =>
 /** T3 refused the token: the one failure where repeating a call is safe, because nothing ran. */
 class Refused extends Error {}
 
-const clients = new WeakMap<FactoryRuntime, ReturnType<typeof create>>();
-
 /** The machine's one T3 MCP client. */
 export function t3Mcp(f: FactoryRuntime): T3McpClient {
   return client(f);
 }
 
 function client(f: FactoryRuntime) {
-  let c = clients.get(f);
-  if (!c) clients.set(f, (c = create(f)));
-  return c;
+  return f.memory("T3 MCP client", () => create(f));
 }
 
 export function setup(f: FactoryRuntime) {

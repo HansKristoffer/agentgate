@@ -182,10 +182,6 @@ export type FactoryConfig = Omit<z.infer<typeof factoryConfigSchema>, "sources">
 export const stageFileSchema = z
   .object({
     start: z.enum(["auto", "manual"]).default("auto"),
-    skill: z
-      .string()
-      .regex(/^[a-z0-9][a-z0-9-]{0,63}$/)
-      .optional(), // adds "Use the <skill> skill."
     model: modelSchema.optional(),
     /** The MCP servers (aliases) this stage's threads may use besides agentgate's own tools; none when absent. */
     mcp: mcpAliases.optional(),

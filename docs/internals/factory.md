@@ -3,7 +3,15 @@
 An opt-in module of the daemon ([`apps/agentgate/src/factory/`](../../apps/agentgate/src/factory/)) that works
 issues in T3 Code threads up to a PR ready for a person. Each feature file registers its operations, loops, run
 kinds, sources and board parts on the runtime in its own `setup` ([`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)),
-so features never edit shared files. Everything the factory can be asked to do is one operation, registered once: a
+listed once in [`features.ts`](../../apps/agentgate/src/factory/features.ts), so features never edit shared files. The
+controller never calls a feature to tell it something happened: every transition emits an event
+([`events.ts`](../../apps/agentgate/src/factory/events.ts)), and whoever cares subscribes.
+[`records.ts`](../../apps/agentgate/src/factory/records.ts) reads a run's tokens on `run.ended` and an item's again as
+it moves to `shipped` or `closed`, `notify.ts` tells the person, and the MCP gateway asks
+`threadScope` again when a run starts, resumes or ends. The controller imports what it drives (the folder, T3 Code,
+the outbox), never a feature that reacts to it.
+What a feature keeps only in memory it keeps with `f.memory(name, init)`, so those calls are the list of what a
+restart forgets. Everything the factory can be asked to do is one operation, registered once: a
 name (the words after `agentgate factory`), a zod schema for its input, and a `run` that returns JSON. The CLI, the
 control API and the app (`POST /api/factory/op/<name>`), the agents' MCP tools and a virtual project's endpoint are
 made from that list, so `api.ts` and `cli.ts` name no operation, and a capability is never written a second time for
@@ -82,7 +90,8 @@ taken twice.
   run, and the thread T3 then starts is interrupted and settled.
 
 When an item waits for the maintainer, it keeps its phase and gets `needsYou`, set only by `ask` in
-[`controller.ts`](../../apps/agentgate/src/factory/controller.ts) and answered only through `answer`. Its cause (a
+[`controller.ts`](../../apps/agentgate/src/factory/controller.ts) and answered only through `answer` in
+[`actions.ts`](../../apps/agentgate/src/factory/actions.ts). Its cause (a
 question, a silent end, a stall, its token budget, an uncertain launch, or nothing moving it for four times
 `stalledAfter`: no active run, no working PR thread, and no run, push, nudge or person's act in that window) maps to one
 of three kinds, and the kind decides whether the issue hears it (`POSTS` in

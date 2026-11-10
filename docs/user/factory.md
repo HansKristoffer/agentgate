@@ -77,26 +77,29 @@ Editors check `factory.yaml` against the JSON Schema in [`packages/protocol/fact
 # yaml-language-server: $schema=https://raw.githubusercontent.com/HansKristoffer/agentgate/main/packages/protocol/factory.schema.json
 ```
 
-Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys are errors.
+Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys are errors. Each key's default and
+limits are in that schema, made from `factoryConfigSchema` in
+[`packages/protocol/src/factory.ts`](../../packages/protocol/src/factory.ts), and a stage file's in `stageFileSchema`
+beside it. [An example](#an-example) shows a whole folder.
 
 ### factory.yaml
 
-| Key                        | Default    | Meaning                                                                                                                                                                                                                                                           |
-| -------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`                  | required   | Always `1`.                                                                                                                                                                                                                                                       |
-| `name`                     | required   | Up to 40 lowercase letters, digits and dashes.                                                                                                                                                                                                                    |
-| `description`              |            | Up to 500 characters.                                                                                                                                                                                                                                             |
-| `repositories`             | required   | The repositories the factory works in, as `owner/repo` keys.                                                                                                                                                                                                      |
-| `repositories.*.reviewers` | `[]`       | Up to 10 GitHub logins or `org/team` names to request reviews from when a PR is ready. GitHub refuses to request a review from the PR's author, so that login is left out.                                                                                        |
-| `limits.threads`           | `3`        | Stage threads working at once (1 to 20). A thread waiting for you, or sitting idle on its PR, does not count.                                                                                                                                                     |
-| `limits.waitForQuota`      | `true`     | Wait to start a thread while no account in the pool for its provider has room. Without accounts for that provider, T3 Code uses its own login and nothing waits.                                                                                                  |
-| `limits.waitingForYou`     | `5`        | Intake pauses while this many items wait for you, PRs ready for your review included (1 to 100).                                                                                                                                                                  |
-| `limits.itemTokens`        | `30000000` | The tokens one item may use across all its threads and their subagents, cache reads included. An item over it has its threads stopped and waits for you in its stage; raise the limit and run `retry` to go on. The current folder's value applies to every item. |
-| `limits.reviewRounds`      | `3`        | Review rounds before the PR goes to you with the findings still open (0 to 5). `0` skips the review stage.                                                                                                                                                        |
-| `limits.nudges`            | `3`        | Times the factory reminds an implement thread of a PR problem it sits on (0 to 10) before the item waits for you.                                                                                                                                                 |
-| `limits.stalledAfter`      | `15m`      | How long a thread may sit idle on a failing check, a conflict, a review comment or review findings before the factory nudges it, or sends the PR to you.                                                                                                          |
-| `sources`                  | `[]`       | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
-| `stages.<stage>.note`      |            | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
+| Key                        | Meaning                                                                                                                                                                                                                                                           |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                  | Required. Always `1`.                                                                                                                                                                                                                                             |
+| `name`                     | Required. Up to 40 lowercase letters, digits and dashes.                                                                                                                                                                                                          |
+| `description`              | Up to 500 characters.                                                                                                                                                                                                                                             |
+| `repositories`             | Required. The repositories the factory works in, as `owner/repo` keys.                                                                                                                                                                                            |
+| `repositories.*.reviewers` | Up to 10 GitHub logins or `org/team` names to request reviews from when a PR is ready. GitHub refuses to request a review from the PR's author, so that login is left out.                                                                                        |
+| `limits.threads`           | Stage threads working at once. A thread waiting for you, or sitting idle on its PR, does not count.                                                                                                                                                               |
+| `limits.waitForQuota`      | Wait to start a thread while no account in the pool for its provider has room. Without accounts for that provider, T3 Code uses its own login and nothing waits.                                                                                                  |
+| `limits.waitingForYou`     | Intake pauses while this many items wait for you, PRs ready for your review included.                                                                                                                                                                             |
+| `limits.itemTokens`        | The tokens one item may use across all its threads and their subagents, cache reads included. An item over it has its threads stopped and waits for you in its stage; raise the limit and run `retry` to go on. The current folder's value applies to every item. |
+| `limits.reviewRounds`      | Review rounds before the PR goes to you with the findings still open. `0` skips the review stage.                                                                                                                                                                 |
+| `limits.nudges`            | Times the factory reminds an implement thread of a PR problem it sits on before the item waits for you.                                                                                                                                                           |
+| `limits.stalledAfter`      | How long a thread may sit idle on a failing check, a conflict, a review comment or review findings before the factory nudges it, or sends the PR to you.                                                                                                          |
+| `sources`                  | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
+| `stages.<stage>.note`      | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 
 Repository names are matched without regard to case, and a source names a repository listed under `repositories`.
 
@@ -114,12 +117,11 @@ stages:
 
 A note follows the brief, built in or from this file, so a project keeps getting the built-in brief's improvements. Whatever the body says, the factory adds the item (fenced as untrusted data), `rulings.md` and how to report, so a stage file cannot leave them out. The frontmatter is optional:
 
-| Key     | Default | Meaning                                                                                                                                                                                                                    |
-| ------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `start` | `auto`  | `manual` holds each item before this stage until you run `agentgate factory approve <item>`. In `stages/triage.md` it holds every new item.                                                                                |
-| `skill` |         | A skill name; the brief says "Use the \<skill\> skill."                                                                                                                                                                    |
-| `model` |         | The model the stage's threads use, as T3 Code's thread launch takes it: `provider` (T3 Code's provider instance, such as `claudeAgent` or `codex`), `model`, and optional `options`. The default is T3 Code's own default. |
-| `mcp`   | `[]`    | The MCP servers the stage's threads, and the T3 Code subagents they start, may use, by their name in the repository's mapping (up to 20). agentgate's own tools are always there. Others are neither listed nor callable.  |
+| Key     | Meaning                                                                                                                                                                                                                    |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `start` | `manual` holds each item before this stage until you run `agentgate factory approve <item>`. In `stages/triage.md` it holds every new item.                                                                                |
+| `model` | The model the stage's threads use, as T3 Code's thread launch takes it: `provider` (T3 Code's provider instance, such as `claudeAgent` or `codex`), `model`, and optional `options`. The default is T3 Code's own default. |
+| `mcp`   | The MCP servers the stage's threads, and the T3 Code subagents they start, may use, by their name in the repository's mapping (up to 20). agentgate's own tools are always there. Others are neither listed nor callable.  |
 
 `mcp` narrows what a factory thread sees by default, so a stage reaches a cloud or database server only when you name it. It is not a security boundary: the thread runs with your login at full access and could start a process of its own. A stage that should check its work in a browser needs that server named too, such as `mcp: [chrome-devtools]`. Threads try their tools before they report `blocked`, so a stage that keeps reporting it is missing access, such as a secrets manager or a deploy log, usually needs that server in its `mcp`.
 
@@ -192,7 +194,6 @@ Reproduce the report with a failing test before you route it.
 ```text
 ---
 start: manual
-skill: debug
 model:
   provider: claudeAgent
   model: claude-opus-5-5

@@ -52,7 +52,7 @@ import {
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { claimWrite, fileIssue } from "./outbox.ts";
-import { later, operation, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
+import { later, operation, SayOnce, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The PR follower: every 2 minutes, one step per open item with a PR. It ships or closes the item when its PR is merged
@@ -68,14 +68,10 @@ const CHECKS_SETTLE = 10 * 60_000;
 /** The most of collaborators' comments a nudge quotes. */
 const COMMENTS_CHARS = 8000;
 
-const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
+const noted = (f: FactoryRuntime) => f.memory("PR failures said", () => new SayOnce());
 /** A failure the event list hears once while the item's PR is followed. */
 function failed(f: FactoryRuntime, item: FactoryItem, text: string) {
-  let errors = noted.get(f);
-  if (!errors) noted.set(f, (errors = new Map()));
-  if (errors.get(item.id) === text) return;
-  errors.set(item.id, text);
-  f.events.emit({ kind: "note", item: item.id, text });
+  if (noted(f).fresh(item.id, text)) f.events.emit({ kind: "note", item: item.id, text });
 }
 
 export const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
@@ -416,7 +412,7 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
         item: item.id,
         text: `${item.key}'s PR was merged before the factory called it ready`,
       });
-    noted.get(f)?.delete(item.id);
+    noted(f).clear(item.id);
     await finishItem(f, item, "shipped", {
       interrupt: true,
       reason: "The PR was merged",
@@ -425,7 +421,7 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
     return;
   }
   if (view.state === "CLOSED") {
-    noted.get(f)?.delete(item.id);
+    noted(f).clear(item.id);
     await finishItem(f, item, "closed", {
       interrupt: true,
       reason: "The PR was closed without merging",

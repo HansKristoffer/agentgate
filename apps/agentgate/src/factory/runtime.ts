@@ -1,4 +1,4 @@
-import { getErrorMessage } from "hanzio";
+import { exponentialBackoff, getErrorMessage } from "hanzio";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -21,9 +21,8 @@ import {
 import type { Ctx, Env, Listener } from "../daemon.ts";
 import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
-import { FactoryEvents } from "./events.ts";
+import type { FactoryEvents } from "./events.ts";
 import type { FactoryItem, FactoryRun } from "./db.ts";
-import { setupFeatures } from "./features.ts";
 
 /**
  * The factory's shared runtime. Each feature file registers its operations, loops, run kinds, sources and board parts
@@ -140,15 +139,18 @@ export interface PostResult {
 }
 export interface SourceAdapter {
   type: SourceType;
-  /** Every open, labelled item now; the controller dedupes. */
+  /** Every open, labelled item now; intake dedupes. */
   poll?(source: FactorySource): Promise<IncomingItem[]>;
-  /** Read before every stage: whether the issue is still open. */
-  check?(item: FactoryItem): Promise<{ open: boolean }>;
+  /** Read before every stage, and for each listed issue intake has no item for: whether the issue is still open, and
+   * the newest marker in the factory's own comments on it (anyone who can comment could otherwise forge one). An
+   * issue intake reads has no item yet, so no `configCommit`: the current folder's source is meant. */
+  check?(
+    item: Pick<FactoryItem, "source" | "externalId" | "repo"> & { configCommit?: string },
+  ): Promise<{ open: boolean; marker?: MarkerPayload }>;
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
-  newestMarker?(item: Pick<FactoryItem, "source" | "externalId" | "repo">): Promise<MarkerPayload | undefined>;
   /** The comments of people the source trusts after the factory's newest comment and after the comment `after`,
-   * oldest first, for answers given on the issue (`readAnswers` in controller.ts). None before the factory's first. */
+   * oldest first, for answers given on the issue (`readAnswers` in intake.ts). None before the factory's first. */
   replies?(item: FactoryItem, after: string | undefined): Promise<Array<{ id: string; body: string }>>;
 }
 export interface LaunchSpec {
@@ -157,7 +159,6 @@ export interface LaunchSpec {
   brief: string; // the complete first message
   baseRef: string;
   branch: string;
-  startFromOrigin: boolean;
   model?: FactoryModel;
 }
 /** A stage's own part of its launch: its brief, and a title or branch when the shared ones (`stageLaunch` in
@@ -206,17 +207,23 @@ export interface FactoryRuntime {
   forwarder?: Forwarder; // set by the follow feature
   /** Per item, the end of its last queued step (`withItem`). */
   locks: Map<string, Promise<unknown>>;
+  /**
+   * What a feature keeps in memory only, made by `init` the first time `name` is asked for. Everything kept this way
+   * is lost on a restart, so `grep -n "f.memory("` lists what a restart forgets; the tables keep the rest.
+   */
+  memory<T>(name: string, init: () => T): T;
   isFactoryNode(): boolean;
   pointer(): FactoryPointer | undefined;
 }
 
-/** Creates the runtime and calls every feature's setup. */
-export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
+/** The runtime before any feature registered on it; features.ts makes the whole one. */
+export function emptyRuntime(ctx: Ctx, events: FactoryEvents): FactoryRuntime {
   const { s } = ctx;
-  const f: FactoryRuntime = {
+  const kept = new Map<string, unknown>();
+  return {
     ctx,
     s,
-    events: new FactoryEvents(s),
+    events,
     api: new Hono<Env>(),
     peer: new Hono<Env>(),
     operations: new Map(),
@@ -225,12 +232,13 @@ export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
     sources: new Map(),
     boardParts: [],
     locks: new Map(),
+    memory<T>(name: string, init: () => T) {
+      if (!kept.has(name)) kept.set(name, init());
+      return kept.get(name) as T;
+    },
     pointer: () => s.settings().factory,
     isFactoryNode: () => s.settings().factory?.node === s.nodeId,
   };
-  setupFeatures(f);
-  routes(f);
-  return f;
 }
 
 /** How a call reaches the factory machine, or undefined when it runs here: the factory is off, or this machine runs
@@ -295,7 +303,7 @@ export async function runTerminal(
 
 /** The control API's routes for operations; the board (`GET /`) is board.ts's. A refusal is a 400 with its message,
  * like the rest of the control API. */
-function routes(f: FactoryRuntime) {
+export function operationRoutes(f: FactoryRuntime) {
   const local = (listener: Listener) => {
     if (listener !== "loopback")
       throw new HTTPException(403, { message: "This operation requires a local connection" });
@@ -378,23 +386,63 @@ async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
-/** The last failure each loop logged, so one that fails every pass says so once until it changes or recovers. */
-const loopFailures = new WeakMap<FactoryRuntime, Map<string, string>>();
+/**
+ * What was last said per key, so a failure that repeats every pass is said once, and again when its text changes or
+ * after `clear` (it recovered).
+ */
+export class SayOnce {
+  private said = new Map<string, string>();
+  /** True when `text` is new for `key`, which the caller then says. */
+  fresh(key: string, text = ""): boolean {
+    if (this.said.get(key) === text) return false;
+    this.said.set(key, text);
+    return true;
+  }
+  /** Forgets `key`, which recovered; true when something was said for it. */
+  clear(key: string): boolean {
+    return this.said.delete(key);
+  }
+  /** Forgets every key `keep` turns down, such as runs no longer measured. */
+  keepOnly(keep: (key: string) => boolean) {
+    for (const key of this.said.keys()) if (!keep(key)) this.said.delete(key);
+  }
+}
+
+/** Per key, when the next try may start after failures in a row: `baseMs`, doubling up to `maxMs`. */
+export class Backoff {
+  private tries = new Map<string, { failures: number; retryAt: number }>();
+  constructor(
+    private clock: { now(): number },
+    private options: { baseMs: number; maxMs: number },
+  ) {}
+  /** Whether the key may be tried now. */
+  due(key: string): boolean {
+    return (this.tries.get(key)?.retryAt ?? 0) <= this.clock.now();
+  }
+  /** One more failure in a row, or the `failures` a caller counts itself; returns when the next try may start. */
+  failed(key: string, failures = (this.tries.get(key)?.failures ?? 0) + 1): number {
+    const retryAt = this.clock.now() + exponentialBackoff(failures, { ...this.options, jitter: false });
+    this.tries.set(key, { failures, retryAt });
+    return retryAt;
+  }
+  /** Forgets the key's failures; true when it had any, so the caller can say it works again. */
+  ok(key: string): boolean {
+    return this.tries.delete(key);
+  }
+}
 
 /** A loop as the daemon schedules it: nothing while the factory is off (unless it cleans up), and a factory-node loop
  * nothing on other machines, whose open items stay frozen as `factory off` leaves them. A failure is logged with the
- * loop's name, once per distinct error. */
+ * loop's name, once per distinct error until the loop recovers. */
 export const loopTask = (f: FactoryRuntime, loop: FactoryLoop) => async () => {
   if (!f.pointer() && !loop.whenOff) return;
   if (loop.where === "factory-node" && !f.isFactoryNode()) return;
-  let failures = loopFailures.get(f);
-  if (!failures) loopFailures.set(f, (failures = new Map()));
+  const said = f.memory("loop failures said", () => new SayOnce());
   try {
     await loop.run();
-    failures.delete(loop.name);
+    said.clear(loop.name);
   } catch (e) {
     const text = logError(e);
-    if (failures.get(loop.name) !== text) console.error(`factory: the ${loop.name} loop failed: ${text}`);
-    failures.set(loop.name, text);
+    if (said.fresh(loop.name, text)) console.error(`factory: the ${loop.name} loop failed: ${text}`);
   }
 };

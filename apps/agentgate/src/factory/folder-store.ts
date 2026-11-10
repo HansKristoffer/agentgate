@@ -39,9 +39,6 @@ export function folderStore(f: FactoryRuntime, pointer: FactoryPointer): FolderS
   return pointer.store === "github" ? gitFolder(pointer) : storedFolder(f);
 }
 
-/** Whether the factory runs on the stored folder, which then loads each change at once and cannot be deleted. */
-export const runsOnStoredFolder = (f: FactoryRuntime) => f.pointer()?.store === "agentgate";
-
 function storedFolder(f: FactoryRuntime): FolderStore {
   return {
     label: "stored in agentgate",

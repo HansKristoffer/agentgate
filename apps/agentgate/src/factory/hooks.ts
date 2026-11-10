@@ -7,8 +7,8 @@ import { checkRelayUrl, relayUrl } from "../relay.ts";
 import { hookUrl, queueDelete, type HookEndpoint } from "../remote.ts";
 import { serialTask } from "../runtime.ts";
 import { currentFolder } from "./config.ts";
-import { admit, HELD_LIMIT, pollSource } from "./controller.ts";
-import type { FactoryRuntime } from "./runtime.ts";
+import { admit, HELD_LIMIT, pollSource } from "./intake.ts";
+import { SayOnce, type FactoryRuntime } from "./runtime.ts";
 import { deleteSecret, getSecret, resolveSecretRef, setSecret } from "./secrets.ts";
 
 /**
@@ -130,16 +130,12 @@ function render(template: string, delivery: { body: string; json: unknown; heade
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 const answer = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
-/** Sources whose held items reached HELD_LIMIT, so the refusal is noted once. */
-const capped = new WeakMap<FactoryRuntime, Set<string>>();
 
 // ---- deliveries
 
 /** One poll pass at a time per source; a delivery during a pass runs one more after it. */
-const polls = new WeakMap<FactoryRuntime, Map<string, () => Promise<void>>>();
 function pollSoon(f: FactoryRuntime, source: string) {
-  let bySource = polls.get(f);
-  if (!bySource) polls.set(f, (bySource = new Map()));
+  const bySource = f.memory("hook polls", () => new Map<string, () => Promise<void>>());
   let poll = bySource.get(source);
   if (!poll) bySource.set(source, (poll = serialTask(() => pollSource(f, source))));
   return poll();
@@ -200,20 +196,19 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
       ...(dedupe && { dedupe }),
     },
   });
-  let full = capped.get(f);
-  if (!full) capped.set(f, (full = new Set()));
+  // Sources whose held items reached HELD_LIMIT: once per filling, or a flood of deliveries would flood the event
+  // list too.
+  const full = f.memory("full hook sources said", () => new SayOnce());
   if (admitted === "duplicate") return answer(200, { ok: true, duplicate: true });
   if (admitted === "full") {
-    // Once per filling: a flood of deliveries would otherwise flood the event list too.
-    if (!full.has(source.id))
+    if (full.fresh(source.id))
       f.events.emit({
         kind: "note",
         text: `Deliveries to ${source.id} are refused while ${HELD_LIMIT} of its items wait for approval or rejection`,
       });
-    full.add(source.id);
     return answer(429, { error: "too many deliveries wait for approval" });
   }
-  full.delete(source.id);
+  full.clear(source.id);
   return answer(202, { ok: true, item: admitted.key });
 }
 

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { writeBack } from "../src/factory/controller.ts";
+import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { linearApi } from "../src/factory/linear.ts";
 import { loopTask } from "../src/factory/runtime.ts";
@@ -144,7 +144,7 @@ test("open, labelled issues in the team become items once, and an issue closed i
   ]);
 });
 
-test("a write-back is one commentCreate whose visible last line is the marker, and newestMarker reads it back", async () => {
+test("a write-back is one commentCreate whose visible last line is the marker, and check reads it back", async () => {
   const n = await factoryNode(cleanup, { config: linearConfig });
   setSecret(n.s, "LINEAR_KEY", KEY);
   const linear = fakeLinear();
@@ -171,7 +171,7 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
     createdAt: "2999-01-01T00:00:00.000Z",
     user: { id: FACTORY_USER },
   });
-  const marker = await n.f.sources.get("linear")!.newestMarker!(item);
+  const { marker } = await n.f.sources.get("linear")!.check!(item);
   expect(marker).toEqual({
     item: item.id,
     key: "eng-42",
@@ -186,7 +186,7 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
   });
 });
 
-test("a marker in a comment by another Linear user counts for nothing: not for newestMarker or intake", async () => {
+test("a marker in a comment by another Linear user counts for nothing: not for check or intake", async () => {
   const n = await factoryNode(cleanup, { config: linearConfig });
   setSecret(n.s, "LINEAR_KEY", KEY);
   const linear = fakeLinear();
@@ -210,7 +210,7 @@ test("a marker in a comment by another Linear user counts for nothing: not for n
   await n.intake();
   const item = items.byExternal(n.s, "ENG-7")!;
   expect(item.phase).toBe("triage");
-  expect(await n.f.sources.get("linear")!.newestMarker!(item)).toBeUndefined();
+  expect((await n.f.sources.get("linear")!.check!(item)).marker).toBeUndefined();
 });
 
 test("a comment Linear never received is sent again until it goes through; one whose mutation dropped is uncertain and never sent again; one Linear refused is tried three times, then failed", async () => {

@@ -1,9 +1,14 @@
-import type { FactoryRuntime } from "./runtime.ts";
+import type { Ctx } from "../daemon.ts";
+import { FactoryEvents } from "./events.ts";
+import { emptyRuntime, operationRoutes, type FactoryRuntime } from "./runtime.ts";
 import { setup as board } from "./board.ts";
 import { setup as config } from "./config.ts";
 import { setup as stored } from "./stored.ts";
 import { setup as t3Mcp } from "./t3-mcp.ts";
+import { setup as actions } from "./actions.ts";
+import { setup as view } from "./view.ts";
 import { setup as controller } from "./controller.ts";
+import { setup as intake } from "./intake.ts";
 import { setup as secrets } from "./secrets.ts";
 import { setup as github } from "./github.ts";
 import { setup as follow } from "./follow.ts";
@@ -31,7 +36,10 @@ const features = [
   init,
   repos,
   t3Mcp,
+  actions,
+  view,
   controller,
+  intake,
   secrets,
   github,
   follow,
@@ -49,6 +57,10 @@ const features = [
   notify,
 ];
 
-export function setupFeatures(f: FactoryRuntime) {
+/** The factory's runtime with every feature set up on it, and the control API's operation routes. */
+export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
+  const f = emptyRuntime(ctx, new FactoryEvents(ctx.s));
   for (const setup of features) setup(f);
+  operationRoutes(f);
+  return f;
 }

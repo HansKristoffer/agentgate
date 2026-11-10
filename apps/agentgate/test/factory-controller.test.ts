@@ -5,7 +5,7 @@ import type { FactorySource, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { currentFolder } from "../src/factory/config.ts";
 import { enqueueRun } from "../src/factory/controller.ts";
-import { items, runs, type FactoryItem } from "../src/factory/db.ts";
+import { items, runs } from "../src/factory/db.ts";
 import { loopTask, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { t3Mcp } from "../src/factory/t3-mcp.ts";
@@ -274,8 +274,7 @@ function fakeSource(n: Node, sources: Record<string, IncomingItem[] | Error>) {
       if (answer instanceof Error) throw answer;
       return answer;
     },
-    check: async (item: FactoryItem) => ({ open: !closed.has(item.externalId) }),
-    newestMarker: async ({ externalId }) => markers.get(externalId),
+    check: async ({ externalId }) => ({ open: !closed.has(externalId), marker: markers.get(externalId) }),
     post: async (item, body) => {
       posts.push({ item: item.key, body });
       return { status: "posted" };

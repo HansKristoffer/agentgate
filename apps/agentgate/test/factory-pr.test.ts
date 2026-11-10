@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { writeBack } from "../src/factory/controller.ts";
+import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, markerTag } from "../src/factory/markers.ts";
 import { withSummary } from "../src/factory/pr.ts";

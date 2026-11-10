@@ -1,10 +1,10 @@
-import type { FactoryRuntime, PostResult } from "./runtime.ts";
-import { later, shortError } from "./runtime.ts";
-import { currentFolder } from "./config.ts";
-import { adapterOf } from "./controller.ts";
-import { items } from "./db.ts";
+import { createHash } from "node:crypto";
+import type { FactoryReport, MarkerPayload, Moment, StageName } from "@agentgate/protocol";
+import { later, shortError, type FactoryRuntime, type PostResult, type SourceAdapter } from "./runtime.ts";
+import { currentFolder, folderFor } from "./config.ts";
+import { isStage, items, type FactoryItem } from "./db.ts";
 import { createIssue, replyToConversation } from "./gh.ts";
-import { defuse } from "./markers.ts";
+import { defuse, renderComment } from "./markers.ts";
 
 /**
  * The outbox: every write to GitHub or Linear whose outcome can be uncertain (a comment on an item's issue, a reply in a
@@ -22,6 +22,64 @@ import { defuse } from "./markers.ts";
  * Writes that are safe to repeat, such as resolving a conversation or rewriting the PR body, do not need a claim.
  */
 
+/** The stage a moment's marker names, when not the phase the item is in. */
+const MOMENT_STAGE: Partial<Record<Moment, StageName>> = {
+  triaged: "triage",
+  "spec-approved": "spec",
+  "pr-opened": "implement",
+  ready: "review",
+};
+
+function sourceOf(f: FactoryRuntime, item: Pick<FactoryItem, "source" | "configCommit">) {
+  return folderFor(f, item.configCommit)?.config.sources.find((x) => x.id === item.source);
+}
+/** The adapter of the source the item came from, as the folder it started under names it. */
+export function adapterOf(f: FactoryRuntime, item: FactoryItem): SourceAdapter | undefined {
+  const type = item.source === "manual" ? "manual" : sourceOf(f, item)?.type;
+  return type ? f.sources.get(type) : undefined;
+}
+
+/** A `waiting` comment's `ref`: one comment per question a run asks. */
+export const questionRef = (run: string, question: string) =>
+  `${run}:${createHash("sha256").update(question).digest("hex").slice(0, 12)}`;
+
+/**
+ * The comment for a moment, claimed in the outbox now and posted after the current step of the item: at
+ * most once per item, moment and `ref`, and never again once its outcome is uncertain. A source with nothing to post
+ * to skips it.
+ */
+export function writeBack(
+  f: FactoryRuntime,
+  item: FactoryItem,
+  moment: Moment,
+  input: { report?: FactoryReport; text?: string; commit?: string; ref?: string } = {},
+): void {
+  const { s } = f;
+  const adapter = adapterOf(f, item);
+  if (!adapter?.post) return;
+  const ref = input.ref ?? "";
+  const { report } = input;
+  const stage = moment === "taken" ? null : (MOMENT_STAGE[moment] ?? (isStage(item.phase) ? item.phase : null));
+  const marker: MarkerPayload = {
+    item: item.id,
+    key: item.key,
+    stage,
+    outcome: report?.outcome ?? null,
+    route: report?.result?.kind === "triage" ? report.result.route : null,
+    commit: input.commit ?? null,
+    factory: item.configCommit.slice(0, 7),
+    node: s.nodeId,
+    state: moment === "shipped" || moment === "closed" ? "finished" : "open",
+    pr: item.pr?.url ?? null,
+  };
+  const body = renderComment(moment, item, {
+    ...(report?.summary && { summary: report.summary }),
+    ...(input.text && { extra: input.text }),
+    marker,
+  });
+  claimWrite(f, item.id, moment, ref, body, `The ${moment} comment on ${item.key}`);
+}
+
 /** "reply": `ref` is `<conversation id>@<commit>`. "issue": a new issue (`fileIssue`), its body the JSON of repo,
  * title and text. Any other moment is a comment on the item's source. */
 export type WriteMoment = string;
@@ -33,12 +91,7 @@ const GIVE_UP = 86_400_000;
 const EVERY = 2 * 60_000;
 
 /** The writes this daemon is sending now, by item, moment and ref. */
-const inFlight = new WeakMap<FactoryRuntime, Set<string>>();
-const flying = (f: FactoryRuntime) => {
-  let set = inFlight.get(f);
-  if (!set) inFlight.set(f, (set = new Set()));
-  return set;
-};
+const flying = (f: FactoryRuntime) => f.memory("writes in flight", () => new Set<string>());
 
 /** Claims a write; false when this item, moment and `ref` already has one. The send follows the current step. */
 export function claimWrite(

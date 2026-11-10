@@ -83,7 +83,7 @@ test("the example folder loads with every file type, defaults applied and source
     file: { start: "auto", model: { provider: "claudeAgent", model: "claude-sonnet-5-5" } },
     brief: "Reproduce the report with a failing test before you route it.",
   });
-  expect(folder.stages.implement?.file).toEqual({ start: "manual", skill: "debug" });
+  expect(folder.stages.implement?.file).toEqual({ start: "manual" });
   expect(folder.config.stages).toEqual({
     implement: { note: "Run `bun test` in the package you changed before you open the PR." },
   });

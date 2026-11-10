@@ -6,9 +6,11 @@ import { revision } from "../src/configuration.ts";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { ensureFactoryTables, items, runs, trimFactory, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
 import {
+  Backoff,
   later,
   loopTask,
   operation,
+  SayOnce,
   UsageError,
   withItem,
   type Caller,
@@ -650,4 +652,37 @@ test("a loop that fails every pass logs its name once per distinct error, and ag
     "factory: the flaky loop failed: RangeError",
     "factory: the flaky loop failed: RangeError",
   ]);
+});
+
+test("SayOnce says a key's text once, again when the text changes, and again after the key recovered", () => {
+  const said = new SayOnce();
+  expect(said.fresh("loop", "HTTP 502")).toBe(true);
+  expect(said.fresh("loop", "HTTP 502")).toBe(false);
+  expect(said.fresh("other", "HTTP 502")).toBe(true);
+  expect(said.fresh("loop", "HTTP 503")).toBe(true);
+  expect(said.clear("loop")).toBe(true);
+  expect(said.clear("loop")).toBe(false);
+  expect(said.fresh("loop", "HTTP 503")).toBe(true);
+  // Keys left out are forgotten, so they are said again.
+  said.keepOnly((key) => key === "loop");
+  expect(said.fresh("loop", "HTTP 503")).toBe(false);
+  expect(said.fresh("other", "HTTP 502")).toBe(true);
+});
+
+test("Backoff waits its base after a failure, doubling up to its most, per key, until the key works again", () => {
+  let now = 1000;
+  const backoff = new Backoff({ now: () => now }, { baseMs: 100, maxMs: 350 });
+  expect(backoff.due("a")).toBe(true);
+  expect([backoff.failed("a"), backoff.failed("a"), backoff.failed("a"), backoff.failed("a")]).toEqual([
+    1100, 1200, 1350, 1350,
+  ]);
+  expect(backoff.due("a")).toBe(false);
+  expect(backoff.due("b")).toBe(true);
+  now = 1350;
+  expect(backoff.due("a")).toBe(true);
+  // A count the caller keeps itself, such as one stored on a run, sets the wait.
+  expect(backoff.failed("b", 2)).toBe(1550);
+  expect(backoff.ok("a")).toBe(true);
+  expect(backoff.ok("a")).toBe(false);
+  expect(backoff.failed("a")).toBe(1450);
 });

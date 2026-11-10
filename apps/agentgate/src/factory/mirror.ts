@@ -268,12 +268,9 @@ class Mirror implements T3Mirror {
   }
 }
 
-const mirrors = new WeakMap<FactoryRuntime, Mirror>();
-
 /** The machine's one mirror, started or stopped to match the factory setting and T3 connection as it is asked for. */
 export function mirrorOf(f: FactoryRuntime): T3Mirror {
-  let mirror = mirrors.get(f);
-  if (!mirror) mirrors.set(f, (mirror = new Mirror(f)));
+  const mirror = f.memory("T3 mirror", () => new Mirror(f));
   mirror.reconcile();
   return mirror;
 }

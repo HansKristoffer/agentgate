@@ -24,12 +24,7 @@ const VISIBLE = "agentgate-factory:1 ";
 const CAPPED = "Only the first 1,000 open labelled issues are read; the rest wait until fewer are open";
 
 /** Sources whose last poll stopped at MAX_PAGES with issues left, which their board row says. */
-const cappedSources = new WeakMap<FactoryRuntime, Set<string>>();
-function cappedOf(f: FactoryRuntime) {
-  let set = cappedSources.get(f);
-  if (!set) cappedSources.set(f, (set = new Set()));
-  return set;
-}
+const cappedOf = (f: FactoryRuntime) => f.memory("capped linear sources", () => new Set<string>());
 
 type LinearSource = Extract<FactorySource, { type: "linear" }>;
 
@@ -264,7 +259,7 @@ async function post(f: FactoryRuntime, item: FactoryItem, body: string): Promise
 }
 
 export function setup(f: FactoryRuntime): void {
-  // Merged into the controller's row for the source, which comes earlier.
+  // Merged into intake's row for the source, which comes earlier.
   f.boardParts.push(async () => ({
     sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
       cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],
@@ -276,13 +271,8 @@ export function setup(f: FactoryRuntime): void {
     async check(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source, item.configCommit));
       const answer = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
-      return { open: !CLOSED.includes(answer.issue.state.type) };
+      return { open: !CLOSED.includes(answer.issue.state.type), marker: newestOf(answer) };
     },
     post: (item, body) => post(f, item, body),
-    /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */
-    async newestMarker(item) {
-      const apiKey = apiKeyOf(f, sourceFor(f, item.source));
-      return newestOf(await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId }));
-    },
   });
 }

@@ -3,7 +3,7 @@ import { webhookUrl } from "../operations.ts";
 import { fetchHeaders } from "../runtime.ts";
 import { runs, items, type FactoryItem } from "./db.ts";
 import { deleteSecret, getSecret, setSecret } from "./secrets.ts";
-import { operation, shortError, UsageError, type FactoryRuntime } from "./runtime.ts";
+import { operation, SayOnce, shortError, UsageError, type FactoryRuntime } from "./runtime.ts";
 import { t3Mcp } from "./t3-mcp.ts";
 
 /**
@@ -30,9 +30,6 @@ export const delivery = {
     ),
   retryMs: 5000,
 };
-
-/** Each URL's last failure, so one that keeps failing is logged once until it changes or works again. */
-const failures = new WeakMap<FactoryRuntime, Map<string, string>>();
 
 /** The question, or the rest of a line, cut short for a chat message. */
 const cap = (text: string, max = 500) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -62,8 +59,8 @@ function itemUpdate(item: FactoryItem) {
 /** One POST, tried again once after a short wait. The URL may carry the receiver's token, and a fetch error can
  * repeat it: the log names a status or the error's name. */
 async function post(f: FactoryRuntime, url: string, body: string) {
-  let failed = failures.get(f);
-  if (!failed) failures.set(f, (failed = new Map()));
+  // Each URL's last failure, so one that keeps failing is logged once until it changes or works again.
+  const failed = f.memory("notify failures said", () => new SayOnce());
   let error = "";
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt) await Bun.sleep(delivery.retryMs);
@@ -72,14 +69,13 @@ async function post(f: FactoryRuntime, url: string, body: string) {
       const response = await delivery.post(url, body);
       await response.body?.cancel().catch(() => {});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      failed.delete(url);
+      failed.clear(url);
       return;
     } catch (e) {
       error = e instanceof Error && /^HTTP \d{3}$/.test(e.message) ? e.message : e instanceof Error ? e.name : "error";
     }
   }
-  if (failed.get(url) !== error) console.error(`factory: a notify URL did not take an update: ${error}`);
-  failed.set(url, error);
+  if (failed.fresh(url, error)) console.error(`factory: a notify URL did not take an update: ${error}`);
 }
 
 /** Every URL a moment is posted to: the person's own and the factory endpoints'. */

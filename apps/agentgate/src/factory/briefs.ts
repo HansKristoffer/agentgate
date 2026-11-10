@@ -62,7 +62,7 @@ function reportSection(kind: RunKind, run: FactoryRun) {
   ].join("\n\n");
 }
 
-/** Order: the stage file's body at the item's commit, or `builtIn`; the stage file's skill; the stage's note from
+/** Order: the stage file's body at the item's commit, or `builtIn`; the stage's note from
  * factory.yaml; `context`; the item fenced as untrusted; `rulings.md`; the report instructions. */
 export function renderBrief(
   f: FactoryRuntime,
@@ -72,7 +72,6 @@ export function renderBrief(
   const folder = folderFor(f, item?.configCommit ?? run.configCommit);
   const stage = isStage(kind) ? folder?.stages[kind] : undefined;
   const parts = [stage?.brief || input.builtIn];
-  if (stage?.file.skill) parts.push(`Use the ${stage.file.skill} skill.`);
   const note = isStage(kind) ? folder?.config.stages[kind]?.note : undefined;
   if (note) parts.push(`## For this project\n\n${note}`);
   if (input.context) parts.push(input.context);

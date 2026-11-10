@@ -3,7 +3,7 @@ import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
 import { closeItem, defaultBranch, moveOn, originBranches } from "./controller.ts";
 import { items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
-import { defaultBranchCi, prView, type PrView } from "./gh.ts";
+import { defaultBranchCi, prView, type CheckState, type PrView } from "./gh.ts";
 import { shortError, type FactoryRuntime, type NoLaunch, type StageLaunch } from "./runtime.ts";
 
 /**
@@ -27,15 +27,9 @@ const IMPLEMENT_BRIEF = `You implement one item for AgentGate's software factory
 
 const CI_TTL = 2 * 60_000;
 
-const ciMemory = new WeakMap<
-  FactoryRuntime,
-  Map<string, { state: Awaited<ReturnType<typeof defaultBranchCi>>; at: number }>
->();
-function ciOf(f: FactoryRuntime) {
-  let m = ciMemory.get(f);
-  if (!m) ciMemory.set(f, (m = new Map()));
-  return m;
-}
+/** Each repository's default-branch CI as last read, kept for `CI_TTL`. */
+const ciOf = (f: FactoryRuntime) =>
+  f.memory("default-branch CI", () => new Map<string, { state: CheckState; at: number }>());
 
 const folderOf = (f: FactoryRuntime, item: FactoryItem) => folderFor(f, item.configCommit);
 

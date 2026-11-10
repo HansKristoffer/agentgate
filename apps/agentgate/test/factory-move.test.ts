@@ -363,7 +363,9 @@ test("after move --now, the new machine takes in again an issue the old one left
   github.open(3, { state: "finished" });
   expect((await onB("move", "b", "--now")).code).toBe(0);
 
-  const reads = () => github.calls.filter((c) => c[0] === "issue" && c[1] === "view" && c.at(-1) === "comments").length;
+  // Only intake runs here, so every issue read is a marker read (`check`).
+  const reads = () =>
+    github.calls.filter((c) => c[0] === "issue" && c[1] === "view" && c.at(-1) === "state,comments").length;
   const first = reads();
   for (let pass = 0; pass < 3; pass++) await loop(bf, "factory-intake");
   await idle(bf);

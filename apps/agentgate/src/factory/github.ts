@@ -14,19 +14,14 @@ import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
 
 /**
  * The GitHub source: open issues with the source's label become items, keyed `<repository name>-<n>` with the external
- * id `owner/repo#<n>`. The controller polls, dedupes, backs off and re-checks the issue before every stage; this file
+ * id `owner/repo#<n>`. Intake polls, dedupes and backs off, and the controller re-checks the issue before every stage; this file
  * only talks to GitHub through gh.ts.
  */
 
 const CAPPED = `Only the newest ${ISSUE_LIMIT} open labelled issues are read; the rest wait until fewer are open`;
 
 /** Sources whose last poll found more than ISSUE_LIMIT issues, which their board row says. */
-const cappedSources = new WeakMap<FactoryRuntime, Set<string>>();
-function cappedOf(f: FactoryRuntime) {
-  let set = cappedSources.get(f);
-  if (!set) cappedSources.set(f, (set = new Set()));
-  return set;
-}
+const cappedOf = (f: FactoryRuntime) => f.memory("capped github sources", () => new Set<string>());
 
 /** `<repository name>-<number>`, such as `api-42`, or `<owner>-<name>-<number>` when another of the folder's
  * repositories has the same name. Lowercase, with anything a branch name should not hold made a dash. */
@@ -70,17 +65,12 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   },
   async check(item) {
     const { repo, number } = issueOf(item);
-    return { open: (await issueStateAndComments(repo, number)).open };
+    const [{ open, comments }, viewer] = await Promise.all([issueStateAndComments(repo, number), viewerLogin()]);
+    return { open, marker: newestOf(comments, viewer) };
   },
   async post(item, body) {
     const { repo, number } = issueOf(item);
     return postIssueComment(repo, number, body);
-  },
-  /** Only the factory's own comments count: anyone who can comment could otherwise forge a marker. */
-  async newestMarker(item) {
-    const { repo, number } = issueOf(item);
-    const [comments, viewer] = await Promise.all([issueComments(repo, number), viewerLogin()]);
-    return newestOf(comments, viewer);
   },
   /** The trust rule for PR comments (D40): the repository's own people. A comment without a marker is a person's, even
    * from the factory's own login, which is the maintainer's (D42). */
@@ -103,7 +93,7 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
 });
 
 export function setup(f: FactoryRuntime): void {
-  // Merged into the controller's row for the source, which comes earlier.
+  // Merged into intake's row for the source, which comes earlier.
   f.boardParts.push(async () => ({
     sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
       cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],

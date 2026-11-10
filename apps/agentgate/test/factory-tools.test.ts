@@ -185,6 +185,37 @@ test("each outcome moves its item as the state table says, with one comment carr
   for (const run of n.started.slice(0, 6)) expect(runs.get(n.s, run.id)!.error).toBeUndefined();
 });
 
+test("the gateway hears that a run's tools changed as it ends, resumes with an answer, starts, and as its item finishes", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  let changed = 0;
+  const { gateway } = n.ctx;
+  const real = gateway.toolsChanged.bind(gateway);
+  gateway.toolsChanged = (instance) => {
+    changed++;
+    real(instance);
+  };
+
+  await n.report(run!, {
+    outcome: "needs-decision",
+    summary: "Two ways.",
+    decision: { question: "Keep v1 alive?", recommendation: "Yes" },
+  });
+  expect(changed).toBe(1);
+  // The reported run takes a report again, so its thread gets `factory_report` back.
+  await n.command("approve", "gh-1", "--reason", "keep it for a week");
+  expect(changed).toBe(2);
+  // Its run is cancelled, then the item closes.
+  await n.command("drop", "gh-1", "--reason", "not now");
+  await idle(n.f);
+  expect(changed).toBe(4);
+  await n.command("retry", "gh-1");
+  await n.dispatch();
+  await idle(n.f);
+  expect(changed).toBe(5);
+  expect(runs.forItem(n.s, run!.item!).at(-1)!.state).toBe("running");
+});
+
 test("an answered question goes back to its thread, and a second question is posted too, once", async () => {
   const n = await triaging(1);
   const [run] = n.started;

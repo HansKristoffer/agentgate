@@ -17,16 +17,17 @@ import {
   type StageFile,
   type StageName,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage, safeJsonParse } from "hanzio";
+import { getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
 import { PeerError } from "../handoff/jobs.ts";
 import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
-import { folderStore, runsOnStoredFolder, type FolderStore } from "./folder-store.ts";
+import { folderStore, type FolderStore } from "./folder-store.ts";
 import { branchProtected, defaultBranch } from "./gh.ts";
 import {
+  Backoff,
   noWords,
   operation,
   requireFactoryProtocol,
@@ -209,21 +210,22 @@ function readState(f: FactoryRuntime, pointer: FactoryPointer): FolderState {
   return state?.source === source ? state : { source };
 }
 
+/** Whether the factory runs on the stored folder, which then loads each change at once and cannot be deleted. */
+export const runsOnStoredFolder = (f: FactoryRuntime) => f.pointer()?.store === "agentgate";
+
 interface Memory {
   folders: Map<string, LoadedFolder>; // by commit
   queue: Promise<void>; // one fetch at a time
-  failures: number;
-  retryAt: number;
+  /** A fetch that failed is tried again after 2 minutes, doubling up to an hour, like the skill sync. */
+  fetches: Backoff;
 }
-const memories = new WeakMap<FactoryRuntime, Memory>();
-function memory(f: FactoryRuntime) {
-  let m = memories.get(f);
-  if (!m) {
-    m = { folders: new Map(), queue: Promise.resolve(), failures: 0, retryAt: 0 };
-    memories.set(f, m);
-  }
-  return m;
-}
+const memory = (f: FactoryRuntime) =>
+  f.memory("folders", (): Memory => ({
+    folders: new Map(),
+    queue: Promise.resolve(),
+    fetches: new Backoff(f.s, { baseMs: 2 * 60_000, maxMs: 3600_000 }),
+  }));
+const FETCH = "fetch";
 
 /** The folder of a commit this machine fetched; kept while any open item uses that commit. */
 export function folderAt(f: FactoryRuntime, commit: string): LoadedFolder | undefined {
@@ -282,7 +284,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   const { s, events } = f;
   const pointer = f.pointer();
   if (!pointer || !f.isFactoryNode()) return;
-  if (!force && m.retryAt > s.now()) return;
+  if (!force && !m.fetches.due(FETCH)) return;
 
   const folder = folderStore(f, pointer);
   const state = readState(f, pointer);
@@ -300,9 +302,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
     fetched = await folder.read({ since, signal: f.ctx.abort.signal, ...(tree && { tree }) });
   } catch (e) {
     const error = getErrorMessage(e);
-    m.failures++;
-    // 2 minutes, doubling up to an hour, like the skill sync.
-    m.retryAt = s.now() + exponentialBackoff(m.failures, { baseMs: 2 * 60_000, maxMs: 3600_000, jitter: false });
+    m.fetches.failed(FETCH);
     if (state.fetchError !== error) {
       console.error(`factory: ${error}`);
       events.emit({ kind: "config", error, text: `Fetching the factory folder failed: ${error}` });
@@ -311,9 +311,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
     return;
   }
 
-  if (m.failures) console.log(`factory: fetching ${folder.label} works again`);
-  m.failures = 0;
-  m.retryAt = 0;
+  if (m.fetches.ok(FETCH)) console.log(`factory: fetching ${folder.label} works again`);
   if (!fetched) {
     if (state.fetchError) save({ ...state, fetchError: undefined });
   } else if (!fetched.dir) {
