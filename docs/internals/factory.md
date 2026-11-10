@@ -352,7 +352,7 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - Untrusted text after the label gate reaches threads, fenced (D40, above).
 - The folder loads whatever is pushed to its ref, and a full-access thread can push there or edit the loaded folder
   on disk (`<home>/factory/<commit>/`). Branch protection is the remedy where the GitHub plan allows it, so `use`
-  warns when the branch is unprotected; a check inside the factory would also refuse the maintainer's own pushes. A
+  warns when the branch is unprotected and could be protected; a check inside the factory would also refuse the maintainer's own pushes. A
   stored folder has no such remedy: a thread can write it through the control API with the admin token on disk.
 - Token budgets count what agentgate's proxy saw for a run's T3 sessions. A thread whose sessions bypass the proxy
   counts nothing, so the board shows its item's tokens as unknown after 10 minutes.

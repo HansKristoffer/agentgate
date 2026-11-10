@@ -137,6 +137,21 @@ export async function branchProtected(repo: string, branch: string): Promise<boo
   return view.protected;
 }
 
+/** Whether the branch could be protected: every public repository can, a private one only on a paid plan. Reading a
+ * private branch's protection answers 404 when it can be protected and is not, and 403 when the plan cannot (or the
+ * login is no admin, which could not protect it either), so only the 404 counts. */
+export async function protectionAvailable(repo: string, branch: string): Promise<boolean> {
+  const view = await ghJson(`read whether ${repo} is public`, z.object({ visibility: z.string() }), [
+    "repo",
+    "view",
+    repo,
+    "--json",
+    "visibility",
+  ]);
+  if (view.visibility.toUpperCase() === "PUBLIC") return true;
+  return (await ask(["api", `repos/${repo}/branches/${encodeURIComponent(branch)}/protection`])).kind === "missing";
+}
+
 /** The most open labelled issues one poll reads. */
 export const ISSUE_LIMIT = 200;
 

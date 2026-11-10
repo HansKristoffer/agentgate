@@ -523,12 +523,12 @@ test("the CLI answers a command while its stdin stays open and silent, still pip
   const names = (lines: string[]) => lines.map((line) => line.trim().split(/ {2,}/)[0]);
   expect(names(groups[0]!)).toEqual([
     "factory init <owner/repo> [--label <label>] [--node <machine>] [--json]",
-    "factory status [--json]",
+    "factory status [--all] [--json]",
     "factory add <owner/repo> <title> [--body <text>] [--json]",
     "factory approve <item> [--reason <text>]",
     "factory show <item> [--json]",
   ]);
-  expect(groups[0]![1]).toMatch(/^  factory status \[--json\] {2,}the board: items by phase/);
+  expect(groups[0]![1]).toMatch(/^  factory status \[--all\] \[--json\] {2,}the board: items by phase/);
   expect(groups.slice(2).map((group) => names(group).map((usage) => usage!.split(" ")[1]))).toEqual([
     ["folder", "folder", "folder", "folder", "folder", "folder", "folder"],
     ["repo", "repo"],

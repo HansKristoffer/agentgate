@@ -375,12 +375,16 @@ function Status({ board }: { board: FactoryBoard }) {
   const c = board.capacity;
   const moving = board.factory?.moving;
   const t3 = board.t3.stream === "live" && board.t3.mcp === "signed-in";
+  // An error a failing check's banner already shows above every tab is not repeated here.
+  const banner = (...ids: string[]) => board.checks.some((c) => c.state === "fail" && ids.includes(c.id));
+  const folderError = board.config?.error && !banner("folder") ? `: ${board.config.error}` : "";
+  const t3Error = board.t3.error && !banner("t3", "t3-mcp") ? `: ${board.t3.error}` : "";
   // A row's tone says at a glance whether it is fine; rows that only inform have none.
   const rows: [string, ReactNode, Tone?][] = [
     [
       "Folder",
       board.config
-        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}${board.factory ? `, ${board.factory.label}` : ""}`
+        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${folderError}${board.factory ? `, ${board.factory.label}` : ""}`
         : "Not loaded yet",
     ],
     [
@@ -388,11 +392,7 @@ function Status({ board }: { board: FactoryBoard }) {
       board.factory &&
         `${board.factory.node}${board.factory.online ? "" : " (offline)"}${moving ? `. ${movingLabel(moving)}` : ""}`,
     ],
-    [
-      "T3 Code",
-      t3 ? "Connected" : `Stream ${board.t3.stream}, MCP ${board.t3.mcp}${board.t3.error ? `: ${board.t3.error}` : ""}`,
-      t3 ? "ready" : "bad",
-    ],
+    ["T3 Code", t3 ? "Connected" : `Stream ${board.t3.stream}, MCP ${board.t3.mcp}${t3Error}`, t3 ? "ready" : "bad"],
     ["Threads working", `${c.working} of ${c.threads}`, c.working ? "build" : "held"],
     [
       "New items",
@@ -443,8 +443,12 @@ function Machines({ board }: { board: FactoryBoard }) {
       {board.machines.map((m) => (
         <Panel
           key={m.node}
-          title={`T3 Code threads on ${m.node}${m.node === board.node ? " (this machine)" : ""}`}
-          detail={m.online ? `${m.threads.length} open in T3 Code` : "Offline"}
+          title={`Factory threads on ${m.node}${m.node === board.node ? " (this machine)" : ""}`}
+          detail={
+            m.online
+              ? `${m.threads.length} open in T3 Code${m.hidden ? `; ${m.hidden} other threads not shown` : ""}`
+              : "Offline"
+          }
         >
           {m.threads.length ? (
             m.threads.map((t) => (
@@ -461,7 +465,7 @@ function Machines({ board }: { board: FactoryBoard }) {
             ))
           ) : (
             <Empty>
-              <p>{m.online ? "No active threads." : "This machine does not answer."}</p>
+              <p>{m.online ? "No factory threads." : "This machine does not answer."}</p>
             </Empty>
           )}
         </Panel>
@@ -591,24 +595,31 @@ export function Factory(props: ViewProps) {
   const capture = useGeneration(connection);
   // One read at a time, for the connection shown: a read whose answer would be dropped (another connection, or the
   // first of StrictMode's two mounts) must not hold back the next for five seconds.
-  const loading = useRef<() => boolean>(undefined);
+  const loading = useRef<{ current: () => boolean; done: Promise<void>; again?: Promise<void> }>(undefined);
 
-  const load = async () => {
-    if (loading.current?.()) return;
+  /** Reads the board. A poll skips while a read runs; `refresh` waits for it and reads once more, since that read may
+   * have started before the action or change it follows. Refreshes asked for meanwhile share that one read. */
+  const load = (refresh = false): Promise<void> => {
+    const running = loading.current;
+    if (running?.current()) return refresh ? (running.again ??= running.done.then(() => load())) : running.done;
     const current = capture();
-    loading.current = current;
-    try {
-      const next = await request<FactoryBoard>(connection, "/factory");
-      if (current()) {
-        setBoard(next);
-        setError("");
+    const done = (async () => {
+      try {
+        const next = await request<FactoryBoard>(connection, "/factory");
+        if (current()) {
+          setBoard(next);
+          setError("");
+        }
+      } catch (e) {
+        if (current()) setError(String(e));
+      } finally {
+        if (loading.current?.current === current) loading.current = undefined;
       }
-    } catch (e) {
-      if (current()) setError(String(e));
-    } finally {
-      if (loading.current === current) loading.current = undefined;
-    }
+    })();
+    loading.current = { current, done };
+    return done;
   };
+  const refresh = () => load(true);
   useEffect(() => {
     setBoard(undefined);
     void load();
@@ -616,7 +627,7 @@ export function Factory(props: ViewProps) {
     return () => clearInterval(timer);
   }, [connection]);
   useEffect(() => {
-    if (props.changes) void load();
+    if (props.changes) void refresh();
   }, [props.changes]);
 
   /** An action, then the board as it is after it. */
@@ -624,7 +635,7 @@ export function Factory(props: ViewProps) {
     perform(
       async () => {
         await task();
-        await load();
+        await refresh();
       },
       message,
       key,
@@ -643,7 +654,7 @@ export function Factory(props: ViewProps) {
   const ask: AskReason = (item, action, title) => setAsking({ item, action, title });
 
   if (!board) return error ? <Empty>{error}</Empty> : <Empty>Loading the factory…</Empty>;
-  if (!board.factory) return <FactoryOff {...props} board={board} refresh={load} />;
+  if (!board.factory) return <FactoryOff {...props} board={board} refresh={refresh} />;
   const paused = !!board.capacity.paused;
   const repos = board.config ? [...new Set(board.sources.map((s) => s.repo))] : [];
 

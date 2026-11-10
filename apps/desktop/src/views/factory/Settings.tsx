@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
-import { confirmDialog } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog, messageOf } from "@hanskristoffer/taurio/runtime";
 import { movingLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { factoryOp } from "../../api.ts";
@@ -10,14 +10,32 @@ import { StoredFolder } from "./Folder.tsx";
 
 export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 
+/** What a panel shows when its read failed, in place of "Loading…" that would never end. */
+export function ReadFailed({ error, retry }: { error: string; retry: () => void }) {
+  return (
+    <>
+      <p className="danger">{error}</p>
+      <Button size="sm" variant="tertiary" onPress={retry}>
+        Try again
+      </Button>
+    </>
+  );
+}
+
 /** The secrets factory.yaml names, set and delete. Loopback only, like the operations: values never cross the network
  * from the app. */
 function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
   const [names, setNames] = useState<{ set: string[]; missing: string[] }>();
   const [editing, setEditing] = useState<string>();
-  const load = async () => setNames(await factoryOp(connection, "secret list", {}));
+  const [error, setError] = useState("");
+  const load = async () => {
+    setNames(await factoryOp(connection, "secret list", {}));
+    setError("");
+  };
+  const read = () => void load().catch((e) => setError(messageOf(e)));
   useEffect(() => {
-    if (local) void load().catch(() => setNames(undefined));
+    setNames(undefined);
+    if (local) read();
   }, [connection, local]);
   if (!local)
     return (
@@ -52,19 +70,13 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
               <Button
                 size="sm"
                 variant="ghost"
-                onPress={() =>
-                  void run(async () => {
-                    if (
-                      !(await confirmDialog(`Delete ${name} on every machine?`, {
-                        destructive: true,
-                        okLabel: "Delete",
-                      }))
-                    )
-                      return;
-                    await factoryOp(connection, "secret delete", { name });
-                    await load();
-                  }, `${name} deleted`)
-                }
+                onPress={async () => {
+                  if (await confirmDialog(`Delete ${name} on every machine?`, { destructive: true, okLabel: "Delete" }))
+                    void run(async () => {
+                      await factoryOp(connection, "secret delete", { name });
+                      await load();
+                    }, `${name} deleted`);
+                }}
               >
                 Delete
               </Button>
@@ -73,7 +85,11 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
         ))
       ) : (
         <Empty>
-          <p>{names ? "factory.yaml names no secrets." : "Loading…"}</p>
+          {names || !error ? (
+            <p>{names ? "factory.yaml names no secrets." : "Loading…"}</p>
+          ) : (
+            <ReadFailed error={error} retry={read} />
+          )}
         </Empty>
       )}
       {editing && (
@@ -83,9 +99,10 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
               e.preventDefault();
               const value = field(new FormData(e.currentTarget), "value");
               const name = editing;
-              setEditing(undefined);
+              // Closes only once set: a refused value keeps the dialog and its text, and the error shows as a toast.
               void run(async () => {
                 await factoryOp(connection, "secret set", { name, value });
+                setEditing(undefined);
                 await load();
               }, `${name} set`);
             }}
@@ -105,16 +122,26 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
 function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
   const [host, setHost] = useState<string | null>();
   const [editing, setEditing] = useState(false);
-  const load = async () => setHost((await factoryOp(connection, "notify", {})).host ?? null);
+  const [error, setError] = useState("");
+  const load = async () => {
+    setHost((await factoryOp(connection, "notify", {})).host ?? null);
+    setError("");
+  };
+  const read = () => void load().catch((e) => setError(messageOf(e)));
   useEffect(() => {
-    if (local) void load().catch(() => setHost(undefined));
+    setHost(undefined);
+    if (local) read();
   }, [connection, local]);
   return (
     <Panel
       title="Notifications"
       detail="An https URL, such as a Slack incoming webhook, that hears when an item waits for you or a PR is ready. GitHub does not notify you of the factory's comments, which it writes as you."
     >
-      {local ? (
+      {local && host === undefined && error ? (
+        <Empty>
+          <ReadFailed error={error} retry={read} />
+        </Empty>
+      ) : local ? (
         <div className="item">
           <span className="grow">{host ? <code>{host}</code> : host === null ? "Not set" : "Loading…"}</span>
           <Button size="sm" variant="tertiary" onPress={() => setEditing(true)}>
@@ -148,9 +175,10 @@ function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "loca
             onSubmit={(e) => {
               e.preventDefault();
               const url = field(new FormData(e.currentTarget), "url");
-              setEditing(false);
+              // Closes only once set: a refused URL keeps the dialog and its text, and the error shows as a toast.
               void run(async () => {
                 await factoryOp(connection, "notify", { url });
+                setEditing(false);
                 await load();
               }, "Notify URL set");
             }}
@@ -245,18 +273,15 @@ export function FactorySettings({
           <Button
             size="sm"
             variant="danger-soft"
-            onPress={() =>
-              void run(async () => {
-                if (
-                  !(await confirmDialog("Turn the factory off on every machine?", {
-                    destructive: true,
-                    okLabel: "Turn off",
-                  }))
-                )
-                  return;
-                await factoryOp(connection, "off", {});
-              }, "The factory is off")
-            }
+            onPress={async () => {
+              if (
+                await confirmDialog("Turn the factory off on every machine?", {
+                  destructive: true,
+                  okLabel: "Turn off",
+                })
+              )
+                void run(() => factoryOp(connection, "off", {}), "The factory is off");
+            }}
           >
             Turn off
           </Button>

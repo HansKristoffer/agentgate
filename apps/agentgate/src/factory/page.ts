@@ -264,7 +264,7 @@ function render(b) {
 		h.append(el("span", "dot " + (m.online ? "good" : "bad")), el("span", "", m.node + (m.node === b.node ? " (this machine)" : "")));
 		box.append(h);
 		if (!m.online) box.append(el("div", "empty", "offline"));
-		else if (!m.threads.length) box.append(el("div", "empty", "no active threads"));
+		else if (!m.threads.length) box.append(el("div", "empty", "no factory threads"));
 		m.threads.forEach(function (t) {
 			var row = el("div", "thread");
 			var name = el("span", "name");

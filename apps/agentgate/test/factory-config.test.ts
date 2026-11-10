@@ -341,26 +341,44 @@ test("the reload operation on another machine reloads the factory machine's fold
   expect(((await down.json()) as { error: string }).error).toContain("this machine cannot reach it");
 });
 
-test("use warns when GitHub does not protect the folder's branch, and says nothing when it does or cannot tell", async () => {
+test("use warns when the folder's branch is unprotected and could be protected, and says nothing otherwise", async () => {
   const { f } = node();
   fakeFetcher();
   const asked: string[][] = [];
   let protectedBranch: boolean | undefined = false;
+  let visibility = "PUBLIC";
+  // GitHub's answers for a private repository's protection: 404 on a plan that has it, 403 on a free plan.
+  let protection = { ok: false, out: JSON.stringify({ message: "Branch not protected", status: "404" }) };
   host.gh = async (args) => {
     asked.push(args);
-    if (args[0] === "repo" && args[1] === "view")
+    if (args[0] === "repo" && args.includes("defaultBranchRef"))
       return { ok: true, out: JSON.stringify({ defaultBranchRef: { name: "main" } }) };
+    if (args[0] === "repo" && args.includes("visibility")) return { ok: true, out: JSON.stringify({ visibility }) };
+    if (args[1]?.endsWith("/protection")) return protection;
     if (protectedBranch === undefined) return { ok: false, out: JSON.stringify({ message: "Not Found" }) };
     return { ok: true, out: JSON.stringify({ name: "main", protected: protectedBranch }) };
   };
   const warning =
-    "Warning: main of acme/factory is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub if your plan allows.";
+    "Warning: main of acme/factory is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub.";
   expect((await command(f, "use", "acme/factory")).output).toContain(warning);
-  expect(asked.at(-1)).toEqual(["api", "repos/acme/factory/branches/main"]);
+  expect(asked).toContainEqual(["api", "repos/acme/factory/branches/main"]);
   expect((await command(f, "use", "acme/factory", "--ref", "release/v2")).output.at(-1)).toContain(
     "release/v2 of acme/factory is not protected",
   );
-  expect(asked.at(-1)).toEqual(["api", "repos/acme/factory/branches/release%2Fv2"]);
+  expect(asked).toContainEqual(["api", "repos/acme/factory/branches/release%2Fv2"]);
+
+  visibility = "PRIVATE";
+  expect((await command(f, "use", "acme/factory")).output).toContain(warning);
+  expect(asked.at(-1)).toEqual(["api", "repos/acme/factory/branches/main/protection"]);
+  protection = {
+    ok: false,
+    out: JSON.stringify({
+      message: "Upgrade to GitHub Pro or make this repository public to enable this feature.",
+      status: "403",
+    }),
+  };
+  expect((await command(f, "use", "acme/factory")).output.join("\n")).not.toContain("Warning");
+
   protectedBranch = true;
   expect((await command(f, "use", "acme/factory")).output.join("\n")).not.toContain("Warning");
   protectedBranch = undefined; // a tag, or no access

@@ -2,7 +2,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { factoryBoardSchema, type FactoryBoard } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { buildBoard } from "../src/factory/board.ts";
-import { items } from "../src/factory/db.ts";
+import { items, runs } from "../src/factory/db.ts";
 import { mirrorOf, timing } from "../src/factory/mirror.ts";
 import { FACTORY_PAGE } from "../src/factory/page.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
@@ -115,7 +115,7 @@ test("the mirror follows T3's stream, marks a thread with a pending request, and
   });
   await until(() => mirror.thread(thread.id)?.needsYou, "the pending request");
   expect(changes).toEqual([`${thread.id}: false -> true`]);
-  const live = await buildBoard(f, { includeWebhookUrls: false });
+  const live = await buildBoard(f, { includeWebhookUrls: false, allThreads: true });
   expect(live.t3).toEqual({ stream: "live", mcp: "off" });
   expect(live.machines[0]).toEqual({
     node: "a",
@@ -191,7 +191,7 @@ test("while the stream is down the mirror polls T3's shell on the interval, and 
   await until(() => polls.length >= 4, "four polls");
   const gaps = polls.slice(1).map((at, i) => at - polls[i]!);
   expect(Math.min(...gaps)).toBeGreaterThanOrEqual(35);
-  const board = await buildBoard(f, { includeWebhookUrls: false });
+  const board = await buildBoard(f, { includeWebhookUrls: false, allThreads: true });
   expect(board.t3).toEqual({
     stream: "polling",
     mcp: "off",
@@ -239,16 +239,35 @@ test("/factory is the page for browsers and the board's JSON otherwise, only whi
     expect((await call("/factory", { listener: "tailnet", headers: { host } })).status).toBe(200);
 });
 
-test("the board lists every machine's threads from /peer/threads, and a machine that does not answer as offline", async () => {
+test("the board lists the factory's threads on each machine from /peer/threads, a machine that does not answer as offline, and every thread with --all", async () => {
   const [a, b, c] = await startNodes("a", "b", "c");
   cleanup.push(a!.stop, b!.stop);
+  const other = {
+    ...waitingShell.threads[0]!,
+    id: "t-other",
+    title: "Another project's work",
+    pendingRuntimeRequest: null,
+  };
+  const shell = { ...waitingShell, threads: [...waitingShell.threads, other] };
   await withT3(b!.s, (req) =>
-    new URL(req.url).pathname === "/api/orchestration/shell" ? Response.json(waitingShell) : undefined,
+    new URL(req.url).pathname === "/api/orchestration/shell" ? Response.json(shell) : undefined,
   );
   await c!.stop();
   a!.s.put("node", "a", { ...a!.s.get("node", "a")!, healthDashboard: true });
+  // A factory run launched t-waiting on b; t-other is none of the factory's.
+  runs.insert(a!.s, {
+    id: "run_1",
+    item: "it_1",
+    kind: "triage",
+    attempt: 1,
+    state: "running",
+    nudges: 0,
+    configCommit: "c",
+    threadId: "t-waiting",
+  });
+  const call = caller(app(a!.ctx));
 
-  const res = await caller(app(a!.ctx))("/factory");
+  const res = await call("/factory");
   expect(res.status).toBe(200);
   const { machines } = (await res.json()) as FactoryBoard;
   expect(machines).toEqual([
@@ -263,12 +282,32 @@ test("the board lists every machine's threads from /peer/threads, and a machine 
           project: "api",
           status: "waiting",
           needsYou: true,
+          item: "it_1",
           updatedAt: Date.parse(UPDATED),
         },
       ],
+      hidden: 1,
     },
     { node: "c", online: false, threads: [] },
   ]);
+
+  const status = async (...args: string[]) =>
+    (
+      (await (await call("/api/factory/terminal", { method: "POST", body: { args: ["status", ...args] } })).json()) as {
+        output: string[];
+      }
+    ).output.join("\n");
+  const text = await status();
+  expect(text).toContain("  b: 1 threads, 1 need you; 1 other threads (--all lists them)");
+  expect(text).toContain("Needs approval");
+  expect(text).not.toContain("Another project's work");
+
+  const all = await status("--all");
+  expect(all).toContain("  b: 2 threads, 1 need you\n");
+  expect(all).toContain("Another project's work");
+  const board = JSON.parse(await status("--all", "--json")) as FactoryBoard;
+  expect(board.machines[1]!.threads.map((t) => t.id).toSorted()).toEqual(["t-other", "t-waiting"]);
+  expect(board.machines[1]!.hidden).toBeUndefined();
 });
 
 test("factory status and GET /api/factory show one board, with the board parts merged", async () => {

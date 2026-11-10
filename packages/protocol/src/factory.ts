@@ -373,7 +373,18 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
       kind: z.literal("triage"),
       route: z.enum(["implement", "spec"]),
       reproduction: z.union([
-        z.object({ command: z.string().min(1).max(2000), failsBefore: z.literal(true) }).strict(),
+        z
+          .object({
+            command: z
+              .string()
+              .min(1)
+              .max(2000)
+              .describe(
+                "What the next stage runs in its own fresh worktree to see the bug: a command that needs nothing outside the repository, or a test file's path and content with the command that runs it",
+              ),
+            failsBefore: z.literal(true),
+          })
+          .strict(),
         z.object({ notPossible: z.string().min(1).max(2000) }).strict(),
       ]),
     })
@@ -686,7 +697,16 @@ export const factoryBoardSchema = z.object({
   /** Open items in the tables of the machine answering, while another machine runs the factory: nothing drives them
    * until the factory moves back, and `drop` on this machine closes one. */
   frozen: z.array(boardItemSchema).optional(),
-  machines: z.array(z.object({ node: z.string(), online: z.boolean(), threads: z.array(boardThreadSchema) })),
+  /** Each machine's open T3 Code threads of factory runs; with `factory status --all`, every open thread. */
+  machines: z.array(
+    z.object({
+      node: z.string(),
+      online: z.boolean(),
+      threads: z.array(boardThreadSchema),
+      /** The machine's other open threads, left out: other projects' titles are not the board's to show. */
+      hidden: z.number().optional(),
+    }),
+  ),
   sources: z.array(
     z.object({
       id: z.string(),

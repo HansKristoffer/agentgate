@@ -13,7 +13,7 @@ export const TRIAGE_BRIEF = `You triage one item for AgentGate's software factor
 - Look for duplicates among the repository's issues and PRs and the factory's open items (the \`factory_status\` tool), and check whether the default branch already fixes the item.
 - Report \`not-a-bug\`, naming the reason, when it does not come from production (stack paths on a CI runner or a developer's checkout, seeded or test data), or when it is not ours to fix (a third-party outage or a network blip with nothing on our side to handle better).
 - Report \`needs-decision\` when fixing it means guessing what someone meant, or deciding about accounts, permissions, payments, other people's data, CI, deployment or secrets.
-- Reproduce a bug with a failing test or command, or say why that is not possible.
+- Reproduce a bug with a failing test or command, or say why that is not possible. The next stage starts in a fresh worktree, so report what it can run there: a command that needs nothing outside the repository, or a test file's path and content with the command that runs it. Not a path under \`/tmp\` or in this worktree.
 - Change no code beyond the reproduction.
 - Choose \`implement\`, or choose \`spec\` when the behavior or design is unclear or the change is large: more than about 400 changed lines, or more than one feature.`;
 

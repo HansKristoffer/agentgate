@@ -26,7 +26,7 @@ import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
 import { folderStore, type FolderStore } from "./folder-store.ts";
-import { branchProtected, defaultBranch } from "./gh.ts";
+import { branchProtected, defaultBranch, protectionAvailable } from "./gh.ts";
 import {
   Backoff,
   FACTORY_PROTOCOL,
@@ -514,14 +514,16 @@ async function moveFactory(f: FactoryRuntime, { node, now }: FactoryMoveInput, c
 }
 
 /** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
- * pushes where the plan allows it (free private repositories cannot). So `use` says once when the branch is open.
- * A tag, or a GitHub that cannot be asked, says nothing. */
+ * pushes where the plan allows it (free private repositories cannot). So `use` says once when the branch is open and
+ * could be protected; a warning the person cannot act on is noise. A tag, or a GitHub that cannot be asked, says
+ * nothing. */
 async function protectionWarning(pointer: { repo: string; ref?: string }) {
   try {
     const branch = pointer.ref ?? (await defaultBranch(pointer.repo));
     if (await branchProtected(pointer.repo, branch)) return {};
+    if (!(await protectionAvailable(pointer.repo, branch))) return {};
     return {
-      warning: `${branch} of ${pointer.repo} is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub if your plan allows.`,
+      warning: `${branch} of ${pointer.repo} is not protected, so a factory thread that pushes there changes every later brief. Protect it on GitHub.`,
     };
   } catch {
     return {};

@@ -13,8 +13,9 @@ import { needsSignIn } from "./t3-mcp.ts";
 import { frozenItems } from "./view.ts";
 
 /**
- * The board: every machine's T3 threads and what the factory's features add through `f.boardParts`. One builder serves
- * the `/factory` page, `GET /api/factory`, which the app polls, and the `status` operation.
+ * The board: each machine's T3 threads of factory runs (every thread with `allThreads`) and what the factory's
+ * features add through `f.boardParts`. One builder serves the `/factory` page, `GET /api/factory`, which the app
+ * polls, and the `status` operation.
  */
 
 /** How long other machines' threads, read through `/peer/threads`, are reused. */
@@ -26,28 +27,31 @@ export function setup(f: FactoryRuntime) {
   f.page = (req, listener) => respond(f, req, listener);
   f.api.get("/", async (c) => c.json(await boardView(f, { includeWebhookUrls: true })));
   // Paired machines may see webhook URLs: they already share every secret.
-  f.peer.get("/board", async (c) => c.json(await buildBoard(f, { includeWebhookUrls: true })));
+  f.peer.get("/board", async (c) =>
+    c.json(await buildBoard(f, { includeWebhookUrls: true, allThreads: c.req.query("all") === "1" })),
+  );
   // Local: `boardView` asks the factory machine for its board itself, and adds what only this machine knows.
   const short = (board: FactoryBoard) => boardText(board, { short: true }).join("\n");
   operation(f, {
     name: "status",
-    summary: "the board: items by phase, what waits for you, capacity, sources and every machine's threads",
-    input: z.object({}),
+    summary: "the board: items by phase, what waits for you, capacity, sources and the factory's threads",
+    input: z.object({ all: z.boolean().optional() }),
     local: true,
     // A person at this machine or in the app sees the webhook URLs; an agent and a remote endpoint do not.
-    run: (_, caller) => boardView(f, { includeWebhookUrls: caller.via === "terminal" || caller.via === "api" }),
+    run: ({ all }, caller) =>
+      boardView(f, { includeWebhookUrls: caller.via === "terminal" || caller.via === "api", allThreads: all }),
     terminal: {
-      usage: "status [--json]",
+      usage: "status [--all] [--json]",
       parse(args) {
-        if (args.some((a) => a !== "--json")) throw new UsageError();
-        return { input: {}, json: args.includes("--json") };
+        if (args.some((a) => a !== "--json" && a !== "--all")) throw new UsageError();
+        return { input: args.includes("--all") ? { all: true } : {}, json: args.includes("--json") };
       },
       print: (board, { json }) => (json ? [JSON.stringify(board, null, 2)] : boardText(board)),
     },
     tool: {
       name: "factory_status",
       description:
-        "The software factory's board as short text: its items by phase, what waits on a person, capacity, sources and every machine's T3 Code threads.",
+        "The software factory's board as short text: its items by phase, what waits on a person, capacity, sources and the factory's T3 Code threads on each machine.",
       result: short,
     },
     remote: {
@@ -68,13 +72,14 @@ export function setup(f: FactoryRuntime) {
 
 /** The board as this machine shows it to the API and CLI: the factory machine's, when that is another machine, with
  * the items frozen in this machine's own tables, which that machine's board cannot know. */
-export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: boolean }): Promise<FactoryBoard> {
+export async function boardView(f: FactoryRuntime, opts: BoardOptions): Promise<FactoryBoard> {
   const pointer = f.pointer();
   if (!pointer || f.isFactoryNode()) return buildBoard(f, opts);
   try {
     // A paired machine's own board, passed through: parsing it here again would show a newer factory machine, whose
     // board has a field or value this one does not know, as offline.
-    const board = await peerCall<FactoryBoard>(f.s, pointer.node, "/factory/board", { timeout: 8000 });
+    const path = `/factory/board${opts.allThreads ? "?all=1" : ""}`;
+    const board = await peerCall<FactoryBoard>(f.s, pointer.node, path, { timeout: 8000 });
     const frozen = frozenItems(f);
     return strip({ ...board, node: f.s.nodeId, frozen: frozen.length ? frozen : undefined }, opts);
   } catch {
@@ -89,7 +94,10 @@ export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: b
   }
 }
 
-export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: boolean }): Promise<FactoryBoard> {
+/** `allThreads` lists every open thread under Machines, not only the factory's: `factory status --all`. */
+type BoardOptions = { includeWebhookUrls: boolean; allThreads?: boolean };
+
+export async function buildBoard(f: FactoryRuntime, opts: BoardOptions): Promise<FactoryBoard> {
   const { stream, error } = mirrorOf(f).status();
   const base: FactoryBoard = {
     node: f.s.nodeId,
@@ -108,7 +116,7 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
       mainRed: [],
     },
     items: [],
-    machines: await machines(f),
+    machines: await machines(f, !!opts.allThreads),
     sources: [],
     metrics: { merged: 0, mergeRate: 0, reverts14d: 0 },
     events: f.events.recent(50),
@@ -159,8 +167,10 @@ function strip(board: FactoryBoard, { includeWebhookUrls }: { includeWebhookUrls
   };
 }
 
-/** This machine first, live from the mirror while it drives factory work, then the others. */
-async function machines(f: FactoryRuntime): Promise<FactoryBoard["machines"]> {
+/** This machine first, live from the mirror while it drives factory work, then the others. A thread is the factory's
+ * when one of its runs launched it; the rest are counted, not listed, unless `all`: the token-less page and the CLI
+ * listed every project's thread titles before anything about the factory. */
+async function machines(f: FactoryRuntime, all: boolean): Promise<FactoryBoard["machines"]> {
   const [here, others] = await Promise.all([localThreads(f), peerMachines(f)]);
   // A factory run's thread names its item.
   const ids = [...here, ...others.flatMap((m) => m.threads)].map((t) => t.id);
@@ -169,10 +179,11 @@ async function machines(f: FactoryRuntime): Promise<FactoryBoard["machines"]> {
     const run = byThread.get(t.id);
     return run ? { ...t, ...(run.item && { item: run.item }), ...(run.threadLink && { link: run.threadLink }) } : t;
   };
-  return [{ node: f.s.nodeId, online: true, threads: here }, ...others].map((m) => ({
-    ...m,
-    threads: m.threads.map(linked),
-  }));
+  return [{ node: f.s.nodeId, online: true, threads: here }, ...others].map((m) => {
+    const threads = all ? m.threads : m.threads.filter((t) => byThread.has(t.id));
+    const hidden = m.threads.length - threads.length;
+    return { ...m, threads: threads.map(linked), ...(hidden > 0 && { hidden }) };
+  });
 }
 
 async function localThreads(f: FactoryRuntime): Promise<BoardThread[]> {
@@ -397,7 +408,10 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   lines.push("", "Machines:");
   for (const m of b.machines) {
     const needYou = m.threads.filter((t) => t.needsYou).length;
-    const summary = m.online ? `${m.threads.length} threads${when(needYou, `, ${needYou} need you`)}` : "offline";
+    const hidden = when(m.hidden, `; ${m.hidden} other threads (--all lists them)`);
+    const summary = m.online
+      ? `${m.threads.length} threads${when(needYou, `, ${needYou} need you`)}${hidden}`
+      : "offline";
     lines.push(`  ${m.node}${here(m.node)}: ${summary}`);
     if (short) continue;
     for (const t of m.threads)
