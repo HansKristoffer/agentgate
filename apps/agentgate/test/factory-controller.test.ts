@@ -175,6 +175,26 @@ test("while no pooled account has room nothing starts, and the board shows when 
   expect(after.items[0]!.waiting).toBeUndefined();
 });
 
+test("accounts that are signed out here hold nothing back: T3 Code runs on its own logins", async () => {
+  const n = await factoryNode(cleanup);
+  // As a seeded dev store or a machine whose logins expired has them: listed and enabled, with no usable login.
+  n.s.put("account", "c1", { id: "c1", provider: "claude", label: "c1", priority: 1 });
+  n.s.put("account", "c2", { id: "c2", provider: "claude", label: "c2", priority: 2 });
+  n.s.put("credential", "c2", {
+    accountId: "c2",
+    accessToken: "access-c2",
+    refreshToken: "refresh-c2",
+    expiresAt: n.s.now() + 3600_000,
+    holder: "a",
+    needsLogin: true,
+  });
+
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  expect(launches(n)).toHaveLength(1);
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).items[0]!.waiting).toBeUndefined();
+});
+
 test("a triage stage with start: manual holds new items until approve, and intake pauses while items wait for you", async () => {
   const n = await factoryNode(cleanup, {
     config: (repo) => ({ limits: { waitingForYou: 1 }, sources: [github(repo)] }),

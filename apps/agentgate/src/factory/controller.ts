@@ -733,8 +733,13 @@ async function prepareLaunch(
     ? folderFor(f, run.configCommit)?.stages[run.kind]?.file.model
     : definition.model?.(run);
   const provider = providerOf(model);
-  // Only a pool that exists can be waited for: without accounts here, T3 runs on its own logins.
-  const pooled = provider && s.list("account").some((a) => a.provider === provider && a.enabled);
+  // Only a pool that can serve can be waited for: without signed-in accounts here, T3 runs on its own logins.
+  const pooled =
+    provider &&
+    s.list("account").some((a) => {
+      const credential = s.get("credential", a.id);
+      return a.provider === provider && a.enabled && credential && !credential.needsLogin;
+    });
   if (limitsOf(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
     if (run.item)
