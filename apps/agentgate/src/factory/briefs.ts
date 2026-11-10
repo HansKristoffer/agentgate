@@ -24,7 +24,7 @@ const RESULTS: Record<RunKind, string> = {
   implement:
     '`done` needs `result: { kind: "implement", prUrl, commit, claims: [{ claim, evidence }], notChecked: [], decisions: [{ decision, confidence: "low" | "medium" | "high" }] }`.',
   review:
-    '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`.',
+    '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text, title? }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`. A `pre-existing` finding becomes an issue of its own: give it a `title` of a few words that names the problem without referring to this PR.',
   judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
   learn:
     '`done` needs `result: { kind: "learn", prUrl? or proposal?, lessons, issues?: [{ repo, title, body }] }` with a PR, a proposal or issues, as this run\'s section says; report `nothing-to-do` when there is nothing to learn.',

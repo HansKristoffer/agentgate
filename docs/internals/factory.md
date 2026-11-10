@@ -158,6 +158,9 @@ Behaviors of T3 Code the factory relies on:
   (`RestartContinuation`), so the factory treats `interrupted` as a person's stop: the run ends and the item waits as
   `stopped`, where a reminder or a nudge would start the turn they stopped. The factory settles every thread it stops
   itself, which is how the PR follower tells a budget stop from a person's; a nudge after `retry` goes through.
+- **T3 refuses to settle a running thread, and an interrupt lands a moment after T3 answers it.** A report always
+  comes from a turn still running, and a thread the factory interrupts is still running when the call returns, so both
+  settle when the mirror sees the turn end (`settleFinished`).
 - **`waiting` is a working status.** A turn that waits on a command or a subagent shows `waiting` without a pending
   request; a thread that waits for a person has the pending request. The controller also counts a thread whose T3
   subagent thread works (`parentThreadId` in the shell's lineage) as working.

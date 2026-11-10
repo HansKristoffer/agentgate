@@ -353,6 +353,8 @@ export const needsYouSchema = z
       "stopped",
     ]),
     question: z.string().optional(),
+    // The rest of a long question, such as the spec a spec card asks to approve; `question` is its first line.
+    detail: z.string().optional(),
     recommendation: z.string().optional(),
     link: z.string().optional(),
   })
@@ -440,6 +442,8 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
               line: z.number().int().positive().optional(),
               severity: z.enum(["important", "nit", "pre-existing"]),
               text: z.string().min(1).max(4000),
+              // A pre-existing finding becomes an issue under this title; without one, the text is the title.
+              title: z.string().trim().min(1).max(200).optional(),
             })
             .strict(),
         )
@@ -752,10 +756,11 @@ export const factoryItemDetailSchema = z.object({
       endedAt: z.number().optional(),
     }),
   ),
-  /** The outbox's writes for the item: comments for its moments, and replies in its PR's review conversations. */
+  /** The outbox's writes for the item: comments for its moments, replies in its PR's review conversations, and the
+   * issues it filed for work it left alone. */
   writebacks: z.array(
     z.object({
-      moment: z.enum([...writeBackMoments, "reply"]),
+      moment: z.enum([...writeBackMoments, "reply", "issue"]),
       status: z.enum(["pending", "sending", "posted", "failed", "uncertain"]),
       at: z.number(),
     }),

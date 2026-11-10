@@ -32,6 +32,28 @@ export const REQUIRED_T3_INPUTS = {
 } as const;
 export const REQUIRED_T3_TOOLS = Object.keys(REQUIRED_T3_INPUTS) as (keyof typeof REQUIRED_T3_INPUTS)[];
 export type T3Tool = keyof typeof REQUIRED_T3_INPUTS;
+
+const pendingIds = z.object({ requestIds: z.array(z.string()) });
+const pendingRequest = z.object({
+  requestId: z.string(),
+  questions: z.array(
+    z.object({
+      id: z.string(),
+      question: z.string(),
+      options: z.array(z.object({ label: z.string(), value: z.string().optional() })),
+    }),
+  ),
+});
+export type PendingRequest = z.infer<typeof pendingRequest>;
+
+/** The question cards a thread waits on in T3 Code. T3 lists questions only, not permission approvals. */
+export async function pendingRequests(mcp: T3McpClient, threadId: string): Promise<PendingRequest[]> {
+  const { requestIds } = pendingIds.parse(await mcp.call("t3_pending_request", { action: "list", threadId }));
+  const requests: PendingRequest[] = [];
+  for (const requestId of requestIds)
+    requests.push(pendingRequest.parse(await mcp.call("t3_pending_request", { action: "read", threadId, requestId })));
+  return requests;
+}
 export class T3McpError extends Error {
   /** T3 answered the call with an error, so it ran nothing; otherwise the outcome is unknown. */
   answered = false;

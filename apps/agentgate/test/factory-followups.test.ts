@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import type { MarkerPayload } from "@agentgate/protocol";
+import type { FactoryItemDetail, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { setNeedsYou } from "../src/factory/controller.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
@@ -115,6 +115,11 @@ test("the board shows an item's review rounds, and the findings left open when i
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
   const pre = { url: pr.url, commit: expect.any(String), reviewRound: 2, openFindings: 2 };
   expect((await row(item)).pr).toEqual(pre);
+
+  // The pre-existing finding became an issue, and the item's detail still shows with that write in it.
+  const detail = await n.api(`/api/factory/items/${item.key}`);
+  expect(detail.status).toBe(200);
+  expect(((await detail.json()) as FactoryItemDetail).writebacks.map((w) => w.moment)).toContain("issue");
 });
 
 test("approving, retrying and adding by hand are each one human touch, and a question the factory asks is none", async () => {

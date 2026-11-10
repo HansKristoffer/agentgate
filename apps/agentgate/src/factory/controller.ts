@@ -69,7 +69,7 @@ import {
 } from "./runtime.ts";
 import { claimWrite } from "./outbox.ts";
 import { sampleJudges } from "./scorers.ts";
-import { T3McpError, t3Mcp } from "./t3-mcp.ts";
+import { pendingRequests, T3McpError, t3Mcp } from "./t3-mcp.ts";
 
 /**
  * The factory's controller: a state machine per item, driven by fixed code. Intake adds items from the sources, the
@@ -93,6 +93,8 @@ interface Memory {
   watching: boolean;
   /** Runs whose thread was seen working since the factory last sent it a message. */
   seen: Set<string>;
+  /** Threads the factory interrupted, to settle once T3 shows their turn stopped. */
+  stopping: Set<string>;
   sources: Map<
     string,
     {
@@ -123,6 +125,7 @@ function memory(f: FactoryRuntime) {
       (m = {
         watching: false,
         seen: new Set(),
+        stopping: new Set(),
         sources: new Map(),
         retryAt: new Map(),
         projects: new Map(),
@@ -315,6 +318,12 @@ function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
   touched(f, item, "answer", "answered in T3 Code");
 }
 
+/** How events name a run: by its item's key where it has one, which is what a person knows it by. */
+const runName = (f: FactoryRuntime, run: FactoryRun) => {
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  return item ? `${item.key}'s ${run.kind}` : `${run.kind} run ${run.id}`;
+};
+
 /** Ends a run. Judges then sample it, and its tokens are read. The event names `patch.error`, when
  * given, as why the run ended. */
 export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
@@ -326,7 +335,7 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
     run: run.id,
     ...(run.item && { item: run.item }),
     state,
-    text: `${run.kind} run ${run.id} ended: ${patch.error ?? state}`,
+    text: `${runName(f, run)} ended: ${patch.error ?? state}`,
   });
   // The run's thread gets its project's servers back (`threadScope`).
   f.ctx.gateway.toolsChanged();
@@ -492,7 +501,7 @@ export async function actOnThread(f: FactoryRuntime, run: FactoryRun, action: Th
 
 /** For actions whose caller goes on regardless: the failure is the run's error and a note. */
 const threadFailed = (f: FactoryRuntime, run: FactoryRun, what: string) => (e: unknown) => {
-  const text = `${what} the thread of ${run.id} failed: ${shortError(e)}`;
+  const text = `${what} the thread of ${runName(f, run)} failed: ${shortError(e)}`;
   runs.update(f.s, run.id, { error: text });
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text });
 };
@@ -511,14 +520,19 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
   for (const run of all) if (active.has(run.id)) endRun(f, run, "cancelled");
   for (const run of all) {
     if (!run.threadId) continue;
+    const thread = mirror.thread(run.threadId);
     // A reported run's thread can still work: the implement thread owns its PR until the item ships.
-    if (active.has(run.id) || working(f, mirror.thread(run.threadId)))
+    if (active.has(run.id) || working(f, thread)) {
+      // T3 settles a thread only once its turn stopped, which the mirror shows a moment after the interrupt.
+      const turn = !thread || isWorkingStatus(thread.status);
+      if (turn) memory(f).stopping.add(run.threadId);
       await actOnThread(f, run, { action: "interrupt", text: reason.slice(0, 2000) }).catch(
         threadFailed(f, run, "Interrupting"),
       );
+      if (turn) continue;
+    }
     // The mirror shows this machine's threads only; settling a settled thread on another machine changes nothing.
-    if (!mirror.thread(run.threadId)?.settled)
-      await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
+    if (!thread?.settled) await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   }
 }
 
@@ -529,10 +543,11 @@ const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().op
 async function endedWhileStarting(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id)!;
   if (run.state === "starting") return false;
+  // Settled once the mirror shows the turn stopped (`settleFinished`).
+  memory(f).stopping.add(run.threadId!);
   await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
     threadFailed(f, run, "Interrupting"),
   );
-  await actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling"));
   return true;
 }
 
@@ -864,7 +879,7 @@ async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: Mirr
   // A subagent's change can end its parent's turn: the run belongs to the parent.
   const thread = rootOf(f, changed);
   const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
-  if (!run) return;
+  if (!run) return settleFinished(f, thread);
   // A turn that ended while this daemon was not watching shows first as a finished status.
   const endedUnseen = thread === changed && !previous && thread.status !== "idle";
   await withItem(f, run.item ?? run.id, () => threadChanged(f, run.id, endedUnseen));
@@ -880,15 +895,19 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
+    const asks = `The ${run.kind} thread asks you something in T3 Code`;
     if (run.state === "running") {
       runs.update(s, run.id, { state: "waiting" });
       if (run.item)
         setNeedsYou(f, run.item, {
           reason: "approval",
-          question: `The ${run.kind} thread asks you something in T3 Code`,
+          question: asks,
           ...(run.threadLink && { link: run.threadLink }),
         });
     }
+    // Also for a run that already waited when this daemon started, whose question was never read.
+    if (run.item && items.get(s, run.item)?.needsYou?.question === asks)
+      later(f, run.item, `Reading what ${run.id}'s thread asks`, () => showQuestion(f, run.id));
     return;
   }
   if (run.state === "waiting") {
@@ -905,6 +924,26 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   // again behind their back.
   if (thread.status === "interrupted") return stopped(f, runs.get(s, run.id)!);
   await silentEnd(f, runs.get(s, run.id)!);
+}
+
+/** What a waiting thread asks, read from T3 Code into its item's wait, so the app, the CLI and Grok show it and can answer
+ * it without T3: the first line as the question, the rest, such as a spec, as `detail`. Set without an event: the
+ * event, and the updates webhook, already said the item waits. */
+async function showQuestion(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id);
+  if (!run?.item || !run.threadId || run.state !== "waiting") return;
+  const requests = await pendingRequests(t3Mcp(f), run.threadId).catch(() => []);
+  const text = requests
+    .flatMap((r) => r.questions.map((q) => q.question.trim()))
+    .filter(Boolean)
+    .join("\n\n");
+  const item = items.get(f.s, run.item);
+  if (!text || item?.needsYou?.reason !== "approval" || runs.get(f.s, id)?.state !== "waiting") return;
+  const [first = "", ...rest] = text.split("\n");
+  const detail = rest.join("\n").trim();
+  items.update(f.s, item.id, {
+    needsYou: { ...item.needsYou, question: first.slice(0, 500), ...(detail && { detail: detail.slice(0, 20_000) }) },
+  });
 }
 
 /** Someone stopped a run's thread in T3 Code. The run ends, and its item waits for the maintainer to retry or drop it. */
@@ -973,7 +1012,7 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
       kind: "note",
       run: run.id,
       ...(run.item && { item: run.item }),
-      text: `Reminded ${run.id} to report`,
+      text: `Reminded ${runName(f, run)} thread to report`,
     });
     await sendToThread(f, run, reminder(run));
     return;
@@ -1084,14 +1123,30 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Tool
     });
     writeBack(f, after, "waiting", { report, text: question, ref: questionRef(run.id, question) });
   } else if (!closing && !asks) await definition.accept(report, reported, item);
-
-  // A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
-  // its PR until the item ships.
-  if (!asks && !(run.kind === "implement" && report.outcome === "done") && run.threadId)
-    later(f, run.item ?? run.id, `Settling the thread of ${run.id}`, () =>
-      actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
-    );
+  // The thread settles once the turn that reported ends (`settleFinished`).
   return { accepted: true };
+}
+
+/** A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
+ * its PR until the item ships. */
+const settlesAfterReport = (run: FactoryRun) =>
+  run.state === "reported" &&
+  !!run.report &&
+  run.report.outcome !== "blocked" &&
+  run.report.outcome !== "needs-decision" &&
+  !(run.kind === "implement" && run.report.outcome === "done");
+
+/** Settles a thread once its turn ended, since T3 refuses to settle a running thread: a finished stage's, whose report
+ * came from that turn, and one the factory interrupted. */
+async function settleFinished(f: FactoryRuntime, thread: MirrorThread) {
+  if (thread.settled || working(f, thread)) return;
+  const head = runs.byThreads(f.s, [thread.id]).at(-1);
+  const run = head && runs.get(f.s, head.id);
+  const stopped = memory(f).stopping.delete(thread.id);
+  if (!run || (!stopped && !settlesAfterReport(run))) return;
+  await withItem(f, run.item ?? run.id, () =>
+    actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
+  );
 }
 
 // ---- intake
@@ -1369,6 +1424,8 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     if (!answerable(f, item, last))
       throw new Error(`Answer ${item.key}'s question in T3 Code${last.threadLink ? `: ${last.threadLink}` : ""}`);
     await f.runKinds.get(last.kind)!.answer!(last, { approve, ...(reason && { reason }) });
+    // Answered here, so the thread going on is not a second answer from T3 Code (`answeredInT3`).
+    setNeedsYou(f, item.id, null);
     touched(f, item, action, `${action === "approve" ? "approved" : "rejected"} what the ${last.kind} thread asked`);
     return `${approve ? "Approved" : "Rejected"} for ${item.key}`;
   }
@@ -1656,12 +1713,14 @@ function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
   });
 }
 
-const time = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+/** UTC, and says so: the text can be made on another machine, or read by a remote agent, in another time zone. */
+const time = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 export function detailText(d: FactoryItemDetail): string[] {
   const { item } = d;
   const lines = [`${item.key} ${item.title} (${item.repo}, ${item.phase})`];
   if (item.needsYou) lines.push(`Needs you (${item.needsYou.reason}): ${item.needsYou.question ?? ""}`);
+  if (item.needsYou?.detail) lines.push("", item.needsYou.detail, "");
   if (item.pr) lines.push(`PR: ${item.pr.url}`);
   lines.push(`Tokens: ${item.tokensUnknown ? "unknown" : item.tokens}`, "", "Runs:");
   for (const r of d.runs)

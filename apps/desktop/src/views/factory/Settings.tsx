@@ -119,8 +119,14 @@ export function FactorySettings({
           <div className="grow">
             <strong>T3 Code sign-in</strong>
             <small className="muted">
-              {board.t3.mcp}
-              {board.t3.mcpExpiresAt ? ` until ${new Date(board.t3.mcpExpiresAt).toLocaleDateString()}` : ""}
+              {
+                { "signed-in": "Signed in", "signing-in": "Signing in", failed: "Sign-in failed", off: "Signed out" }[
+                  board.t3.mcp
+                ]
+              }
+              {board.t3.mcpExpiresAt
+                ? ` until ${new Date(board.t3.mcpExpiresAt).toLocaleDateString(undefined, { dateStyle: "long" })}`
+                : ""}
               {board.t3.error ? ` · ${board.t3.error}` : ""}
             </small>
           </div>
@@ -186,7 +192,7 @@ export function FactorySettings({
           <div className="grow">
             <strong>Turn the factory off</strong>
             <small className="muted">
-              Stops intake and new threads on every machine, and signs out of T3 Code's MCP.
+              Takes in no new items and starts no threads on any machine, and signs out of T3 Code.
             </small>
           </div>
           <Button

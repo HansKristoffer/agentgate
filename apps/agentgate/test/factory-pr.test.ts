@@ -65,7 +65,7 @@ test("a PR that goes ready gets the factory's summary in its body: each claim wi
       `**The implementer checked** at \`${pr.headRefOid.slice(0, 12)}\`:`,
       "- Saving twice no longer crashes: bun test test/save.test.ts passes",
       "",
-      "**Not checked:** Windows",
+      "**Not checked:** Windows; Linux",
       "",
       "**Decided where the item was silent**, least sure first:",
       "- low confidence: A second save waits for the first instead of failing",
@@ -146,9 +146,12 @@ test("a merge ships the item and a PR closed unmerged closes it, each with one c
   expect(n.github.posted(2).at(-1)).toBe("Shipped: the pull request was merged.");
   expect(n.github.posted(3).at(-1)).toBe("The factory stopped working on this.");
   expect([1, 2, 3].map((i) => n.github.posted(i).length)).toEqual([5, 4, 4]);
-  // The finished PRs' threads are settled.
+  // The finished PRs' threads are settled, once the interrupt has stopped a running one.
   for (const { run } of [ready, early, dropped])
-    expect(n.mcp.calls.some((c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId)).toBe(true);
+    await n.until(
+      () => n.mcp.calls.some((c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId),
+      `${run.id}'s thread to settle`,
+    );
 });
 
 test("one pass reads every followed PR of a repository with one query, and a PR GitHub cannot show fails alone", async () => {
@@ -189,11 +192,13 @@ test("a PR merged while its review run waits to start ships the item once, thoug
   expect(items.get(n.s, item.id)!.phase).toBe("shipped");
   expect(runs.get(n.s, review.id)!.state).toBe("cancelled");
   expect(n.github.posted(1).filter((c) => c.startsWith("Shipped"))).toEqual(["Shipped: the pull request was merged."]);
-  expect(
-    n.mcp.calls.some(
-      (c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId && c.args.action === "settle",
-    ),
-  ).toBe(true);
+  await n.until(
+    () =>
+      n.mcp.calls.some(
+        (c) => c.tool === "t3_thread_organize" && c.args.threadId === run.threadId && c.args.action === "settle",
+      ),
+    "the shipped item's thread to settle",
+  );
 });
 
 test("an idle thread is nudged at once about a new problem and again after stalledAfter, with only the repository's people's comments, and past nudges the item waits as stalled", async () => {
