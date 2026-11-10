@@ -172,7 +172,11 @@ export function fakeT3(options: {
 
   const rpc: Record<string, (p: Record<string, unknown>) => unknown> = {
     "server.getConfig": () => ({
-      settings: { providerInstances: {}, providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} } },
+      settings: {
+        providerInstances: {},
+        providers: { claudeAgent: api.homePath ? { homePath: api.homePath } : {} },
+        ...api.settings,
+      },
     }),
     "orchestration.getThreadProjection": (p) => {
       const t = threads.get(String(p.threadId));
@@ -308,6 +312,8 @@ export function fakeT3(options: {
     },
   };
 
+  // Outside `api`, which the server's handler cannot name without making its own type circular.
+  let serverVersion: string | undefined;
   const authorized = (req: Request) => tokens.has(req.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
   const server = Bun.serve<{ ok: true }>({
     port: 0,
@@ -325,7 +331,11 @@ export function fakeT3(options: {
         return Response.json({ access_token: access, token_type: "Bearer", expires_in: 30 * 86400, scope: "" });
       }
       if (url.pathname === "/.well-known/t3/environment")
-        return Response.json({ environmentId: "env", label: options.label ?? "fake" });
+        return Response.json({
+          environmentId: "env",
+          label: options.label ?? "fake",
+          ...(serverVersion && { serverVersion }),
+        });
       if (url.pathname === "/ws") {
         if (url.searchParams.get("orchestrationProtocol") !== protocol)
           return Response.json({ code: "orchestration_protocol_incompatible" }, { status: 426 });
@@ -410,6 +420,15 @@ export function fakeT3(options: {
     shell,
     /** The Claude provider's home in T3's settings; unset means Claude's default home. Imports read `claudeDir`. */
     homePath: options.claudeDir as string | undefined,
+    /** More of T3's settings, such as its worktree cleanup. */
+    settings: {} as Record<string, unknown>,
+    /** The version `/.well-known/t3/environment` names; older servers name none. */
+    get serverVersion() {
+      return serverVersion;
+    },
+    set serverVersion(version: string | undefined) {
+      serverVersion = version;
+    },
     /** Refuse clones for a missing permission. */
     denyClones: false,
     /** How many times each RPC method was called. */

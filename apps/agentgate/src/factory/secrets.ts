@@ -67,6 +67,24 @@ const stdinValue = (stdin: string | undefined) => {
 /** Secrets are every machine's, so their operations run where they are asked, and only for a caller on that machine:
  * a tailnet caller never sets or sees them. */
 export function setup(f: FactoryRuntime): void {
+  f.checks.push({
+    name: "Secrets",
+    run() {
+      if (!currentFolder(f)) return [];
+      const { missing } = secretList(f);
+      return [
+        {
+          id: "secrets",
+          title: "Every secret:NAME the folder names is set",
+          state: missing.length ? "fail" : "ok",
+          ...(missing.length && {
+            detail: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not set`,
+            fix: `printf %s "$VALUE" | agentgate factory secret set ${missing[0]}`,
+          }),
+        },
+      ];
+    },
+  });
   operation(f, {
     name: "secret set",
     summary: "set a secret on every machine; the value comes on stdin",

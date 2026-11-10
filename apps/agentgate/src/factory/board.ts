@@ -8,6 +8,7 @@ import { mirrorOf, timing } from "./mirror.ts";
 import { needsYouLines } from "./needs-you.ts";
 import { FACTORY_PAGE } from "./page.ts";
 import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
+import { preflight, unreachableCheck } from "./preflight.ts";
 import { needsSignIn } from "./t3-mcp.ts";
 import { frozenItems } from "./view.ts";
 
@@ -77,9 +78,14 @@ export async function boardView(f: FactoryRuntime, opts: { includeWebhookUrls: b
     const frozen = frozenItems(f);
     return strip({ ...board, node: f.s.nodeId, frozen: frozen.length ? frozen : undefined }, opts);
   } catch {
-    // The factory machine is unreachable or runs an older agentgate: show this machine's board, the factory offline.
+    // The factory machine is unreachable or runs an older agentgate: show this machine's board, the factory offline,
+    // with a failing check, since without that machine's items it looks empty and healthy.
     const board = await buildBoard(f, opts);
-    return { ...board, factory: board.factory && { ...board.factory, online: false } };
+    return {
+      ...board,
+      checks: [unreachableCheck(f, pointer.node), ...board.checks],
+      factory: board.factory && { ...board.factory, online: false },
+    };
   }
 }
 
@@ -87,6 +93,8 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
   const { stream, error } = mirrorOf(f).status();
   const base: FactoryBoard = {
     node: f.s.nodeId,
+    // Only the factory machine's preflight: another machine's T3 Code and gh do no factory work.
+    checks: f.isFactoryNode() ? await preflight(f, { fresh: false }) : [],
     factory: null, // config.ts's part
     config: null,
     t3: { stream, mcp: "off", ...(error && { error }) },
@@ -304,6 +312,13 @@ function metricsText(m: FactoryBoard["metrics"]): string {
 export function boardText(b: FactoryBoard, { short = false, now = Date.now() } = {}): string[] {
   const here = (node: string) => when(node === b.node, " (this machine)");
   const lines: string[] = [];
+  const failing = b.checks.filter((c) => c.state === "fail");
+  if (failing.length)
+    lines.push(
+      "Failing checks (agentgate factory doctor says how to fix each):",
+      ...failing.map((c) => `  ${c.title}${when(c.detail, `: ${c.detail}`)}`),
+      "",
+    );
 
   const p = b.factory;
   if (!p) lines.push("Factory: off");

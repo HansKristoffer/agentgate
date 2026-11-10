@@ -2,7 +2,7 @@
 
 An opt-in module of the daemon ([`apps/agentgate/src/factory/`](../../apps/agentgate/src/factory/)) that works
 issues in T3 Code threads up to a PR ready for a person. Each feature file registers its operations, loops, run
-kinds, sources and board parts on the runtime in its own `setup` ([`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)),
+kinds, sources, board parts and preflight checks on the runtime in its own `setup` ([`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)),
 listed once in [`features.ts`](../../apps/agentgate/src/factory/features.ts), so features never edit shared files. The
 controller never calls a feature to tell it something happened: every transition emits an event
 ([`events.ts`](../../apps/agentgate/src/factory/events.ts)), and whoever cares subscribes.
@@ -323,6 +323,22 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - `factory source add` edits `factory.yaml` as text and keeps the change only when parsing the result gives the old
   file plus the new source (and its secret name). No YAML writer at hand keeps comments, and the folder is the
   maintainer's file ([`source-add.ts`](../../apps/agentgate/src/factory/source-add.ts)).
+
+## Preflight
+
+- `agentgate factory doctor` and the board's `checks` are one list that each feature adds its checks to (`f.checks`,
+  run by [`preflight.ts`](../../apps/agentgate/src/factory/preflight.ts)). A check that asks gh, T3 Code or another
+  process is `slow`: the board shows its last answer, which a factory-machine loop refreshes every 5 minutes and
+  `doctor` asks again, so a board never waits on `gh`.
+- Checks are the factory machine's: other machines' gh and T3 Code do no factory work, and their board and `doctor`
+  are the factory machine's. A machine that cannot reach it shows that as a failing check, since its own board would
+  look empty and healthy.
+- Two checks read T3 Code beyond the channels above: the running version (`serverVersion` of
+  `/.well-known/t3/environment`) against the `runtime/versions/<version>/t3` path of the `t3` agentgate runs, and the
+  worktree cleanup in `server.getConfig` (`worktreeCleanup`, else `storageCleanup`). Either missing reads `unknown`.
+- The canary is a run kind of its own with no item, so nothing posts. It is queued as its last attempt, so a turn that
+  ends without a report ends it with no reminder and no second thread, and it runs only where `doctor` is asked on the
+  factory machine: a forwarded call ends after 60 seconds, before most threads report.
 
 ## Known limits in v1
 

@@ -27,6 +27,7 @@ const RESULTS: Record<RunKind, string> = {
     '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text, title? }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`. A `pre-existing` finding becomes an issue of its own: give it a `title` of a few words that names the problem without referring to this PR.',
   scout:
     'Report only `done` or `nothing-to-do`. `done` needs `result: { kind: "scout", findings: [{ key, title, body }] }` with at least one finding; report `nothing-to-do` when nothing needs a ticket.',
+  canary: "Report only `done`, with no result.",
 };
 
 /** A fence longer than any run of backticks in the text, so the text cannot close it. */

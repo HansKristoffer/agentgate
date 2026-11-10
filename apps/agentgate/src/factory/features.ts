@@ -2,6 +2,7 @@ import type { Ctx } from "../daemon.ts";
 import { FactoryEvents } from "./events.ts";
 import { emptyRuntime, operationRoutes, type FactoryRuntime } from "./runtime.ts";
 import { setup as board } from "./board.ts";
+import { setup as preflight } from "./preflight.ts";
 import { setup as config } from "./config.ts";
 import { setup as stored } from "./stored.ts";
 import { setup as t3Mcp } from "./t3-mcp.ts";
@@ -26,11 +27,13 @@ import { setup as scouts } from "./scouts.ts";
 import { setup as sourceAdd } from "./source-add.ts";
 import { setup as outbox } from "./outbox.ts";
 import { setup as notify } from "./notify.ts";
+import { setup as canary } from "./canary.ts";
 
-/** Every feature. Each registers its operations, loops, run kinds, sources and board parts on the runtime; none
- * replaces or wraps another's, so the order only orders the board's parts and the help text. */
+/** Every feature. Each registers its operations, loops, run kinds, sources, board parts and checks on the runtime; none
+ * replaces or wraps another's, so the order only orders the board's parts, the checks and the help text. */
 const features = [
   board,
+  preflight,
   config,
   stored,
   init,
@@ -55,6 +58,7 @@ const features = [
   sourceAdd,
   outbox,
   notify,
+  canary,
 ];
 
 /** The factory's runtime with every feature set up on it, and the control API's operation routes. */

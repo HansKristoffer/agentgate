@@ -136,6 +136,18 @@ export function setup(f: FactoryRuntime) {
       Pick<FactoryBoard, "t3">
     >;
   });
+  f.checks.push({
+    name: "T3 Code's MCP",
+    run() {
+      const { mcp: state, error } = mcp.status();
+      const check = { id: "t3-mcp", title: "The factory is signed in to T3 Code's MCP, which has every tool it uses" };
+      if (state === "signed-in") return [{ ...check, state: "ok" }];
+      if (state === "failed")
+        return [{ ...check, state: "fail", ...(error && { detail: error }), fix: "agentgate factory t3 sign-in" }];
+      // The loop signs in within a minute of the factory turning on here.
+      return [{ ...check, state: "unknown", detail: state === "off" ? "not signed in yet" : "signing in" }];
+    },
+  });
   // Both run on the factory machine, the only one that signs in.
   const said = {
     parse: noWords,

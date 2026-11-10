@@ -71,7 +71,7 @@ test("init turns the factory on with the template stored in agentgate; edits loa
   expect(storedFiles(s)).toEqual(template);
   const first = storedCommit(template);
   expect(currentFolder(f)).toMatchObject({ commit: first, config: { name: "api" } });
-  expect((await command(f, "status", [])).output[0]).toBe("Factory: stored in agentgate on a (this machine), online");
+  expect((await command(f, "status", [])).output).toContain("Factory: stored in agentgate on a (this machine), online");
 
   items.insert(s, {
     id: "it_1",

@@ -357,6 +357,19 @@ export function claudeStatus(dir = PRIMARY_CLAUDE_DIR): { routing: boolean; mcp:
   };
 }
 
+/** The same for a Codex home: whether its config.toml routes through this daemon and has agentgate's MCP server. */
+export function codexStatus(dir = PRIMARY_CODEX_DIR): { routing: boolean; mcp: boolean } {
+  try {
+    const cfg = Bun.TOML.parse(readFileSync(join(dir, "config.toml"), "utf8")) as {
+      model_provider?: string;
+      mcp_servers?: Record<string, unknown>;
+    };
+    return { routing: cfg.model_provider === "agentgate", mcp: !!cfg.mcp_servers?.agentgate };
+  } catch {
+    return { routing: false, mcp: false };
+  }
+}
+
 /** Whether Claude Code is signed in itself: it saves the account in .claude.json, and the token in .credentials.json or the Keychain. */
 const ownClaudeLogin = (dir: string) => {
   try {

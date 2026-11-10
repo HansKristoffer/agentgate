@@ -293,7 +293,8 @@ export const itemPhases = [
   "closed",
 ] as const;
 export type ItemPhase = (typeof itemPhases)[number];
-export const runKinds = ["triage", "spec", "implement", "review", "scout"] as const;
+/** `canary`: the one short thread `agentgate factory doctor --canary` starts, which only reports. */
+export const runKinds = ["triage", "spec", "implement", "review", "scout", "canary"] as const;
 export type RunKind = (typeof runKinds)[number];
 /** waiting: the thread asked a person a question. silent: the thread ended without a report. */
 export const runStates = [
@@ -623,8 +624,22 @@ export const boardItemSchema = z.object({
 });
 export type BoardItem = z.infer<typeof boardItemSchema>;
 
+/** One thing the factory needs, as `agentgate factory doctor` and the board show it. `unknown`: it could not be
+ * answered, and `detail` says why. `fix` is the command or step that fixes it. */
+export const factoryCheckSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  state: z.enum(["ok", "warn", "fail", "unknown"]),
+  detail: z.string().optional(),
+  fix: z.string().optional(),
+});
+export type FactoryCheck = z.infer<typeof factoryCheckSchema>;
+
 export const factoryBoardSchema = z.object({
   node: z.string(), // the machine answering
+  /** The factory machine's preflight while the factory is on, else none. The checks that ask gh or T3 Code are their
+   * last answer, so a board never waits for them; a machine that cannot reach the factory machine says so here. */
+  checks: z.array(factoryCheckSchema),
   factory: z
     .object({
       store: z.enum(factoryStores),

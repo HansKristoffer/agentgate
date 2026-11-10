@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Button, Card, Tabs } from "@heroui/react";
+import { Alert, Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import { movingLabel, type BoardItem, type FactoryBoard, type ItemAction, type ItemPhase } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
@@ -671,6 +671,18 @@ export function Factory(props: ViewProps) {
         </ActionButton>
       </HeaderActions>
       {error && <p className="danger">{error}</p>}
+      {/* On every tab: a failing check, which includes a folder commit that did not load and a factory machine that
+          does not answer, whose board would otherwise look empty and healthy. */}
+      {board.checks
+        .filter((c) => c.state === "fail")
+        .map((c) => (
+          <Alert key={c.id} status="danger" className="callout">
+            <Alert.Content>
+              <Alert.Title>{c.title}</Alert.Title>
+              <Alert.Description>{[c.detail, c.fix && `Fix: ${c.fix}`].filter(Boolean).join(". ")}</Alert.Description>
+            </Alert.Content>
+          </Alert>
+        ))}
       {paused && (
         <p className="muted">
           Paused: no intake, new threads or nudges until you resume. Running threads finish their turn.

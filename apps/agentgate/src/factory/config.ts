@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import {
   factoryConfigSchema,
   factoryMoveInputSchema,
+  type FactoryCheck,
   factoryUseInputSchema,
   movingLabel,
   scoutFileSchema,
@@ -28,6 +29,7 @@ import { folderStore, type FolderStore } from "./folder-store.ts";
 import { branchProtected, defaultBranch } from "./gh.ts";
 import {
   Backoff,
+  FACTORY_PROTOCOL,
   noWords,
   operation,
   requireFactoryProtocol,
@@ -567,7 +569,41 @@ const printed = (status: FactoryStatus & { warning?: string }) => ({
   code: status.config?.error ? 1 : 0,
 });
 
+/** The preflight's checks of the pointer: every paired machine can sync it, and the folder it names loads. */
+function folderChecks(f: FactoryRuntime): FactoryCheck[] {
+  const old = f.s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
+    .map((n) => n.id);
+  const checks: FactoryCheck[] = [
+    {
+      id: "releases",
+      title: "Every paired machine runs a release that knows the factory",
+      state: old.length ? "fail" : "ok",
+      ...(old.length && {
+        detail: `${old.join(", ")} cannot sync the factory's settings, secrets or stored folder`,
+        fix: `update agentgate on ${old.join(", ")}`,
+      }),
+    },
+  ];
+  const pointer = f.pointer();
+  if (!pointer) return checks;
+  const { config } = factoryStatus(f);
+  const where = runsOnStoredFolder(f) ? "with agentgate factory folder put" : `in ${folderStore(f, pointer).label}`;
+  const fix = `fix the file the error names ${where}, then agentgate factory reload`;
+  const folder = { id: "folder", title: "The factory's folder loads" };
+  checks.push(
+    !config
+      ? { ...folder, state: "unknown", detail: "not loaded on this machine yet", fix: "agentgate factory reload" }
+      : config.error
+        ? { ...folder, state: "fail", detail: config.error, fix }
+        : { ...folder, state: "ok", detail: `${config.name} at ${short(config.commit)}` },
+  );
+  return checks;
+}
+
 export function setup(f: FactoryRuntime): void {
+  f.checks.push({ name: "Folder", run: () => folderChecks(f) });
   operation(f, {
     name: "use",
     summary: "turn the factory on at a folder that exists, or change its folder",

@@ -1,16 +1,20 @@
 import { currentFolder } from "./config.ts";
 import type { FactoryItem } from "./db.ts";
+import type { FactoryCheck } from "@agentgate/protocol";
 import {
+  canPush,
   COLLABORATORS,
+  ghAccount,
   ISSUE_LIMIT,
   issueComments,
   issueStateAndComments,
+  labelExists,
   openLabelledIssues,
   postIssueComment,
   viewerLogin,
 } from "./gh.ts";
 import { parseMarkers } from "./markers.ts";
-import type { FactoryRuntime, SourceAdapter } from "./runtime.ts";
+import { shortError, type FactoryRuntime, type SourceAdapter } from "./runtime.ts";
 
 /**
  * The GitHub source: open issues with the source's label become items, keyed `<repository name>-<n>` with the external
@@ -92,7 +96,66 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   },
 });
 
+/**
+ * The preflight's GitHub checks, through this machine's `gh`: signed in with the `repo` scope, push access to each of
+ * the folder's repositories, and each GitHub source's label. One call for the login, then one per repository and
+ * label at once; nothing past the login is asked while `gh` cannot ask at all.
+ */
+async function githubChecks(f: FactoryRuntime): Promise<FactoryCheck[]> {
+  const account = await ghAccount();
+  const signedIn = { id: "gh", title: "gh is signed in with the repo scope" };
+  if ("error" in account)
+    return [
+      {
+        ...signedIn,
+        state: "fail",
+        detail: account.error,
+        fix: account.signedOut ? "install gh and run gh auth login" : "gh auth status",
+      },
+    ];
+  // A fine-grained token has no scopes to read: its push access below says what it may do.
+  const scoped = !account.scopes || account.scopes.includes("repo");
+  const checks: FactoryCheck[] = [
+    {
+      ...signedIn,
+      state: scoped ? "ok" : "fail",
+      detail: scoped
+        ? `as ${account.login}`
+        : `${account.login}'s token lacks the repo scope (it has ${account.scopes?.join(", ") || "none"})`,
+      ...(!scoped && { fix: "gh auth refresh --scopes repo" }),
+    },
+  ];
+  const config = currentFolder(f)?.config;
+  const asked = async (check: Omit<FactoryCheck, "state">, ask: () => Promise<boolean>, fix: string) => {
+    try {
+      return (await ask()) ? { ...check, state: "ok" as const } : { ...check, state: "fail" as const, fix };
+    } catch (e) {
+      return { ...check, state: "unknown" as const, detail: shortError(e) };
+    }
+  };
+  const pushes = Object.keys(config?.repositories ?? {}).map((repo) =>
+    asked(
+      { id: `push:${repo}`, title: `gh can push to ${repo}` },
+      () => canPush(repo),
+      `give ${account.login} write access to ${repo}`,
+    ),
+  );
+  const labels = (config?.sources ?? []).flatMap((source) =>
+    source.type === "github"
+      ? [
+          asked(
+            { id: `label:${source.id}`, title: `${source.repo} has the label ${source.label} (source ${source.id})` },
+            () => labelExists(source.repo, source.label),
+            `gh label create ${source.label} --repo ${source.repo}`,
+          ),
+        ]
+      : [],
+  );
+  return [...checks, ...(await Promise.all([...pushes, ...labels]))];
+}
+
 export function setup(f: FactoryRuntime): void {
+  f.checks.push({ name: "GitHub", slow: true, run: () => githubChecks(f) });
   // Merged into intake's row for the source, which comes earlier.
   f.boardParts.push(async () => ({
     sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>

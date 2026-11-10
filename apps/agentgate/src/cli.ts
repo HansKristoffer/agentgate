@@ -1452,6 +1452,11 @@ async function main() {
         cwd: process.cwd(),
       });
       for (const line of result.output) console.log(line);
+      // Once the factory is on, the preflight says what it still needs; JSON output stays one document.
+      if (!result.code && ["init", "use"].includes(args[0]!) && !args.includes("--json")) {
+        const checks = await management<FactoryCommandResult>("/factory/terminal", "POST", { args: ["doctor"] });
+        console.log(["", ...checks.output].join("\n"));
+      }
       process.exit(result.code);
     }
 

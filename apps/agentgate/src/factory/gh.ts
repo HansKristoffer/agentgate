@@ -193,6 +193,44 @@ export async function viewerLogin(): Promise<string> {
   return viewer;
 }
 
+/**
+ * This machine's `gh` login, for the preflight: the account, and the scopes of a classic token, which GitHub names in
+ * its `X-OAuth-Scopes` header (a fine-grained token or an app's has none). Or why `gh` cannot ask, with `signedOut`
+ * when it is not installed or not logged in. Headers hold no token: GitHub never echoes the one it was sent.
+ */
+export async function ghAccount(): Promise<
+  { login: string; scopes?: string[] } | { error: string; signedOut: boolean }
+> {
+  const r = await ask(["api", "user", "--include"]);
+  if (r.kind !== "ok") return { error: r.message, signedOut: r.kind === "unreachable" };
+  const split = r.out.search(/\r?\n\r?\n/);
+  const head = split < 0 ? "" : r.out.slice(0, split);
+  let user: unknown;
+  try {
+    user = JSON.parse(split < 0 ? r.out : r.out.slice(split));
+  } catch {
+    // Not JSON: the shape check below says so.
+  }
+  const parsed = login.safeParse(user);
+  if (!parsed.success)
+    return { error: "gh answered in an unexpected shape when asked for its login", signedOut: false };
+  const scopes = /^x-oauth-scopes:(.*)$/im.exec(head)?.[1];
+  return {
+    login: parsed.data.login,
+    ...(scopes !== undefined && {
+      scopes: scopes
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+    }),
+  };
+}
+
+/** Whether this machine's `gh` login may push to the repository, as GitHub's `permissions` for it say. */
+export async function canPush(repo: string): Promise<boolean> {
+  return (await gh(`read your access to ${repo}`, ["api", `repos/${repo}`, "--jq", ".permissions.push"])) === "true";
+}
+
 // A deleted account's comments come without an author. `id` is the comment's node id, which issue answers remember.
 const issueComment = comment.extend({ id: z.string(), author: login.nullish() });
 
@@ -363,13 +401,17 @@ export async function openPrFor(repo: string, branch: string): Promise<string | 
   return list[0]?.url;
 }
 
+/** Whether the repository has the label. */
+export async function labelExists(repo: string, name: string): Promise<boolean> {
+  const r = await ask(["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"]);
+  if (r.kind === "missing") return false;
+  output(`read the label ${name} in ${repo}`, r);
+  return true;
+}
+
 /** Creates a label unless the repository has it. */
 export async function ensureLabel(repo: string, name: string, color: string, description: string) {
-  const r = await ask(["api", `repos/${repo}/labels/${encodeURIComponent(name)}`, "--jq", ".name"]);
-  if (r.kind !== "missing") {
-    output(`read the label ${name} in ${repo}`, r);
-    return;
-  }
+  if (await labelExists(repo, name)) return;
   await gh(
     `create the label ${name} in ${repo}`,
     ["api", `repos/${repo}/labels`, "--method", "POST", "--input", "-"],

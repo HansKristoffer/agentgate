@@ -302,9 +302,10 @@ test("move --now freezes the old machine's items: it starts no thread, follows n
   expect(runs.forItem(a.s, first.item!).find((r) => r.kind === "spec")).toMatchObject({ state: "queued" });
   expect(a.mcp.revoked).toHaveLength(1);
 
-  // a shows b's board, and its own items apart from it.
+  // a shows b's board, and its own items apart from it, after b's failing checks.
   const { output } = await a.command("status");
-  expect(output.slice(0, 4)).toEqual([
+  const from = output.indexOf("Factory: acme/factory on b, online");
+  expect(output.slice(from, from + 4)).toEqual([
     "Factory: acme/factory on b, online",
     "Frozen on a: 2 items. The factory now runs on b, so nothing works on them. agentgate factory move a resumes them; agentgate factory drop <id>, run on a, closes one.",
     `  spec      ${key(1)} Issue 1 (${first.item})`,
@@ -335,7 +336,9 @@ test("move --now freezes the old machine's items: it starts no thread, follows n
   expect(items.byKey(a.s, key(1))!.phase).toBe("closed");
   expect(runs.forItem(a.s, first.item!).every((r) => r.endedAt)).toBe(true);
   expect(github.markers(1)).toHaveLength(before.comments);
-  expect((await a.command("status")).output[1]).toStartWith("Frozen on a: 1 item. The factory now runs on b");
+  expect((await a.command("status")).output.find((l) => l.startsWith("Frozen"))).toStartWith(
+    "Frozen on a: 1 item. The factory now runs on b",
+  );
 });
 
 test("moving the factory back resumes what was frozen", async () => {

@@ -7,6 +7,7 @@ import {
   factoryCommandInputSchema,
   operationFor,
   type FactoryBoard,
+  type FactoryCheck,
   type FactoryCommandResult,
   type FactoryModel,
   type FactoryOperationInfo,
@@ -25,8 +26,8 @@ import type { FactoryEvents } from "./events.ts";
 import type { FactoryItem, FactoryRun } from "./db.ts";
 
 /**
- * The factory's shared runtime. Each feature file registers its operations, loops, run kinds, sources and board parts
- * here in its own `setup`, so features never edit shared files. An operation is registered once, and the CLI, the
+ * The factory's shared runtime. Each feature file registers its operations, loops, run kinds, sources, board parts and
+ * preflight checks here in its own `setup`, so features never edit shared files. An operation is registered once, and the CLI, the
  * control API, the agents' MCP tools and a virtual project's remote endpoint are all made from that one entry.
  */
 
@@ -184,6 +185,14 @@ export interface RunKindDefinition {
   /** `approve`/`reject` of a waiting run. */
   answer?(run: FactoryRun, decision: { approve: boolean; reason?: string }): Promise<void>;
 }
+/** A feature's part of the preflight (preflight.ts): the checks of what it needs. A `slow` source asks gh, T3 Code or
+ * another process, so the board shows its last answer, which the preflight loop and `doctor` refresh; any other runs
+ * for every board. `name` titles the row that says the source itself failed. */
+export interface CheckSource {
+  name: string;
+  slow?: true;
+  run(): FactoryCheck[] | Promise<FactoryCheck[]>;
+}
 /** A call sent to the factory machine through `/peer/factory/op` (follow.ts). */
 export interface ForwardOp {
   name: string;
@@ -203,6 +212,7 @@ export interface FactoryRuntime {
   runKinds: Map<RunKind, RunKindDefinition>;
   sources: Map<SourceType, SourceAdapter>;
   boardParts: Array<() => Promise<Partial<FactoryBoard>>>;
+  checks: CheckSource[];
   page?: (req: Request, listener: Listener) => Promise<Response>; // set by the board feature
   forwarder?: Forwarder; // set by the follow feature
   /** Per item, the end of its last queued step (`withItem`). */
@@ -231,6 +241,7 @@ export function emptyRuntime(ctx: Ctx, events: FactoryEvents): FactoryRuntime {
     runKinds: new Map(),
     sources: new Map(),
     boardParts: [],
+    checks: [],
     locks: new Map(),
     memory<T>(name: string, init: () => T) {
       if (!kept.has(name)) kept.set(name, init());

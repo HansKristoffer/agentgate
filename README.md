@@ -277,6 +277,7 @@ The factory comments as your `gh` login, and GitHub never notifies you of your o
 ```sh
 agentgate factory use acme/factory:factory   # turn it on; off turns it off, reload fetches the folder now
 agentgate factory status                     # the board: items, what waits for you, sources and webhook URLs
+agentgate factory doctor                     # what the factory still needs, with the fix for each
 printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY
 agentgate factory approve api-42 --reason "keep the old field as an alias"
 agentgate factory help                       # every factory command

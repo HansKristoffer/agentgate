@@ -14,6 +14,8 @@ On the machine that runs the factory:
 
 Every paired machine must run a release that knows the factory before you turn it on or set a secret, since older releases drop the setting and stall on secret records. `agentgate factory use` names the machines to update.
 
+`agentgate factory doctor` checks all of this, each with its fix, and `doctor --canary` starts one short thread that only reports back, which proves the whole chain; `init` and `use` print the checks once the factory is on, and `status` and the app lead with any that fail.
+
 ## Turning it on and off
 
 The quickest start is `agentgate factory init acme/api`, or **Start a factory** in the app's Factory view (or a project's menu in Projects). It keeps a new folder in agentgate, with a `factory.yaml` for that repository (one GitHub source on the label `factory`, or the one `--label` names) and an empty `rulings.md`, creates the label, and turns the factory on. Nothing is pushed to the repository. The folder is copied to every paired machine and kept in backups, and `off` leaves it, so `agentgate factory use --store agentgate` turns it on again. Init refuses while a factory is on (add the repository to it with `repo add` instead) and while agentgate already keeps a folder. It creates the label with the `gh` login of the machine it runs on, which is the machine the app is connected to.
@@ -469,6 +471,7 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory off`                                                                | Turn it off.                                                                                                               |
 | `factory reload`                                                             | Fetch and check the folder now.                                                                                            |
 | `factory status [--json]`                                                    | The board, with the webhook URLs.                                                                                          |
+| `factory doctor [--canary] [--json]`                                         | Check what the factory needs, each with its fix; exit 1 if any fails. `--canary` runs one thread that only reports.        |
 | `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                                                                                       |
 | `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                                                                                           |
 | `factory show <item> [--json]`                                               | An item's runs, comments and events.                                                                                       |
