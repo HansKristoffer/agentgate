@@ -23,11 +23,9 @@ import {
   type StageName,
 } from "@agentgate/protocol";
 import { exponentialBackoff } from "hanzio";
-import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { run as git } from "../handoff/code.ts";
 import { cloneProject, findProject } from "../handoff/destination.ts";
-import { jsonInput } from "../http.ts";
 import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
@@ -52,17 +50,16 @@ import { recordItemEnd, recordRun } from "./records.ts";
 import {
   later,
   logError,
-  opRoute,
-  runOp,
+  noWords,
+  operation,
   shortError,
+  UsageError,
   withItem,
-  type CommandIO,
+  type Caller,
   type FactoryRuntime,
-  type FactoryTool,
   type IncomingItem,
   type LaunchSpec,
   type SourceAdapter,
-  type ToolCaller,
 } from "./runtime.ts";
 import { claimWrite } from "./outbox.ts";
 import { pendingRequests, T3McpError, t3Mcp } from "./t3-mcp.ts";
@@ -836,7 +833,7 @@ function runOfThread(f: FactoryRuntime, thread: string) {
 export function threadScope(f: FactoryRuntime, thread: string | undefined): SessionScope {
   const head = thread ? runOfThread(f, thread) : undefined;
   const run = head && runs.get(f.s, head.id);
-  if (!run) return { hidden: [...f.tools.values()].filter((t) => t.forRuns).map((t) => t.name) };
+  if (!run) return { hidden: [...f.operations.values()].flatMap((op) => (op.tool?.forRuns ? [op.tool.name] : [])) };
   const folder = folderFor(f, run.configCommit);
   const { checked } = run;
   const scout = checked?.kind === "scout" ? folder?.config.sources.find((x) => x.id === checked.source) : undefined;
@@ -1047,7 +1044,7 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
 
 /** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
  * thread under it, which may read the run's item but never report for it. Routing, not security (D35). */
-export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller, options: { subagents?: boolean } = {}) {
+export function ownRun(f: FactoryRuntime, id: string, caller: Caller, options: { subagents?: boolean } = {}) {
   const run = runs.get(f.s, id);
   if (!run) throw new ReportError(`${f.s.nodeId} has no factory run ${id}`);
   if (!caller.thread)
@@ -1062,26 +1059,18 @@ export function ownRun(f: FactoryRuntime, id: string, caller: ToolCaller, option
   return run;
 }
 
-function parseReport(args: unknown) {
-  const parsed = factoryReportSchema.safeParse(args);
-  if (parsed.success) return parsed.data;
-  const issue = parsed.error.issues[0]!;
-  const field = [...issue.path, ...(issue.code === "unrecognized_keys" ? [issue.keys[0]!] : [])].join(".");
-  throw new ReportError(`${field ? `${field}: ` : ""}${issue.message}`);
-}
-
 /** A report, taken as one step of its item. It answers once the item has moved; what GitHub or Linear hears, and
  * settling the thread, follow in later steps. */
 export async function acceptReport(
   f: FactoryRuntime,
   report: FactoryReport,
-  caller: ToolCaller,
+  caller: Caller,
 ): Promise<{ accepted: true }> {
   const owner = runs.get(f.s, report.run)?.item ?? report.run;
   return withItem(f, owner, () => takeReport(f, report, caller));
 }
 
-async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: ToolCaller): Promise<{ accepted: true }> {
+async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Caller): Promise<{ accepted: true }> {
   const { s } = f;
   const run = ownRun(f, report.run, caller);
   const takes = (r: FactoryRun | undefined) => r?.state === "running" || r?.state === "waiting";
@@ -1277,8 +1266,11 @@ function requireFolder(f: FactoryRuntime): LoadedFolder {
 }
 
 /** An item a person or an agent adds. An agent's waits for approval: no label let it in. */
-function addManual(f: FactoryRuntime, input: unknown, options: { hold?: boolean } = {}) {
-  const { repo, title, body } = factoryItemInputSchema.parse(input);
+function addManual(
+  f: FactoryRuntime,
+  { repo, title, body }: z.infer<typeof factoryItemInputSchema>,
+  options: { hold?: boolean } = {},
+) {
   const folder = requireFolder(f);
   const repos = Object.keys(folder.config.repositories);
   const known = repos.find((r) => r.toLowerCase() === repo.toLowerCase());
@@ -1600,9 +1592,8 @@ function frozenHere(f: FactoryRuntime) {
 
 /** Whether an item operation's input names an item frozen here, which only this machine can answer for. By its id
  * alone: a key or an issue names the factory machine's item, which may be a new item of the same issue. */
-function namesFrozen(f: FactoryRuntime, input: unknown) {
-  const ref = (input as { item?: unknown } | null)?.item;
-  const item = frozenHere(f) && typeof ref === "string" ? items.get(f.s, ref) : undefined;
+function namesFrozen(f: FactoryRuntime, ref: string) {
+  const item = frozenHere(f) ? items.get(f.s, ref) : undefined;
   return !!item && isOpenPhase(item.phase);
 }
 
@@ -1724,8 +1715,29 @@ const triage = (f: FactoryRuntime) => ({
   },
 });
 
-/** Runs a command through `runCommand`, so a machine that does not run the factory reaches the one that does, and
- * answers like a route: a failure is a 400 with the command's message. */
+/** What each item action does, for `agentgate factory help` and for an assistant on a remote endpoint. */
+const ACTION_HELP: Record<Action, { summary: string; remote: string }> = {
+  approve: {
+    summary: "start a held item, take what a stage recommends, approve a spec, or say what changed for a blocked item",
+    remote:
+      "Approve an item that waits for the maintainer: start a held item's stage, take a stage's recommendation (or give your answer as reason), approve a spec, or say what changed for a blocked item.",
+  },
+  reject: {
+    summary: "turn a held item away, refuse a recommendation, or ask for spec changes",
+    remote:
+      "Reject an item that waits for the maintainer: turn a held item away, refuse a stage's recommendation, or ask for spec changes with reason as the feedback.",
+  },
+  retry: {
+    summary: "take an item that failed, stalled or was stopped back to work, or start a closed one again",
+    remote:
+      "Take an item that failed, went over its token budget, stalled, got stuck, was stopped or handed off back to work, or start a closed item again at triage.",
+  },
+  drop: {
+    summary: "stop an item's threads and close it; its PR stays open",
+    remote: "Stop an item's threads and close it with a comment. Its PR, if it has one, stays open.",
+  },
+};
+
 export function setup(f: FactoryRuntime): void {
   f.sources.set("manual", { type: "manual" });
   f.runKinds.set("triage", triage(f));
@@ -1735,63 +1747,103 @@ export function setup(f: FactoryRuntime): void {
   f.loops.push({ name: "factory-stuck", everyMs: 5 * 60_000, where: "factory-node", run: async () => findStuck(f) });
   f.boardParts.push(async () => boardPart(f));
 
-  f.tools.set("factory_report", {
-    name: "factory_report",
-    forRuns: true,
-    description:
-      "Report the outcome of your factory stage, once, from the stage's own T3 Code thread. Returns { accepted: true }, or an error naming what to fix.",
-    inputSchema: z.toJSONSchema(factoryReportSchema, { io: "input" }) as FactoryTool["inputSchema"],
-    call: (args, caller) => acceptReport(f, parseReport(args), caller),
-  });
-  f.tools.set("factory_item", {
-    name: "factory_item",
-    forRuns: true,
-    description:
-      "Your factory run's item: its intake snapshot (untrusted), the rulings, the approved spec, earlier stages' outcomes and the PR.",
-    inputSchema: { type: "object", properties: { run: { type: "string" } }, required: ["run"] },
-    call: async (args, caller) => {
-      if (typeof args.run !== "string") throw new ReportError("run is required");
-      return itemView(f, ownRun(f, args.run, caller, { subagents: true }));
+  operation(f, {
+    name: "add",
+    summary: "add an item by hand; triage starts at once",
+    input: factoryItemInputSchema,
+    // An agent's item waits for approval; a person's, and a remote endpoint's the maintainer gave control, do not.
+    run: async (input, caller) => {
+      const item = addManual(f, input, { hold: caller.via === "tool" });
+      return { id: item.id, key: item.key, repo: item.repo, phase: item.phase };
     },
-  });
-  f.tools.set("factory_add", {
-    name: "factory_add",
-    description:
-      "Add an item to the software factory. It waits until the maintainer approves it with agentgate factory approve, then is triaged in T3 Code like an issue from a source.",
-    inputSchema: z.toJSONSchema(factoryItemInputSchema, { io: "input" }) as FactoryTool["inputSchema"],
-    call: async (args) => {
-      const item = addManual(f, args, { hold: true });
-      const url = f.s.get("node", f.s.nodeId)?.url;
-      return { item: item.id, key: item.key, ...(url && { link: `${url.replace(/\/$/, "")}/factory` }) };
+    terminal: {
+      usage: "add <owner/repo> <title> [--body <text>] [--json]",
+      parse(args) {
+        const { values, positionals } = parseArgs({
+          args,
+          options: { body: { type: "string" }, json: { type: "boolean" } },
+          allowPositionals: true,
+        });
+        if (positionals.length !== 2) throw new UsageError();
+        const { json, ...rest } = values;
+        return { input: { repo: positionals[0], title: positionals[1], ...rest }, json };
+      },
+      print: (item, { json }) => [
+        json
+          ? JSON.stringify({ id: item.id, key: item.key })
+          : `Added ${item.key} (${item.id}) to ${item.repo}: ${item.phase === "held" ? "held for approval" : "triage is queued"}`,
+      ],
+    },
+    tool: {
+      name: "factory_add",
+      description:
+        "Add an item to the software factory. It waits until the maintainer approves it with agentgate factory approve, then is triaged in T3 Code like an issue from a source.",
+      result(item) {
+        const url = f.s.get("node", f.pointer()?.node ?? f.s.nodeId)?.url;
+        return { item: item.id, key: item.key, ...(url && { link: `${url.replace(/\/$/, "")}/factory` }) };
+      },
+    },
+    remote: {
+      description:
+        "Add a task for the factory in one of its repositories (factory__status lists them). It is triaged in a T3 Code thread like a labelled issue, then fixed or specced up to a pull request for the maintainer to merge.",
     },
   });
 
-  // The operations the CLI, the routes and other machines share.
-  f.ops.set("add", {
-    run: async (input) => {
-      const item = addManual(f, input);
-      return { id: item.id, key: item.key, repo: item.repo, phase: item.phase };
-    },
+  const itemRef = z.object({
+    item: z.string().min(1).max(200).describe("The item's key (web-42), id or issue (owner/repo#42)"),
   });
-  const itemRef = z.object({ item: z.string().min(1).max(200) });
-  const frozen = { here: (input: unknown) => namesFrozen(f, input) };
-  f.ops.set("show", {
-    ...frozen,
-    run: async (input) => {
-      const { item: ref } = itemRef.parse(input);
+  operation(f, {
+    name: "show",
+    summary: "an item's runs, comments and events",
+    input: itemRef,
+    here: ({ item }) => namesFrozen(f, item),
+    run: async ({ item: ref }) => {
       const item = findItem(f, ref);
       if (!item) throw new Error(`${f.s.nodeId} has no factory item ${ref}`);
       return itemDetail(f, item);
     },
+    terminal: {
+      usage: "show <item> [--json]",
+      parse(args) {
+        const { values, positionals } = parseArgs({
+          args,
+          options: { json: { type: "boolean" } },
+          allowPositionals: true,
+        });
+        if (positionals.length !== 1) throw new UsageError();
+        return { input: { item: positionals[0] }, json: values.json };
+      },
+      print: (detail, { json }) => (json ? [JSON.stringify(detail)] : detailText(detail)),
+    },
+    remote: {
+      description:
+        "One factory item: its phase, PR, runs with their T3 Code threads, the comments the factory posted and recent events.",
+      result: (detail) => detailText(detail).join("\n"),
+    },
   });
   for (const action of ACTIONS)
-    f.ops.set(action, {
-      ...frozen,
-      run: async (input) => {
-        const { item: ref, reason } = itemRef.extend(factoryActionInputSchema.shape).parse(input);
-        return { message: await itemAction(f, ref, action, reason) };
+    operation(f, {
+      name: action,
+      summary: ACTION_HELP[action].summary,
+      input: itemRef.extend(factoryActionInputSchema.shape),
+      here: ({ item }) => namesFrozen(f, item),
+      run: async ({ item, reason }) => ({ message: await itemAction(f, item, action, reason) }),
+      terminal: {
+        usage: `${action} <item> [--reason <text>]`,
+        parse(args) {
+          const { values, positionals } = parseArgs({
+            args,
+            options: { reason: { type: "string" } },
+            allowPositionals: true,
+          });
+          if (positionals.length !== 1) throw new UsageError();
+          return { input: { item: positionals[0], ...(values.reason && { reason: values.reason }) } };
+        },
+        print: ({ message }) => [message],
       },
+      remote: { description: ACTION_HELP[action].remote, result: ({ message }) => message },
     });
+
   const setPaused = (paused: boolean) => {
     requireFolder(f);
     if (paused !== isPaused(f)) {
@@ -1807,98 +1859,51 @@ export function setup(f: FactoryRuntime): void {
         : "Resumed.",
     };
   };
-  f.ops.set("pause", { run: async () => setPaused(true) });
-  f.ops.set("resume", { run: async () => setPaused(false) });
-
-  // The commands format what the operations return; the operations reach the right machine, so the commands run here.
-  const message = (io: CommandIO, result: unknown) => io.out((result as { message: string }).message);
-  f.commands.set("add", {
-    usage: "add <owner/repo> <title> [--body <text>] [--json]",
-    local: true,
-    async run(args, io) {
-      const { values, positionals } = parseArgs({
-        args,
-        options: { body: { type: "string" }, json: { type: "boolean" } },
-        allowPositionals: true,
-      });
-      if (positionals.length !== 2) {
-        io.out("usage: agentgate factory add <owner/repo> <title> [--body <text>]");
-        return 2;
-      }
-      const { json, ...rest } = values;
-      const item = (await runOp(f, "add", { repo: positionals[0], title: positionals[1], ...rest })) as {
-        id: string;
-        key: string;
-        repo: string;
-        phase: ItemPhase;
-      };
-      io.out(
-        json
-          ? JSON.stringify({ id: item.id, key: item.key })
-          : `Added ${item.key} (${item.id}) to ${item.repo}: ${item.phase === "held" ? "held for approval" : "triage is queued"}`,
-      );
-      return 0;
+  const said = { parse: noWords, print: ({ message }: { message: string }) => [message] };
+  operation(f, {
+    name: "pause",
+    summary: "stop intake, new threads and nudges until resume",
+    input: z.object({}),
+    run: async () => setPaused(true),
+    terminal: { usage: "pause", ...said },
+    remote: {
+      description:
+        "Pause the factory: no intake, new threads or nudges until resume. Running threads finish their turn.",
+      result: ({ message }) => message,
     },
   });
-  for (const action of ACTIONS)
-    f.commands.set(action, {
-      usage: `${action} <item> [--reason <text>]`,
-      local: true,
-      async run(args, io) {
-        const { values, positionals } = parseArgs({
-          args,
-          options: { reason: { type: "string" } },
-          allowPositionals: true,
-        });
-        if (positionals.length !== 1) {
-          io.out(`usage: agentgate factory ${action} <item> [--reason <text>]`);
-          return 2;
-        }
-        message(io, await runOp(f, action, { item: positionals[0], ...(values.reason && { reason: values.reason }) }));
-        return 0;
-      },
-    });
-  f.commands.set("show", {
-    usage: "show <item> [--json]",
-    local: true,
-    async run(args, io) {
-      const { values, positionals } = parseArgs({
-        args,
-        options: { json: { type: "boolean" } },
-        allowPositionals: true,
-      });
-      if (positionals.length !== 1) {
-        io.out("usage: agentgate factory show <item> [--json]");
-        return 2;
-      }
-      const detail = factoryItemDetailSchema.parse(await runOp(f, "show", { item: positionals[0] }));
-      if (values.json) io.out(JSON.stringify(detail));
-      else detailText(detail).forEach((line) => io.out(line));
-      return 0;
-    },
-  });
-  f.commands.set("pause", {
-    usage: "pause  stop intake, new threads and nudges until resume",
-    local: true,
-    run: async (_, io) => (message(io, await runOp(f, "pause", {})), 0),
-  });
-  f.commands.set("resume", {
-    usage: "resume",
-    local: true,
-    run: async (_, io) => (message(io, await runOp(f, "resume", {})), 0),
+  operation(f, {
+    name: "resume",
+    summary: "take in items, start threads and nudge again",
+    input: z.object({}),
+    run: async () => setPaused(false),
+    terminal: { usage: "resume", ...said },
+    remote: { description: "Resume a paused factory.", result: ({ message }) => message },
   });
 
-  // The routes return what the operations return.
-  f.api.post("/items", async (c) => {
-    const { id, key } = (await opRoute(f, "add", await jsonInput(c.req.raw))) as { id: string; key: string };
-    return c.json({ id, key });
+  // What a stage's own thread calls. `ownRun` matches the calling thread to the run it names.
+  operation(f, {
+    name: "report",
+    summary: "a stage thread's outcome, once",
+    input: factoryReportSchema,
+    run: (report, caller) => acceptReport(f, report, caller),
+    tool: {
+      name: "factory_report",
+      forRuns: true,
+      description:
+        "Report the outcome of your factory stage, once, from the stage's own T3 Code thread. Returns { accepted: true }, or an error naming what to fix.",
+    },
   });
-  f.api.get("/items/:id", async (c) => c.json(await opRoute(f, "show", { item: c.req.param("id") })));
-  f.api.post("/items/:id/:action", async (c) => {
-    const action = ACTIONS.find((a) => a === c.req.param("action"));
-    if (!action) throw new HTTPException(404, { message: `unknown action; use ${ACTIONS.join(", ")}` });
-    const { reason } = factoryActionInputSchema.parse(await jsonInput(c.req.raw));
-    return c.json(await opRoute(f, action, { item: c.req.param("id"), ...(reason && { reason }) }));
+  operation(f, {
+    name: "item",
+    summary: "what a stage thread reads about its item",
+    input: z.object({ run: z.string() }),
+    run: async ({ run }, caller) => itemView(f, ownRun(f, run, caller, { subagents: true })),
+    tool: {
+      name: "factory_item",
+      forRuns: true,
+      description:
+        "Your factory run's item: its intake snapshot (untrusted), the rulings, the approved spec, earlier stages' outcomes and the PR.",
+    },
   });
-  for (const name of ["pause", "resume"]) f.api.post(`/${name}`, async (c) => c.json(await opRoute(f, name, {})));
 }

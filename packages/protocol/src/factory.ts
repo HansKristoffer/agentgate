@@ -273,16 +273,15 @@ export const factoryFolderSchema = z
     if (folder.files.reduce((n, file) => n + file.text.length + file.path.length, 0) > MAX_STORED_FOLDER)
       ctx.addIssue({ code: "custom", path: ["files"], message: "the folder is larger than 900 KiB" });
   });
-/** GET /api/factory/folder: the stored folder, or no files when there is none. */
+/** `folder ls`: the stored folder, or no files when there is none. */
 export const storedFolderViewSchema = z.object({
   commit: z.string().optional(),
   files: z.array(z.object({ path: z.string(), text: z.string() })),
 });
 export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
-/** PUT /api/factory/folder: files to write by path, `null` to delete one. The result must load as a folder. */
-export const storedFolderChangeSchema = z
-  .object({ files: z.record(folderFilePath, z.string().max(MAX_STORED_FOLDER).nullable()) })
-  .strict();
+/** `folder put`: files to write by path, `null` to delete one. The daemon checks the folder that results as a whole,
+ * its paths and size included, so its refusal names the file. */
+export const storedFolderChangeSchema = z.object({ files: z.record(z.string(), z.string().nullable()) }).strict();
 
 /** The branch `factory init` pushes the template to. */
 export const FACTORY_INIT_BRANCH = "agentgate/factory-init";
@@ -560,7 +559,7 @@ export const boardThreadSchema = z.object({
 });
 export type BoardThread = z.infer<typeof boardThreadSchema>;
 
-/** What a person can do to an item: `agentgate factory <action> <item>` and POST /api/factory/items/:id/:action. */
+/** What a person can do to an item, each an operation: `agentgate factory <action> <item>`. */
 export const itemActions = ["approve", "reject", "retry", "drop"] as const;
 export type ItemAction = (typeof itemActions)[number];
 
@@ -692,7 +691,7 @@ export const factoryBoardSchema = z.object({
 });
 export type FactoryBoard = z.infer<typeof factoryBoardSchema>;
 
-/** GET /api/factory/items/:id and `agentgate factory show <item> --json`: one item with its runs, write-backs and events. */
+/** `show`, and `agentgate factory show <item> --json`: one item with its runs, write-backs and events. */
 export const factoryItemDetailSchema = z.object({
   item: boardItemSchema,
   runs: z.array(
@@ -737,7 +736,7 @@ export const factoryInitResultSchema = z.object({
 });
 export type FactoryInitResult = z.infer<typeof factoryInitResultSchema>;
 
-/** PUT /api/factory: a folder on GitHub (`store` may be left out), or the one agentgate stores. */
+/** `use`: a folder on GitHub (`store` may be left out), or the one agentgate stores. */
 export const factoryUseInputSchema = z.union([
   z
     .object({
@@ -750,16 +749,18 @@ export const factoryUseInputSchema = z.union([
     .strict(),
   z.object({ store: z.literal("agentgate"), node: pointerNode.optional() }).strict(),
 ]);
-/** POST /api/factory/move, `agentgate factory move`. Without `now`, the factory machine finishes its open items
- * first; with it, the factory moves at once and they stay frozen there. */
+export type FactoryUseInput = z.infer<typeof factoryUseInputSchema>;
+/** `move`. Without `now`, the factory machine finishes its open items first; with it, the factory moves at once and
+ * they stay frozen there. */
 export const factoryMoveInputSchema = z.object({ node: pointerNode, now: z.boolean().optional() }).strict();
-/** POST /api/factory/init, `agentgate factory init`: `store` is where the new folder goes, GitHub by default. */
+export type FactoryMoveInput = z.infer<typeof factoryMoveInputSchema>;
+/** `init`: `store` is where the new folder goes, GitHub by default. */
 export const factoryInitInputSchema = z
   .object({ repo, node: pointerNode.optional(), store: z.enum(factoryStores).optional() })
   .strict();
 export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;
-/** POST /api/factory/sources, `agentgate factory source add`: a PR on the factory folder that adds a source, or the
- * change itself when agentgate stores the folder. */
+/** `source add`: a PR on the factory folder that adds a source, or the change itself when agentgate stores the
+ * folder. */
 export const factorySourceAddInputSchema = z
   .object({
     source: z.discriminatedUnion("type", [webhookSourceSchema, scoutSourceSchema]),
@@ -775,7 +776,7 @@ export const factorySourceAddResultSchema = z.object({
   warnings: z.array(z.string()),
 });
 export type FactorySourceAddResult = z.infer<typeof factorySourceAddResultSchema>;
-/** POST /api/factory/items */
+/** `add`, and the agents' `factory_add`. */
 export const factoryItemInputSchema = z
   .object({
     repo,
@@ -786,23 +787,87 @@ export const factoryItemInputSchema = z
       .optional(),
   })
   .strict();
-/** POST /api/factory/items/:id/:action */
+/** What `approve`, `reject`, `retry` and `drop` take besides the item. */
 export const factoryActionInputSchema = z.object({ reason: z.string().max(2000).optional() }).strict();
-/** PUT /api/factory/secrets/:name */
-export const factorySecretInputSchema = z.object({ value: secretRecordSchema.shape.value }).strict();
-/** POST /api/factory/command: how the CLI runs `agentgate factory <name> ...` in the daemon. */
+/** `secret set` */
+export const factorySecretInputSchema = z
+  .object({ name: secretNameSchema, value: secretRecordSchema.shape.value })
+  .strict();
+
+/** What `use`, `move`, `off` and `reload` answer with: the pointer and the folder as the board shows them. */
+export type FactoryStatus = Pick<FactoryBoard, "factory" | "config">;
+
+/**
+ * The factory operations the app calls, by name: what `POST /api/factory/op/<name>` takes and returns for each. A
+ * name is the words after `agentgate factory`. The daemon registers every operation in `apps/agentgate/src/factory`,
+ * where `operation` checks the ones named here against these types.
+ */
+export interface FactoryOps extends Record<
+  ItemAction,
+  { input: { item: string; reason?: string }; result: { message: string } }
+> {
+  add: {
+    input: z.input<typeof factoryItemInputSchema>;
+    result: { id: string; key: string; repo: string; phase: ItemPhase };
+  };
+  show: { input: { item: string }; result: FactoryItemDetail };
+  pause: { input: NoInput; result: { message: string } };
+  resume: { input: NoInput; result: { message: string } };
+  init: { input: FactoryInitInput; result: FactoryInitResult };
+  use: { input: z.input<typeof factoryUseInputSchema>; result: FactoryStatus & { warning?: string } };
+  move: { input: FactoryMoveInput; result: FactoryStatus };
+  off: { input: NoInput; result: FactoryStatus };
+  reload: { input: NoInput; result: FactoryStatus };
+  "source add": { input: FactorySourceAddInput; result: FactorySourceAddResult };
+  scout: { input: { id: string }; result: { run: string } | { skipped: string } };
+  "folder ls": { input: NoInput; result: StoredFolderView };
+  "folder put": { input: z.input<typeof storedFolderChangeSchema>; result: StoredFolderView };
+  "secret list": { input: NoInput; result: { set: string[]; missing: string[] } };
+  "secret set": { input: z.input<typeof factorySecretInputSchema>; result: { name: string } };
+  "secret delete": { input: { name: string }; result: { name: string; deleted: boolean } };
+  "t3 sign-in": { input: NoInput; result: { mcp: string; expiresAt?: number } };
+}
+/** An operation that takes nothing: `{}`. */
+type NoInput = Record<string, never>;
+
+/** `GET /api/factory/operations`: the operations `agentgate factory` runs, for its help, and so the CLI reads stdin
+ * only for one that takes it. */
+export interface FactoryOperationInfo {
+  name: string;
+  summary: string;
+  usage: string;
+  stdin?: boolean;
+}
+
+/** The operation `words` name: the one with the longest name they start with, so `secret set X` is `secret set`
+ * and not `secret`. */
+export function operationFor<T extends { name: string }>(operations: Iterable<T>, words: readonly string[]) {
+  let found: T | undefined;
+  for (const op of operations) {
+    const name = op.name.split(" ");
+    if (name.every((word, i) => words[i] === word) && name.length > (found?.name.split(" ").length ?? 0)) found = op;
+  }
+  return found;
+}
+
+/** `POST /api/factory/terminal`: the words after `agentgate factory` as the CLI got them, with stdin when the
+ * operation they name takes it. The answer is what to print and the exit code. */
 export const factoryCommandInputSchema = z
   .object({
-    name: z.string().regex(/^[a-z][a-z0-9-]{0,39}$/),
-    args: z.array(z.string().max(64 * 1024)).max(100),
+    args: z
+      .array(z.string().max(64 * 1024))
+      .min(1)
+      .max(100),
     stdin: z
       .string()
       .max(1024 * 1024)
       .optional(),
   })
   .strict();
-export const factoryCommandResultSchema = z.object({ code: z.number().int(), output: z.array(z.string()) });
-export type FactoryCommandResult = z.infer<typeof factoryCommandResultSchema>;
+export interface FactoryCommandResult {
+  code: number;
+  output: string[];
+}
 
 /** The JSON Schema of `factory.yaml` for editors. Input mode: a key with a default may be left out. */
 export const factoryJsonSchema = () => z.toJSONSchema(factoryConfigSchema, { io: "input" });

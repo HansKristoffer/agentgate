@@ -1,4 +1,5 @@
 import { folderLabel, itemPhases, movingLabel, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { z } from "zod";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
@@ -7,12 +8,12 @@ import { frozenItems } from "./controller.ts";
 import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { FACTORY_PAGE } from "./page.ts";
-import { logError, type FactoryRuntime } from "./runtime.ts";
+import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
 import { needsSignIn } from "./t3-mcp.ts";
 
 /**
  * The board: every machine's T3 threads and what the factory's features add through `f.boardParts`. One builder serves
- * the `/factory` page, `GET /api/factory`, `agentgate factory status` and the `factory_status` tool.
+ * the `/factory` page, `GET /api/factory`, which the app polls, and the `status` operation.
  */
 
 /** How long other machines' threads, read through `/peer/threads`, are reused. */
@@ -25,27 +26,34 @@ export function setup(f: FactoryRuntime) {
   f.api.get("/", async (c) => c.json(await boardView(f, { includeWebhookUrls: true })));
   // Paired machines may see webhook URLs: they already share every secret.
   f.peer.get("/board", async (c) => c.json(await buildBoard(f, { includeWebhookUrls: true })));
-  f.commands.set("status", {
-    usage: "status [--json]",
+  // Local: `boardView` asks the factory machine for its board itself, and adds what only this machine knows.
+  const short = (board: FactoryBoard) => boardText(board, { short: true }).join("\n");
+  operation(f, {
+    name: "status",
+    summary: "the board: items by phase, what waits for you, capacity, sources and every machine's threads",
+    input: z.object({}),
     local: true,
-    async run(args, io) {
-      if (args.some((a) => a !== "--json")) {
-        io.out("usage: agentgate factory status [--json]");
-        return 2;
-      }
-      const board = await boardView(f, { includeWebhookUrls: true });
-      if (args.includes("--json")) io.out(JSON.stringify(board, null, 2));
-      else boardText(board).forEach((line) => io.out(line));
-      return 0;
+    // A person at this machine or in the app sees the webhook URLs; an agent and a remote endpoint do not.
+    run: (_, caller) => boardView(f, { includeWebhookUrls: caller.via === "terminal" || caller.via === "api" }),
+    terminal: {
+      usage: "status [--json]",
+      parse(args) {
+        if (args.some((a) => a !== "--json")) throw new UsageError();
+        return { input: {}, json: args.includes("--json") };
+      },
+      print: (board, { json }) => (json ? [JSON.stringify(board, null, 2)] : boardText(board)),
     },
-  });
-  f.tools.set("factory_status", {
-    name: "factory_status",
-    description:
-      "The software factory's board as short text: its items by phase, what waits on a person, capacity, sources and every machine's T3 Code threads.",
-    inputSchema: { type: "object", properties: {} },
-    local: true,
-    call: async () => boardText(await boardView(f, { includeWebhookUrls: false }), { short: true }).join("\n"),
+    tool: {
+      name: "factory_status",
+      description:
+        "The software factory's board as short text: its items by phase, what waits on a person, capacity, sources and every machine's T3 Code threads.",
+      result: short,
+    },
+    remote: {
+      description:
+        "The software factory's board: the repositories it works, its items by phase with their PRs, what waits for the maintainer, capacity and sources.",
+      result: short,
+    },
   });
   // Starts the mirror once this machine drives factory work and T3 Code is connected, and stops it when either goes.
   f.loops.push({

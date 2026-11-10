@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { factoryFolderSchema, storedFolderChangeSchema, type StoredFolderView } from "@agentgate/protocol";
-import { jsonInput } from "../http.ts";
+import { z } from "zod";
 import { loadFolder, storedChanged } from "./config.ts";
 import {
   NO_STORED_FOLDER,
@@ -13,13 +13,14 @@ import {
   writeFiles,
   type FolderFiles,
 } from "./folder.ts";
-import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { noWords, operation, requireFactoryProtocol, UsageError, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory folder agentgate stores, for a project whose repository must not hold it: one synced `factoryFolder`
- * record that `agentgate factory folder` and the app edit, and that `factory init --store agentgate` and `source add`
- * write. Every write checks that the result loads, so the stored folder is never broken. Two machines that save at
- * once keep the later save, like every record.
+ * record that the `folder` operations edit, from the CLI and the app, and that `factory init --store agentgate` and
+ * `source add` write. Every write checks that the result loads, so the stored folder is never broken. Two machines
+ * that save at once keep the later save, like every record. The record is every machine's, so the operations run
+ * where they are asked.
  */
 
 type FolderChanges = Record<string, string | null>;
@@ -80,72 +81,91 @@ function deleteStored(f: FactoryRuntime) {
 
 // ---- setup
 
-const FOLDER_USAGE = "folder ls | cat <path> | put <path> < file | rm <path> | delete";
+const at = (saved: StoredFolderView) => `the stored folder is at ${saved.commit!.slice(0, 7)}`;
+/** The one path `cat`, `put` or `rm` names in a terminal. */
+const onePath = (args: string[]) => {
+  if (args.length !== 1 || !args[0]) throw new UsageError();
+  return args[0];
+};
 
 export function setup(f: FactoryRuntime): void {
-  f.commands.set("folder", {
-    usage: `${FOLDER_USAGE}  the factory folder agentgate stores`,
+  operation(f, {
+    name: "folder ls",
+    summary: "the files of the factory folder agentgate stores",
+    input: z.object({}),
     local: true,
-    stdin: ["put"],
-    async run(args, io) {
-      const [verb, path, ...extra] = args;
-      const usage = () => {
-        io.out(`usage: agentgate factory ${FOLDER_USAGE}`);
-        return 2;
-      };
-      if (extra.length) return usage();
-      const files = storedFiles(f.s);
-      switch (verb) {
-        case "ls": {
-          if (path) return usage();
-          if (!files) throw new Error(NO_STORED_FOLDER);
-          io.out(`The stored folder is at ${storedCommit(files).slice(0, 7)}:`);
-          for (const file of sortedFiles(files)) io.out(`  ${file.path}  ${Buffer.byteLength(file.text)} bytes`);
-          return 0;
-        }
-        case "cat": {
-          if (!path) return usage();
-          const text = files?.[path];
-          if (text === undefined) throw new Error(files ? `The stored folder has no ${path}` : NO_STORED_FOLDER);
-          io.out(text.replace(/\n$/, ""));
-          return 0;
-        }
-        case "put": {
-          if (!path) return usage();
-          if (io.stdin === undefined) throw new Error("put reads the file from stdin: put <path> < file");
-          const saved = await changeStored(f, { [path]: io.stdin });
-          io.out(`Saved ${path}; the stored folder is at ${saved.commit!.slice(0, 7)}.`);
-          return 0;
-        }
-        case "rm": {
-          if (!path) return usage();
-          if (files && !(path in files)) throw new Error(`The stored folder has no ${path}`);
-          const saved = await changeStored(f, { [path]: null });
-          io.out(`Removed ${path}; the stored folder is at ${saved.commit!.slice(0, 7)}.`);
-          return 0;
-        }
-        case "delete":
-          if (path) return usage();
-          deleteStored(f);
-          io.out("The stored folder is deleted.");
-          return 0;
-        default:
-          return usage();
-      }
+    run: () => view(f),
+    terminal: {
+      usage: "folder ls",
+      parse: noWords,
+      print({ commit, files }) {
+        if (!commit) throw new Error(NO_STORED_FOLDER);
+        return [
+          `The stored folder is at ${commit.slice(0, 7)}:`,
+          ...files.map((file) => `  ${file.path}  ${Buffer.byteLength(file.text)} bytes`),
+        ];
+      },
     },
   });
-
-  f.api.get("/folder", (c) => c.json(view(f)));
-  f.api.put("/folder", async (c) => {
-    const { files } = storedFolderChangeSchema.parse(await jsonInput(c.req.raw));
-    return c.json(await asInput(() => changeStored(f, files)));
+  operation(f, {
+    name: "folder cat",
+    summary: "print one of its files",
+    input: z.object({ path: z.string() }),
+    local: true,
+    run({ path }) {
+      const files = storedFiles(f.s);
+      const text = files?.[path];
+      if (text === undefined) throw new Error(files ? `The stored folder has no ${path}` : NO_STORED_FOLDER);
+      return { text };
+    },
+    terminal: {
+      usage: "folder cat <path>",
+      parse: (args) => ({ input: { path: onePath(args) } }),
+      print: ({ text }) => [text.replace(/\n$/, "")],
+    },
   });
-  f.api.delete("/folder", async (c) =>
-    c.json(
-      await asInput(() => {
-        deleteStored(f);
-        return view(f);
-      }),
-    ),
-  );
+  operation(f, {
+    name: "folder put",
+    summary: "write a file from stdin",
+    input: storedFolderChangeSchema,
+    local: true,
+    run: ({ files }) => changeStored(f, files),
+    terminal: {
+      usage: "folder put <path> < file",
+      stdin: true,
+      parse(args, stdin) {
+        const path = onePath(args);
+        if (stdin === undefined) throw new Error("put reads the file from stdin: put <path> < file");
+        return { input: { files: { [path]: stdin } } };
+      },
+      print: (saved, { input }) => [`Saved ${Object.keys(input.files)[0]}; ${at(saved)}.`],
+    },
+  });
+  operation(f, {
+    name: "folder rm",
+    summary: "remove a file",
+    input: z.object({ path: z.string() }),
+    local: true,
+    run({ path }) {
+      const files = storedFiles(f.s);
+      if (files && !(path in files)) throw new Error(`The stored folder has no ${path}`);
+      return changeStored(f, { [path]: null });
+    },
+    terminal: {
+      usage: "folder rm <path>",
+      parse: (args) => ({ input: { path: onePath(args) } }),
+      print: (saved, { input }) => [`Removed ${input.path}; ${at(saved)}.`],
+    },
+  });
+  operation(f, {
+    name: "folder delete",
+    summary: "delete the stored folder; refused while the factory runs on it",
+    input: z.object({}),
+    local: true,
+    run() {
+      deleteStored(f);
+      return view(f);
+    },
+    terminal: { usage: "folder delete", parse: noWords, print: () => ["The stored folder is deleted."] },
+  });
 }

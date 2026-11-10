@@ -4,9 +4,13 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import {
   ConfigurationConflict,
-  factoryCommandResultSchema,
+  factoryCommandInputSchema,
+  operationFor,
   type FactoryBoard,
+  type FactoryCommandResult,
   type FactoryModel,
+  type FactoryOperationInfo,
+  type FactoryOps,
   type FactoryPointer,
   type FactoryReport,
   type FactorySource,
@@ -14,53 +18,95 @@ import {
   type RunKind,
 } from "@agentgate/protocol";
 import type { Ctx, Env, Listener } from "../daemon.ts";
+import { jsonInput } from "../http.ts";
 import type { Store } from "../store.ts";
 import { FactoryEvents } from "./events.ts";
 import type { FactoryItem, FactoryRun } from "./db.ts";
 import { setupFeatures } from "./features.ts";
 
 /**
- * The factory's shared runtime. Each feature file registers its routes, commands, tools, loops, run kinds, sources and
- * board parts here in its own `setup`, so features never edit shared files.
+ * The factory's shared runtime. Each feature file registers its operations, loops, run kinds, sources and board parts
+ * here in its own `setup`, so features never edit shared files. An operation is registered once, and the CLI, the
+ * control API, the agents' MCP tools and a virtual project's remote endpoint are all made from that one entry.
  */
 
 export { FACTORY_PROTOCOL, requireFactoryProtocol } from "../store.ts";
 
 export type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
-/** thread: `_meta["dev.agentgate/t3Thread"]`, a label the shim adds, not proof; node: the machine that received the call. */
-export interface ToolCaller {
+/**
+ * Who calls an operation. `via`: the CLI, the control API (the app), an agent's MCP tool, or a virtual project's
+ * remote endpoint. `thread`: `_meta["dev.agentgate/t3Thread"]` of a tool call, a label the shim adds, not proof.
+ * `node`: the machine that received the call. A call forwarded to the factory machine carries its caller along.
+ */
+export interface Caller {
+  via: "terminal" | "api" | "tool" | "remote";
   thread?: string;
   node: string;
 }
-export interface FactoryTool {
-  name: string; // e.g. "factory_report"
-  description: string;
-  inputSchema: { type: "object"; properties: Record<string, unknown>; required?: string[] };
-  local?: boolean; // never forwarded to the factory machine
-  /** Listed only to a factory run's own threads (`threadScope`). */
-  forRuns?: boolean;
-  /** Not listed to agents: a route reaches it through `runTool`, which forwards it to the factory machine. */
-  unlisted?: boolean;
-  /** The value is returned as JSON text; a thrown error becomes a tool error. */
-  call(args: Record<string, unknown>, caller: ToolCaller): Promise<unknown>;
-}
-export interface CommandIO {
-  stdin?: string;
-  out(line: string): void;
-}
-export interface FactoryCommand {
-  usage: string;
+
+/** Thrown by a terminal form's `parse` for words it cannot read: the operation's `usage` is printed, with exit code 2. */
+export class UsageError extends Error {}
+/** The `parse` of an operation that takes no words. */
+export const noWords = (args: string[]) => {
+  if (args.length) throw new UsageError();
+  return { input: {} };
+};
+
+/**
+ * One thing the factory can do, however it is asked. `run` takes the input its schema checked and returns JSON. It
+ * runs on the factory machine, wherever the call arrives, unless it is `local` or `here` says this input is this
+ * machine's to answer. `terminal`, `tool` and `remote` say how the CLI, agents and a remote endpoint reach it; the
+ * control API reaches every operation by its name.
+ */
+export interface Operation<S extends z.ZodType = z.ZodType, O = unknown, N extends string = string> {
+  /** The words after `agentgate factory`, such as `secret set`. */
+  name: N;
+  /** One line for `agentgate factory help`. */
+  summary: string;
+  input: S;
+  /** Runs on the machine that is asked, never forwarded. */
   local?: boolean;
-  /** The subcommands that take input on stdin, such as `set` of `secret set`. */
-  stdin?: string[];
-  /** Returns the exit code. */
-  run(args: string[], io: CommandIO): Promise<number>;
+  /** Whether this input is answered here though another machine runs the factory: it names an item frozen in this
+   * machine's tables, which no other machine can reach. */
+  here?(input: z.output<S>): boolean;
+  /** Refused over the tailnet, like the control API's other secret routes. */
+  loopbackOnly?: boolean;
+  run(input: z.output<S>, caller: Caller): O | Promise<O>;
+  terminal?: {
+    /** The name and its arguments, as help and a parse error show them. */
+    usage: string;
+    /** The CLI reads stdin only for an operation that says so: under an agent or a cron job stdin stays open and
+     * silent, so reading it would wait forever, and in a `while read` loop it would swallow the loop's input. */
+    stdin?: boolean;
+    /** The input from the words after the name, and from stdin when `stdin` is set; `json` when the person asked for
+     * the result as JSON. Throws a UsageError for words it cannot read. */
+    parse(args: string[], stdin: string | undefined): { input: unknown; json?: boolean };
+    /** The result as lines, with the exit code when it is not 0. */
+    print(result: O, asked: { input: z.output<S>; json?: boolean }): string[] | { lines: string[]; code: number };
+  };
+  /** An MCP tool for local sessions. `forRuns`: listed only to a factory run's own threads (`threadScope`). `result`
+   * is what the tool answers when that is not the operation's own result. */
+  tool?: { name: string; description: string; forRuns?: boolean; result?(value: O): unknown };
+  /** Offered on a virtual project's endpoint whose `factoryTools` is on, as the tool `factory__<name>`. */
+  remote?: { description: string; result?(value: O): unknown };
 }
-/** Whether `agentgate factory <command> <args>` takes input on stdin: its subcommand, the first argument that is not
- * an option, is one the command names. The CLI reads stdin only then: under an agent or a cron job stdin stays open
- * and silent, so reading it would wait forever, and in a `while read` loop it would swallow the loop's input. */
-export const readsStdin = (command: Pick<FactoryCommand, "stdin"> | undefined, args: string[]) =>
-  !!command?.stdin?.includes(args.find((arg) => !arg.startsWith("-")) ?? "");
+
+/** What an operation the app calls returns: its result in the protocol's `FactoryOps`. `never`, so that registering it
+ * does not compile, when its schema would refuse what the app sends. Other operations return anything. */
+type Returns<N extends string, S extends z.ZodType> = N extends keyof FactoryOps
+  ? [FactoryOps[N]["input"]] extends [z.input<S>]
+    ? FactoryOps[N]["result"]
+    : never
+  : unknown;
+
+/** Registers an operation. */
+export function operation<S extends z.ZodType, N extends string, O extends Returns<N, S>>(
+  f: FactoryRuntime,
+  op: Operation<S, O, N>,
+): void {
+  f.operations.set(op.name, op);
+}
+
 export interface FactoryLoop {
   name: string;
   everyMs: number;
@@ -121,19 +167,12 @@ export interface RunKindDefinition {
   /** `approve`/`reject` of a waiting run. */
   answer?(run: FactoryRun, decision: { approve: boolean; reason?: string }): Promise<void>;
 }
-/** An operation the CLI, the routes and other machines share: typed input in, JSON out. A command formats its result
- * for the terminal, a route returns it as it is, and another machine's call is forwarded to the factory machine. */
-export interface FactoryOp {
-  local?: boolean; // never forwarded to the factory machine
-  /** Whether this input is answered here though another machine runs the factory: it names an item frozen in this
-   * machine's tables, which no other machine can reach. */
-  here?(input: unknown): boolean;
-  run(input: unknown): Promise<unknown>;
+/** A call sent to the factory machine through `/peer/factory/op` (follow.ts). */
+export interface ForwardOp {
+  name: string;
+  input: unknown;
+  caller: Caller;
 }
-export type ForwardOp =
-  | { kind: "tool"; name: string; args: Record<string, unknown>; caller: ToolCaller }
-  | { kind: "command"; name: string; args: string[]; stdin?: string }
-  | { kind: "op"; name: string; input: unknown };
 export type Forwarder = (op: ForwardOp) => Promise<unknown>;
 
 export interface FactoryRuntime {
@@ -142,9 +181,7 @@ export interface FactoryRuntime {
   events: FactoryEvents;
   api: Hono<Env>; // mounted at /api/factory, behind management()'s guards
   peer: Hono<Env>; // mounted at /peer/factory, behind the peer token
-  commands: Map<string, FactoryCommand>; // `agentgate factory <name> ...`
-  ops: Map<string, FactoryOp>;
-  tools: Map<string, FactoryTool>;
+  operations: Map<string, Operation>; // by name; register with `operation`
   loops: FactoryLoop[];
   runKinds: Map<RunKind, RunKindDefinition>;
   sources: Map<SourceType, SourceAdapter>;
@@ -166,9 +203,7 @@ export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
     events: new FactoryEvents(s),
     api: new Hono<Env>(),
     peer: new Hono<Env>(),
-    commands: new Map(),
-    ops: new Map(),
-    tools: new Map(),
+    operations: new Map(),
     loops: [],
     runKinds: new Map(),
     sources: new Map(),
@@ -178,45 +213,96 @@ export function createFactoryRuntime(ctx: Ctx): FactoryRuntime {
     isFactoryNode: () => s.settings().factory?.node === s.nodeId,
   };
   setupFeatures(f);
+  routes(f);
   return f;
 }
 
-/** Where a call runs: here, unless the factory is on and runs on another machine. */
-function forward(f: FactoryRuntime, local: boolean | undefined) {
+/** How a call reaches the factory machine, or undefined when it runs here: the factory is off, or this machine runs
+ * it. */
+export function toFactoryMachine(f: FactoryRuntime): Forwarder | undefined {
   const pointer = f.pointer();
-  if (local || !pointer || f.isFactoryNode()) return undefined;
+  if (!pointer || f.isFactoryNode()) return undefined;
   if (!f.forwarder) throw new Error(`The factory runs on ${pointer.node}, and this machine cannot reach it`);
   return f.forwarder;
 }
 
-export async function runTool(f: FactoryRuntime, name: string, args: Record<string, unknown>, caller: ToolCaller) {
-  const tool = f.tools.get(name);
-  if (!tool) throw new Error(`unknown factory tool ${name}`);
-  const forwarder = forward(f, tool.local);
-  return forwarder ? forwarder({ kind: "tool", name, args, caller }) : tool.call(args, caller);
+/** Checks the input here, so a mistake is refused the same way on every machine, then runs the operation here or on
+ * the factory machine. That machine gets the input as it was given and checks it again. */
+async function perform(f: FactoryRuntime, op: Operation, given: unknown, caller: Caller) {
+  const input = op.input.parse(given);
+  const forward = op.local || op.here?.(input) ? undefined : toFactoryMachine(f);
+  const result = forward ? await forward({ name: op.name, input: given, caller }) : await op.run(input, caller);
+  return { input, result };
 }
 
-/** Runs the operation here, or on the factory machine when it runs elsewhere. */
-export async function runOp(f: FactoryRuntime, name: string, input: unknown): Promise<unknown> {
-  const op = f.ops.get(name);
+/** The operation's result, for the transports that take typed input: the control API, tools, the remote endpoint and
+ * a call another machine forwarded. An input the schema refuses throws a ZodError, which each transport words. */
+export async function runOperation(f: FactoryRuntime, name: string, input: unknown, caller: Caller): Promise<unknown> {
+  const op = f.operations.get(name);
   if (!op) throw new Error(`unknown factory operation ${name}`);
-  const forwarder = forward(f, op.local || op.here?.(input));
-  return forwarder ? forwarder({ kind: "op", name, input }) : op.run(input);
+  return (await perform(f, op, input, caller)).result;
 }
 
-/** For routes: the operation's result, with an error as a 400 carrying its message. */
-export const opRoute = (f: FactoryRuntime, name: string, input: unknown) => asInput(() => runOp(f, name, input));
+type TerminalOperation = Operation & { terminal: NonNullable<Operation["terminal"]> };
+const terminalOperations = (f: FactoryRuntime) =>
+  [...f.operations.values()].filter((op): op is TerminalOperation => !!op.terminal);
 
-export async function runCommand(f: FactoryRuntime, name: string, args: string[], io: CommandIO) {
-  const command = f.commands.get(name);
-  if (!command) throw new Error(`unknown factory command ${name}; run agentgate factory help`);
-  const forwarder = forward(f, command.local);
-  if (!forwarder) return command.run(args, io);
-  const result = factoryCommandResultSchema.parse(
-    await forwarder({ kind: "command", name, args, ...(io.stdin !== undefined && { stdin: io.stdin }) }),
+/** `agentgate factory <words>`: the operation the words name, its input parsed from the rest here, and its result
+ * printed here, wherever it ran. */
+export async function runTerminal(f: FactoryRuntime, words: string[], stdin?: string): Promise<FactoryCommandResult> {
+  const operations = terminalOperations(f);
+  const op = operationFor(operations, words);
+  if (!op) {
+    // A first word several operations share, such as `secret`: the ones it could have meant.
+    const family = operations.filter((o) => o.name.startsWith(`${words[0]} `));
+    if (family.length) return { code: 2, output: family.map((o) => `usage: agentgate factory ${o.terminal.usage}`) };
+    // Only the first word is repeated: what follows could be a value typed in the wrong place.
+    throw new Error(`unknown factory command ${words[0] ?? ""}; run agentgate factory help`);
+  }
+  const { terminal } = op;
+  let asked: ReturnType<typeof terminal.parse>;
+  try {
+    asked = terminal.parse(words.slice(op.name.split(" ").length), terminal.stdin ? stdin : undefined);
+  } catch (e) {
+    if (!(e instanceof UsageError)) throw e;
+    return { code: 2, output: [`usage: agentgate factory ${terminal.usage}`] };
+  }
+  const { input, result } = await perform(f, op, asked.input, { via: "terminal", node: f.s.nodeId });
+  const printed = terminal.print(result, { input, ...(asked.json && { json: true }) });
+  return Array.isArray(printed) ? { code: 0, output: printed } : { code: printed.code, output: printed.lines };
+}
+
+/** The control API's routes for operations; the board (`GET /`) is board.ts's. A refusal is a 400 with its message,
+ * like the rest of the control API. */
+function routes(f: FactoryRuntime) {
+  const local = (listener: Listener) => {
+    if (listener !== "loopback")
+      throw new HTTPException(403, { message: "This operation requires a local connection" });
+  };
+  f.api.get("/operations", (c) =>
+    c.json(
+      terminalOperations(f).map(({ name, summary, terminal }): FactoryOperationInfo => ({
+        name,
+        summary,
+        usage: terminal.usage,
+        ...(terminal.stdin && { stdin: true }),
+      })),
+    ),
   );
-  result.output.forEach((line) => io.out(line));
-  return result.code;
+  f.api.post("/op/:name", async (c) => {
+    const op = f.operations.get(c.req.param("name"));
+    if (!op) throw new HTTPException(404, { message: "No such factory operation" });
+    if (op.loopbackOnly) local(c.env.listener);
+    const input = await jsonInput(c.req.raw);
+    const result = await asInput(() => runOperation(f, op.name, input, { via: "api", node: f.s.nodeId }));
+    return c.json(result ?? null);
+  });
+  // The words the CLI got. Loopback only as a whole: they include setting secrets, and the app sends typed input.
+  f.api.post("/terminal", async (c) => {
+    local(c.env.listener);
+    const { args, stdin } = factoryCommandInputSchema.parse(await jsonInput(c.req.raw));
+    return c.json(await asInput(() => runTerminal(f, args, stdin)));
+  });
 }
 
 /** An error's message for a note or a run's error, cut short: an adapter's or T3's message could be long. */
@@ -261,7 +347,7 @@ export function later(f: FactoryRuntime, item: string, what: string, step: () =>
 }
 
 /** For routes: what an administrator typed wrong is a 400, like the rest of the control API. */
-export async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
+async function asInput<T>(fn: () => T | Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {

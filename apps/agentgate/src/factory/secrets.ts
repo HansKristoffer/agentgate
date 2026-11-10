@@ -1,9 +1,8 @@
 import { factorySecretInputSchema, secretNameSchema } from "@agentgate/protocol";
-import { HTTPException } from "hono/http-exception";
-import { jsonInput } from "../http.ts";
+import { z } from "zod";
 import type { Store } from "../store.ts";
 import { currentFolder } from "./config.ts";
-import { asInput, requireFactoryProtocol, type FactoryRuntime } from "./runtime.ts";
+import { noWords, operation, requireFactoryProtocol, UsageError, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The factory's secrets: values the folder names as `secret:NAME`, set from the CLI and kept as synced `secret` records
@@ -47,82 +46,76 @@ export function secretList(f: FactoryRuntime) {
   return { set, missing };
 }
 
-// The error never echoes the input: a value typed where the name goes would land in it.
+// What a terminal is told about a name or a value its operation would refuse. Neither echoes the input: a value typed
+// where the name goes would land in it.
 const NAME_RULE = "a secret name is capital letters, digits and _, starting with a letter, such as LINEAR_KEY";
-const parseName = (name: string | undefined) => {
-  const parsed = secretNameSchema.safeParse(name);
-  if (!parsed.success) throw new Error(NAME_RULE);
-  return parsed.data;
+const oneName = (args: string[]) => {
+  if (args.length !== 1) throw new UsageError();
+  if (!secretNameSchema.safeParse(args[0]).success) throw new Error(NAME_RULE);
+  return args[0];
 };
 
 /** A value piped on stdin, without the newline `echo` adds. */
 const stdinValue = (stdin: string | undefined) => {
   const value = stdin?.replace(/\r?\n$/, "");
   if (!value) throw new Error('pipe the value on stdin: printf %s "$VALUE" | agentgate factory secret set NAME');
-  const parsed = factorySecretInputSchema.shape.value.safeParse(value);
-  if (!parsed.success) throw new Error("a secret value is at most 16384 characters");
-  return parsed.data;
+  if (!factorySecretInputSchema.shape.value.safeParse(value).success)
+    throw new Error("a secret value is at most 16384 characters");
+  return value;
 };
 
-const USAGE = "secret set <NAME> (value on stdin) | secret list | secret delete <NAME>";
-
+/** Secrets are every machine's, so their operations run where they are asked, and only for a caller on that machine:
+ * a tailnet caller never sets or sees them. */
 export function setup(f: FactoryRuntime): void {
-  f.commands.set("secret", {
-    usage: USAGE,
+  operation(f, {
+    name: "secret set",
+    summary: "set a secret on every machine; the value comes on stdin",
+    input: factorySecretInputSchema,
     local: true,
-    stdin: ["set"],
-    async run(args, io) {
-      const [sub, name] = args;
-      const named = name !== undefined && args.length === 2;
-      if (sub === "set" && named) {
-        const id = parseName(name);
-        setSecret(f.s, id, stdinValue(io.stdin));
-        io.out(`Set ${id} for every machine.`);
-        return 0;
-      }
-      if (sub === "delete" && named) {
-        const id = parseName(name);
-        if (getSecret(f.s, id) === undefined) {
-          io.out(`${id} is not set.`);
-          return 1;
-        }
-        deleteSecret(f.s, id);
-        io.out(`Deleted ${id} on every machine.`);
-        return 0;
-      }
-      if (sub === "list" && args.length === 1) {
-        const { set, missing } = secretList(f);
-        set.forEach((name) => io.out(name));
-        missing.forEach((name) => io.out(`${name}  not set (named in factory.yaml)`));
-        if (!set.length && !missing.length) io.out("No factory secrets.");
-        return 0;
-      }
-      io.out(`usage: agentgate factory ${USAGE}`);
-      return 2;
+    loopbackOnly: true,
+    run({ name, value }) {
+      setSecret(f.s, name, value);
+      return { name };
+    },
+    terminal: {
+      usage: "secret set <NAME> < value",
+      stdin: true,
+      parse: (args, stdin) => ({ input: { name: oneName(args), value: stdinValue(stdin) } }),
+      print: ({ name }) => [`Set ${name} for every machine.`],
     },
   });
-
-  // Like the control API's other secret routes, these are loopback only: a tailnet caller never sets or sees them.
-  const local = (listener: string) => {
-    if (listener !== "loopback")
-      throw new HTTPException(403, { message: "This operation requires a local connection" });
-  };
-  f.api.get("/secrets", (c) => {
-    local(c.env.listener);
-    return c.json(secretList(f));
+  operation(f, {
+    name: "secret list",
+    summary: "the names set, and those factory.yaml names that are missing",
+    input: z.object({}),
+    local: true,
+    loopbackOnly: true,
+    run: () => secretList(f),
+    terminal: {
+      usage: "secret list",
+      parse: noWords,
+      print: ({ set, missing }) =>
+        set.length || missing.length
+          ? [...set, ...missing.map((name) => `${name}  not set (named in factory.yaml)`)]
+          : ["No factory secrets."],
+    },
   });
-  f.api.put("/secrets/:name", async (c) => {
-    local(c.env.listener);
-    const id = await asInput(() => parseName(c.req.param("name")));
-    const { value } = factorySecretInputSchema.parse(await jsonInput(c.req.raw));
-    await asInput(() => setSecret(f.s, id, value));
-    return c.json({ ok: true });
-  });
-  f.api.delete("/secrets/:name", async (c) => {
-    local(c.env.listener);
-    const id = await asInput(() => parseName(c.req.param("name")));
-    if (getSecret(f.s, id) === undefined) throw new HTTPException(404, { message: `${id} is not set` });
-    deleteSecret(f.s, id);
-    return c.json({ ok: true });
+  operation(f, {
+    name: "secret delete",
+    summary: "delete a secret on every machine",
+    input: z.object({ name: secretNameSchema }),
+    local: true,
+    loopbackOnly: true,
+    run({ name }) {
+      const deleted = getSecret(f.s, name) !== undefined;
+      if (deleted) deleteSecret(f.s, name);
+      return { name, deleted };
+    },
+    terminal: {
+      usage: "secret delete <NAME>",
+      parse: (args) => ({ input: { name: oneName(args) } }),
+      print: ({ name, deleted }) =>
+        deleted ? [`Deleted ${name} on every machine.`] : { lines: [`${name} is not set.`], code: 1 },
+    },
   });
 }

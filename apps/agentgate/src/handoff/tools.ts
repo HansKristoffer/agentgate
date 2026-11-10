@@ -1,17 +1,24 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 import { getErrorMessage } from "hanzio";
+import { z } from "zod";
 import { BUILTIN_ALIAS, type Source } from "../mcp/gateway.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
 import { T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
 import { allNodes, requestHandoff } from "./threads.ts";
-import { runTool, type FactoryRuntime } from "../factory/runtime.ts";
+import { runOperation, type FactoryRuntime } from "../factory/runtime.ts";
 
 const text = (value: unknown): CallToolResult => ({
   content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
 });
 const fail = (value: string): CallToolResult => ({ isError: true, content: [{ type: "text", text: value }] });
+/** What an agent is told about arguments a factory tool refuses: the first problem, by its field. */
+function refused(error: z.ZodError) {
+  const issue = error.issues[0]!;
+  const field = [...issue.path, ...(issue.code === "unrecognized_keys" ? [issue.keys[0]!] : [])].join(".");
+  return `${field ? `${field}: ` : ""}${issue.message}`;
+}
 
 function server(h: Handoffs, f?: FactoryRuntime): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
@@ -44,21 +51,27 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
         },
       );
     if (f?.pointer())
-      for (const { name, description, inputSchema, unlisted } of f.tools.values())
-        if (!unlisted) tools.push({ name, description, inputSchema: inputSchema as Tool["inputSchema"] });
+      for (const { tool, input } of f.operations.values())
+        if (tool)
+          tools.push({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: z.toJSONSchema(input, { io: "input" }) as Tool["inputSchema"],
+          });
     return { tools };
   });
   server.setRequestHandler("tools/call", async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      if (f?.pointer() && f.tools.has(req.params.name)) {
+      const op = f?.pointer() ? [...f.operations.values()].find((o) => o.tool?.name === req.params.name) : undefined;
+      if (f && op?.tool) {
         const thread = req.params._meta?.[T3_THREAD_META_KEY];
-        return text(
-          await runTool(f, req.params.name, args, {
-            ...(typeof thread === "string" && thread && { thread }),
-            node: h.s.nodeId,
-          }),
-        );
+        const result = await runOperation(f, op.name, args, {
+          via: "tool",
+          ...(typeof thread === "string" && thread && { thread }),
+          node: h.s.nodeId,
+        });
+        return text(op.tool.result ? op.tool.result(result) : result);
       }
       if (req.params.name === "handoff_targets") return text(handoffTargets(await allNodes(h), h.s.nodeId));
       if (req.params.name !== "handoff_thread") return fail(`unknown tool ${req.params.name}`);
@@ -69,7 +82,7 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
       });
       return text({ status: "started", ...started });
     } catch (e) {
-      return fail(getErrorMessage(e));
+      return fail(e instanceof z.ZodError ? refused(e) : getErrorMessage(e));
     }
   });
   return server;

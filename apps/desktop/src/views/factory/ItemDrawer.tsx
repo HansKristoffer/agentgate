@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
 import { ExternalLink, GitPullRequest } from "lucide-react";
 import type { Connection, FactoryBoard, FactoryItemDetail } from "@agentgate/protocol";
-import { openExternal, request } from "../../api.ts";
-import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
+import { factoryOp, openExternal } from "../../api.ts";
+import { ActionButton, Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
 import { useGeneration } from "../../features/proxy/useGeneration.ts";
 import { ago } from "../utils.ts";
 import { NeedsYouActions, OpenInT3, Pill, statusOf, toneOf, type Act, type AskReason, type Tone } from "../Factory.tsx";
@@ -49,8 +49,8 @@ const WRITES: Record<string, string> = {
   issue: "Filed a follow-up issue",
 };
 
-/** One item: its runs with their T3 Code threads and errors, what the factory posted for it, and its events. Read from
- * `GET /api/factory/items/:id`, which reaches the factory machine. */
+/** One item: its runs with their T3 Code threads and errors, what the factory posted for it, and its events. Read with
+ * the `show` operation, which reaches the factory machine. */
 export function ItemDrawer({
   connection,
   changes,
@@ -83,7 +83,7 @@ export function ItemDrawer({
       const current = () => live && generation();
       loading.current = current;
       try {
-        const next = await request<FactoryItemDetail>(connection, `/factory/items/${encodeURIComponent(id)}`);
+        const next = await factoryOp(connection, "show", { item: id });
         if (current()) {
           setDetail(next);
           setError("");
@@ -120,6 +120,17 @@ export function ItemDrawer({
             <GitPullRequest size={14} />
             Pull request
           </Button>
+        )}
+        {/* A closed item starts again at triage; one that waits for you has its Retry among its answers below. */}
+        {item.actions.includes("retry") && !item.needsYou && (
+          <ActionButton
+            size="sm"
+            variant="tertiary"
+            pendingKey={`factory:retry:${item.id}`}
+            onPress={() => void act(item, "retry")}
+          >
+            Retry
+          </ActionButton>
         )}
         {item.actions.includes("drop") && !item.needsYou && (
           <Button size="sm" variant="tertiary" onPress={() => ask(item, "drop", `Drop ${item.key}`)}>

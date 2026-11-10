@@ -7,7 +7,6 @@ import { app } from "../src/daemon.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher } from "../src/factory/folder.ts";
 import { handleHook } from "../src/factory/hooks.ts";
-import { runTool } from "../src/factory/runtime.ts";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { Store } from "../src/store.ts";
 import { getSecret, setSecret } from "../src/factory/secrets.ts";
@@ -124,7 +123,8 @@ test("each webhook-capable source gets a hook URL kept as a ~hook secret, shown 
   n.s.put("node", "a", { ...n.s.get("node", "a")!, healthDashboard: true });
   const page = await (await n.api("/factory")).text();
   expect(page).toContain('"configured":true');
-  const status = String(await runTool(n.f, "factory_status", {}, { node: "a" }));
+  const tool = await (await n.ctx.gateway.builtin!()).client.callTool({ name: "factory_status", arguments: {} });
+  const status = JSON.parse((tool.content as { text: string }[])[0]!.text) as string;
   expect(status).toContain("webhook configured");
   for (const url of urls) {
     expect(page).not.toContain(url);

@@ -2,15 +2,16 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FACTORY_INIT_BRANCH } from "@agentgate/protocol";
-import { app, makeCtx } from "../src/daemon.ts";
+import { makeCtx } from "../src/daemon.ts";
 import { loadFolder } from "../src/factory/config.ts";
 import { fetcher } from "../src/factory/folder.ts";
 import { initTemplate } from "../src/factory/init.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { recorded } from "./fixtures/gh.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
+import { postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
 const realGh = host.gh;
@@ -146,25 +147,9 @@ function node() {
     s.close();
   });
   const f = ctx.factory;
-  const command = async (...args: string[]) => {
-    const output: string[] = [];
-    const code = await runCommand(f, args[0]!, args.slice(1), { out: (line) => output.push(line) }).catch(
-      (e: Error) => {
-        output.push(e.message);
-        return 1;
-      },
-    );
-    return { code, output };
-  };
-  const api = (path: string, body: unknown) =>
-    app(ctx).fetch(
-      new Request(`http://127.0.0.1:7878/api/factory${path}`, {
-        method: "POST",
-        headers: { host: "127.0.0.1:7878", "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      { listener: "loopback" },
-    );
+  const command = (...words: string[]) => terminal(f, words);
+  /** An operation as the app sends it. */
+  const api = (name: string, input: unknown) => postOp(ctx, name, input);
   return { s, f, command, api };
 }
 
@@ -179,7 +164,7 @@ test("init pushes the template to its branch in one commit, opens a draft PR, cr
   fakeFetcher(github);
   const { s, api } = node();
 
-  const res = await api("/init", { repo: REPO });
+  const res = await api("init", { repo: REPO });
   expect(res.status).toBe(200);
   expect(await res.json()).toEqual({
     prUrl: `https://github.com/${REPO}/pull/7`,
@@ -217,7 +202,7 @@ test("init pushes the template to its branch in one commit, opens a draft PR, cr
 test("factory init --json prints what the route answers, and the template parses and loads as a folder", async () => {
   const github = fakeGitHub();
   fakeFetcher(github);
-  const viaApi = await (await node().api("/init", { repo: REPO })).json();
+  const viaApi = await (await node().api("init", { repo: REPO })).json();
   const again = fakeGitHub();
   fakeFetcher(again);
   const { code, output } = await node().command("init", REPO, "--json");
@@ -286,7 +271,7 @@ test("once the init PR merges, the factory follows the default branch even thoug
   const github = fakeGitHub();
   const fetched = fakeFetcher(github);
   const { s, f, api } = node();
-  await api("/init", { repo: REPO });
+  await api("init", { repo: REPO });
 
   await folderLoop(f);
   expect(s.settings().factory).toMatchObject({ ref: FACTORY_INIT_BRANCH, init: { pr: 7 } });
@@ -316,7 +301,7 @@ test("moving the factory keeps the init PR it waits on, so the machine it lands 
   const github = fakeGitHub();
   fakeFetcher(github);
   const { s, f, api, command } = node();
-  await api("/init", { repo: REPO });
+  await api("init", { repo: REPO });
   s.put("node", "b", { id: "b", protocol: 8 });
 
   expect((await command("move", "b")).code).toBe(0);
@@ -333,11 +318,11 @@ test("moving the factory keeps the init PR it waits on, so the machine it lands 
   ]);
 
   // b cannot be asked what it still has open, so only a move that does not wait brings the factory back.
-  expect(await (await api("/move", { node: "a" })).json()).toEqual({
+  expect(await (await api("move", { node: "a" })).json()).toEqual({
     error:
       "The factory runs on b, and this machine cannot reach it; agentgate factory move a --now moves it without waiting for that machine",
   });
-  expect((await api("/move", { node: "a", now: true })).status).toBe(200);
+  expect((await api("move", { node: "a", now: true })).status).toBe(200);
   github.prs.get(7)!.state = "MERGED";
   await folderLoop(f);
   expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });
@@ -347,7 +332,7 @@ test("a closed init PR leaves the factory on its branch, says so, and stops aski
   const github = fakeGitHub();
   fakeFetcher(github);
   const { s, f, api } = node();
-  await api("/init", { repo: REPO });
+  await api("init", { repo: REPO });
   github.prs.get(7)!.state = "CLOSED";
   await folderLoop(f);
   expect(s.settings().factory).toEqual({

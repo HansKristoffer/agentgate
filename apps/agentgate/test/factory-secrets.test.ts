@@ -6,12 +6,13 @@ import { app, makeCtx, type Ctx } from "../src/daemon.ts";
 import { host } from "../src/logins.ts";
 import { boardView } from "../src/factory/board.ts";
 import { fetcher } from "../src/factory/folder.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { loopTask, runTerminal, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { getSecret, resolveSecretRef, secretNames, setSecret } from "../src/factory/secrets.ts";
 import { exportBackup, importBackup, Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes, type TestNode } from "./fixtures/nodes.ts";
+import { postOp } from "./fixtures/t3-mcp.ts";
 
 const VALUE = "lin_api_value-that-must-never-show";
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -45,11 +46,10 @@ function node(name = "a") {
   return { s, ctx, f: ctx.factory };
 }
 
-async function command(f: FactoryRuntime, args: string[], stdin?: string) {
-  const output: string[] = [];
-  const code = await runCommand(f, "secret", args, { stdin, out: (line) => output.push(line) });
-  return { code, output };
-}
+const command = (f: FactoryRuntime, args: string[], stdin?: string) => runTerminal(f, ["secret", ...args], stdin);
+/** A secret operation as the app sends it, with the admin token a tailnet caller needs. */
+const op = (ctx: Ctx, listener: Listener, name: string, input?: unknown) =>
+  postOp(ctx, name, input, listener, { authorization: "Bearer admin-token" });
 
 const request = (ctx: Ctx, listener: Listener, method: string, path: string, body?: unknown) =>
   app(ctx).fetch(
@@ -80,7 +80,7 @@ async function withFolder(f: FactoryRuntime) {
   cleanup.push(() => {
     fetcher.fetch = fetch;
   });
-  expect(await runCommand(f, "use", ["acme/factory"], { out: () => {} })).toBe(0);
+  expect((await runTerminal(f, ["use", "acme/factory"])).code).toBe(0);
   await loopTask(
     f,
     f.loops.find((l) => l.name === "factory-folder")!,
@@ -135,23 +135,31 @@ test("secret list shows names only, with the names factory.yaml uses that this m
   expect(getSecret(s, "~hook:desk")).toBe("hook-key");
 });
 
-test("the secret routes refuse the tailnet listener and work on loopback", async () => {
+test("the secret operations refuse a remote-management connection and work on loopback, while others take both", async () => {
   const { s, ctx } = node();
-  for (const [method, path, body] of [
-    ["GET", "/api/factory/secrets"],
-    ["PUT", "/api/factory/secrets/LINEAR_KEY", { value: VALUE }],
-    ["DELETE", "/api/factory/secrets/LINEAR_KEY"],
+  const named = { name: "LINEAR_KEY" };
+  for (const [name, input] of [
+    ["secret list", {}],
+    ["secret set", { ...named, value: VALUE }],
+    ["secret delete", named],
   ] as const) {
-    const res = await request(ctx, "tailnet", method, path, body);
-    expect(res.status).toBe(403);
+    const res = await op(ctx, "tailnet", name, input);
+    expect({ status: res.status, body: await res.json() }).toEqual({
+      status: 403,
+      body: { error: "This operation requires a local connection" },
+    });
   }
   expect(getSecret(s, "LINEAR_KEY")).toBeUndefined();
+  // An operation that is not loopback only answers the same connection.
+  expect((await op(ctx, "tailnet", "off")).status).toBe(200);
+  // The terminal's form is for this machine's CLI alone.
+  const typed = await request(ctx, "tailnet", "POST", "/api/factory/terminal", { args: ["status"] });
+  expect(typed.status).toBe(403);
 
-  expect((await request(ctx, "loopback", "PUT", "/api/factory/secrets/LINEAR_KEY", { value: VALUE })).status).toBe(200);
-  const listed = await request(ctx, "loopback", "GET", "/api/factory/secrets");
-  expect(await listed.json()).toEqual({ set: ["LINEAR_KEY"], missing: [] });
-  expect((await request(ctx, "loopback", "DELETE", "/api/factory/secrets/LINEAR_KEY")).status).toBe(200);
-  expect((await request(ctx, "loopback", "DELETE", "/api/factory/secrets/LINEAR_KEY")).status).toBe(404);
+  expect((await op(ctx, "loopback", "secret set", { ...named, value: VALUE })).status).toBe(200);
+  expect(await (await op(ctx, "loopback", "secret list")).json()).toEqual({ set: ["LINEAR_KEY"], missing: [] });
+  expect(await (await op(ctx, "loopback", "secret delete", named)).json()).toEqual({ ...named, deleted: true });
+  expect(await (await op(ctx, "loopback", "secret delete", named)).json()).toEqual({ ...named, deleted: false });
 });
 
 test("backups carry secrets, export --no-secrets leaves them out, and import waits for every node", () => {
@@ -186,22 +194,24 @@ test("a secret value never shows in /status, the board, logs or error messages",
   await command(f, ["set", "LINEAR_KEY"], VALUE);
   // As the CLI sends them: a value typed where the name goes, a value too long, a set refused for an old node.
   const cli = (args: string[], stdin: string) =>
-    request(ctx, "loopback", "POST", "/api/factory/command", { name: "secret", args, stdin });
+    request(ctx, "loopback", "POST", "/api/factory/terminal", { args: ["secret", ...args], stdin });
   const refusals = [
     await cli(["set", VALUE], VALUE),
     await cli(["set", "LONG"], VALUE.repeat(1000)),
-    await request(ctx, "loopback", "PUT", "/api/factory/secrets/LONG", { value: VALUE.repeat(1000) }),
+    await cli(["sett", VALUE], VALUE),
+    await op(ctx, "loopback", "secret set", { name: "LONG", value: VALUE.repeat(1000) }),
+    await op(ctx, "loopback", "secret set", { name: VALUE, value: "x" }),
   ];
   s.put("node", "old", { id: "old", protocol: 7 });
   refusals.push(await cli(["set", "LINEAR_KEY"], VALUE));
-  expect(refusals.map((r) => r.status)).toEqual([400, 400, 400, 400]);
+  expect(refusals.map((r) => r.status)).toEqual([400, 400, 400, 400, 400, 400]);
   const errors = await Promise.all(refusals.map((r) => r.text()));
 
   const statusResponse = await request(ctx, "loopback", "GET", "/api/status");
   expect(statusResponse.status).toBe(200);
   const status = await statusResponse.text();
   const board = JSON.stringify(await boardView(f, { includeWebhookUrls: true }));
-  const secrets = await (await request(ctx, "loopback", "GET", "/api/factory/secrets")).text();
+  const secrets = await (await op(ctx, "loopback", "secret list")).text();
   for (const text of [status, board, secrets, ...errors, JSON.stringify(logged)]) expect(text).not.toContain(VALUE);
   expect(getSecret(s, "LINEAR_KEY")).toBe(VALUE);
 });

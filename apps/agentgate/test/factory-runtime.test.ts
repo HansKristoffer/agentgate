@@ -1,9 +1,21 @@
 import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
+import { operationFor, type FactoryCommandResult, type FactoryOperationInfo } from "@agentgate/protocol";
+import { z } from "zod";
 import { revision } from "../src/configuration.ts";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { ensureFactoryTables, items, runs, trimFactory, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
-import { later, loopTask, readsStdin, withItem, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
+import {
+  later,
+  loopTask,
+  operation,
+  UsageError,
+  withItem,
+  type Caller,
+  type FactoryRuntime,
+  type ForwardOp,
+  type Operation,
+} from "../src/factory/runtime.ts";
 import { getSecret } from "../src/factory/secrets.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
@@ -201,27 +213,39 @@ test("events are recorded and reach their listeners, and a failing listener neve
   ]);
 });
 
-test("a feature's route, peer route, command and tool are reachable, and its factory-node loop runs only there", async () => {
+const word = z.object({ word: z.string().max(10).optional() }).strict();
+/** An operation of a feature under test: it says its word back, and records its input and who called. */
+function echo(f: FactoryRuntime, name: string, more: Partial<Operation<typeof word, { said: string }>> = {}) {
+  const calls: { input: { word?: string }; caller: Caller }[] = [];
+  operation(f, {
+    name,
+    summary: "says it back",
+    input: word,
+    run: async (input, caller) => {
+      calls.push({ input, caller });
+      return { said: input.word ?? "" };
+    },
+    terminal: {
+      usage: `${name} [<word>] [--json]`,
+      parse(args) {
+        const words = args.filter((a) => a !== "--json");
+        if (words.length > 1) throw new UsageError();
+        return { input: { ...(words[0] && { word: words[0] }) }, json: args.includes("--json") };
+      },
+      print: ({ said }, { input, json }) =>
+        json ? [JSON.stringify({ said })] : { lines: [`said ${said}`, `asked ${input.word}`], code: 3 },
+    },
+    ...more,
+  });
+  return calls;
+}
+
+test("one operation is reached from the terminal, the control API and an agent's tool, each naming its caller, and its factory-node loop runs only there", async () => {
   const { s, ctx, f } = fixture();
   f.api.get("/hello", (c) => c.json({ hello: true }));
   f.peer.get("/ping", (c) => c.json({ pong: true }));
-  f.commands.set("echo", {
-    usage: "echo <words>",
-    run: async (args, io) => {
-      io.out(args.join(" "));
-      io.out(`stdin: ${io.stdin}`);
-      return 3;
-    },
-  });
-  const callers: ToolCaller[] = [];
-  f.tools.set("factory_echo", {
-    name: "factory_echo",
-    description: "Echoes",
-    inputSchema: { type: "object", properties: { word: { type: "string" } } },
-    call: async (args, from) => {
-      callers.push(from);
-      return { word: args.word };
-    },
+  const calls = echo(f, "echo", {
+    tool: { name: "factory_echo", description: "Echoes", result: ({ said }) => ({ word: said }) },
   });
   let loops = 0;
   const loop = loopTask(f, { name: "count", everyMs: 1000, where: "factory-node", run: async () => void loops++ });
@@ -234,16 +258,41 @@ test("a feature's route, peer route, command and tool are reachable, and its fac
   const ping = await call("/peer/factory/ping", "GET", undefined, "tailnet", { authorization: "Bearer peer-token" });
   expect(await ping.json()).toEqual({ pong: true });
 
-  expect(await (await call("/api/factory/commands")).json()).toContainEqual({ name: "echo", usage: "echo <words>" });
-  const command = { name: "echo", args: ["a", "--b"], stdin: "in" };
-  expect(await (await call("/api/factory/command", "POST", command)).json()).toEqual({
-    code: 3,
-    output: ["a --b", "stdin: in"],
+  // The terminal: its words parsed and its result printed by the operation, with the exit code it gives.
+  expect(await (await call("/api/factory/operations")).json()).toContainEqual({
+    name: "echo",
+    summary: "says it back",
+    usage: "echo [<word>] [--json]",
   });
-  const remote = await call("/api/factory/command", "POST", command, "tailnet", {
+  const typed = (...args: string[]) => call("/api/factory/terminal", "POST", { args });
+  expect(await (await typed("echo", "hi")).json()).toEqual({ code: 3, output: ["said hi", "asked hi"] });
+  expect(await (await typed("echo", "hi", "--json")).json()).toEqual({ code: 0, output: ['{"said":"hi"}'] });
+  // Words it cannot read print its own usage.
+  expect(await (await typed("echo", "a", "b")).json()).toEqual({
+    code: 2,
+    output: ["usage: agentgate factory echo [<word>] [--json]"],
+  });
+  const remote = await call("/api/factory/terminal", "POST", { args: ["echo"] }, "tailnet", {
     authorization: "Bearer admin-secret",
   });
   expect(remote.status).toBe(403);
+
+  // The control API: the input as JSON, the result as it is, and a refusal as a 400 with its reason.
+  const op = (name: string, input: unknown) => call(`/api/factory/op/${encodeURIComponent(name)}`, "POST", input);
+  expect(await (await op("echo", { word: "hey" })).json()).toEqual({ said: "hey" });
+  const invalid = await op("echo", { word: "much too long a word" });
+  expect([invalid.status, ((await invalid.json()) as { error: string }).error]).toEqual([400, "invalid input"]);
+  operation(f, {
+    name: "refuse",
+    summary: "refuses",
+    input: z.object({}),
+    run: async () => {
+      throw new Error("Not today");
+    },
+  });
+  const refused = await op("refuse", {});
+  expect([refused.status, await refused.json()]).toEqual([400, { error: "Not today" }]);
+  expect((await op("nonesuch", {})).status).toBe(404);
 
   const builtin = (await ctx.gateway.builtin!()).client;
   expect((await builtin.listTools()).tools).toEqual([]);
@@ -251,14 +300,30 @@ test("a feature's route, peer route, command and tool are reachable, and its fac
   expect(loops).toBe(0);
 
   useFactory(s, "a");
-  expect((await builtin.listTools()).tools.map((t) => t.name)).toContain("factory_echo");
-  const result = await builtin.callTool({
-    name: "factory_echo",
-    arguments: { word: "hi" },
-    _meta: { "dev.agentgate/t3Thread": "thread-1" },
+  const listed = (await builtin.listTools()).tools.find((t) => t.name === "factory_echo");
+  expect(listed).toMatchObject({
+    description: "Echoes",
+    inputSchema: {
+      type: "object",
+      properties: { word: { type: "string", maxLength: 10 } },
+      additionalProperties: false,
+    },
   });
-  expect(JSON.parse((result.content as { text: string }[])[0]!.text)).toEqual({ word: "hi" });
-  expect(callers).toEqual([{ thread: "thread-1", node: "a" }]);
+  const tool = (args: Record<string, unknown>) =>
+    builtin.callTool({ name: "factory_echo", arguments: args, _meta: { "dev.agentgate/t3Thread": "thread-1" } });
+  // The tool answers with its own form of the result, as JSON text.
+  expect(JSON.parse(((await tool({ word: "hi" })).content as { text: string }[])[0]!.text)).toEqual({ word: "hi" });
+  // Arguments the schema refuses are a tool error that names the field.
+  expect(await tool({ word: "hi", extra: 1 })).toMatchObject({
+    isError: true,
+    content: [{ text: 'extra: Unrecognized key: "extra"' }],
+  });
+  expect(calls).toEqual([
+    { input: { word: "hi" }, caller: { via: "terminal", node: "a" } },
+    { input: { word: "hi" }, caller: { via: "terminal", node: "a" } },
+    { input: { word: "hey" }, caller: { via: "api", node: "a" } },
+    { input: { word: "hi" }, caller: { via: "tool", thread: "thread-1", node: "a" } },
+  ]);
   await loop();
   expect(loops).toBe(1);
 
@@ -267,33 +332,20 @@ test("a feature's route, peer route, command and tool are reachable, and its fac
   expect(loops).toBe(1);
 });
 
-test("on another machine, commands go to the factory machine, and fail clearly when it cannot be reached", async () => {
+test("on another machine, an operation goes to the factory machine with its input and its caller, and fails clearly when that cannot be reached", async () => {
   const { s, ctx, f } = fixture();
-  f.commands.set("status", {
-    usage: "status",
-    run: async (_, io) => {
-      io.out("here");
-      return 0;
-    },
-  });
-  f.commands.set("t3", {
-    usage: "t3",
-    local: true,
-    run: async (_, io) => {
-      io.out("local");
-      return 0;
-    },
-  });
+  const here = echo(f, "echo", { tool: { name: "factory_echo", description: "Echoes" } });
+  const local = echo(f, "echo here", { local: true });
   const call = caller(app(ctx));
-  const run = async (name: string) => {
-    const res = await call("/api/factory/command", "POST", { name, args: ["--json"] });
+  const typed = async (...args: string[]) => {
+    const res = await call("/api/factory/terminal", "POST", { args });
     return { status: res.status, body: await res.json() };
   };
 
-  expect(await run("status")).toEqual({ status: 200, body: { code: 0, output: ["here"] } });
+  expect(await typed("echo", "hi")).toEqual({ status: 200, body: { code: 3, output: ["said hi", "asked hi"] } });
 
   useFactory(s, "b");
-  expect(await run("status")).toEqual({
+  expect(await typed("echo", "hi")).toEqual({
     status: 400,
     body: { error: "The factory runs on b, and this machine cannot reach it" },
   });
@@ -301,25 +353,90 @@ test("on another machine, commands go to the factory machine, and fail clearly w
   const sent: ForwardOp[] = [];
   f.forwarder = async (op) => {
     sent.push(op);
-    return { code: 2, output: ["from b"] };
+    return { said: "from b" };
   };
-  expect(await run("status")).toEqual({ status: 200, body: { code: 2, output: ["from b"] } });
-  expect(sent).toEqual([{ kind: "command", name: "status", args: ["--json"] }]);
-  expect(await run("t3")).toEqual({ status: 200, body: { code: 0, output: ["local"] } });
+  // The words are parsed here and the result is printed here; the typed input and the caller travel.
+  expect(await typed("echo", "hi")).toEqual({ status: 200, body: { code: 3, output: ["said from b", "asked hi"] } });
+  // A usage error and an input the schema refuses never leave this machine.
+  expect((await typed("echo", "a", "b")).body).toMatchObject({ code: 2 });
+  expect((await typed("echo", "much too long a word")).status).toBe(400);
+  const builtin = (await ctx.gateway.builtin!()).client;
+  const result = await builtin.callTool({
+    name: "factory_echo",
+    arguments: { word: "yo" },
+    _meta: { "dev.agentgate/t3Thread": "thread-9" },
+  });
+  expect(JSON.parse((result.content as { text: string }[])[0]!.text)).toEqual({ said: "from b" });
+  expect(sent).toEqual([
+    { name: "echo", input: { word: "hi" }, caller: { via: "terminal", node: "a" } },
+    { name: "echo", input: { word: "yo" }, caller: { via: "tool", thread: "thread-9", node: "a" } },
+  ]);
+  expect(here).toHaveLength(1);
+
+  // A local operation runs where it is asked, whoever runs the factory.
+  expect((await typed("echo", "here", "now")).body).toEqual({ code: 3, output: ["said now", "asked now"] });
+  expect(local.map((c) => c.input)).toEqual([{ word: "now" }]);
+  expect(sent).toHaveLength(2);
 });
 
-test("only the commands that take input on stdin are said to read it", async () => {
-  const { ctx } = fixture();
-  const listed = await caller(app(ctx))("/api/factory/commands");
-  const commands = (await listed.json()) as { name: string; stdin?: string[] }[];
-  const reads = (line: string) => {
-    const [name, ...args] = line.split(" ");
-    return readsStdin(
-      commands.find((c) => c.name === name),
-      args,
-    );
+test("the factory machine runs a forwarded operation with the caller that came along, and no other machine takes one", async () => {
+  const { s, ctx, f } = fixture();
+  const calls = echo(f, "echo");
+  s.db.run("insert into peers values ('b', 'http://b', 'peer-token', 0, null)");
+  const forwarded = (body: unknown) =>
+    caller(app(ctx))("/peer/factory/op", "POST", body, "tailnet", { authorization: "Bearer peer-token" });
+  const op = { name: "echo", input: { word: "hi" }, caller: { via: "tool", thread: "thread-9", node: "b" } };
+
+  useFactory(s, "b");
+  const elsewhere = await forwarded(op);
+  expect([elsewhere.status, await elsewhere.json()]).toEqual([409, { error: "a does not run the factory" }]);
+
+  useFactory(s, "a");
+  expect(await (await forwarded(op)).json()).toEqual({ said: "hi" });
+  expect(calls).toEqual([{ input: { word: "hi" }, caller: { via: "tool", thread: "thread-9", node: "b" } }]);
+  expect((await forwarded({ ...op, caller: { node: "b" } })).status).toBe(400);
+  const unknown = await forwarded({ ...op, name: "nonesuch" });
+  expect([unknown.status, await unknown.json()]).toEqual([400, { error: "unknown factory operation nonesuch" }]);
+});
+
+test("the words name the operation with the longest name they start with, and words that name none are refused", async () => {
+  const { ctx, f } = fixture();
+  echo(f, "echo");
+  echo(f, "echo twice");
+  const typed = async (...args: string[]) => {
+    const res = await caller(app(ctx))("/api/factory/terminal", "POST", { args });
+    return { status: res.status, body: await res.json() };
   };
 
+  expect((await typed("echo", "twice", "hi")).body).toMatchObject({ output: ["said hi", "asked hi"] });
+  expect((await typed("echo", "twice")).body).toMatchObject({ output: ["said ", "asked undefined"] });
+  expect((await typed("echo", "thrice")).body).toMatchObject({ output: ["said thrice", "asked thrice"] });
+  // `secret set NAME` is `secret set`, never `secret` with two arguments: there is no `secret`.
+  expect((await typed("secret", "list")).body).toEqual({ code: 0, output: ["No factory secrets."] });
+  // A first word that several operations share answers with the ones it could have meant, and repeats no value.
+  const family = (await typed("secret", "sett", "LINEAR_KEY", "blue")).body as FactoryCommandResult;
+  expect((await typed("secret")).body).toEqual(family);
+  expect(family.code).toBe(2);
+  expect(family.output.map((line) => line.split(" ").slice(0, 5).join(" "))).toEqual([
+    "usage: agentgate factory secret set",
+    "usage: agentgate factory secret list",
+    "usage: agentgate factory secret delete",
+  ]);
+  expect(await typed("nonesuch", "LINEAR_KEY", "blue", "x")).toEqual({
+    status: 400,
+    body: { error: "unknown factory command nonesuch; run agentgate factory help" },
+  });
+  // An operation only agents call has no words.
+  expect((await typed("report")).body).toEqual({ error: "unknown factory command report; run agentgate factory help" });
+});
+
+test("only the operations that take input on stdin are said to read it", async () => {
+  const { ctx } = fixture();
+  const listed = await caller(app(ctx))("/api/factory/operations");
+  const operations = (await listed.json()) as FactoryOperationInfo[];
+  const reads = (line: string) => !!operationFor(operations, line.split(" "))?.stdin;
+
+  expect(operations.filter((op) => op.stdin).map((op) => op.name)).toEqual(["folder put", "secret set", "source add"]);
   expect(
     [
       "status",
@@ -332,13 +449,14 @@ test("only the commands that take input on stdin are said to read it", async () 
       "folder cat put",
       "folder put factory.yaml",
       "source add",
+      "source add --json",
       "source --json add",
       "nonesuch add",
     ].filter(reads),
-  ).toEqual(["secret set LINEAR_KEY", "folder put factory.yaml", "source add", "source --json add"]);
+  ).toEqual(["secret set LINEAR_KEY", "folder put factory.yaml", "source add", "source add --json"]);
 });
 
-test("the CLI answers a command while its stdin stays open and silent, and still pipes a value to one that takes it", async () => {
+test("the CLI answers a command while its stdin stays open and silent, still pipes a value to one that takes it, lists the commands and refuses an unknown one", async () => {
   const { s, ctx } = fixture();
   const handler = app(ctx);
   const daemon = Bun.serve({
@@ -353,7 +471,7 @@ test("the CLI answers a command while its stdin stays open and silent, and still
       env: { ...process.env, AGENTGATE_HOME: tmp(), AGENTGATE_PORT: String(daemon.port), AGENTGATE_DEV: "1" },
       stdin: "pipe",
       stdout: "pipe",
-      stderr: "inherit",
+      stderr: "pipe",
     });
     cleanup.push(async () => child.kill());
     return child;
@@ -369,6 +487,34 @@ test("the CLI answers a command while its stdin stays open and silent, and still
   expect(await new Response(status.stdout).text()).toStartWith("Factory: off\n");
   expect(await set.exited).toBe(0);
   expect(getSecret(s, "LINEAR_KEY")).toBe("blue");
+
+  // Help: the commands to start with, then the rest, with those that share a first word together.
+  const help = cli("help");
+  expect(await help.exited).toBe(0);
+  const groups = (await new Response(help.stdout).text())
+    .trim()
+    .split("\n\n")
+    .map((group) => group.split("\n"));
+  const names = (lines: string[]) => lines.map((line) => line.trim().split(/ {2,}/)[0]);
+  expect(names(groups[0]!)).toEqual([
+    "factory init <owner/repo> [--store github|agentgate] [--node <machine>] [--json]",
+    "factory status [--json]",
+    "factory add <owner/repo> <title> [--body <text>] [--json]",
+    "factory approve <item> [--reason <text>]",
+    "factory show <item> [--json]",
+  ]);
+  expect(groups[0]![1]).toMatch(/^  factory status \[--json\] {2,}the board: items by phase/);
+  expect(groups.slice(2).map((group) => names(group).map((usage) => usage!.split(" ")[1]))).toEqual([
+    ["folder", "folder", "folder", "folder", "folder"],
+    ["t3", "t3"],
+    ["secret", "secret", "secret"],
+  ]);
+
+  const unknown = cli("nonesuch", "words");
+  expect(await unknown.exited).toBe(1);
+  expect(await new Response(unknown.stderr).text()).toBe(
+    "unknown factory command nonesuch; run agentgate factory help\n",
+  );
 });
 
 test("the generic settings patch cannot write the factory pointer", async () => {

@@ -27,8 +27,8 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
   token. Creating, connecting and deleting endpoints do.
 - `export --no-secrets` drops the whole `remote` field.
 - A virtual project's `factoryTools` adds the factory's tools under the reserved `factory` prefix
-  ([`factory/remote-tools.ts`](../../apps/agentgate/src/factory/remote-tools.ts)). They call the factory's typed
-  operations, which reach the factory machine or an item's holder, so any node can serve the endpoint. Turning it on
+  ([`factory/remote-tools.ts`](../../apps/agentgate/src/factory/remote-tools.ts)). They are the factory operations
+  marked `remote`, which reach the factory machine, so any node can serve the endpoint. Turning it on
   is gated on node protocol 9, since older nodes drop the field when they save the project. Unlike the agent tool
   `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
   control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.

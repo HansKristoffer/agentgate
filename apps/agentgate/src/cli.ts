@@ -7,7 +7,15 @@ import { buildQueryString, getErrorMessage, typedSwitch } from "hanzio";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
-import { HEALTH_PATH, loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
+import {
+  HEALTH_PATH,
+  loginIdSchema,
+  modelPolicySchema,
+  operationFor,
+  outdatedNodes,
+  type FactoryCommandResult,
+  type FactoryOperationInfo,
+} from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { relevant } from "./llm/quota.ts";
@@ -232,6 +240,27 @@ async function management<T>(path: string, method = "GET", body?: unknown): Prom
 function initialized(s: Store) {
   if (!s.local("node")) die("Run `agentgate init` first.");
   return s;
+}
+
+/** `agentgate factory help`: the commands to start with, then the rest, with those that share a first word together. */
+function factoryHelp(operations: FactoryOperationInfo[]) {
+  const start = ["init", "status", "add", "approve", "show"];
+  const rest = operations.filter((op) => !start.includes(op.name));
+  const family = (op: FactoryOperationInfo) => op.name.split(" ")[0]!;
+  const families = Map.groupBy(rest, family);
+  const groups = [
+    start.flatMap((name) => operations.filter((op) => op.name === name)),
+    rest.filter((op) => families.get(family(op))!.length === 1),
+    ...[...families.values()].filter((ops) => ops.length > 1),
+  ];
+  return groups
+    .filter((ops) => ops.length)
+    .map((ops) => {
+      // Aligned, but one long usage does not push every summary off the screen.
+      const width = Math.min(50, Math.max(...ops.map((op) => op.usage.length)));
+      return ops.map((op) => `  factory ${op.usage.padEnd(width)}  ${op.summary}`).join("\n");
+    })
+    .join("\n\n");
 }
 
 const bar = (pct: number) => {
@@ -1409,17 +1438,13 @@ async function main() {
     }
 
     case "factory": {
-      // The daemon owns every factory command. Arguments go as typed, since each command parses its own options.
-      const [name, ...args] = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
-      const commands = await management<{ name: string; usage: string; stdin?: string[] }[]>("/factory/commands");
-      if (!name || name === "help")
-        return console.log(commands.map((c) => `  factory ${c.usage}`).join("\n") || "No factory commands yet.");
-      // Stdin is read only for a command that takes it: any other must answer while its stdin stays open and silent.
-      const { readsStdin } = await import("./factory/runtime.ts");
-      const command = commands.find((c) => c.name === name);
-      const stdin = !process.stdin.isTTY && readsStdin(command, args) ? await Bun.stdin.text() : undefined;
-      const result = await management<import("@agentgate/protocol").FactoryCommandResult>("/factory/command", "POST", {
-        name,
+      // The daemon owns every factory operation. The words go as typed, since each operation parses its own.
+      const args = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
+      const operations = await management<FactoryOperationInfo[]>("/factory/operations");
+      if (!args.length || args[0] === "help") return console.log(factoryHelp(operations));
+      // Stdin is read only for an operation that takes it: any other must answer while its stdin stays open and silent.
+      const stdin = !process.stdin.isTTY && operationFor(operations, args)?.stdin ? await Bun.stdin.text() : undefined;
+      const result = await management<FactoryCommandResult>("/factory/terminal", "POST", {
         args,
         ...(stdin !== undefined && { stdin }),
       });

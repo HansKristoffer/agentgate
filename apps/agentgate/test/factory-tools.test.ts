@@ -273,7 +273,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   expect(again).toMatchObject({ kind: "triage", attempt: 1 });
   expect(again!.threadId).not.toBe(run!.threadId);
 
-  const drop = await n.api(`/api/factory/items/${run!.item}/drop`, "POST", { reason: "not now" });
+  const drop = await n.op("drop", { item: run!.item, reason: "not now" });
   expect(await drop.json()).toEqual({ message: "Dropped gh-1" });
   await idle(n.f);
   expect(item(n, run!)).toMatchObject({ phase: "closed" });
@@ -395,7 +395,7 @@ test("a thread whose turn waits on background work or a subagent is not taken fo
   expect(String(sends()[0]!.args.message)).toContain(`run: "${run!.id}"`);
 });
 
-test("agents see the factory's tools, without the ones only routes call", async () => {
+test("agents get the operations that say they are tools, and no other", async () => {
   const n = await triaging(1);
   const builtin = (await n.ctx.gateway.builtin!()).client;
   const names = (await builtin.listTools()).tools.map((t) => t.name).filter((t) => t.startsWith("factory_"));
@@ -406,4 +406,10 @@ test("agents see the factory's tools, without the ones only routes call", async 
     "factory_report",
     "factory_status",
   ]);
+  // Running a scout is the maintainer's: an operation of the terminal and the app, under no tool's name.
+  expect(await builtin.callTool({ name: "factory_scout", arguments: { id: "perf" } })).toMatchObject({
+    isError: true,
+    content: [{ text: "unknown tool factory_scout" }],
+  });
+  expect(await builtin.callTool({ name: "scout", arguments: { id: "perf" } })).toMatchObject({ isError: true });
 });

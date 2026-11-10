@@ -222,7 +222,7 @@ test("an issue of a repository whose name another repository shares is keyed <ow
   });
   const refused = `42 names 2 items, ${key} and ${other.key}; name one by its key`;
   expect(await n.command("approve", "42")).toEqual({ code: 1, output: [refused] });
-  const api = await n.api("/api/factory/items/42/approve", "POST", {});
+  const api = await n.op("approve", { item: "42" });
   expect(api.status).toBe(400);
   expect(await api.text()).toContain(refused);
   expect((await n.command("drop", `${n.repo}#42`)).code).toBe(0);

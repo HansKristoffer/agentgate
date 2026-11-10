@@ -11,7 +11,7 @@ import {
   type NeedsYou,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
-import { openExternal, request } from "../api.ts";
+import { factoryOp, openExternal, request } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { ago, field } from "./utils.ts";
@@ -21,9 +21,9 @@ import { FactorySettings } from "./factory/Settings.tsx";
 import { Sources } from "./factory/Sources.tsx";
 
 /**
- * The software factory: what waits for you first, then every stage. Everything here goes through
- * `/api/factory`, which reaches the factory machine from whichever machine the app is connected to. Only the items
- * frozen on the connected machine itself are that machine's to show and drop.
+ * The software factory: what waits for you first, then every stage. The board is polled from `/api/factory` and
+ * everything else is a factory operation (`factoryOp`); both reach the factory machine from whichever machine the app
+ * is connected to. Only the items frozen on the connected machine itself are that machine's to show and drop.
  */
 
 /** What the view does to an item, for the queue, the cards and the drawer. */
@@ -646,15 +646,7 @@ export function Factory(props: ViewProps) {
     );
   const act: Act = (item, action, reason) =>
     run(
-      async () => {
-        const r = await request<{ message: string }>(
-          connection,
-          `/factory/items/${encodeURIComponent(item.id)}/${action}`,
-          "POST",
-          reason ? { reason } : {},
-        );
-        return r.message;
-      },
+      async () => (await factoryOp(connection, action, { item: item.id, ...(reason && { reason }) })).message,
       {
         approve: `Approved ${item.key}`,
         reject: `Rejected ${item.key}`,
@@ -683,7 +675,7 @@ export function Factory(props: ViewProps) {
           pendingKey="factory:pause"
           onPress={() =>
             void run(
-              () => request(connection, paused ? "/factory/resume" : "/factory/pause", "POST"),
+              () => factoryOp(connection, paused ? "resume" : "pause", {}),
               paused ? "The factory resumed" : "The factory is paused",
               "factory:pause",
             )
@@ -755,7 +747,7 @@ export function Factory(props: ViewProps) {
           close={() => setAdding(false)}
           add={(input) =>
             void run(async () => {
-              const added = await request<{ key: string }>(connection, "/factory/items", "POST", input);
+              const added = await factoryOp(connection, "add", input);
               setAdding(false);
               return added;
             }, "Item added")

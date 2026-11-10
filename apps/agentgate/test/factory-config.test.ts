@@ -1,16 +1,17 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { app, makeCtx } from "../src/daemon.ts";
+import { makeCtx } from "../src/daemon.ts";
 import { currentFolder, folderAt, loadFolder } from "../src/factory/config.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher, type FolderFetcher } from "../src/factory/folder.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { loopTask, runTerminal, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, repos, sh, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
+import { postOp } from "./fixtures/t3-mcp.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "factory");
 const realFetch = fetcher.fetch;
@@ -44,11 +45,7 @@ function node(name = "a") {
   return { s, ctx, f: ctx.factory };
 }
 
-async function command(f: FactoryRuntime, name: string, ...args: string[]) {
-  const output: string[] = [];
-  const code = await runCommand(f, name, args, { out: (line) => output.push(line) });
-  return { code, output };
-}
+const command = (f: FactoryRuntime, ...words: string[]) => runTerminal(f, words);
 
 const fetchLoop = (f: FactoryRuntime) =>
   loopTask(
@@ -315,7 +312,7 @@ test("use waits for every machine to understand the factory, and only the machin
   expect(calls).toHaveLength(1);
 });
 
-test("POST /api/factory/reload on another machine reloads the factory machine's folder, and says when it cannot reach it", async () => {
+test("the reload operation on another machine reloads the factory machine's folder, and says when it cannot reach it", async () => {
   const [a, b] = await startNodes("a", "b");
   let bStopped = false;
   cleanup.push(() => Promise.all([a!.stop(), bStopped ? undefined : b!.stop()]).then(() => {}));
@@ -327,11 +324,7 @@ test("POST /api/factory/reload on another machine reloads the factory machine's 
   );
   await fetchLoop(b!.ctx.factory)();
   const fetched = calls.length;
-  const reload = () =>
-    app(a!.ctx).fetch(
-      new Request("http://127.0.0.1:7878/api/factory/reload", { method: "POST", headers: { host: "127.0.0.1:7878" } }),
-      { listener: "loopback" },
-    );
+  const reload = () => postOp(a!.ctx, "reload");
 
   const res = await reload();
   expect(res.status).toBe(200);
@@ -374,19 +367,11 @@ test("use warns when GitHub does not protect the folder's branch, and says nothi
   expect((await command(f, "use", "acme/factory", "--ref", "v1.0")).output.join("\n")).not.toContain("Warning");
 });
 
-test("the use command and PUT /api/factory set the same pointer, and the board shows it with the folder", async () => {
+test("use typed in a terminal and sent by the app set the same pointer, and the board shows it with the folder", async () => {
   const { s, ctx, f } = node();
   const { commit } = fakeFetcher();
   s.now = () => 1_000;
-  const put = (body: unknown) =>
-    app(ctx).fetch(
-      new Request("http://127.0.0.1:7878/api/factory", {
-        method: "PUT",
-        headers: { host: "127.0.0.1:7878", "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      { listener: "loopback" },
-    );
+  const put = (body: unknown) => postOp(ctx, "use", body);
 
   await command(f, "use", "acme/factory:/factory/", "--ref", "live");
   const byCommand = s.settings().factory;

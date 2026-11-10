@@ -6,11 +6,12 @@ import {
   type ScoutSchedule,
   type Weekday,
 } from "@agentgate/protocol";
+import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, type LoadedFolder } from "./config.ts";
 import { admit, cancelLaunch, defaultBranch, enqueueRun, HELD_LIMIT, intakeState } from "./controller.ts";
 import { ACTIVE, items, runs, type FactoryRun } from "./db.ts";
-import { asInput, runTool, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { operation, UsageError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
 
 /**
  * Scouts: a `scout` source runs a T3 thread on its schedule, or on `agentgate factory scout <id>`, that follows the
@@ -347,34 +348,19 @@ export function setup(f: FactoryRuntime): void {
   f.loops.push({ name: "factory-scouts", everyMs: 60_000, where: "factory-node", run: async () => scoutWhenDue(f) });
   f.boardParts.push(async () => ({ sources: scoutsOf(currentFolder(f)).map((s) => scoutRow(f, s)) }));
 
-  f.tools.set("factory_scout", {
-    name: "factory_scout",
-    unlisted: true,
-    description:
-      "Run one of the factory's scouts now, whatever its schedule. Returns { run }, or { skipped } when its last run has not finished.",
-    inputSchema: {
-      type: "object",
-      properties: { id: { type: "string", description: "The scout's id: its file's name in scouts/" } },
-      required: ["id"],
-    },
-    call: async (args) => scoutNow(f, String(args.id ?? "")),
-  });
-
-  f.commands.set("scout", {
-    usage: "scout <id>",
-    async run(args, io) {
-      const { positionals } = parseArgs({ args, options: {}, allowPositionals: true });
-      if (positionals.length !== 1) {
-        io.out("usage: agentgate factory scout <id>");
-        return 2;
-      }
-      const result = scoutNow(f, positionals[0]!);
-      io.out("run" in result ? `Queued the scout run ${result.run}` : `Skipped: ${result.skipped}`);
-      return 0;
+  operation(f, {
+    name: "scout",
+    summary: "run a scout now, whatever its schedule",
+    input: z.object({ id: z.string().describe("The scout's id: its file's name in scouts/") }),
+    run: async ({ id }) => scoutNow(f, id),
+    terminal: {
+      usage: "scout <id>",
+      parse(args) {
+        const { positionals } = parseArgs({ args, options: {}, allowPositionals: true });
+        if (positionals.length !== 1) throw new UsageError();
+        return { input: { id: positionals[0] } };
+      },
+      print: (result) => ["run" in result ? `Queued the scout run ${result.run}` : `Skipped: ${result.skipped}`],
     },
   });
-  // Through runTool, so a machine that does not run the factory asks the one that does.
-  f.api.post("/scouts/:id/run", async (c) =>
-    c.json(await asInput(() => runTool(f, "factory_scout", { id: c.req.param("id") }, { node: f.s.nodeId }))),
-  );
 }

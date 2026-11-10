@@ -1,15 +1,9 @@
 import { useState } from "react";
 import { Button, toast } from "@heroui/react";
 import { Factory as FactoryIcon } from "lucide-react";
-import {
-  isVirtual,
-  type FactoryBoard,
-  type FactoryInitResult,
-  type FactoryStore,
-  type Status,
-} from "@agentgate/protocol";
+import { isVirtual, type FactoryBoard, type FactoryStore, type Status } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
-import { openExternal, request } from "../../api.ts";
+import { factoryOp, openExternal } from "../../api.ts";
 import { Choice, Empty, Field, Modal } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 
@@ -57,7 +51,7 @@ export function InitDialog({
           const form = new FormData(e.currentTarget);
           const input = { repo: field(form, "repo"), node: field(form, "node"), store };
           void perform(async () => {
-            const result = await request<FactoryInitResult>(connection, "/factory/init", "POST", input);
+            const result = await factoryOp(connection, "init", input);
             close();
             done?.();
             for (const warning of result.warnings) toast(warning);
@@ -123,12 +117,12 @@ function UseDialog({
           e.preventDefault();
           const form = new FormData(e.currentTarget);
           const node = field(form, "node");
-          const [repo, ...path] = field(form, "folder").split(":");
+          const [repo = "", ...path] = field(form, "folder").split(":");
           const ref = field(form, "ref");
           const input =
             store === "agentgate" ? { store, node } : { repo, path: path.join(":"), node, ...(ref && { ref }) };
           void perform(async () => {
-            const status = await request<{ warning?: string }>(connection, "/factory", "PUT", input);
+            const status = await factoryOp(connection, "use", input);
             if (status.warning) toast(status.warning);
             close();
             done();

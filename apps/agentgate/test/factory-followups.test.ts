@@ -115,7 +115,7 @@ test("the board shows an item's review rounds, and the findings left open when i
   expect((await row(item)).pr).toEqual(pre);
 
   // The pre-existing finding became an issue, and the item's detail still shows with that write in it.
-  const detail = await n.api(`/api/factory/items/${item.key}`);
+  const detail = await n.op("show", { item: item.key });
   expect(detail.status).toBe(200);
   expect(((await detail.json()) as FactoryItemDetail).writebacks.map((w) => w.moment)).toContain("issue");
 });

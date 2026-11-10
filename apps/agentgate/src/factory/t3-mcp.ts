@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import type { FactoryBoard, FactoryCommandResult } from "@agentgate/protocol";
+import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import { createPairingLink, parsePairing, t3State, T3Error } from "../handoff/t3.ts";
 import { VERSION } from "../mcp/gateway.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 import { runs } from "./db.ts";
-import { runCommand, type FactoryRuntime } from "./runtime.ts";
+import { noWords, operation, type FactoryRuntime } from "./runtime.ts";
 
 /** The factory drives T3 Code through its own `/mcp`, signed in like any outside MCP client: OAuth with PKCE, approved
  * with a pairing code from the local `t3 pair` at full access. T3 issues no refresh token, so the factory signs in
@@ -140,27 +140,32 @@ export function setup(f: FactoryRuntime) {
       Pick<FactoryBoard, "t3">
     >;
   });
-  f.commands.set("t3", {
-    usage: "t3 [sign-in]  this machine's T3 Code MCP sign-in for the factory; it ends when the factory is turned off",
-    async run(args, io) {
-      const [action] = args;
-      if (action === "sign-in")
-        await mcp.signIn().catch(() => {}); // the status below says why
-      else if (action !== undefined) {
-        io.out(`unknown t3 action ${action}; use sign-in`);
-        return 2;
-      }
-      const status = mcp.status();
-      io.out(`mcp: ${status.mcp}${status.expiresAt ? ` until ${new Date(status.expiresAt).toISOString()}` : ""}`);
-      if (status.error) io.out(`error: ${status.error}`);
-      return action === "sign-in" && status.mcp !== "signed-in" ? 1 : 0;
-    },
+  // Both run on the factory machine, the only one that signs in.
+  const said = {
+    parse: noWords,
+    print: (status: ReturnType<typeof mcp.status>) => [
+      `mcp: ${status.mcp}${status.expiresAt ? ` until ${new Date(status.expiresAt).toISOString()}` : ""}`,
+      ...(status.error ? [`error: ${status.error}`] : []),
+    ],
+  };
+  operation(f, {
+    name: "t3",
+    summary: "the factory's sign-in to T3 Code's MCP; it ends when the factory is turned off",
+    input: z.object({}),
+    run: () => mcp.status(),
+    terminal: { usage: "t3", ...said },
   });
-  // Through the command, so the app signs in on the factory machine like the CLI does.
-  f.api.post("/t3/sign-in", async (c) => {
-    const output: string[] = [];
-    const code = await runCommand(f, "t3", ["sign-in"], { out: (line) => output.push(line) });
-    return c.json({ code, output } satisfies FactoryCommandResult, code ? 409 : 200);
+  operation(f, {
+    name: "t3 sign-in",
+    summary: "sign in to T3 Code's MCP again now",
+    input: z.object({}),
+    async run() {
+      await mcp.signIn().catch(() => {}); // the status says why, also when the sign-in worked and T3 lacks a tool
+      const status = mcp.status();
+      if (status.mcp !== "signed-in") throw new T3McpError(status.error ?? "The sign-in to T3 Code's MCP failed");
+      return status;
+    },
+    terminal: { usage: "t3 sign-in", ...said },
   });
 }
 

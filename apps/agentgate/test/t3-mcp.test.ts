@@ -6,7 +6,7 @@ import { t3Mcp, T3McpError } from "../src/factory/t3-mcp.ts";
 import { connectT3, host as t3Host, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { tmp } from "./fixtures/git.ts";
-import { fakeT3WithMcp } from "./fixtures/t3-mcp.ts";
+import { fakeT3WithMcp, postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 const DAY = 86_400_000;
 const cleanup: (() => unknown)[] = [];
@@ -233,8 +233,9 @@ test("the token appears in no log line, status, board part, command output or er
     return (await handler.fetch(req, { listener: "loopback" })).text();
   };
 
-  const seen: string[] = [await request("/api/factory/t3/sign-in", "POST")];
-  expect(seen[0]).toContain("mcp: signed-in");
+  const typed = async (...words: string[]) => (await terminal(f, words)).output.join("\n");
+  const seen: string[] = [await typed("t3", "sign-in")];
+  expect(seen[0]).toStartWith("mcp: signed-in until ");
   const secret = "test-secret-token-1";
   expect(mcp.tokens[0]).toContain(secret);
   // A T3 that echoes the credential in a tool error, then refuses it, then refuses its replacement.
@@ -245,10 +246,15 @@ test("the token appears in no log line, status, board part, command output or er
   mcp.refuseAll = true;
   seen.push(await client.call("t3_thread_send", {}).then(String, (e: Error) => e.message));
 
-  const output: string[] = [];
-  await f.commands.get("t3")!.run([], { out: (line) => output.push(line) });
+  // The app's sign-in fails with T3's reason as the error it toasts, and the terminal prints the same.
+  const again = await postOp(ctx, "t3 sign-in");
+  expect(again.status).toBe(400);
+  const reason = ((await again.json()) as { error: string }).error;
+  expect(reason).toBe("T3 Code on a refused the factory's MCP sign-in");
+  expect(await terminal(f, ["t3", "sign-in"])).toEqual({ code: 1, output: [reason] });
   seen.push(
-    ...output,
+    reason,
+    await typed("t3"),
     await request("/status"),
     JSON.stringify(await Promise.all(f.boardParts.map((p) => p()))),
     JSON.stringify(client.status()),

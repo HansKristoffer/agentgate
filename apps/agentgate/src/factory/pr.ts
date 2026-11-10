@@ -1,5 +1,9 @@
-import { factoryPrThreadsInputSchema, type MarkerPayload, type StageResult } from "@agentgate/protocol";
-import { z } from "zod";
+import {
+  factoryPrThreadsInputSchema,
+  type FactoryPrThreadsInput,
+  type MarkerPayload,
+  type StageResult,
+} from "@agentgate/protocol";
 import { fenced } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import {
@@ -35,7 +39,7 @@ import {
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { claimWrite, fileIssue } from "./outbox.ts";
-import { later, shortError, withItem, type FactoryRuntime, type FactoryTool, type ToolCaller } from "./runtime.ts";
+import { later, operation, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * The PR follower: every 2 minutes, one step per item with a PR (`pr`, `review` and `ready`). It ships or closes the
@@ -476,13 +480,7 @@ async function resolveFixed(f: FactoryRuntime, item: FactoryItem, runId: string,
 
 /** `factory_pr_threads`: the thread's outcome for review conversations, taken as a step of its item once the factory
  * has seen on GitHub that the commit is the PR's head and each conversation is open with a trusted comment. */
-async function acceptConversations(f: FactoryRuntime, args: unknown, caller: ToolCaller) {
-  const parsed = factoryPrThreadsInputSchema.safeParse(args);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0]!;
-    throw new ReportError(`${issue.path.join(".") || "input"}: ${issue.message}`);
-  }
-  const input = parsed.data;
+async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInput, caller: Caller) {
   const owner = runs.get(f.s, input.run)?.item ?? input.run;
   return withItem(f, owner, async () => {
     const run = ownRun(f, input.run, caller);
@@ -723,13 +721,17 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
 }
 
 export function setup(f: FactoryRuntime): void {
-  f.tools.set("factory_pr_threads", {
-    name: "factory_pr_threads",
-    forRuns: true,
-    description:
-      "After you push fixes for the review conversations the factory quoted, say which you fixed and which you declined (with a note giving your reason). The factory replies on GitHub and resolves the fixed ones. Returns { accepted: n }, or an error naming what to fix.",
-    inputSchema: z.toJSONSchema(factoryPrThreadsInputSchema, { io: "input" }) as FactoryTool["inputSchema"],
-    call: (args, caller) => acceptConversations(f, args, caller),
+  operation(f, {
+    name: "pr threads",
+    summary: "what an implement thread did about its PR's review conversations",
+    input: factoryPrThreadsInputSchema,
+    run: (input, caller) => acceptConversations(f, input, caller),
+    tool: {
+      name: "factory_pr_threads",
+      forRuns: true,
+      description:
+        "After you push fixes for the review conversations the factory quoted, say which you fixed and which you declined (with a note giving your reason). The factory replies on GitHub and resolves the fixed ones. Returns { accepted: n }, or an error naming what to fix.",
+    },
   });
   f.loops.push({ name: "factory-prs", everyMs: 2 * 60_000, where: "factory-node", run: () => followPrs(f) });
 }

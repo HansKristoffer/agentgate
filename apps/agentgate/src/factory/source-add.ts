@@ -5,17 +5,16 @@ import {
   type FactorySourceAddInput,
   type FactorySourceAddResult,
 } from "@agentgate/protocol";
-import { jsonInput } from "../http.ts";
+import { z } from "zod";
 import { storedFiles } from "./folder.ts";
 import { branchExists, defaultBranch, fileExists, openPr, openPrFor, pushNewBranch, readFile } from "./gh.ts";
-import { asInput, type FactoryRuntime } from "./runtime.ts";
+import { operation, UsageError, type FactoryRuntime } from "./runtime.ts";
 import { changeStored } from "./stored.ts";
 
 /**
- * `agentgate factory source add` and `POST /api/factory/sources`: a webhook source or a scout, added to the factory's
- * folder in a PR, through this machine's `gh` login and without a checkout. The source starts once the PR merges and
- * the folder loop loads it. A folder agentgate stores takes the change at once, since only the maintainer adds
- * sources. A webhook source is added to `factory.yaml`, edited as text so its comments and layout stay, and checked by
+ * The `source add` operation: a webhook source or a scout, added to the factory's folder in a PR, through this
+ * machine's `gh` login and without a checkout. The source starts once the PR merges and the folder loop loads it. A
+ * folder agentgate stores takes the change at once, since only the maintainer adds sources. A webhook source is added to `factory.yaml`, edited as text so its comments and layout stay, and checked by
  * parsing it again; a scout is its own file, `scouts/<id>.md`.
  */
 
@@ -175,9 +174,9 @@ function checkNew(yaml: string, source: { id: string; repo: string }, scoutExist
   if (scoutExists) throw new Error(`The factory already has a scout ${source.id}`);
 }
 
-/** `agentgate factory source add` and `POST /api/factory/sources`. Refuses before writing anything when the factory is
- * off, the id is taken, the repository is not the factory's, or the branch exists. */
-export async function addSource(f: FactoryRuntime, input: unknown): Promise<FactorySourceAddResult> {
+/** Refuses before writing anything when the factory is off, the id is taken, the repository is not the factory's, or
+ * the branch exists. */
+async function addSource(f: FactoryRuntime, input: unknown): Promise<FactorySourceAddResult> {
   const parsed = factorySourceAddInputSchema.parse(input);
   const { source } = parsed;
   // What was set, so the folder does not fill up with defaults.
@@ -241,46 +240,40 @@ export async function addSource(f: FactoryRuntime, input: unknown): Promise<Fact
   return factorySourceAddResultSchema.parse({ prUrl: pr.url, branch, warnings: [...warnings, ...secretWarning] });
 }
 
-const USAGE = "usage: agentgate factory source add [--json] < source.yaml";
-
 export function setup(f: FactoryRuntime): void {
-  f.commands.set("source", {
-    usage:
-      "source add [--json] < source.yaml  add a webhook source or scout, in a PR on a folder on GitHub; the YAML has source and prompt",
+  operation(f, {
+    name: "source add",
+    summary: "add a webhook source or scout, in a PR on a folder on GitHub; the YAML has source and prompt",
+    // `addSource` checks it, and needs it as it was given: it writes only what the person set, in their order.
+    input: z.unknown(),
     local: true,
-    stdin: ["add"],
-    async run(args, io) {
-      const { values, positionals } = parseArgs({
-        args,
-        options: { json: { type: "boolean" } },
-        allowPositionals: true,
-      });
-      if (positionals.length !== 1 || positionals[0] !== "add" || !io.stdin?.trim()) {
-        io.out(USAGE);
-        return 2;
-      }
-      // The daemon runs this, maybe on another machine, so the input comes on stdin rather than as file paths.
-      let input: unknown;
-      try {
-        input = Bun.YAML.parse(io.stdin);
-      } catch {
-        throw new Error("stdin is not YAML; give { source: {...}, prompt?: ... }");
-      }
-      const result = await addSource(f, input);
-      if (values.json) io.out(JSON.stringify(result));
-      else {
-        io.out(
-          result.prUrl
-            ? `Opened ${result.prUrl}; the source starts once it merges.`
-            : "Added to the stored folder; the source starts within 2 minutes.",
-        );
-        for (const warning of result.warnings) io.out(`Warning: ${warning}`);
-      }
-      return 0;
+    run: (input) => addSource(f, input),
+    terminal: {
+      usage: "source add [--json] < source.yaml",
+      // The daemon runs this, so the input comes on stdin rather than as file paths.
+      stdin: true,
+      parse(args, stdin) {
+        const { values, positionals } = parseArgs({
+          args,
+          options: { json: { type: "boolean" } },
+          allowPositionals: true,
+        });
+        if (positionals.length || !stdin?.trim()) throw new UsageError();
+        try {
+          return { input: Bun.YAML.parse(stdin), json: values.json };
+        } catch {
+          throw new Error("stdin is not YAML; give { source: {...}, prompt?: ... }");
+        }
+      },
+      print: (result, { json }) =>
+        json
+          ? [JSON.stringify(result)]
+          : [
+              result.prUrl
+                ? `Opened ${result.prUrl}; the source starts once it merges.`
+                : "Added to the stored folder; the source starts within 2 minutes.",
+              ...result.warnings.map((warning) => `Warning: ${warning}`),
+            ],
     },
-  });
-  f.api.post("/sources", async (c) => {
-    const body = await jsonInput(c.req.raw);
-    return c.json(await asInput(() => addSource(f, body)));
   });
 }

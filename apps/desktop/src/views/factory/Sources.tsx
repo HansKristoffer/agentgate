@@ -1,15 +1,9 @@
 import { useState } from "react";
 import { Button, Tabs, toast } from "@heroui/react";
 import { Plus } from "lucide-react";
-import {
-  weekdays,
-  type FactoryBoard,
-  type FactorySourceAddInput,
-  type FactorySourceAddResult,
-  type Weekday,
-} from "@agentgate/protocol";
+import { weekdays, type FactoryBoard, type FactorySourceAddInput, type Weekday } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
-import { openExternal, request } from "../../api.ts";
+import { factoryOp, openExternal } from "../../api.ts";
 import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { ago, field, relative } from "../utils.ts";
 import { OpenInT3 } from "../Factory.tsx";
@@ -29,8 +23,8 @@ const DAY_LABELS: Record<Weekday, string> = {
 const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 /**
- * The body of POST /factory/sources from the dialog's form. The daemon checks it against the same schema, and leaves
- * out of the folder what equals a default.
+ * The input of the `source add` operation from the dialog's form. The daemon checks it against the same schema, and
+ * leaves out of the folder what equals a default.
  */
 export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): FactorySourceAddInput {
   const optional = (name: string) => field(form, name) || undefined;
@@ -99,7 +93,7 @@ function SourceDialog({
           e.preventDefault();
           const input = sourceInput(new FormData(e.currentTarget), kind, when);
           void perform(async () => {
-            const result = await request<FactorySourceAddResult>(connection, "/factory/sources", "POST", input);
+            const result = await factoryOp(connection, "source add", input);
             close();
             for (const warning of result.warnings) toast(warning);
             const prUrl = result.prUrl;
@@ -337,12 +331,8 @@ export function Sources(props: ViewProps & { board: FactoryBoard; run: Run }) {
                 onPress={() =>
                   void run(
                     async () => {
-                      const r = await request<{ run?: string; skipped?: string }>(
-                        connection,
-                        `/factory/scouts/${encodeURIComponent(s.id)}/run`,
-                        "POST",
-                      );
-                      if (r.skipped) throw new Error(r.skipped);
+                      const r = await factoryOp(connection, "scout", { id: s.id });
+                      if ("skipped" in r) throw new Error(r.skipped);
                     },
                     `The ${s.id} scout runs now`,
                     `factory:scout:${s.id}`,

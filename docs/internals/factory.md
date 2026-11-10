@@ -1,10 +1,17 @@
 # Software factory
 
 An opt-in module of the daemon ([`apps/agentgate/src/factory/`](../../apps/agentgate/src/factory/)) that works
-issues in T3 Code threads up to a PR ready for a person. Each feature file registers its routes, commands, tools,
-loops, run kinds, sources and board parts on the runtime in its own `setup` ([`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)),
-so features never edit shared files. The user guide is [docs/user/factory.md](../user/factory.md); the folder format
-is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/protocol/src/factory.ts).
+issues in T3 Code threads up to a PR ready for a person. Each feature file registers its operations, loops, run
+kinds, sources and board parts on the runtime in its own `setup` ([`runtime.ts`](../../apps/agentgate/src/factory/runtime.ts)),
+so features never edit shared files. Everything the factory can be asked to do is one operation, registered once: a
+name (the words after `agentgate factory`), a zod schema for its input, and a `run` that returns JSON. The CLI, the
+control API and the app (`POST /api/factory/op/<name>`), the agents' MCP tools and a virtual project's endpoint are
+made from that list, so `api.ts` and `cli.ts` name no operation, and a capability is never written a second time for
+another way in. What depends on who asks reads the `caller` that comes with every call: an agent's `factory_add` is
+held, a person's `add` is not. The inputs and results the app exchanges are typed in `FactoryOps`
+([`packages/protocol/src/factory.ts`](../../packages/protocol/src/factory.ts)), and registering an operation that
+differs from its entry there does not compile. The user guide is [docs/user/factory.md](../user/factory.md); the
+folder format is `factoryConfigSchema` in the same protocol file.
 
 ## Decisions
 
@@ -38,12 +45,17 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
   record kinds are gated on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
   field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and
   following the init PR write the pointer; the generic settings patch has no `factory`.
-- One machine runs the factory. Other machines forward to it through `/peer/factory/op`
-  ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)): agent tools, text commands, and typed operations
-  (`f.ops`: add, show, the item actions, pause, resume, reload, move), which the routes return as JSON and the CLI
-  formats. `local` commands and tools (`use`, `off`, `status`, `secret`) run where they are called. A machine that does
-  not run the factory answers `/peer/factory/op` with a 409, so two machines that disagree on where it runs never
-  forward to each other in a loop.
+- One machine runs the factory. An operation asked for on another machine is sent there through
+  `/peer/factory/op` ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)) as its name, its input and its
+  caller, whichever way it was asked. The machine that was asked checks the input first and words the result: a
+  terminal's words are parsed, and the answer printed, where they were typed, so only typed input and JSON cross
+  machines. Operations marked `local` run where they are asked: those that write the pointer or another synced
+  record, or open a PR with this machine's `gh` login (`use`, `move`, `off`, `init`, `source add`, the secrets, the
+  stored folder), and `status`, which fetches the factory machine's board itself. A machine that does not run the
+  factory answers `/peer/factory/op` with a 409, so two machines that disagree on where it runs never forward to
+  each other in a loop.
+- The terminal's route (`POST /api/factory/terminal`) is loopback only as a whole, and the secret operations are
+  loopback only on every route: a remote-management connection never sets or lists a secret.
 
 ## One step at a time per item
 
@@ -74,9 +86,9 @@ machine drives items: every loop that moves one, or talks to T3 Code, GitHub or 
 machine the pointer names (`where: "factory-node"`). A machine that has open items in its tables and does not run the
 factory leaves them frozen, exactly as `factory off` does, and signs out of T3 Code's MCP like any other machine.
 
-Moving the factory therefore drains first ([`config.ts`](../../apps/agentgate/src/factory/config.ts)). `move` is an
-operation on the factory machine, the only one that knows what it has open. With open items it writes `moveTo` into the
-pointer. While that is set, intake is off, the open items go on as usual, and the `factory-move` loop moves the pointer
+Moving the factory therefore drains first ([`config.ts`](../../apps/agentgate/src/factory/config.ts)). `move` is
+decided on the factory machine, the only one that knows what it has open: any other machine checks the machine's name
+and sends it the same operation. With open items it writes `moveTo` into the pointer. While that is set, intake is off, the open items go on as usual, and the `factory-move` loop moves the pointer
 once none is open and the outbox has sent what it owed: no other machine can post those comments, and an issue whose
 `closed` comment never arrived looks open to the next machine's intake. The loop decides from the pointer and the
 tables on every pass, so a restart, or a settings write from another machine that wins over the loop's, costs one more

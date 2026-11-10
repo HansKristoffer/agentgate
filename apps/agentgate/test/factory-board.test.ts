@@ -309,7 +309,7 @@ test("factory status and GET /api/factory show one board, with the board parts m
 
   const api = (await (await call("/api/factory")).json()) as FactoryBoard;
   const command = (await (
-    await call("/api/factory/command", { method: "POST", body: { name: "status", args: ["--json"] } })
+    await call("/api/factory/terminal", { method: "POST", body: { args: ["status", "--json"] } })
   ).json()) as { code: number; output: string[] };
   expect(command.code).toBe(0);
   expect(JSON.parse(command.output.join("\n"))).toEqual(api);
@@ -329,7 +329,7 @@ test("factory status and GET /api/factory show one board, with the board parts m
   expect(errors.mock.calls.map((c) => String(c[0]))).toContain("factory: a board part failed: Error");
 
   // People at the terminal see the webhook URL; agents never do.
-  const text = await call("/api/factory/command", { method: "POST", body: { name: "status", args: [] } });
+  const text = await call("/api/factory/terminal", { method: "POST", body: { args: ["status"] } });
   expect(((await text.json()) as { output: string[] }).output.join("\n")).toContain(hookSource.webhook.url);
   const builtin = (await ctx.gateway.builtin!()).client;
   const tool = await builtin.callTool({ name: "factory_status", arguments: {} });
@@ -355,7 +355,7 @@ test("on another machine, GET /api/factory and factory status show the factory m
   expect(board.sources).toEqual([hookSource]);
   expect(board.machines.map((m) => m.node)).toEqual(["b", "a"]);
 
-  const res = await call("/api/factory/command", { method: "POST", body: { name: "status", args: [] } });
+  const res = await call("/api/factory/terminal", { method: "POST", body: { args: ["status"] } });
   const { output } = (await res.json()) as { output: string[] };
   expect(output).toContain("Factory: acme/api on b, online");
   expect(output).toContain("  a (this machine): 0 threads");
@@ -428,7 +428,7 @@ test("the page and factory status show the last 7 days' outcomes", async () => {
     "4 merged 80% merge rate 1 reverted within 14 days 5.3h median time to merge 1.5 human touches per item 1.2M tokens per merged PR",
   );
 
-  const res = await call("/api/factory/command", { method: "POST", body: { name: "status", args: [] } });
+  const res = await call("/api/factory/terminal", { method: "POST", body: { args: ["status"] } });
   const text = ((await res.json()) as { output: string[] }).output;
   expect(text).toContain(
     "Last 7 days: 4 merged, merge rate 80%, 1 reverted within 14 days, median 5.3h to merge, 1.5 human touches per item, 1.2M tokens per merged PR",

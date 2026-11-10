@@ -4,12 +4,13 @@ import { currentFolder, folderAt } from "../src/factory/config.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher, storedCommit, storedFiles } from "../src/factory/folder.ts";
 import { initTemplate } from "../src/factory/init.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
+import { terminal } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
 const realGh = host.gh;
@@ -48,14 +49,8 @@ function node(name = "a") {
   return { s, f: ctx.factory };
 }
 
-async function command(f: FactoryRuntime, name: string, args: string[], stdin?: string) {
-  const output: string[] = [];
-  const code = await runCommand(f, name, args, { out: (line) => output.push(line), stdin }).catch((e: Error) => {
-    output.push(e.message);
-    return 1;
-  });
-  return { code, output };
-}
+const command = (f: FactoryRuntime, name: string, args: string[], stdin?: string) =>
+  terminal(f, [name, ...args], stdin);
 
 const folderLoop = (f: FactoryRuntime) =>
   loopTask(

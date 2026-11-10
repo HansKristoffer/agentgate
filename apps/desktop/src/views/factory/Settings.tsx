@@ -3,20 +3,19 @@ import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { folderLabel, movingLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
-import { request } from "../../api.ts";
+import { factoryOp } from "../../api.ts";
 import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 import { StoredFolder } from "./Folder.tsx";
 
 export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 
-/** The secrets factory.yaml names, set and delete. Loopback only, like the routes: values never cross the network from
- * the app. */
+/** The secrets factory.yaml names, set and delete. Loopback only, like the operations: values never cross the network
+ * from the app. */
 function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
   const [names, setNames] = useState<{ set: string[]; missing: string[] }>();
   const [editing, setEditing] = useState<string>();
-  const load = async () =>
-    setNames(await request<{ set: string[]; missing: string[] }>(connection, "/factory/secrets"));
+  const load = async () => setNames(await factoryOp(connection, "secret list", {}));
   useEffect(() => {
     if (local) void load().catch(() => setNames(undefined));
   }, [connection, local]);
@@ -62,7 +61,7 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
                       }))
                     )
                       return;
-                    await request(connection, `/factory/secrets/${name}`, "DELETE");
+                    await factoryOp(connection, "secret delete", { name });
                     await load();
                   }, `${name} deleted`)
                 }
@@ -86,7 +85,7 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
               const name = editing;
               setEditing(undefined);
               void run(async () => {
-                await request(connection, `/factory/secrets/${name}`, "PUT", { value });
+                await factoryOp(connection, "secret set", { name, value });
                 await load();
               }, `${name} set`);
             }}
@@ -135,7 +134,7 @@ export function FactorySettings({
             variant="tertiary"
             pendingKey="factory:t3"
             onPress={() =>
-              void run(() => request(connection, "/factory/t3/sign-in", "POST"), "Signed in to T3 Code", "factory:t3")
+              void run(() => factoryOp(connection, "t3 sign-in", {}), "Signed in to T3 Code", "factory:t3")
             }
           >
             Sign in again
@@ -153,9 +152,7 @@ export function FactorySettings({
             size="sm"
             variant="tertiary"
             pendingKey="factory:reload"
-            onPress={() =>
-              void run(() => request(connection, "/factory/reload", "POST"), "Folder reloaded", "factory:reload")
-            }
+            onPress={() => void run(() => factoryOp(connection, "reload", {}), "Folder reloaded", "factory:reload")}
           >
             Reload now
           </ActionButton>
@@ -192,7 +189,7 @@ export function FactorySettings({
                   }))
                 )
                   return;
-                await request(connection, "/factory", "DELETE");
+                await factoryOp(connection, "off", {});
               }, "The factory is off")
             }
           >
@@ -212,7 +209,7 @@ export function FactorySettings({
               const now = form.has("now");
               setMoving(false);
               void run(
-                () => request(connection, "/factory/move", "POST", { node, ...(now && { now }) }),
+                () => factoryOp(connection, "move", { node, ...(now && { now }) }),
                 node === pointer.node ? `The factory stays on ${node}` : `The factory moves to ${node}`,
               );
             }}

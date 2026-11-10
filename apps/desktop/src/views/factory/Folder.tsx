@@ -3,7 +3,7 @@ import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import type { StoredFolderView } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
-import { request } from "../../api.ts";
+import { factoryOp } from "../../api.ts";
 import { Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 import type { Run } from "./Settings.tsx";
@@ -13,12 +13,12 @@ import type { Run } from "./Settings.tsx";
 export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> & { run: Run }) {
   const [folder, setFolder] = useState<StoredFolderView>();
   const [editing, setEditing] = useState<{ path: string; text: string; isNew: boolean }>();
-  const load = async () => setFolder(await request<StoredFolderView>(connection, "/factory/folder"));
+  const load = async () => setFolder(await factoryOp(connection, "folder ls", {}));
   useEffect(() => {
     void load().catch(() => setFolder(undefined));
   }, [connection]);
   const put = async (files: Record<string, string | null>) =>
-    setFolder(await request<StoredFolderView>(connection, "/factory/folder", "PUT", { files }));
+    setFolder(await factoryOp(connection, "folder put", { files }));
   return (
     <Panel
       title="Stored folder"

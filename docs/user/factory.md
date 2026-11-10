@@ -465,4 +465,4 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory scout <id>`                                                                | Run a scout now.                                                                                                     |
 | `factory source add [--json] < source.yaml`                                         | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                      |
 
-The control API has the same operations under `/api/factory`.
+`agentgate factory help` lists them all. Each command is one operation, and the control API takes every operation by its name, the words after `factory`, with its input as JSON: `POST /api/factory/op/secret%20list`. `GET /api/factory` is the board.

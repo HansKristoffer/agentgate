@@ -4,13 +4,13 @@ import { app } from "../src/daemon.ts";
 import { boardView } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, parseMarkers } from "../src/factory/markers.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { host } from "../src/logins.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import type { Store } from "../src/store.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
-import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle, terminal } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -149,15 +149,8 @@ async function twoMachines() {
     stopA: () => server.stop(true),
     toB: () => carry(a.s, b!.s),
     toA: () => carry(b!.s, a.s),
-    /** `agentgate factory <name> …` typed on b. */
-    async onB(name: string, ...args: string[]) {
-      const output: string[] = [];
-      const code = await runCommand(bf, name, args, { out: (line) => output.push(line) }).catch((e: Error) => {
-        output.push(e.message);
-        return 1;
-      });
-      return { code, output };
-    },
+    /** `agentgate factory <words>` typed on b. */
+    onB: (...words: string[]) => terminal(bf, words),
     /** Issue `number` taken in on a, with its triage thread started. */
     async triaging(number: number) {
       github.open(number);

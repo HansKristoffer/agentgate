@@ -1,16 +1,16 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { app, makeCtx } from "../src/daemon.ts";
+import { makeCtx } from "../src/daemon.ts";
 import { loadFolder } from "../src/factory/config.ts";
 import { initTemplate } from "../src/factory/init.ts";
-import { runCommand } from "../src/factory/runtime.ts";
 import { factorySourceAddInputSchema } from "@agentgate/protocol";
 import { insertSource, scoutFile, sourceYaml, withoutDefaults } from "../src/factory/source-add.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { recorded } from "./fixtures/gh.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
+import { postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
 const realGh = host.gh;
@@ -218,31 +218,16 @@ function node(ref?: string) {
     await ctx.gateway.close();
     s.close();
   });
-  const command = async (stdin: string, ...args: string[]) => {
-    const output: string[] = [];
-    const code = await runCommand(ctx.factory, "source", args, { stdin, out: (line) => output.push(line) }).catch(
-      (e: Error) => {
-        output.push(e.message);
-        return 1;
-      },
-    );
-    return { code, output };
-  };
+  const command = (stdin: string, ...args: string[]) => terminal(ctx.factory, ["source", ...args], stdin);
+  /** `source add` as the app sends it. */
   const api = async (body: unknown) => {
-    const res = await app(ctx).fetch(
-      new Request("http://127.0.0.1:7878/api/factory/sources", {
-        method: "POST",
-        headers: { host: "127.0.0.1:7878", "content-type": "application/json" },
-        body: JSON.stringify(body),
-      }),
-      { listener: "loopback" },
-    );
+    const res = await postOp(ctx, "source add", body);
     return { status: res.status, body: (await res.json()) as Record<string, unknown> };
   };
   return { command, api };
 }
 
-test("POST /sources pushes the scout's file under the folder, and opens a PR to the factory's branch", async () => {
+test("source add from the app pushes the scout's file under the folder, and opens a PR to the factory's branch", async () => {
   const github = fakeGitHub();
   const res = await node().api({ source: scout, prompt: "Look at latency.\n\n" });
   expect(res).toEqual({

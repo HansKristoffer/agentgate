@@ -1,10 +1,10 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { app, makeCtx, type Ctx } from "../../src/daemon.ts";
+import { app, makeCtx, type Ctx, type Listener } from "../../src/daemon.ts";
 import { fetcher } from "../../src/factory/folder.ts";
 import { mirrorOf } from "../../src/factory/mirror.ts";
-import { loopTask, runCommand, type FactoryRuntime } from "../../src/factory/runtime.ts";
+import { loopTask, runTerminal, type FactoryRuntime } from "../../src/factory/runtime.ts";
 import { REQUIRED_T3_TOOLS } from "../../src/factory/t3-mcp.ts";
 import { connectT3, host } from "../../src/handoff/t3.ts";
 import { host as login } from "../../src/logins.ts";
@@ -335,6 +335,21 @@ function sharedOrigin() {
   return shared;
 }
 
+/** `POST /api/factory/op/<name>`: an operation as the app sends it, on loopback unless `listener` says otherwise. */
+export const postOp = (ctx: Ctx, name: string, input: unknown = {}, listener: Listener = "loopback", headers = {}) =>
+  app(ctx).fetch(
+    new Request(`http://127.0.0.1:7878/api/factory/op/${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { host: "127.0.0.1:7878", "content-type": "application/json", ...headers },
+      body: JSON.stringify(input),
+    }),
+    { listener },
+  );
+
+/** `agentgate factory <words>` as the CLI shows it: what the daemon answers, or its refusal with exit code 1. */
+export const terminal = (f: FactoryRuntime, words: string[], stdin?: string) =>
+  runTerminal(f, words, stdin).catch((e: Error) => ({ code: 1, output: [e.message] }));
+
 /**
  * The factory machine `a` on an in-memory store with fake time: connected to a `fakeT3WithMcp`, its folder loaded
  * from `folder` (factory.yaml as an object, plus other files), the mirror live, and every repository in
@@ -410,14 +425,8 @@ export async function factoryNode(
   /** The node's handles, bound to one daemon context. */
   const bind = async (ctx: Ctx) => {
     const f = ctx.factory;
-    const command = async (name: string, ...args: string[]) => {
-      const output: string[] = [];
-      const code = await runCommand(f, name, args, { out: (line) => output.push(line) }).catch((e: Error) => {
-        output.push(e.message);
-        return 1;
-      });
-      return { code, output };
-    };
+    /** `agentgate factory <words>` typed on this machine. */
+    const command = (...words: string[]) => terminal(f, words);
     const mirror = mirrorOf(f);
     await until(() => mirror.status().stream === "live", "the shell stream");
     const loop = (name: string) =>
@@ -441,6 +450,8 @@ export async function factoryNode(
       advance: (ms: number) => (now += ms),
       dispatch: loop("factory-dispatch"),
       intake: loop("factory-intake"),
+      /** An operation as the app sends it. */
+      op: (name: string, input?: unknown) => postOp(ctx, name, input),
       /** A control API request on loopback. */
       api: (path: string, method = "GET", body?: unknown) =>
         handler.fetch(
@@ -472,11 +483,8 @@ export async function factoryNode(
   // No test reaches GitHub: one that needs gh answers stubs it after this.
   login.gh = async () => undefined;
   cleanup.push(() => (login.gh = realGh));
-  const output: string[] = [];
-  const used = await runCommand(first.factory, "use", ["acme/factory", "--node", "a"], {
-    out: (line) => output.push(line),
-  }).catch((e: Error) => (output.push(e.message), 1));
-  if (used) throw new Error(`the factory folder did not load: ${output.join("\n")}`);
+  const used = await terminal(first.factory, ["use", "acme/factory", "--node", "a"]);
+  if (used.code) throw new Error(`the factory folder did not load: ${used.output.join("\n")}`);
   s.now = () => now;
   return bind(first);
 }

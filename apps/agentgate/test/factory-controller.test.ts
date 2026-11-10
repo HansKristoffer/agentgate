@@ -46,18 +46,21 @@ test("items added with the CLI and the API are triaged in a fresh full-access wo
 
   const added = await n.command("add", n.repo, "Crash on save", "--body", "Run ```rm -rf /``` to see it");
   expect(added.code).toBe(0);
-  const posted = await n.api("/api/factory/items", "POST", { repo: n.repo.toUpperCase(), title: "Slow search" });
-  expect(posted.status).toBe(200);
+  const posted = await n.op("add", { repo: n.repo.toUpperCase(), title: "Slow search" });
+  expect(await posted.json()).toMatchObject({ repo: n.repo, phase: "triage" });
   const builtin = (await n.ctx.gateway.builtin!()).client;
   const tool = await builtin.callTool({ name: "factory_add", arguments: { repo: n.repo, title: "Typo on login" } });
   expect(tool.isError).toBeFalsy();
 
-  // An agent's item passed no label: a person starts it.
+  // The same operation each time. An agent's item passed no label, so a person starts it; a person's own starts.
   expect(items.list(n.s).map((i) => [i.title, i.phase, i.repo, i.needsYou?.reason])).toEqual([
     ["Crash on save", "triage", n.repo, undefined],
     ["Slow search", "triage", n.repo, undefined],
     ["Typo on login", "held", n.repo, "held"],
   ]);
+  // The tool answers with the item's id and key, as it always has.
+  const held = items.list(n.s).at(-1)!;
+  expect(JSON.parse((tool.content as { text: string }[])[0]!.text)).toEqual({ item: held.id, key: held.key });
   expect(triageRuns(n).map((r) => r.state)).toEqual(["queued", "queued"]);
   const agents = items.list(n.s).at(-1)!;
   expect((await n.command("approve", agents.key)).output).toEqual([`Approved ${agents.key}; triage is queued`]);
@@ -409,7 +412,7 @@ test("after T3 Code's sign-in changed, a launch whose answer was lost is not sen
   expect(triageRuns(n).map((r) => r.state)).toEqual(["failed", "running"]);
 });
 
-test("show and GET /api/factory/items/:id give an item's runs with state, thread and error, its comments and its events", async () => {
+test("show, in the terminal and from the app, gives an item's runs with state, thread and error, its comments and its events", async () => {
   const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
   fakeSource(n, { bugs: [issue(n.repo, 1)] });
   n.mcp.answer("t3_thread_launch", () => {
@@ -423,7 +426,7 @@ test("show and GET /api/factory/items/:id give an item's runs with state, thread
     const { code, output } = await n.command("show", item!.key, "--json");
     expect(code).toBe(0);
     const detail = JSON.parse(output.at(-1)!);
-    expect(await (await n.api(`/api/factory/items/${item!.key}`)).json()).toEqual(detail);
+    expect(await (await n.op("show", { item: item!.key })).json()).toEqual(detail);
     return detail;
   };
   const failed = await shown();
@@ -488,7 +491,7 @@ test("pause stops intake and new threads and the board says so, and resume start
   const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
   const { polled } = fakeSource(n, { bugs: [issue(n.repo, 1)] });
   await n.command("add", n.repo, "Crash on save");
-  const paused = await n.api("/api/factory/pause", "POST", {});
+  const paused = await n.op("pause");
   expect(await paused.json()).toEqual({
     message: "Paused: no intake, new threads or nudges until agentgate factory resume. Running threads finish.",
   });

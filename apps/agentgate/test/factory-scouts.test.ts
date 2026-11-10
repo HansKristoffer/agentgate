@@ -174,16 +174,17 @@ test("a scout runs on its schedule, not while intake is off or its run is going,
   expect(n.scoutRuns()).toHaveLength(2);
   expect(n.scoutRuns()[1]!.queuedAt).toBe(n.s.now());
 
-  // Run now, from each entry point, whatever the schedule says.
+  // Run now, from the terminal and from the app, whatever the schedule says.
   runs.update(n.s, n.scoutRuns()[1]!.id, { state: "cancelled" });
   expect((await n.command("scout", "perf")).output).toEqual([expect.stringMatching(/^Queued the scout run run_/)]);
   runs.update(n.s, n.scoutRuns()[2]!.id, { state: "cancelled" });
-  expect(await n.tool("factory_scout", { id: "perf" })).toEqual({ run: expect.stringMatching(/^run_/) });
-  runs.update(n.s, n.scoutRuns()[3]!.id, { state: "cancelled" });
-  expect(await (await n.api("/api/factory/scouts/perf/run", "POST")).json()).toEqual({
-    run: expect.stringMatching(/^run_/),
+  expect(await (await n.op("scout", { id: "perf" })).json()).toEqual({ run: expect.stringMatching(/^run_/) });
+  // While that run goes, another is skipped, and says why.
+  expect(await (await n.op("scout", { id: "perf" })).json()).toEqual({
+    skipped: expect.stringMatching(/^The perf scout's run run_\w+ has not finished yet$/),
   });
-  expect(await n.tool("factory_scout", { id: "nope" })).toEqual({ error: "The factory has no source nope" });
+  const unknown = await n.op("scout", { id: "nope" });
+  expect([unknown.status, await unknown.json()]).toEqual([400, { error: "The factory has no source nope" }]);
 });
 
 test("a disabled scout never runs on its schedule, but runs on request", async () => {
