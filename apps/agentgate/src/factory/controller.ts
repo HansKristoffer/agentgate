@@ -69,7 +69,7 @@ import {
 } from "./runtime.ts";
 import { claimWrite } from "./outbox.ts";
 import { sampleJudges } from "./scorers.ts";
-import { T3McpError, t3Mcp } from "./t3-mcp.ts";
+import { pendingRequests, T3McpError, t3Mcp } from "./t3-mcp.ts";
 
 /**
  * The factory's controller: a state machine per item, driven by fixed code. Intake adds items from the sources, the
@@ -895,15 +895,19 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
+    const asks = `The ${run.kind} thread asks you something in T3 Code`;
     if (run.state === "running") {
       runs.update(s, run.id, { state: "waiting" });
       if (run.item)
         setNeedsYou(f, run.item, {
           reason: "approval",
-          question: `The ${run.kind} thread asks you something in T3 Code`,
+          question: asks,
           ...(run.threadLink && { link: run.threadLink }),
         });
     }
+    // Also for a run that already waited when this daemon started, whose question was never read.
+    if (run.item && items.get(s, run.item)?.needsYou?.question === asks)
+      later(f, run.item, `Reading what ${run.id}'s thread asks`, () => showQuestion(f, run.id));
     return;
   }
   if (run.state === "waiting") {
@@ -920,6 +924,26 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   // again behind their back.
   if (thread.status === "interrupted") return stopped(f, runs.get(s, run.id)!);
   await silentEnd(f, runs.get(s, run.id)!);
+}
+
+/** What a waiting thread asks, read from T3 Code into its item's wait, so the app, the CLI and Grok show it and can answer
+ * it without T3: the first line as the question, the rest, such as a spec, as `detail`. Set without an event: the
+ * event, and the updates webhook, already said the item waits. */
+async function showQuestion(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id);
+  if (!run?.item || !run.threadId || run.state !== "waiting") return;
+  const requests = await pendingRequests(t3Mcp(f), run.threadId).catch(() => []);
+  const text = requests
+    .flatMap((r) => r.questions.map((q) => q.question.trim()))
+    .filter(Boolean)
+    .join("\n\n");
+  const item = items.get(f.s, run.item);
+  if (!text || item?.needsYou?.reason !== "approval" || runs.get(f.s, id)?.state !== "waiting") return;
+  const [first = "", ...rest] = text.split("\n");
+  const detail = rest.join("\n").trim();
+  items.update(f.s, item.id, {
+    needsYou: { ...item.needsYou, question: first.slice(0, 500), ...(detail && { detail: detail.slice(0, 20_000) }) },
+  });
 }
 
 /** Someone stopped a run's thread in T3 Code. The run ends, and its item waits for the maintainer to retry or drop it. */
@@ -988,7 +1012,7 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
       kind: "note",
       run: run.id,
       ...(run.item && { item: run.item }),
-      text: `Reminded ${run.id} to report`,
+      text: `Reminded ${runName(f, run)} thread to report`,
     });
     await sendToThread(f, run, reminder(run));
     return;
@@ -1400,6 +1424,8 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     if (!answerable(f, item, last))
       throw new Error(`Answer ${item.key}'s question in T3 Code${last.threadLink ? `: ${last.threadLink}` : ""}`);
     await f.runKinds.get(last.kind)!.answer!(last, { approve, ...(reason && { reason }) });
+    // Answered here, so the thread going on is not a second answer from T3 Code (`answeredInT3`).
+    setNeedsYou(f, item.id, null);
     touched(f, item, action, `${action === "approve" ? "approved" : "rejected"} what the ${last.kind} thread asked`);
     return `${approve ? "Approved" : "Rejected"} for ${item.key}`;
   }
@@ -1687,12 +1713,14 @@ function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
   });
 }
 
-const time = (at: number) => new Date(at).toISOString().slice(0, 16).replace("T", " ");
+/** UTC, and says so: the text can be made on another machine, or read by a remote agent, in another time zone. */
+const time = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
 export function detailText(d: FactoryItemDetail): string[] {
   const { item } = d;
   const lines = [`${item.key} ${item.title} (${item.repo}, ${item.phase})`];
   if (item.needsYou) lines.push(`Needs you (${item.needsYou.reason}): ${item.needsYou.question ?? ""}`);
+  if (item.needsYou?.detail) lines.push("", item.needsYou.detail, "");
   if (item.pr) lines.push(`PR: ${item.pr.url}`);
   lines.push(`Tokens: ${item.tokensUnknown ? "unknown" : item.tokens}`, "", "Runs:");
   for (const r of d.runs)

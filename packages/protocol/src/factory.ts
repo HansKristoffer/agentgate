@@ -353,6 +353,8 @@ export const needsYouSchema = z
       "stopped",
     ]),
     question: z.string().optional(),
+    // The rest of a long question, such as the spec a spec card asks to approve; `question` is its first line.
+    detail: z.string().optional(),
     recommendation: z.string().optional(),
     link: z.string().optional(),
   })

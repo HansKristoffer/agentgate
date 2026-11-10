@@ -84,6 +84,7 @@ export function ItemDrawer({
       </div>
       {item.needsYou && (
         <Panel title="Needs you" detail={item.needsYou.question}>
+          {item.needsYou.detail && <div className="factory-detail">{item.needsYou.detail}</div>}
           <div className="item">
             <div className="row factory-actions">
               <NeedsYouActions item={item} act={act} ask={ask} />

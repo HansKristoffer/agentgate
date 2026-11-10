@@ -44,7 +44,7 @@ const PHASE_TITLES: Record<ItemPhase, string> = {
 };
 const REASONS: Record<NeedsYou["reason"], string> = {
   held: "Waiting for approval",
-  approval: "Asks you in T3 Code",
+  approval: "Asks you",
   decision: "Needs a decision",
   blocked: "Blocked",
   budget: "Over its token budget",
@@ -141,6 +141,12 @@ function NeedsYouQueue({
                 <small className="muted">{PHASE_TITLES[item.phase]}</small>
               </div>
               {item.needsYou?.question && <p className="factory-question">{item.needsYou.question}</p>}
+              {item.needsYou?.detail && (
+                <details>
+                  <summary className="muted">Read it here</summary>
+                  <div className="factory-detail">{item.needsYou.detail}</div>
+                </details>
+              )}
               {item.needsYou?.recommendation && <p className="muted">Recommended: {item.needsYou.recommendation}</p>}
               <div className="row factory-actions">
                 <NeedsYouActions item={item} act={act} ask={ask} />

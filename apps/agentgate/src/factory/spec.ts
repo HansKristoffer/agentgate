@@ -1,11 +1,10 @@
 import type { FactoryReport } from "@agentgate/protocol";
-import { z } from "zod";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
 import { closeItem, defaultBranch, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
-import { t3Mcp } from "./t3-mcp.ts";
+import { pendingRequests, t3Mcp } from "./t3-mcp.ts";
 
 /**
  * The spec stage, for items triage found unclear or large. The thread writes a spec, has a fresh agent review it, and
@@ -32,30 +31,14 @@ const specRuns = (f: FactoryRuntime, item: FactoryItem) => runs.forItem(f.s, ite
 const asksForChanges = (r: FactoryRun) =>
   r.state === "reported" && r.report?.result?.kind === "spec" && !r.report.result.approved;
 
-const listed = z.object({ requestIds: z.array(z.string()) });
-const pendingRequest = z.object({
-  requestId: z.string(),
-  questions: z.array(
-    z.object({
-      id: z.string(),
-      question: z.string(),
-      options: z.array(z.object({ label: z.string(), value: z.string().optional() })),
-    }),
-  ),
-});
-
 /** The spec's Approve or Change card among the run's pending questions, with the answer each option takes. Throws
  * when there is none, naming the thread so the maintainer can answer in T3 Code. */
 async function findCard(f: FactoryRuntime, run: FactoryRun & { threadId: string }) {
-  const mcp = t3Mcp(f);
-  const { threadId } = run;
   const where = run.threadLink ? `: ${run.threadLink}` : "";
+  const requests = await pendingRequests(t3Mcp(f), run.threadId);
+  if (!requests.length) throw new Error(`The spec thread has no pending question; look at it in T3 Code${where}`);
 
-  const { requestIds } = listed.parse(await mcp.call("t3_pending_request", { action: "list", threadId }));
-  if (!requestIds.length) throw new Error(`The spec thread has no pending question; look at it in T3 Code${where}`);
-
-  for (const requestId of requestIds) {
-    const request = pendingRequest.parse(await mcp.call("t3_pending_request", { action: "read", threadId, requestId }));
+  for (const request of requests) {
     for (const question of request.questions) {
       const option = (label: string) =>
         question.options.find((o) => o.label.trim().toLowerCase() === label.toLowerCase());
@@ -63,7 +46,7 @@ async function findCard(f: FactoryRuntime, run: FactoryRun & { threadId: string 
       const change = option(CHANGE);
       if (!approve || !change) continue;
       return {
-        requestId,
+        requestId: request.requestId,
         question: question.id,
         approve: approve.value ?? approve.label,
         change: change.value ?? change.label,

@@ -155,4 +155,33 @@ test("approve and reject answer the waiting card through t3_pending_request, and
   n.mcp.setThread(threadId, { needsYou: false, status: "running" });
   await n.until(() => runs.get(n.s, n.run.id)!.state === "running", "the spec run to run again");
   expect(await n.needsYou(n.item)).toBeUndefined();
+  // Each answer is one touch: the thread going on after it is not another answer in T3 Code.
+  expect(items.get(n.s, n.item.id)!.touches).toBe(2);
+});
+
+test("the card a thread waits on shows in its item's wait, the spec as detail, without a second event", async () => {
+  const n = await specFactory();
+  const threadId = n.run.threadId!;
+  const card = `Approve the spec for ${n.key(1)}?\n\n${SPEC}`;
+  n.mcp.answer("t3_pending_request", (args) =>
+    args.action === "list"
+      ? { requestIds: ["request-1"] }
+      : {
+          requestId: "request-1",
+          questions: [{ id: card, question: card, options: [{ label: "Approve" }, { label: "Change" }] }],
+        },
+  );
+  const waits = () => n.f.events.recent(50).filter((e) => e.kind === "item.needs-you" && e.item === n.item.id);
+
+  n.mcp.setThread(threadId, { needsYou: true });
+  await n.until(() => items.get(n.s, n.item.id)?.needsYou?.detail, "the spec to show in the wait");
+  expect(await n.needsYou(n.item)).toEqual({
+    reason: "approval",
+    question: `Approve the spec for ${n.key(1)}?`,
+    detail: SPEC,
+    link: n.run.threadLink,
+  });
+  expect(waits()).toHaveLength(1);
+  const { output } = await n.command("show", n.key(1));
+  expect(output).toContain(SPEC);
 });

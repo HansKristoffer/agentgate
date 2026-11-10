@@ -1098,6 +1098,15 @@ h3 {
   margin: 0;
   line-height: 1.5;
 }
+/* A thread's long question, such as the spec its card asks to approve: plain text, scrolled within. */
+.factory-detail {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 6px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+}
 .factory-actions {
   flex-wrap: wrap;
 }

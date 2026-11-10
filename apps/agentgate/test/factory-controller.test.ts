@@ -450,6 +450,8 @@ test("show and GET /api/factory/items/:id give an item's runs with state, thread
   const { output } = await n.command("show", item!.key);
   expect(output[0]).toBe(`${item!.key} Issue 1 (${n.repo}, triage)`);
   expect(output).toContain(`  ${triageRuns(n)[0]!.id} triage attempt 1: running on a https://t3.test/threads/thread-1`);
+  // Times say their zone: the text may be read in another one.
+  expect(output[output.indexOf("Events:") + 1]).toMatch(/^ {2}\d{4}-\d\d-\d\d \d\d:\d\d UTC \S/);
 });
 
 test("an item whose launch keeps failing waits as stuck once its phase is four stalledAfter old, and retry starts a new run", async () => {
