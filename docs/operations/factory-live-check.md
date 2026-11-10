@@ -40,7 +40,9 @@ change: each step, what you saw, and anything that differed.
 
 - **The factory.** `bun run cli -- factory init HansKristoffer/factory-scratch --node dev`. The seeded store keeps
   the live machines' records, and without `--node` the factory would go to the always-on one, which the dev daemon
-  cannot reach. Then give each stage a cheap model with a stage file that has only frontmatter, which keeps the
+  cannot reach. While those machines run a release from before the factory, `init` refuses with "Update agentgate on
+  … first"; with the dev daemon stopped, drop their records from the seeded store only
+  (`sqlite3 .agentgate/agentgate.db "delete from records where kind='node' and id != 'dev'"`). Then give each stage a cheap model with a stage file that has only frontmatter, which keeps the
   built-in brief:
 
   ```sh
