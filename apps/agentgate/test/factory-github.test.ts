@@ -578,12 +578,7 @@ test("each gh.ts read parses what gh really answered", async () => {
     baseRefName: "main",
     mergeable: "MERGEABLE",
     body: expect.stringContaining("<!-- agentgate-factory:summary -->"),
-    files: ["src/truncate.test.ts", "src/truncate.ts"],
     comments: [],
-    reviews: [
-      { body: "", authorAssociation: "OWNER", submittedAt: "2026-11-10T08:39:55Z", state: "COMMENTED" },
-      { body: "", authorAssociation: "OWNER", submittedAt: "2026-11-10T08:41:13Z", state: "COMMENTED" },
-    ],
   });
   const feedback = await gh.prFeedback(PR);
   expect(feedback.reviews.map((r) => [r.state, r.association, r.bot])).toEqual([
@@ -838,13 +833,8 @@ test("a commit with more checks than one read returns never passes on those: it 
 });
 
 test("a review a person started and has not submitted is left out, with its comments", async () => {
-  // A pending review cannot be recorded without starting one: gh's source answers its `submittedAt` as null, and
-  // GraphQL marks its comments PENDING. Both are added here to what was recorded for factory-scratch#6.
-  const view = recordedJson("prView");
-  view.reviews.push({ ...view.reviews[0], body: "Rename this before merging", submittedAt: null, state: "PENDING" });
-  stubGh(() => ok(view));
-  expect((await gh.prView(PR)).reviews.map((r) => r.state)).toEqual(["COMMENTED", "COMMENTED"]);
-
+  // A pending review cannot be recorded without starting one: GraphQL answers its `submittedAt` as null and marks its
+  // comments PENDING. Both are added here to what was recorded for factory-scratch#6.
   const feedback = recordedJson("feedback");
   const { reviews, reviewThreads } = feedback.data.repository.pullRequest;
   reviews.nodes.push({ ...reviews.nodes[0], body: "Rename this before merging", submittedAt: null, state: "PENDING" });

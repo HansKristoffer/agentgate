@@ -465,9 +465,7 @@ export interface PrView {
   mergedAt?: string;
   mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   body: string;
-  files: string[];
   comments: Array<{ body: string; authorAssociation: string; createdAt: string }>;
-  reviews: Array<{ body: string; authorAssociation: string; submittedAt: string; state: string }>;
 }
 
 export type CheckState = "pending" | "passing" | "failing" | "none";
@@ -566,16 +564,7 @@ const prViewSchema = z.object({
   mergedAt: z.string().nullable(),
   mergeable: z.enum(["MERGEABLE", "CONFLICTING", "UNKNOWN"]),
   body: z.string(),
-  files: z.array(z.object({ path: z.string() })),
   comments: z.array(comment),
-  reviews: z.array(
-    z.object({
-      body: z.string(),
-      authorAssociation: z.string(),
-      submittedAt: z.string().nullable(), // null while pending
-      state: z.string(),
-    }),
-  ),
 });
 const PR_FIELDS = Object.keys(prViewSchema.shape).join(",");
 
@@ -588,14 +577,8 @@ export async function prView(url: string): Promise<PrView> {
     "--json",
     PR_FIELDS,
   ]);
-  const { mergedAt, author, files, reviews, ...rest } = pr;
-  return {
-    ...rest,
-    author: author.login,
-    ...(mergedAt && { mergedAt }),
-    files: files.map((file) => file.path),
-    reviews: reviews.flatMap((r) => (r.submittedAt ? [{ ...r, submittedAt: r.submittedAt }] : [])),
-  };
+  const { mergedAt, author, ...rest } = pr;
+  return { ...rest, author: author.login, ...(mergedAt && { mergedAt }) };
 }
 
 /** A comment in a review or a review conversation; `bot` when a GitHub App wrote it, whatever its association. */
@@ -729,7 +712,7 @@ export async function prFeedback(url: string): Promise<PrFeedback> {
 }
 
 /** A PR's state and head, mergeability, and plain comments. */
-export type PrState = Omit<PrView, "body" | "files" | "reviews">;
+export type PrState = Omit<PrView, "body">;
 /** The follower's read of a PR: its state, its head's checks as `judgeChecks` has them, and the reviews and
  * conversations of `prFeedback`. Only this read knows which checks the base branch requires. */
 export type FollowedPr = PrState & { checks: CheckState; failing: string[]; feedback: PrFeedback };

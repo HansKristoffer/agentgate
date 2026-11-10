@@ -162,9 +162,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
           mergedAt: pr.state === "MERGED" ? "2026-11-05T12:00:00Z" : null,
           mergeable: pr.mergeable,
           body: pr.body,
-          files: [{ path: "src/a.ts" }],
           comments: pr.comments,
-          reviews: pr.reviews,
         });
       if (sub === "ready") {
         pr.isDraft = false;
