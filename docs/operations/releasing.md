@@ -8,6 +8,8 @@ Configure npm trusted publishing for `@hanskristoffer/agentpool` and all four `a
 
 If publication fails, manually run Release with the existing release tag. An existing version is skipped, so partially published platform sets can be completed. A source fix needs a new release; npm versions are immutable. `build-macos.yml` also accepts an existing tag for rebuilding desktop assets. Inspect both paths before announcing availability.
 
+The hosted relay is not part of a release: deploy it ([the relay](relay.md#deploying-and-self-hosting)) before releasing a daemon that uses a new relay route. Factory webhooks need `/hook`, and a daemon facing an older relay shows its webhook URLs as unreachable.
+
 Apple and Tauri signing secrets are listed in the README. Preserve the Tauri private key: changing it without a migration strands installed updaters. Platform binaries carry SHA256SUMS. See [running agentgate](running.md#distribution-checks) for the live distribution checks beyond CI.
 
 GitHub documents this token behavior in [Triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow).

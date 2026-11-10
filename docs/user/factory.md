@@ -306,6 +306,10 @@ Each webhook source, and each GitHub or Linear source with `webhook`, gets a URL
 
 A GitHub or Linear delivery only makes the factory poll that source now, so a forged one costs one poll. A webhook source's delivery carries the item itself, which is why it waits for your approval by default.
 
+Try a source before giving its URL out. `agentgate factory source test <id> < delivery.json` renders a sample delivery through the source's templates and prints the title, body, dedupe key and `only` value, and whether it would be added, held or started, or why not; it adds nothing. Give the headers and query a template reads with `--header 'Name: value'` (repeatable) and `--query 'env=prod'`. With `--send` it posts the delivery to the source's URL instead, signed with its secret, and prints the answer, which proves the way through the relay; a delivery that is accepted there adds its item.
+
+A script or cron job on the factory machine needs no URL: `agentgate factory deliver <id> < delivery.json` takes the delivery as the URL would, without a signature, and follows the source's `intake`. It works on that machine's own connection only, not over the tailnet.
+
 Sentry alerts can come in the same way, through an integration's webhook for issues, with its client secret stored as `SENTRY_HOOK`:
 
 ```yaml
@@ -330,6 +334,7 @@ Sentry sends a delivery for every change to an issue (created, resolved, assigne
 What to expect:
 
 - The relay answers for the factory machine, and nothing is queued. While that machine is offline a delivery gets `503`, and the sender must try again. GitHub and Linear sources catch up at their next poll anyway.
+- `agentgate factory status` and the app's Sources tab show each URL's state: whether the relay serves webhook URLs at all, whether the factory machine is connected to it, and the last delivery with its answer. `agentgate factory doctor` fails "The webhook URLs can receive deliveries" when a delivery could not get through, such as on a relay deployed before webhook URLs, which answers every delivery `404`.
 - Answers: `202` accepted, `200` a duplicate, `401` a bad signature, `422` an empty title, `429` while 20 of the source's items wait for your approval, `503` when the machine is offline or the signing secret is not set yet.
 - Deliveries are limited to 1 MiB of UTF-8 text. The relay reads them, unlike sync traffic; see [webhook endpoints](../operations/relay.md#remote-mcp-endpoints).
 - The URL stays when the factory moves to another machine. Removing the source from `factory.yaml` deletes it.
@@ -470,7 +475,7 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory move <machine> [--now]`                                             | Run the same folder on another machine once the open items finish; `--now` does not wait, and leaves them frozen.          |
 | `factory off`                                                                | Turn it off.                                                                                                               |
 | `factory reload`                                                             | Fetch and check the folder now.                                                                                            |
-| `factory status [--json]`                                                    | The board, with the webhook URLs.                                                                                          |
+| `factory status [--json]`                                                    | The board, with the webhook URLs and their state.                                                                          |
 | `factory doctor [--canary] [--json]`                                         | Check what the factory needs, each with its fix; exit 1 if any fails. `--canary` runs one thread that only reports.        |
 | `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                                                                                       |
 | `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                                                                                           |
@@ -481,5 +486,7 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                                                                                    |
 | `factory scout <id>`                                                         | Run a scout now.                                                                                                           |
 | `factory source add [--json] < source.yaml`                                  | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                            |
+| `factory source test <id> [--header ...] [--query ...] [--send] < body`      | Show what a webhook source makes of a delivery, adding nothing; `--send` posts it to the source's URL.                     |
+| `factory deliver <id> [--header ...] [--query ...] < body`                   | Take a delivery on this machine as the source's URL would; local connections only.                                         |
 
 `agentgate factory help` lists them all. Each command is one operation, and the control API takes every operation by its name, the words after `factory`, with its input as JSON: `POST /api/factory/op/secret%20list`. `GET /api/factory` is the board.

@@ -455,7 +455,13 @@ test("only the operations that take input on stdin are said to read it", async (
   const operations = (await listed.json()) as FactoryOperationInfo[];
   const reads = (line: string) => !!operationFor(operations, line.split(" "))?.stdin;
 
-  expect(operations.filter((op) => op.stdin).map((op) => op.name)).toEqual(["folder put", "secret set", "source add"]);
+  expect(operations.filter((op) => op.stdin).map((op) => op.name)).toEqual([
+    "folder put",
+    "secret set",
+    "source test",
+    "deliver",
+    "source add",
+  ]);
   expect(
     [
       "status",
@@ -528,6 +534,7 @@ test("the CLI answers a command while its stdin stays open and silent, still pip
     ["repo", "repo"],
     ["t3", "t3"],
     ["secret", "secret", "secret"],
+    ["source", "source"],
   ]);
 
   const unknown = cli("nonesuch", "words");

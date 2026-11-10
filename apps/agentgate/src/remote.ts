@@ -245,6 +245,12 @@ export class RemoteEndpoints {
     };
   }
 
+  /** A webhook's socket on this node, for the factory's board: undefined when this node does not serve it. */
+  hookState(source: string): { connected: boolean; error?: string } | undefined {
+    const c = this.conns.get(`~hook:${source}`);
+    return c && { connected: c.connected, ...(c.error && { error: c.error }) };
+  }
+
   /** The value stored once the relay acknowledged this secret and state; synchronous so status needn't hash. */
   private pushedValue(r: Remote, enabled: boolean) {
     return `${r.secret.slice(0, 8)}:${enabled}`;
@@ -370,7 +376,9 @@ export class RemoteEndpoints {
       void this.answer(c, ws, frame);
     };
     ws.onclose = (e) => {
-      if (c.ws !== ws) return;
+      // A stopped endpoint's socket: stop() already aborted its calls, and nothing is retried or recorded, as the store
+      // may be closing with the daemon.
+      if (c.ws !== ws || c.closed) return;
       for (const a of c.inflight.values()) a.abort(new Error("relay connection closed"));
       const upFor = c.openedAt ? Date.now() - c.openedAt : 0;
       c.openedAt = undefined;
@@ -487,6 +495,15 @@ export class RemoteEndpoints {
     this.closed = true;
     for (const id of [...this.conns.keys()]) this.stop(id);
   }
+}
+
+/** The last request an endpoint answered, from what `answer` logs: `id` is the project, or `~hook:<source>`. */
+export function lastRequest(s: Store, id: string): { at: number; status: number } | undefined {
+  return (
+    (s.db
+      .query("select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1")
+      .get(id) as { at: number; status: number } | null) ?? undefined
+  );
 }
 
 /** A delivery as the factory reads it: the relay already dropped hop-by-hop headers, and the Request sets its own

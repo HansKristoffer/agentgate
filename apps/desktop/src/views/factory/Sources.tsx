@@ -50,6 +50,9 @@ export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): F
   }
   const header = optional("header");
   const secret = optional("secret");
+  // Half a signature would be dropped, leaving the URL unsigned while the person thinks it is checked.
+  if (!header !== !secret)
+    throw new Error("A signature needs both its header and its secret name; fill in both, or neither for none");
   const body = optional("body");
   const dedupe = optional("dedupe");
   const intake = field(form, "intake");
@@ -91,8 +94,9 @@ function SourceDialog({
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          const input = sourceInput(new FormData(e.currentTarget), kind, when);
+          const form = new FormData(e.currentTarget);
           void perform(async () => {
+            const input = sourceInput(form, kind, when);
             const result = await factoryOp(connection, "source add", input);
             close();
             for (const warning of result.warnings) toast(warning);
@@ -268,10 +272,26 @@ function SourceDialog({
   );
 }
 
+/** A webhook URL's reach and last delivery: what a sender's delivery meets. */
+function hookDetail(hook: NonNullable<FactoryBoard["sources"][number]["webhook"]>) {
+  if (!hook.configured) return "No URL yet";
+  if (hook.relayServes === false) return "The relay does not serve webhook URLs, so deliveries are lost";
+  if (hook.connected === false) return `Not connected to the relay${hook.error ? `: ${hook.error}` : ""}`;
+  return hook.lastDelivery
+    ? `Last delivery ${ago(hook.lastDelivery.at)} (${hook.lastDelivery.status})`
+    : "No delivery yet";
+}
+
+/** A webhook that cannot receive, shown as a problem. */
+const hookDown = (s: FactoryBoard["sources"][number]) =>
+  !!s.webhook && (s.webhook.relayServes === false || s.webhook.connected === false);
+
 function sourceDetail(s: FactoryBoard["sources"][number]) {
   if (s.error) return s.error;
   const scout = s.scout;
-  if (!scout) return s.lastPollAt ? `Polled ${ago(s.lastPollAt)}` : "Not polled yet";
+  if (s.type === "webhook" && s.webhook) return hookDetail(s.webhook);
+  const hook = s.webhook ? ` · ${hookDetail(s.webhook)}` : "";
+  if (!scout) return `${s.lastPollAt ? `Polled ${ago(s.lastPollAt)}` : "Not polled yet"}${hook}`;
   const next = !scout.enabled ? "disabled" : scout.nextAt ? `next ${relative(scout.nextAt)}` : "waits for intake";
   const last = scout.lastRun
     ? scout.lastRun.state === "reported"
@@ -310,7 +330,7 @@ export function Sources(props: ViewProps & { board: FactoryBoard; run: Run }) {
                 </small>
                 {s.scout && !s.scout.enabled && <Badge>disabled</Badge>}
               </div>
-              <small className={s.error ? "danger" : "muted"}>{sourceDetail(s)}</small>
+              <small className={s.error || hookDown(s) ? "danger" : "muted"}>{sourceDetail(s)}</small>
             </div>
             {s.webhook?.url && (
               <Button size="sm" variant="tertiary" onPress={() => void navigator.clipboard.writeText(s.webhook!.url!)}>

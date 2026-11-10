@@ -129,6 +129,14 @@ function ago(at) {
 	var hours = Math.round(minutes / 60);
 	return hours < 48 ? hours + "h ago" : Math.round(hours / 24) + "d ago";
 }
+function hookText(w) {
+	if (!w.configured) return "not configured";
+	var parts = ["configured"];
+	if (w.relayServes === false) parts.push("the relay does not serve webhook URLs");
+	else if (w.connected === false) parts.push("not connected to the relay");
+	parts.push(w.lastDelivery ? "last delivery " + ago(w.lastDelivery.at) + " (" + w.lastDelivery.status + ")" : "no delivery yet");
+	return parts.join(", ");
+}
 function pill(text, tone) {
 	var p = el("span", "pill");
 	p.append(el("span", "dot " + (tone || "")), el("span", "", text));
@@ -285,7 +293,7 @@ function render(b) {
 					? s.scout.schedule + (s.scout.enabled ? "" : ", disabled")
 						+ (s.scout.nextAt ? ", next " + new Date(s.scout.nextAt).toLocaleString() : "")
 					: ""),
-				el("td", "", s.webhook ? (s.webhook.configured ? "configured" : "not configured") : "none"),
+				el("td", "", s.webhook ? hookText(s.webhook) : "none"),
 				el("td", "bad", s.error || ""));
 			table.append(tr);
 		});

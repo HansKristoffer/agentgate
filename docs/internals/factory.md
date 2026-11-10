@@ -310,6 +310,12 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - The URL's relay credentials are the synced `~hook:<source>` secret, so the URL survives a move to another machine.
   `~hook:` ids are agentgate's own, so a folder cannot declare them and `secret list` hides them.
 - The relay reads deliveries in clear, like remote MCP traffic, and queues nothing while the machine is offline.
+- Whether a URL can receive is the relay's answer to a `GET` on it (`405` from a relay that routes `/hook`, `404` from
+  one deployed before it; the router answers without waking the endpoint) plus this machine's socket for it. A
+  connected socket alone proves nothing: an older relay accepts the endpoint and the socket, and still 404s every
+  delivery.
+- `factory deliver` takes the same path as a delivery after its signature check, without one, so it is loopback only.
+  `source test` uses the same rendering and `admit`'s decision (`admission`) without writing.
 
 ## Scouts and added sources
 

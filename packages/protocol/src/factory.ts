@@ -695,8 +695,20 @@ export const factoryBoardSchema = z.object({
       repo: z.string(),
       lastPollAt: z.number().optional(),
       error: z.string().optional(),
-      // The URL only in GET /api/factory and the CLI: the token-less page and factory_status never show it.
-      webhook: z.object({ configured: z.boolean(), url: z.string().optional() }).optional(),
+      // The URL and `error` only in GET /api/factory and the CLI: the token-less page and factory_status never show them.
+      webhook: z
+        .object({
+          configured: z.boolean(),
+          url: z.string().optional(),
+          /** Whether the relay serves webhook URLs at all: one deployed before them answers 404. Absent until asked. */
+          relayServes: z.boolean().optional(),
+          /** Whether the factory machine's socket for this URL is open, so the relay can hand it a delivery. */
+          connected: z.boolean().optional(),
+          error: z.string().optional(), // why the socket is not open
+          /** The last delivery through the relay, and the status it was answered with. */
+          lastDelivery: z.object({ at: z.number(), status: z.number() }).optional(),
+        })
+        .optional(),
       scout: z
         .object({
           schedule: z.string(), // "every 6h", "09:00 Mon, Fri (Europe/Copenhagen)"

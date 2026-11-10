@@ -146,14 +146,16 @@ function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
   };
 }
 
-/** Webhook URLs carry the hook's key, so the token-less page and agents never see them. */
+/** Webhook URLs carry the hook's key, so the token-less page and agents never see them, nor a socket's error text. */
 function strip(board: FactoryBoard, { includeWebhookUrls }: { includeWebhookUrls: boolean }): FactoryBoard {
   if (includeWebhookUrls) return board;
   return {
     ...board,
-    sources: board.sources.map(({ webhook, ...source }) =>
-      webhook ? { ...source, webhook: { configured: webhook.configured } } : source,
-    ),
+    sources: board.sources.map(({ webhook, ...source }) => {
+      if (!webhook) return source;
+      const { url: _, error: __, ...state } = webhook;
+      return { ...source, webhook: state };
+    }),
   };
 }
 
@@ -291,6 +293,20 @@ function scoutText(scout: NonNullable<FactoryBoard["sources"][number]["scout"]>,
 /** `text` when `value` is set, else nothing: the optional parts of a line. */
 const when = (value: unknown, text: string) => (value ? text : "");
 
+/** A webhook's URL, or whether it has one, then whether a delivery can reach it, and its last delivery. */
+function webhookText(hook: NonNullable<FactoryBoard["sources"][number]["webhook"]>, now: number) {
+  const reach =
+    hook.relayServes === false
+      ? "the relay does not serve webhook URLs"
+      : hook.connected === false
+        ? `not connected to the relay${when(hook.error, `: ${hook.error}`)}`
+        : undefined;
+  const last = hook.lastDelivery
+    ? `last delivery ${ago(hook.lastDelivery.at, now)} (${hook.lastDelivery.status})`
+    : hook.configured && "no delivery yet";
+  return [hook.url ?? (hook.configured ? "configured" : "not configured"), reach, last].filter(Boolean).join(", ");
+}
+
 const percent = (rate: number) => `${Math.round(rate * 100)}%`;
 const tokens = (n: number) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
@@ -370,7 +386,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
 
   if (b.sources.length) lines.push("", "Sources:");
   for (const s of b.sources) {
-    const hook = s.webhook && (s.webhook.url ?? (s.webhook.configured ? "configured" : "not configured"));
+    const hook = s.webhook && webhookText(s.webhook, now);
     const polled = when(s.lastPollAt, `, polled ${ago(s.lastPollAt ?? 0, now)}`);
     const scout = s.scout && scoutText(s.scout, now);
     lines.push(

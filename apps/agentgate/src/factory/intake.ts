@@ -34,16 +34,28 @@ export const HELD_LIMIT = 20;
  * holds items or intake is not on (paused, or too many items wait for the maintainer); and a source that already holds
  * `HELD_LIMIT` items takes no more.
  */
-export function admit(
+export function admit(f: FactoryRuntime, input: Admission & { repo: string; incoming: IncomingItem }) {
+  const decided = admission(f, { ...input, dedupe: input.incoming.dedupe });
+  if (typeof decided === "string") return decided;
+  return addItem(f, { source: input.source, repo: input.repo, incoming: input.incoming, hold: decided.hold });
+}
+
+interface Admission {
+  source: string;
+  intake: "auto" | "hold";
+  dedupeWindow: string;
+}
+
+/** What `admit` would do, writing nothing: also what `factory source test` says of a sample delivery. */
+export function admission(
   f: FactoryRuntime,
-  input: { source: string; repo: string; intake: "auto" | "hold"; dedupeWindow: string; incoming: IncomingItem },
-): FactoryItem | "duplicate" | "full" {
-  const { incoming } = input;
+  input: Admission & { dedupe?: string },
+): "duplicate" | "full" | { hold: boolean } {
   const since = f.s.now() - durationMs(input.dedupeWindow);
-  if (incoming.dedupe && items.hasDedupe(f.s, input.source, incoming.dedupe, since)) return "duplicate";
+  if (input.dedupe && items.hasDedupe(f.s, input.source, input.dedupe, since)) return "duplicate";
   const hold = input.intake !== "auto" || intakeState(f) !== "on";
   if (hold && items.heldCount(f.s, input.source) >= HELD_LIMIT) return "full";
-  return addItem(f, { source: input.source, repo: input.repo, incoming, hold });
+  return { hold };
 }
 
 /**

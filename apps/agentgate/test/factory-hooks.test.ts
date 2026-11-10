@@ -6,21 +6,26 @@ import type { ServerWebSocket } from "bun";
 import { app } from "../src/daemon.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher } from "../src/factory/folder.ts";
-import { handleHook } from "../src/factory/hooks.ts";
+import { handleHook, http } from "../src/factory/hooks.ts";
+import { preflight } from "../src/factory/preflight.ts";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { Store } from "../src/store.ts";
 import { getSecret, setSecret } from "../src/factory/secrets.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
+const realFetch = http.fetch;
+afterEach(() => void (http.fetch = realFetch));
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-/** A relay stand-in: records endpoint PUTs, and forwards a delivery to the socket of the endpoint it names. */
+/** A relay stand-in: records endpoint PUTs, and forwards a delivery to the socket of the endpoint it names. A GET on
+ * `/hook/:key` answers 405 like a relay that routes hooks, or 404 like one from before them while `old` is set. */
 function fakeRelay() {
+  const state = { old: false };
   const puts = new Map<string, { kind?: string; enabled: boolean }>();
   const deletes: string[] = [];
   const sockets = new Map<string, ServerWebSocket<{ key: string }>>();
@@ -38,6 +43,8 @@ function fakeRelay() {
         return Response.json({ ok: true });
       }
       if (srv.upgrade(req, { data: { key: key! } })) return undefined;
+      if (req.method === "GET" && req.url.includes("/hook/") && !state.old)
+        return new Response("method not allowed", { status: 405 });
       return new Response("no", { status: 404 });
     },
     websocket: {
@@ -58,7 +65,7 @@ function fakeRelay() {
     sockets.get(key)!.send(JSON.stringify({ t: "req", id, ...delivery }));
     return reply;
   };
-  return { url: `http://127.0.0.1:${server.port}`, puts, deletes, sockets, deliver };
+  return { url: `http://127.0.0.1:${server.port}`, puts, deletes, sockets, deliver, state };
 }
 
 const sign = (secret: string, body: string, encoding: "hex" | "base64" = "hex") =>
@@ -113,9 +120,10 @@ test("each webhook-capable source gets a hook URL kept as a ~hook secret, shown 
     sources: { id: string; webhook?: unknown; lastPollAt?: number }[];
   };
   // One row per source: the webhook's part merges into the controller's, which reported the poll.
+  const reachable = { configured: true, relayServes: true, connected: true };
   expect(api.sources.map((s) => [s.id, s.webhook, typeof s.lastPollAt])).toEqual([
-    ["alerts", { configured: true, url: alertsUrl }, "undefined"],
-    ["bugs", { configured: true, url: bugsUrl }, "number"],
+    ["alerts", { ...reachable, url: alertsUrl }, "undefined"],
+    ["bugs", { ...reachable, url: bugsUrl }, "number"],
     ["polled", undefined, "number"],
   ]);
   expect((await n.command("status")).output.join("\n")).toContain(alertsUrl);
@@ -320,4 +328,145 @@ test("an MCP request over 256 KiB is refused even though relay frames may carry 
   const big = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", pad: "x".repeat(300 * 1024) });
   const { response } = await gateway.handleRemote("@grok", big, {}, new AbortController().signal);
   expect(response.status).toBe(413);
+});
+
+test("source test renders a delivery through the source's templates and says whether it would be added, adding nothing", async () => {
+  const { n } = await hookedFactory((repo) => [
+    alerts(repo),
+    {
+      id: "sentry",
+      type: "webhook",
+      repo,
+      title: "{{body.data.issue.title}}",
+      dedupe: "{{body.data.issue.id}}",
+      only: { value: "{{body.action}}", in: ["created", "unresolved"] },
+    },
+  ]);
+  const body = JSON.stringify({ alert: { id: "a-1", name: "Disk full", details: "/var is at 99%" } });
+  const tried = await terminal(
+    n.f,
+    ["source", "test", "alerts", "--query", "env=prod", "--header", "User-Agent: pager/2"],
+    body,
+  );
+  expect(tried).toEqual({
+    code: 0,
+    output: [
+      "Signature: X-Alert-Signature, with ALERT_SECRET. A dry run does not check it; --send signs it.",
+      "Title: Disk full on prod",
+      "Dedupe key: a-1",
+      "It would be added, waiting for your approval.",
+      "Nothing was added.",
+      "",
+      "Body:",
+      "/var is at 99% (from pager/2)",
+    ],
+  });
+
+  const assigned = JSON.stringify({ action: "assigned", data: { issue: { id: "42", title: "TypeError" } } });
+  const json = await terminal(n.f, ["source", "test", "sentry", "--json"], assigned);
+  expect(JSON.parse(json.output[0]!)).toEqual({
+    source: "sentry",
+    rendered: { title: "TypeError", body: assigned, dedupe: "42", only: { value: "assigned", kept: false } },
+    refused: 'only takes created, unresolved, and its value is "assigned"',
+  });
+  expect((await terminal(n.f, ["source", "test", "sentry"], assigned)).output).toContain(
+    'It would not be added: only takes created, unresolved, and its value is "assigned".',
+  );
+  // Without stdin there is nothing to try.
+  expect((await terminal(n.f, ["source", "test", "sentry"])).code).toBe(2);
+  expect(items.list(n.s)).toEqual([]);
+});
+
+test("source test --send posts the delivery to the source's URL signed with its secret, and prints the answer", async () => {
+  const { n, relay, hook } = await hookedFactory((repo) => [alerts(repo)]);
+  const sent: { url: string; headers: Headers; body: string }[] = [];
+  http.fetch = async (url, init) => {
+    sent.push({ url: String(url), headers: new Headers(init?.headers), body: String(init?.body) });
+    return Response.json({ ok: true, item: "alerts-abc123" }, { status: 202 });
+  };
+  const body = JSON.stringify({ alert: { id: "a-1", name: "Disk full" } });
+  const result = await terminal(n.f, ["source", "test", "alerts", "--send", "--query", "env=prod"], body);
+  expect(result).toEqual({ code: 0, output: ['The URL answered 202: {"ok":true,"item":"alerts-abc123"}'] });
+  expect(sent).toHaveLength(1);
+  expect(sent[0]!.url).toBe(`${relay.url}/hook/${hook("alerts").key}?env=prod`);
+  expect(sent[0]!.body).toBe(body);
+  expect(sent[0]!.headers.get("x-alert-signature")).toBe(`v1=${sign("alert-signing-key", body, "base64")}`);
+  expect(sent[0]!.headers.get("content-type")).toBe("application/json");
+  // The delivery went out; nothing was added here by the command itself.
+  expect(items.list(n.s)).toEqual([]);
+});
+
+test("deliver takes a delivery on loopback as the URL would, held or started per the source's intake, and dedupes a repeat", async () => {
+  const { n } = await hookedFactory((repo) => [alerts(repo), { ...alerts(repo), id: "pager", intake: "auto" }]);
+  const body = JSON.stringify({ alert: { id: "a-1", name: "Disk full", details: "-" } });
+  // No signature: the loopback caller is this machine.
+  const held = await terminal(n.f, ["deliver", "alerts", "--query", "env=prod"], body);
+  expect(held.code).toBe(0);
+  expect(held.output[0]).toMatch(/^Added alerts-\w{6}, waiting for your approval\.$/);
+  expect(await terminal(n.f, ["deliver", "alerts", "--query", "env=prod"], body)).toEqual({
+    code: 0,
+    output: ["A duplicate: an item with its dedupe key is open or finished recently. Nothing added."],
+  });
+  const started = await terminal(n.f, ["deliver", "pager", "--query", "env=prod"], body);
+  expect(started.output[0]).toMatch(/^Added pager-\w{6}\.$/);
+  expect(items.list(n.s).map((i) => [i.source, i.title, i.phase === "held"])).toEqual([
+    ["alerts", "Disk full on prod", true],
+    ["pager", "Disk full on prod", false],
+  ]);
+});
+
+test("deliver is refused over the tailnet, while source test answers there", async () => {
+  const { n } = await hookedFactory((repo) => [alerts(repo)]);
+  n.s.setLocal("adminToken", "admin-token");
+  const input = { id: "alerts", body: JSON.stringify({ alert: { name: "x" } }) };
+  const op = (name: string, listener: "loopback" | "tailnet") =>
+    postOp(n.ctx, name, input, listener, { authorization: "Bearer admin-token" });
+  const refused = await op("deliver", "tailnet");
+  expect({ status: refused.status, body: await refused.json() }).toEqual({
+    status: 403,
+    body: { error: "This operation requires a local connection" },
+  });
+  expect((await op("source test", "tailnet")).status).toBe(200);
+  expect(items.list(n.s)).toEqual([]);
+});
+
+test("the webhooks check fails with its fix when the relay does not serve /hook, and passes when it does", async () => {
+  const { n, relay, hook } = await hookedFactory((repo) => [alerts(repo)]);
+  await n.until(() => relay.sockets.has(hook("alerts").key), "the hook socket");
+  const check = async () => (await preflight(n.f, { fresh: false })).find((c) => c.id === "webhooks");
+  await n.until(async () => (await check())?.state === "ok", "the check to pass");
+
+  relay.state.old = true;
+  n.advance(5 * 60_000);
+  await n.f.loops.find((l) => l.name === "factory-hooks")!.run();
+  const failing = await check();
+  expect(failing).toMatchObject({ state: "fail" });
+  expect(failing!.detail).toContain("answers 404 on /hook");
+  expect(failing!.fix).toContain("agentgate factory deliver <id>");
+  // Neither the URL nor its key is in a check, which the token-less page shows.
+  expect(JSON.stringify(failing)).not.toContain(hook("alerts").key);
+  const api = (await (await n.api("/api/factory")).json()) as { sources: { webhook?: { relayServes?: boolean } }[] };
+  expect(api.sources[0]!.webhook?.relayServes).toBe(false);
+
+  relay.state.old = false;
+  await n.f.loops.find((l) => l.name === "factory-hooks")!.run();
+  expect(await check()).toMatchObject({ state: "ok" });
+});
+
+test("the board shows each webhook's last delivery and how it was answered", async () => {
+  const { n, relay, hook } = await hookedFactory((repo) => [alerts(repo)]);
+  const { key } = hook("alerts");
+  await n.until(() => relay.sockets.has(key), "the hook socket");
+  const board = async () =>
+    (await (await n.api("/api/factory")).json()) as {
+      sources: { webhook?: { lastDelivery?: { at: number; status: number } } }[];
+    };
+  expect((await board()).sources[0]!.webhook?.lastDelivery).toBeUndefined();
+  expect((await n.command("status")).output.join("\n")).toContain("no delivery yet");
+
+  const body = JSON.stringify({ alert: { id: "a-1", name: "Disk full" } });
+  const headers = { "x-alert-signature": `v1=${sign("alert-signing-key", body, "base64")}` };
+  expect((await relay.deliver(key, { headers, body, query: "env=prod" })).status).toBe(202);
+  expect((await board()).sources[0]!.webhook?.lastDelivery).toEqual({ at: n.s.now(), status: 202 });
+  expect((await n.command("status")).output.join("\n")).toContain("last delivery just now (202)");
 });
