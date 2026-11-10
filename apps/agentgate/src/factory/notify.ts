@@ -55,7 +55,15 @@ function update(f: FactoryRuntime, row: { seq: number; at: number; item: string 
         phase: item.phase,
         ...(item.url && { url: item.url }),
         ...(item.prUrl && { pr: item.prUrl }),
-        ...(item.needsYou && { needsYou: { reason: item.needsYou.reason, question: item.needsYou.question } }),
+        ...(item.needsYou && {
+          needsYou: {
+            kind: item.needsYou.kind,
+            cause: item.needsYou.cause,
+            question: item.needsYou.question,
+            ...(item.needsYou.recommendation && { recommendation: item.needsYou.recommendation }),
+            ...(item.needsYou.options && { options: item.needsYou.options }),
+          },
+        }),
       },
     }),
   };

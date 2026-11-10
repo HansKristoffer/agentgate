@@ -1,7 +1,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import type { FactoryItemDetail, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
-import { setNeedsYou } from "../src/factory/controller.ts";
+import { ask } from "../src/factory/controller.ts";
 import { items, runs, type FactoryItem } from "../src/factory/db.ts";
 import { MARKER_PREFIX } from "../src/factory/markers.ts";
 import { itemOutcome } from "../src/factory/records.ts";
@@ -131,9 +131,9 @@ test("approving, retrying and adding by hand are each one human touch, and a que
 
   expect((await n.command("approve", held!.key)).code).toBe(0);
   expect(touches(held!)).toBe(1);
-  setNeedsYou(n.f, held!.id, { reason: "decision", question: "Rename the flag?" });
+  ask(n.f, items.get(n.s, held!.id)!, { cause: "decision", question: "Rename the flag?" });
   expect(touches(held!)).toBe(1);
-  setNeedsYou(n.f, held!.id, { reason: "failed", question: "Triage ended twice without a report." });
+  ask(n.f, items.get(n.s, held!.id)!, { cause: "failed", question: "Triage ended twice without a report." });
   expect((await n.command("retry", held!.key)).code).toBe(0);
   expect(touches(held!)).toBe(2);
 

@@ -11,7 +11,7 @@ import { renderBrief } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, type LoadedFolder } from "./config.ts";
 import { admit, cancelLaunch, defaultBranch, enqueueRun, HELD_LIMIT, intakeState } from "./controller.ts";
 import { ACTIVE, items, runs, type FactoryRun } from "./db.ts";
-import { operation, UsageError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { operation, UsageError, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
 
 /**
  * Scouts: a `scout` source runs a T3 thread on its schedule, or on `agentgate factory scout <id>`, that follows the
@@ -229,7 +229,7 @@ const scoutRun = (f: FactoryRuntime) => ({
 
   model: (run: FactoryRun) => scoutOfRun(f, run)?.scout.model,
 
-  async launch(run: FactoryRun): Promise<LaunchSpec | { wait: string }> {
+  async launch(run: FactoryRun): Promise<LaunchSpec | NoLaunch> {
     const found = scoutOfRun(f, run);
     if (!found)
       return cancelLaunch(f, run, `the factory's folder no longer has the scout ${sourceOfRun(run) ?? "of this run"}`);

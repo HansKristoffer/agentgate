@@ -7,6 +7,7 @@ import {
 import { fenced } from "./briefs.ts";
 import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
 import {
+  ask,
   enqueueRun,
   finishItem,
   isPaused,
@@ -16,7 +17,9 @@ import {
   ReportError,
   repositoryOf,
   sendToThread,
-  setNeedsYou,
+  stopAsking,
+  stopWaiting,
+  waitFor,
   writeBack,
 } from "./controller.ts";
 import { ACTIVE, dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
@@ -82,6 +85,10 @@ export function green(f: FactoryRuntime, view: Pick<Followed, "checks" | "mergea
   return checks && view.mergeable !== "CONFLICTING";
 }
 
+/** Checks still running, or none yet on a head too new to have them. */
+const checksPending = (f: FactoryRuntime, view: Pick<Followed, "checks">, headAt: number) =>
+  view.checks === "pending" || (view.checks === "none" && f.s.now() - headAt < CHECKS_SETTLE);
+
 /** Marks the PR ready for review and requests the repository's reviewers; throws when GitHub refuses. */
 async function markReady(f: FactoryRuntime, item: FactoryItem, view: PrState) {
   const reviewers = repositoryOf(f, item)?.reviewers ?? [];
@@ -109,7 +116,7 @@ export async function toReady(
   await prView(view.url)
     .then((fresh) => prSetBody(view.url, withSummary(fresh.body, readySummary(f, item))))
     .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
-  const ready = moveItem(f, item.id, "ready", item.needsYou?.reason === "stalled" ? null : undefined);
+  const ready = moveItem(f, item.id, "ready", item.needsYou?.cause === "stalled");
   fileLeftovers(f, ready, view.url);
   const text = open.length
     ? `${view.url}\n\n${why} These findings are still open:\n\n${open.map((o) => `- ${o}`).join("\n")}`
@@ -315,7 +322,7 @@ async function nudge(
   const { s } = f;
   const { problems, comments, conversations } = problemsOf(view, feedback, data);
   if (!problems.length) {
-    if (item.needsYou?.reason === "stalled") setNeedsYou(f, item.id, null);
+    if (item.needsYou?.cause === "stalled") stopAsking(f, item.id);
     return;
   }
   if (isPaused(f) || item.needsYou) return;
@@ -334,9 +341,12 @@ async function nudge(
   if (data.nudged === key && s.now() - (data.nudgedAt ?? 0) < durationMs(limits.stalledAfter)) return;
   const what = problems.map((p) => p.text).join("; ");
   if (run.nudges >= limits.nudges) {
-    const question = `${item.key}'s PR still needs work after ${run.nudges} nudge${run.nudges === 1 ? "" : "s"}: ${what}. Look at the thread, then fix it there or drop the item.`;
-    const after = setNeedsYou(f, item.id, { reason: "stalled", question, link: run.threadLink ?? view.url });
-    writeBack(f, after, "waiting", { text: question, ref: `stalled:${run.id}` });
+    ask(f, item, {
+      cause: "stalled",
+      question: `${item.key}'s PR still needs work after ${run.nudges} nudge${run.nudges === 1 ? "" : "s"}: ${what}. Fix it in the thread, or retry to nudge it again.`,
+      link: run.threadLink ?? view.url,
+      run,
+    });
     return;
   }
   const quotedUntil = comments.length ? newest(comments.map((c) => c.at)) : data.quotedUntil;
@@ -425,13 +435,17 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
     items.update(s, item.id, { prCommit: view.headRefOid });
   }
   // While the item waits for the maintainer, nothing else moves it; a stall clears itself when the problem goes.
-  if (item.needsYou && item.needsYou.reason !== "stalled") return;
+  if (item.needsYou && item.needsYou.cause !== "stalled") return;
+  // What it waits for on its PR is read again each pass.
+  stopWaiting(f, item.id, ["checks", "review"]);
   const result = run.report?.result;
   const backed = result?.kind === "implement" && result.claims.every((c) => c.evidence.trim());
   if (item.phase === "pr" && green(f, view, data.headAt) && backed) {
     await advance(f, item, view);
     return;
   }
+  if (item.phase === "pr" && checksPending(f, view, data.headAt))
+    waitFor(f, item.id, "checks", "Waits for the PR's checks");
   if (item.phase === "review") await followReview(f, item, view, data.headAt);
   await nudge(f, items.get(s, id)!, runs.get(s, run.id)!, view, feedback, data);
 }
@@ -689,6 +703,7 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
   // starts once the PR is green, as after a push.
   if (!last || (last.state !== "reported" && !ACTIVE.includes(last.state))) {
     if (view.state === "OPEN" && green(f, view, headAt)) enqueueRun(f, { kind: "review", item: item.id });
+    else if (checksPending(f, view, headAt)) waitFor(f, item.id, "checks", "Waits for the PR's checks to review it");
     return;
   }
   if (last.state !== "reported") return;
@@ -710,12 +725,17 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
   const moved = !view.headRefOid.startsWith(data.head.toLowerCase());
   if (data.stale || moved) {
     if (green(f, view, headAt)) enqueueRun(f, { kind: "review", item: item.id });
+    else if (checksPending(f, view, headAt))
+      waitFor(f, item.id, "checks", `Waits for the PR's checks before review round ${data.round + 1}`);
     return;
   }
   const implement = prRun(f, item);
   const thread = implement?.threadId ? mirrorOf(f).thread(implement.threadId) : undefined;
   const busy = !!thread && (thread.needsYou || isWorkingStatus(thread.status));
-  if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) return;
+  if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) {
+    waitFor(f, item.id, "review", `Waits for the implement thread to push fixes for review round ${data.round}`);
+    return;
+  }
   runs.update(f.s, last.id, { checked: { ...data, final: true } });
   await toReady(f, item, view, open(), why);
 }

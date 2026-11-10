@@ -84,7 +84,7 @@ test("an item over its token budget has its threads interrupted and waits for th
   expect(items.get(n.s, item.id)).toMatchObject({
     phase: "implement",
     tokens: 1100,
-    needsYou: { reason: "budget", question: expect.stringContaining(`agentgate factory retry ${n.key(1)}`) },
+    needsYou: { kind: "stopped", cause: "budget", question: expect.stringContaining("Raise limits.itemTokens") },
   });
   expect(runs.get(n.s, run.id)!.state).toBe("cancelled");
   expect(n.mcp.calls).toContainEqual({
@@ -129,7 +129,7 @@ test("a report that races its item's budget stop is refused: the item stays stop
   interrupted();
   await measuring;
   expect(await reporting).toEqual({ error: `Run ${second.id} is cancelled and takes no report` });
-  expect(items.get(n.s, item.id)).toMatchObject({ phase: "implement", needsYou: { reason: "budget" } });
+  expect(items.get(n.s, item.id)).toMatchObject({ phase: "implement", needsYou: { cause: "budget" } });
   expect(items.get(n.s, item.id)!.prUrl).toBeUndefined();
   expect(runs.forItem(n.s, item.id).filter((r) => r.state === "queued")).toEqual([]);
 });
@@ -146,7 +146,7 @@ test("a budget stop in pr reads no thread and sends no nudge, a merge still ship
   await stop(merged.run);
   await stop(retried.run);
   for (const { item, run } of [merged, retried]) {
-    expect(items.get(n.s, item.id)).toMatchObject({ phase: "pr", needsYou: { reason: "budget" } });
+    expect(items.get(n.s, item.id)).toMatchObject({ phase: "pr", needsYou: { cause: "budget" } });
     // The implement thread owns the PR and still works after its report: the stop interrupts it too.
     await n.until(() => n.mirror.thread(run.threadId!)?.status === "interrupted", "the PR thread's interrupt");
   }

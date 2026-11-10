@@ -289,7 +289,7 @@ test("a holding scout's findings wait for approval, and stop at 20 waiting", asy
   expect(await n.report(run, found(...keys))).toEqual({ accepted: true });
   const held = items.list(n.s, { open: true }).filter((i) => i.source === "perf");
   expect(held).toHaveLength(20);
-  expect(held.every((i) => i.phase === "held" && i.needsYou?.reason === "held")).toBe(true);
+  expect(held.every((i) => i.phase === "held" && i.needsYou?.cause === "held")).toBe(true);
   expect(runs.get(n.s, run.id)!.checked).toMatchObject({ skipped: ["slow-20"] });
 });
 

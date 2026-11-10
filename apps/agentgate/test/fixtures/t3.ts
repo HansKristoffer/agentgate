@@ -43,7 +43,7 @@ export type FakeThread = {
   failNextTurn?: boolean;
   /** The shell state a turn driven through `/mcp` set (fixtures/t3-mcp.ts), which every view of the shell shows: the
    * stream, a resumed stream's snapshot and a poll. Without it the status comes from `runs`. */
-  shell?: { status: string; needsYou: boolean };
+  shell?: { status: string; needsYou: boolean; request?: string };
   messages: string[];
   conversation?: Message[];
   background?: { kind: string; description: string }[];

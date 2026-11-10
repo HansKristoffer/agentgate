@@ -3,10 +3,20 @@ import { Button } from "@heroui/react";
 import { ExternalLink, GitPullRequest } from "lucide-react";
 import type { Connection, FactoryBoard, FactoryItemDetail } from "@agentgate/protocol";
 import { factoryOp, openExternal } from "../../api.ts";
-import { ActionButton, Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
+import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
 import { useGeneration } from "../../features/proxy/useGeneration.ts";
 import { ago } from "../utils.ts";
-import { NeedsYouActions, OpenInT3, Pill, statusOf, toneOf, type Act, type AskReason, type Tone } from "../Factory.tsx";
+import {
+  ItemActions,
+  NeedsYouText,
+  OpenInT3,
+  Pill,
+  statusOf,
+  toneOf,
+  type Act,
+  type AskReason,
+  type Tone,
+} from "../Factory.tsx";
 
 const STAGES: Record<string, string> = {
   triage: "Triage",
@@ -108,7 +118,7 @@ export function ItemDrawer({
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
-        <Pill tone={toneOf(item)}>{item.needsYou ? "Needs you" : statusOf(item)}</Pill>
+        <Pill tone={toneOf(item)}>{item.needsYou?.title ?? statusOf(item)}</Pill>
         {item.url && (
           <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.url!)}>
             <ExternalLink size={14} />
@@ -121,32 +131,23 @@ export function ItemDrawer({
             Pull request
           </Button>
         )}
-        {/* A closed item starts again at triage; one that waits for you has its Retry among its answers below. */}
-        {item.actions.includes("retry") && !item.needsYou && (
-          <ActionButton
-            size="sm"
-            variant="tertiary"
-            pendingKey={`factory:retry:${item.id}`}
-            onPress={() => void act(item, "retry")}
-          >
-            Retry
-          </ActionButton>
-        )}
-        {item.actions.includes("drop") && !item.needsYou && (
-          <Button size="sm" variant="tertiary" onPress={() => ask(item, "drop", `Drop ${item.key}`)}>
-            Drop…
-          </Button>
-        )}
+        {/* One that waits for you has its actions with what each does below. */}
+        {!item.needsYou && <ItemActions item={item} act={act} ask={ask} />}
       </div>
       {item.needsYou && (
-        <Panel title="Needs you" detail={item.needsYou.question}>
-          {item.needsYou.detail && <div className="factory-detail">{item.needsYou.detail}</div>}
+        <Panel title="Needs you" detail={item.needsYou.title}>
           <div className="item">
-            <div className="row factory-actions">
-              <NeedsYouActions item={item} act={act} ask={ask} />
-              <OpenInT3 link={item.needsYou.link ?? item.run?.threadLink} />
+            <div className="grow">
+              <NeedsYouText item={item} />
             </div>
+            <OpenInT3 link={item.needsYou.link ?? item.run?.threadLink} />
           </div>
+          {item.actions.map((a) => (
+            <div className="item" key={a.name + a.label}>
+              <span className="grow">{a.effect}</span>
+              <ItemActions item={{ ...item, actions: [a] }} act={act} ask={ask} />
+            </div>
+          ))}
         </Panel>
       )}
       {error && <p className="danger">{error}</p>}

@@ -1,14 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
-import {
-  movingLabel,
-  type BoardItem,
-  type FactoryBoard,
-  type ItemAction,
-  type ItemPhase,
-  type NeedsYou,
-} from "@agentgate/protocol";
+import { movingLabel, type BoardItem, type FactoryBoard, type ItemAction, type ItemPhase } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { factoryOp, openExternal, request } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
@@ -42,18 +35,6 @@ const PHASE_TITLES: Record<ItemPhase, string> = {
   shipped: "Shipped",
   closed: "Closed",
 };
-const REASONS: Record<NeedsYou["reason"], string> = {
-  held: "Waiting for approval",
-  approval: "Asks you",
-  decision: "Needs a decision",
-  blocked: "Blocked",
-  budget: "Over its token budget",
-  stalled: "Stalled on its PR",
-  failed: "Failed",
-  stuck: "Stuck",
-  "handed-off": "Handed to another machine",
-  stopped: "Stopped in T3 Code",
-};
 
 /** The colour family of a state, defined in styles.css for light and dark: the stages run from understanding (think)
  * through building and checking to ready, and anything that waits for you, or failed, stands out from all of them. */
@@ -70,9 +51,9 @@ const STAGE_TONES: Record<ItemPhase, Tone> = {
   closed: "held",
 };
 export const toneStyle = (tone: Tone) => ({ "--tone": `var(--tone-${tone})` }) as CSSProperties;
-/** An item's colour: what waits for you, or failed, before the stage it is in. */
+/** An item's colour: what waits for you, or stopped, before the stage it is in. */
 export const toneOf = (item: BoardItem): Tone =>
-  item.needsYou ? (["failed", "stuck"].includes(item.needsYou.reason) ? "bad" : "you") : STAGE_TONES[item.phase];
+  item.needsYou ? (item.needsYou.kind === "stopped" ? "bad" : "you") : STAGE_TONES[item.phase];
 /** A state in its colour, with a dot, so the eye finds what waits for you before reading. */
 export function Pill({ tone, children }: { tone: Tone; children: ReactNode }) {
   return (
@@ -95,41 +76,53 @@ export function OpenInT3({ link, label = "Open in T3 Code" }: { link?: string; l
   );
 }
 
-/** The buttons an item that waits for you gets: labelled by why it waits, and only for the actions the daemon says it
- * takes now. */
-export function NeedsYouActions({ item, act, ask }: { item: BoardItem; act: Act; ask: AskReason }) {
-  const reason = item.needsYou?.reason;
-  const key = (a: string) => `factory:${a}:${item.id}`;
-  const button = (action: ItemAction, label: string, run = () => act(item, action)) =>
-    item.actions.includes(action) && (
-      <ActionButton
-        key={action + label}
-        size="sm"
-        variant="tertiary"
-        pendingKey={key(action)}
-        onPress={() => void run()}
-      >
-        {label}
-      </ActionButton>
-    );
-  const buttons: ReactNode[] = [];
-  if (reason === "held") buttons.push(button("approve", "Approve"), button("reject", "Reject"));
-  if (reason === "approval")
-    buttons.push(
-      button("approve", "Approve"),
-      button("reject", "Ask for changes…", async () => ask(item, "reject", `Changes for ${item.key}`)),
-    );
-  if (reason === "decision")
-    buttons.push(
-      button("approve", "Take the recommendation"),
-      button("approve", "Answer…", async () => ask(item, "approve", `Answer ${item.key}`)),
-      button("reject", "Reject"),
-    );
-  if (reason === "blocked")
-    buttons.push(button("approve", "Unblock…", async () => ask(item, "approve", `What changed for ${item.key}`)));
-  buttons.push(button("retry", "Retry"));
-  if (reason) buttons.push(button("drop", "Drop…", async () => ask(item, "drop", `Drop ${item.key}`)));
-  return <>{buttons}</>;
+/** The daemon's actions for an item, as it labels them: one that takes text asks for it first. The button's tooltip
+ * says what it will do. */
+export function ItemActions({ item, act, ask }: { item: BoardItem; act: Act; ask: AskReason }) {
+  return (
+    <>
+      {item.actions.map((a) => (
+        <span key={a.name + a.label} title={a.effect}>
+          <ActionButton
+            size="sm"
+            variant="tertiary"
+            pendingKey={`factory:${a.name}:${item.id}`}
+            onPress={() =>
+              a.takesText ? ask(item, a.name, `${a.label.replace(/…$/, "")}: ${item.key}`) : void act(item, a.name)
+            }
+          >
+            {a.label}
+          </ActionButton>
+        </span>
+      ))}
+    </>
+  );
+}
+
+/** What an item waits for you to do, as the daemon renders it everywhere: what happened, the question, the
+ * recommendation and the options. */
+export function NeedsYouText({ item }: { item: BoardItem }) {
+  const n = item.needsYou;
+  if (!n) return null;
+  return (
+    <>
+      <p className="factory-question">{n.question}</p>
+      {n.detail && (
+        <details>
+          <summary className="muted">Read it here</summary>
+          <div className="factory-detail">{n.detail}</div>
+        </details>
+      )}
+      {n.recommendation && <p className="muted">Recommended: {n.recommendation}</p>}
+      {n.options && (
+        <ul className="muted">
+          {n.options.map((o) => (
+            <li key={o}>{o}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
 }
 
 function NeedsYouQueue({
@@ -160,24 +153,15 @@ function NeedsYouQueue({
           <div className="item factory-waiting factory-toned" key={item.id} style={toneStyle(toneOf(item))}>
             <div className="grow">
               <div className="row">
-                <Pill tone={toneOf(item)}>
-                  {item.needsYou ? REASONS[item.needsYou.reason] : "Ready for your review"}
-                </Pill>
+                <Pill tone={toneOf(item)}>{item.needsYou?.title ?? "Ready for your review"}</Pill>
                 <button type="button" className="factory-link" onClick={() => open(item.id)}>
                   <strong>{item.key}</strong> {item.title}
                 </button>
                 {item.phase !== "ready" && <small className="muted">{PHASE_TITLES[item.phase]}</small>}
               </div>
-              {item.needsYou?.question && <p className="factory-question">{item.needsYou.question}</p>}
-              {item.needsYou?.detail && (
-                <details>
-                  <summary className="muted">Read it here</summary>
-                  <div className="factory-detail">{item.needsYou.detail}</div>
-                </details>
-              )}
-              {item.needsYou?.recommendation && <p className="muted">Recommended: {item.needsYou.recommendation}</p>}
+              <NeedsYouText item={item} />
               <div className="row factory-actions">
-                <NeedsYouActions item={item} act={act} ask={ask} />
+                <ItemActions item={item} act={act} ask={ask} />
                 {!item.needsYou && item.pr && (
                   <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
                     <GitPullRequest size={14} />
@@ -198,8 +182,10 @@ function NeedsYouQueue({
   );
 }
 
-/** What is happening to an item, in words: the stage's work while its run goes, else where it stands. */
+/** What is happening to an item, in words: what it waits for, as the daemon says, else the stage's work while its run
+ * goes, else where it stands. */
 export function statusOf(item: BoardItem): string {
+  if (item.waiting) return item.waiting.text;
   const run = item.run;
   const working = run && ["starting", "running", "waiting"].includes(run.state);
   const queued = run?.state === "queued";
@@ -213,7 +199,7 @@ export function statusOf(item: BoardItem): string {
     case "implement":
       return queued ? "Waiting to implement" : "Implementing";
     case "pr":
-      return working ? "Fixing the PR" : "PR open, waiting for its checks";
+      return working ? "Fixing the PR" : "PR open";
     case "review":
       return item.pr?.reviewRound ? `Review round ${item.pr.reviewRound + (working ? 1 : 0)}` : "Reviewing the PR";
     case "ready":
@@ -237,7 +223,7 @@ function ItemCard({ item, showRepo, open }: { item: BoardItem; showRepo: boolean
       </div>
       <strong>{item.title}</strong>
       <div className="factory-card-meta">
-        <Pill tone={toneOf(item)}>{item.needsYou ? REASONS[item.needsYou.reason] : statusOf(item)}</Pill>
+        <Pill tone={toneOf(item)}>{item.needsYou?.title ?? statusOf(item)}</Pill>
         {item.tokens > 0 && <small>{tokens(item.tokens)} tokens</small>}
         {item.inPhaseSince > 0 && <small>{ago(item.inPhaseSince)}</small>}
       </div>

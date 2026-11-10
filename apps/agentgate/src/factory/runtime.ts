@@ -14,6 +14,7 @@ import {
   type FactoryPointer,
   type FactoryReport,
   type FactorySource,
+  type ItemWaiting,
   type MarkerPayload,
   type RunKind,
 } from "@agentgate/protocol";
@@ -156,9 +157,11 @@ export interface LaunchSpec {
   startFromOrigin: boolean;
   model?: FactoryModel;
 }
+/** A launch that does not start now: it waits (the board shows why), or `cancelLaunch` ended the run. */
+export type NoLaunch = { wait: ItemWaiting["on"]; text: string } | { cancelled: true };
 export interface RunKindDefinition {
   kind: RunKind;
-  launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }>;
+  launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch>;
   /** The model a run of a kind that does not take it from its stage file starts with, so dispatch can check quota
    * before building the launch, whose work (a PR read, a brief) would otherwise repeat every pass while it waits. */
   model?(run: FactoryRun): FactoryModel | undefined;

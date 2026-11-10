@@ -78,9 +78,16 @@ taken twice.
 - Launching a thread runs outside the step, since creating a worktree can take minutes. A drop meanwhile ends the
   run, and the thread T3 then starts is interrupted and settled.
 
-When an item waits for the maintainer, it keeps its phase and gets `needsYou` with a reason: a question, a silent
-end, a stall, its token budget, an uncertain launch (`stuck`), or nothing moving it for four times `stalledAfter`: no
-active run, no working PR thread, and no run, push, nudge or person's act in that window. A running run whose
+When an item waits for the maintainer, it keeps its phase and gets `needsYou`, set only by `ask` in
+[`controller.ts`](../../apps/agentgate/src/factory/controller.ts) and answered only through `answer`. Its cause (a
+question, a silent end, a stall, its token budget, an uncertain launch, or nothing moving it for four times
+`stalledAfter`: no active run, no working PR thread, and no run, push, nudge or person's act in that window) maps to one
+of three kinds, and the kind decides whether the issue hears it (`POSTS` in
+[`needs-you.ts`](../../apps/agentgate/src/factory/needs-you.ts)): a start does not, an answer and a stop do. The daemon
+builds each item's actions with their effects, so no client keys buttons or text by cause. A thread's question card is
+asked once per T3 request id, and the run records the id it answered, since T3 can show a request again after it was
+answered and two cards can read the same. Waits that need nobody (a thread slot, quota, CI, PR checks) live in the
+controller's memory and show as the board item's `waiting`, never as a run's `error`. A running run whose
 thread sat idle that long ended a turn the watcher missed, such as across a restart, and is reminded. While it waits, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR
 still ends it. There is no `failed` phase, so `retry` knows where to resume, and an item with a PR resumes with it.
 

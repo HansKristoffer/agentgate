@@ -7,6 +7,7 @@ import {
   factoryItemInputSchema,
   factoryReportSchema,
   itemActions,
+  type BoardAction,
   type BoardItem,
   type FactoryBoard,
   type FactoryItemDetail,
@@ -14,9 +15,11 @@ import {
   type FactoryReport,
   type ItemAction,
   type ItemPhase,
+  type ItemWaiting,
   type MarkerPayload,
   type Moment,
   type NeedsYou,
+  type NeedsYouCause,
   type Outcome,
   type RunKind,
   type RunState,
@@ -46,6 +49,7 @@ import {
 import type { HumanAct } from "./events.ts";
 import { renderComment } from "./markers.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
+import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { recordItemEnd, recordRun } from "./records.ts";
 import {
   later,
@@ -103,6 +107,8 @@ interface Memory {
   /** Per run, when its next launch may start after one failed; the count of failures is on the run. */
   retryAt: Map<string, number>;
   quota?: { waitingUntil?: number };
+  /** Why each item that needs nobody waits (`waitFor`), by item; `run` is the queued run a dispatch wait is about. */
+  waits: Map<string, ItemWaiting & { run?: string }>;
   projects: Map<string, { projectId: string; root: string; branch?: string }>;
   /** When each queued run last read its item's issue as open, so a run that waits (red CI) reads it every 2 minutes,
    * not every pass; every new run reads it before it starts. */
@@ -122,6 +128,7 @@ function memory(f: FactoryRuntime) {
         retryAt: new Map(),
         projects: new Map(),
         openAt: new Map(),
+        waits: new Map(),
       }),
     );
   return m;
@@ -177,11 +184,7 @@ export function enqueueRun(
   });
   const what = item ? `${input.kind} for ${item.key}` : input.kind;
   f.events.emit({ kind: "run.queued", run: run.id, ...(input.item && { item: input.item }), text: `Queued ${what}` });
-  if (holds)
-    setNeedsYou(f, item.id, {
-      reason: "held",
-      question: `Start ${input.kind} with agentgate factory approve ${item.key}`,
-    });
+  if (holds) ask(f, item, { cause: "held", question: `Start ${input.kind}?`, run });
   return run;
 }
 
@@ -216,7 +219,6 @@ export function addItem(
     ...(incoming.url && { url: incoming.url }),
     snapshot: incoming.snapshot,
     phase: held ? "held" : "triage",
-    ...(held && { needsYou: { reason: "held", question: `Start it with agentgate factory approve ${key}` } }),
     configCommit: folder.commit,
     ...(incoming.dedupe && { dedupe: incoming.dedupe }),
   });
@@ -227,7 +229,7 @@ export function addItem(
   });
   writeBack(f, item, "taken", held ? { text: "It starts once the maintainer approves it." } : {});
   if (!held) enqueueRun(f, { kind: "triage", item: item.id });
-  return item;
+  return held ? ask(f, item, { cause: "held", question: "Start triage?" }) : item;
 }
 
 /** The most of one source's items that wait for approval before it takes no more: a webhook URL that leaked, or a
@@ -252,14 +254,14 @@ export function admit(
   return addItem(f, { source: input.source, repo: input.repo, incoming, hold });
 }
 
-/** `needsYou` undefined leaves it as it is; null clears it. */
-export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, needsYou?: NeedsYou | null): FactoryItem {
+/** `clearWait` also ends what the item waits for the person to do. */
+export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, clearWait = false): FactoryItem {
   const before = items.get(f.s, item);
   if (!before) throw new Error(`no factory item ${item}`);
   const after = items.update(f.s, item, {
     phase: to,
     ...(before.phase !== to && { phaseAt: f.s.now() }),
-    ...(needsYou !== undefined && { needsYou: needsYou ?? undefined }),
+    ...(clearWait && { needsYou: undefined }),
   });
   if (before.phase !== to) {
     f.events.emit({
@@ -270,22 +272,72 @@ export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, needsYo
       text: `${before.key} moved from ${before.phase} to ${to}`,
     });
     // A finished item's implement thread, kept while its PR is open, loses its stage's servers (`threadScope`).
-    if (!isOpenPhase(to)) f.ctx.gateway.toolsChanged();
+    if (!isOpenPhase(to)) {
+      f.ctx.gateway.toolsChanged();
+      stopWaiting(f, item);
+    }
   }
   return after;
 }
 
-export function setNeedsYou(f: FactoryRuntime, item: string, needsYou: NeedsYou | null): FactoryItem {
-  const after = items.update(f.s, item, { needsYou: needsYou ?? undefined });
-  if (needsYou)
-    f.events.emit({
-      kind: "item.needs-you",
-      item,
-      reason: needsYou.reason,
-      text: `${after.key} needs you (${needsYou.reason})${needsYou.question ? `: ${needsYou.question}` : ""}`,
+/** What an item waits for the person to do, past its cause; the cause decides the kind (`CAUSES`). */
+export interface Ask {
+  cause: NeedsYouCause;
+  question: string;
+  detail?: string;
+  recommendation?: string;
+  options?: string[];
+  link?: string;
+  /** The run that asks, which the answer goes back to. */
+  run?: FactoryRun;
+  /** A thread's question card: T3's pending request. */
+  request?: string;
+  /** The stage's report, for the comment's marker and summary. */
+  report?: FactoryReport;
+}
+
+/**
+ * The one way an item starts waiting for the person: it sets the wait, records the event the board, notify.ts and the
+ * webhooks hear, and claims the `waiting` comment when the kind posts one (`POSTS`), once per run and question. The
+ * comment and the CLI render the same block (`needsYouLines`), with the actions the daemon takes now.
+ */
+export function ask(f: FactoryRuntime, item: FactoryItem, input: Ask): FactoryItem {
+  const { kind, title } = CAUSES[input.cause];
+  const needsYou: NeedsYou = {
+    kind,
+    cause: input.cause,
+    title,
+    question: input.question,
+    ...(input.detail && { detail: input.detail }),
+    ...(input.recommendation && { recommendation: input.recommendation }),
+    ...(input.options?.length && { options: input.options }),
+    ...(input.link && { link: input.link }),
+    since: f.s.now(),
+    ...(input.run && { run: input.run.id }),
+    ...(input.request !== undefined && { request: input.request }),
+  };
+  const after = items.update(f.s, item.id, { needsYou });
+  f.events.emit({
+    kind: "item.needs-you",
+    item: item.id,
+    cause: input.cause,
+    text: `${after.key} needs you (${title}): ${input.question}`,
+  });
+  if (POSTS[kind])
+    writeBack(f, after, "waiting", {
+      text: needsYouLines(after.key, needsYou, actionsOf(f, after)).join("\n"),
+      ref: questionRef(input.run?.id ?? input.cause, input.question),
+      ...(input.report && { report: input.report }),
     });
   return after;
 }
+
+/** Ends what the item waits for, without an event: whoever answered already caused one. */
+export const stopAsking = (f: FactoryRuntime, item: string) => items.update(f.s, item, { needsYou: undefined });
+
+/** Whether the item waits on this run's question card in T3 Code. */
+const asksInT3 = (item: FactoryItem | undefined, run: FactoryRun) =>
+  item?.needsYou?.request !== undefined && item.needsYou.run === run.id;
 
 /** Records something a person did to the item, for the human-touches metric. */
 function touched(f: FactoryRuntime, item: FactoryItem, act: HumanAct, text: string) {
@@ -294,9 +346,11 @@ function touched(f: FactoryRuntime, item: FactoryItem, act: HumanAct, text: stri
   f.events.emit({ kind: "human", item: item.id, act, text: `${item.key}: ${text}` });
 }
 
-/** The person answered the thread's question in T3 Code, so the item no longer waits for them. */
-function answeredInT3(f: FactoryRuntime, item: FactoryItem) {
-  setNeedsYou(f, item.id, null);
+/** The person answered the thread's question in T3 Code, so the item no longer waits for them, and T3 showing that
+ * request again does not ask again. */
+function answeredInT3(f: FactoryRuntime, item: FactoryItem, run: FactoryRun) {
+  runs.update(f.s, run.id, { answered: item.needsYou?.request });
+  stopAsking(f, item.id);
   touched(f, item, "answer", "answered in T3 Code");
 }
 
@@ -331,10 +385,10 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
   return ended;
 }
 
-/** For a run kind's `launch` that will never start the run: it ends cancelled, and dispatch notes why. */
+/** For a run kind's `launch` that will never start the run: it ends cancelled, and says why. */
 export function cancelLaunch(f: FactoryRuntime, run: FactoryRun, why: string) {
   endRun(f, run, "cancelled", { error: why });
-  return { wait: why };
+  return { cancelled: true } as const;
 }
 
 /** Closes an item and cancels its queued runs, with the closed comment. */
@@ -358,7 +412,7 @@ export async function finishItem(
   if (options.note) f.events.emit({ kind: "note", item: item.id, text: options.reason });
   if (options.interrupt) await interruptItem(f, item.id, options.reason);
   else for (const run of runs.forItem(f.s, item.id)) if (run.state === "queued") endRun(f, run, "cancelled");
-  moveItem(f, item.id, to, null);
+  moveItem(f, item.id, to, true);
   // The item as it was, so the marker names the stage it ended in.
   if (options.comment) writeBack(f, item, to, options.comment);
   later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
@@ -570,6 +624,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   f.ctx.gateway.toolsChanged();
   if (await endedWhileStarting(f, run.id)) return false;
   runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
+  if (run.item) stopWaiting(f, run.item);
   // T3 may show the turn running before the launch answers, when the run did not know its thread yet. A launch sent
   // again after a restart can find its turn already over, which the watcher saw before the run knew its thread.
   const thread = mirrorOf(f).thread(threadId);
@@ -590,9 +645,10 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
 function launchUncertain(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | undefined) {
   endRun(f, run, "failed", { error: "its launch may have started a thread before T3 Code's sign-in changed" });
   if (item)
-    setNeedsYou(f, item.id, {
-      reason: "stuck",
-      question: `A launch of ${item.key}'s ${run.kind} stage may have started a thread before T3 Code's sign-in changed. Look for it in T3 Code, then run agentgate factory retry ${item.key} or drop it.`,
+    ask(f, item, {
+      cause: "stuck",
+      question: `A launch of ${item.key}'s ${run.kind} stage may have started a thread before T3 Code's sign-in changed. Look for it in T3 Code before you retry it.`,
+      run,
     });
 }
 
@@ -633,11 +689,40 @@ function providerOf(model: FactoryModel | undefined): ProviderName | undefined {
   return (["claude", "codex", "cursor"] as const).find((p) => name.includes(p));
 }
 
-/** Records why a run waits, telling the event list only when the reason changes. */
-function note(f: FactoryRuntime, run: FactoryRun, text: string) {
-  if (run.error === text) return;
-  runs.update(f.s, run.id, { error: text });
-  f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text: `${run.kind} waits: ${text}` });
+/** The waits dispatch tells the event list of; a free thread or a PR's checks are waited for too often to note. */
+const NOTED: readonly ItemWaiting["on"][] = ["quota", "default-branch", "launch"];
+
+/** Records why an item that needs nobody waits, for the board: on what, since when, and a sentence for a person.
+ * `run` names a queued run, whose start ends the wait. */
+export function waitFor(f: FactoryRuntime, item: string, on: ItemWaiting["on"], text: string, run?: FactoryRun) {
+  const waits = memory(f).waits;
+  const before = waits.get(item);
+  if (before?.on === on && before.text === text) return;
+  waits.set(item, { on, text, since: before?.on === on ? before.since : f.s.now(), ...(run && { run: run.id }) });
+  if (run && NOTED.includes(on))
+    f.events.emit({
+      kind: "note",
+      run: run.id,
+      item,
+      text: `${runName(f, run)} ${text[0]!.toLowerCase()}${text.slice(1)}`,
+    });
+}
+
+/** Ends the item's wait, or only a wait on one of `on`. */
+export function stopWaiting(f: FactoryRuntime, item: string, on?: readonly ItemWaiting["on"][]) {
+  const waits = memory(f).waits;
+  const wait = waits.get(item);
+  if (wait && (!on || on.includes(wait.on))) waits.delete(item);
+}
+
+/** What the board shows the item waits for: nothing while it needs the person, or once the run it waited to start
+ * has started or ended. */
+function waitingOf(f: FactoryRuntime, item: FactoryItem): ItemWaiting | undefined {
+  const wait = memory(f).waits.get(item.id);
+  if (!wait || item.needsYou || !isOpenPhase(item.phase)) return undefined;
+  const run = wait.run ? runs.get(f.s, wait.run) : undefined;
+  if (wait.run && run?.state !== "queued" && run?.state !== "starting") return undefined;
+  return { on: wait.on, since: wait.since, text: wait.text };
 }
 
 /** Stage runs first, then scout runs, each oldest first. */
@@ -659,7 +744,11 @@ async function dispatch(f: FactoryRuntime) {
     if (!f.runKinds.has(queued.kind)) continue;
     if ((m.retryAt.get(queued.id) ?? 0) > s.now()) continue;
     const stage = isStage(queued.kind);
-    if (counts.stage + counts.scout >= limits.threads) continue;
+    if (counts.stage + counts.scout >= limits.threads) {
+      if (queued.item)
+        waitFor(f, queued.item, "thread", `Waits for a free thread; all ${limits.threads} are working`, queued);
+      continue;
+    }
     // Scout runs leave a slot for the items' work.
     if (!stage && counts.scout >= Math.max(1, limits.threads - 1)) continue;
     const outcome = await launchRun(f, queued);
@@ -701,7 +790,14 @@ async function prepareLaunch(
   const pooled = provider && s.list("account").some((a) => a.provider === provider && a.enabled);
   if (limitsOf(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
-    note(f, run, `no ${provider} account has room`);
+    if (run.item)
+      waitFor(
+        f,
+        run.item,
+        "quota",
+        `Waits for quota: no ${provider} account has room${until ? ` until ${time(until)}` : ""}`,
+        run,
+      );
     return { quota: { ...(until !== undefined && { waitingUntil: until }) } };
   }
   const openAt = memory(f).openAt;
@@ -719,8 +815,9 @@ async function prepareLaunch(
     }
   }
   const spec = await definition.launch(run, item);
+  if ("cancelled" in spec) return {};
   if ("wait" in spec) {
-    note(f, runs.get(s, run.id) ?? run, spec.wait);
+    if (run.item) waitFor(f, run.item, spec.wait, spec.text, run);
     return {};
   }
   return { run, ...(item && { item }), spec };
@@ -759,11 +856,16 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       // T3 answered this first send with an error, so no thread exists: the next launch may go under any session.
       // After a send whose answer was lost, the thread may exist: only that session can find it again.
       const answered = e instanceof T3McpError && e.answered && !queued.launchSession;
+      const error = `starting it failed: ${shortError(e)}`;
       runs.update(s, run.id, {
         ...(current.state === "starting" && { state: "queued" as const }),
         ...(answered && { launchSession: undefined }),
+        error,
       });
-      note(f, current, `starting it failed: ${shortError(e)}`);
+      if (current.item)
+        waitFor(f, current.item, "launch", `Waits to try again at ${time(m.retryAt.get(run.id)!)}: ${error}`, current);
+      else if (current.error !== error)
+        f.events.emit({ kind: "note", run: run.id, text: `${runName(f, run)}: ${error}` });
     }
     return {};
   }
@@ -865,25 +967,17 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
-    const asks = `The ${run.kind} thread asks you something in T3 Code`;
-    if (run.state === "running") {
-      runs.update(s, run.id, { state: "waiting" });
-      if (run.item)
-        setNeedsYou(f, run.item, {
-          reason: "approval",
-          question: asks,
-          ...(run.threadLink && { link: run.threadLink }),
-        });
-    }
-    // Also for a run that already waited when this daemon started, whose question was never read.
-    if (run.item && items.get(s, run.item)?.needsYou?.question === asks)
-      later(f, run.item, `Reading what ${run.id}'s thread asks`, () => showQuestion(f, run.id));
+    if (run.state === "running") runs.update(s, run.id, { state: "waiting" });
+    // Once per T3 request: one answered, or already asked, is not asked again when T3 shows it again.
+    const request = thread.request ?? "";
+    if (run.item && run.answered !== request && items.get(s, run.item)?.needsYou?.request !== request)
+      later(f, run.item, `Reading what ${run.id}'s thread asks`, () => askThreadQuestion(f, run.id, request));
     return;
   }
   if (run.state === "waiting") {
     runs.update(s, run.id, { state: "running" });
     const item = run.item ? items.get(s, run.item) : undefined;
-    if (item?.needsYou?.reason === "approval") answeredInT3(f, item);
+    if (asksInT3(item, run)) answeredInT3(f, item!, run);
   }
   if (working(f, thread)) {
     m.seen.add(run.id);
@@ -896,23 +990,39 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   await silentEnd(f, runs.get(s, run.id)!);
 }
 
-/** What a waiting thread asks, read from T3 Code into its item's wait, so the app, the CLI and Grok show it and can answer
- * it without T3: the first line as the question, the rest, such as a spec, as `detail`. Set without an event: the
- * event, and the updates webhook, already said the item waits. */
-async function showQuestion(f: FactoryRuntime, id: string) {
-  const run = runs.get(f.s, id);
-  if (!run?.item || !run.threadId || run.state !== "waiting") return;
-  const requests = await pendingRequests(t3Mcp(f), run.threadId).catch(() => []);
-  const text = requests
-    .flatMap((r) => r.questions.map((q) => q.question.trim()))
+/** A waiting thread's question, read from T3 Code into its item's wait, so the app, the CLI, Grok and the issue show it
+ * and can answer it without T3: the first line as the question, the rest, such as a spec, as `detail`, and the card's
+ * options. When T3 cannot be read, the wait says the thread asks in T3 Code. */
+async function askThreadQuestion(f: FactoryRuntime, id: string, request: string) {
+  const asking = () => {
+    const run = runs.get(f.s, id);
+    const item = run?.item ? items.get(f.s, run.item) : undefined;
+    const fresh = run?.state === "waiting" && run.answered !== request && item?.needsYou?.request !== request;
+    return fresh ? { run, item: item! } : undefined;
+  };
+  const before = asking();
+  if (!before?.run.threadId) return;
+  const requests = await pendingRequests(t3Mcp(f), before.run.threadId).catch(() => []);
+  const now = asking();
+  if (!now) return;
+  const { run, item } = now;
+  const questions = (
+    requests.some((r) => r.requestId === request) ? requests.filter((r) => r.requestId === request) : requests
+  ).flatMap((r) => r.questions);
+  const text = questions
+    .map((q) => q.question.trim())
     .filter(Boolean)
     .join("\n\n");
-  const item = items.get(f.s, run.item);
-  if (!text || item?.needsYou?.reason !== "approval" || runs.get(f.s, id)?.state !== "waiting") return;
-  const [first = "", ...rest] = text.split("\n");
+  const [first = `The ${run.kind} thread asks you something in T3 Code`, ...rest] = text ? text.split("\n") : [];
   const detail = rest.join("\n").trim();
-  items.update(f.s, item.id, {
-    needsYou: { ...item.needsYou, question: first.slice(0, 500), ...(detail && { detail: detail.slice(0, 20_000) }) },
+  ask(f, item, {
+    cause: "question",
+    question: first.slice(0, 500),
+    ...(detail && { detail: detail.slice(0, 20_000) }),
+    options: questions.flatMap((q) => q.options.map((o) => o.label)).slice(0, 10),
+    ...(run.threadLink && { link: run.threadLink }),
+    run,
+    request,
   });
 }
 
@@ -924,10 +1034,11 @@ function stopped(f: FactoryRuntime, run: FactoryRun) {
 }
 
 export function markStopped(f: FactoryRuntime, item: FactoryItem, run: FactoryRun) {
-  setNeedsYou(f, item.id, {
-    reason: "stopped",
-    question: `Someone stopped ${item.key}'s ${run.kind} thread in T3 Code, so the factory leaves it alone. Run agentgate factory retry ${item.key} to go on, or drop it.`,
+  ask(f, item, {
+    cause: "stopped",
+    question: `Someone stopped ${item.key}'s ${run.kind} thread in T3 Code, so the factory leaves it alone.`,
     ...(run.threadLink && { link: run.threadLink }),
+    run,
   });
 }
 
@@ -944,9 +1055,10 @@ async function threadDeleted(f: FactoryRuntime, id: string) {
   endRun(f, run, "failed", { error: "its thread was deleted in T3 Code" });
   const item = run.item ? items.get(f.s, run.item) : undefined;
   if (!item || !isOpenPhase(item.phase)) return;
-  setNeedsYou(f, item.id, {
-    reason: "stopped",
-    question: `${item.key}'s ${run.kind} thread was deleted in T3 Code, so its ${run.kind} stage ended. Run agentgate factory retry ${item.key} to go on in a new thread, or drop it.`,
+  ask(f, item, {
+    cause: "deleted",
+    question: `${item.key}'s ${run.kind} thread was deleted in T3 Code, so its ${run.kind} stage ended.`,
+    run,
   });
 }
 
@@ -966,11 +1078,12 @@ function detach(f: FactoryRuntime, id: string, to: string) {
   if (!run) return;
   if (ACTIVE.includes(run.state)) endRun(f, run, "cancelled", { error: `handed off to ${to}` });
   const item = run.item ? items.get(f.s, run.item) : undefined;
-  if (!item || !isOpenPhase(item.phase) || item.needsYou?.reason === "handed-off") return;
-  setNeedsYou(f, item.id, {
-    reason: "handed-off",
-    question: `${item.key}'s ${run.kind} thread was handed to ${to} and no longer works for the factory. Continue it there, then run agentgate factory retry ${item.key} to go on here, or drop it.`,
+  if (!item || !isOpenPhase(item.phase) || item.needsYou?.cause === "handed-off") return;
+  ask(f, item, {
+    cause: "handed-off",
+    question: `${item.key}'s ${run.kind} thread was handed to ${to} and no longer works for the factory. Continue it there before you retry it here.`,
     ...(run.threadLink && { link: run.threadLink }),
+    run,
   });
 }
 
@@ -984,7 +1097,7 @@ function detachHandedOff(f: FactoryRuntime) {
       if (!run) continue;
       const item = run.item ? items.get(f.s, run.item) : undefined;
       const owner = run.kind === "implement" && run.state === "reported" && !!item?.prUrl && isOpenPhase(item.phase);
-      if (!ACTIVE.includes(run.state) && !(owner && item.needsYou?.reason !== "handed-off")) continue;
+      if (!ACTIVE.includes(run.state) && !(owner && item.needsYou?.cause !== "handed-off")) continue;
       later(f, run.item ?? run.id, `Detaching ${run.id} from its handed-off thread`, async () =>
         detach(f, run.id, job.target),
       );
@@ -1020,13 +1133,12 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
   }
   const item = run.item ? items.get(s, run.item) : undefined;
   if (!item || !isOpenPhase(item.phase)) return;
-  const question = `The ${run.kind} stage ended twice without a report, and so did its retry. Read the thread, then run agentgate factory retry ${item.key} or drop it.`;
-  const after = setNeedsYou(f, item.id, {
-    reason: "failed",
-    question,
+  ask(f, item, {
+    cause: "failed",
+    question: `The ${run.kind} stage ended twice without a report, and so did its retry. Read the thread before you retry it.`,
     ...(run.threadLink && { link: run.threadLink }),
+    run,
   });
-  writeBack(f, after, "waiting", { text: `The ${run.kind} stage failed twice.`, ref: `failed:${run.id}` });
 }
 
 // ---- reports
@@ -1087,20 +1199,23 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
 
   const reported = endRun(f, run, "reported", { report });
   // The thread could only go on to report once the person answered it.
-  if (item?.needsYou?.reason === "approval") answeredInT3(f, item);
+  if (asksInT3(item, run)) answeredInT3(f, item!, run);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
   const closing = CLOSING[report.outcome];
   if (item && closing) await closeItem(f, item, closing(report), report);
-  else if (item && asks) {
-    const question = report.blocked?.missing ?? report.decision!.question;
-    const after = setNeedsYou(f, item.id, {
-      reason: report.outcome === "blocked" ? "blocked" : "decision",
-      question,
-      ...(report.decision && { recommendation: report.decision.recommendation }),
+  else if (item && asks)
+    ask(f, items.get(s, item.id)!, {
+      cause: report.outcome === "blocked" ? "blocked" : "decision",
+      question: report.blocked?.missing ?? report.decision!.question,
+      ...(report.decision && {
+        recommendation: report.decision.recommendation,
+        options: report.decision.options,
+      }),
       ...(run.threadLink && { link: run.threadLink }),
+      run: reported,
+      report,
     });
-    writeBack(f, after, "waiting", { report, text: question, ref: questionRef(run.id, question) });
-  } else if (!closing && !asks) await definition.accept(report, reported, item);
+  else if (!closing && !asks) await definition.accept(report, reported, item);
   // The thread settles once the turn that reported ends (`settleFinished`).
   return { accepted: true };
 }
@@ -1230,9 +1345,9 @@ function findStuck(f: FactoryRuntime) {
     );
     if (s.now() - last < stalledWindow(f, item.configCommit)) continue;
     const hours = Math.round((s.now() - last) / HOUR);
-    setNeedsYou(f, item.id, {
-      reason: "stuck",
-      question: `Nothing moved ${item.key} in ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read what happened with agentgate factory show ${item.key}, then retry or drop it.`,
+    ask(f, item, {
+      cause: "stuck",
+      question: `Nothing moved ${item.key} in ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read its history before you retry it.`,
     });
   }
   // Only a mirror that has read T3 Code's threads can tell that one is gone: at start-up, and while T3 Code cannot be
@@ -1305,46 +1420,116 @@ export function findItem(f: FactoryRuntime, ref: string) {
   return matches[0];
 }
 
-export const ACTIONS = itemActions;
-type Action = ItemAction;
-/** What `retry` takes back: an item that failed, went over its budget, stalled on its PR or got stuck. */
-const RETRYABLE: readonly NeedsYou["reason"][] = ["failed", "budget", "stalled", "stuck", "handed-off", "stopped"];
-
-/** Whether approve and reject answer something: an item held for approval, a thread's pending request its run kind
- * can answer, or a stage that reported a question or what blocks it. */
-function answerable(f: FactoryRuntime, item: FactoryItem, last: FactoryRun | undefined) {
-  if (item.phase === "held" || item.needsYou?.reason === "held") return true;
-  if (last?.state === "waiting") return !!f.runKinds.get(last.kind)?.answer;
-  const outcome = last?.report?.outcome;
-  return !!last?.threadId && last.state === "reported" && (outcome === "blocked" || outcome === "needs-decision");
+/** What `retry` does for an item that stopped: go on with its PR when it has one, or start the stage it stopped in
+ * again in a new thread. */
+function retryTarget(f: FactoryRuntime, item: FactoryItem): { pr: true } | { kind: StageName } {
+  if (item.prUrl && ["pr", "review", "ready"].includes(item.phase)) return { pr: true };
+  const kind =
+    runs
+      .forItem(f.s, item.id)
+      .map((r) => r.kind)
+      .findLast(isStage) ?? "triage";
+  return { kind };
 }
 
-/** The actions `act` takes for the item now, so the app offers no button the daemon refuses. */
-function actionsOf(f: FactoryRuntime, item: FactoryItem, last: FactoryRun | undefined): ItemAction[] {
-  if (item.phase === "shipped") return [];
-  if (item.phase === "closed") return ["retry"];
+/** The approve and reject an item's wait takes: a start, the card a thread asks (when its run kind can answer it
+ * here), or what a stage reported it needs decided or unblocked. */
+function answersOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
+  const wait = item.needsYou;
+  const run = wait?.run ? runs.get(f.s, wait.run) : undefined;
+  if (wait?.kind === "start") {
+    const stage = item.phase === "held" ? "triage" : (run?.kind ?? item.phase);
+    return [
+      { name: "approve", label: "Approve", effect: `Start ${stage}`, takesText: false },
+      { name: "reject", label: "Reject", effect: `Close it without starting ${stage}`, takesText: false },
+    ];
+  }
+  if (wait?.kind !== "answer" || !run?.threadId) return [];
+  if (wait.request !== undefined)
+    return run.state === "waiting" && f.runKinds.get(run.kind)?.answer
+      ? [
+          { name: "approve", label: "Approve", effect: "Approve what the thread asks", takesText: false },
+          {
+            name: "reject",
+            label: "Ask for changes…",
+            effect: "Ask the thread for changes, with your feedback",
+            takesText: true,
+          },
+        ]
+      : [];
+  if (run.state !== "reported") return [];
+  if (!wait.recommendation)
+    return [
+      { name: "approve", label: "Unblock…", effect: "Tell the thread what changed, and it goes on", takesText: true },
+    ];
   return [
-    ...(answerable(f, item, last) ? (["approve", "reject"] as const) : []),
-    ...(item.needsYou && RETRYABLE.includes(item.needsYou.reason) ? (["retry"] as const) : []),
-    "drop",
+    { name: "approve", label: "Take the recommendation", effect: "Go with the recommendation", takesText: false },
+    { name: "approve", label: "Answer…", effect: "Send your answer to the thread, and it goes on", takesText: true },
+    { name: "reject", label: "Reject", effect: "Refuse the recommendation, and the thread goes on", takesText: false },
+  ];
+}
+
+/** The actions `act` takes for the item now, with what each does, so the CLI, the app and the issue comment offer the
+ * same choices and none the daemon refuses. */
+export function actionsOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
+  if (!isOpenPhase(item.phase))
+    return item.phase === "closed" && !frozenHere(f)
+      ? [{ name: "retry", label: "Retry", effect: "Take it in again from triage", takesText: false }]
+      : [];
+  if (frozenHere(f))
+    return [{ name: "drop", label: "Drop…", effect: "Close it here, without a comment", takesText: true }];
+  const target = item.needsYou?.kind === "stopped" ? retryTarget(f, item) : undefined;
+  return [
+    ...answersOf(f, item),
+    ...(target
+      ? [
+          {
+            name: "retry" as const,
+            label: "Retry",
+            effect: "pr" in target ? "Go on with its PR" : `Start ${target.kind} again in a new thread`,
+            takesText: false,
+          },
+        ]
+      : []),
+    {
+      name: "drop",
+      label: "Drop…",
+      effect: "Stop its threads and close it, with your reason on the issue; its PR stays open",
+      takesText: true,
+    },
   ];
 }
 
 /** approve, reject, retry or drop an item, as one step of it. Returns what happened, for the CLI and API. */
-async function itemAction(f: FactoryRuntime, ref: string, action: Action, reason?: string): Promise<string> {
+async function itemAction(f: FactoryRuntime, ref: string, action: ItemAction, reason?: string): Promise<string> {
   const found = findItem(f, ref);
   if (!found) throw new Error(`${f.s.nodeId} has no factory item ${ref}`);
   return withItem(f, found.id, () => act(f, found.id, action, reason));
 }
 
-async function act(f: FactoryRuntime, id: string, action: Action, reason?: string): Promise<string> {
+/** Why `act` refuses an action the item does not take now. */
+function refusal(f: FactoryRuntime, item: FactoryItem, action: ItemAction) {
+  if (action === "drop") return `${item.key} is already ${item.phase}`;
+  // Any other action would start or wake a thread, which only the factory machine does.
+  if (frozenHere(f))
+    return `${item.key} is frozen on ${f.s.nodeId} while the factory runs on ${f.pointer()!.node}; move the factory back to go on with it, or drop it`;
+  if (action === "retry")
+    return item.phase === "shipped"
+      ? `${item.key} shipped; there is nothing to retry`
+      : `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off, was stopped or lost its thread`;
+  const run = item.needsYou?.run ? runs.get(f.s, item.needsYou.run) : undefined;
+  if (item.needsYou?.request !== undefined)
+    return `Answer ${item.key}'s question in T3 Code${run?.threadLink ? `: ${run.threadLink}` : ""}`;
+  return `${item.key} has nothing to ${action}`;
+}
+
+async function act(f: FactoryRuntime, id: string, action: ItemAction, reason?: string): Promise<string> {
   const { s } = f;
   const item = items.get(s, id)!;
-  const last = runs.forItem(s, item.id).at(-1);
+  if (!actionsOf(f, item).some((a) => a.name === action)) throw new Error(refusal(f, item, action));
   const because = reason ? `: ${reason}` : "";
 
   if (action === "drop") {
-    if (!isOpenPhase(item.phase)) throw new Error(`${item.key} is already ${item.phase}`);
     if (frozenHere(f)) {
       // This machine is signed out of T3 Code, so the item's threads are left as they are. And no comment: the issue
       // is the factory machine's to take in again, which a `finished` marker from here would stop.
@@ -1363,111 +1548,99 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
     });
     return `Dropped ${item.key}`;
   }
+  if (action === "retry") return item.phase === "closed" ? reopen(f, item) : retryStage(f, item);
+  return answer(f, item, action, reason);
+}
 
-  // Any other action would start or wake a thread, which only the factory machine does.
-  if (frozenHere(f))
-    throw new Error(
-      `${item.key} is frozen on ${s.nodeId} while the factory runs on ${f.pointer()!.node}; move the factory back to go on with it, or drop it`,
-    );
-
-  if (action === "retry") {
-    if (item.phase === "shipped") throw new Error(`${item.key} shipped; there is nothing to retry`);
-    if (item.phase === "closed") return reopen(f, item);
-    if (!item.needsYou || !RETRYABLE.includes(item.needsYou.reason))
-      throw new Error(
-        `${item.key} has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off or was stopped`,
-      );
-    return retryStage(f, item);
-  }
-
+/**
+ * The person's answer to what the item waits for, sent back where it was asked: a start goes ahead or the item closes,
+ * a thread's card is answered in T3 Code, and a stage that reported a question or a blocker hears the answer in its own
+ * thread and goes on. Approve with no text on a decision goes with the recommendation.
+ */
+async function answer(f: FactoryRuntime, item: FactoryItem, action: "approve" | "reject", text?: string) {
+  const { s } = f;
   const approve = action === "approve";
-  if (item.phase === "held") {
+  const because = text ? `: ${text}` : "";
+  const wait = item.needsYou!;
+  const run = wait.run ? runs.get(s, wait.run) : undefined;
+
+  if (wait.kind === "start") {
+    const held = item.phase === "held";
+    const stage = held ? "triage" : (run?.kind ?? item.phase);
     if (!approve) {
       await closeItem(f, item, `The maintainer rejected it${because}.`);
-      touched(f, item, "reject", "rejected while held");
+      touched(f, item, "reject", held ? "rejected while held" : `rejected before ${stage}`);
       return `Rejected ${item.key}`;
     }
-    moveItem(f, item.id, "triage", null);
-    enqueueRun(f, { kind: "triage", item: item.id, approved: true });
-    touched(f, item, "approve", "approved to start");
-    return `Approved ${item.key}; triage is queued`;
-  }
-  // Held before a stage with `start: manual`: its run is queued, and dispatch starts it once the hold is gone.
-  if (item.needsYou?.reason === "held") {
-    const stage = last?.kind ?? item.phase;
-    if (!approve) {
-      await closeItem(f, item, `The maintainer rejected it${because}.`);
-      touched(f, item, "reject", `rejected before ${stage}`);
-      return `Rejected ${item.key}`;
+    if (held) {
+      moveItem(f, item.id, "triage", true);
+      enqueueRun(f, { kind: "triage", item: item.id, approved: true });
+      touched(f, item, "approve", "approved to start");
+      return `Approved ${item.key}; triage is queued`;
     }
-    setNeedsYou(f, item.id, null);
+    // Its run is queued, and dispatch starts it once the wait is gone.
+    stopAsking(f, item.id);
     touched(f, item, "approve", `approved to start ${stage}`);
     return `Approved ${item.key}; ${stage} starts`;
   }
-  if (last?.state === "waiting") {
-    if (!answerable(f, item, last))
-      throw new Error(`Answer ${item.key}'s question in T3 Code${last.threadLink ? `: ${last.threadLink}` : ""}`);
-    await f.runKinds.get(last.kind)!.answer!(last, { approve, ...(reason && { reason }) });
-    // Answered here, so the thread going on is not a second answer from T3 Code (`answeredInT3`).
-    setNeedsYou(f, item.id, null);
-    touched(f, item, action, `${action === "approve" ? "approved" : "rejected"} what the ${last.kind} thread asked`);
+
+  if (!run) throw new Error(`${item.key} has nothing to ${action}`);
+  if (wait.request !== undefined) {
+    await f.runKinds.get(run.kind)!.answer!(run, { approve, ...(text && { reason: text }) });
+    // Answered here, so T3 showing the request again, or the thread going on, is not a second answer.
+    runs.update(s, run.id, { answered: wait.request });
+    stopAsking(f, item.id);
+    touched(f, item, action, `${approve ? "approved" : "rejected"} what the ${run.kind} thread asked`);
     return `${approve ? "Approved" : "Rejected"} for ${item.key}`;
   }
-  // A stage that reported a question or what blocks it hears the answer in its own thread, and goes on.
-  const outcome = last?.report?.outcome;
-  if (last?.threadId && answerable(f, item, last)) {
-    const answer = approve
-      ? `The maintainer answered: ${reason ?? (outcome === "needs-decision" ? "go with your recommendation" : "it is resolved")}.`
-      : `The maintainer rejected your recommendation${because}.`;
-    const reopened = runs.update(s, last.id, { state: "running", endedAt: undefined });
-    f.ctx.gateway.toolsChanged();
-    try {
-      await sendToThread(
-        f,
-        reopened,
-        `${answer} Continue the ${last.kind} stage, then report again with \`factory_report\`.`,
-      );
-    } catch (e) {
-      runs.update(s, last.id, { state: "reported", endedAt: last.endedAt });
-      throw e;
-    }
-    setNeedsYou(f, item.id, null);
-    touched(f, item, action, `answered the ${last.kind} thread's ${outcome === "blocked" ? "blocker" : "question"}`);
-    return `Sent the answer to ${item.key}'s ${last.kind} thread`;
+
+  const reply = approve
+    ? `The maintainer answered: ${text ?? (wait.recommendation ? "go with your recommendation" : "it is resolved")}.`
+    : `The maintainer rejected your recommendation${because}.`;
+  const reopened = runs.update(s, run.id, { state: "running", endedAt: undefined });
+  f.ctx.gateway.toolsChanged();
+  try {
+    await sendToThread(
+      f,
+      reopened,
+      `${reply} Continue the ${run.kind} stage, then report again with \`factory_report\`.`,
+    );
+  } catch (e) {
+    runs.update(s, run.id, { state: "reported", endedAt: run.endedAt });
+    throw e;
   }
-  throw new Error(`${item.key} has no question to ${action}`);
+  stopAsking(f, item.id);
+  touched(f, item, action, `answered the ${run.kind} thread's ${wait.recommendation ? "question" : "blocker"}`);
+  return `Sent the answer to ${item.key}'s ${run.kind} thread`;
 }
 
 /** A finished item taken in again at triage. It is a new pass, whose moments post again. */
 function reopen(f: FactoryRuntime, item: FactoryItem) {
   const { s } = f;
   s.db.run("delete from factory_writebacks where item=?", [item.id]);
-  const reopened = moveItem(f, item.id, "triage", null);
+  const reopened = moveItem(f, item.id, "triage", true);
   enqueueRun(f, { kind: "triage", item: item.id, approved: true });
   writeBack(f, reopened, "taken", {});
   touched(f, item, "retry", "taken in again after it finished");
   return `Retrying triage for ${item.key}`;
 }
 
-/** An item that waits after a failure goes on: with its PR, when it has one; otherwise its stage starts again in a new
- * thread. What is still queued for it, such as a launch that kept failing, ends first. */
+/** An item that stopped goes on (`retryTarget`). What is still queued for it, such as a launch that kept failing,
+ * ends first. */
 function retryStage(f: FactoryRuntime, item: FactoryItem) {
   const { s } = f;
   for (const run of runs.forItem(s, item.id))
     if (run.state === "queued" || run.state === "starting") endRun(f, run, "cancelled", { error: "retried" });
-  setNeedsYou(f, item.id, null);
-  if (item.prUrl && ["pr", "review", "ready"].includes(item.phase)) {
+  stopAsking(f, item.id);
+  const target = retryTarget(f, item);
+  if ("pr" in target) {
     // The PR follower takes it from here: it nudges the implement thread again and reviews the PR as before.
     const implement = runs.forItem(s, item.id).findLast((r) => r.kind === "implement" && r.report?.result);
     if (implement) runs.update(s, implement.id, { nudges: 0 });
     touched(f, item, "retry", "retried with its PR");
     return `Retrying ${item.key} with its PR`;
   }
-  const kind =
-    runs
-      .forItem(s, item.id)
-      .map((r) => r.kind)
-      .findLast(isStage) ?? "triage";
+  const { kind } = target;
   if (item.phase !== kind) moveItem(f, item.id, kind);
   enqueueRun(f, { kind, item: item.id, approved: true });
   touched(f, item, "retry", `retried ${kind}`);
@@ -1551,6 +1724,7 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
   const { s } = f;
   const itemRuns = runs.forItem(s, item.id);
   const run = itemRuns.at(-1);
+  const waiting = waitingOf(f, item);
   return {
     id: item.id,
     key: item.key,
@@ -1570,7 +1744,8 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
       },
     }),
     ...(item.needsYou && { needsYou: item.needsYou }),
-    actions: frozenHere(f) ? (isOpenPhase(item.phase) ? ["drop"] : []) : actionsOf(f, item, run),
+    ...(waiting && { waiting }),
+    actions: actionsOf(f, item),
     ...(item.prUrl && {
       pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }), ...reviewState(item, itemRuns) },
     }),
@@ -1666,8 +1841,8 @@ const time = (at: number) => `${new Date(at).toISOString().slice(0, 16).replace(
 export function detailText(d: FactoryItemDetail): string[] {
   const { item } = d;
   const lines = [`${item.key} ${item.title} (${item.repo}, ${item.phase})`];
-  if (item.needsYou) lines.push(`Needs you (${item.needsYou.reason}): ${item.needsYou.question ?? ""}`);
-  if (item.needsYou?.detail) lines.push("", item.needsYou.detail, "");
+  if (item.needsYou) lines.push(...needsYouLines(item.key, item.needsYou, item.actions, { detail: true }));
+  else if (item.waiting) lines.push(item.waiting.text);
   if (item.pr) lines.push(`PR: ${item.pr.url}`);
   lines.push(`Tokens: ${item.tokensUnknown ? "unknown" : item.tokens}`, "", "Runs:");
   for (const r of d.runs)
@@ -1716,7 +1891,7 @@ const triage = (f: FactoryRuntime) => ({
 });
 
 /** What each item action does, for `agentgate factory help` and for an assistant on a remote endpoint. */
-const ACTION_HELP: Record<Action, { summary: string; remote: string }> = {
+const ACTION_HELP: Record<ItemAction, { summary: string; remote: string }> = {
   approve: {
     summary: "start a held item, take what a stage recommends, approve a spec, or say what changed for a blocked item",
     remote:
@@ -1728,9 +1903,10 @@ const ACTION_HELP: Record<Action, { summary: string; remote: string }> = {
       "Reject an item that waits for the maintainer: turn a held item away, refuse a stage's recommendation, or ask for spec changes with reason as the feedback.",
   },
   retry: {
-    summary: "take an item that failed, stalled or was stopped back to work, or start a closed one again",
+    summary:
+      "take an item that stopped (failed, stalled, stuck, over budget, stopped) back to work, or start a closed one again",
     remote:
-      "Take an item that failed, went over its token budget, stalled, got stuck, was stopped or handed off back to work, or start a closed item again at triage.",
+      "Take an item that stopped back to work (it failed, went over its token budget, stalled, got stuck, was stopped or handed off, or lost its thread), or start a closed item again at triage.",
   },
   drop: {
     summary: "stop an item's threads and close it; its PR stays open",
@@ -1777,7 +1953,7 @@ export function setup(f: FactoryRuntime): void {
     tool: {
       name: "factory_add",
       description:
-        "Add an item to the software factory. It waits until the maintainer approves it with agentgate factory approve, then is triaged in T3 Code like an issue from a source.",
+        "Add an item to the software factory. It waits until the maintainer approves it, then is triaged in T3 Code like an issue from a source.",
       result(item) {
         const url = f.s.get("node", f.pointer()?.node ?? f.s.nodeId)?.url;
         return { item: item.id, key: item.key, ...(url && { link: `${url.replace(/\/$/, "")}/factory` }) };
@@ -1821,7 +1997,7 @@ export function setup(f: FactoryRuntime): void {
       result: (detail) => detailText(detail).join("\n"),
     },
   });
-  for (const action of ACTIONS)
+  for (const action of itemActions)
     operation(f, {
       name: action,
       summary: ACTION_HELP[action].summary,

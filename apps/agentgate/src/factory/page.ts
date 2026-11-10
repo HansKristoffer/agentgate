@@ -178,9 +178,10 @@ function render(b) {
 			cards.push(c);
 			return;
 		}
-		c.append(el("div", "reason", i.needsYou.reason), el("div", "title", i.key + " " + i.title));
-		if (i.needsYou.question) c.append(el("p", "", i.needsYou.question));
+		c.append(el("div", "reason", i.needsYou.title), el("div", "title", i.key + " " + i.title));
+		c.append(el("p", "", i.needsYou.question));
 		if (i.needsYou.recommendation) c.append(el("p", "", "Recommended: " + i.needsYou.recommendation));
+		if (i.needsYou.options) c.append(el("p", "", "Options: " + i.needsYou.options.join("; ")));
 		var go = i.needsYou.link || (i.run && i.run.threadLink) || i.url;
 		if (go) c.append(link("Open", go));
 		cards.push(c);
@@ -237,7 +238,8 @@ function render(b) {
 			var card = el("div", "item");
 			card.append(el("div", "key", i.key + " · " + i.repo), link(i.title, i.url));
 			var sub = [];
-			if (i.run) sub.push(i.run.kind + " " + i.run.state);
+			if (i.waiting) sub.push(i.waiting.text);
+			else if (i.run) sub.push(i.run.kind + " " + i.run.state);
 			if (i.pr) sub.push("PR" + (i.pr.openFindings ? ", " + i.pr.openFindings + " findings" : ""));
 			if (i.tokensUnknown) sub.push("tokens unknown");
 			sub.push("since " + ago(i.inPhaseSince));

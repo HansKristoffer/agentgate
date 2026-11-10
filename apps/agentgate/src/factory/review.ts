@@ -5,7 +5,7 @@ import { cancelLaunch, defaultBranch } from "./controller.ts";
 import { dataOf, type FactoryItem, type FactoryRun } from "./db.ts";
 import { prView } from "./gh.ts";
 import { describe, findingsOf, limitsOf, reviewRuns, rounds, takeReview } from "./pr.ts";
-import { later, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { later, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
 
 /**
  * The review stage: a fresh thread in its own worktree reviews the PR's head, blind to what the implementer said
@@ -28,7 +28,7 @@ const REVIEW_BRIEF = `You review one pull request for AgentGate's software facto
 
 const review = (f: FactoryRuntime) => ({
   kind: "review" as const,
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }> {
+  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch> {
     if (!item?.prUrl) throw new Error(`the review run ${run.id} has no item with a PR`);
     const max = limitsOf(f, item).reviewRounds;
     // Review was switched off after this run was queued: the PR follower sends the PR to the maintainer.

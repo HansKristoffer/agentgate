@@ -1,7 +1,7 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, enqueueRun, moveItem, setNeedsYou, writeBack } from "./controller.ts";
+import { ask, closeItem, defaultBranch, enqueueRun, moveItem, writeBack } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
 import { pendingRequests, t3Mcp } from "./t3-mcp.ts";
@@ -126,10 +126,11 @@ const spec = (f: FactoryRuntime) => ({
       enqueueRun(f, { kind: "spec", item: item.id });
       return;
     }
-    setNeedsYou(f, item.id, {
-      reason: "failed",
-      question: `You asked for changes to ${item.key}'s spec ${rounds} times. Read the thread, then run agentgate factory retry ${item.key} for another round, or drop it.`,
+    ask(f, item, {
+      cause: "failed",
+      question: `You asked for changes to ${item.key}'s spec ${rounds} times. Read the thread before you retry it for another round.`,
       ...(run.threadLink && { link: run.threadLink }),
+      run,
     });
   },
 

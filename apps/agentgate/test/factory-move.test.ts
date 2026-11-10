@@ -310,7 +310,7 @@ test("move --now freezes the old machine's items: it starts no thread, follows n
   ]);
   const board = (await (await a.api("/api/factory")).json()) as FactoryBoard;
   expect(board.items).toEqual([]);
-  expect(board.frozen?.map((i) => [i.key, i.actions])).toEqual([
+  expect(board.frozen?.map((i) => [i.key, i.actions.map((x) => x.name)])).toEqual([
     [key(1), ["drop"]],
     [key(2), ["drop"]],
   ]);

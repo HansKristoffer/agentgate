@@ -53,7 +53,7 @@ test("items added with the CLI and the API are triaged in a fresh full-access wo
   expect(tool.isError).toBeFalsy();
 
   // The same operation each time. An agent's item passed no label, so a person starts it; a person's own starts.
-  expect(items.list(n.s).map((i) => [i.title, i.phase, i.repo, i.needsYou?.reason])).toEqual([
+  expect(items.list(n.s).map((i) => [i.title, i.phase, i.repo, i.needsYou?.cause])).toEqual([
     ["Crash on save", "triage", n.repo, undefined],
     ["Slow search", "triage", n.repo, undefined],
     ["Typo on login", "held", n.repo, "held"],
@@ -108,16 +108,28 @@ test("a fourth run waits for one of three working threads, and threads waiting f
   expect(launches(n)).toHaveLength(3);
   const [a, b, , d] = triageRuns(n);
   expect(d!.state).toBe("queued");
+  const row = async (id: string) =>
+    (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === id);
+  // The board says why it waits, in the daemon's words, and the CLI prints the same.
+  expect((await row(d!.item!))?.waiting).toEqual({
+    on: "thread",
+    since: n.s.now(),
+    text: "Waits for a free thread; all 3 are working",
+  });
+  expect((await n.command("status")).output).toContain(
+    `  triage    ${items.get(n.s, d!.item!)!.key} four: Waits for a free thread; all 3 are working`,
+  );
   await n.until(() => n.mirror.thread(a!.threadId!)?.status === "running", "the first thread to run");
 
   n.mcp.setThread(a!.threadId!, { needsYou: true });
-  await n.until(() => runs.get(n.s, a!.id)?.state === "waiting", "the first run to wait");
-  expect(items.get(n.s, a!.item!)!.needsYou).toMatchObject({ reason: "approval", link: a!.threadLink });
+  await n.until(() => items.get(n.s, a!.item!)?.needsYou, "the first item to wait");
+  expect(runs.get(n.s, a!.id)?.state).toBe("waiting");
+  expect(items.get(n.s, a!.item!)!.needsYou).toMatchObject({ kind: "answer", cause: "question", link: a!.threadLink });
   // A triage thread's request is answered in T3 Code: the board offers no approve the daemon would refuse.
-  const row = (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === a!.item);
-  expect(row?.actions).toEqual(["drop"]);
+  expect((await row(a!.item!))?.actions.map((x) => x.name)).toEqual(["drop"]);
   await n.dispatch();
   expect(runs.get(n.s, d!.id)!.state).toBe("running");
+  expect((await row(d!.item!))?.waiting).toBeUndefined();
 
   await n.command("add", n.repo, "five");
   const e = triageRuns(n)[4]!;
@@ -149,11 +161,19 @@ test("while no pooled account has room nothing starts, and the board shows when 
   expect(launches(n)).toEqual([]);
   const board = await buildBoard(n.f, { includeWebhookUrls: false });
   expect(board.capacity.quota).toEqual({ waitingUntil: resetsAt });
+  // The item says so itself, and the run carries no error for it.
+  expect(board.items[0]!.waiting).toMatchObject({
+    on: "quota",
+    text: expect.stringContaining("no claude account has room until"),
+  });
+  expect(triageRuns(n)[0]!.error).toBeUndefined();
 
   n.advance(3600_001);
   await n.dispatch();
   expect(launches(n)).toHaveLength(1);
-  expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.quota).toBe("ok");
+  const after = await buildBoard(n.f, { includeWebhookUrls: false });
+  expect(after.capacity.quota).toBe("ok");
+  expect(after.items[0]!.waiting).toBeUndefined();
 });
 
 test("a triage stage with start: manual holds new items until approve, and intake pauses while items wait for you", async () => {
@@ -164,7 +184,7 @@ test("a triage stage with start: manual holds new items until approve, and intak
   const { polled } = fakeSource(n, {});
   await n.command("add", n.repo, "Crash on save");
   const [held] = items.list(n.s);
-  expect(held).toMatchObject({ phase: "held", needsYou: { reason: "held" } });
+  expect(held).toMatchObject({ phase: "held", needsYou: { cause: "held" } });
   expect(triageRuns(n)).toEqual([]);
   await n.dispatch();
   expect(launches(n)).toEqual([]);
@@ -217,7 +237,12 @@ test("an implement stage with start: manual holds a triaged item, named on the b
   const row = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === item.id);
   expect(await row()).toMatchObject({
     phase: "implement",
-    needsYou: { reason: "held", question: `Start implement with agentgate factory approve ${item.key}` },
+    needsYou: { kind: "start", cause: "held", question: "Start implement?" },
+    actions: [
+      { name: "approve", label: "Approve", effect: "Start implement", takesText: false },
+      { name: "reject", label: "Reject", effect: "Close it without starting implement", takesText: false },
+      { name: "drop", label: "Drop…", takesText: true },
+    ],
   });
   await n.dispatch();
   expect(launches(n)).toHaveLength(1);
@@ -400,7 +425,8 @@ test("after T3 Code's sign-in changed, a launch whose answer was lost is not sen
   await n.dispatch();
   expect(runs.get(n.s, run!.id)).toMatchObject({ state: "failed" });
   expect(items.get(n.s, run!.item!)!.needsYou).toMatchObject({
-    reason: "stuck",
+    kind: "stopped",
+    cause: "stuck",
     question: expect.stringContaining("may have started a thread before T3 Code's sign-in changed"),
   });
   expect(threadsOf(n, run!)).toHaveLength(1);
@@ -439,8 +465,18 @@ test("show, in the terminal and from the app, gives an item's runs with state, t
     }),
   ]);
   expect(failed.writebacks).toEqual([{ moment: "taken", status: "posted", at: expect.any(Number) }]);
-  expect(failed.events.map((e: { text: string }) => e.text)).toContain(
-    "triage waits: starting it failed: T3 Code's t3_thread_launch failed: the worktree could not be created",
+  expect(failed.item.waiting).toMatchObject({
+    on: "launch",
+    text: expect.stringContaining(
+      "starting it failed: T3 Code's t3_thread_launch failed: the worktree could not be created",
+    ),
+  });
+  expect(failed.events.map((e: { text: string }) => e.text)).toContainEqual(
+    expect.stringMatching(
+      new RegExp(
+        `^${item!.key}'s triage waits to try again at .+ UTC: starting it failed: T3 Code's t3_thread_launch failed: the worktree could not be created$`,
+      ),
+    ),
   );
 
   n.mcp.answer("t3_thread_launch", () => ({ threadId: "thread-1", link: "https://t3.test/threads/thread-1" }));
@@ -450,6 +486,7 @@ test("show, in the terminal and from the app, gives an item's runs with state, t
   expect(running.runs).toEqual([
     expect.objectContaining({ state: "running", node: "a", threadLink: "https://t3.test/threads/thread-1" }),
   ]);
+  expect(running.item.waiting).toBeUndefined();
   const { output } = await n.command("show", item!.key);
   expect(output[0]).toBe(`${item!.key} Issue 1 (${n.repo}, triage)`);
   expect(output).toContain(`  ${triageRuns(n)[0]!.id} triage attempt 1: running on a https://t3.test/threads/thread-1`);
@@ -473,8 +510,8 @@ test("an item whose launch keeps failing waits as stuck once its phase is four s
   }
   await stuck();
   expect(items.get(n.s, item!.id)!.needsYou).toMatchObject({
-    reason: "stuck",
-    question: expect.stringContaining(`agentgate factory show ${item!.key}`),
+    cause: "stuck",
+    question: expect.stringContaining(`Nothing moved ${item!.key} in triage`),
   });
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.waitingForYou).toBe(1);
 
@@ -696,7 +733,7 @@ test("a stage thread a person stops in T3 Code is left alone: its run ends, the 
   expect(runs.get(n.s, run!.id)!.error).toBe("stopped in T3 Code");
   expect(sentTo(n, thread)).toEqual([]);
   const item = items.get(n.s, run!.item!)!;
-  expect(item.needsYou).toMatchObject({ reason: "stopped", question: expect.stringContaining("Someone stopped") });
+  expect(item.needsYou).toMatchObject({ cause: "stopped", question: expect.stringContaining("Someone stopped") });
 
   expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);
   await n.dispatch();
@@ -719,8 +756,12 @@ test("a stage thread deleted in T3 Code ends its run as failed: the item waits, 
   expect(runs.get(n.s, run!.id)!.error).toBe("its thread was deleted in T3 Code");
   const item = items.get(n.s, run!.item!)!;
   expect(item.needsYou).toEqual({
-    reason: "stopped",
+    kind: "stopped",
+    cause: "deleted",
+    title: "Its thread was deleted",
     question: expect.stringContaining("triage thread was deleted in T3 Code"),
+    since: expect.any(Number),
+    run: run!.id,
   });
 
   expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);
@@ -751,7 +792,7 @@ test("a run whose thread was deleted while the daemon was down ends failed once 
   await stuck();
   await idle(m.f);
   expect(runs.get(m.s, run!.id)).toMatchObject({ state: "failed", error: "its thread was deleted in T3 Code" });
-  expect(items.get(m.s, run!.item!)!.needsYou).toMatchObject({ reason: "stopped" });
+  expect(items.get(m.s, run!.item!)!.needsYou).toMatchObject({ cause: "deleted" });
 });
 
 test("a run whose thread the mirror does not know because it cannot read T3 Code is left running", async () => {
@@ -826,7 +867,7 @@ test("a stage thread handed to another machine leaves the factory: its run ends,
   await idle(n.f);
   expect(runs.get(n.s, run!.id)!.error).toBe("handed off to b");
   const item = items.get(n.s, run!.item!)!;
-  expect(item.needsYou).toMatchObject({ reason: "handed-off", question: expect.stringContaining("was handed to b") });
+  expect(item.needsYou).toMatchObject({ cause: "handed-off", question: expect.stringContaining("was handed to b") });
   expect(sentTo(n, thread)).toEqual([]);
 
   expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);

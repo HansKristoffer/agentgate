@@ -18,7 +18,13 @@ test("route implement starts a run on factory/<key> from the default branch, and
     n.mcp.calls.filter((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id);
 
   expect(items.get(n.s, item.id)!.phase).toBe("implement");
-  expect(runs.get(n.s, run.id)).toMatchObject({ state: "queued", error: expect.stringContaining("fails CI") });
+  expect(runs.get(n.s, run.id)).toMatchObject({ state: "queued", error: undefined });
+  const waiting = async () =>
+    (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === item.id)?.waiting;
+  expect(await waiting()).toMatchObject({
+    on: "default-branch",
+    text: `Waits for the default branch of ${n.repo} to pass CI`,
+  });
   expect(implementLaunches()).toEqual([]);
   expect((await buildBoard(n.f, { includeWebhookUrls: false })).capacity.mainRed).toEqual([n.repo]);
 
@@ -27,6 +33,7 @@ test("route implement starts a run on factory/<key> from the default branch, and
   await n.dispatch();
   expect(implementLaunches()).toHaveLength(1);
   const [launch] = implementLaunches();
+  expect(await waiting()).toBeUndefined();
   expect(launch!.args).toMatchObject({
     title: `Implement ${n.key(1)}: Issue 1`,
     workspaceStrategy: { type: "worktree", baseRef: "main", branch: `factory/${n.key(1)}`, startFromOrigin: true },
@@ -45,7 +52,9 @@ test("when the default branch requires checks, only a failing one of those holds
   const { run } = await n.implementing(1);
   const implementLaunches = () =>
     n.mcp.calls.filter((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id);
-  expect(runs.get(n.s, run.id)).toMatchObject({ state: "queued", error: expect.stringContaining("fails CI") });
+  expect(
+    (await buildBoard(n.f, { includeWebhookUrls: false })).items.find((i) => i.id === run.item)?.waiting,
+  ).toMatchObject({ on: "default-branch" });
 
   // The required checks run only on pull requests, and a release failed at the newest commit.
   n.github.mainChecks = { Release: "FAILURE" };

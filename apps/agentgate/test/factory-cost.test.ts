@@ -51,7 +51,9 @@ test("with 500 reported runs, a dispatch pass and a board each take under 25 ms"
   // An item held before its stage: dispatch looks at its queued run on every pass.
   expect((await n.command("add", n.repo, "Crash on save")).code).toBe(0);
   const [held] = items.list(n.s, { open: true });
-  items.update(n.s, held!.id, { needsYou: { reason: "held" } });
+  items.update(n.s, held!.id, {
+    needsYou: { kind: "start", cause: "held", title: "Waiting for approval", question: "Start triage?", since: 0 },
+  });
 
   await n.dispatch();
   const dispatch = await timed(() => n.dispatch());

@@ -1,7 +1,10 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import type { FactoryReport, MarkerPayload } from "@agentgate/protocol";
+import { factoryBoardSchema, needsYouCauses, type FactoryReport, type MarkerPayload } from "@agentgate/protocol";
+import { buildBoard } from "../src/factory/board.ts";
+import { ask } from "../src/factory/controller.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import { defuse, parseMarkers } from "../src/factory/markers.ts";
+import { CAUSES, POSTS } from "../src/factory/needs-you.ts";
 import type { SourceAdapter } from "../src/factory/runtime.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
@@ -114,7 +117,7 @@ test("each outcome moves its item as the state table says, with one comment carr
     {
       body: { outcome: "blocked", summary: "No access.", blocked: { missing: "a staging login" } },
       phase: "triage",
-      needsYou: { reason: "blocked", question: "a staging login" },
+      needsYou: { cause: "blocked", question: "a staging login" },
     },
     {
       body: {
@@ -123,7 +126,7 @@ test("each outcome moves its item as the state table says, with one comment carr
         decision: { question: "Keep v1 alive?", recommendation: "Yes, for 30 days" },
       },
       phase: "triage",
-      needsYou: { reason: "decision", question: "Keep v1 alive?", recommendation: "Yes, for 30 days" },
+      needsYou: { cause: "decision", question: "Keep v1 alive?", recommendation: "Yes, for 30 days" },
     },
   ];
 
@@ -195,12 +198,89 @@ test("an answered question goes back to its thread, and a second question is pos
   expect(await n.report(run!, { ...asks, decision: { question: "And v0?", recommendation: "No" } })).toEqual({
     accepted: true,
   });
-  expect(item(n, run!).needsYou).toMatchObject({ reason: "decision", question: "And v0?" });
+  expect(item(n, run!).needsYou).toMatchObject({ cause: "decision", question: "And v0?" });
   // Each question reaches the issue once: the same one asked again is not posted twice.
   expect(n.posts.map((p) => p.body.includes("And v0?"))).toEqual([false, true]);
   await n.command("approve", "gh-1");
   await n.report(run!, { ...asks, decision: { question: "And v0?", recommendation: "No" } });
   expect(n.posts).toHaveLength(2);
+});
+
+test("every cause maps to the kind of thing the person must do, and only answers and stops post on the issue", () => {
+  expect(Object.fromEntries(needsYouCauses.map((c) => [c, CAUSES[c].kind]))).toEqual({
+    held: "start",
+    decision: "answer",
+    blocked: "answer",
+    question: "answer",
+    failed: "stopped",
+    stalled: "stopped",
+    stuck: "stopped",
+    budget: "stopped",
+    stopped: "stopped",
+    "handed-off": "stopped",
+    deleted: "stopped",
+  });
+  expect(POSTS).toEqual({ start: false, answer: true, stopped: true });
+});
+
+test("a decision shows the same block on the issue, in status and in show, and approve without text takes the recommendation", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  await n.report(run!, {
+    outcome: "needs-decision",
+    summary: "Two ways.",
+    decision: { question: "Keep v1 alive?", recommendation: "Yes, for 30 days", options: ["Keep v1", "Drop v1"] },
+  });
+  const block = [
+    "Needs a decision: Keep v1 alive?",
+    "Recommended: Yes, for 30 days",
+    "Options:",
+    "  - Keep v1",
+    "  - Drop v1",
+    "What you can do:",
+    "  agentgate factory approve gh-1                 Go with the recommendation",
+    '  agentgate factory approve gh-1 --reason "..."  Send your answer to the thread, and it goes on',
+    "  agentgate factory reject gh-1                  Refuse the recommendation, and the thread goes on",
+    '  agentgate factory drop gh-1 --reason "..."     Stop its threads and close it, with your reason on the issue; its PR stays open',
+  ];
+  expect(n.posts).toHaveLength(1);
+  expect(n.posts[0]!.body).toContain(block.join("\n"));
+  expect((await n.command("status")).output.join("\n")).toContain(block.map((l) => `    ${l}`).join("\n"));
+  expect((await n.command("show", "gh-1")).output.join("\n")).toContain(block.join("\n"));
+
+  // What the app reads comes through its schema whole.
+  const board = await buildBoard(n.f, { includeWebhookUrls: false });
+  expect(factoryBoardSchema.parse(JSON.parse(JSON.stringify(board)))).toEqual(board);
+  expect(board.items[0]!.actions[0]).toEqual({
+    name: "approve",
+    label: "Take the recommendation",
+    effect: "Go with the recommendation",
+    takesText: false,
+  });
+
+  expect((await n.command("approve", "gh-1")).code).toBe(0);
+  const sent = n.mcp.calls.filter((c) => c.tool === "t3_thread_send").at(-1)!.args;
+  expect(String(sent.message)).toStartWith("The maintainer answered: go with your recommendation.");
+  expect(item(n, run!).needsYou).toBeUndefined();
+});
+
+test("a start posts no waiting comment, and a stop posts one", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  await n.report(run!, {
+    outcome: "done",
+    summary: "Large change.",
+    result: { kind: "triage", route: "spec", reproduction: { notPossible: "needs production data" } },
+  });
+  const posted = n.posts.length;
+  ask(n.f, item(n, run!), { cause: "held", question: "Start spec?" });
+  await idle(n.f);
+  expect(n.posts).toHaveLength(posted);
+  ask(n.f, item(n, run!), { cause: "stuck", question: "Nothing moved gh-1 in spec for 2 hours." });
+  await idle(n.f);
+  expect(n.posts).toHaveLength(posted + 1);
+  expect(n.posts.at(-1)!.body).toContain("Stuck: Nothing moved gh-1 in spec for 2 hours.");
+  expect(n.posts.at(-1)!.body).toContain("agentgate factory retry gh-1");
 });
 
 test("a report missing what its outcome needs is refused, naming the field", async () => {
@@ -248,25 +328,27 @@ test("a silent end gets one reminder, a second starts a new thread, and a silent
   expect(second.threadId).not.toBe(run!.threadId);
   await n.until(() => n.mirror.thread(second.threadId!)?.status === "running", "the retry's thread to run");
 
-  await endTurn(n, second, () => item(n, run!).needsYou?.reason === "failed");
+  await endTurn(n, second, () => item(n, run!).needsYou?.cause === "failed");
   await idle(n.f);
   expect(sends()).toHaveLength(1);
   // It keeps its phase: the maintainer retries or drops it.
-  expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: { reason: "failed", link: second.threadLink } });
+  expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: { cause: "failed", link: second.threadLink } });
   expect(n.markers("gh-1")).toEqual([expect.objectContaining({ stage: "triage", state: "open" })]);
 });
 
 test("retry starts the failed stage again, and drop interrupts and settles the thread and closes the item", async () => {
   const n = await triaging(1);
   const [run] = n.started;
-  items.update(n.s, run!.item!, { needsYou: { reason: "failed" } });
+  items.update(n.s, run!.item!, {
+    needsYou: { kind: "stopped", cause: "failed", title: "Failed", question: "Triage ended twice.", since: 0 },
+  });
   runs.update(n.s, run!.id, { state: "silent" });
   expect((await n.command("retry", "gh-2")).output).toEqual(["a has no factory item gh-2"]);
 
   expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
   expect(item(n, run!)).toMatchObject({ phase: "triage", needsYou: undefined });
   expect((await n.command("retry", "gh-1")).output).toEqual([
-    "gh-1 has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off or was stopped",
+    "gh-1 has nothing to retry: retry takes an item that failed, went over its budget, stalled, is stuck, was handed off, was stopped or lost its thread",
   ]);
   await n.dispatch();
   const [again] = runs.forItem(n.s, run!.item!).filter((r) => r.state === "running");

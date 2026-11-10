@@ -3,7 +3,7 @@ import { z } from "zod";
 import { projection, t3Client } from "../handoff/t3.ts";
 import { sessionUsage } from "../llm/sessions.ts";
 import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
-import { interruptItem, setNeedsYou, writeBack } from "./controller.ts";
+import { ask, interruptItem } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { isRevertOf, prState, prView, revertsSince } from "./gh.ts";
 import { mirrorOf } from "./mirror.ts";
@@ -87,12 +87,13 @@ function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number, sessions
 async function enforceBudget(f: FactoryRuntime, id: string) {
   const item = items.get(f.s, id);
   const budget = (currentFolder(f)?.config.limits ?? DEFAULT_LIMITS).itemTokens;
-  if (!item || item.tokens <= budget || !isOpenPhase(item.phase) || item.needsYou?.reason === "budget") return;
-  const question = `${item.key} used ${item.tokens.toLocaleString("en-US")} tokens, over the budget of ${budget.toLocaleString("en-US")}. Raise limits.itemTokens and run agentgate factory retry ${item.key}, or drop it.`;
+  if (!item || item.tokens <= budget || !isOpenPhase(item.phase) || item.needsYou?.cause === "budget") return;
   // Set before the first await, so a report that arrives meanwhile finds the item waiting.
-  const after = setNeedsYou(f, item.id, { reason: "budget", question });
+  ask(f, item, {
+    cause: "budget",
+    question: `${item.key} used ${item.tokens.toLocaleString("en-US")} tokens, over the budget of ${budget.toLocaleString("en-US")}. Raise limits.itemTokens before you retry it.`,
+  });
   await interruptItem(f, item.id, `The item went over the factory's token budget of ${budget}`);
-  writeBack(f, after, "waiting", { text: question, ref: `budget:${budget}` });
 }
 
 /** Stores the run's tokens. */

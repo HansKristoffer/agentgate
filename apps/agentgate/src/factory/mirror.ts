@@ -18,6 +18,8 @@ export interface MirrorThread {
   status: string;
   /** The thread waits on a person: T3 holds a pending runtime request (an approval or a question) for it. */
   needsYou: boolean;
+  /** The id of the pending request it waits on, when T3 gives one. */
+  request?: string;
   settled: boolean;
   archived: boolean;
   /** Set on subagent threads only: the thread that delegated to it. */
@@ -77,6 +79,7 @@ const streamItem = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("project.removed"), sequence: z.number(), projectId: z.string() }),
 ]);
 const KINDS: ReadonlySet<string> = new Set(streamItem.options.map((o) => o.shape.kind.value));
+const pendingId = z.object({ id: z.string() });
 const polledShell = z.object({
   snapshotSequence: z.number().optional(),
   threads: z.array(threadShell),
@@ -85,6 +88,7 @@ const polledShell = z.object({
 });
 
 function mirrored(t: z.infer<typeof threadShell>, archived: boolean): MirrorThread {
+  const request = pendingId.safeParse(t.pendingRuntimeRequest).data?.id;
   const parent = t.lineage?.relationshipToParent === "subagent" ? t.lineage.parentThreadId : undefined;
   return {
     id: t.id,
@@ -92,6 +96,7 @@ function mirrored(t: z.infer<typeof threadShell>, archived: boolean): MirrorThre
     ...(t.projectId && { projectId: t.projectId }),
     status: t.status,
     needsYou: t.pendingRuntimeRequest != null,
+    ...(request && { request }),
     settled: t.settledOverride === "settled",
     archived: archived || !!t.archivedAt,
     ...(parent && { parentThreadId: parent }),

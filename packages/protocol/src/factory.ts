@@ -311,25 +311,44 @@ export const runStates = [
 ] as const;
 export type RunState = (typeof runStates)[number];
 
+/** What the person must do for an item that waits for them: start it, answer what a stage asks, or decide what happens
+ * to work that stopped (retry or drop). */
+export const needsYouKinds = ["start", "answer", "stopped"] as const;
+export type NeedsYouKind = (typeof needsYouKinds)[number];
+/** Why it waits, for the text and the metrics; the daemon maps each to its kind. `question` is a thread's question card
+ * in T3 Code, `deleted` a run's thread deleted there. */
+export const needsYouCauses = [
+  "held",
+  "decision",
+  "blocked",
+  "question",
+  "failed",
+  "stalled",
+  "stuck",
+  "budget",
+  "stopped",
+  "handed-off",
+  "deleted",
+] as const;
+export type NeedsYouCause = (typeof needsYouCauses)[number];
+
 export const needsYouSchema = z
   .object({
-    reason: z.enum([
-      "decision",
-      "blocked",
-      "approval",
-      "budget",
-      "stalled",
-      "held",
-      "failed",
-      "stuck",
-      "handed-off",
-      "stopped",
-    ]),
-    question: z.string().optional(),
+    kind: z.enum(needsYouKinds),
+    cause: z.enum(needsYouCauses),
+    /** What happened, in a few words: the cause for a person. */
+    title: z.string(),
+    question: z.string(),
     // The rest of a long question, such as the spec a spec card asks to approve; `question` is its first line.
     detail: z.string().optional(),
     recommendation: z.string().optional(),
+    options: z.array(z.string()).optional(),
     link: z.string().optional(),
+    since: z.number(),
+    /** The run that asks, which the answer goes back to. */
+    run: z.string().optional(),
+    /** A thread's question card: T3's pending request, answered at most once. */
+    request: z.string().optional(),
   })
   .strict();
 export type NeedsYou = z.infer<typeof needsYouSchema>;
@@ -551,6 +570,22 @@ export type BoardThread = z.infer<typeof boardThreadSchema>;
 /** What a person can do to an item, each an operation: `agentgate factory <action> <item>`. */
 export const itemActions = ["approve", "reject", "retry", "drop"] as const;
 export type ItemAction = (typeof itemActions)[number];
+/** One thing a person can do to an item now, as the daemon offers it: the CLI shows it as a command, the app as a
+ * button. An action can appear twice, without and with text, such as approve on a decision. */
+export const boardActionSchema = z.object({
+  name: z.enum(itemActions),
+  label: z.string(),
+  /** What it will do, in a sentence. */
+  effect: z.string(),
+  /** It asks for text, sent as `reason`. */
+  takesText: z.boolean(),
+});
+export type BoardAction = z.infer<typeof boardActionSchema>;
+/** What an item that needs nobody waits for: a free thread, quota, the default branch's CI, its PR's checks, the next
+ * review round, or the next try of a launch that failed. */
+export const itemWaitsOn = ["thread", "quota", "default-branch", "checks", "review", "launch"] as const;
+export const itemWaitingSchema = z.object({ on: z.enum(itemWaitsOn), since: z.number(), text: z.string() });
+export type ItemWaiting = z.infer<typeof itemWaitingSchema>;
 
 export const boardItemSchema = z.object({
   id: z.string(),
@@ -571,8 +606,10 @@ export const boardItemSchema = z.object({
     })
     .optional(),
   needsYou: needsYouSchema.optional(),
+  /** Why it waits while it needs nobody; absent while it needs you. */
+  waiting: itemWaitingSchema.optional(),
   /** The actions the daemon takes for it now; it refuses the others. */
-  actions: z.array(z.enum(itemActions)),
+  actions: z.array(boardActionSchema),
   pr: z
     .object({
       url: z.string(),

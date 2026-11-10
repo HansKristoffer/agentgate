@@ -115,6 +115,8 @@ export interface FactoryRun {
   source?: string;
   /** The branch an implement run was given at its launch (implement.ts), which its PR must come from. */
   branch?: string;
+  /** The T3 request its thread asked that was last answered, so T3 showing it again does not ask the person twice. */
+  answered?: string;
   /** What agentgate's proxies counted for the run's provider sessions, and how many sessions T3 named; they only grow. */
   tokens: number;
   sessions: number;
@@ -141,8 +143,8 @@ export function ensureFactoryTables(s: Store) {
       id text primary key, item text, kind text not null, attempt integer not null default 1, state text not null,
       node text, thread_id text, thread_link text, report text, checked text, nudges integer not null default 0,
       error text, config_commit text not null, launch_session text, failed_launches integer, source text,
-      branch text, tokens integer not null default 0, sessions integer not null default 0, measured_at integer,
-      queued_at integer not null, started_at integer, ended_at integer)`);
+      branch text, answered text, tokens integer not null default 0, sessions integer not null default 0,
+      measured_at integer, queued_at integer not null, started_at integer, ended_at integer)`);
     s.db.run("create index if not exists factory_runs_item on factory_runs(item)");
     // Dispatch, the follow loop and the board ask for runs by state every few seconds.
     s.db.run("create index if not exists factory_runs_state on factory_runs(state)");
@@ -224,6 +226,7 @@ const runColumns = {
   failedLaunches: "failed_launches",
   source: "source",
   branch: "branch",
+  answered: "answered",
   tokens: "tokens",
   sessions: "sessions",
   measuredAt: "measured_at",
@@ -298,6 +301,7 @@ const toRun = (r: Row): FactoryRun => ({
   failedLaunches: opt(r.failed_launches as number | null),
   source: opt(r.source as string | null),
   branch: opt(r.branch as string | null),
+  answered: opt(r.answered as string | null),
   tokens: r.tokens as number,
   sessions: r.sessions as number,
   measuredAt: opt(r.measured_at as number | null),

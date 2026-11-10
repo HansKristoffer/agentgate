@@ -49,7 +49,7 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
 
   // Threads made through `/mcp` reach the shell stream with their status, the way T3's shell shows a turn.
   let sequence = 1_000_000;
-  const push = (t: FakeThread, patch: { status?: string; needsYou?: boolean } = {}) => {
+  const push = (t: FakeThread, patch: { status?: string; needsYou?: boolean; request?: string } = {}) => {
     const state = { status: "idle", needsYou: false, ...t.shell, ...patch };
     t.shell = state;
     t.updatedAt = new Date().toISOString();
@@ -62,7 +62,9 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
         projectId: t.projectId,
         title: t.title,
         status: state.status,
-        pendingRuntimeRequest: state.needsYou ? { id: "request-1", kind: "user-input", createdAt: t.updatedAt } : null,
+        pendingRuntimeRequest: state.needsYou
+          ? { id: state.request ?? "request-1", kind: "user-input", createdAt: t.updatedAt }
+          : null,
         settledOverride: t.settledOverride ?? null,
         archivedAt: t.archivedAt,
         worktreePath: t.worktreePath,
@@ -155,8 +157,9 @@ export function fakeT3Mcp(fake: ReturnType<typeof fakeT3>) {
     /** Refuse every token, including those issued later. */
     refuseAll: false,
     routes: (req: Request) => routes(req),
-    /** Changes a thread made through `/mcp` as its turn would: `running`, `idle` when it ends, or waiting on a person. */
-    setThread(threadId: string, patch: { status?: string; needsYou?: boolean }) {
+    /** Changes a thread made through `/mcp` as its turn would: `running`, `idle` when it ends, or waiting on a person
+     * (`request` names the pending request, `request-1` by default). */
+    setThread(threadId: string, patch: { status?: string; needsYou?: boolean; request?: string }) {
       push(thread({ threadId }), patch);
     },
   };

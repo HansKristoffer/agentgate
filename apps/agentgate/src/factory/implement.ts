@@ -4,7 +4,7 @@ import { folderFor } from "./config.ts";
 import { closeItem, defaultBranch, moveItem, originBranches, writeBack } from "./controller.ts";
 import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
 import { defaultBranchCi, prView, type PrView } from "./gh.ts";
-import { shortError, type FactoryRuntime, type LaunchSpec } from "./runtime.ts";
+import { shortError, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
 
 /**
  * The implement stage. The thread works on a `factory/<key>` branch and opens a draft PR; the factory checks that PR on
@@ -86,10 +86,10 @@ const mainRed = (f: FactoryRuntime) =>
 
 const implement = (f: FactoryRuntime) => ({
   kind: "implement" as const,
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | { wait: string }> {
+  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch> {
     if (!item) throw new Error(`the implement run ${run.id} has no item`);
     if ((await defaultCi(f, item.repo)) === "failing")
-      return { wait: `the default branch of ${item.repo} fails CI; the fix starts once it passes` };
+      return { wait: "default-branch", text: `Waits for the default branch of ${item.repo} to pass CI` };
     const baseRef = await defaultBranch(f, item.repo);
     const branch = await branchFor(f, run, item);
     const model = folderOf(f, item)?.stages.implement?.file.model;

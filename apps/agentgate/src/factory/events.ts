@@ -1,4 +1,4 @@
-import type { ItemPhase, NeedsYou, RunState } from "@agentgate/protocol";
+import type { ItemPhase, NeedsYouCause, RunState } from "@agentgate/protocol";
 import type { Store } from "../store.ts";
 import { logError, type PostResult } from "./runtime.ts";
 
@@ -6,8 +6,8 @@ import { logError, type PostResult } from "./runtime.ts";
 export type FactoryEvent =
   | { kind: "item.created"; item: string; text: string }
   | { kind: "item.phase"; item: string; from: ItemPhase | null; to: ItemPhase; text: string }
-  /** The item started waiting for the maintainer (`setNeedsYou`). */
-  | { kind: "item.needs-you"; item: string; reason: NeedsYou["reason"]; text: string }
+  /** The item started waiting for the maintainer (`ask` in controller.ts). */
+  | { kind: "item.needs-you"; item: string; cause: NeedsYouCause; text: string }
   | { kind: "run.queued"; run: string; item?: string; text: string }
   | { kind: "run.started"; run: string; item?: string; text: string }
   | { kind: "run.ended"; run: string; item?: string; state: RunState; text: string }

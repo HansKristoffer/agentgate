@@ -8,6 +8,7 @@ import { frozenItems } from "./controller.ts";
 import { runs } from "./db.ts";
 import { folderStore } from "./folder-store.ts";
 import { mirrorOf, timing } from "./mirror.ts";
+import { needsYouLines } from "./needs-you.ts";
 import { FACTORY_PAGE } from "./page.ts";
 import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
 import { needsSignIn } from "./t3-mcp.ts";
@@ -349,17 +350,17 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
 
   const waiting = b.items.filter((i) => i.needsYou || i.phase === "ready");
   if (waiting.length) lines.push("", "Needs you:");
-  for (const { key, title, needsYou: n, pr } of waiting)
+  for (const { key, title, needsYou: n, pr, actions } of waiting) {
     lines.push(
-      n
-        ? `  ${key} ${title}: ${n.reason}${when(n.question, `: ${n.question}`)}${when(n.link, ` ${n.link}`)}`
-        : `  ${key} ${title}: ready for your review${when(pr, ` ${pr?.url}`)}`,
+      `  ${key} ${title}${n ? when(n.link, ` ${n.link}`) : `: ready for your review${when(pr, ` ${pr?.url}`)}`}`,
     );
+    if (n) lines.push(...needsYouLines(key, n, actions).map((l) => `    ${l}`));
+  }
 
   if (b.items.length) lines.push("", "Items:");
   for (const phase of itemPhases)
     for (const i of b.items.filter((i) => i.phase === phase)) {
-      const run = when(i.run, ` [${i.run?.kind} ${i.run?.state}]`);
+      const run = i.waiting ? `: ${i.waiting.text}` : when(i.run, ` [${i.run?.kind} ${i.run?.state}]`);
       const unknown = when(i.tokensUnknown, " (tokens unknown)");
       lines.push(`  ${phase.padEnd(9)} ${i.key} ${i.title}${run}${when(i.pr, ` ${i.pr?.url}`)}${unknown}`);
     }

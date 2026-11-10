@@ -1,4 +1,5 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
+import { buildBoard } from "../src/factory/board.ts";
 import { writeBack } from "../src/factory/controller.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, markerTag } from "../src/factory/markers.ts";
@@ -32,11 +33,14 @@ test("a PR whose checks pass is marked ready, with reviewers requested except it
   await n.pollPrs();
   expect(items.get(n.s, item.id)!.phase).toBe("pr");
   expect(pr.isDraft).toBe(true);
+  const waiting = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).items[0]!.waiting;
+  expect(await waiting()).toMatchObject({ on: "checks", text: "Waits for the PR's checks" });
 
   pr.checks = "passing";
   await n.pollPrs();
   await n.pollPrs();
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
+  expect(await waiting()).toBeUndefined();
   expect(pr).toMatchObject({ isDraft: false, reviewers: ["octocat"] });
   expect(n.github.posted(1)).toEqual([
     "The factory took this.",
@@ -247,7 +251,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
   n.advance(15 * MINUTE);
   await n.pollPrs();
   expect(n.sent(thread)).toHaveLength(2);
-  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ reason: "stalled", link: run.threadLink });
+  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ cause: "stalled", link: run.threadLink });
   expect(n.github.posted(1).at(-1)).toBe("The factory waits for the maintainer.");
   expect(n.github.posted(1)).toHaveLength(4);
 
@@ -544,7 +548,11 @@ test("a review run waiting for quota reads nothing from GitHub until an account 
     await n.dispatch();
   }
   expect(prViews()).toBe(before);
-  expect(review()).toMatchObject({ state: "queued", error: "no claude account has room" });
+  expect(review()).toMatchObject({ state: "queued", error: undefined });
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).items[0]!.waiting).toMatchObject({
+    on: "quota",
+    text: expect.stringContaining("no claude account has room"),
+  });
 
   n.advance(3_600_000);
   await n.dispatch();
@@ -560,7 +568,9 @@ test("retry of an item whose review stage failed twice reviews the PR again once
   const review = runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;
   // As silentEnd leaves it after the second attempt also ended without a report.
   runs.update(n.s, review.id, { state: "silent", endedAt: n.s.now() });
-  items.update(n.s, item.id, { needsYou: { reason: "failed" } });
+  items.update(n.s, item.id, {
+    needsYou: { kind: "stopped", cause: "failed", title: "Failed", question: "Review ended twice.", since: 0 },
+  });
 
   expect((await n.command("retry", n.key(1))).output).toEqual([`Retrying ${n.key(1)} with its PR`]);
   await n.pollPrs();
@@ -675,7 +685,7 @@ test("a person who stops the thread that owns a PR is not overridden: no nudge w
   pr.checks = "failing";
   await n.pollPrs();
   expect(n.sent(thread)).toEqual([]);
-  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ reason: "stopped", link: run.threadLink });
+  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ cause: "stopped", link: run.threadLink });
 
   expect((await n.command("retry", item.key)).output).toEqual([`Retrying ${item.key} with its PR`]);
   await n.pollPrs();
@@ -695,7 +705,7 @@ test("handing off the thread that owns a PR detaches it, and the PR is still fol
   });
   await n.dispatch();
   await idle(n.f);
-  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ reason: "handed-off" });
+  expect(items.get(n.s, item.id)!.needsYou).toMatchObject({ cause: "handed-off" });
 
   // Waiting for you, the item gets no nudge, but its merge still ships it.
   pr.checks = "failing";

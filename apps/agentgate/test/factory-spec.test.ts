@@ -3,6 +3,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { items, runs, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
 import { prFactory, triaged } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
+import { idle } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -94,7 +95,7 @@ test("feedback starts one more spec round, and the next feedback leaves the item
   expect(n.specRuns()).toHaveLength(2);
   expect(items.get(n.s, n.item.id)).toMatchObject({
     phase: "spec",
-    needsYou: { reason: "failed", link: round2!.threadLink },
+    needsYou: { cause: "failed", link: round2!.threadLink },
   });
 
   expect((await n.command("retry", n.key(1))).output).toEqual([`Retrying spec for ${n.key(1)}`]);
@@ -128,10 +129,32 @@ test("approve and reject answer the waiting card through t3_pending_request, and
     n.mcp.calls.filter((c) => c.tool === "t3_pending_request" && c.args.action === "respond").map((c) => c.args);
 
   n.mcp.setThread(threadId, { needsYou: true });
-  await n.until(() => runs.get(n.s, n.run.id)!.state === "waiting", "the spec run to wait");
-  expect(await n.needsYou(n.item)).toMatchObject({ reason: "approval", link: n.run.threadLink });
+  await n.until(() => items.get(n.s, n.item.id)?.needsYou, "the spec item to wait");
+  expect(runs.get(n.s, n.run.id)!.state).toBe("waiting");
+  // T3 listed no request yet, so the wait says where the question is.
+  expect(await n.needsYou(n.item)).toMatchObject({
+    kind: "answer",
+    cause: "question",
+    question: "The spec thread asks you something in T3 Code",
+    link: n.run.threadLink,
+    request: "request-1",
+  });
   const board = await buildBoard(n.f, { includeWebhookUrls: false });
-  expect(board.items.find((i) => i.id === n.item.id)?.actions).toEqual(["approve", "reject", "drop"]);
+  expect(board.items.find((i) => i.id === n.item.id)?.actions).toEqual([
+    { name: "approve", label: "Approve", effect: "Approve what the thread asks", takesText: false },
+    {
+      name: "reject",
+      label: "Ask for changes…",
+      effect: "Ask the thread for changes, with your feedback",
+      takesText: true,
+    },
+    {
+      name: "drop",
+      label: "Drop…",
+      effect: "Stop its threads and close it, with your reason on the issue; its PR stays open",
+      takesText: true,
+    },
+  ]);
 
   expect(await n.command("approve", n.key(1))).toEqual({
     code: 1,
@@ -140,7 +163,19 @@ test("approve and reject answer the waiting card through t3_pending_request, and
 
   pending = ["request-1"];
   expect((await n.command("reject", n.key(1), "--reason", "Keep the newest copy")).code).toBe(0);
+  expect(await n.needsYou(n.item)).toBeUndefined();
+  // T3 showing the answered request again does not ask again, though its question reads the same.
+  n.mcp.setThread(threadId, { needsYou: true, request: "request-1" });
+  await n.until(() => n.mirror.thread(threadId)?.request === "request-1", "the request to show again");
+  await idle(n.f);
+  expect(await n.needsYou(n.item)).toBeUndefined();
+  expect(await n.command("approve", n.key(1))).toEqual({ code: 1, output: [`${n.key(1)} has nothing to approve`] });
+
+  // The next round's card is a new request, asked with its question and options.
   pending = ["request-2"];
+  n.mcp.setThread(threadId, { needsYou: true, request: "request-2" });
+  await n.until(() => items.get(n.s, n.item.id)?.needsYou?.request === "request-2", "the second card to wait");
+  expect(await n.needsYou(n.item)).toMatchObject({ question: "Approve the spec?", options: ["Approve", "Change"] });
   expect((await n.command("approve", n.key(1))).code).toBe(0);
   expect(responses()).toEqual([
     {
@@ -176,10 +211,16 @@ test("the card a thread waits on shows in its item's wait, the spec as detail, w
   n.mcp.setThread(threadId, { needsYou: true });
   await n.until(() => items.get(n.s, n.item.id)?.needsYou?.detail, "the spec to show in the wait");
   expect(await n.needsYou(n.item)).toEqual({
-    reason: "approval",
+    kind: "answer",
+    cause: "question",
+    title: "Asks you",
     question: `Approve the spec for ${n.key(1)}?`,
     detail: SPEC,
+    options: ["Approve", "Change"],
     link: n.run.threadLink,
+    since: expect.any(Number),
+    run: n.run.id,
+    request: "request-1",
   });
   expect(waits()).toHaveLength(1);
   const { output } = await n.command("show", n.key(1));
