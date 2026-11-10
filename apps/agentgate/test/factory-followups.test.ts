@@ -75,6 +75,28 @@ test("a run that ends twice without reporting is retried as attempt 2 with what 
   ]);
 });
 
+test("a reminded turn that ends before the reminder's send answers is still a silent end", async () => {
+  const n = await prFactory(cleanup);
+  n.github.addIssue(1);
+  await n.intake();
+  await n.dispatch();
+  const [first] = runs.list(n.s);
+  const threadId = first!.threadId!;
+  await n.until(() => n.mirror.thread(threadId)?.status === "running", "the thread to run");
+
+  // The reminder's turn runs and ends while the factory still waits for T3 to answer the send.
+  n.mcp.answer("t3_thread_send", async () => {
+    n.mcp.setThread(threadId, { status: "running" });
+    await n.until(() => n.mirror.thread(threadId)?.status === "running", "the reminded thread to run");
+    n.mcp.setThread(threadId, { status: "idle" });
+    await n.until(() => n.mirror.thread(threadId)?.status === "idle", "the reminded turn to end");
+    return { ok: true };
+  });
+  n.mcp.setThread(threadId, { status: "idle" });
+  await n.until(() => runs.list(n.s).length === 2, "the retry");
+  expect(runs.get(n.s, first!.id)!.state).toBe("silent");
+});
+
 test("the board shows an item's review rounds, and the findings left open when it went to ready", async () => {
   const n = await prFactory(cleanup, () => ({ limits: { threads: 20, reviewRounds: 2 } }));
   const latestReview = (item: FactoryItem) => runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;

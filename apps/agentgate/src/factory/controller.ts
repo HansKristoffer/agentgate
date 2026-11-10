@@ -893,6 +893,9 @@ async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: Mirr
   const thread = rootOf(f, changed);
   const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
   if (!run) return settleFinished(f, thread);
+  // Seen working now, not when the item's step runs: a short turn can end while the item is busy, such as with the
+  // reminder that started it, and by then the mirror shows only its end, which would not count as one.
+  if (working(f, thread)) memory(f).seen.add(run.id);
   // A turn that ended while this daemon was not watching shows first as a finished status.
   const endedUnseen = thread === changed && !previous && thread.status !== "idle";
   await withItem(f, run.item ?? run.id, () => threadChanged(f, run.id, endedUnseen));
