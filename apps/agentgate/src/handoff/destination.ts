@@ -308,7 +308,7 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
 }
 
 /** This node's T3 project for the repository, matched by `owner/repo` of its origin. */
-async function findProject(h: Handoffs, remoteUrl: string) {
+export async function findProject(h: Handoffs, remoteUrl: string) {
   const want = parseRemote(remoteUrl)?.toLowerCase();
   if (!want) return undefined;
   for (const project of (await t3Client(h.s).shell()).projects) {
@@ -320,7 +320,7 @@ async function findProject(h: Handoffs, remoteUrl: string) {
 }
 
 /** Clone the repository with this node's own git credentials and make it a T3 project. */
-async function cloneProject(h: Handoffs, remoteUrl: string) {
+export async function cloneProject(h: Handoffs, remoteUrl: string) {
   const repo = repoName(remoteUrl);
   mkdirSync(h.options.cloneDir, { recursive: true });
   let dir = join(h.options.cloneDir, repo);

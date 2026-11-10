@@ -1,0 +1,502 @@
+{
+  "_source": "What gh 2.102.0 really printed on 2026-11-10 for the reads factory/gh.ts makes: each entry is the arguments gh.ts passed, the exit code, stdout and stderr. Recorded against HansKristoffer/factory-scratch (a private scratch repository), aldevvv/zerolabs (a repository without commits), a repository that does not exist, pytorch/pytorch#203997 (more than 100 checks) and cli/cli (reverts). `offline.*` ran with HTTPS_PROXY=http://127.0.0.1:9, `noDns.*` with HTTPS_PROXY=http://proxy.invalid:8080, `loggedOut.*` with an empty GH_CONFIG_DIR and no GH_TOKEN, `badToken.*` with a GH_TOKEN GitHub does not know. Cut after recording: `branch` keeps only its commit's sha, `user` and `user.scopes` only the login and the scope headers, and `followed.manyChecks` has no comments or reviews. `bun scripts/record-gh.ts` records again every entry it can and says which it cannot; for those, run gh with the entry's arguments (and that environment) and copy the three values; when gh.ts changes what it asks, the replay in fixtures/gh.ts fails until the entry is recorded again. Only reads are recorded: a write is never run for a recording. Check a new entry for tokens before saving it.",
+  "repoView": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
+    "exit": 0,
+    "stdout": "{\"defaultBranchRef\":{\"name\":\"main\"}}\n",
+    "stderr": ""
+  },
+  "branch": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main"],
+    "exit": 0,
+    "stdout": "{\"name\":\"main\",\"commit\":{\"sha\":\"551873b938633f80a814a3f8fd801deacc919c9e\"},\"_links\":{\"self\":\"https://api.github.com/repos/HansKristoffer/factory-scratch/branches/main\",\"html\":\"https://github.com/HansKristoffer/factory-scratch/tree/main\"},\"protected\":false,\"protection\":{\"enabled\":false,\"required_status_checks\":{\"enforcement_level\":\"off\",\"contexts\":[],\"checks\":[]}},\"protection_url\":\"https://api.github.com/repos/HansKristoffer/factory-scratch/branches/main/protection\"}\n",
+    "stderr": ""
+  },
+  "branchExists": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main", "--jq", ".name"],
+    "exit": 0,
+    "stdout": "main\n",
+    "stderr": ""
+  },
+  "readFile": {
+    "args": [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+      "repos/HansKristoffer/factory-scratch/contents/README.md?ref=main"
+    ],
+    "exit": 0,
+    "stdout": "# factory-scratch\n\nScratch repository used to try agentgate's software factory. Nothing here is used anywhere.\n",
+    "stderr": ""
+  },
+  "label": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/labels/factory", "--jq", ".name"],
+    "exit": 0,
+    "stdout": "factory\n",
+    "stderr": ""
+  },
+  "issueList": {
+    "args": [
+      "issue",
+      "list",
+      "--repo",
+      "HansKristoffer/factory-scratch",
+      "--label",
+      "factory",
+      "--state",
+      "open",
+      "--limit",
+      "201",
+      "--json",
+      "number,title,body,url,updatedAt"
+    ],
+    "exit": 0,
+    "stdout": "[{\"body\":\"Titles like \\\"Crème brûlée\\\" or \\\"Ærø færge\\\" come out as `cr-me-br-l-e` and `r-f-rge` from `slugify()`. They should be readable.\\n\\nNot sure what we want here: transliterate to ASCII (`creme-brulee`, `aero-faerge`), or keep the Unicode letters in the slug (`crème-brûlée`). Existing slugs are stored in the database, so I do not know whether old ones may change.\",\"number\":4,\"title\":\"Slugs should handle non-English titles\",\"updatedAt\":\"2026-11-10T08:45:18Z\",\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4\"}]\n",
+    "stderr": ""
+  },
+  "issueView": {
+    "args": ["issue", "view", "4", "--repo", "HansKristoffer/factory-scratch", "--json", "state,comments"],
+    "exit": 0,
+    "stdout": "{\"comments\":[{\"id\":\"IC_kwDOVpGbC88AAAABkxRM-A\",\"author\":{\"login\":\"HansKristoffer\"},\"authorAssociation\":\"OWNER\",\"body\":\"**factory-scratch-4**: The factory took this.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QKY5TWS83N5HJ3KJ11WH\\\",\\\"key\\\":\\\"factory-scratch-4\\\",\\\"stage\\\":null,\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":null,\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":null} -->\",\"createdAt\":\"2026-11-10T08:20:59Z\",\"includesCreatedEdit\":false,\"isMinimized\":false,\"minimizedReason\":\"\",\"reactionGroups\":[],\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4#issuecomment-6762548472\",\"viewerDidAuthor\":true},{\"id\":\"IC_kwDOVpGbC88AAAABkxRlqQ\",\"author\":{\"login\":\"HansKristoffer\"},\"authorAssociation\":\"OWNER\",\"body\":\"**factory-scratch-4**: The factory waits for the maintainer.\\n\\nShould slugify() transliterate non-English letters to ASCII, or keep Unicode letters in slugs? And may slugs already stored in the database change, or must existing ones stay as they are?\\n\\nNo duplicate, and main does not fix it. slugify() in src/slug.ts replaces every [^a-z0-9]+ with \\\"-\\\", so \\\"Crème brûlée\\\" becomes \\\"cr-me-br-l-e\\\". The behavior is real, but the issue itself says the intended output is unknown: transliterate to ASCII (creme-brulee, aero-faerge) or keep Unicode letters (crème-brûlée). The two choices give different slugs, and either one changes the slug for any stored title that has non-ASCII characters. The issue also doesn't say whether stored slugs may change, and I can't see the database from here. I made no code changes. Implementing now would mean guessing the maintainer's intent about stored data.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QKY5TWS83N5HJ3KJ11WH\\\",\\\"key\\\":\\\"factory-scratch-4\\\",\\\"stage\\\":\\\"triage\\\",\\\"outcome\\\":\\\"needs-decision\\\",\\\"route\\\":null,\\\"commit\\\":null,\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":null} -->\",\"createdAt\":\"2026-11-10T08:21:20Z\",\"includesCreatedEdit\":false,\"isMinimized\":false,\"minimizedReason\":\"\",\"reactionGroups\":[],\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4#issuecomment-6762554793\",\"viewerDidAuthor\":true},{\"id\":\"IC_kwDOVpGbC88AAAABkxmeaQ\",\"author\":{\"login\":\"HansKristoffer\"},\"authorAssociation\":\"OWNER\",\"body\":\"**factory-scratch-4**: The factory triaged this and starts on a fix.\\n\\nMaintainer ruled: transliterate to ASCII (recommended option), stored slugs unchanged. Route: implement, a small change in src/slug.ts. Reproduced with a failing test added to src/slug.test.ts (uncommitted): slugify(\\\"Crème brûlée\\\") returns \\\"cr-me-br-l-e\\\", expected \\\"creme-brulee\\\"; slugify(\\\"Ærø færge\\\") should be \\\"aero-faerge\\\". Suggested fix: NFKD-normalize and strip combining marks, plus a small map for letters NFKD leaves alone (æ→ae, ø→o, ß→ss, œ→oe, đ→d, ł→l, þ→th). Apply only when a slug is created; do not re-slugify stored rows.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QKY5TWS83N5HJ3KJ11WH\\\",\\\"key\\\":\\\"factory-scratch-4\\\",\\\"stage\\\":\\\"triage\\\",\\\"outcome\\\":\\\"done\\\",\\\"route\\\":\\\"implement\\\",\\\"commit\\\":null,\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":null} -->\",\"createdAt\":\"2026-11-10T08:40:07Z\",\"includesCreatedEdit\":false,\"isMinimized\":false,\"minimizedReason\":\"\",\"reactionGroups\":[],\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4#issuecomment-6762897001\",\"viewerDidAuthor\":true},{\"id\":\"IC_kwDOVpGbC88AAAABkxnmjQ\",\"author\":{\"login\":\"HansKristoffer\"},\"authorAssociation\":\"OWNER\",\"body\":\"**factory-scratch-4**: The factory opened a draft pull request.\\n\\nhttps://github.com/HansKristoffer/factory-scratch/pull/7\\n\\nslugify() now transliterates to ASCII, as the maintainer ruled: \\\"Crème brûlée\\\" gives \\\"creme-brulee\\\" and \\\"Ærø færge\\\" gives \\\"aero-faerge\\\". It strips combining marks after NFKD normalization and maps letters NFKD leaves alone (æ œ ø ß ẞ đ ð ł þ). Stored slugs are untouched. Titles with no Latin letters (CJK) still give an empty slug. Tests were written first and failed; bun test passes (10). Draft PR: https://github.com/HansKristoffer/factory-scratch/pull/7\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QKY5TWS83N5HJ3KJ11WH\\\",\\\"key\\\":\\\"factory-scratch-4\\\",\\\"stage\\\":\\\"implement\\\",\\\"outcome\\\":\\\"done\\\",\\\"route\\\":null,\\\"commit\\\":\\\"6854d97c7af0890cf5f3f3896cf57947a8dc130d\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/7\\\"} -->\",\"createdAt\":\"2026-11-10T08:41:06Z\",\"includesCreatedEdit\":false,\"isMinimized\":false,\"minimizedReason\":\"\",\"reactionGroups\":[],\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4#issuecomment-6762915469\",\"viewerDidAuthor\":true},{\"id\":\"IC_kwDOVpGbC88AAAABkxsbTA\",\"author\":{\"login\":\"HansKristoffer\"},\"authorAssociation\":\"OWNER\",\"body\":\"**factory-scratch-4**: The pull request is ready for review.\\n\\nhttps://github.com/HansKristoffer/factory-scratch/pull/7\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QKY5TWS83N5HJ3KJ11WH\\\",\\\"key\\\":\\\"factory-scratch-4\\\",\\\"stage\\\":\\\"review\\\",\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":\\\"8fbeb1edb0dd1621c3022d4719bbb01bbe7d9232\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/7\\\"} -->\",\"createdAt\":\"2026-11-10T08:45:18Z\",\"includesCreatedEdit\":false,\"isMinimized\":false,\"minimizedReason\":\"\",\"reactionGroups\":[],\"url\":\"https://github.com/HansKristoffer/factory-scratch/issues/4#issuecomment-6762994508\",\"viewerDidAuthor\":true}],\"state\":\"OPEN\"}\n",
+    "stderr": ""
+  },
+  "issueView.comments": {
+    "args": ["issue", "view", "5", "--repo", "HansKristoffer/factory-scratch", "--json", "comments"],
+    "exit": 0,
+    "stdout": "{\"comments\":[]}\n",
+    "stderr": ""
+  },
+  "prList": {
+    "args": [
+      "pr",
+      "list",
+      "--repo",
+      "HansKristoffer/factory-scratch",
+      "--head",
+      "agentgate/factory-init",
+      "--state",
+      "open",
+      "--json",
+      "url"
+    ],
+    "exit": 0,
+    "stdout": "[{\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/1\"}]\n",
+    "stderr": ""
+  },
+  "prState": {
+    "args": ["pr", "view", "3", "--repo", "HansKristoffer/factory-scratch", "--json", "state"],
+    "exit": 0,
+    "stdout": "{\"state\":\"MERGED\"}\n",
+    "stderr": ""
+  },
+  "prView": {
+    "args": [
+      "pr",
+      "view",
+      "https://github.com/HansKristoffer/factory-scratch/pull/6",
+      "--json",
+      "number,url,title,state,isDraft,author,headRefName,headRefOid,baseRefName,mergedAt,mergeable,body,comments"
+    ],
+    "exit": 0,
+    "stdout": "{\"author\":{\"id\":\"MDQ6VXNlcjgyODIwNjY=\",\"is_bot\":false,\"login\":\"HansKristoffer\",\"name\":\"Hans Kristoffer\"},\"baseRefName\":\"main\",\"body\":\"Adds `truncate(text, max)` in `src/truncate.ts`, with tests.\\n\\nSource: manual item m-566044, \\\"Add a truncate(text, max) helper\\\" (factory item it_01M728QDGDVPE1VGFRA8VDV6HP).\\n\\n- The result, ellipsis (`…`) included, is at most `max` characters. Text that already fits is returned unchanged.\\n- `max` of 0 gives `\\\"\\\"`. A negative or non-integer `max` throws a `RangeError`.\\n- A surrogate pair is never split in front of the ellipsis.\\n\\n`bun test`: 8 pass.\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\\n\\n<!-- agentgate-factory:summary -->\\n## What the factory checked\\n\\n**The implementer checked** at `e3c90bcd8e13`:\\n- truncate cuts text to at most max characters with a trailing ellipsis, returns fitting text unchanged, handles max 0 and 1, rejects invalid max, and never splits a surrogate pair: src/truncate.test.ts has 5 tests covering these cases. `bun test` after the change: 8 pass, 0 fail across 3 files.\\n\\n**Not checked:** Grapheme clusters (combining marks, ZWJ emoji sequences) can still be cut mid-sequence, because length is counted in UTF-16 code units; CI on GitHub has not run yet\\n\\n**Decided where the item was silent**, least sure first:\\n- medium confidence: Characters are counted as UTF-16 code units (string.length). I passed over counting code points or grapheme clusters via Array.from or Intl.Segmenter, which would be slower and need more code. A 2-line guard stops a surrogate pair being split.\\n- medium confidence: Invalid max (negative, NaN, non-integer) throws a RangeError. I passed over clamping to 0, which would hide caller bugs. Triage said to reject negative max; I extended that to non-integers.\\n- high confidence: The item says 'max characters' without saying whether the ellipsis counts. I made the total length, ellipsis included, at most max, as triage suggested, and passed over appending the ellipsis after max characters.\\n- high confidence: max 0 returns an empty string for non-empty text, since the single-character ellipsis does not fit. I passed over returning the ellipsis and breaking the at-most-max guarantee.\\n- high confidence: The ellipsis is a single '…' character, not three dots, and is not configurable. I passed over an optional ellipsis parameter because the item did not ask for it.\\n\\n**Review:** 2 rounds, the last at `38873f098536` found nothing to fix.\\n\\n**Risk:** two-way door, stays local. Look first at: src/truncate.ts:9: the Infinity special case in the max validation. Unrelated changes: none.\\n<!-- /agentgate-factory:summary -->\",\"comments\":[],\"headRefName\":\"factory/m-566044\",\"headRefOid\":\"02239b4d97f2f8a9e489e903fe904726c700d0d5\",\"isDraft\":false,\"mergeable\":\"MERGEABLE\",\"mergedAt\":null,\"number\":6,\"state\":\"OPEN\",\"title\":\"feat: add truncate(text, max) helper (m-566044)\",\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/6\"}\n",
+    "stderr": ""
+  },
+  "prView.author": {
+    "args": ["pr", "view", "https://github.com/HansKristoffer/factory-scratch/pull/6", "--json", "author"],
+    "exit": 0,
+    "stdout": "{\"author\":{\"id\":\"MDQ6VXNlcjgyODIwNjY=\",\"is_bot\":false,\"login\":\"HansKristoffer\",\"name\":\"Hans Kristoffer\"}}\n",
+    "stderr": ""
+  },
+  "feedback": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!, $number: Int!) {\n  repository(owner: $owner, name: $name) {\n    pullRequest(number: $number) {\n      reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n    }\n  }\n}",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch",
+      "-F",
+      "number=6"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"pullRequest\":{\"reviews\":{\"nodes\":[{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}}]},\"reviewThreads\":{\"nodes\":[{\"id\":\"PRRT_kwDOVpGbC861ncLB\",\"isResolved\":true,\"isOutdated\":false,\"path\":\"src/truncate.ts\",\"line\":1,\"originalLine\":1,\"viewerCanResolve\":false,\"comments\":{\"nodes\":[{\"body\":\"Please count the ellipsis toward `max`, so the result is never longer than `max` characters, and add a test for `max` smaller than the ellipsis.\",\"createdAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"**m-566044**: Fixed in 02239b4d97f2.\\n\\nThe ellipsis already counted toward max: the cut is max minus the ellipsis length, and max 0 returns an empty string. Added a dedicated test that checks the result is never longer than max for every max from 0 up, including below the ellipsis length, on plain text and text with surrogate pairs. No production code changed.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QDGDVPE1VGFRA8VDV6HP\\\",\\\"key\\\":\\\"m-566044\\\",\\\"stage\\\":\\\"implement\\\",\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":\\\"02239b4d97f2f8a9e489e903fe904726c700d0d5\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/6\\\"} -->\",\"createdAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}}]}}]}}}}}",
+    "stderr": ""
+  },
+  "followed": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p1: pullRequest(number: 1) { ...Followed }\n    p3: pullRequest(number: 3) { ...Followed }\n    p6: pullRequest(number: 6) { ...Followed }\n    p7: pullRequest(number: 7) { ...Followed }\n    p8: pullRequest(number: 8) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"p1\":{\"number\":1,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/1\",\"title\":\"chore(factory): start a software factory\",\"state\":\"OPEN\",\"isDraft\":true,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"agentgate/factory-init\",\"headRefOid\":\"bf0a3e1d557089c03f03cdc18ec49c8f7d78bf75\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}},\"p3\":{\"number\":3,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/3\",\"title\":\"fix: number paginate() pages from 1\",\"state\":\"MERGED\",\"isDraft\":false,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/factory-scratch-2\",\"headRefOid\":\"e7a4d5e1e654cc687b77b987aa8fe77c3b15236d\",\"baseRefName\":\"main\",\"mergedAt\":\"2026-11-10T08:39:57Z\",\"mergeable\":\"UNKNOWN\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}},\"p6\":{\"number\":6,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/6\",\"title\":\"feat: add truncate(text, max) helper (m-566044)\",\"state\":\"OPEN\",\"isDraft\":false,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/m-566044\",\"headRefOid\":\"02239b4d97f2f8a9e489e903fe904726c700d0d5\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}}]},\"reviewThreads\":{\"nodes\":[{\"id\":\"PRRT_kwDOVpGbC861ncLB\",\"isResolved\":true,\"isOutdated\":false,\"path\":\"src/truncate.ts\",\"line\":1,\"originalLine\":1,\"viewerCanResolve\":false,\"comments\":{\"nodes\":[{\"body\":\"Please count the ellipsis toward `max`, so the result is never longer than `max` characters, and add a test for `max` smaller than the ellipsis.\",\"createdAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"**m-566044**: Fixed in 02239b4d97f2.\\n\\nThe ellipsis already counted toward max: the cut is max minus the ellipsis length, and max 0 returns an empty string. Added a dedicated test that checks the result is never longer than max for every max from 0 up, including below the ellipsis length, on plain text and text with surrogate pairs. No production code changed.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QDGDVPE1VGFRA8VDV6HP\\\",\\\"key\\\":\\\"m-566044\\\",\\\"stage\\\":\\\"implement\\\",\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":\\\"02239b4d97f2f8a9e489e903fe904726c700d0d5\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/6\\\"} -->\",\"createdAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}}]}}]}},\"p7\":{\"number\":7,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/7\",\"title\":\"fix: transliterate non-English titles in slugify()\",\"state\":\"OPEN\",\"isDraft\":false,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/factory-scratch-4\",\"headRefOid\":\"8fbeb1edb0dd1621c3022d4719bbb01bbe7d9232\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}},\"p8\":{\"number\":8,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/8\",\"title\":\"feat: add wordCount(text) helper (m-fa16fb)\",\"state\":\"OPEN\",\"isDraft\":true,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/m-fa16fb\",\"headRefOid\":\"52d080578cb952cb0d0e7388fa16427924efe730\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}}}}}",
+    "stderr": ""
+  },
+  "mainChecks": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    defaultBranchRef {\n      refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }\n      target { ... on Commit { statusCheckRollup {\n        contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n      } } }\n    }\n  }\n}",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"defaultBranchRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]},\"target\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}}}}",
+    "stderr": ""
+  },
+  "reverts": {
+    "args": [
+      "pr",
+      "list",
+      "--repo",
+      "cli/cli",
+      "--state",
+      "merged",
+      "--search",
+      "Revert in:title merged:>=2026-09-01",
+      "--limit",
+      "100",
+      "--json",
+      "number,title,body,mergedAt"
+    ],
+    "exit": 0,
+    "stdout": "[{\"body\":\"## Description\\r\\n\\r\\nReverts cli/cli#14437\\r\\n\\r\\nFailed https://github.com/cli/cli/actions/runs/34978056515/job/104410855926\\r\\n\\r\\n> “Actions and reusable workflows stored in private repositories cannot be used in public or internal repositories.”\\r\\n\\r\\nhttps://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/reuse-automations/share-with-your-enterprise\",\"mergedAt\":\"2026-09-15T14:11:21Z\",\"number\":14462,\"title\":\"Revert \\\"Use internal Apple codesign action\\\"\"}]\n",
+    "stderr": ""
+  },
+  "branchExists.missing": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/no-such-branch", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Branch not found\",\"documentation_url\":\"https://docs.github.com/rest/branches/branches#get-a-branch\",\"status\":\"404\"}",
+    "stderr": "gh: Branch not found (HTTP 404)\n"
+  },
+  "readFile.missing": {
+    "args": [
+      "api",
+      "-H",
+      "Accept: application/vnd.github.raw+json",
+      "repos/HansKristoffer/factory-scratch/contents/factory/no-such-file.yaml?ref=main"
+    ],
+    "exit": 1,
+    "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}",
+    "stderr": "gh: Not Found (HTTP 404)\n"
+  },
+  "label.missing": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/labels/no-such-label", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/issues/labels#get-a-label\",\"status\":\"404\"}",
+    "stderr": "gh: Not Found (HTTP 404)\n"
+  },
+  "issueView.missing": {
+    "args": ["issue", "view", "999", "--repo", "HansKristoffer/factory-scratch", "--json", "state,comments"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "GraphQL: Could not resolve to an issue or pull request with the number of 999. (repository.issue)\n"
+  },
+  "prState.missing": {
+    "args": ["pr", "view", "999", "--repo", "HansKristoffer/factory-scratch", "--json", "state"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "GraphQL: Could not resolve to a PullRequest with the number of 999. (repository.pullRequest)\n"
+  },
+  "followed.missing": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p6: pullRequest(number: 6) { ...Followed }\n    p999: pullRequest(number: 999) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 1,
+    "stdout": "{\"data\":{\"repository\":{\"p6\":{\"number\":6,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/6\",\"title\":\"feat: add truncate(text, max) helper (m-566044)\",\"state\":\"OPEN\",\"isDraft\":false,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/m-566044\",\"headRefOid\":\"02239b4d97f2f8a9e489e903fe904726c700d0d5\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}}]},\"reviewThreads\":{\"nodes\":[{\"id\":\"PRRT_kwDOVpGbC861ncLB\",\"isResolved\":true,\"isOutdated\":false,\"path\":\"src/truncate.ts\",\"line\":1,\"originalLine\":1,\"viewerCanResolve\":false,\"comments\":{\"nodes\":[{\"body\":\"Please count the ellipsis toward `max`, so the result is never longer than `max` characters, and add a test for `max` smaller than the ellipsis.\",\"createdAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"**m-566044**: Fixed in 02239b4d97f2.\\n\\nThe ellipsis already counted toward max: the cut is max minus the ellipsis length, and max 0 returns an empty string. Added a dedicated test that checks the result is never longer than max for every max from 0 up, including below the ellipsis length, on plain text and text with surrogate pairs. No production code changed.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QDGDVPE1VGFRA8VDV6HP\\\",\\\"key\\\":\\\"m-566044\\\",\\\"stage\\\":\\\"implement\\\",\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":\\\"02239b4d97f2f8a9e489e903fe904726c700d0d5\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/6\\\"} -->\",\"createdAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}}]}}]}},\"p999\":null}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"repository\",\"p999\"],\"locations\":[{\"line\":4,\"column\":5}],\"message\":\"Could not resolve to a PullRequest with the number of 999.\"}]}",
+    "stderr": "gh: Could not resolve to a PullRequest with the number of 999.\n"
+  },
+  "followed.missing.6": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p6: pullRequest(number: 6) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"p6\":{\"number\":6,\"url\":\"https://github.com/HansKristoffer/factory-scratch/pull/6\",\"title\":\"feat: add truncate(text, max) helper (m-566044)\",\"state\":\"OPEN\",\"isDraft\":false,\"author\":{\"login\":\"HansKristoffer\"},\"headRefName\":\"factory/m-566044\",\"headRefOid\":\"02239b4d97f2f8a9e489e903fe904726c700d0d5\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"MERGEABLE\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"test\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":false}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"\",\"state\":\"COMMENTED\",\"submittedAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"author\":{\"__typename\":\"User\"}}]},\"reviewThreads\":{\"nodes\":[{\"id\":\"PRRT_kwDOVpGbC861ncLB\",\"isResolved\":true,\"isOutdated\":false,\"path\":\"src/truncate.ts\",\"line\":1,\"originalLine\":1,\"viewerCanResolve\":false,\"comments\":{\"nodes\":[{\"body\":\"Please count the ellipsis toward `max`, so the result is never longer than `max` characters, and add a test for `max` smaller than the ellipsis.\",\"createdAt\":\"2026-11-10T08:39:55Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}},{\"body\":\"**m-566044**: Fixed in 02239b4d97f2.\\n\\nThe ellipsis already counted toward max: the cut is max minus the ellipsis length, and max 0 returns an empty string. Added a dedicated test that checks the result is never longer than max for every max from 0 up, including below the ellipsis length, on plain text and text with surrogate pairs. No production code changed.\\n\\n<!-- agentgate-factory:1 {\\\"item\\\":\\\"it_01M728QDGDVPE1VGFRA8VDV6HP\\\",\\\"key\\\":\\\"m-566044\\\",\\\"stage\\\":\\\"implement\\\",\\\"outcome\\\":null,\\\"route\\\":null,\\\"commit\\\":\\\"02239b4d97f2f8a9e489e903fe904726c700d0d5\\\",\\\"factory\\\":\\\"ba4ce23\\\",\\\"node\\\":\\\"dev\\\",\\\"state\\\":\\\"open\\\",\\\"pr\\\":\\\"https://github.com/HansKristoffer/factory-scratch/pull/6\\\"} -->\",\"createdAt\":\"2026-11-10T08:41:13Z\",\"authorAssociation\":\"OWNER\",\"state\":\"SUBMITTED\",\"author\":{\"__typename\":\"User\"}}]}}]}}}}}",
+    "stderr": ""
+  },
+  "followed.missing.999": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p999: pullRequest(number: 999) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 1,
+    "stdout": "{\"data\":{\"repository\":{\"p999\":null}},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"repository\",\"p999\"],\"locations\":[{\"line\":3,\"column\":5}],\"message\":\"Could not resolve to a PullRequest with the number of 999.\"}]}",
+    "stderr": "gh: Could not resolve to a PullRequest with the number of 999.\n"
+  },
+  "repoView.noRepo": {
+    "args": ["repo", "view", "HansKristoffer/no-such-repo-agentgate", "--json", "defaultBranchRef"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "GraphQL: Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'. (repository)\n"
+  },
+  "branchExists.noRepo": {
+    "args": ["api", "repos/HansKristoffer/no-such-repo-agentgate/branches/main", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/branches/branches#get-a-branch\",\"status\":\"404\"}",
+    "stderr": "gh: Not Found (HTTP 404)\n"
+  },
+  "issueList.noRepo": {
+    "args": [
+      "issue",
+      "list",
+      "--repo",
+      "HansKristoffer/no-such-repo-agentgate",
+      "--label",
+      "factory",
+      "--state",
+      "open",
+      "--limit",
+      "201",
+      "--json",
+      "number,title,body,url,updatedAt"
+    ],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "GraphQL: Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'. (repository)\n"
+  },
+  "followed.noRepo": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p1: pullRequest(number: 1) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=no-such-repo-agentgate"
+    ],
+    "exit": 1,
+    "stdout": "{\"data\":{\"repository\":null},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"repository\"],\"locations\":[{\"line\":2,\"column\":3}],\"message\":\"Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'.\"}]}",
+    "stderr": "gh: Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'.\n"
+  },
+  "mainChecks.noRepo": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    defaultBranchRef {\n      refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }\n      target { ... on Commit { statusCheckRollup {\n        contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n      } } }\n    }\n  }\n}",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=no-such-repo-agentgate"
+    ],
+    "exit": 1,
+    "stdout": "{\"data\":{\"repository\":null},\"errors\":[{\"type\":\"NOT_FOUND\",\"path\":[\"repository\"],\"locations\":[{\"line\":2,\"column\":3}],\"message\":\"Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'.\"}]}",
+    "stderr": "gh: Could not resolve to a Repository with the name 'HansKristoffer/no-such-repo-agentgate'.\n"
+  },
+  "repoView.empty": {
+    "args": ["repo", "view", "aldevvv/zerolabs", "--json", "defaultBranchRef"],
+    "exit": 0,
+    "stdout": "{\"defaultBranchRef\":{\"name\":\"\"}}\n",
+    "stderr": ""
+  },
+  "branchExists.empty": {
+    "args": ["api", "repos/aldevvv/zerolabs/branches/agentgate%2Ffactory-init", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Branch not found\",\"documentation_url\":\"https://docs.github.com/rest/branches/branches#get-a-branch\",\"status\":\"404\"}",
+    "stderr": "gh: Branch not found (HTTP 404)\n"
+  },
+  "mainChecks.empty": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    defaultBranchRef {\n      refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } }\n      target { ... on Commit { statusCheckRollup {\n        contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n      } } }\n    }\n  }\n}",
+      "-f",
+      "owner=aldevvv",
+      "-f",
+      "name=zerolabs"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"defaultBranchRef\":null}}}",
+    "stderr": ""
+  },
+  "followed.manyChecks": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p203997: pullRequest(number: 203997) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=pytorch",
+      "-f",
+      "name=pytorch"
+    ],
+    "exit": 0,
+    "stdout": "{\"data\":{\"repository\":{\"p203997\":{\"number\":203997,\"url\":\"https://github.com/pytorch/pytorch/pull/203997\",\"title\":\"Update Metamates merge rule\",\"state\":\"CLOSED\",\"isDraft\":false,\"author\":{\"login\":\"pytorchupdatebot\"},\"headRefName\":\"update-metamates-rule\",\"headRefOid\":\"94d88e9026526244b4c85aee77f68585196a37c4\",\"baseRefName\":\"main\",\"mergedAt\":null,\"mergeable\":\"UNKNOWN\",\"baseRef\":{\"refUpdateRule\":null,\"rules\":{\"nodes\":[{\"parameters\":{}},{\"parameters\":null},{\"parameters\":null},{\"parameters\":null}]}},\"commits\":{\"nodes\":[{\"commit\":{\"statusCheckRollup\":{\"contexts\":{\"nodes\":[{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"capture\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"analyze\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"Auto Request Review\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"check-ci / check-ci\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"before-test / get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"apply\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"bc_linter\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"Get changed files / get-changed-files\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"Get changed files / get-changed-files\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"linux-jammy-py3.14t-clang21-tsan / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"linux-jammy-py3.11-gcc11 / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"before-test / llm-retrieval\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-build / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_core, 1, 1, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 1, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 2, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 3, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 4, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 5, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 6, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.11 / dynamo-test / test (dynamo_wrapped, 7, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-build / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_core, 1, 1, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 1, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 2, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 3, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 4, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 5, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 6, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.12 / dynamo-test / test (dynamo_wrapped, 7, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-build / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_core, 1, 1, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 1, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 2, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 3, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 4, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 5, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 6, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14 / dynamo-test / test (dynamo_wrapped, 7, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-build / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_core, 1, 1, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 1, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 2, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 3, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 4, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 5, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 6, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.14t / dynamo-test / test (dynamo_wrapped, 7, 7, mt-l-x86iavx512-16-128)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-build / build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_core, 1, 1, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 1, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 2, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 3, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 4, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 5, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 6, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"dynamo-unittest / py3.15 / dynamo-test / test (dynamo_wrapped, 7, 7, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"record-error\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"quick-checks / lint\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"quick-checks / lint\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"linux-jammy-py3.14t-clang21-tsan / test (tsan, 1, 1, mt-l-x86iavx512-8-64)\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"linux-docs / build-docs-cpp-false\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"before-test / get-label-type / runner-determinator\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"linux-docs / build-docs-python-false\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"},{\"__typename\":\"CheckRun\",\"name\":\"pr-sanity-checks\",\"status\":\"COMPLETED\",\"conclusion\":\"SKIPPED\"},{\"__typename\":\"CheckRun\",\"name\":\"pr-sanity-checks\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}],\"pageInfo\":{\"hasNextPage\":true}}}}}]},\"comments\":{\"nodes\":[]},\"reviews\":{\"nodes\":[]},\"reviewThreads\":{\"nodes\":[]}}}}}",
+    "stderr": ""
+  },
+  "offline.branchExists": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Get \"https://api.github.com/repos/HansKristoffer/factory-scratch/branches/main\": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused\n"
+  },
+  "offline.repoView": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused\n"
+  },
+  "offline.issueList": {
+    "args": [
+      "issue",
+      "list",
+      "--repo",
+      "HansKristoffer/factory-scratch",
+      "--label",
+      "factory",
+      "--state",
+      "open",
+      "--limit",
+      "201",
+      "--json",
+      "number,title,body,url,updatedAt"
+    ],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused\n"
+  },
+  "offline.prView": {
+    "args": [
+      "pr",
+      "view",
+      "https://github.com/HansKristoffer/factory-scratch/pull/6",
+      "--json",
+      "number,url,title,state,isDraft,author,headRefName,headRefOid,baseRefName,mergedAt,mergeable,body,comments"
+    ],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused\n"
+  },
+  "offline.followed": {
+    "args": [
+      "api",
+      "graphql",
+      "-f",
+      "query=query ($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n    p6: pullRequest(number: 6) { ...Followed }\n  }\n}\nfragment Followed on PullRequest {\n    number url title state isDraft author { login } headRefName headRefOid baseRefName mergedAt mergeable\n    baseRef { refUpdateRule { requiredStatusCheckContexts }\n      rules(first: 100) { nodes { parameters { ... on RequiredStatusChecksParameters { requiredStatusChecks { context } } } } } }\n    commits(last: 1) { nodes { commit { statusCheckRollup {\n      contexts(first: 100) {\n        nodes { __typename ... on CheckRun { name status conclusion } ... on StatusContext { context state } }\n        pageInfo { hasNextPage }\n      }\n    } } } }\n    comments(last: 100) { nodes { body authorAssociation createdAt } }\n    reviews(last: 100) { nodes { body state submittedAt authorAssociation author { __typename } } }\n    reviewThreads(first: 100) {\n      nodes {\n        id isResolved isOutdated path line originalLine viewerCanResolve\n        comments(first: 50) { nodes { body createdAt authorAssociation state author { __typename } } }\n      }\n    }\n  }",
+      "-f",
+      "owner=HansKristoffer",
+      "-f",
+      "name=factory-scratch"
+    ],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "Post \"https://api.github.com/graphql\": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused\n"
+  },
+  "noDns.branchExists": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "error connecting to proxy.invalid\ncheck your internet connection or https://githubstatus.com\n"
+  },
+  "noDns.repoView": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "error connecting to proxy.invalid\ncheck your internet connection or https://githubstatus.com\n"
+  },
+  "loggedOut.branchExists": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main", "--jq", ".name"],
+    "exit": 4,
+    "stdout": "",
+    "stderr": "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+  },
+  "loggedOut.repoView": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
+    "exit": 4,
+    "stdout": "",
+    "stderr": "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+  },
+  "loggedOut.issueList": {
+    "args": [
+      "issue",
+      "list",
+      "--repo",
+      "HansKristoffer/factory-scratch",
+      "--label",
+      "factory",
+      "--state",
+      "open",
+      "--limit",
+      "201",
+      "--json",
+      "number,title,body,url,updatedAt"
+    ],
+    "exit": 4,
+    "stdout": "",
+    "stderr": "To get started with GitHub CLI, please run:  gh auth login\nAlternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n"
+  },
+  "badToken.branchExists": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main", "--jq", ".name"],
+    "exit": 1,
+    "stdout": "{\r\n  \"message\": \"Bad credentials\",\r\n  \"documentation_url\": \"https://docs.github.com/rest\",\r\n  \"status\": \"401\"\r\n}",
+    "stderr": "gh: Bad credentials (HTTP 401)\n"
+  },
+  "badToken.repoView": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
+    "exit": 1,
+    "stdout": "",
+    "stderr": "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login -h github.com\n"
+  },
+  "visibility": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "visibility"],
+    "exit": 0,
+    "stdout": "{\"visibility\":\"PRIVATE\"}\n",
+    "stderr": ""
+  },
+  "protection": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main/protection"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Upgrade to GitHub Pro or make this repository public to enable this feature.\",\"documentation_url\":\"https://docs.github.com/rest/branches/branch-protection#get-branch-protection\",\"status\":\"403\"}",
+    "stderr": "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)\n"
+  },
+  "user": {
+    "args": ["api", "user"],
+    "exit": 0,
+    "stdout": "{\"login\":\"HansKristoffer\"}\n",
+    "stderr": ""
+  },
+  "user.scopes": {
+    "args": ["api", "user", "--include"],
+    "exit": 0,
+    "stdout": "HTTP/2.0 200 OK\nContent-Type: application/json; charset=utf-8\nX-Accepted-Oauth-Scopes: \nX-Oauth-Scopes: gist, read:org, repo, workflow\n\n{\"login\":\"HansKristoffer\"}\n",
+    "stderr": ""
+  },
+  "push": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch", "--jq", ".permissions.push"],
+    "exit": 0,
+    "stdout": "true\n",
+    "stderr": ""
+  }
+}

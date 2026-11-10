@@ -4,7 +4,8 @@ One daemon per machine that:
 
 - pools several **Claude**, **Codex**, and **Cursor** subscriptions and moves to the next account when one hits its limit;
 - hosts **MCP servers** and gives each GitHub repo its own set (e.g. a separate PostHog project per repo), plus general ones for every repo;
-- **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline.
+- **shares** all of it between your machines over Tailscale or an end-to-end encrypted relay, and keeps working when the other machines are offline;
+- can run a **software factory**, off until you turn it on, that works the issues you label in T3 Code threads until a pull request is ready for you to merge.
 
 T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underneath. The optional **Tauri macOS app** controls your local or remote setup. The daemon and CLI work independently, including on headless Linux servers. There is no web UI. See [running agentgate](docs/operations/running.md).
 
@@ -236,13 +237,61 @@ agentgate project set @grok linear=linear posthog=posthog-lullu
 agentgate skills projects release-notes @grok
 agentgate remote enable @grok        # prints the URL and Authorization header
 agentgate remote secret @grok        # new secret, same URL
+agentgate remote factory @grok on    # also let Grok see and steer the software factory
+agentgate remote webhook @grok https://bot.example/agentgate?token=…   # tell Grok what waits for you
 ```
 
-Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
+With the **Software factory** switch on (or `remote factory @grok on`), Grok can also follow and steer the [software factory](#software-factory) from anywhere: `factory__status` shows the board and the repositories it works, `factory__show` one item, and `factory__add` adds a task in any of those repositories, which starts at triage without waiting for your approval. Grok can also approve, reject, retry and drop items, and pause or resume the factory. To hear about changes without asking, set an **updates webhook** in the app, with `remote webhook`, or let Grok set one with `factory__webhook`: it then gets the same posts as your own [notify URL](#software-factory), when an item starts waiting for you and when a PR is ready. Put the receiver's token in the URL's path or query; the app shows only its host. Every machine must run a release that knows the switch; turning it on names the machines to update.
+
+Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. With the factory switch on, that includes starting full-access T3 Code threads on your machines with text they choose. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
+
+## Software factory
+
+The factory takes the issues you label on GitHub or Linear, those a webhook sends, and those a scout files when it checks something on a schedule (such as slow endpoints), and works each one in T3 Code threads on one of your machines until its pull request is ready for review. Every step is a T3 Code thread you can open and talk to. The factory never merges; that stays with you.
+
+Each item goes through these stages:
+
+1. **Triage** reproduces the report, looks for duplicates and for a fix already on the default branch, closes reports that come from a CI runner, a developer's machine or a third-party outage, and chooses between a fix and a spec.
+2. **Spec**, for unclear or large items: the thread writes a spec, has a fresh agent review it, and asks you **Approve** or **Change**. The app's Factory view and `agentgate factory show` show the spec, and you answer there or in T3 Code. A large change is cut to a first slice, and the rest becomes issues when the PR is ready.
+3. **Implement** works on the branch `factory/<item>`, reviews its own diff, and opens a draft pull request. The thread keeps the PR, and the factory wakes it when it sits on a failing check, a conflict, or comments from the repository's own people. No fix starts while the default branch fails CI.
+4. **Review**: a fresh thread reviews the PR in focused passes (correctness, tests, reuse, efficiency, security and the repository's own rules) without reading what the implementer said about it. Its findings go to the implement thread, not to GitHub, for up to three rounds by default.
+5. **Ready**: the factory marks the PR ready for review, requests the repository's reviewers, and adds a summary to the PR's description: what the implementer checked and did not, the decisions it made that the issue left open, least sure first, what the last review round left open, and where the risk is. Problems the review found in code the PR did not change, and the slices a spec left for later, become issues without the factory's label: label one to have the factory work it. You merge the PR or close it.
+
+The factory comments on the issue when it takes it in, when it triages it, when a spec is approved, when it opens the PR, when the PR is ready or merged, and whenever it needs an answer from you or stopped.
+
+To start one:
+
+1. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary`, which also counts their tokens, or `--mcp`). Stage threads report back through it. `agentgate factory doctor` checks all of this once the factory is on.
+2. Press **Start a factory** in the app's Factory view, or run `agentgate factory init owner/repo`. It keeps the factory's folder in agentgate, so nothing is pushed to the repository, every machine gets a copy, and you edit it in the app's Factory settings or with `agentgate factory folder`. More repositories join with **Add to the factory** in a project's menu, or `agentgate factory repo add owner/repo`. To run from a folder in a git repository instead (the [factory guide](docs/user/factory.md) has the format and an example, and `agentgate factory folder export` writes one out), run `agentgate factory use owner/repo[:folder]`. The factory runs on your always-on machine, or the one you name with `--node`; `agentgate factory move <machine>` moves it later, once the items it has open are finished. Other machines forward factory commands to it.
+3. Watch it in the app's Factory view, which shows what waits for you, every stage, and links that open each thread in T3 Code. `agentgate factory status` and the `/factory` page (`agentgate dashboard on`) show the same board.
+4. Label an issue with your source's label (`factory` for a folder `init` made). The factory looks every 2 minutes.
+
+You act in three places:
+
+- **T3 Code**: answer the questions threads ask, including the spec card. A thread you stop stays stopped: its item waits for you until you `retry` or `drop` it.
+- **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, `show <item>` tells what happened to it, `pause` and `resume` stop and restart the whole factory, and `add <owner/repo> <title>` adds an item by hand.
+- **GitHub**: answer a question on its issue (`/approve`, `/reject <reason>`, or your answer in your own words), review the PR, ask for changes in a review comment, and merge it.
+
+The factory comments as your `gh` login, and GitHub never notifies you of your own comments. To hear when an item waits for you or a PR is ready, give it a URL of your own, such as a Slack incoming webhook: `agentgate factory notify https://hooks.slack.com/services/…` (or **Notifications** in the app's Factory settings; `notify off` stops it). The app also marks the Factory view and sends a system notification, and the thread that asks is marked unread in T3 Code.
+
+```sh
+agentgate factory init acme/api              # a factory for one repository, on at once; off turns it off
+agentgate factory status                     # the board: items, what waits for you, sources and webhook URLs
+agentgate factory doctor                     # what the factory still needs, with the fix for each
+printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY
+agentgate factory approve api-42 --reason "keep the old field as an alias"
+agentgate factory help                       # every factory command
+```
+
+Things to know:
+
+- **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt. Protect the factory folder's branch on GitHub if your plan allows; `factory use` warns when it is open and could be protected.
+- **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. An item that passes `limits.itemTokens` in `factory.yaml` (30 million tokens by default) stops and waits for you.
+- Every machine must run this release before you turn the factory on or set a factory secret, because older releases drop them.
 
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `factory help`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 

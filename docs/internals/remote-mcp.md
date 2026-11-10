@@ -26,6 +26,26 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
 - The public `/mcp/:key` route does not require `RELAY_KEY`, because clients like Grok only send a bearer
   token. Creating, connecting and deleting endpoints do.
 - `export --no-secrets` drops the whole `remote` field.
+- A virtual project's `factoryTools` adds the factory's tools under the reserved `factory` prefix
+  ([`factory/remote-tools.ts`](../../apps/agentgate/src/factory/remote-tools.ts)). They are the factory operations
+  marked `remote`, which reach the factory machine, so any node can serve the endpoint. Turning it on
+  is gated on node protocol 9, since older nodes drop the field when they save the project. Unlike the agent tool
+  `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
+  control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.
+- The endpoint's `factoryWebhook` is one more URL on the factory's notify outlets
+  ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), beside the person's own `factory notify` URL:
+  it hears when an item starts waiting for the person and when a PR is ready, from the factory machine, with one retry
+  and no replay. The URL is a capability, so the API shows its origin only, logs show a status or an error's name, and
+  backups without secrets and the seeded dev store drop it.
+- The factory's webhook URLs reuse this machinery as endpoints of kind `hook`, served at `POST /hook/:key`
+  ([factory](factory.md#hook-endpoints-hookkey)). Like `/mcp/:key`, the route needs neither a bearer token nor
+  `RELAY_KEY`, because senders such as GitHub cannot send them. The serving machine checks the sender's signature
+  instead, so the relay forwards every header except cookies, hop-by-hop headers (including those `Connection`
+  names) and its own `x-agentgate-*`, and the body as exact UTF-8 bytes. Bodies may be up to 1 MiB
+  (`REMOTE_LIMITS.hookRequestBytes`), more than MCP requests, since a GitHub push event can be large.
+- An endpoint's kind is fixed when the relay first admits it. A `PUT /e/:key` with another kind is refused, and a
+  public request reaches only an endpoint of its own kind, so a hook key never opens an MCP endpoint. MCP updates
+  leave `kind` out, which relays from before webhooks expect.
 
 ## Traps
 

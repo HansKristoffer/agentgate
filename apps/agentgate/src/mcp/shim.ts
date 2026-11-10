@@ -1,4 +1,5 @@
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@modelcontextprotocol/client";
+import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { LOCAL_URL, schemas, type McpInstance } from "../store.ts";
 import {
@@ -46,7 +47,10 @@ export async function buildShim(
   // The handshake and session reads fail fast, so a hung daemon costs the session its tools, not its start.
   const handshake = options.handshakeMs ?? 5000;
   const project = detectProject(cwd, env);
-  const q = `project=${encodeURIComponent(project)}`;
+  // A T3 Code thread names itself: the daemon narrows a factory thread's tools by it, and tells which thread a
+  // factory report came from.
+  const thread = env.T3CODE_THREAD_ID;
+  const q = `project=${encodeURIComponent(project)}${thread ? `&thread=${encodeURIComponent(thread)}` : ""}`;
   // Too late for this session's skills (agents read them before starting MCP servers), but it lets the
   // daemon link project skills into this repo's worktrees ahead of the next session.
   if (project !== "*")
@@ -159,13 +163,24 @@ export async function buildShim(
     }));
   };
   await ensure().catch(() => {});
+  const toDaemon = (client: Client): Source => ({
+    alias: "",
+    client,
+    ...(thread && {
+      invoke: (params, options) =>
+        client.request(
+          { method: "tools/call", params: { ...params, _meta: { [T3_THREAD_META_KEY]: thread, ...params._meta } } },
+          options,
+        ) as Promise<CallToolResult>,
+    }),
+  });
   const child = (alias: string): Source | undefined => {
     const c = children.get(alias);
     return c && { alias, client: c.client, instance: c.instance };
   };
   const sources = async (): Promise<Source[]> => {
     await ensure().catch(() => {});
-    return [...(daemon ? [{ alias: "", client: daemon }] : []), ...Array.from(children.keys(), (a) => child(a)!)];
+    return [...(daemon ? [toDaemon(daemon)] : []), ...Array.from(children.keys(), (a) => child(a)!)];
   };
   server = mergedServer(daemon ? mergeInstructions(await sources()) : DAEMON_DOWN, sources, {
     onError: (alias, e) => console.error(`agentgate: ${alias || "daemon"}: ${e}`),
@@ -174,7 +189,7 @@ export async function buildShim(
     resolveSource: async (alias) => {
       if (alias) return child(alias);
       if (!daemon) await ensure().catch(() => {});
-      return daemon && { alias: "", client: daemon };
+      return daemon && toDaemon(daemon);
     },
   });
   const timer = setInterval(() => {

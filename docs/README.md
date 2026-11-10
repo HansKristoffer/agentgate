@@ -6,12 +6,14 @@ Start with the [README](../README.md).
 
 - [Using Agentgate with Claude Desktop](./user/claude-desktop.md)
 - [Proxy controls and diagnostics](./user/proxy.md)
+- [The software factory](./user/factory.md)
 
 ## Running agentgate
 
 - [Backups, upgrades and distribution checks](./operations/running.md)
 - [The relay: trust model, limits and self-hosting](./operations/relay.md)
 - [Releasing](./operations/releasing.md)
+- [Factory live check](./operations/factory-live-check.md)
 
 ## Working on agentgate
 
@@ -24,5 +26,6 @@ traps the source alone does not explain. Most changes need no internal doc updat
 - [Relay](./internals/relay.md)
 - [Remote MCP endpoints](./internals/remote-mcp.md)
 - [Skills](./internals/skills.md)
+- [Software factory](./internals/factory.md)
 - [Checkout files](./internals/checkout-files.md)
 - [Claude Desktop](./internals/claude-desktop.md)

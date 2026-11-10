@@ -40,6 +40,8 @@ const t3ThreadSchema = z.object({
   lastActivity: z.string(),
   /** Set while it works: when the current work started, for "Working 12m". */
   workingSince: z.string().optional(),
+  /** Opens the thread in T3 Code from any machine; absent when T3 did not name its environment, or from older nodes. */
+  link: z.string().optional(),
   node: z.string(),
 });
 export type T3Thread = z.infer<typeof t3ThreadSchema>;

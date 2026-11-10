@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useChanges } from "./useChanges.ts";
 import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
@@ -8,6 +9,7 @@ import {
   Boxes,
   ChevronRight,
   CircleHelp,
+  Factory as FactoryIcon,
   FolderGit2,
   LayoutDashboard,
   Monitor,
@@ -23,6 +25,7 @@ import {
   Accounts,
   ActivityView,
   Dashboard,
+  Factory,
   Nodes,
   Projects,
   Servers,
@@ -32,7 +35,7 @@ import {
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { problems } from "./attention.ts";
-import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
+import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./desktopTray.ts";
 
 import type { Perform } from "./types.ts";
 import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./components/ui.tsx";
@@ -45,6 +48,7 @@ const navigation = [
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "t3", title: "T3 Code", icon: SquareTerminal },
+  { id: "factory", title: "Factory", icon: FactoryIcon },
   { id: "activity", title: "Activity", icon: Activity },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
@@ -57,6 +61,7 @@ const descriptions: Record<View, string> = {
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   t3: "Hand a thread to another machine and back, with its session and code.",
+  factory: "Issues worked in T3 Code threads, up to a PR ready for you. See what waits for you and steer it.",
   activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
@@ -153,6 +158,11 @@ export function App() {
       if (newerThanShown()) setError(String(e));
     }
   }, []);
+  // Refreshes as soon as the daemon reports a change.
+  const changes = useChanges(connection, ready);
+  useEffect(() => {
+    if (changes) void refresh();
+  }, [changes, refresh]);
   // Polls, every second while something is under way so it shows as it happens, and refreshes on focus and on every
   // page change, so a view never opens on stale data.
   const live = !!data && underWay(data, desktop);
@@ -209,7 +219,8 @@ export function App() {
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
-  const props = data && { data, connection, perform, local, desktop };
+  const factoryWaiting = useFactoryAttention(connection, !!data?.settings.factory, changes);
+  const props = data && { data, connection, perform, local, desktop, changes };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
@@ -218,6 +229,7 @@ export function App() {
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
+    factory: <Factory {...props} />,
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
@@ -232,6 +244,7 @@ export function App() {
     : {};
   // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
+  if (factoryWaiting) attention.add("factory");
   return (
     <BusyContext value={busy}>
       <PendingContext value={pending}>

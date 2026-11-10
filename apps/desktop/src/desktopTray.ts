@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
-import type { DesktopLogin, DesktopStatus, Status } from "@agentgate/protocol";
+import { useEffect, useRef, useState } from "react";
+import type { Connection, DesktopLogin, DesktopStatus, FactoryBoard, Status } from "@agentgate/protocol";
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { TrayIcon } from "@tauri-apps/api/tray";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
+import { request } from "./api.ts";
 import { tightest } from "./views/ClaudeDesktop.tsx";
 
 const name = (l: { label?: string; email?: string; accountUuid: string }) =>
@@ -157,4 +158,45 @@ export function useDesktopNotifications(
         );
     }
   }, [data, desktop]);
+}
+
+/**
+ * The factory's two moments the person hears about (factory/notify.ts on the daemon): an item starts waiting for them,
+ * and a PR is ready. The board is read again whenever the daemon's factory events change. Items already waiting when
+ * the app first reads the board are not announced, so opening the app is not a burst of notifications. Returns how many
+ * items wait for the person, for the sidebar's attention dot.
+ */
+export function useFactoryAttention(connection: Connection, on: boolean, changes: number) {
+  const [board, setBoard] = useState<FactoryBoard>();
+  const primed = useRef(false);
+  useEffect(() => {
+    if (!on) return setBoard(undefined);
+    void request<FactoryBoard>(connection, "/factory").then(setBoard, () => {});
+  }, [connection, on, changes]);
+  useEffect(() => {
+    if (!board) return;
+    const moments = board.items.flatMap((i) =>
+      i.needsYou
+        ? [
+            {
+              key: `factory:${i.id}:${i.needsYou.since}`,
+              title: `${i.key} needs you`,
+              body: `${i.needsYou.title}: ${i.needsYou.question}`,
+            },
+          ]
+        : i.phase === "ready"
+          ? [{ key: `factory-ready:${i.id}`, title: `${i.key}'s PR is ready`, body: i.title }]
+          : [],
+    );
+    if (!primed.current) {
+      primed.current = true;
+      localStorage.setItem("desktopNotified", JSON.stringify([...sent(), ...moments.map((m) => m.key)].slice(-50)));
+      return;
+    }
+    // One at a time: each reads and writes the list of what was sent.
+    void (async () => {
+      for (const m of moments) await notify(m.key, m.title, m.body);
+    })();
+  }, [board]);
+  return board?.items.filter((i) => i.needsYou).length ?? 0;
 }

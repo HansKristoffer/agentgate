@@ -1,51 +1,78 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { Server, type CallToolResult, type ListToolsResult } from "@modelcontextprotocol/server";
+import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 import { getErrorMessage } from "hanzio";
+import { z } from "zod";
 import { BUILTIN_ALIAS, type Source } from "../mcp/gateway.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
-import { handoffTargets } from "@agentgate/protocol";
+import { T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
 import { allNodes, requestHandoff } from "./threads.ts";
+import { runOperation, type FactoryRuntime } from "../factory/runtime.ts";
 
 const text = (value: unknown): CallToolResult => ({
   content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
 });
 const fail = (value: string): CallToolResult => ({ isError: true, content: [{ type: "text", text: value }] });
+/** What an agent is told about arguments a factory tool refuses: the first problem, by its field. */
+function refused(error: z.ZodError) {
+  const issue = error.issues[0]!;
+  const field = [...issue.path, ...(issue.code === "unrecognized_keys" ? [issue.keys[0]!] : [])].join(".");
+  return `${field ? `${field}: ` : ""}${issue.message}`;
+}
 
-function server(h: Handoffs): Server {
+function server(h: Handoffs, f?: FactoryRuntime): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
-  // Only once T3 Code is connected here: other sessions have no thread to hand off.
-  server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => ({
-    tools: !t3State(h.s).url
-      ? []
-      : [
-          {
-            name: "handoff_targets",
-            description:
-              "List the machines a T3 Code thread on this machine can be handed to, and why the others are unavailable. Servers are always-on machines.",
-            inputSchema: { type: "object", properties: {} },
-          },
-          {
-            name: "handoff_thread",
-            description:
-              "Hand a T3 Code thread, with its Claude session and its code (unpushed commits and uncommitted files), to another machine and continue it there. To hand off yourself, get your thread id from T3's t3_thread_configure tool (called without arguments). Handing off the calling thread interrupts it right after this returns; it then continues on the other machine.",
-            inputSchema: {
-              type: "object",
-              required: ["threadId"],
-              properties: {
-                threadId: { type: "string", description: "The T3 Code thread id" },
-                to: {
-                  type: "string",
-                  description: '"server" (default: the first available always-on machine), "here", or a machine name',
-                },
+  server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => {
+    const tools: Tool[] = [];
+    // Only once T3 Code is connected here: other sessions have no thread to hand off.
+    if (t3State(h.s).url)
+      tools.push(
+        {
+          name: "handoff_targets",
+          description:
+            "List the machines a T3 Code thread on this machine can be handed to, and why the others are unavailable. Servers are always-on machines.",
+          inputSchema: { type: "object", properties: {} },
+        },
+        {
+          name: "handoff_thread",
+          description:
+            "Hand a T3 Code thread, with its Claude session and its code (unpushed commits and uncommitted files), to another machine and continue it there. To hand off yourself, get your thread id from T3's t3_thread_configure tool (called without arguments). Handing off the calling thread interrupts it right after this returns; it then continues on the other machine.",
+          inputSchema: {
+            type: "object",
+            required: ["threadId"],
+            properties: {
+              threadId: { type: "string", description: "The T3 Code thread id" },
+              to: {
+                type: "string",
+                description: '"server" (default: the first available always-on machine), "here", or a machine name',
               },
             },
           },
-        ],
-  }));
+        },
+      );
+    if (f?.pointer())
+      for (const { tool, input } of f.operations.values())
+        if (tool)
+          tools.push({
+            name: tool.name,
+            description: tool.description,
+            inputSchema: z.toJSONSchema(input, { io: "input" }) as Tool["inputSchema"],
+          });
+    return { tools };
+  });
   server.setRequestHandler("tools/call", async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
+      const op = f?.pointer() ? [...f.operations.values()].find((o) => o.tool?.name === req.params.name) : undefined;
+      if (f && op?.tool) {
+        const thread = req.params._meta?.[T3_THREAD_META_KEY];
+        const result = await runOperation(f, op.name, args, {
+          via: "tool",
+          ...(typeof thread === "string" && thread && { thread }),
+          node: h.s.nodeId,
+        });
+        return text(op.tool.result ? op.tool.result(result) : result);
+      }
       if (req.params.name === "handoff_targets") return text(handoffTargets(await allNodes(h), h.s.nodeId));
       if (req.params.name !== "handoff_thread") return fail(`unknown tool ${req.params.name}`);
       if (typeof args.threadId !== "string" || !args.threadId) return fail("threadId is required");
@@ -55,16 +82,19 @@ function server(h: Handoffs): Server {
       });
       return text({ status: "started", ...started });
     } catch (e) {
-      return fail(getErrorMessage(e));
+      return fail(e instanceof z.ZodError ? refused(e) : getErrorMessage(e));
     }
   });
   return server;
 }
 
-/** Built-in gateway tools under the `agentgate` alias, so an agent can hand its own thread to another machine. */
-export async function handoffSource(h: Handoffs): Promise<Source> {
+/**
+ * Built-in gateway tools under the `agentgate` alias, so an agent can hand its own thread to another machine, and,
+ * while the factory is on, the factory's tools.
+ */
+export async function handoffSource(h: Handoffs, f?: FactoryRuntime): Promise<Source> {
   const [a, b] = InMemoryTransport.createLinkedPair();
-  const srv = server(h),
+  const srv = server(h, f),
     client = new Client({ name: "agentgate", version: "1" });
   await Promise.all([srv.connect(a), client.connect(b)]);
   const close = client.close.bind(client);

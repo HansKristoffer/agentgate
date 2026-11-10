@@ -61,6 +61,7 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 - **The URL and secret are a capability.** Anyone with both can call that project's tools. **New secret** keeps the URL; **New URL** replaces both and deletes the old endpoint.
 - **Unpairing a machine** gives every endpoint a new URL and secret (the removed machine knows the current ones), and endpoints it served move to this machine. Update the URLs in Grok afterwards. `relay rotate` does not change endpoints.
 - **Every machine must run a version that understands endpoints** before one can be enabled; older daemons would drop the endpoint when they edit the project.
+- **The factory switch** (`agentgate remote factory @name on`) adds the software factory's tools to an endpoint: its board, adding tasks that start at triage, the item actions, pause and resume. With it on, the URL and secret (and so the relay operator) can start full-access T3 Code threads on your machines with text of their choosing. Turning it off takes effect on the next request, and drops the endpoint's updates webhook. The webhook's posts come straight from your machines, not through the relay.
 - One machine serves each endpoint (always-on machines by default). Its MCP servers must work on that machine; servers that start per worktree are not offered.
 - Limits: 256 KiB per request, 4 MiB per response, 4 requests in flight per endpoint (a fifth gets `503` with `Retry-After: 1`), 10 minutes per request, no JSON-RPC batches. The limits are `REMOTE_LIMITS` in `packages/protocol/src/remote.ts`, which the relay and the serving machine both enforce, so changing one means deploying both. An endpoint is deleted after `RELAY_RETENTION_DAYS` with neither a request nor a connected machine.
 
@@ -71,6 +72,8 @@ Virtual projects (`@name`) can have a public endpoint at `<relay>/mcp/<key>` for
 | `RELAY_ENDPOINT_REQUESTS_PER_MINUTE` | 600     | Public requests per endpoint             |
 
 The public route does not require `RELAY_KEY` (Grok can't send it); creating, connecting and deleting endpoints does.
+
+**Hook endpoints.** The [software factory](../user/factory.md#webhooks)'s webhook URLs are endpoints of the same kind of Durable Object at `<relay>/hook/<key>`. `POST /hook/:key` needs no bearer token and no `RELAY_KEY`, since senders such as GitHub send neither; the factory machine checks the sender's signature. The relay forwards every header except cookies and hop-by-hop headers, and bodies up to 1 MiB of UTF-8 text. An endpoint's kind, `mcp` or `hook`, never changes, so a hook URL can never be used as an MCP endpoint. Deliveries are readable by the relay like MCP traffic, count against the same per-endpoint limits, and get `503` while the factory machine is offline; nothing is queued. A relay deployed before webhooks answers `404` on `/hook/:key`, where one that has the route answers a `GET` with `405`; the factory machine asks that way, and `agentgate factory doctor` fails until the relay is updated. Deploy the relay before using factory webhooks, self-hosted or hosted.
 
 ## Node channel
 

@@ -14,12 +14,13 @@ import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { cancelHandoff, startHandoff, type SourceState } from "./source.ts";
 import type { z } from "zod";
 import {
-  ACTIVE,
+  isWorkingStatus,
   T3Error,
   claudeHomes,
   connectWith,
   createPairingLink,
   disconnectT3,
+  hostedThreadLink,
   t3Client,
   t3State,
   type connectInput,
@@ -32,10 +33,22 @@ import {
 const CACHE = 5 * 60_000;
 const RECENT = 10 * 60_000;
 
-async function localThreads(h: Handoffs): Promise<T3Thread[]> {
+/** A thread as `GET /peer/threads` lists it. `needsYou`: T3 holds a pending runtime request (an approval or a question)
+ * for it; absent from nodes on older versions. */
+export type ViewThread = T3Thread & { needsYou?: boolean };
+
+async function localThreads(h: Handoffs): Promise<ViewThread[]> {
   const t3 = t3Client(h.s);
   const claudeIds = () => t3.rpc(async (call) => (await claudeHomes(call, h.options.claudeDir)).map(([id]) => id));
-  const [shell, claude] = await Promise.all([t3.shell(), h.cache.getOrSet("claude", claudeIds, { ttlMs: CACHE })]);
+  // Without the environment id the threads are listed without links rather than not at all.
+  const environment = h.cache
+    .getOrSet(`environment:${t3.url}`, () => t3.environmentId(), { ttlMs: CACHE })
+    .catch(() => undefined);
+  const [shell, claude, environmentId] = await Promise.all([
+    t3.shell(),
+    h.cache.getOrSet("claude", claudeIds, { ttlMs: CACHE }),
+    environment,
+  ]);
 
   // What T3's sidebar lists outside Settled: top-level threads. Subagents move with their parent.
   const listed = shell.threads.filter((t) => {
@@ -45,7 +58,7 @@ async function localThreads(h: Handoffs): Promise<T3Thread[]> {
   });
   const projects = new Map(shell.projects.map((p) => [p.id, projectLabel(p, shell.projects)]));
   return sidebarOrder(listed).map((t) => {
-    const running = ACTIVE.has(t.status) || t.status === "queued";
+    const running = isWorkingStatus(t.status);
     return {
       id: t.id,
       title: t.title,
@@ -58,6 +71,8 @@ async function localThreads(h: Handoffs): Promise<T3Thread[]> {
       node: h.s.nodeId,
       lastActivity: t.latestUserMessageAt ?? t.updatedAt,
       ...(running && t.activityRunStartedAt && { workingSince: t.activityRunStartedAt }),
+      ...(environmentId && { link: hostedThreadLink(environmentId, t.id) }),
+      needsYou: t.pendingRuntimeRequest != null,
     };
   });
 }
@@ -126,7 +141,7 @@ export function sidebarOrder<T extends Ordered>(threads: T[]): T[] {
 /** What this node tells the others (`GET /peer/threads`): its T3 connection, active threads and recent handoffs it drove. */
 export async function localView(
   h: Handoffs,
-): Promise<{ t3: T3NodeState; threads: T3Thread[]; jobs: HandoffJob[]; error?: string }> {
+): Promise<{ t3: T3NodeState; threads: ViewThread[]; jobs: HandoffJob[]; error?: string }> {
   const recent = (j: { step: string; updatedAt: number }) =>
     !["done", "failed"].includes(j.step) || h.s.now() - j.updatedAt < RECENT;
   const jobs = h
@@ -145,22 +160,33 @@ export async function localView(
 /** Every node's view. Unreachable nodes are listed with the reason instead of failing the whole answer. */
 export async function allNodes(h: Handoffs): Promise<NodeThreads[]> {
   return Promise.all(
-    h.s.list("node").map(async (n): Promise<NodeThreads> => {
-      const online = n.id === h.s.nodeId || h.s.now() - lastSeen(h.s, n.id) < 60_000;
-      const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
-      if (n.id === h.s.nodeId) return { ...base, ...(await localView(h)) };
-      if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
-      if (!online) return { ...base, error: "offline" };
-      try {
-        return {
-          ...base,
-          ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })),
-        };
-      } catch (e) {
-        return { ...base, error: getErrorMessage(e) };
-      }
-    }),
+    h.s
+      .list("node")
+      .map(async (n) =>
+        n.id === h.s.nodeId
+          ? { node: n.id, server: n.alwaysOn, online: true, ...(await localView(h)) }
+          : peerView(h, n),
+      ),
   );
+}
+
+/** Another node's view through `GET /peer/threads`, or why it cannot be read. */
+export async function peerView(
+  h: Handoffs,
+  n: { id: string; alwaysOn: boolean },
+): Promise<NodeThreads & { threads: ViewThread[] }> {
+  const online = h.s.now() - lastSeen(h.s, n.id) < 60_000;
+  const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
+  if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
+  if (!online) return { ...base, error: "offline" };
+  try {
+    return {
+      ...base,
+      ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })),
+    };
+  } catch (e) {
+    return { ...base, error: getErrorMessage(e) };
+  }
 }
 
 export async function resolveTarget(

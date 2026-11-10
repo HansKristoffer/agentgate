@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../src/handoff/code.ts";
 import { claudeProjectKey, claudeSessions, rewriteCwd, safeRelative } from "../src/handoff/session.ts";
 import {
+  activeT3,
   claudeInstance,
   connectT3,
   connectWith,
@@ -287,11 +288,54 @@ test("T3 Code's own t3 pair creates the link: shown to the user, or redeemed to 
   expect(t3State(s)).toMatchObject({ connected: true, url: t3.url });
   expect(readFileSync(args, "utf8").trim()).toBe("pair --log-level error --label agentgate a");
 
-  // A failure says why, and never repeats stdout, where a token would be.
+  // A failure says why and which t3 ran, and never repeats stdout, where a token would be.
+  const failure = (run: Promise<unknown>) => run.then(String, (e: Error) => e.message);
   fake(`echo "Token: secret-token"\necho "No running T3 Code server found." >&2\nexit 1`);
-  await expect(createPairingLink(s)).rejects.toThrow(/^t3 pair failed on a: No running T3 Code server found\.$/);
+  expect(await failure(createPairingLink(s))).toBe(`t3 pair failed on a (${bin}): No running T3 Code server found.`);
+  // An older t3 answers a flag it does not know with its usage.
+  fake(`echo "USAGE: t3 pair [--label text]. Token: secret-token"`);
+  expect(await failure(createPairingLink(s))).toBe(`t3 pair failed on a (${bin}): it printed no pairing link`);
+
+  // T3 Code refusing a token this t3 made a moment ago points at the binary; a pasted link may be used or old.
+  const stray = `${t3.url}/pair#token=another-servers-token`;
+  fake(`echo "Pairing URL: ${stray}"`);
+  const refused = await failure(connectWith(s, { create: true }));
+  expect(refused).toContain(`rejected the pairing token ${bin} had just created`);
+  expect(refused).not.toContain("another-servers-token");
+  await expect(connectWith(s, { pairingUrl: stray })).rejects.toThrow("single-use and expires");
+
   t3Host.t3 = () => undefined;
   await expect(createPairingLink(s)).rejects.toThrow("not installed on a");
+});
+
+test("the t3 command is the running T3 Code server's own binary when T3 Code names one", () => {
+  const home = tmp();
+  const state = join(home, "runtime", "service-state.json");
+  const bin = join(home, "runtime", "versions", "0.1.9-nightly.20261110.4452", "t3");
+  // T3 Code keeps no versions here, as without its self-updating service.
+  expect(activeT3(home)).toBeUndefined();
+
+  mkdirSync(dirname(bin), { recursive: true });
+  writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
+  writeFileSync(state, "{ half-written");
+  expect(activeT3(home)).toBeUndefined();
+  // A version that is named and not installed.
+  writeFileSync(state, JSON.stringify({ protocol: 3, activeVersion: "0.1.8-nightly.20261106.4262" }));
+  expect(activeT3(home)).toBeUndefined();
+  writeFileSync(
+    state,
+    JSON.stringify({ protocol: 3, activeVersion: "0.1.9-nightly.20261110.4452", update: { status: "committed" } }),
+  );
+  expect(activeT3(home)).toBe(bin);
+
+  // T3CODE_HOME names T3's folder when it is not ~/.t3. Where a t3 is on PATH too, the running server's still wins.
+  const real = process.env.T3CODE_HOME;
+  stops.push(() => {
+    if (real === undefined) delete process.env.T3CODE_HOME;
+    else process.env.T3CODE_HOME = real;
+  });
+  process.env.T3CODE_HOME = home;
+  expect(t3Host.t3()).toBe(bin);
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {

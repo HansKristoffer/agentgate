@@ -27,6 +27,29 @@ type LoginId = Login["id"];
 const SHAREABLE = ["github", "infisical"] as const;
 const IDENTITY = "infisical-identity";
 
+/** What a `gh` run came to. `exit` and `err` let a caller tell why it failed; `err` is absent when gh printed none. */
+export interface GhAnswer {
+  ok: boolean;
+  out: string;
+  exit?: number;
+  err?: string;
+}
+
+/**
+ * A finished `gh` run as its callers see it: trimmed stdout, and of stderr only the first line. gh prints its reason
+ * there (`gh: Not Found (HTTP 404)`, a dial error), never its arguments or environment; the line is still capped, and
+ * anything shaped like a GitHub token or a URL's credentials is taken out, so it can go into an error message.
+ */
+export function ghAnswer(run: { exit: number; stdout: string; stderr: string }): GhAnswer {
+  const line = run.stderr.split("\n").find((l) => l.trim()) ?? "";
+  const err = line
+    .trim()
+    .replace(/\b(?:gh[a-z]_|github_pat_)\w+/g, "[redacted]")
+    .replace(/:\/\/[^/\s@]*@/g, "://")
+    .slice(0, 200);
+  return { ok: run.exit === 0, out: run.stdout.trim(), exit: run.exit, ...(err && { err }) };
+}
+
 /** The user's home and the `gh` and `infisical` commands; tests point them elsewhere. */
 export const host = {
   home: homedir(),
@@ -54,17 +77,21 @@ export const host = {
     const [out, code] = await Promise.all([stdout, child.exited, stderr()]);
     return { ok: code === 0, out: out.trim() };
   },
-  async gh(args: string[], stdin?: string): Promise<{ ok: boolean; out: string } | undefined> {
+  async gh(args: string[], stdin?: string): Promise<GhAnswer | undefined> {
     if (!Bun.which("gh")) return undefined;
     const child = Bun.spawn(["gh", ...args], {
       stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
       stdout: "pipe",
-      stderr: "ignore",
+      stderr: "pipe",
       env: { ...process.env, GH_PROMPT_DISABLED: "1" },
       timeout: 30_000,
     });
-    const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    return { ok: code === 0, out: out.trim() };
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return ghAnswer({ exit, stdout, stderr });
   },
 };
 const realHome = (what: string) => {

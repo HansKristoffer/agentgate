@@ -27,7 +27,7 @@ import { handoffTargets, type NodeThreads } from "@agentgate/protocol";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { saveProject } from "../src/operations.ts";
-import { disconnectT3, t3State } from "../src/handoff/t3.ts";
+import { disconnectT3, hostedThreadLink, t3State } from "../src/handoff/t3.ts";
 import { memoryRelay, serveRelay } from "../../relay/test/memory.ts";
 import { createRelay, deriveKeys, joinRelay, parseInvite, syncAll } from "../src/relay.ts";
 import { NodeChannel } from "../src/channel.ts";
@@ -801,6 +801,16 @@ test("the thread list matches T3's sidebar: settled and subagent threads are lef
   expect((await localView(a.h)).threads.some((t) => t.id === active.id)).toBe(true);
 });
 
+test("a listed thread links to it on app.t3.codes under its T3 Code's environment, encoded as T3 encodes it", async () => {
+  const a = await node("a", tmp());
+  const thread = a.t3.addThread({ projectId: a.project.id, sessionId: SID, title: "Active" });
+  const [listed] = (await localView(a.h)).threads;
+  expect(listed?.link).toBe(`https://app.t3.codes/threads/env/${encodeURIComponent(thread.id)}`);
+  expect(hostedThreadLink("env", "import:claude.agent(1)")).toBe(
+    "https://app.t3.codes/threads/env/import%3Aclaude%2Eagent%281%29",
+  );
+});
+
 test("threads keep T3's sidebar order: pinned by pin key, then dragged threads, unarranged ones newest first", () => {
   const t = (id: string, createdAt: string, extra = {}) => ({
     id,
@@ -911,7 +921,7 @@ test("a handoff works through the relay alone; the relay sees only sealed calls 
   await joinRelay(b.s, invite);
   await syncAll(a.s);
   for (const n of [a, b]) {
-    const channel = new NodeChannel(n.s, relayedRoutes(n.h));
+    const channel = new NodeChannel(n.s, relayedRoutes(n.h, new Hono()));
     cleanup.push(() => channel.close());
     await channel.reconcile();
     await until(() => channel.connected, `${n.name}'s relay channel`);

@@ -1,4 +1,4 @@
-import { API_VERSION, statusSchema, type Connection, type DesktopStatus } from "@agentgate/protocol";
+import { API_VERSION, statusSchema, type Connection, type DesktopStatus, type FactoryOps } from "@agentgate/protocol";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -7,6 +7,11 @@ export function request<T>(connection: Connection, path: string, method = "GET",
   if (!native) return Promise.reject(new Error("Open the Agentgate native app to connect to your setup."));
   return invoke<T>("api_request", { connection, path, method, body });
 }
+/** One factory operation by its name, the words after `agentgate factory`, with the input and result `FactoryOps`
+ * gives it. The daemon sends it on to the machine that runs the factory when it is that machine's to run, and a
+ * refusal rejects with its reason. */
+export const factoryOp = <N extends keyof FactoryOps>(connection: Connection, name: N, input: FactoryOps[N]["input"]) =>
+  request<FactoryOps[N]["result"]>(connection, `/factory/op/${encodeURIComponent(name)}`, "POST", input);
 export async function status(connection: Connection) {
   const data = await request<unknown>(connection, "/status");
   if (!data || typeof data !== "object" || !("apiVersion" in data) || data.apiVersion !== API_VERSION)

@@ -10,6 +10,7 @@ import { renameInstance } from "../src/operations.ts";
 import { DAEMON_DOWN, buildShim } from "../src/mcp/shim.ts";
 import { fromPreset, newInstance, preset } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
+import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 
 test("git remotes normalise to owner/repo", () => {
   expect(parseRemote("git@github.com:Lullu-ai/lullu.git")).toBe("Lullu-ai/lullu");
@@ -158,7 +159,8 @@ async function gatewayWith(upstreamUrl: string) {
   const daemon = Bun.serve({ port: 0, fetch: (req) => a.fetch(req, { listener: "loopback" }) });
   servers.push(daemon);
   const cwd = mkdtempSync(join(tmpdir(), "agentgate-shim-"));
-  const shim = () => buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "o/r" });
+  const shim = (env: Record<string, string> = {}) =>
+    buildShim(cwd, `http://127.0.0.1:${daemon.port}`, { AGENTGATE_PROJECT: "o/r", ...env });
   const done = async () => {
     await ctx.gateway.close();
     s.close();
@@ -203,6 +205,34 @@ test("forwarded calls carry the client that made them", async () => {
   const result = await client.callTool({ name: "brain__caller", arguments: {} });
   const caller = JSON.parse((result.content as { text: string }[])[0]!.text);
   expect(caller).toEqual({ name: "claude-code", title: "Claude Code", version: "2.1.0" });
+
+  await client.close();
+  await container.close();
+  await gateway.done();
+});
+
+test("a T3 Code thread's calls name the thread, unless the call already names one", async () => {
+  const upstream = Bun.serve({
+    port: 0,
+    fetch: async (req) => {
+      const mcp = new McpServer({ name: "thread", version: "0" });
+      mcp.registerTool("thread", { description: "which thread called" }, async (ctx) => ({
+        content: [{ type: "text", text: String(ctx.mcpReq._meta?.[T3_THREAD_META_KEY]) }],
+      }));
+      const t = new WebStandardStreamableHTTPServerTransport({ enableJsonResponse: true });
+      await mcp.connect(t);
+      return t.handleRequest(req);
+    },
+  });
+  servers.push(upstream);
+  const gateway = await gatewayWith(`http://127.0.0.1:${upstream.port}/mcp`);
+  const container = await gateway.shim({ T3CODE_THREAD_ID: "thread-1" });
+  const client = await connectTo(container.server);
+  const thread = async (_meta?: Record<string, unknown>) =>
+    ((await client.callTool({ name: "brain__thread", arguments: {}, _meta })).content as { text: string }[])[0]!.text;
+
+  expect(await thread()).toBe("thread-1");
+  expect(await thread({ [T3_THREAD_META_KEY]: "thread-2" })).toBe("thread-2");
 
   await client.close();
   await container.close();

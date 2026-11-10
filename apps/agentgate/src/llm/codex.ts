@@ -5,6 +5,7 @@ import { jwtClaims, tokenRequest, type Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
 import type { Store } from "../store.ts";
 import type { Observation, Provider, Window } from "./provider.ts";
+import { codexSession } from "./sessions.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 
 // Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
@@ -52,8 +53,8 @@ export const codex: Provider = {
     );
   },
   session: (headers) => {
-    const id = headers.get("session_id") ?? headers.get("x-codex-session-id");
-    return id && id.length <= 128 ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
+    const id = codexSession(headers);
+    return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
   },
   stateful: (body) => typeof body?.previous_response_id === "string" && !!body.previous_response_id,
   classifyFailure: (status, _headers, body) =>

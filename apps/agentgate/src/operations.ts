@@ -2,11 +2,11 @@ import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/te
 import { getUniqueValues } from "hanzio";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
 import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
-import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
+import { BUILTIN_ALIAS, FACTORY_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
 import { relayInvite, rotateRelay, via } from "./relay.ts";
-import { NODE_PROTOCOL, regenerateAfterUnpair } from "./remote.ts";
+import { regenerateAfterUnpair } from "./remote.ts";
 import { unpair } from "./sync.ts";
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
@@ -199,6 +199,8 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {
     if (!validId(alias)) throw new Error(`invalid tool prefix ${alias}`);
     if (virtual && alias === "skills") throw new Error("the prefix skills is reserved for the built-in skill tools");
+    if (virtual && alias === FACTORY_ALIAS)
+      throw new Error(`the prefix ${FACTORY_ALIAS} is reserved for the software factory's tools`);
     if (!virtual && alias === BUILTIN_ALIAS)
       throw new Error(`the prefix ${BUILTIN_ALIAS} is reserved for agentgate's own tools`);
     if (!s.get("mcp", target)) throw new Error(`no MCP instance ${target}`);
@@ -214,8 +216,66 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
   });
 }
 
+/** The node protocol that keeps `factoryTools` on project records (see NODE_PROTOCOL in remote.ts). */
+const FACTORY_TOOLS_PROTOCOL = 9;
+
+/** Offers the software factory's tools on a virtual project's endpoint, or stops offering them
+ * (factory/remote-tools.ts). Turning them on waits until every node keeps the field; turning them off needs no wait,
+ * since a dropped field reads as off. */
+export function setFactoryTools(s: Store, id: string, on: boolean) {
+  return s.transaction(() => {
+    if (!isVirtual(id)) throw new Error("Only virtual projects (@name) can offer the factory's tools");
+    const p = s.get("project", id);
+    if (!p) throw new Error(`no project ${id}`);
+    if (on) {
+      const old = s
+        .list("node")
+        .filter((n) => (n.protocol ?? 0) < FACTORY_TOOLS_PROTOCOL)
+        .map((n) => n.id);
+      if (old.length)
+        throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the factory tools setting`);
+    }
+    // Turning the tools off drops the webhook too: it was set for them, and turning them on again must not resume posting.
+    const { factoryTools: _, factoryWebhook: __, ...rest } = p;
+    return s.put("project", id, on ? { ...p, factoryTools: true } : rest);
+  });
+}
+
+/** Sets or clears the URL every machine posts the factory's updates to (factory/notify.ts). Only `https`, without
+ * credentials in the authority: a token belongs in the path or query, which the API never shows. */
+export function setFactoryWebhook(s: Store, id: string, url: string | undefined) {
+  return s.transaction(() => {
+    const p = s.get("project", id);
+    if (!isVirtual(id) || !p?.factoryTools)
+      throw new Error(`${id} does not offer the factory's tools; turn them on first`);
+    const { factoryWebhook: _, ...rest } = p;
+    if (!url) return s.put("project", id, rest);
+    return s.put("project", id, { ...rest, factoryWebhook: webhookUrl(url) });
+  });
+}
+
+/** A webhook URL the factory may post to (factory/notify.ts): `https`, without credentials in the authority, since
+ * only the path and query are kept out of what agentgate shows. Errors never repeat the URL. */
+export function webhookUrl(url: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("The webhook must be a URL");
+  }
+  if (parsed.protocol !== "https:") throw new Error("The webhook must be an https URL");
+  if (parsed.username || parsed.password)
+    throw new Error("Put the receiver's token in the webhook's path or query, not before the host");
+  if (url.length > 2000) throw new Error("The webhook URL is too long");
+  return parsed.href;
+}
+
+/** The node protocol that keeps `healthDashboard` on node records (see NODE_PROTOCOL in remote.ts). Pinned, not
+ * NODE_PROTOCOL: later protocol bumps add nothing the dashboard needs, and must not make turning it on wait for them. */
+const HEALTH_PROTOCOL = 7;
+
 /** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a
- * node record, so turning it on waits until every node reports NODE_PROTOCOL. Turning it off needs no wait: a dropped
+ * node record, so turning it on waits until every node reports HEALTH_PROTOCOL. Turning it off needs no wait: a dropped
  * field reads as off. */
 export function setHealthDashboard(s: Store, node: string, on: boolean) {
   return s.transaction(() => {
@@ -224,7 +284,7 @@ export function setHealthDashboard(s: Store, node: string, on: boolean) {
     if (on) {
       const old = s
         .list("node")
-        .filter((m) => (m.protocol ?? 0) < NODE_PROTOCOL)
+        .filter((m) => (m.protocol ?? 0) < HEALTH_PROTOCOL)
         .map((m) => m.id);
       if (old.length)
         throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the dashboard setting`);

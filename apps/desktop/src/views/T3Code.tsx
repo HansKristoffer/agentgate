@@ -16,6 +16,7 @@ import {
 import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle, ActionButton } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
+import { OpenInT3 } from "./Factory.tsx";
 import { ago, elapsed, field, since } from "./utils.ts";
 
 const STEPS: Record<string, string> = {
@@ -312,6 +313,7 @@ function ThreadRow({
           </span>
         </div>
       </div>
+      <OpenInT3 link={t.link} label="Open" />
       {action}
     </div>
   );

@@ -39,6 +39,7 @@ import {
   accountPatchSchema,
   settingsPatchSchema,
 } from "@agentgate/protocol";
+import { sleep } from "./runtime.ts";
 import packageInfo from "../../../package.json";
 import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
@@ -53,6 +54,8 @@ import {
   removeNode,
   renameInstance,
   saveProject,
+  setFactoryTools,
+  setFactoryWebhook,
   setAccount,
   setHealthDashboard,
 } from "./operations.ts";
@@ -196,6 +199,23 @@ export function management(ctx: Ctx) {
       });
     }
   };
+  // The app waits here and refreshes when something changed: a record (from this daemon, a peer or the CLI, which writes
+  // the store from its own process, so no in-process event sees every change) or a factory event. Reading two counters
+  // four times a second is cheaper than the app reading the status every second.
+  const changeToken = () => {
+    const events = s.db.query("select coalesce(max(seq), 0) as seq from factory_events").get() as { seq: number };
+    return `${s.seq()}.${events.seq}`;
+  };
+  app.get("/changes", async (c) => {
+    const after = c.req.query("after");
+    const until = Date.now() + Math.min(25, Math.max(0, Number(c.req.query("wait") ?? 25) || 0)) * 1000;
+    let token = changeToken();
+    while (token === after && Date.now() < until && !c.req.raw.signal.aborted && !ctx.abort.signal.aborted) {
+      await sleep(250);
+      token = changeToken();
+    }
+    return c.json({ token });
+  });
   app.get("/status", (c) => {
     const status: Status = {
       apiVersion: API_VERSION,
@@ -692,6 +712,30 @@ export function management(ctx: Ctx) {
     remoteChanged(() => disableRemote(s, remoteId(c)));
     return c.json({ ok: true });
   });
+  app.put("/projects/factory-tools", async (c) => {
+    const f = z
+      .object({ id: z.string().min(1).max(80), on: z.boolean() })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json(
+      publicProject(
+        input(() => setFactoryTools(s, f.id, f.on)),
+        ctx.remote,
+      ),
+    );
+  });
+  app.put("/projects/factory-webhook", async (c) => {
+    const f = z
+      .object({ id: z.string().min(1).max(80), url: z.string().max(2000).nullable() })
+      .strict()
+      .parse(await json(c.req.raw));
+    return c.json(
+      publicProject(
+        input(() => setFactoryWebhook(s, f.id, f.url ?? undefined)),
+        ctx.remote,
+      ),
+    );
+  });
   app.delete("/projects", (c) => {
     const id = z.string().min(1).parse(c.req.query("id"));
     deleteProject(s, id);
@@ -996,6 +1040,8 @@ export function management(ctx: Ctx) {
     await inputAsync(() => desktop.gateway(s, f.on));
     return c.json({ ok: true });
   });
+  // The board and every factory operation (factory/runtime.ts).
+  app.route("/factory", ctx.factory.api);
   return app;
 }
 

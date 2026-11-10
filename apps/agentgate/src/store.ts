@@ -6,6 +6,8 @@ import {
   skillSchema,
   quotaWindowSchema,
   providerSchema,
+  secretRecordSchema,
+  factoryFolderSchema,
   MAX_RECORD,
 } from "@agentgate/protocol";
 import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
@@ -192,7 +194,29 @@ export const schemas = {
       )
       .max(20000),
   }),
+  /** A factory secret by name, or one of agentgate's own (`~hook:<source>`, `~notify`), shared with every node (factory/secrets.ts). */
+  secret: secretRecordSchema,
+  /** The factory folder agentgate stores (id `folder`), for a factory whose pointer says `store: agentgate` (factory/stored.ts). */
+  factoryFolder: factoryFolderSchema,
 };
+
+/** Every node must advertise this before `settings.factory`, a `secret` or the `factoryFolder` record is written: older
+ * nodes drop the setting when they save settings, and stall on an unknown record kind. */
+export const FACTORY_PROTOCOL = 8;
+
+/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
+export function requireFactoryProtocol(s: Store) {
+  const old = s
+    .list("node")
+    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
+    .map((n) => n.id);
+  if (old.length)
+    throw new Error(
+      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
+    );
+}
+/** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
+export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
@@ -595,13 +619,14 @@ export function exportBackup(s: Store, secrets = true) {
     data: string;
   }[];
   const records = rows
-    .filter((r) => secrets || !["credential", "mcpCredential", "refreshRequest", "login"].includes(r.kind))
+    .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
       if (!secrets && r.kind === "project") {
         delete data.remote;
         delete data.files;
-      } // endpoint keys and env files are secrets
+        delete data.factoryWebhook;
+      } // endpoint keys, env files and webhook URLs are secrets
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };
@@ -615,6 +640,7 @@ export function importBackup(s: Store, input: unknown) {
     })
     .parse(input);
   const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
+  if (records.some((r) => r.kind === "secret" || r.kind === "factoryFolder")) requireFactoryProtocol(s);
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {

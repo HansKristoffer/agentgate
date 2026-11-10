@@ -7,7 +7,15 @@ import { buildQueryString, getErrorMessage, typedSwitch } from "hanzio";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
 import { patchSettings, revision, checkRevision } from "./configuration.ts";
-import { HEALTH_PATH, loginIdSchema, modelPolicySchema, outdatedNodes } from "@agentgate/protocol";
+import {
+  HEALTH_PATH,
+  loginIdSchema,
+  modelPolicySchema,
+  operationFor,
+  outdatedNodes,
+  type FactoryCommandResult,
+  type FactoryOperationInfo,
+} from "@agentgate/protocol";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { relevant } from "./llm/quota.ts";
@@ -40,6 +48,8 @@ import {
   removeNode,
   renameInstance,
   saveProject,
+  setFactoryTools,
+  setFactoryWebhook,
   setAccount,
   setHealthDashboard,
   tuneInstance,
@@ -102,6 +112,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
                                              replace a newer version than the one cat printed (cat | shasum -a 256)
   remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
   remote show|secret|regenerate|disable @name | remote ls
+  remote factory @name on|off                 let the endpoint see and steer the software factory: the board, items,
+                                             adding tasks, approve/reject/retry/drop, pause and resume
+  remote webhook @name <https-url>|off        post the factory's updates (items added, moved, waiting for you) there
   pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
   join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
   nodes | unpair <node>
@@ -116,6 +129,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
   handoffs cancel <id> [--node <node>]        give up a handoff stuck waiting for its destination
+  factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
   logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
   logins share [github|infisical]             share this machine's logins; every machine signs in with them
   logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
@@ -226,6 +240,27 @@ async function management<T>(path: string, method = "GET", body?: unknown): Prom
 function initialized(s: Store) {
   if (!s.local("node")) die("Run `agentgate init` first.");
   return s;
+}
+
+/** `agentgate factory help`: the commands to start with, then the rest, with those that share a first word together. */
+function factoryHelp(operations: FactoryOperationInfo[]) {
+  const start = ["init", "status", "add", "approve", "show"];
+  const rest = operations.filter((op) => !start.includes(op.name));
+  const family = (op: FactoryOperationInfo) => op.name.split(" ")[0]!;
+  const families = Map.groupBy(rest, family);
+  const groups = [
+    start.flatMap((name) => operations.filter((op) => op.name === name)),
+    rest.filter((op) => families.get(family(op))!.length === 1),
+    ...[...families.values()].filter((ops) => ops.length > 1),
+  ];
+  return groups
+    .filter((ops) => ops.length)
+    .map((ops) => {
+      // Aligned, but one long usage does not push every summary off the screen.
+      const width = Math.min(50, Math.max(...ops.map((op) => op.usage.length)));
+      return ops.map((op) => `  factory ${op.usage.padEnd(width)}  ${op.summary}`).join("\n");
+    })
+    .join("\n\n");
 }
 
 const bar = (pct: number) => {
@@ -885,7 +920,7 @@ async function main() {
         for (const p of s.list("project"))
           if (p.remote)
             console.log(
-              `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}`,
+              `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}${p.factoryTools ? " +factory" : ""}${p.factoryWebhook ? ` +webhook ${new URL(p.factoryWebhook).origin}` : ""}`,
             );
         return;
       }
@@ -898,6 +933,24 @@ async function main() {
         if (sub === "disable") {
           disableRemote(s, id);
           return console.log("ok");
+        }
+        if (sub === "factory") {
+          const on = rest[1] === "on" ? true : rest[1] === "off" ? false : die("remote factory @name on|off");
+          setFactoryTools(s, id, on);
+          return console.log(
+            on
+              ? `${id} offers the factory's tools. Anyone with its URL and secret can add tasks and approve, retry or drop items.`
+              : `${id} no longer offers the factory's tools.`,
+          );
+        }
+        if (sub === "webhook") {
+          const url = rest[1] ?? die("remote webhook @name <https-url>|off");
+          setFactoryWebhook(s, id, url === "off" ? undefined : url);
+          return console.log(
+            url === "off"
+              ? "Updates are no longer posted."
+              : "The factory posts there when an item waits for you or a PR is ready.",
+          );
         }
       } catch (e) {
         return die(getErrorMessage(e));
@@ -1332,7 +1385,7 @@ async function main() {
         );
         for (const th of n.threads)
           console.log(
-            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}`,
+            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}${th.link ? `  ${th.link}` : ""}`,
           );
       }
       return;
@@ -1384,6 +1437,27 @@ async function main() {
           `${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`,
         );
       return;
+    }
+
+    case "factory": {
+      // The daemon owns every factory operation. The words go as typed, since each operation parses its own.
+      const args = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
+      const operations = await management<FactoryOperationInfo[]>("/factory/operations");
+      if (!args.length || args[0] === "help") return console.log(factoryHelp(operations));
+      // Stdin is read only for an operation that takes it: any other must answer while its stdin stays open and silent.
+      const stdin = !process.stdin.isTTY && operationFor(operations, args)?.stdin ? await Bun.stdin.text() : undefined;
+      const result = await management<FactoryCommandResult>("/factory/terminal", "POST", {
+        args,
+        ...(stdin !== undefined && { stdin }),
+        cwd: process.cwd(),
+      });
+      for (const line of result.output) console.log(line);
+      // Once the factory is on, the preflight says what it still needs; JSON output stays one document.
+      if (!result.code && ["init", "use"].includes(args[0]!) && !args.includes("--json")) {
+        const checks = await management<FactoryCommandResult>("/factory/terminal", "POST", { args: ["doctor"] });
+        console.log(["", ...checks.output].join("\n"));
+      }
+      process.exit(result.code);
     }
 
     case "setup": {

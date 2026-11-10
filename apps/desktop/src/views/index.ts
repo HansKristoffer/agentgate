@@ -7,3 +7,4 @@ export { Settings } from "./Settings.tsx";
 export { Skills } from "./Skills.tsx";
 export { T3Code } from "./T3Code.tsx";
 export { ActivityView } from "./Activity.tsx";
+export { Factory } from "./Factory.tsx";

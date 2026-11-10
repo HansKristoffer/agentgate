@@ -129,8 +129,9 @@ async function setup(instance: Partial<McpInstance> = {}) {
   const url = `http://127.0.0.1:${daemon.port}`;
   const cwd = mkdtempSync(join(tmpdir(), "agentgate-gateway-"));
   const open: { close(): Promise<void> }[] = [];
-  const session = async (options: { handshakeMs?: number } = {}) => {
-    const shim = await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/r" }, { reconnectMs: 60_000, ...options });
+  const session = async (options: { handshakeMs?: number; env?: Record<string, string> } = {}) => {
+    const { env, ...rest } = options;
+    const shim = await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/r", ...env }, { reconnectMs: 60_000, ...rest });
     const [a, b] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "agent", version: "0" });
     await Promise.all([shim.server.connect(a), client.connect(b)]);
@@ -285,6 +286,77 @@ test("sessions hear of tool changes only when their tools may differ", async () 
     for (let i = 0; i < 50 && notices < 1; i++) await Bun.sleep(10);
     await Bun.sleep(50);
     expect(notices).toBe(1);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a session whose shim names a scoped thread lists and calls only the servers its scope allows", async () => {
+  const g = await setup({ tools: ["echo"] });
+  try {
+    g.s.put("mcp", "other", { ...newInstance({ id: "other", url: upstream() }), tools: ["echo"] });
+    g.s.put("project", "o/r", { id: "o/r", mcp: { up: "up", other: "other" } });
+    // agentgate's own tools: one for anyone, one only a factory run's thread sees.
+    g.ctx.gateway.builtin = async () => {
+      const server = new Server({ name: "builtin", version: "0" }, { capabilities: { tools: {} } });
+      server.setRequestHandler("tools/list", async () => ({
+        tools: ["factory_report", "factory_status"].map((name) => ({ name, inputSchema: { type: "object" as const } })),
+      }));
+      server.setRequestHandler("tools/call", async (r) => ({ content: [{ type: "text", text: r.params.name }] }));
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: "agentgate", version: "0" });
+      await Promise.all([server.connect(a), client.connect(b)]);
+      return { alias: "agentgate", client };
+    };
+    // The factory's answer, as `threadScope` gives it: a run's thread and a subagent under it get `up`.
+    const scoped = new Set(["thread-run", "thread-sub"]);
+    const asked: (string | undefined)[] = [];
+    g.ctx.gateway.scope = (thread) => {
+      asked.push(thread);
+      return thread && scoped.has(thread) ? { servers: ["up"] } : { hidden: ["factory_report"] };
+    };
+    const names = async (client: Client) => (await client.listTools()).tools.map((t) => t.name);
+
+    const run = await g.session({ env: { T3CODE_THREAD_ID: "thread-run" } });
+    // The shim names its thread from the first request, so the session's instructions already leave `other` out.
+    expect(asked[0]).toBe("thread-run");
+    expect(run.getInstructions()).not.toContain("## other");
+    expect(await names(run)).toEqual(["agentgate__factory_report", "agentgate__factory_status", "up__echo"]);
+    const refused = await run.callTool({ name: "other__echo", arguments: {} });
+    expect(refused).toMatchObject({ isError: true, content: [{ text: "agentgate: unavailable tool other__echo" }] });
+    const sub = await g.session({ env: { T3CODE_THREAD_ID: "thread-sub" } });
+    expect(await names(sub)).toEqual(await names(run));
+
+    // The maintainer's session in the same repository: every server, and no tool made for a run's thread.
+    const own = await g.session();
+    expect(await names(own)).toEqual(["agentgate__factory_status", "other__echo", "up__echo"]);
+    // A listing works the scope out for its sources and its tools, not once per tool.
+    asked.length = 0;
+    await names(own);
+    expect(asked).toEqual([undefined, undefined]);
+    expect((await own.callTool({ name: "agentgate__factory_report", arguments: {} })).isError).toBe(true);
+    // The per-session servers the shim runs itself are narrowed the same way.
+    g.s.put("mcp", "local", newInstance({ id: "local", command: "local-mcp", mode: "perSession" }));
+    g.s.put("project", "o/r", { id: "o/r", mcp: { up: "up", other: "other", local: "local" } });
+    const children = async (query: string) =>
+      ((await (await fetch(`${g.url}/api/shim?project=o/r${query}`)).json()) as { alias: string }[]).map(
+        (c) => c.alias,
+      );
+    expect(await children("")).toEqual(["local"]);
+    expect(await children("&thread=thread-run")).toEqual([]);
+
+    // A thread whose run starts after its session did hears that its tools changed, and loses `other`.
+    const late = await g.session({ env: { T3CODE_THREAD_ID: "thread-late" } });
+    expect(await names(late)).toContain("other__echo");
+    let notices = 0;
+    late.setNotificationHandler("notifications/tools/list_changed", () => void notices++);
+    scoped.add("thread-late");
+    g.ctx.gateway.toolsChanged();
+    for (let i = 0; i < 50 && !notices; i++) await Bun.sleep(10);
+    expect(notices).toBe(1);
+    // Each call is checked against the scope as it is now, before the client lists again.
+    expect((await late.callTool({ name: "other__echo", arguments: {} })).isError).toBe(true);
+    expect(await names(late)).toEqual(await names(run));
   } finally {
     await g.done();
   }

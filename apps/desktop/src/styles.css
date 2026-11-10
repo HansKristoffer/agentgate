@@ -174,6 +174,10 @@ pre {
   padding: 10px 14px;
   min-height: 52px;
 }
+/* HeroUI's modal body mutes its text; a panel's rows inside a dialog read like the same rows on a page. */
+.modal__body .card {
+  color: var(--foreground);
+}
 /* React Aria selects leave an invisible <template> ahead of themselves; it must not count as a row above. */
 .item ~ .item,
 .rows > :not(template) + .item {
@@ -1039,4 +1043,202 @@ h3 {
   .alias-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+}
+
+/* The factory's colours. Stages run from understanding (think) through building and checking to ready; what waits
+   for you is amber and what failed red, whatever stage it is in. Violet and teal are Apple's system colours, beside
+   the theme's own blue, green, amber and red. */
+:root {
+  --tone-held: #8e8e93;
+  --tone-think: #af52de;
+  --tone-build: var(--accent);
+  --tone-check: #0f9fb5;
+  --tone-ready: var(--success);
+  --tone-you: var(--warning);
+  --tone-bad: var(--danger);
+}
+.dark,
+[data-theme="dark"] {
+  --tone-held: #98989d;
+  --tone-think: #bf5af2;
+  --tone-check: #40c8e0;
+}
+/* A state in its colour: a tinted pill with a dot, its text mixed toward the foreground so it reads in both themes. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  background: color-mix(in oklab, var(--tone) 15%, transparent);
+  color: color-mix(in oklab, var(--tone) 62%, var(--foreground));
+}
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+  flex-shrink: 0;
+}
+/* A card or row in a state's colour: a stripe down its leading edge. */
+.factory-toned {
+  position: relative;
+  overflow: hidden;
+}
+.factory-toned::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--tone);
+}
+/* The pipeline: each stage a pill, tinted when it holds items. */
+.pipe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--muted);
+}
+.pipe::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone);
+  opacity: 0.55;
+}
+.pipe.on {
+  background: color-mix(in oklab, var(--tone) 15%, transparent);
+  color: color-mix(in oklab, var(--tone) 62%, var(--foreground));
+}
+.pipe.on::before {
+  opacity: 1;
+}
+/* A number that means something good or bad is in that colour; the rest stay plain. */
+.stat.toned strong {
+  color: color-mix(in oklab, var(--tone) 75%, var(--foreground));
+}
+
+/* The factory: stage columns of item cards. */
+.factory-pipeline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+}
+.factory-stages {
+  margin-bottom: 16px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.factory-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+/* A log line: denser than a settings row. */
+.item.factory-event {
+  min-height: 0;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.factory-history summary {
+  cursor: pointer;
+  margin: 8px 0;
+}
+/* A finished item: one row that opens its drawer. */
+.factory-finished {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.factory-finished:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
+}
+.factory-stage h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+.factory-stage h3::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.factory-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.factory-card-key {
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.factory-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  color: var(--muted);
+}
+.factory-card-links {
+  display: flex;
+  gap: 2px;
+}
+.factory-waiting .grow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.factory-question {
+  margin: 0;
+  line-height: 1.5;
+}
+/* A thread's long question, such as the spec its card asks to approve: plain text, scrolled within. */
+.factory-detail {
+  max-height: 420px;
+  overflow: auto;
+  margin-top: 6px;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.factory-actions {
+  flex-wrap: wrap;
+}
+.factory-link {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.factory-link:hover strong {
+  text-decoration: underline;
 }

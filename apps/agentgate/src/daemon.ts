@@ -10,7 +10,7 @@ import { LOG_DIRS, backfillTokens, publishTokens } from "./llm/token-history.ts"
 import { Quotas } from "./llm/quota.ts";
 import { interruptPending } from "./llm/telemetry.ts";
 import { ProxyOperations } from "./llm/operations.ts";
-import { Gateway, aliasesFor } from "./mcp/gateway.ts";
+import { Gateway, aliasesFor, inScope } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin } from "./desktop.ts";
@@ -45,6 +45,11 @@ import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
+import { createFactoryRuntime } from "./factory/features.ts";
+import { loopTask, type FactoryRuntime } from "./factory/runtime.ts";
+import { threadScope } from "./factory/controller.ts";
+import { factoryToolsSource } from "./factory/remote-tools.ts";
+import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -66,6 +71,8 @@ export interface Ctx {
   /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
   health: HealthDashboard;
+  /** The software factory's features and what they registered (factory/runtime.ts). */
+  factory: FactoryRuntime;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -106,10 +113,8 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
-  gateway.builtin = () => handoffSource(handoffs);
-  const channel = new NodeChannel(s, relayedRoutes(handoffs));
-  return {
-    channel,
+  ensureFactoryTables(s);
+  const base: Omit<Ctx, "factory" | "channel"> = {
     s,
     creds,
     quotas,
@@ -124,6 +129,15 @@ export function makeCtx(
     handoffs,
     health: new HealthDashboard(s),
   };
+  // Features may keep the context, but none reads ctx.factory or ctx.channel while they set up.
+  const ctx = base as Ctx;
+  ctx.factory = createFactoryRuntime(ctx);
+  // After the features, whose peer routes the relay serves too.
+  ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
+  gateway.builtin = () => handoffSource(handoffs, ctx.factory);
+  gateway.factoryTools = (project) => factoryToolsSource(ctx.factory, project);
+  gateway.scope = (thread) => threadScope(ctx.factory, thread);
+  return ctx;
 }
 
 export function app(ctx: Ctx) {
@@ -197,7 +211,9 @@ export function app(ctx: Ctx) {
   );
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
+    const scope = ctx.gateway.scope?.(c.req.query("thread")?.slice(0, 256) || undefined);
     const out = Object.entries(aliasesFor(s, project))
+      .filter(([alias]) => inScope(scope, alias))
       .map(([alias, id]) => ({ alias, instance: s.get("mcp", id) }))
       .filter((x) => x.instance?.mode === "perSession");
     return c.json(out);
@@ -214,11 +230,12 @@ export function app(ctx: Ctx) {
   });
 
   // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)));
+  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer));
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
   app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
+  app.get("/factory", (c) => (ctx.factory.page ? ctx.factory.page(c.req.raw, c.env.listener) : c.notFound()));
   app.route("/api", management(ctx));
   return app;
 }
@@ -365,11 +382,14 @@ export async function serve(
     expireLogins(s);
     rotateLogs();
   }, 3600000);
+  // On its own, so a failed trim never skips the login expiry or log rotation above.
+  schedule(async () => trimFactory(s), 3600000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);
   schedule(() => ctx.handoffs.syncProjects(), 30_000);
   schedule(() => ctx.channel.reconcile(), 30_000);
+  for (const loop of ctx.factory.loops) schedule(loopTask(ctx.factory, loop), loop.everyMs);
   let stopping: Promise<void> | undefined;
   return {
     ctx,
