@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import { folderLabel, movingLabel, type FactoryBoard } from "@agentgate/protocol";
+import { movingLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { factoryOp } from "../../api.ts";
 import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
@@ -144,7 +144,7 @@ export function FactorySettings({
           <div className="grow">
             <strong>Folder</strong>
             <small className="muted">
-              {folderLabel(pointer)}
+              {pointer.label}
               {board.config ? ` · ${board.config.name} at ${board.config.commit.slice(0, 7)}` : ""}
             </small>
           </div>

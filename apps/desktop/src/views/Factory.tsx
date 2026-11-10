@@ -2,7 +2,6 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import {
-  folderLabel,
   movingLabel,
   type BoardItem,
   type FactoryBoard,
@@ -395,7 +394,7 @@ function Status({ board }: { board: FactoryBoard }) {
     [
       "Folder",
       board.config
-        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}${board.factory ? `, ${folderLabel(board.factory)}` : ""}`
+        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}${board.factory ? `, ${board.factory.label}` : ""}`
         : "Not loaded yet",
     ],
     [

@@ -3,7 +3,7 @@ import { Button, toast } from "@heroui/react";
 import { Factory as FactoryIcon } from "lucide-react";
 import { isVirtual, type FactoryBoard, type FactoryStore, type Status } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
-import { factoryOp, openExternal } from "../../api.ts";
+import { factoryOp } from "../../api.ts";
 import { Choice, Empty, Field, Modal } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 
@@ -27,8 +27,8 @@ const nodeOptions = (data: Status) =>
     label: `${n.id}${n.alwaysOn ? " (always on)" : ""}${n.online ? "" : " (offline)"}`,
   }));
 
-/** `agentgate factory init`: a template PR on the repository, and the factory on at its branch, or the template as the
- * folder agentgate stores. Runs with the `gh` login of the machine the app is connected to. */
+/** `agentgate factory init`: the template as the folder agentgate stores, and the factory on it. The label is created
+ * with the `gh` login of the machine the app is connected to. */
 export function InitDialog({
   data,
   connection,
@@ -42,42 +42,26 @@ export function InitDialog({
   done?: () => void;
 }) {
   const repos = knownRepos(data);
-  const [store, setStore] = useState<FactoryStore>("github");
   return (
     <Modal title="Start a factory" close={close}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           const form = new FormData(e.currentTarget);
-          const input = { repo: field(form, "repo"), node: field(form, "node"), store };
+          const input = { repo: field(form, "repo"), node: field(form, "node") };
           void perform(async () => {
             const result = await factoryOp(connection, "init", input);
             close();
             done?.();
             for (const warning of result.warnings) toast(warning);
-            const prUrl = result.prUrl;
-            if (prUrl)
-              toast("The factory is on", {
-                description: "Review and merge the template PR; the factory follows the default branch after.",
-                actionProps: { children: "Open PR", onPress: () => void openExternal(prUrl) },
-              });
-            else toast("The factory is on", { description: "Edit its folder under Settings." });
+            toast("The factory is on", { description: "Edit its folder under Settings." });
           });
         }}
       >
         <p className="muted">
-          {store === "github" ? (
-            <>
-              Opens a draft PR on the repository with a <code>factory/</code> folder (factory.yaml and rulings.md),
-              creates the <code>factory</code> label, and turns the factory on at the PR's branch.
-            </>
-          ) : (
-            <>
-              Keeps the factory's folder (factory.yaml and rulings.md) in agentgate, so nothing is pushed to the
-              repository, creates the <code>factory</code> label, and turns the factory on.
-            </>
-          )}{" "}
-          GitHub actions use the <code>gh</code> login of {data.node}.
+          Keeps the factory's folder (factory.yaml and rulings.md) in agentgate, so nothing is pushed to the repository,
+          creates the <code>factory</code> label with the <code>gh</code> login of {data.node}, and turns the factory
+          on. <code>agentgate factory folder export</code> writes the folder out to keep it in git.
         </p>
         <Field
           label="Repository"
@@ -85,12 +69,6 @@ export function InitDialog({
           isRequired
           defaultValue={repo ?? repos[0]}
           description={repos.length ? `For example ${repos.slice(0, 3).join(", ")}` : "owner/repo"}
-        />
-        <Choice
-          label="Folder"
-          selectedKey={store}
-          onSelectionChange={(key) => setStore(key as FactoryStore)}
-          options={storeOptions}
         />
         <Choice label="Runs on" name="node" defaultValue={defaultNode(data)} options={nodeOptions(data)} />
         <Button type="submit" size="sm">

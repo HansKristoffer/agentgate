@@ -18,12 +18,6 @@
     "stdout": "main\n",
     "stderr": ""
   },
-  "fileExists": {
-    "args": ["api", "repos/HansKristoffer/factory-scratch/contents/README.md", "--jq", ".path"],
-    "exit": 0,
-    "stdout": "README.md\n",
-    "stderr": ""
-  },
   "readFile": {
     "args": [
       "api",
@@ -185,18 +179,6 @@
     "stdout": "{\"message\":\"Branch not found\",\"documentation_url\":\"https://docs.github.com/rest/branches/branches#get-a-branch\",\"status\":\"404\"}",
     "stderr": "gh: Branch not found (HTTP 404)\n"
   },
-  "fileExists.missing": {
-    "args": ["api", "repos/HansKristoffer/factory-scratch/contents/factory/no-such-file.yaml", "--jq", ".path"],
-    "exit": 1,
-    "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}",
-    "stderr": "gh: Not Found (HTTP 404)\n"
-  },
-  "fileExists.noRef": {
-    "args": ["api", "repos/HansKristoffer/factory-scratch/contents/README.md?ref=no-such-branch", "--jq", ".path"],
-    "exit": 1,
-    "stdout": "{\"message\":\"No commit found for the ref no-such-branch\",\"documentation_url\":\"https://docs.github.com/v3/repos/contents/\",\"status\":\"404\"}",
-    "stderr": "gh: No commit found for the ref no-such-branch (HTTP 404)\n"
-  },
   "readFile.missing": {
     "args": [
       "api",
@@ -283,12 +265,6 @@
     "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/branches/branches#get-a-branch\",\"status\":\"404\"}",
     "stderr": "gh: Not Found (HTTP 404)\n"
   },
-  "fileExists.noRepo": {
-    "args": ["api", "repos/HansKristoffer/no-such-repo-agentgate/contents/factory/factory.yaml", "--jq", ".path"],
-    "exit": 1,
-    "stdout": "{\"message\":\"Not Found\",\"documentation_url\":\"https://docs.github.com/rest/repos/contents#get-repository-content\",\"status\":\"404\"}",
-    "stderr": "gh: Not Found (HTTP 404)\n"
-  },
   "issueList.noRepo": {
     "args": [
       "issue",
@@ -343,12 +319,6 @@
     "exit": 0,
     "stdout": "{\"defaultBranchRef\":{\"name\":\"\"}}\n",
     "stderr": ""
-  },
-  "fileExists.empty": {
-    "args": ["api", "repos/aldevvv/zerolabs/contents/factory/factory.yaml", "--jq", ".path"],
-    "exit": 1,
-    "stdout": "{\"message\":\"This repository is empty.\",\"documentation_url\":\"https://docs.github.com/v3/repos/contents/#get-contents\",\"status\":\"404\"}",
-    "stderr": "gh: This repository is empty. (HTTP 404)\n"
   },
   "branchExists.empty": {
     "args": ["api", "repos/aldevvv/zerolabs/branches/agentgate%2Ffactory-init", "--jq", ".name"],

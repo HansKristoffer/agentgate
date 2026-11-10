@@ -1,4 +1,4 @@
-import { folderLabel, itemPhases, movingLabel, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { itemPhases, movingLabel, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
@@ -6,6 +6,7 @@ import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
 import { lastSeen } from "../sync.ts";
 import { frozenItems } from "./controller.ts";
 import { runs } from "./db.ts";
+import { folderStore } from "./folder-store.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { FACTORY_PAGE } from "./page.ts";
 import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
@@ -153,14 +154,10 @@ function pointerRow(f: FactoryRuntime): FactoryBoard["factory"] {
   const pointer = f.pointer();
   if (!pointer) return null;
   const seen = lastSeen(f.s, pointer.node);
+  const { moveTo: _, ...rest } = pointer;
   return {
-    store: pointer.store,
-    ...(pointer.store === "github" && {
-      repo: pointer.repo,
-      path: pointer.path,
-      ...(pointer.ref && { ref: pointer.ref }),
-    }),
-    node: pointer.node,
+    ...rest,
+    label: folderStore(f, pointer).label,
     online: f.s.now() - seen < 60_000,
     ...(seen > 0 && { lastSeenAt: seen }),
   };
@@ -322,7 +319,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   const p = b.factory;
   if (!p) lines.push("Factory: off");
   else {
-    lines.push(`Factory: ${folderLabel(p)} on ${p.node}${here(p.node)}, ${p.online ? "online" : "offline"}`);
+    lines.push(`Factory: ${p.label} on ${p.node}${here(p.node)}, ${p.online ? "online" : "offline"}`);
     if (p.moving) lines.push(`${movingLabel(p.moving)}; nothing new is taken in until then`);
   }
   if (p && b.frozen?.length) {

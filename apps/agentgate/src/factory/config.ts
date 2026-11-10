@@ -5,7 +5,6 @@ import {
   factoryConfigSchema,
   factoryMoveInputSchema,
   factoryUseInputSchema,
-  folderLabel,
   movingLabel,
   scoutFileSchema,
   stageFileSchema,
@@ -24,8 +23,9 @@ import { PeerError } from "../handoff/jobs.ts";
 import type { Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
-import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFetch, storedFiles } from "./folder.ts";
-import { branchProtected, defaultBranch, prState } from "./gh.ts";
+import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
+import { folderStore, runsOnStoredFolder, type FolderStore } from "./folder-store.ts";
+import { branchProtected, defaultBranch } from "./gh.ts";
 import {
   noWords,
   operation,
@@ -37,8 +37,8 @@ import {
 } from "./runtime.ts";
 
 /**
- * The factory's folder: where `agentgate factory use` points it, the loop that fetches it when its ref moves (or reads
- * the folder agentgate stores, stored.ts), and the loader that checks it as a whole. A broken commit never replaces the
+ * The factory's folder: where `agentgate factory use` points it, the loop that reads it when it changes (from git or
+ * from agentgate, folder-store.ts), and the loader that checks it as a whole. A broken commit never replaces the
  * last good folder; items finish under the commit they started with (`folderAt`). And the pointer itself: which machine
  * runs the factory, and moving it to another (`moveFactory`).
  */
@@ -203,12 +203,10 @@ interface FolderState {
   error?: string; // why `fetched` did not load
   fetchError?: string; // why the last fetch failed
 }
-const sourceOf = (p: FactoryPointer) =>
-  JSON.stringify(p.store === "github" ? [p.repo.toLowerCase(), p.path, p.ref ?? null] : [p.store]);
-
-function readState(s: Store, pointer: FactoryPointer): FolderState {
-  const state = safeJsonParse<FolderState>(s.local(STATE_KEY) ?? "{}").data;
-  return state?.source === sourceOf(pointer) ? state : { source: sourceOf(pointer) };
+function readState(f: FactoryRuntime, pointer: FactoryPointer): FolderState {
+  const source = folderStore(f, pointer).key;
+  const state = safeJsonParse<FolderState>(f.s.local(STATE_KEY) ?? "{}").data;
+  return state?.source === source ? state : { source };
 }
 
 interface Memory {
@@ -247,7 +245,7 @@ export function folderAt(f: FactoryRuntime, commit: string): LoadedFolder | unde
 /** The last good folder, which new items start under. */
 export function currentFolder(f: FactoryRuntime): LoadedFolder | undefined {
   const pointer = f.pointer();
-  const commit = pointer && readState(f.s, pointer).commit;
+  const commit = pointer && readState(f, pointer).commit;
   return commit ? folderAt(f, commit) : undefined;
 }
 
@@ -280,58 +278,26 @@ function sync(f: FactoryRuntime, force = false): Promise<void> {
   return run;
 }
 
-/** A factory `init` turned on at its branch follows the default branch once the init PR merges. Checked before the
- * fetch and while a failed fetch backs off: GitHub usually deletes a merged PR's branch, so its fetch fails. */
-async function followInit(f: FactoryRuntime): Promise<boolean> {
-  const { s } = f;
-  const pointer = f.pointer();
-  if (pointer?.store !== "github" || !pointer.init || !f.isFactoryNode()) return false;
-  const state = await prState(pointer.repo, pointer.init.pr).catch(() => "OPEN" as const);
-  if (state === "OPEN") return false;
-  const { init, ref, ...rest } = pointer;
-  const merged = state === "MERGED";
-  setPointer(s, merged ? rest : { ...rest, ...(ref && { ref }) });
-  f.events.emit({
-    kind: "note",
-    text: merged
-      ? `The init PR #${init.pr} merged; the factory follows ${pointer.repo}'s default branch`
-      : `The init PR #${init.pr} was closed without merging; the factory still runs ${ref}`,
-  });
-  return true;
-}
-
 async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   const { s, events } = f;
-  // A new branch owes nothing to the old one's failed fetches.
-  if (await followInit(f)) Object.assign(m, { failures: 0, retryAt: 0 });
   const pointer = f.pointer();
   if (!pointer || !f.isFactoryNode()) return;
-  // Reading the stored folder costs nothing, so it never backs off.
-  if (!force && m.retryAt > s.now() && pointer.store === "github" && !pointer.init) return;
+  if (!force && m.retryAt > s.now()) return;
 
-  const state = readState(s, pointer);
+  const folder = folderStore(f, pointer);
+  const state = readState(f, pointer);
   const save = (next: FolderState) => {
     // The pointer may have moved while git ran; that state belongs to the old one.
     const now = f.pointer();
-    if (now && sourceOf(now) === state.source) s.setLocal(STATE_KEY, JSON.stringify(next));
+    if (now && folderStore(f, now).key === state.source) s.setLocal(STATE_KEY, JSON.stringify(next));
   };
 
   // Without the last good folder on disk, fetch whatever the ref points at now.
   const since = force || (state.fetched === state.commit && !currentFolder(f)) ? undefined : state.fetched;
-  let fetched: Awaited<ReturnType<typeof fetcher.fetch>>;
+  let fetched: Awaited<ReturnType<FolderStore["read"]>>;
   try {
     const tree = currentFolder(f) ? state.tree : undefined;
-    fetched =
-      pointer.store === "agentgate"
-        ? storedFetch(s, since)
-        : await fetcher.fetch({
-            repo: pointer.repo,
-            ref: pointer.ref,
-            path: pointer.path,
-            since,
-            signal: f.ctx.abort.signal,
-            ...(tree && { tree }),
-          });
+    fetched = await folder.read({ since, signal: f.ctx.abort.signal, ...(tree && { tree }) });
   } catch (e) {
     const error = getErrorMessage(e);
     m.failures++;
@@ -345,7 +311,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
     return;
   }
 
-  if (m.failures) console.log(`factory: fetching ${folderLabel(pointer)} works again`);
+  if (m.failures) console.log(`factory: fetching ${folder.label} works again`);
   m.failures = 0;
   m.retryAt = 0;
   if (!fetched) {
@@ -355,19 +321,19 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
     save({ ...state, fetched: fetched.commit, error: undefined, fetchError: undefined });
   } else {
     try {
-      const folder = loadFolder(fetched.dir, fetched.commit);
-      m.folders.set(folder.commit, folder);
+      const loaded = loadFolder(fetched.dir, fetched.commit);
+      m.folders.set(loaded.commit, loaded);
       save({
         source: state.source,
-        fetched: folder.commit,
-        commit: folder.commit,
+        fetched: loaded.commit,
+        commit: loaded.commit,
         ...(fetched.tree && { tree: fetched.tree }),
         loadedAt: s.now(),
       });
       events.emit({
         kind: "config",
-        commit: folder.commit,
-        text: `Loaded ${folder.config.name} at ${short(folder.commit)}`,
+        commit: loaded.commit,
+        text: `Loaded ${loaded.config.name} at ${short(loaded.commit)}`,
       });
     } catch (e) {
       const error = getErrorMessage(e);
@@ -383,7 +349,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
 function prune(f: FactoryRuntime) {
   const pointer = f.pointer();
   const keep = new Set(items.list(f.s, { open: true }).map((i) => i.configCommit));
-  const current = pointer && readState(f.s, pointer).commit;
+  const current = pointer && readState(f, pointer).commit;
   if (current) keep.add(current);
   const m = memory(f);
   for (const commit of m.folders.keys()) if (!keep.has(commit)) m.folders.delete(commit);
@@ -400,12 +366,13 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
   const { moveTo, ...rest } = pointer;
   const factory = {
     ...rest,
+    label: folderStore(f, pointer).label,
     online: pointer.node === s.nodeId || s.now() - seen < 60_000,
     ...(seen > 0 && { lastSeenAt: seen }),
     // Only the factory machine knows how many of its items are open.
     ...(moveTo && { moving: { to: moveTo, ...(f.isFactoryNode() && { open: openItems(f) }) } }),
   };
-  const state = readState(s, pointer);
+  const state = readState(f, pointer);
   const folder = currentFolder(f);
   const error = [state.fetchError, state.error].filter(Boolean).join("; ") || undefined;
   if (folder)
@@ -427,8 +394,8 @@ function factoryStatus(f: FactoryRuntime): FactoryStatus {
 /** An always-on machine is the natural host; otherwise this one. */
 export const defaultNode = (s: Store) => s.list("node").find((n) => n.alwaysOn)?.id ?? s.nodeId;
 
-/** The pointer is written only here: `use`, `move`, `off` and following the init PR. The generic settings patch has no
- * `factory`, so nothing else can drop `init` or `moveTo`, or skip the protocol check. */
+/** The pointer is written only here: `use`, `move` and `off`. The generic settings patch has no `factory`, so nothing
+ * else can drop `moveTo`, or skip the protocol check. */
 function setPointer(s: Store, pointer: FactoryPointer | undefined) {
   s.transaction(() => {
     const { factory: _, ...rest } = s.settings();
@@ -436,9 +403,8 @@ function setPointer(s: Store, pointer: FactoryPointer | undefined) {
   });
 }
 
-/** The `use` operation; `factory init` adds the PR whose merge moves it to the default branch. On the factory machine,
- * the folder is fetched before it returns. */
-export async function useFactory(f: FactoryRuntime, parsed: FactoryUseInput, extra: { init?: { pr: number } } = {}) {
+/** The `use` operation. On the factory machine, the folder is fetched before it returns. */
+export async function useFactory(f: FactoryRuntime, parsed: FactoryUseInput) {
   const { s } = f;
   requireFactoryProtocol(s);
   // Another folder is no reason to change machines, which would freeze the open items of the one it runs on, nor to
@@ -460,7 +426,6 @@ export async function useFactory(f: FactoryRuntime, parsed: FactoryUseInput, ext
     ...(parsed.ref && { ref: parsed.ref }),
     node,
     ...(moveTo && { moveTo }),
-    ...(extra.init && { init: extra.init }),
   };
   setPointer(s, pointer);
   await sync(f, true);
@@ -470,7 +435,7 @@ export async function useFactory(f: FactoryRuntime, parsed: FactoryUseInput, ext
 /** Loads the stored folder now on the factory machine, after a change to it; other machines load it within the folder
  * loop's 2 minutes. */
 export async function storedChanged(f: FactoryRuntime) {
-  if (f.pointer()?.store === "agentgate" && f.isFactoryNode()) await sync(f, true);
+  if (runsOnStoredFolder(f) && f.isFactoryNode()) await sync(f, true);
 }
 
 /** The pointer that `node` can take, and apart from it the machine a move already waits for. */
@@ -489,10 +454,10 @@ function movable(f: FactoryRuntime, node: string) {
 const drained = (f: FactoryRuntime) => !openItems(f) && !hasUnsentWrites(f.s);
 
 /**
- * The factory machine's part of `move`: the same folder on another machine, keeping the ref and the init PR it waits
- * on. Only the factory machine drives items, so it finishes the open ones first: the pointer records where the
- * factory goes (`moveTo`), intake takes nothing new, and `finishMove` moves the pointer once the machine is drained.
- * Drained already, it moves at once, and naming the machine that already runs it cancels a move it waits for.
+ * The factory machine's part of `move`: the same folder on another machine, keeping its ref. Only the factory machine
+ * drives items, so it finishes the open ones first: the pointer records where the factory goes (`moveTo`), intake
+ * takes nothing new, and `finishMove` moves the pointer once the machine is drained. Drained already, it moves at once,
+ * and naming the machine that already runs it cancels a move it waits for.
  */
 function startMove(f: FactoryRuntime, node: string) {
   const { s } = f;
@@ -551,7 +516,7 @@ async function moveFactory(f: FactoryRuntime, { node, now }: FactoryMoveInput, c
 /** Any thread that can push to the folder's branch changes the briefs of every later run, and GitHub can refuse such
  * pushes where the plan allows it (free private repositories cannot). So `use` says once when the branch is open.
  * A tag, or a GitHub that cannot be asked, says nothing. */
-export async function protectionWarning(pointer: { repo: string; ref?: string }) {
+async function protectionWarning(pointer: { repo: string; ref?: string }) {
   try {
     const branch = pointer.ref ?? (await defaultBranch(pointer.repo));
     if (await branchProtected(pointer.repo, branch)) return {};
@@ -586,7 +551,7 @@ async function reloadFactory(f: FactoryRuntime) {
 function describe({ factory, config, warning }: FactoryStatus & { warning?: string }) {
   if (!factory) return ["The factory is off."];
   const offline = factory.online ? "" : " (offline)";
-  const lines = [`Factory folder ${folderLabel(factory)}, run by ${factory.node}${offline}.`];
+  const lines = [`Factory folder ${factory.label}, run by ${factory.node}${offline}.`];
   if (factory.moving)
     lines.push(
       `${movingLabel(factory.moving)}; nothing new is taken in until then. agentgate factory move ${factory.moving.to} --now does not wait, and leaves the open items frozen on ${factory.node}; agentgate factory move ${factory.node} cancels.`,

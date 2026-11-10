@@ -211,20 +211,12 @@ export const factoryPointerSchema = z.discriminatedUnion("store", [
     ref: z.string().min(1).max(200).optional(), // default: the repo's default branch
     node: pointerNode,
     moveTo: pointerMoveTo,
-    // Set by `factory init`: the PR that adds the folder. Once it merges, the factory follows the default branch.
-    init: z.object({ pr: z.number().int().positive() }).optional(),
   }),
   z.object({ store: z.literal("agentgate"), node: pointerNode, moveTo: pointerMoveTo }),
 ]);
 export type FactoryPointer = z.infer<typeof factoryPointerSchema>;
 const factoryStores = ["github", "agentgate"] as const;
 export type FactoryStore = (typeof factoryStores)[number];
-
-/** Where the folder is, for a person: `owner/repo:path at ref`, or that agentgate stores it. */
-export const folderLabel = (p: { store: FactoryStore; repo?: string; path?: string; ref?: string }) =>
-  p.store === "agentgate"
-    ? "stored in agentgate"
-    : `${p.repo}${p.path ? `:${p.path}` : ""}${p.ref ? ` at ${p.ref}` : ""}`;
 
 /** What a board says while `factory move` waits for the factory machine's open items, and after the last one for the
  * comments it has not posted yet. */
@@ -282,9 +274,6 @@ export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
 /** `folder put`: files to write by path, `null` to delete one. The daemon checks the folder that results as a whole,
  * its paths and size included, so its refusal names the file. */
 export const storedFolderChangeSchema = z.object({ files: z.record(z.string(), z.string().nullable()) }).strict();
-
-/** The branch `factory init` pushes the template to. */
-export const FACTORY_INIT_BRANCH = "agentgate/factory-init";
 
 /** The synced `secret` record. `~hook:` ids are agentgate's own (webhook URL keys), never declared in a folder. */
 export const secretRecordSchema = z.object({
@@ -608,6 +597,7 @@ export const factoryBoardSchema = z.object({
       repo: z.string().optional(), // store github: the folder's repository, path and ref
       path: z.string().optional(),
       ref: z.string().optional(),
+      label: z.string(), // where the folder is, for a person: `owner/repo:path at ref`, or that agentgate stores it
       node: z.string(),
       online: z.boolean(),
       lastSeenAt: z.number().optional(),
@@ -723,12 +713,8 @@ export const factoryItemDetailSchema = z.object({
 });
 export type FactoryItemDetail = z.infer<typeof factoryItemDetailSchema>;
 
-/** What `factory init` did: the draft PR with the template and the factory, already on at its branch; or the folder
- * agentgate stores, and the factory on it. */
+/** What `factory init` did: the template written to the folder agentgate stores, and the factory on it. */
 export const factoryInitResultSchema = z.object({
-  // A folder on GitHub: the PR that adds it. A stored folder is written at once and has none.
-  prUrl: z.string().url().optional(),
-  branch: z.literal(FACTORY_INIT_BRANCH).optional(),
   /** What init could not set up, each a sentence for the person. */
   warnings: z.array(z.string()),
   factory: factoryBoardSchema.shape.factory,
@@ -754,13 +740,15 @@ export type FactoryUseInput = z.infer<typeof factoryUseInputSchema>;
  * they stay frozen there. */
 export const factoryMoveInputSchema = z.object({ node: pointerNode, now: z.boolean().optional() }).strict();
 export type FactoryMoveInput = z.infer<typeof factoryMoveInputSchema>;
-/** `init`: `store` is where the new folder goes, GitHub by default. */
+/** `init`: a factory for `repo`, its folder stored in agentgate. `label` is the GitHub label its source takes. */
+const labelName = githubSourceSchema.shape.label;
 export const factoryInitInputSchema = z
-  .object({ repo, node: pointerNode.optional(), store: z.enum(factoryStores).optional() })
+  .object({ repo, node: pointerNode.optional(), label: labelName.optional() })
   .strict();
 export type FactoryInitInput = z.infer<typeof factoryInitInputSchema>;
-/** `source add`: a PR on the factory folder that adds a source, or the change itself when agentgate stores the
- * folder. */
+/** `repo add` and `repo remove`. */
+export const factoryRepoInputSchema = z.object({ repo, label: labelName.optional() }).strict();
+/** `source add`: a source for the factory folder, through `propose` like every change to it. */
 export const factorySourceAddInputSchema = z
   .object({
     source: z.discriminatedUnion("type", [webhookSourceSchema, scoutSourceSchema]),
@@ -768,14 +756,9 @@ export const factorySourceAddInputSchema = z
   })
   .strict();
 export type FactorySourceAddInput = z.input<typeof factorySourceAddInputSchema>;
-export const factorySourceAddResultSchema = z.object({
-  // A folder on GitHub; a stored folder has the source at once.
-  prUrl: z.string().url().optional(),
-  branch: z.string().optional(),
-  /** Each a sentence for the person: a tag the factory follows, a secret to set. */
-  warnings: z.array(z.string()),
-});
-export type FactorySourceAddResult = z.infer<typeof factorySourceAddResultSchema>;
+/** What a change to the folder came to: in the folder now (a stored folder), waiting in a pull request (a folder in
+ * git), or nothing to change. `warnings` are each a sentence for the person. */
+export type FolderChangeResult = ({ applied: true } | { pr: string } | { unchanged: true }) & { warnings: string[] };
 /** `add`, and the agents' `factory_add`. */
 export const factoryItemInputSchema = z
   .object({
@@ -818,7 +801,8 @@ export interface FactoryOps extends Record<
   move: { input: FactoryMoveInput; result: FactoryStatus };
   off: { input: NoInput; result: FactoryStatus };
   reload: { input: NoInput; result: FactoryStatus };
-  "source add": { input: FactorySourceAddInput; result: FactorySourceAddResult };
+  "source add": { input: FactorySourceAddInput; result: FolderChangeResult };
+  "repo add": { input: z.input<typeof factoryRepoInputSchema>; result: FolderChangeResult };
   scout: { input: { id: string }; result: { run: string } | { skipped: string } };
   "folder ls": { input: NoInput; result: StoredFolderView };
   "folder put": { input: z.input<typeof storedFolderChangeSchema>; result: StoredFolderView };
@@ -862,6 +846,7 @@ export const factoryCommandInputSchema = z
       .string()
       .max(1024 * 1024)
       .optional(),
+    cwd: z.string().max(4096).optional(), // the CLI's working directory, which a relative path names a file in
   })
   .strict();
 export interface FactoryCommandResult {

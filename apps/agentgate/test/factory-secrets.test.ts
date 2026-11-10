@@ -192,7 +192,8 @@ test("a secret value never shows in /status, the board, logs or error messages",
 
   await withFolder(f);
   await command(f, ["set", "LINEAR_KEY"], VALUE);
-  // As the CLI sends them: a value typed where the name goes, a value too long, a set refused for an old node.
+  // As the CLI sends them: a value typed where the name goes, a value too long, a mistyped subcommand (answered with
+  // the group's usages, not refused), a set refused for an old node.
   const cli = (args: string[], stdin: string) =>
     request(ctx, "loopback", "POST", "/api/factory/terminal", { args: ["secret", ...args], stdin });
   const refusals = [
@@ -204,7 +205,7 @@ test("a secret value never shows in /status, the board, logs or error messages",
   ];
   s.put("node", "old", { id: "old", protocol: 7 });
   refusals.push(await cli(["set", "LINEAR_KEY"], VALUE));
-  expect(refusals.map((r) => r.status)).toEqual([400, 400, 400, 400, 400, 400]);
+  expect(refusals.map((r) => r.status)).toEqual([400, 400, 200, 400, 400, 400]);
   const errors = await Promise.all(refusals.map((r) => r.text()));
 
   const statusResponse = await request(ctx, "loopback", "GET", "/api/status");

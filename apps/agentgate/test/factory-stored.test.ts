@@ -1,4 +1,6 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { makeCtx } from "../src/daemon.ts";
 import { currentFolder, folderAt } from "../src/factory/config.ts";
 import { items } from "../src/factory/db.ts";
@@ -10,7 +12,7 @@ import { Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
-import { terminal } from "./fixtures/t3-mcp.ts";
+import { postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
 const realGh = host.gh;
@@ -46,7 +48,7 @@ function node(name = "a") {
     await ctx.gateway.close();
     s.close();
   });
-  return { s, f: ctx.factory };
+  return { s, ctx, f: ctx.factory };
 }
 
 const command = (f: FactoryRuntime, name: string, args: string[], stdin?: string) =>
@@ -58,16 +60,14 @@ const folderLoop = (f: FactoryRuntime) =>
     f.loops.find((l) => l.name === "factory-folder")!,
   )();
 
-test("init --store agentgate turns the factory on with the template stored in agentgate and no PR; edits load at once, and one that breaks the folder is refused", async () => {
+test("init turns the factory on with the template stored in agentgate; edits load at once, and one that breaks the folder is refused", async () => {
   const { s, f } = node();
-  expect(await command(f, "init", [REPO, "--store", "agentgate"])).toEqual({
+  expect(await command(f, "init", [REPO])).toEqual({
     code: 0,
     output: ["The factory runs on a with a folder agentgate stores; edit it with agentgate factory folder."],
   });
   expect(s.settings().factory).toEqual({ store: "agentgate", node: "a" });
-  const template = Object.fromEntries(
-    Object.entries(initTemplate(REPO)).map(([path, text]) => [path.replace(/^factory\//, ""), text]),
-  );
+  const template = initTemplate(REPO);
   expect(storedFiles(s)).toEqual(template);
   const first = storedCommit(template);
   expect(currentFolder(f)).toMatchObject({ commit: first, config: { name: "api" } });
@@ -116,9 +116,7 @@ test("init --store agentgate turns the factory on with the template stored in ag
     "The factory runs on the stored folder; turn it off with agentgate factory off first",
   ]);
   await command(f, "off", []);
-  expect((await command(f, "init", [REPO, "--store", "agentgate"])).output[0]).toStartWith(
-    "agentgate already stores a factory folder",
-  );
+  expect((await command(f, "init", [REPO])).output[0]).toStartWith("agentgate already stores a factory folder");
   expect((await command(f, "use", ["--store", "agentgate"])).code).toBe(0);
   expect(currentFolder(f)?.commit).toBe(second.commit);
   await command(f, "off", []);
@@ -164,14 +162,14 @@ test("the stored folder syncs to the machine that runs the factory, which loads 
 
 test("source add on a stored folder changes it at once, with no PR", async () => {
   const { s, f } = node();
-  await command(f, "init", [REPO, "--store", "agentgate"]);
+  await command(f, "init", [REPO]);
   const added = await command(
     f,
     "source",
     ["add"],
     `source: { id: desk, type: webhook, repo: ${REPO}, title: "{{body.subject}}" }\n`,
   );
-  expect(added).toEqual({ code: 0, output: ["Added to the stored folder; the source starts within 2 minutes."] });
+  expect(added).toEqual({ code: 0, output: ["Added to the factory folder; the source starts within 2 minutes."] });
   const scout = `source: { id: perf, type: scout, repo: ${REPO}, schedule: { every: 6h } }\nprompt: Look at the logs.\n`;
   expect((await command(f, "source", ["add"], scout)).code).toBe(0);
   expect(currentFolder(f)?.config.sources.map((x) => x.id)).toEqual(["issues", "desk", "perf"]);
@@ -179,4 +177,93 @@ test("source add on a stored folder changes it at once, with no PR", async () =>
     `---\nrepo: ${REPO}\nschedule:\n  every: "6h"\n---\n\nLook at the logs.\n`,
   );
   expect((await command(f, "source", ["add"], scout)).output).toEqual(["The factory already has a scout perf"]);
+});
+
+test("folder export then import round-trips every file; a relative directory is the CLI's, and a broken folder is refused", async () => {
+  const { s, f } = node();
+  await command(f, "init", [REPO]);
+  await command(f, "folder", ["put", "stages/implement.md"], "Run the tests first.\n");
+  await command(f, "folder", ["put", "skills/lint/SKILL.md"], "---\nname: lint\ndescription: Lints.\n---\nLint.\n");
+  const files = storedFiles(s)!;
+
+  // The CLI ran in `cwd`; the daemon's own working directory is somewhere else.
+  const cwd = tmp();
+  expect(await terminal(f, ["folder", "export", "out"], undefined, cwd)).toEqual({
+    code: 0,
+    output: [`Wrote the stored folder's 4 files to ${join(cwd, "out")}.`],
+  });
+  const out = join(cwd, "out");
+  expect(
+    readdirSync(out, { recursive: true })
+      .filter((p) => String(p).endsWith(".md") || String(p).endsWith(".yaml"))
+      .sort(),
+  ).toEqual(["factory.yaml", "rulings.md", "skills/lint/SKILL.md", "stages/implement.md"]);
+  expect((await terminal(f, ["folder", "export", "out"], undefined, cwd)).output).toEqual([
+    `${out} is not empty; --force writes the files into it anyway`,
+  ]);
+  expect((await terminal(f, ["folder", "export", "out", "--force"], undefined, cwd)).code).toBe(0);
+  expect((await command(f, "folder", ["export", "out"])).output).toEqual(["Give the directory as an absolute path"]);
+  // Imported as it was written, the folder is the same files at the same commit.
+  const commit = currentFolder(f)!.commit;
+  expect((await terminal(f, ["folder", "import", "out"], undefined, cwd)).code).toBe(0);
+  expect(storedFiles(s)).toEqual(files);
+  expect(currentFolder(f)?.commit).toBe(commit);
+
+  // A changed directory replaces the folder as a whole: a file gone from it goes, and git's own files are left out.
+  writeFileSync(join(out, "stages/implement.md"), "Run the linter first.\n");
+  writeFileSync(join(out, "rulings.md"), "# Rulings\n\n- Greenfield.\n");
+  mkdirSync(join(out, ".git"));
+  writeFileSync(join(out, ".git/HEAD"), "ref: refs/heads/main\n");
+  rmSync(join(out, "skills"), { recursive: true });
+  const imported = await terminal(f, ["folder", "import", "out"], undefined, cwd);
+  expect(imported).toEqual({
+    code: 0,
+    output: [expect.stringMatching(/^Imported 3 files; the stored folder is at [0-9a-f]{7}\.$/)],
+  });
+  expect(storedFiles(s)).toEqual({
+    "factory.yaml": files["factory.yaml"]!,
+    "rulings.md": "# Rulings\n\n- Greenfield.\n",
+    "stages/implement.md": "Run the linter first.\n",
+  });
+  // The factory runs on the stored folder, so the import loads at once.
+  expect(currentFolder(f)?.rulings).toBe("# Rulings\n\n- Greenfield.");
+
+  const before = storedFiles(s);
+  writeFileSync(join(out, "factory.yaml"), "version: [1\n");
+  const broken = await command(f, "folder", ["import", out]);
+  expect(broken.code).toBe(1);
+  expect(broken.output[0]).toStartWith("factory.yaml: invalid YAML");
+  expect(storedFiles(s)).toEqual(before);
+  expect(readFileSync(join(out, "rulings.md"), "utf8")).toBe("# Rulings\n\n- Greenfield.\n");
+});
+
+test("folder import prepares the stored folder while the factory is off or runs on a folder in git", async () => {
+  const { s, f } = node();
+  const dir = tmp();
+  writeFileSync(join(dir, "factory.yaml"), YAML("acme"));
+  expect((await command(f, "folder", ["import", dir])).code).toBe(0);
+  expect(storedFiles(s)).toEqual({ "factory.yaml": YAML("acme") });
+
+  s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: REPO, path: "", node: "b" } });
+  writeFileSync(join(dir, "factory.yaml"), YAML("renamed"));
+  expect((await command(f, "folder", ["import", dir])).code).toBe(0);
+  expect(storedFiles(s)).toEqual({ "factory.yaml": YAML("renamed") });
+  expect(s.settings().factory).toMatchObject({ store: "github" });
+});
+
+test("folder export and import are refused over remote management", async () => {
+  const { s, ctx } = node();
+  const dir = tmp();
+  writeFileSync(join(dir, "factory.yaml"), YAML("acme"));
+  for (const name of ["folder import", "folder export"]) {
+    const res = await postOp(ctx, name, { dir }, "tailnet", { authorization: "Bearer admin-secret" });
+    expect({ status: res.status, body: await res.json() }).toEqual({
+      status: 403,
+      body: { error: "This operation requires a local connection" },
+    });
+  }
+  expect(storedFiles(s)).toBeUndefined();
+  // A typed call names an absolute directory: there is no CLI whose directory a relative one could be in.
+  const relative = await postOp(ctx, "folder import", { dir: "out" });
+  expect(relative.status).toBe(400);
 });

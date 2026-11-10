@@ -125,7 +125,7 @@ const fetchFolder: FolderFetcher = async ({ repo, ref, path, since, tree: unchan
 export type FolderFiles = Record<string, string>;
 export const STORED_FOLDER = "folder"; // the id of the one `factoryFolder` record
 export const NO_STORED_FOLDER =
-  "agentgate stores no factory folder; start one with agentgate factory init <owner/repo> --store agentgate";
+  "agentgate stores no factory folder; start one with agentgate factory init <owner/repo> or agentgate factory folder import <dir>";
 export function storedFiles(s: Store): FolderFiles | undefined {
   const record = s.get("factoryFolder", STORED_FOLDER);
   return record && Object.fromEntries(record.files.map((file) => [file.path, file.text]));

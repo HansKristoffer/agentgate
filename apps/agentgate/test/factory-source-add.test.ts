@@ -21,7 +21,7 @@ afterEach(async () => {
 });
 afterAll(removeTmp);
 
-const TEMPLATE = initTemplate(REPO)["factory/factory.yaml"]!;
+const TEMPLATE = initTemplate(REPO)["factory.yaml"]!;
 const scout = {
   id: "perf",
   type: "scout",
@@ -173,8 +173,7 @@ function fakeGitHub(files: Record<string, string> = { "factory/factory.yaml": TE
     const ref = new URLSearchParams(query).get("ref") ?? "main";
     if (route!.startsWith("contents/")) {
       const content = github.branches.get(ref)?.[route!.slice(9)];
-      if (content === undefined) return recorded(args.includes("--jq") ? "fileExists.missing" : "readFile.missing");
-      return ok(args.includes("--jq") ? route!.slice(9) : content);
+      return content === undefined ? recorded("readFile.missing") : ok(content);
     }
     if (route!.startsWith("branches/")) {
       const branch = decodeURIComponent(route!.slice(9));
@@ -232,7 +231,7 @@ test("source add from the app pushes the scout's file under the folder, and open
   const res = await node().api({ source: scout, prompt: "Look at latency.\n\n" });
   expect(res).toEqual({
     status: 200,
-    body: { prUrl: `https://github.com/${REPO}/pull/9`, branch: "agentgate/factory-source-perf", warnings: [] },
+    body: { pr: `https://github.com/${REPO}/pull/9`, warnings: [] },
   });
   expect(github.base).toBe("main");
   expect(github.tree.map((t) => t.path)).toEqual(["factory/scouts/perf.md"]);
@@ -282,7 +281,7 @@ test("a factory that follows a tag gets its PR on the default branch, with a war
   const github = fakeGitHub();
   const res = await node("v1").api({ source: scout, prompt: "Look at latency." });
   expect(res.body.warnings).toEqual([
-    "The factory follows v1, which is not a branch, so the PR goes to the default branch; perf starts once v1 includes it",
+    "The factory follows v1, which is not a branch, so the PR goes to the default branch; the change takes effect once v1 includes it",
   ]);
   expect(github.prs[0]!.base).toBe("main");
 });
@@ -310,7 +309,7 @@ test("source add refuses before writing: a taken id, a repository the factory la
   github.branches.set("agentgate/factory-source-perf", {});
   github.prs.push({ head: "agentgate/factory-source-perf", base: "main", draft: false, title: "", body: "" });
   expect((await api({ source: scout, prompt: "x" })).body.error).toBe(
-    `A PR that adds perf is open: https://github.com/${REPO}/pull/9`,
+    `A PR with this change is open: https://github.com/${REPO}/pull/9`,
   );
   expect(github.writes).toBe(0);
 });

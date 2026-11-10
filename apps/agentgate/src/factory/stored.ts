@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
+import { parseArgs } from "node:util";
 import { factoryFolderSchema, storedFolderChangeSchema, type StoredFolderView } from "@agentgate/protocol";
 import { z } from "zod";
 import { loadFolder, storedChanged } from "./config.ts";
@@ -13,14 +14,14 @@ import {
   writeFiles,
   type FolderFiles,
 } from "./folder.ts";
+import { runsOnStoredFolder } from "./folder-store.ts";
 import { noWords, operation, requireFactoryProtocol, UsageError, type FactoryRuntime } from "./runtime.ts";
 
 /**
- * The factory folder agentgate stores, for a project whose repository must not hold it: one synced `factoryFolder`
- * record that the `folder` operations edit, from the CLI and the app, and that `factory init --store agentgate` and
- * `source add` write. Every write checks that the result loads, so the stored folder is never broken. Two machines
- * that save at once keep the later save, like every record. The record is every machine's, so the operations run
- * where they are asked.
+ * The factory folder agentgate stores: one synced `factoryFolder` record that `factory init` starts, the `folder`
+ * operations edit from the CLI and the app, and changes proposed through folder-store.ts write. Every write checks that
+ * the result loads, so the stored folder is never broken. Two machines that save at once keep the later save, like
+ * every record. The record is every machine's, so the operations run where they are asked.
  */
 
 type FolderChanges = Record<string, string | null>;
@@ -73,10 +74,62 @@ function view(f: FactoryRuntime): StoredFolderView {
 
 /** Removes the stored folder; refused while the factory runs on it, since off keeps it to turn on again. */
 function deleteStored(f: FactoryRuntime) {
-  if (f.pointer()?.store === "agentgate")
+  if (runsOnStoredFolder(f))
     throw new Error("The factory runs on the stored folder; turn it off with agentgate factory off first");
   if (!storedFiles(f.s)) throw new Error(NO_STORED_FOLDER);
   f.s.del("factoryFolder", STORED_FOLDER);
+}
+
+/** Every file under `dir` by its path inside it. Links are left out, as a fetch from git leaves them out, and so are
+ * names that start with a dot (`.git`, `.DS_Store`), which a stored folder cannot hold. */
+function readDir(dir: string, under = ""): FolderFiles {
+  const files: FolderFiles = {};
+  for (const entry of readdirSync(join(dir, under), { withFileTypes: true })) {
+    if (entry.name.startsWith(".")) continue;
+    const path = under ? `${under}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) Object.assign(files, readDir(dir, path));
+    else if (entry.isFile()) files[path] = readFileSync(join(dir, path), "utf8");
+    // A stored folder holds at most 500 files; this stops before reading a whole home directory named by mistake.
+    if (Object.keys(files).length > 500) throw new Error(`${dir} has more than the 500 files a stored folder holds`);
+  }
+  return files;
+}
+
+/** `folder import`: the stored folder becomes exactly the directory's files, checked as a whole like every write. */
+function importStored(f: FactoryRuntime, dir: string) {
+  const files = readDir(dir);
+  const gone = Object.keys(storedFiles(f.s) ?? {}).filter((path) => !(path in files));
+  return changeStored(f, { ...Object.fromEntries(gone.map((path) => [path, null])), ...files });
+}
+
+/** `folder export`: the stored folder's files written into `dir`, which is created; one with files in it only with
+ * `force`, which writes over files of the same name and leaves the others. */
+function exportStored(f: FactoryRuntime, dir: string, force?: boolean) {
+  const files = storedFiles(f.s);
+  if (!files) throw new Error(NO_STORED_FOLDER);
+  if (!force && existsSync(dir) && readdirSync(dir).length)
+    throw new Error(`${dir} is not empty; --force writes the files into it anyway`);
+  mkdirSync(dir, { recursive: true });
+  writeFiles(dir, files);
+  return { files: Object.keys(files).length };
+}
+
+const dirInput = z.object({
+  dir: z.string().min(1).max(4096).refine(isAbsolute, "the directory must be an absolute path"),
+  force: z.boolean().optional(),
+});
+/** The directory a terminal names: the daemon's working directory is not the CLI's, so a relative one is resolved
+ * against the directory the CLI ran in. */
+function dirWords(args: string[], cwd: string | undefined, withForce: boolean) {
+  const { values, positionals } = parseArgs({
+    args,
+    options: withForce ? { force: { type: "boolean" } } : {},
+    allowPositionals: true,
+  });
+  if (positionals.length !== 1 || !positionals[0]) throw new UsageError();
+  const dir = positionals[0];
+  if (!isAbsolute(dir) && !cwd) throw new Error("Give the directory as an absolute path");
+  return { input: { dir: resolve(cwd ?? "/", dir), ...(values.force && { force: true }) } };
 }
 
 // ---- setup
@@ -167,5 +220,32 @@ export function setup(f: FactoryRuntime): void {
       return view(f);
     },
     terminal: { usage: "folder delete", parse: noWords, print: () => ["The stored folder is deleted."] },
+  });
+  // Both touch this machine's disk, so they are refused over the tailnet, and only a terminal names a directory.
+  operation(f, {
+    name: "folder export",
+    summary: "write the stored folder's files into a directory, to keep it in git",
+    input: dirInput,
+    local: true,
+    loopbackOnly: true,
+    run: ({ dir, force }) => exportStored(f, dir, force),
+    terminal: {
+      usage: "folder export <dir> [--force]",
+      parse: (args, _, cwd) => dirWords(args, cwd, true),
+      print: ({ files }, { input }) => [`Wrote the stored folder's ${files} files to ${input.dir}.`],
+    },
+  });
+  operation(f, {
+    name: "folder import",
+    summary: "replace the stored folder with a directory's files, checked as a whole",
+    input: dirInput.omit({ force: true }),
+    local: true,
+    loopbackOnly: true,
+    run: ({ dir }) => importStored(f, dir),
+    terminal: {
+      usage: "folder import <dir>",
+      parse: (args, _, cwd) => dirWords(args, cwd, false),
+      print: (saved) => [`Imported ${saved.files.length} files; ${at(saved)}.`],
+    },
   });
 }

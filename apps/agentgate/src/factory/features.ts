@@ -16,6 +16,7 @@ import { setup as records } from "./records.ts";
 import { setup as spec } from "./spec.ts";
 import { setup as skills } from "./skills.ts";
 import { setup as init } from "./init.ts";
+import { setup as repos } from "./repos.ts";
 import { setup as scouts } from "./scouts.ts";
 import { setup as sourceAdd } from "./source-add.ts";
 import { setup as outbox } from "./outbox.ts";
@@ -28,6 +29,7 @@ const features = [
   config,
   stored,
   init,
+  repos,
   t3Mcp,
   controller,
   secrets,

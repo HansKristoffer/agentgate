@@ -147,7 +147,7 @@ function tile(value, label) {
 function render(b) {
 	var f = b.factory;
 	var pointer = f
-		? (f.store === "agentgate" ? "stored in agentgate" : f.repo + (f.path ? ":" + f.path : "") + (f.ref ? " at " + f.ref : "")) + " on " + f.node + (f.online ? "" : " (offline)")
+		? f.label + " on " + f.node + (f.online ? "" : " (offline)")
 		: "The factory is off. Turn it on with agentgate factory use <owner/repo>.";
 	if (f && f.moving) {
 		var open = f.moving.open;

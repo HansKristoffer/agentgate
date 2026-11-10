@@ -1447,6 +1447,7 @@ async function main() {
       const result = await management<FactoryCommandResult>("/factory/terminal", "POST", {
         args,
         ...(stdin !== undefined && { stdin }),
+        cwd: process.cwd(),
       });
       for (const line of result.output) console.log(line);
       process.exit(result.code);

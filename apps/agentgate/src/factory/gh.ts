@@ -240,18 +240,10 @@ function written(what: string, r: GhResult): PostResult {
 const post = async (what: string, path: string, payload: unknown) =>
   written(what, await ask(["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload)));
 
-// ---- starting a factory folder in a repository (factory init)
+// ---- proposing a change to a factory folder in a repository (folder-store.ts)
 
 const contents = (repo: string, path: string, ref?: string) =>
   `repos/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
-
-/** Whether a file exists on `ref`, or the default branch. A repository without commits has no file. */
-export async function fileExists(repo: string, path: string, ref?: string): Promise<boolean> {
-  const r = await ask(["api", contents(repo, path, ref), "--jq", ".path"]);
-  if (r.kind === "missing") return false;
-  output(`read ${path} in ${repo}`, r);
-  return true;
-}
 
 /** A text file's content on `ref`, or undefined when there is none. */
 export async function readFile(repo: string, path: string, ref: string): Promise<string | undefined> {
@@ -271,12 +263,12 @@ export async function branchExists(repo: string, branch: string): Promise<boolea
 const sha = z.object({ sha: z.string().min(1) });
 
 /** One commit on a new branch from the head of `base` (default: the default branch), adding or replacing `files` (path
- * to text). Throws when the branch exists or the repository has no commits. */
+ * to text), and removing those whose text is null. Throws when the branch exists or the repository has no commits. */
 export async function pushNewBranch(
   repo: string,
   branch: string,
   message: string,
-  files: Record<string, string>,
+  files: Record<string, string | null>,
   base?: string,
   /** Point an existing branch at the new commit instead: one an earlier, failed attempt of the same command left. */
   replace = false,
@@ -295,7 +287,12 @@ export async function pushNewBranch(
     ghJson(what, sha, ["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload));
   const tree = await post(`write the files to ${repo}`, `repos/${repo}/git/trees`, {
     base_tree: parent.tree.sha,
-    tree: Object.entries(files).map(([path, content]) => ({ path, mode: "100644", type: "blob", content })),
+    // A null `sha` removes the file.
+    tree: Object.entries(files).map(([path, content]) =>
+      content === null
+        ? { path, mode: "100644", type: "blob", sha: null }
+        : { path, mode: "100644", type: "blob", content },
+    ),
   });
   const commit = await post(`commit the files to ${repo}`, `repos/${repo}/git/commits`, {
     message,

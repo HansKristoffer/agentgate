@@ -79,8 +79,9 @@ export interface Operation<S extends z.ZodType = z.ZodType, O = unknown, N exten
      * silent, so reading it would wait forever, and in a `while read` loop it would swallow the loop's input. */
     stdin?: boolean;
     /** The input from the words after the name, and from stdin when `stdin` is set; `json` when the person asked for
-     * the result as JSON. Throws a UsageError for words it cannot read. */
-    parse(args: string[], stdin: string | undefined): { input: unknown; json?: boolean };
+     * the result as JSON. `cwd` is the CLI's working directory, for a relative path among the words. Throws a
+     * UsageError for words it cannot read. */
+    parse(args: string[], stdin: string | undefined, cwd: string | undefined): { input: unknown; json?: boolean };
     /** The result as lines, with the exit code when it is not 0. */
     print(result: O, asked: { input: z.output<S>; json?: boolean }): string[] | { lines: string[]; code: number };
   };
@@ -249,7 +250,12 @@ const terminalOperations = (f: FactoryRuntime) =>
 
 /** `agentgate factory <words>`: the operation the words name, its input parsed from the rest here, and its result
  * printed here, wherever it ran. */
-export async function runTerminal(f: FactoryRuntime, words: string[], stdin?: string): Promise<FactoryCommandResult> {
+export async function runTerminal(
+  f: FactoryRuntime,
+  words: string[],
+  stdin?: string,
+  cwd?: string,
+): Promise<FactoryCommandResult> {
   const operations = terminalOperations(f);
   const op = operationFor(operations, words);
   if (!op) {
@@ -262,7 +268,7 @@ export async function runTerminal(f: FactoryRuntime, words: string[], stdin?: st
   const { terminal } = op;
   let asked: ReturnType<typeof terminal.parse>;
   try {
-    asked = terminal.parse(words.slice(op.name.split(" ").length), terminal.stdin ? stdin : undefined);
+    asked = terminal.parse(words.slice(op.name.split(" ").length), terminal.stdin ? stdin : undefined, cwd);
   } catch (e) {
     if (!(e instanceof UsageError)) throw e;
     return { code: 2, output: [`usage: agentgate factory ${terminal.usage}`] };
@@ -300,8 +306,8 @@ function routes(f: FactoryRuntime) {
   // The words the CLI got. Loopback only as a whole: they include setting secrets, and the app sends typed input.
   f.api.post("/terminal", async (c) => {
     local(c.env.listener);
-    const { args, stdin } = factoryCommandInputSchema.parse(await jsonInput(c.req.raw));
-    return c.json(await asInput(() => runTerminal(f, args, stdin)));
+    const { args, stdin, cwd } = factoryCommandInputSchema.parse(await jsonInput(c.req.raw));
+    return c.json(await asInput(() => runTerminal(f, args, stdin, cwd)));
   });
 }
 

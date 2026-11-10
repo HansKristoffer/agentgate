@@ -1,6 +1,5 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { FactoryPointer } from "@agentgate/protocol";
 import { skillId } from "../skill-import.ts";
 import {
   deleteSkill,
@@ -11,6 +10,7 @@ import {
   type FetchedSkill,
 } from "../skills.ts";
 import { currentFolder } from "./config.ts";
+import { folderStore } from "./folder-store.ts";
 import { shortError, type FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -20,8 +20,6 @@ import { shortError, type FactoryRuntime } from "./runtime.ts";
 
 const MINUTE = 60_000;
 
-const skillSource = (pointer: FactoryPointer) =>
-  `factory:${pointer.store === "github" ? pointer.repo.toLowerCase() : pointer.store}`;
 const factorySkills = (f: FactoryRuntime) => skillSummaries(f.s).filter((k) => k.source?.startsWith("factory:"));
 
 /** Each `skills/<name>/` that has a SKILL.md; one that cannot be read is named instead of failing the rest. */
@@ -48,7 +46,7 @@ function installFolderSkills(f: FactoryRuntime) {
   // Not loaded yet is not empty: the skills stay until a folder says otherwise.
   if (pointer && !folder) return;
   const { s } = f;
-  const source = pointer ? skillSource(pointer) : undefined;
+  const source = pointer ? folderStore(f, pointer).skillSource : undefined;
   const { found, skipped } = readFolderSkills(folder?.skillsDir);
   // Another factory repo's skill of the same name is replaced; anyone else's is left alone.
   const taken = found.filter((k) => {

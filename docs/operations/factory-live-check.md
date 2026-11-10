@@ -60,11 +60,11 @@ results in the PR that ships the change: each step, what you saw, and anything t
 
 7. **Start from the app.** With the factory off, press **Start a factory** in the app's Factory view for a second scratch
    repository.
-   - A draft PR adds `factory/factory.yaml` and `factory/rulings.md` on `agentgate/factory-init`, the `factory` label
-     exists, and the board shows the factory on at that branch.
+   - Nothing is pushed to the repository, the `factory` label exists, and Settings shows the factory on with its
+     folder stored in agentgate.
    - Label an issue: it shows under Needs you or a stage, and **Open in T3 Code** opens its thread. Try it from the
      app on another machine than the thread's, and record whether that opens.
-   - Merge the PR: within 2 minutes the events say the factory follows the default branch.
+   - **Add to the factory** in a third scratch repository's menu in Projects adds it at once, and creates its label.
 
 ## Things to record
 

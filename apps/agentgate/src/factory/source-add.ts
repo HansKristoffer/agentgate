@@ -1,21 +1,14 @@
 import { parseArgs } from "node:util";
-import {
-  factorySourceAddInputSchema,
-  factorySourceAddResultSchema,
-  type FactorySourceAddInput,
-  type FactorySourceAddResult,
-} from "@agentgate/protocol";
+import { factorySourceAddInputSchema, type FactorySourceAddInput, type FolderChangeResult } from "@agentgate/protocol";
 import { z } from "zod";
-import { storedFiles } from "./folder.ts";
-import { branchExists, defaultBranch, fileExists, openPr, openPrFor, pushNewBranch, readFile } from "./gh.ts";
+import { folderStore } from "./folder-store.ts";
 import { operation, UsageError, type FactoryRuntime } from "./runtime.ts";
-import { changeStored } from "./stored.ts";
 
 /**
- * The `source add` operation: a webhook source or a scout, added to the factory's folder in a PR, through this
- * machine's `gh` login and without a checkout. The source starts once the PR merges and the folder loop loads it. A
- * folder agentgate stores takes the change at once, since only the maintainer adds sources. A webhook source is added to `factory.yaml`, edited as text so its comments and layout stay, and checked by
- * parsing it again; a scout is its own file, `scouts/<id>.md`.
+ * The `source add` operation: a webhook source or a scout, proposed to the factory's folder (folder-store.ts), so a
+ * folder in git gets a PR through this machine's `gh` login and the stored folder takes it at once. A webhook source is
+ * added to `factory.yaml`, edited as text so its comments and layout stay, and checked by parsing it again; a scout is
+ * its own file, `scouts/<id>.md`. The YAML editing here is also what `repo add|remove` (repos.ts) edit with.
  */
 
 type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
@@ -23,7 +16,7 @@ type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
 /** A plain scalar YAML reads back as the same string; anything else is written as a JSON string, which YAML reads. */
 const PLAIN = /^[A-Za-z_][A-Za-z0-9_./-]*$/;
 const KEYWORDS = /^(true|false|yes|no|on|off|y|n|null|~)$/i;
-const scalar = (value: Exclude<Json, Json[] | object>) =>
+export const scalar = (value: Exclude<Json, Json[] | object>) =>
   typeof value === "string" && PLAIN.test(value) && !KEYWORDS.test(value) ? value : JSON.stringify(value);
 
 /** Block YAML for a source: nested objects indented, lists of scalars in flow style like `[mon, thu]`. */
@@ -55,77 +48,105 @@ export function sourceYaml(source: { [key: string]: Json }, indent = "  ") {
 const lineIndent = (line: string) => line.length - line.trimStart().length;
 const isContent = (line: string) => line.trim() !== "" && !line.trimStart().startsWith("#");
 
-/** `lines` with `entry` added at the end of the top-level block list `key`, or undefined when `key` is not one. */
-function appendToBlockList(lines: string[], key: string, entry: (indent: string) => string): string[] | undefined {
-  const at = lines.findIndex((l) => new RegExp(`^${key}:\\s*(#.*)?$`).test(l));
+/** The top-level block `key`: its line, the index after its last line, and its entries' indent, which is undefined
+ * when nothing is under the key. Undefined when the key is absent or holds a value on its own line, such as `[]`. */
+export function block(lines: string[], key: string) {
+  const at = lines.findIndex((l) => l.startsWith(`${key}:`) && /^[^:]+:\s*(#.*)?$/.test(l));
   if (at < 0) return undefined;
-  let first = at + 1;
-  while (first < lines.length && !isContent(lines[first]!)) first++;
-  const firstLine = lines[first];
-  if (firstLine === undefined || !firstLine.trimStart().startsWith("-")) {
-    // `key:` with no items before the next top-level key or the end: an empty list.
-    if (firstLine === undefined || lineIndent(firstLine) === 0)
-      return [...lines.slice(0, at + 1), entry("  "), ...lines.slice(at + 1)];
-    return undefined;
-  }
-  const itemIndent = lineIndent(firstLine);
-  let last = first;
-  for (let i = first + 1; i < lines.length; i++) {
+  let indent: number | undefined;
+  let end = at + 1;
+  for (let i = at + 1; i < lines.length; i++) {
     const line = lines[i]!;
     if (!isContent(line)) continue;
-    const indent = lineIndent(line);
-    if (indent < itemIndent || (indent === itemIndent && !line.trimStart().startsWith("-"))) break;
-    last = i;
+    const n = lineIndent(line);
+    // A list may sit at its key's own indent; anything else there is the next key.
+    if ((n === 0 && !line.startsWith("-")) || (indent !== undefined && n < indent)) break;
+    indent ??= n;
+    end = i + 1;
   }
-  return [...lines.slice(0, last + 1), entry(" ".repeat(itemIndent)), ...lines.slice(last + 1)];
+  return { at, end, indent };
 }
 
-const hasTopKey = (lines: string[], key: string) => lines.some((l) => new RegExp(`^${key}:`).test(l));
+/** The entries of a block, each from its first line to its last line that is not blank or a comment. */
+export function entries(lines: string[], { at, end, indent }: NonNullable<ReturnType<typeof block>>) {
+  const starts: number[] = [];
+  for (let i = at + 1; i < end; i++) if (isContent(lines[i]!) && lineIndent(lines[i]!) === indent) starts.push(i);
+  return starts.map((start, k) => {
+    let last = start;
+    for (let i = start + 1; i < (starts[k + 1] ?? end); i++) if (isContent(lines[i]!)) last = i;
+    const text = lines
+      .slice(start, last + 1)
+      .map((l) => l.slice(indent))
+      .join("\n");
+    return { start, end: last + 1, text };
+  });
+}
+
+export const hasTopKey = (lines: string[], key: string) => lines.some((l) => new RegExp(`^${key}:`).test(l));
 
 function withSource(lines: string[], source: { [key: string]: Json }) {
   const entry = (indent: string) => sourceYaml(source, indent);
   if (!hasTopKey(lines, "sources")) return [...lines, "sources:", entry("  ")];
   const empty = lines.findIndex((l) => /^sources:\s*\[\s*\]\s*(#.*)?$/.test(l));
   if (empty >= 0) return [...lines.slice(0, empty), "sources:", entry("  "), ...lines.slice(empty + 1)];
-  return appendToBlockList(lines, "sources", entry);
+  const list = block(lines, "sources");
+  if (!list) return undefined;
+  // `sources:` with nothing under it: an empty list.
+  if (list.indent === undefined) return [...lines.slice(0, list.at + 1), entry("  "), ...lines.slice(list.at + 1)];
+  if (!lines[entries(lines, list)[0]!.start]!.trimStart().startsWith("-")) return undefined;
+  return [...lines.slice(0, list.end), entry(" ".repeat(list.indent)), ...lines.slice(list.end)];
 }
 
-const parse = (text: string) => (Bun.YAML.parse(text) ?? {}) as Record<string, unknown>;
+export const parse = (text: string) => (Bun.YAML.parse(text) ?? {}) as Record<string, unknown>;
 
 /**
- * factory.yaml with `source` at the end of `sources`. Throws, with the snippet to add by hand, when the file is not laid
- * out in a way this can edit, or the edit would change anything else.
+ * `text` with `lines` edited, checked by parsing it again: it must parse to `expected` of what it parsed to before.
+ * Throws, with what to do by hand, when the file is not laid out in a way this can edit (`lines` gave undefined, saying
+ * `layout`), or the edit would change anything else.
  */
-export function insertSource(text: string, source: { [key: string]: Json }): string {
+export function editYaml(
+  text: string,
+  change: {
+    lines(lines: string[]): string[] | undefined;
+    expected(old: Record<string, unknown>): unknown;
+    layout: string;
+    what: string;
+    byHand: string;
+  },
+): string {
   const old = parse(text);
-  const snippet = ["sources:", sourceYaml(source)].join("\n");
-  const refuse = (why: string) =>
-    new Error(`factory.yaml could not be edited (${why}); add this to it by hand:\n\n${snippet}`);
-
-  const sourced = withSource(text.replace(/\n+$/, "").split("\n"), source);
-  if (!sourced) throw refuse("its sources are not a block list");
-  const next = `${sourced.join("\n")}\n`;
-
+  const refuse = (why: string) => new Error(`factory.yaml could not be edited (${why}); ${change.byHand}`);
+  const edited = change.lines(text.replace(/\n+$/, "").split("\n"));
+  if (!edited) throw refuse(change.layout);
+  const next = `${edited.join("\n")}\n`;
   let parsed: Record<string, unknown>;
   try {
     parsed = parse(next);
   } catch {
     throw refuse("the edit did not parse");
   }
-  const oldSources = Array.isArray(old.sources) ? old.sources : [];
-  if (!Bun.deepEquals(parsed, { ...old, sources: [...oldSources, source] }))
-    throw refuse("the edit changed more than the new source");
+  if (!Bun.deepEquals(parsed, change.expected(old))) throw refuse(`the edit changed more than ${change.what}`);
   return next;
 }
 
+/** factory.yaml with `source` at the end of `sources`. */
+export const insertSource = (text: string, source: { [key: string]: Json }) =>
+  editYaml(text, {
+    lines: (lines) => withSource(lines, source),
+    expected: (old) => ({ ...old, sources: [...(Array.isArray(old.sources) ? old.sources : []), source] }),
+    layout: "its sources are not a block list",
+    what: "the new source",
+    byHand: `add this to it by hand:\n\n${["sources:", sourceYaml(source)].join("\n")}`,
+  });
+
 // ---- the PR
 
-function prBody(input: FactorySourceAddInput, folder: string, secret: string | undefined) {
+function prBody(input: FactorySourceAddInput, secret: string | undefined) {
   const { source } = input;
   const lines =
     source.type === "scout"
       ? [
-          `This adds the scout \`${source.id}\` to the software factory. On its schedule, a T3 Code thread follows \`${folder}scouts/${source.id}.md\` in a worktree of ${source.repo} and reports what it finds; each finding becomes a factory item that is triaged, fixed and reviewed.`,
+          `This adds the scout \`${source.id}\` to the software factory. On its schedule, a T3 Code thread follows \`scouts/${source.id}.md\` of the factory folder in a worktree of ${source.repo} and reports what it finds; each finding becomes a factory item that is triaged, fixed and reviewed.`,
           "",
           `It starts once this PR merges. \`agentgate factory scout ${source.id}\` runs it at once.`,
         ]
@@ -174,9 +195,8 @@ function checkNew(yaml: string, source: { id: string; repo: string }, scoutExist
   if (scoutExists) throw new Error(`The factory already has a scout ${source.id}`);
 }
 
-/** Refuses before writing anything when the factory is off, the id is taken, the repository is not the factory's, or
- * the branch exists. */
-async function addSource(f: FactoryRuntime, input: unknown): Promise<FactorySourceAddResult> {
+/** Refuses before writing anything when the factory is off, the id is taken, or the repository is not the factory's. */
+async function addSource(f: FactoryRuntime, input: unknown): Promise<FolderChangeResult> {
   const parsed = factorySourceAddInputSchema.parse(input);
   const { source } = parsed;
   // What was set, so the folder does not fill up with defaults.
@@ -188,62 +208,33 @@ async function addSource(f: FactoryRuntime, input: unknown): Promise<FactorySour
   const pointer = f.pointer();
   if (!pointer) throw new Error("The factory is off; turn it on with agentgate factory use <owner/repo>");
   const secret = source.type === "webhook" ? source.signature?.secret.slice("secret:".length) : undefined;
-  const secretWarning = secret
-    ? [`Set the signing secret with agentgate factory secret set ${secret} before deliveries arrive`]
-    : [];
 
-  if (pointer.store === "agentgate") {
-    const files = storedFiles(f.s) ?? {};
-    const yaml = files["factory.yaml"] ?? "";
-    const scoutPath = `scouts/${source.id}.md`;
-    checkNew(yaml, source, scoutPath in files);
-    await changeStored(
-      f,
+  const folder = folderStore(f, pointer);
+  const yaml = await folder.file("factory.yaml");
+  if (yaml === undefined) throw new Error(`The factory folder, ${folder.label}, has no factory.yaml`);
+  const scoutPath = `scouts/${source.id}.md`;
+  checkNew(yaml, source, (await folder.file(scoutPath)) !== undefined);
+  const proposed = await folder.propose({
+    title: `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`,
+    body: prBody(parsed, secret),
+    branch: `agentgate/factory-source-${source.id}`,
+    files:
       source.type === "scout"
         ? { [scoutPath]: scoutFile(raw, parsed.prompt!) }
         : { "factory.yaml": insertSource(yaml, raw) },
+  });
+  if (secret)
+    proposed.warnings.push(
+      `Set the signing secret with agentgate factory secret set ${secret} before deliveries arrive`,
     );
-    return factorySourceAddResultSchema.parse({ warnings: secretWarning });
-  }
-
-  const { repo, path, ref } = pointer;
-  const folder = path ? `${path}/` : "";
-  const warnings: string[] = [];
-  let base = ref;
-  if (ref && !(await branchExists(repo, ref))) {
-    base = undefined;
-    warnings.push(
-      `The factory follows ${ref}, which is not a branch, so the PR goes to the default branch; ${source.id} starts once ${ref} includes it`,
-    );
-  }
-  base ??= await defaultBranch(repo);
-
-  const yaml = await readFile(repo, `${folder}factory.yaml`, base);
-  if (yaml === undefined) throw new Error(`${repo} has no ${folder}factory.yaml on ${base}`);
-  const scoutPath = `${folder}scouts/${source.id}.md`;
-  checkNew(yaml, source, await fileExists(repo, scoutPath, base));
-  const branch = `agentgate/factory-source-${source.id}`;
-  // A branch without an open PR is an earlier attempt that failed after pushing: this one takes it over.
-  const earlier = await branchExists(repo, branch);
-  if (earlier) {
-    const open = await openPrFor(repo, branch);
-    if (open) throw new Error(`A PR that adds ${source.id} is open: ${open}`);
-  }
-
-  const files =
-    source.type === "scout"
-      ? { [scoutPath]: scoutFile(raw, parsed.prompt!) }
-      : { [`${folder}factory.yaml`]: insertSource(yaml, raw) };
-  const title = `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`;
-  await pushNewBranch(repo, branch, title, files, base, earlier);
-  const pr = await openPr(repo, branch, title, prBody(parsed, folder, secret), { base });
-  return factorySourceAddResultSchema.parse({ prUrl: pr.url, branch, warnings: [...warnings, ...secretWarning] });
+  return proposed;
 }
 
 export function setup(f: FactoryRuntime): void {
   operation(f, {
     name: "source add",
-    summary: "add a webhook source or scout, in a PR on a folder on GitHub; the YAML has source and prompt",
+    summary:
+      "add a webhook source or scout: a PR on a folder in git, at once on the stored one; stdin has source and prompt",
     // `addSource` checks it, and needs it as it was given: it writes only what the person set, in their order.
     input: z.unknown(),
     local: true,
@@ -269,9 +260,9 @@ export function setup(f: FactoryRuntime): void {
         json
           ? [JSON.stringify(result)]
           : [
-              result.prUrl
-                ? `Opened ${result.prUrl}; the source starts once it merges.`
-                : "Added to the stored folder; the source starts within 2 minutes.",
+              "pr" in result
+                ? `Opened ${result.pr}; the source starts once it merges.`
+                : "Added to the factory folder; the source starts within 2 minutes.",
               ...result.warnings.map((warning) => `Warning: ${warning}`),
             ],
     },

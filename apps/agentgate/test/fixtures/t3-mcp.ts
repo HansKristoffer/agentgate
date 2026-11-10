@@ -347,8 +347,8 @@ export const postOp = (ctx: Ctx, name: string, input: unknown = {}, listener: Li
   );
 
 /** `agentgate factory <words>` as the CLI shows it: what the daemon answers, or its refusal with exit code 1. */
-export const terminal = (f: FactoryRuntime, words: string[], stdin?: string) =>
-  runTerminal(f, words, stdin).catch((e: Error) => ({ code: 1, output: [e.message] }));
+export const terminal = (f: FactoryRuntime, words: string[], stdin?: string, cwd?: string) =>
+  runTerminal(f, words, stdin, cwd).catch((e: Error) => ({ code: 1, output: [e.message] }));
 
 /**
  * The factory machine `a` on an in-memory store with fake time: connected to a `fakeT3WithMcp`, its folder loaded

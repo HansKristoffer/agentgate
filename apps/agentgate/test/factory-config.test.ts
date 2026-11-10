@@ -385,6 +385,7 @@ test("use typed in a terminal and sent by the app set the same pointer, and the 
       repo: "acme/factory",
       path: "factory",
       ref: "live",
+      label: "acme/factory:factory at live",
       node: "a",
       online: true,
       lastSeenAt: 1_000,

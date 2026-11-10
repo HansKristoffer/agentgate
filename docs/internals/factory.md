@@ -35,27 +35,34 @@ folder format is `factoryConfigSchema` in the same protocol file.
   It is written only at ready on purpose. The reviewer is blind to the implementer's claims and decisions (`factory_item`
   hides them), but only a prompt keeps it from reading the PR description, so either in the body before review would
   reach it.
-- A folder may live outside every repository, as the one synced `factoryFolder` record
-  ([`stored.ts`](../../apps/agentgate/src/factory/stored.ts)), for projects that may not hold it; the pointer's
-  `store` says which. Its commit is the SHA-256 of its files, written to `<home>/factory/<commit>` like a fetched
-  commit, so items and pruning treat both the same. Unlike a push, every write checks that the folder loads and
-  refuses one that does not: other machines only ever see the newest record, so a broken one would leave a new factory
-  machine nothing to run. Two saves at once keep the later, like any record.
+- A folder lives in a git repository or as the one synced `factoryFolder` record
+  ([`stored.ts`](../../apps/agentgate/src/factory/stored.ts)), which `init` writes; the pointer's `store` says which.
+  The stored folder's commit is the SHA-256 of its files, written to `<home>/factory/<commit>` like a fetched commit,
+  so items and pruning treat both the same. Unlike a push, every write checks that the folder loads and refuses one
+  that does not: other machines only ever see the newest record, so a broken one would leave a new factory machine
+  nothing to run. Two saves at once keep the later, like any record.
+- Code outside [`folder-store.ts`](../../apps/agentgate/src/factory/folder-store.ts) does not ask which kind it has:
+  the folder loop reads through it, and `source add` and `repo add|remove` `propose` a change that the stored folder
+  applies at once and a folder in git turns into a PR. A git folder never takes a direct push from agentgate, because
+  whatever reaches its branch changes every later brief; the person merges.
 - `settings.factory` (the pointer to the folder and the machine that runs it), the `secret` and the `factoryFolder`
   record kinds are gated on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
-  field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and
-  following the init PR write the pointer; the generic settings patch has no `factory`.
+  field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move` and `off`
+  write the pointer; the generic settings patch has no `factory`.
 - One machine runs the factory. An operation asked for on another machine is sent there through
   `/peer/factory/op` ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)) as its name, its input and its
   caller, whichever way it was asked. The machine that was asked checks the input first and words the result: a
   terminal's words are parsed, and the answer printed, where they were typed, so only typed input and JSON cross
   machines. Operations marked `local` run where they are asked: those that write the pointer or another synced
-  record, or open a PR with this machine's `gh` login (`use`, `move`, `off`, `init`, `source add`, the secrets, the
-  stored folder), and `status`, which fetches the factory machine's board itself. A machine that does not run the
+  record, or open a PR with this machine's `gh` login (`use`, `move`, `off`, `init`, `source add`, `repo add`, the
+  secrets, the stored folder), and `status`, which fetches the factory machine's board itself. `repo remove` runs on
+  the factory machine, the only one that knows the repository's open items. A machine that does not run the
   factory answers `/peer/factory/op` with a 409, so two machines that disagree on where it runs never forward to
   each other in a loop.
-- The terminal's route (`POST /api/factory/terminal`) is loopback only as a whole, and the secret operations are
-  loopback only on every route: a remote-management connection never sets or lists a secret.
+- The terminal's route (`POST /api/factory/terminal`) is loopback only as a whole, and the secret operations and
+  `folder export|import` are loopback only on every route: a remote-management connection never sets or lists a
+  secret, or reads or writes this machine's disk. The CLI sends its working directory with the words, since the
+  daemon's is not the person's, so a relative directory means what they typed.
 
 ## One step at a time per item
 
@@ -132,10 +139,6 @@ last line in a code span. Intake posts the first marker, the `taken` comment, in
   `move --now` nothing takes them in again, and they wait there for the factory to move back or for `drop`.
 - Markers are read only from comments the factory's own account wrote: the `gh` login on GitHub, and the API key's
   user on Linear. Anyone else who can comment on an issue could otherwise forge one and keep intake away from it.
-- `factory init` keeps its PR's number in the pointer (`init.pr`). The folder loop asks GitHub about that PR before
-  it fetches, and while a failed fetch backs off, because GitHub usually deletes a merged PR's branch: once it merged,
-  the pointer drops its ref and follows the default branch. Matching the number, not the branch name, keeps an old
-  merged init PR from moving a new factory.
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.

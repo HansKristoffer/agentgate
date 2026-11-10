@@ -1,12 +1,12 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FACTORY_INIT_BRANCH } from "@agentgate/protocol";
 import { makeCtx } from "../src/daemon.ts";
-import { loadFolder } from "../src/factory/config.ts";
-import { fetcher } from "../src/factory/folder.ts";
+import { currentFolder, loadFolder } from "../src/factory/config.ts";
+import { items } from "../src/factory/db.ts";
+import { fetcher, storedFiles } from "../src/factory/folder.ts";
 import { initTemplate } from "../src/factory/init.ts";
-import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
+import { addRepository } from "../src/factory/repos.ts";
 import { host } from "../src/logins.ts";
 import { Store } from "../src/store.ts";
 import { recorded } from "./fixtures/gh.ts";
@@ -14,123 +14,78 @@ import { removeTmp, tmp } from "./fixtures/git.ts";
 import { postOp, terminal } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
+const WEB = "acme/web";
 const realGh = host.gh;
-const realFetch = fetcher.fetch;
+const realRoot = fetcher.root;
 const cleanup: (() => unknown)[] = [];
 beforeEach(() => {
   fetcher.root = tmp("agentgate-factory-init-");
 });
 afterEach(async () => {
-  host.gh = realGh;
-  fetcher.fetch = realFetch;
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  host.gh = realGh;
+  fetcher.root = realRoot;
 });
 afterAll(removeTmp);
 
 const ok = (value: unknown) => ({ ok: true, out: typeof value === "string" ? value : JSON.stringify(value) });
 
-/** GitHub for one repository, answering the gh calls `factory init` and the folder loop make. What is not there, and
- * a repository without commits, are answered as GitHub was recorded answering them (fixtures/gh-recorded.json). */
-function fakeGitHub() {
+/** GitHub for the factory's repositories: labels, and a factory folder at `factory/` of acme/api's main branch, with the
+ * tree and PR a change to it writes. What is not there is answered as GitHub was recorded answering it
+ * (fixtures/gh-recorded.json). */
+function fakeGitHub(files: Record<string, string> = {}) {
   const github = {
-    files: new Set<string>(),
-    branches: new Set<string>(["main"]),
+    files,
     labels: new Set<string>(),
-    prs: new Map<number, { head: string; state: "OPEN" | "CLOSED" | "MERGED"; draft: boolean; title: string }>(),
-    empty: false,
     labelsFail: false,
-    /** The tree and commit init wrote. */
-    tree: [] as { path: string; content: string }[],
-    commit: undefined as { message: string; tree: string; parents: string[] } | undefined,
+    tree: [] as { path: string; content?: string; sha?: null }[],
+    prs: [] as { repo: string; head: string; base: string; title: string; body: string }[],
     calls: [] as string[][],
-    /** Calls that write to GitHub. */
-    writes: () =>
-      github.calls.filter((c) => c.includes("POST") || c.includes("PATCH") || (c[0] === "pr" && c[1] === "create")),
-    /** Branches moved to a new commit, as init does with one an earlier, failed init left. */
-    moved: [] as string[],
   };
   host.gh = async (args, stdin) => {
     github.calls.push(args);
     const [cmd, sub] = args;
-    if (cmd === "repo" && sub === "view")
-      return github.empty ? recorded("repoView.empty") : ok({ defaultBranchRef: { name: "main" } });
+    if (cmd === "repo" && sub === "view") return ok({ defaultBranchRef: { name: "main" } });
     if (cmd === "pr" && sub === "create") {
-      const number = 7 + github.prs.size;
       const flag = (name: string) => args[args.indexOf(name) + 1]!;
-      github.prs.set(number, {
+      github.prs.push({
+        repo: flag("--repo"),
         head: flag("--head"),
-        state: "OPEN",
-        draft: args.includes("--draft"),
+        base: flag("--base"),
         title: flag("--title"),
+        body: stdin!,
       });
-      return ok(`https://github.com/${REPO}/pull/${number}\n`);
+      return ok(`https://github.com/${flag("--repo")}/pull/${8 + github.prs.length}\n`);
     }
-    if (cmd === "pr" && sub === "list") {
-      const head = args[args.indexOf("--head") + 1];
-      const open = [...github.prs].filter(([, p]) => p.head === head && p.state === "OPEN");
-      return ok(open.map(([n]) => ({ url: `https://github.com/${REPO}/pull/${n}` })));
+    const path = args.find((a) => a.startsWith("repos/"))!;
+    const [, owner, name, ...rest] = path.split("/");
+    const repo = `${owner}/${name}`;
+    const route = rest.join("/").split("?")[0]!;
+    if (route.startsWith("labels/"))
+      return github.labels.has(`${repo}#${decodeURIComponent(route.slice(7))}`)
+        ? ok("factory")
+        : recorded("label.missing");
+    if (route === "labels") {
+      if (github.labelsFail) return { ok: false, out: JSON.stringify({ message: "Must have admin rights" }) };
+      github.labels.add(`${repo}#${JSON.parse(stdin!).name}`);
+      return ok({});
     }
-    if (cmd === "pr" && sub === "view") return ok({ state: github.prs.get(Number(args[2]))!.state });
-    if (cmd !== "api") throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
-    const path = sub!.replace(`repos/${REPO}/`, "");
-    const post = args.includes("POST");
-    if (path.startsWith("contents/")) {
-      if (github.empty) return recorded("fileExists.empty");
-      return github.files.has(path.slice(9)) ? ok(path.slice(9)) : recorded("fileExists.missing");
+    if (route.startsWith("contents/")) {
+      const content = github.files[route.slice(9)];
+      return content === undefined ? recorded("readFile.missing") : ok(content);
     }
-    if (path.startsWith("branches/")) {
-      const branch = decodeURIComponent(path.slice(9));
-      if (github.empty) return recorded("branchExists.empty");
-      return github.branches.has(branch)
-        ? ok({ name: branch, protected: branch === "main" })
-        : recorded("branchExists.missing");
-    }
-    if (path === "git/ref/heads/main") return ok({ object: { sha: "base" } });
-    if (path === "git/commits/base") return ok({ tree: { sha: "base-tree" } });
-    if (path === "git/trees" && post) {
+    if (route.startsWith("branches/")) return recorded("branchExists.missing");
+    if (route === "git/ref/heads/main") return ok({ object: { sha: "base" } });
+    if (route === "git/commits/base") return ok({ tree: { sha: "base-tree" } });
+    if (route === "git/trees") {
       github.tree = JSON.parse(stdin!).tree;
       return ok({ sha: "tree-1" });
     }
-    if (path === "git/commits" && post) {
-      github.commit = JSON.parse(stdin!);
-      return ok({ sha: "commit-1" });
-    }
-    if (path === "git/refs" && post) {
-      github.branches.add(JSON.parse(stdin!).ref.replace("refs/heads/", ""));
-      return ok({ ref: "created" });
-    }
-    if (path.startsWith("git/refs/heads/") && args.includes("PATCH")) {
-      github.moved.push(path.slice("git/refs/heads/".length));
-      return ok({ ref: "moved" });
-    }
-    if (path.startsWith("labels/"))
-      return github.labels.has(decodeURIComponent(path.slice(7))) ? ok("factory") : recorded("label.missing");
-    if (path === "labels" && post) {
-      if (github.labelsFail) return { ok: false, out: JSON.stringify({ message: "Must have admin rights" }) };
-      github.labels.add(JSON.parse(stdin!).name);
-      return ok({});
-    }
+    if (route === "git/commits") return ok({ sha: "commit-1" });
+    if (route === "git/refs") return ok({ ref: "created" });
     throw new Error(`the fake GitHub has no answer for gh ${args.join(" ")}`);
   };
   return github;
-}
-
-/** The folder git would fetch: the template on the init branch, the same files on main once merged. */
-function fakeFetcher(github: ReturnType<typeof fakeGitHub>) {
-  const fetched: (string | undefined)[] = [];
-  fetcher.fetch = async ({ ref }) => {
-    fetched.push(ref);
-    if (ref && !github.branches.has(ref)) throw new Error(`git could not fetch ${ref} of ${REPO}`);
-    const commit = (ref ? "a" : "b").repeat(40);
-    const dir = join(fetcher.root, commit);
-    for (const [path, content] of Object.entries(initTemplate(REPO))) {
-      const file = join(dir, path.replace(/^factory\//, ""));
-      mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, content);
-    }
-    return { commit, dir };
-  };
-  return fetched;
 }
 
 function node() {
@@ -149,200 +104,214 @@ function node() {
   const f = ctx.factory;
   const command = (...words: string[]) => terminal(f, words);
   /** An operation as the app sends it. */
-  const api = (name: string, input: unknown) => postOp(ctx, name, input);
+  const api = async (name: string, input: unknown) => {
+    const res = await postOp(ctx, name, input);
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
   return { s, f, command, api };
 }
 
-const folderLoop = (f: FactoryRuntime) =>
-  loopTask(
-    f,
-    f.loops.find((l) => l.name === "factory-folder")!,
-  )();
-
-test("init pushes the template to its branch in one commit, opens a draft PR, creates the label and turns the factory on there", async () => {
-  const github = fakeGitHub();
-  fakeFetcher(github);
-  const { s, api } = node();
-
-  const res = await api("init", { repo: REPO });
-  expect(res.status).toBe(200);
-  expect(await res.json()).toEqual({
-    prUrl: `https://github.com/${REPO}/pull/7`,
-    branch: FACTORY_INIT_BRANCH,
-    warnings: [],
-    factory: {
-      store: "github",
-      repo: REPO,
-      path: "factory",
-      ref: FACTORY_INIT_BRANCH,
-      node: "a",
-      online: true,
-      lastSeenAt: 1_000,
-    },
-    config: { commit: "a".repeat(40), name: "api", loadedAt: 1_000, repositories: [REPO] },
-  });
-  expect(github.tree.map((t) => t.path)).toEqual(["factory/factory.yaml", "factory/rulings.md"]);
-  expect(github.commit).toEqual({
-    message: "chore(factory): start a software factory",
-    tree: "tree-1",
-    parents: ["base"],
-  });
-  expect(github.prs.get(7)).toMatchObject({ head: FACTORY_INIT_BRANCH, draft: true, state: "OPEN" });
-  expect(github.labels.has("factory")).toBe(true);
-  expect(s.settings().factory).toEqual({
-    store: "github",
-    repo: REPO,
-    path: "factory",
-    ref: FACTORY_INIT_BRANCH,
-    node: "a",
-    init: { pr: 7 },
-  });
-});
-
-test("factory init --json prints what the route answers, and the template parses and loads as a folder", async () => {
-  const github = fakeGitHub();
-  fakeFetcher(github);
-  const viaApi = await (await node().api("init", { repo: REPO })).json();
-  const again = fakeGitHub();
-  fakeFetcher(again);
-  const { code, output } = await node().command("init", REPO, "--json");
-  expect(code).toBe(0);
-  expect(JSON.parse(output[0]!)).toEqual(viaApi);
-
+/** The folder `files` would make, loaded the way the factory loads it. */
+function load(files: Record<string, string>) {
   const dir = tmp();
-  for (const [path, content] of Object.entries(initTemplate("Acme/My_API.v2"))) {
+  for (const [path, content] of Object.entries(files)) {
     mkdirSync(dirname(join(dir, path)), { recursive: true });
     writeFileSync(join(dir, path), content);
   }
-  const folder = loadFolder(join(dir, "factory"), "c".repeat(40));
+  return loadFolder(dir, "c".repeat(40));
+}
+
+test("init writes the template to the stored folder, creates the label and turns the factory on, with no branch or PR on GitHub", async () => {
+  const github = fakeGitHub();
+  const { s, f, api } = node();
+
+  const res = await api("init", { repo: REPO });
+  expect(res).toEqual({
+    status: 200,
+    body: {
+      warnings: [],
+      factory: { store: "agentgate", label: "stored in agentgate", node: "a", online: true, lastSeenAt: 1_000 },
+      config: expect.objectContaining({ name: "api", repositories: [REPO] }),
+    },
+  });
+  expect(storedFiles(s)).toEqual(initTemplate(REPO));
+  expect(s.settings().factory).toEqual({ store: "agentgate", node: "a" });
+  expect(currentFolder(f)?.config.sources).toEqual([
+    expect.objectContaining({ id: "issues", type: "github", repo: REPO, label: "factory" }),
+  ]);
+  expect(github.labels).toEqual(new Set([`${REPO}#factory`]));
+  // Only the label was read and created: nothing was pushed and no PR was opened.
+  expect(github.calls.every((c) => c[1]!.startsWith(`repos/${REPO}/labels`))).toBe(true);
+});
+
+test("factory init --json prints what the route answers, --label names the label, and the template parses and loads as a folder", async () => {
+  fakeGitHub();
+  const viaApi = (await node().api("init", { repo: REPO, label: "agent" })).body;
+  const github = fakeGitHub();
+  const { code, output } = await node().command("init", REPO, "--label", "agent", "--json");
+  expect(code).toBe(0);
+  expect(JSON.parse(output[0]!)).toEqual(viaApi);
+  expect(github.labels).toEqual(new Set([`${REPO}#agent`]));
+
+  const folder = load(initTemplate("Acme/My_API.v2"));
   expect(folder.config).toMatchObject({
     name: "my-api-v2",
     repositories: { "Acme/My_API.v2": {} },
     sources: [{ id: "issues", type: "github", repo: "Acme/My_API.v2", label: "factory" }],
   });
   // The rulings file asks about greenfield and owned packages in a comment, which never reaches a brief.
-  expect(initTemplate(REPO)["factory/rulings.md"]).toContain("Packages you own");
+  expect(initTemplate(REPO)["rulings.md"]).toContain("Packages you own");
   expect(folder.rulings).toBe("# Rulings");
 });
 
-test("init refuses before writing anything: a factory on, a folder there, an open init PR, an empty repository; a label it cannot create is a warning", async () => {
+test("init refuses while a factory is on, naming repo add, and while agentgate stores a folder; a label it cannot create is a warning", async () => {
   const github = fakeGitHub();
-  fakeFetcher(github);
-  const a = node();
-  const refused = async (why: string) => {
-    expect(await a.command("init", REPO)).toEqual({ code: 1, output: [why] });
-    expect(github.writes()).toEqual([]);
-  };
-
-  github.files.add("factory/factory.yaml");
-  await refused(`${REPO} already has factory/factory.yaml; turn it on with agentgate factory use ${REPO}:factory`);
-  github.files.clear();
-
-  github.branches.add(FACTORY_INIT_BRANCH);
-  github.prs.set(3, { head: FACTORY_INIT_BRANCH, state: "OPEN", draft: true, title: "x" });
-  await refused(`An init PR for ${REPO} is open: https://github.com/${REPO}/pull/3. Merge or close it first`);
-  github.prs.clear();
-
-  github.empty = true;
-  await refused(`${REPO} has no commits yet; push a first commit, then try again`);
-  github.empty = false;
-
-  // A branch an earlier init left without an open PR, as when opening the PR failed: init moves it to its commit.
   github.labelsFail = true;
-  const done = await a.command("init", REPO);
-  expect(done.code).toBe(0);
-  expect(github.moved).toEqual([FACTORY_INIT_BRANCH]);
-  expect(done.output).toContain(
-    "Warning: Creating the factory label failed (gh could not create the label factory in acme/api: Must have admin rights); create it before labelling issues",
-  );
-
-  // The factory is on now: a second init refuses before it asks GitHub anything.
-  const asked = github.calls.length;
-  expect(await a.command("init", REPO)).toEqual({
-    code: 1,
+  const { s, command } = node();
+  const done = await command("init", REPO);
+  expect(done).toEqual({
+    code: 0,
     output: [
-      `The factory is on, ${REPO}:factory at ${FACTORY_INIT_BRANCH}; turn it off with agentgate factory off before init`,
+      "The factory runs on a with a folder agentgate stores; edit it with agentgate factory folder.",
+      "Warning: Creating the factory label failed (gh could not create the label factory in acme/api: Must have admin rights); create it before labelling issues",
     ],
   });
+
+  const asked = github.calls.length;
+  expect(await command("init", WEB)).toEqual({
+    code: 1,
+    output: [`The factory is on, stored in agentgate; add ${WEB} to it with agentgate factory repo add ${WEB}`],
+  });
+  await command("off");
+  expect((await command("init", WEB)).output[0]).toStartWith("agentgate already stores a factory folder");
   expect(github.calls).toHaveLength(asked);
+  expect(storedFiles(s)).toEqual(initTemplate(REPO));
 });
 
-test("once the init PR merges, the factory follows the default branch even though the branch is gone; a closed PR keeps the branch", async () => {
+test("repo add on the stored folder applies at once: the folder loads with the repository and its source, and a second add changes nothing", async () => {
   const github = fakeGitHub();
-  const fetched = fakeFetcher(github);
-  const { s, f, api } = node();
-  await api("init", { repo: REPO });
+  const { s, f, command, api } = node();
+  await command("init", REPO);
 
-  await folderLoop(f);
-  expect(s.settings().factory).toMatchObject({ ref: FACTORY_INIT_BRANCH, init: { pr: 7 } });
-
-  // The branch is deleted, so its fetch fails and backs off; then the merge shows on GitHub.
-  github.branches.delete(FACTORY_INIT_BRANCH);
-  await folderLoop(f);
-  expect(f.events.recent(5).map((e) => e.text)).toContainEqual(
-    expect.stringContaining("Fetching the factory folder failed"),
-  );
-  github.prs.get(7)!.state = "MERGED";
-  fetched.length = 0;
-  await folderLoop(f);
-  expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });
-  expect(fetched).toEqual([undefined]);
-  expect(f.events.recent(10).map((e) => e.text)).toContain(
-    `The init PR #7 merged; the factory follows ${REPO}'s default branch`,
-  );
-  // Without `init`, GitHub is not asked about any PR again.
-  const views = () => github.calls.filter((c) => c[0] === "pr" && c[1] === "view").length;
-  const before = views();
-  await folderLoop(f);
-  expect(views()).toBe(before);
-});
-
-test("moving the factory keeps the init PR it waits on, so the machine it lands on still follows the merge", async () => {
-  const github = fakeGitHub();
-  fakeFetcher(github);
-  const { s, f, api, command } = node();
-  await api("init", { repo: REPO });
-  s.put("node", "b", { id: "b", protocol: 8 });
-
-  expect((await command("move", "b")).code).toBe(0);
-  expect(s.settings().factory).toEqual({
-    store: "github",
-    repo: REPO,
-    path: "factory",
-    ref: FACTORY_INIT_BRANCH,
-    init: { pr: 7 },
-    node: "b",
+  expect(await command("repo", "add", WEB)).toEqual({
+    code: 0,
+    output: [`The factory works in ${WEB} now, on issues labelled factory.`],
   });
-  expect((await command("move", "nowhere")).output).toEqual([
-    "No machine is named nowhere; agentgate status lists them",
+  expect(currentFolder(f)?.config).toMatchObject({
+    repositories: { [REPO]: {}, [WEB]: {} },
+    sources: [
+      { id: "issues", repo: REPO, label: "factory" },
+      { id: "web-issues", type: "github", repo: WEB, label: "factory" },
+    ],
+  });
+  expect(github.labels.has(`${WEB}#factory`)).toBe(true);
+
+  const before = storedFiles(s);
+  expect(await api("repo add", { repo: "ACME/Web" })).toEqual({ status: 200, body: { unchanged: true, warnings: [] } });
+  expect((await command("repo", "add", WEB)).output).toEqual([`${WEB} is in the factory already; nothing changed.`]);
+  expect(storedFiles(s)).toEqual(before);
+});
+
+test("repo add on a folder in git opens a PR whose factory.yaml has the repository and its source", async () => {
+  const yaml = initTemplate(REPO)["factory.yaml"]!.replace("sources:", "# where items come from\nsources:");
+  const github = fakeGitHub({ "factory/factory.yaml": yaml });
+  const { s, api } = node();
+  s.put("setting", "settings", {
+    ...s.settings(),
+    factory: { store: "github", repo: REPO, path: "factory", node: "a" },
+  });
+
+  expect(await api("repo add", { repo: WEB, label: "agent" })).toEqual({
+    status: 200,
+    body: { pr: `https://github.com/${REPO}/pull/9`, warnings: [] },
+  });
+  expect(github.prs).toEqual([
+    expect.objectContaining({
+      repo: REPO,
+      head: "agentgate/factory-add-acme-web",
+      base: "main",
+      title: `chore(factory): add ${WEB}`,
+    }),
   ]);
-
-  // b cannot be asked what it still has open, so only a move that does not wait brings the factory back.
-  expect(await (await api("move", { node: "a" })).json()).toEqual({
-    error:
-      "The factory runs on b, and this machine cannot reach it; agentgate factory move a --now moves it without waiting for that machine",
+  expect(github.tree.map((t) => t.path)).toEqual(["factory/factory.yaml"]);
+  const edited = github.tree[0]!.content!;
+  expect(edited).toContain("# where items come from");
+  expect(load({ "factory.yaml": edited }).config).toMatchObject({
+    repositories: { [REPO]: {}, [WEB]: {} },
+    sources: [{ id: "issues" }, { id: "web-issues", type: "github", repo: WEB, label: "agent" }],
   });
-  expect((await api("move", { node: "a", now: true })).status).toBe(200);
-  github.prs.get(7)!.state = "MERGED";
-  await folderLoop(f);
-  expect(s.settings().factory).toEqual({ store: "github", repo: REPO, path: "factory", node: "a" });
+  expect(github.labels.has(`${WEB}#agent`)).toBe(true);
 });
 
-test("a closed init PR leaves the factory on its branch, says so, and stops asking", async () => {
-  const github = fakeGitHub();
-  fakeFetcher(github);
-  const { s, f, api } = node();
-  await api("init", { repo: REPO });
-  github.prs.get(7)!.state = "CLOSED";
-  await folderLoop(f);
-  expect(s.settings().factory).toEqual({
-    store: "github",
-    repo: REPO,
-    path: "factory",
-    ref: FACTORY_INIT_BRANCH,
-    node: "a",
+test("repo remove refuses while the repository has open items, and otherwise takes it and its sources and scouts out", async () => {
+  fakeGitHub();
+  const { s, f, command } = node();
+  await command("init", REPO);
+  await command("repo", "add", WEB);
+  const scout = `source: { id: perf, type: scout, repo: ${WEB}, schedule: { every: 6h } }\nprompt: Look at the logs.\n`;
+  expect((await terminal(f, ["source", "add"], scout)).code).toBe(0);
+  const item = (id: string) =>
+    items.insert(s, {
+      id,
+      source: "web-issues",
+      externalId: `${WEB}#${id}`,
+      key: `web-${id}`,
+      repo: WEB,
+      title: "Crash",
+      snapshot: {},
+      phase: "implement",
+      configCommit: currentFolder(f)!.commit,
+    });
+  item("1");
+  item("2");
+
+  expect(await command("repo", "remove", WEB)).toEqual({
+    code: 1,
+    output: [`${WEB} has 2 open items; let them finish or drop them before removing it`],
   });
-  expect(f.events.recent(10).map((e) => e.text)).toContain(
-    `The init PR #7 was closed without merging; the factory still runs ${FACTORY_INIT_BRANCH}`,
+  items.update(s, "1", { phase: "shipped" });
+  items.update(s, "2", { phase: "closed" });
+  expect(await command("repo", "remove", WEB)).toEqual({ code: 0, output: [`The factory no longer works in ${WEB}.`] });
+  expect(currentFolder(f)?.config).toMatchObject({ repositories: { [REPO]: {} }, sources: [{ id: "issues" }] });
+  expect(storedFiles(s)!["scouts/perf.md"]).toBeUndefined();
+  expect(storedFiles(s)!["factory.yaml"]).toBe(initTemplate(REPO)["factory.yaml"]);
+
+  expect((await command("repo", "remove", WEB)).output).toEqual([`${WEB} is not in the factory; nothing changed.`]);
+  expect((await command("repo", "remove", REPO)).output).toEqual([
+    `${REPO} is the factory's only repository; turn the factory off instead`,
+  ]);
+});
+
+test("adding a repository keeps the person's layout and comments, and one it cannot edit is refused with what to do by hand", () => {
+  const yaml = [
+    "version: 1",
+    "name: acme",
+    "repositories: # the repositories",
+    "  acme/api:",
+    "    reviewers: [alice]",
+    "",
+    "# items",
+    "sources:",
+    "- id: issues",
+    "  type: github",
+    "  repo: acme/api",
+    "  label: factory",
+    "limits:",
+    "  threads: 2",
+    "",
+  ].join("\n");
+  const next = addRepository(yaml, WEB, "factory");
+  expect(next).toBe(
+    yaml
+      .replace("    reviewers: [alice]\n", "    reviewers: [alice]\n  acme/web: {}\n")
+      .replace(
+        "  label: factory\n",
+        "  label: factory\n- id: web-issues\n  type: github\n  repo: acme/web\n  label: factory\n",
+      ),
+  );
+  expect(() =>
+    addRepository(yaml.replace(/repositories:[\s\S]*?\n\n/, "repositories: { acme/api: {} }\n"), WEB, "factory"),
+  ).toThrow(
+    "factory.yaml could not be edited (its repositories are not a block mapping); add acme/web: {} under repositories by hand",
   );
 });

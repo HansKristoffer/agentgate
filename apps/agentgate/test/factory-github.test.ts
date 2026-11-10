@@ -520,7 +520,6 @@ test("each gh.ts read parses what gh really answered", async () => {
     "repoView",
     "branch",
     "branchExists",
-    "fileExists",
     "readFile",
     "label",
     "issueList",
@@ -537,7 +536,6 @@ test("each gh.ts read parses what gh really answered", async () => {
   expect(await gh.defaultBranch(SCRATCH)).toBe("main");
   expect(await gh.branchProtected(SCRATCH, "main")).toBe(false);
   expect(await gh.branchExists(SCRATCH, "main")).toBe(true);
-  expect(await gh.fileExists(SCRATCH, "README.md")).toBe(true);
   expect(await gh.readFile(SCRATCH, "README.md", "main")).toStartWith("# factory-scratch\n");
   // A label the repository has is left as it is: creating one would be a call nothing was recorded for.
   await gh.ensureLabel(SCRATCH, "factory", "5319e7", "Issues the AgentGate software factory works");
@@ -623,30 +621,23 @@ test("a missing branch, file or repository is told from a failure by GitHub's 40
   replayGh(
     cleanup,
     "branchExists.missing",
-    "fileExists.missing",
-    "fileExists.noRef",
     "readFile.missing",
     "branchExists.noRepo",
-    "fileExists.noRepo",
     "repoView.noRepo",
     "issueList.noRepo",
     "issueView.missing",
     "prState.missing",
     "mainChecks.noRepo",
     "repoView.empty",
-    "fileExists.empty",
     "branchExists.empty",
     "mainChecks.empty",
   );
-  // The branches API words its 404 "Branch not found", contents "Not Found" or "No commit found for the ref …".
+  // The branches API words its 404 "Branch not found", contents "Not Found".
   expect(await gh.branchExists(SCRATCH, "no-such-branch")).toBe(false);
-  expect(await gh.fileExists(SCRATCH, "factory/no-such-file.yaml")).toBe(false);
-  expect(await gh.fileExists(SCRATCH, "README.md", "no-such-branch")).toBe(false);
   expect(await gh.readFile(SCRATCH, "factory/no-such-file.yaml", "main")).toBe(undefined);
 
   // A repository GitHub does not show has no branch and no file either; the reads that need it pass on gh's reason.
   expect(await gh.branchExists(GONE, "main")).toBe(false);
-  expect(await gh.fileExists(GONE, "factory/factory.yaml")).toBe(false);
   const noRepo = `Could not resolve to a Repository with the name '${GONE}'.`;
   await expect(gh.defaultBranch(GONE)).rejects.toThrow(
     `gh could not read the default branch of ${GONE}: GraphQL: ${noRepo} (repository)`,
@@ -665,7 +656,6 @@ test("a missing branch, file or repository is told from a failure by GitHub's 40
   );
 
   // A repository without commits: no file, no branch, no checks, and no default branch to start from.
-  expect(await gh.fileExists(EMPTY, "factory/factory.yaml")).toBe(false);
   expect(await gh.branchExists(EMPTY, "agentgate/factory-init")).toBe(false);
   expect(await gh.defaultBranchCi(EMPTY)).toBe("none");
   await expect(gh.defaultBranch(EMPTY)).rejects.toThrow(

@@ -16,26 +16,37 @@ Every paired machine must run a release that knows the factory before you turn i
 
 ## Turning it on and off
 
-The quickest start is `agentgate factory init acme/api`, or **Start a factory** in the app's Factory view (or a project's menu in Projects). It pushes a `factory/` folder with a `factory.yaml` for that repository (one GitHub source on the label `factory`) and an empty `rulings.md` to the branch `agentgate/factory-init`, opens a draft PR, creates the `factory` label, and turns the factory on at that branch at once. When you merge the PR, the factory moves to the default branch by itself; if you close it, the factory stays on the branch until you run `use`. Init refuses while a factory is on, and when the repository already has `factory/factory.yaml` or an `agentgate/factory-init` branch. It writes to GitHub with the `gh` login of the machine it runs on, which is the machine the app is connected to.
+The quickest start is `agentgate factory init acme/api`, or **Start a factory** in the app's Factory view (or a project's menu in Projects). It keeps a new folder in agentgate, with a `factory.yaml` for that repository (one GitHub source on the label `factory`, or the one `--label` names) and an empty `rulings.md`, creates the label, and turns the factory on. Nothing is pushed to the repository. The folder is copied to every paired machine and kept in backups, and `off` leaves it, so `agentgate factory use --store agentgate` turns it on again. Init refuses while a factory is on (add the repository to it with `repo add` instead) and while agentgate already keeps a folder. It creates the label with the `gh` login of the machine it runs on, which is the machine the app is connected to.
+
+A folder in a git repository works too: `use` turns the factory on at one.
 
 ```sh
-agentgate factory init acme/api                         # a template PR on acme/api, and the factory on at its branch
-agentgate factory use acme/factory                      # factory.yaml at the repository's root
+agentgate factory init acme/api                         # a folder kept in agentgate, and the factory on
+agentgate factory use acme/factory                      # factory.yaml at the root of a repository
 agentgate factory use acme/tools:factory --ref stable   # the factory folder in acme/tools, at a branch or tag
+agentgate factory use --store agentgate                 # the folder agentgate keeps
 agentgate factory use acme/factory --node srv           # run it on srv instead of the always-on machine
-agentgate factory reload                                # fetch and check the folder now
+agentgate factory reload                                # read and check the folder now
 agentgate factory off
 ```
 
-The factory checks the folder's branch every 2 minutes and loads a new commit when it moves. A commit with a mistake in it never replaces the last good one: `agentgate factory status` shows the error, naming the file and field, and the factory keeps running the commit before. Each item finishes under the commit it started with.
+The factory checks a folder in git every 2 minutes and loads a new commit when its branch moves. A commit with a mistake in it never replaces the last good one: `agentgate factory status` shows the error, naming the file and field, and the factory keeps running the commit before. Each item finishes under the commit it started with.
 
 Whatever reaches that branch changes every later brief, and factory threads push with your `gh` login. Protect the branch on GitHub if your plan allows it (free private repositories cannot), so changes to the folder go through a pull request; `use` warns when it is not protected.
 
 `off` stops the factory and signs it out of T3 Code's MCP. Its items stay in the machine's tables.
 
-### Keeping the folder in agentgate
+### Repositories
 
-Some repositories must not hold the factory's folder. `agentgate factory init acme/api --store agentgate`, or **In agentgate, outside the repository** in the app's **Start a factory**, keeps the same template in agentgate instead: nothing is pushed, the `factory` label is still created, and the factory turns on at once. The folder is copied to every paired machine and kept in backups. `factory off` leaves it, so `agentgate factory use --store agentgate` turns it on again.
+One factory works in every repository its `factory.yaml` lists. `repo add` lists one more, with a GitHub source for its issues labelled `factory` (or `--label`), and creates the label; `repo remove` takes a repository out with its sources and scouts, and is refused while it has open items. On the folder agentgate keeps, the change applies at once; on a folder in git, it opens a PR, and the repository joins or leaves once you merge it. Both keep the rest of `factory.yaml` as you wrote it, comments included. **Add to the factory** in a project's menu in Projects does what `repo add` does.
+
+```sh
+agentgate factory repo add acme/web                  # its issues labelled factory
+agentgate factory repo add acme/docs --label agent
+agentgate factory repo remove acme/docs
+```
+
+### The folder agentgate keeps
 
 Edit it under **Stored folder** in the app's Factory settings, or from the CLI. Every save is checked like a new commit, and one that leaves a broken folder is refused with the file and field, so the stored folder always loads. Each change is a new folder commit, named by the SHA-256 of its files, and items finish under the commit they started with. When two machines save at the same moment, the later save wins.
 
@@ -47,7 +58,7 @@ agentgate factory folder rm stages/implement.md
 agentgate factory folder delete                               # only while the factory runs elsewhere or is off
 ```
 
-To move a folder you have on GitHub into agentgate, `put` its files one at a time, starting with `factory.yaml`, then run `use --store agentgate`.
+`folder export <dir>` writes its files into a directory, to commit them to a repository and `use` it there; it refuses a directory with files in it unless you add `--force`. `folder import <dir>` replaces the folder with a directory's files, such as a checkout of a factory folder in git, then `use --store agentgate` turns the factory on at it. An import is checked as a whole, so a broken folder is refused and the current one stays; while the factory runs on the stored folder, it loads at once. Names that start with a dot, such as `.git`, are left out. Both run on the machine you type them on, never over remote management.
 
 ## The folder
 
@@ -441,28 +452,30 @@ When a branch requires checks, through a branch protection rule or a ruleset, on
 One machine runs the factory. It polls the sources, starts the threads in its T3 Code and follows the PRs, and no other machine works on an item. On your other machines, `agentgate factory` commands and the agents' factory tools reach it over Tailscale or the relay, and `status` shows its board.
 
 - **Handing off a stage thread** (`agentgate handoff`) takes it out of the factory: it becomes your thread on the other machine, and the item waits for you as `handed-off`. When you are done with it, `retry` starts the stage again here, or `drop` closes the item. A PR the thread opened is still followed: merging it ships the item.
-- **Moving the factory**: `agentgate factory move <machine>`, or **Move…** in the app's Settings, keeps the folder, its ref and an init PR it waits on. With no item open, the factory moves at once. Otherwise the machine that runs it finishes its open items first. It takes in no new issues, and a webhook delivery or a scout's finding waits for your approval, as while paused. The board and `status` say "Moving to srv once 3 items finish", and when the last one has shipped or closed and its last comment is posted, the factory moves by itself. An item that waits for you is open too, a PR ready for your review included, so answer it, merge it or `drop` it. `agentgate factory move` to the machine that runs it now cancels a move that waits.
+- **Moving the factory**: `agentgate factory move <machine>`, or **Move…** in the app's Settings, keeps the folder and its ref. With no item open, the factory moves at once. Otherwise the machine that runs it finishes its open items first. It takes in no new issues, and a webhook delivery or a scout's finding waits for your approval, as while paused. The board and `status` say "Moving to srv once 3 items finish", and when the last one has shipped or closed and its last comment is posted, the factory moves by itself. An item that waits for you is open too, a PR ready for your review included, so answer it, merge it or `drop` it. `agentgate factory move` to the machine that runs it now cancels a move that waits.
 - **Moving it now**: `agentgate factory move <machine> --now`, or **Move now** in the same dialog, does not wait. It is for when the machine that runs the factory is gone, or its items are not worth the wait. What that machine has open stays frozen there: a thread that is working finishes its turn, nothing more is started or followed for those items, and they are not on the new machine's board. The new machine takes their issues in again from triage, and a draft PR the old item opened stays open for you to close. On the old machine, `agentgate factory status` and the app list what is frozen, each with its id. Move the factory back to go on with those items where they stopped, or run `agentgate factory drop <id>` on that machine to close one; an item's key names the item on the machine that runs the factory. An item from a webhook, a scout or `factory add` has no issue, so nothing takes it in again: it waits on the old machine until you do one or the other.
 
 ## Commands
 
-| Command                                                                             | What it does                                                                                                         |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `factory init <owner/repo> [--store github\|agentgate] [--node <machine>] [--json]` | Start a factory for a repository: a template PR and the factory on at its branch, or the template kept in agentgate. |
-| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]`        | Turn the factory on, or change its folder. Another `--node` moves it at once, like `move --now`.                     |
-| `factory use --store agentgate [--node <machine>]`                                  | Turn the factory on with the folder agentgate keeps.                                                                 |
-| `factory folder ls\|cat <path>\|put <path>\|rm <path>\|delete`                      | Read and edit the folder agentgate keeps; `put` reads the file from stdin.                                           |
-| `factory move <machine> [--now]`                                                    | Run the same folder on another machine once the open items finish; `--now` does not wait, and leaves them frozen.    |
-| `factory off`                                                                       | Turn it off.                                                                                                         |
-| `factory reload`                                                                    | Fetch and check the folder now.                                                                                      |
-| `factory status [--json]`                                                           | The board, with the webhook URLs.                                                                                    |
-| `factory add <owner/repo> <title> [--body <text>]`                                  | Add an item by hand.                                                                                                 |
-| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`                     | Answer, restart or stop an item.                                                                                     |
-| `factory show <item> [--json]`                                                      | An item's runs, comments and events.                                                                                 |
-| `factory pause` / `resume`                                                          | Stop intake, new threads and nudges, and start them again.                                                           |
-| `factory secret set <NAME>` / `list` / `delete <NAME>`                              | Manage secrets; `set` reads the value from stdin.                                                                    |
-| `factory t3 [sign-in]`                                                              | The factory's sign-in to T3 Code's MCP.                                                                              |
-| `factory scout <id>`                                                                | Run a scout now.                                                                                                     |
-| `factory source add [--json] < source.yaml`                                         | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                      |
+| Command                                                                      | What it does                                                                                                               |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `factory init <owner/repo> [--label <label>] [--node <machine>] [--json]`    | Start a factory for a repository, its folder kept in agentgate, and turn it on.                                            |
+| `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]` | Turn the factory on, or change its folder. Another `--node` moves it at once, like `move --now`.                           |
+| `factory use --store agentgate [--node <machine>]`                           | Turn the factory on with the folder agentgate keeps.                                                                       |
+| `factory folder ls\|cat <path>\|put <path>\|rm <path>\|delete`               | Read and edit the folder agentgate keeps; `put` reads the file from stdin.                                                 |
+| `factory folder export <dir> [--force]` / `import <dir>`                     | Write the folder agentgate keeps into a directory, or replace it with one's files.                                         |
+| `factory repo add <owner/repo> [--label <label>]` / `remove <owner/repo>`    | Add a repository and its labelled issues, or take one out: a PR on a folder in git, at once on the folder agentgate keeps. |
+| `factory move <machine> [--now]`                                             | Run the same folder on another machine once the open items finish; `--now` does not wait, and leaves them frozen.          |
+| `factory off`                                                                | Turn it off.                                                                                                               |
+| `factory reload`                                                             | Fetch and check the folder now.                                                                                            |
+| `factory status [--json]`                                                    | The board, with the webhook URLs.                                                                                          |
+| `factory add <owner/repo> <title> [--body <text>]`                           | Add an item by hand.                                                                                                       |
+| `factory approve\|reject\|retry\|drop <item> [--reason <text>]`              | Answer, restart or stop an item.                                                                                           |
+| `factory show <item> [--json]`                                               | An item's runs, comments and events.                                                                                       |
+| `factory pause` / `resume`                                                   | Stop intake, new threads and nudges, and start them again.                                                                 |
+| `factory secret set <NAME>` / `list` / `delete <NAME>`                       | Manage secrets; `set` reads the value from stdin.                                                                          |
+| `factory t3 [sign-in]`                                                       | The factory's sign-in to T3 Code's MCP.                                                                                    |
+| `factory scout <id>`                                                         | Run a scout now.                                                                                                           |
+| `factory source add [--json] < source.yaml`                                  | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                            |
 
 `agentgate factory help` lists them all. Each command is one operation, and the control API takes every operation by its name, the words after `factory`, with its input as JSON: `POST /api/factory/op/secret%20list`. `GET /api/factory` is the board.
