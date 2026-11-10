@@ -613,7 +613,9 @@ test("a PR whose implement thread is deleted waits as deleted, and retry starts 
   const [, takeover] = n.implementRuns(item);
   expect(takeover).toMatchObject({ state: "running", branch: pr.headRefName });
   const launch = n.mcp.calls.findLast((c) => c.tool === "t3_thread_launch")!.args;
-  expect(launch.workspaceStrategy).toMatchObject({ branch: `factory/${item.key}-implement-2` });
+  expect(launch.workspaceStrategy).toMatchObject({
+    branch: `factory/${item.key}-implement-2-${takeover!.id.slice(-6).toLowerCase()}`,
+  });
   expect(String(launch.message)).toContain(`gh pr checkout ${pr.number}`);
 
   // It reports the PR it took over, and no other.

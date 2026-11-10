@@ -115,7 +115,7 @@ test("once checks pass and every claim has evidence, a blind review starts in it
     workspaceStrategy: {
       type: "worktree",
       baseRef: "main",
-      branch: `factory/${n.key(1)}-review-1`,
+      branch: `factory/${n.key(1)}-review-1-${review.id.slice(-6).toLowerCase()}`,
       startFromOrigin: true,
     },
   });

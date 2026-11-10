@@ -97,6 +97,28 @@ test("a reminded turn that ends before the reminder's send answers is still a si
   expect(runs.get(n.s, first!.id)!.state).toBe("silent");
 });
 
+test("a thread that fails before T3 Code makes its worktree gets no reminder, and attempt 2 starts on a branch of its own", async () => {
+  const n = await prFactory(cleanup);
+  n.github.addIssue(1);
+  await n.intake();
+  await n.dispatch();
+  const [first] = runs.list(n.s);
+  const threadId = first!.threadId!;
+  await n.until(() => n.mirror.thread(threadId)?.status === "running", "the thread to run");
+
+  // As T3 Code answers a worktree it cannot add, such as for a branch an earlier run left in its clone.
+  n.t3.threads.get(threadId)!.worktreePath = null;
+  n.mcp.setThread(threadId, { status: "failed" });
+  await n.until(() => runs.list(n.s).length === 2, "the retry");
+  expect(n.sent(threadId)).toEqual([]);
+  expect(runs.get(n.s, first!.id)!.state).toBe("silent");
+
+  await n.dispatch();
+  const second = runs.list(n.s).find((r) => r.attempt === 2)!;
+  const branch = (run: typeof second) => n.t3.threads.get(run.threadId!)!.branch;
+  expect(branch(second)).not.toBe(branch(first!));
+});
+
 test("the board shows an item's review rounds, and the findings left open when it went to ready", async () => {
   const n = await prFactory(cleanup, () => ({ limits: { threads: 20, reviewRounds: 2 } }));
   const latestReview = (item: FactoryItem) => runs.forItem(n.s, item.id).findLast((r) => r.kind === "review")!;

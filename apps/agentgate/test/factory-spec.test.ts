@@ -44,7 +44,11 @@ test("route spec starts a spec run on its own branch, whose brief names the run"
   const launch = n.launchOf(n.run)!;
   expect(launch).toMatchObject({
     title: `Spec ${n.key(1)}: Issue 1`,
-    workspaceStrategy: { baseRef: "main", branch: `factory/${n.key(1)}-spec-1`, startFromOrigin: true },
+    workspaceStrategy: {
+      baseRef: "main",
+      branch: `factory/${n.key(1)}-spec-1-${n.run.id.slice(-6).toLowerCase()}`,
+      startFromOrigin: true,
+    },
   });
   expect(String(launch.message)).toContain(`run: "${n.run.id}"`);
   expect(n.github.posted(1)).toEqual(["The factory took this.", "The factory triaged this and writes a spec first."]);
@@ -84,7 +88,9 @@ test("feedback starts one more spec round, and the next feedback leaves the item
   await n.dispatch();
   const [, round2] = n.specRuns();
   expect(round2!.state).toBe("running");
-  expect(n.launchOf(round2!)!.workspaceStrategy).toMatchObject({ branch: `factory/${n.key(1)}-spec-2` });
+  expect(n.launchOf(round2!)!.workspaceStrategy).toMatchObject({
+    branch: `factory/${n.key(1)}-spec-2-${round2!.id.slice(-6).toLowerCase()}`,
+  });
   expect(String(n.launchOf(round2!)!.message)).toContain("This is round 2 of the spec.");
 
   await n.specReport(round2!, { approved: false, feedback: "Still not right." });

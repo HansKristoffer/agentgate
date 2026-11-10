@@ -213,7 +213,9 @@ test("an issue of a repository whose name another repository shares is keyed <ow
   expect(items.list(n.s).map((i) => i.key)).toEqual([key]);
   await n.dispatch();
   const [triage] = runs.list(n.s);
-  expect(n.t3.threads.get(triage!.threadId!)!.branch).toBe(`factory/${key}-triage-1`);
+  expect(n.t3.threads.get(triage!.threadId!)!.branch).toBe(
+    `factory/${key}-triage-1-${triage!.id.slice(-6).toLowerCase()}`,
+  );
 
   // The same number in the twin repository: `42` names both items, and every way in says so.
   const other = items.insert(n.s, {

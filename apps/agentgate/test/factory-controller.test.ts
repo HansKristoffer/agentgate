@@ -79,7 +79,7 @@ test("items added with the CLI and the API are triaged in a fresh full-access wo
     workspaceStrategy: {
       type: "worktree",
       baseRef: "main",
-      branch: `factory/${item.key}-triage-1`,
+      branch: `factory/${item.key}-triage-1-${first!.id.slice(-6).toLowerCase()}`,
       startFromOrigin: true,
     },
   });

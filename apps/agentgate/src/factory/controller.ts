@@ -149,7 +149,9 @@ function ownsPr(f: FactoryRuntime, run: Pick<FactoryRun, "id" | "item">) {
  * worktree of the one before it. */
 function stageBranch(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
   const n = runs.forItem(f.s, item.id).filter((r) => r.kind === run.kind && r.queuedAt <= run.queuedAt).length;
-  return `factory/${item.key}-${run.kind}-${n}`;
+  // The run's own tail too: an item taken in again for the same issue counts from 1 again, and the branch an earlier
+  // item's run left in T3 Code's clone would stop the new worktree.
+  return `factory/${item.key}-${run.kind}-${n}-${run.id.slice(-6).toLowerCase()}`;
 }
 
 /** The part of a stage run's launch every stage shares: the item's repository, a title naming the stage and the item,
@@ -936,7 +938,9 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   // T3 resumes a turn its own restart cut, so `interrupted` means someone stopped the thread: a reminder would start it
   // again behind their back.
   if (thread.status === "interrupted") return stopped(f, runs.get(s, run.id)!);
-  await silentEnd(f, runs.get(s, run.id)!);
+  // A thread that failed before T3 Code made its worktree never started: a reminder would only queue behind it.
+  const unstarted = thread.status === "failed" && !thread.worktreePath;
+  await silentEnd(f, runs.get(s, run.id)!, { remind: !unstarted });
 }
 
 /** A waiting thread's question, read from T3 Code into its item's wait, so the app, the CLI, Grok and the issue show it
@@ -1064,9 +1068,9 @@ function detachHandedOff(f: FactoryRuntime) {
 }
 
 /** One reminder in the same thread; then attempt 2 in a new thread; a silent attempt 2 makes the item wait. */
-async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
+async function silentEnd(f: FactoryRuntime, run: FactoryRun, { remind = true } = {}) {
   const { s } = f;
-  if (run.attempt === 1 && run.nudges === 0) {
+  if (remind && run.attempt === 1 && run.nudges === 0) {
     runs.update(s, run.id, { nudges: 1 });
     f.events.emit({
       kind: "note",
