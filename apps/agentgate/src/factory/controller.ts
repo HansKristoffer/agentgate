@@ -68,7 +68,6 @@ import {
   type ToolCaller,
 } from "./runtime.ts";
 import { claimWrite } from "./outbox.ts";
-import { sampleJudges } from "./scorers.ts";
 import { pendingRequests, T3McpError, t3Mcp } from "./t3-mcp.ts";
 
 /**
@@ -324,8 +323,7 @@ const runName = (f: FactoryRuntime, run: FactoryRun) => {
   return item ? `${item.key}'s ${run.kind}` : `${run.kind} run ${run.id}`;
 };
 
-/** Ends a run. Judges then sample it, and its tokens are read. The event names `patch.error`, when
- * given, as why the run ended. */
+/** Ends a run, and reads its tokens. The event names `patch.error`, when given, as why the run ended. */
 export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
   const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
   memory(f).seen.delete(run.id);
@@ -339,7 +337,6 @@ export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patc
   });
   // The run's thread gets its project's servers back (`threadScope`).
   f.ctx.gateway.toolsChanged();
-  sampleJudges(f, ended);
   void recordRun(f, ended).catch((e) =>
     f.events.emit({
       kind: "note",
@@ -478,13 +475,6 @@ export async function defaultBranch(f: FactoryRuntime, repo: string) {
   if (!branch) throw new Error(`git cannot read the default branch of ${repo} in ${p.root}`);
   p.branch = branch;
   return branch;
-}
-
-/** Whether the repository has a branch of that name, read from its T3 project's checkout. */
-export async function isBranch(f: FactoryRuntime, repo: string, name: string) {
-  const p = await project(f, repo);
-  const heads = await git(p.root, ["ls-remote", "--heads", "origin", name]);
-  return heads.ok && heads.out.trim().length > 0;
 }
 
 type ThreadAction = { action: "send"; text: string } | { action: "interrupt"; text: string } | { action: "settle" };
@@ -627,24 +617,23 @@ function working(f: FactoryRuntime, t: MirrorThread | undefined): boolean {
     .some((child) => child.parentThreadId === t.id && working(f, child));
 }
 
-/** Working runs of the kinds that count: stage runs, and the rest (judge and learn runs). A starting run counts; a
- * thread that waits for a person, or sits idle owning a PR, does not; a running one T3 has not shown yet does. */
+/** Working runs: stage runs, and scout runs. A starting run counts; a thread that waits for a person, or sits idle
+ * owning a PR, does not; a running one T3 has not shown yet does. */
 export function workingCounts(f: FactoryRuntime) {
   const mirror = mirrorOf(f);
-  const counts = { stage: 0, other: 0 };
+  const counts = { stage: 0, scout: 0 };
   for (const run of runs.heads(f.s, ["starting", "running", "waiting", "reported"])) {
-    if (f.runKinds.get(run.kind)?.countsAsWorking === false) continue;
     const thread = run.threadId ? mirror.thread(run.threadId) : undefined;
     const busy =
       run.state === "starting" || (!!run.threadId && (thread ? working(f, thread) : run.state === "running"));
-    if (busy) counts[isStage(run.kind) ? "stage" : "other"]++;
+    if (busy) counts[isStage(run.kind) ? "stage" : "scout"]++;
   }
   return counts;
 }
 
 export function workingCount(f: FactoryRuntime): number {
-  const { stage, other } = workingCounts(f);
-  return stage + other;
+  const { stage, scout } = workingCounts(f);
+  return stage + scout;
 }
 
 /** The pool this model draws on. T3 names providers by its instance ids, such as `claudeAgent`. */
@@ -660,7 +649,7 @@ function note(f: FactoryRuntime, run: FactoryRun, text: string) {
   f.events.emit({ kind: "note", run: run.id, ...(run.item && { item: run.item }), text: `${run.kind} waits: ${text}` });
 }
 
-/** Stage runs first, then judge and learn runs, each oldest first. */
+/** Stage runs first, then scout runs, each oldest first. */
 const byPriority = (a: FactoryRun, b: FactoryRun) =>
   Number(!isStage(a.kind)) - Number(!isStage(b.kind)) || a.queuedAt - b.queuedAt;
 
@@ -676,18 +665,15 @@ async function dispatch(f: FactoryRuntime) {
   let quota: Memory["quota"];
   // A run left `starting` was cut off by a restart; launching it again finds the same thread.
   for (const queued of runs.list(s, { states: ["queued", "starting"] }).toSorted(byPriority)) {
-    const definition = f.runKinds.get(queued.kind);
-    if (!definition) continue;
+    if (!f.runKinds.has(queued.kind)) continue;
     if ((m.retryAt.get(queued.id) ?? 0) > s.now()) continue;
     const stage = isStage(queued.kind);
-    if (definition.countsAsWorking !== false) {
-      if (counts.stage + counts.other >= limits.threads) continue;
-      // Judge and learn runs leave a slot for live work.
-      if (!stage && counts.other >= Math.max(1, limits.threads - 1)) continue;
-    }
+    if (counts.stage + counts.scout >= limits.threads) continue;
+    // Scout runs leave a slot for the items' work.
+    if (!stage && counts.scout >= Math.max(1, limits.threads - 1)) continue;
     const outcome = await launchRun(f, queued);
     if (outcome.quota) quota = outcome.quota;
-    if (outcome.started && definition.countsAsWorking !== false) counts[stage ? "stage" : "other"]++;
+    if (outcome.started) counts[stage ? "stage" : "scout"]++;
   }
   m.quota = quota;
 }
@@ -773,7 +759,7 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
     );
     const current = runs.get(s, run.id) ? runs.update(s, run.id, { failedLaunches: failures }) : undefined;
     // A run without an item has nobody to wait for: after as many failed launches as make an item stuck, it ends, and
-    // its schedule (a scout's, learning's) queues a fresh one.
+    // its schedule (a scout's) queues a fresh one.
     if (current && !current.item && ACTIVE.includes(current.state) && failures >= STUCK_LAUNCHES) {
       m.retryAt.delete(run.id);
       endRun(f, current, "failed", { error: `starting it failed ${failures} times: ${shortError(e)}` });
@@ -862,9 +848,9 @@ function runOfThread(f: FactoryRuntime, thread: string) {
 
 /**
  * What the MCP gateway lets the sessions of a T3 Code thread use (R8): a stage run's thread, and the T3 subagent
- * threads under it, get agentgate's tools and the servers its stage file names in `mcp`, a scout's thread those its
- * source names, and a judge or learn thread agentgate's tools only. Every other session gets every server its project maps, but not the tools made for a run's
- * own thread. The thread id is a label its shim sends, so this narrows a default and is no boundary.
+ * threads under it, get agentgate's tools and the servers its stage file names in `mcp`, and a scout's thread those
+ * its source names. Every other session gets every server its project maps, but not the tools made for a run's own
+ * thread. The thread id is a label its shim sends, so this narrows a default and is no boundary.
  */
 export function threadScope(f: FactoryRuntime, thread: string | undefined): SessionScope {
   const head = thread ? runOfThread(f, thread) : undefined;
@@ -1044,7 +1030,7 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun) {
   }
   endRun(f, run, "silent");
   if (run.attempt < 2) {
-    // What the factory gave or found for attempt 1, such as the run a judge grades, holds for attempt 2 as well.
+    // What the factory gave or found for attempt 1, such as a scout run's source, holds for attempt 2 as well.
     enqueueRun(f, {
       kind: run.kind,
       ...(run.item && { item: run.item }),
@@ -1077,8 +1063,6 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
   duplicate: (r) => `This duplicates ${r.duplicateOf}.`,
   "already-fixed": () => "The default branch already fixes this.",
 };
-/** The outcomes with which triage ends an item; one a person later retries was a wrong call. */
-const CLOSING_OUTCOMES: readonly Outcome[] = ["not-a-bug", "duplicate", "already-fixed", "nothing-to-do"];
 
 /** The run, when the caller is its own thread on the machine that holds it (D35: routing, not security). */
 /** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
@@ -1492,13 +1476,9 @@ async function act(f: FactoryRuntime, id: string, action: Action, reason?: strin
   throw new Error(`${item.key} has no question to ${action}`);
 }
 
-/** A finished item taken in again at triage. A person disagreed with how it ended, so a triage that closed it was a
- * wrong call; and it is a new pass, whose moments post again. */
+/** A finished item taken in again at triage. It is a new pass, whose moments post again. */
 function reopen(f: FactoryRuntime, item: FactoryItem) {
   const { s } = f;
-  const triage = runs.forItem(s, item.id).findLast((r) => r.kind === "triage" && r.state === "reported");
-  if (triage?.report && CLOSING_OUTCOMES.includes(triage.report.outcome))
-    runs.update(s, triage.id, { verdict: "flawed" });
   s.db.run("delete from factory_writebacks where item=?", [item.id]);
   const reopened = moveItem(f, item.id, "triage", null);
   enqueueRun(f, { kind: "triage", item: item.id, approved: true });

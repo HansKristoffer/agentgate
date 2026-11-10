@@ -75,7 +75,6 @@ table { width: 100%; border-collapse: collapse; background: var(--surface); bord
 td, th { text-align: left; padding: 6px 10px; border-top: 1px solid var(--border); font-size: 13px; }
 th { color: var(--ink-2); font-weight: 600; border-top: none; }
 .events div { padding: 3px 0; font-size: 13px; }
-#judges table { margin-top: 8px; }
 .empty { color: var(--muted); font-size: 13px; }
 </style>
 </head>
@@ -93,7 +92,6 @@ th { color: var(--ink-2); font-weight: 600; border-top: none; }
 <section id="metrics-section">
 <h2>Last 7 days</h2>
 <div class="tiles" id="metrics"></div>
-<div id="judges"></div>
 </section>
 <h2>Items</h2>
 <div class="board" id="items"></div>
@@ -211,23 +209,6 @@ function render(b) {
 		tile(m.humanTouchesPerItem === undefined ? none : m.humanTouchesPerItem.toFixed(1), "human touches per item"),
 		tile(m.tokensPerMergedPr === undefined ? none : tokens(m.tokensPerMergedPr), "tokens per merged PR"),
 	]);
-	if (!m.scorers.length) fill("judges", []);
-	else {
-		var judges = el("table");
-		var jh = el("tr");
-		["Judge", "Passed", "Runs", "By factory commit"].forEach(function (t) { jh.append(el("th", "", t)); });
-		judges.append(jh);
-		m.scorers.forEach(function (x) {
-			var tr = el("tr");
-			tr.append(
-				el("td", "", x.name), el("td", "", percent(x.passRate)), el("td", "", x.runs),
-				el("td", "", x.byConfig.map(function (c) {
-					return c.commit.slice(0, 7) + " " + percent(c.passRate) + " of " + c.runs;
-				}).join(" · ")));
-			judges.append(tr);
-		});
-		fill("judges", [judges]);
-	}
 
 	// Every stage in one line, and a column only for those that hold items: all of them at a card's width do not fit.
 	var phases = PHASES.filter(function (phase) {

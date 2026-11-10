@@ -6,14 +6,12 @@ import {
   factoryMoveInputSchema,
   factoryUseInputSchema,
   folderLabel,
-  scorerFileSchema,
   scoutFileSchema,
   stageFileSchema,
   stageNames,
   type FactoryBoard,
   type FactoryConfig,
   type FactoryPointer,
-  type ScorerFile,
   type StageFile,
   type StageName,
 } from "@agentgate/protocol";
@@ -39,7 +37,6 @@ export interface LoadedFolder {
   config: FactoryConfig; // factory.yaml with defaults applied
   secrets: string[]; // the names factory.yaml uses as `secret:NAME`
   stages: Partial<Record<StageName, { file: StageFile; brief: string }>>;
-  scorers: Record<string, { file: ScorerFile; rubric: string }>;
   scouts: Record<string, { prompt: string }>; // scouts/<id>.md of each scout source
   rulings: string; // "" when absent
   skillsDir?: string; // <dir>/skills when present
@@ -170,19 +167,6 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
     stages[stage] = { file: check(stageFileSchema, data, file), brief: body };
   }
 
-  const scorers: LoadedFolder["scorers"] = {};
-  for (const name of markdownFiles(join(dir, "scorers"))) {
-    const file = `scorers/${name}.md`;
-    if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(name))
-      throw new FolderError(file, "", "a scorer's name is up to 40 lowercase letters, digits and dashes");
-    const { data, body } = markdown(dir, file);
-    const scorer = check(scorerFileSchema, data, file);
-    const best = Math.max(...scorer.labels.map((l) => l.score));
-    if (scorer.pass > best)
-      throw new FolderError(file, "pass", `${scorer.pass} is above the best label's score, ${best}, so nothing passes`);
-    scorers[name] = { file: scorer, rubric: body };
-  }
-
   // HTML comments are notes for the person editing the file, such as the prompts `factory init` writes; briefs skip them.
   const rulings = existsSync(join(dir, "rulings.md"))
     ? readFileSync(join(dir, "rulings.md"), "utf8")
@@ -191,7 +175,7 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
     : "";
   const skills = join(dir, "skills");
   const skillsDir = existsSync(skills) && statSync(skills).isDirectory() ? skills : undefined;
-  return { commit, dir, config, secrets, stages, scorers, scouts, rulings, ...(skillsDir && { skillsDir }) };
+  return { commit, dir, config, secrets, stages, scouts, rulings, ...(skillsDir && { skillsDir }) };
 }
 
 // What the factory machine knows about its folder, kept across restarts. `fetched` is the newest commit tried,
@@ -355,7 +339,7 @@ async function syncNow(f: FactoryRuntime, m: Memory, force: boolean) {
   if (!fetched) {
     if (state.fetchError) save({ ...state, fetchError: undefined });
   } else if (!fetched.dir) {
-    // The folder did not change: the loaded one stays, with its commit, events and judge history.
+    // The folder did not change: the loaded one stays, with its commit and events.
     save({ ...state, fetched: fetched.commit, error: undefined, fetchError: undefined });
   } else {
     try {

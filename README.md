@@ -284,7 +284,6 @@ Things to know:
 
 - **It works as you.** Comments, PRs and reviews carry your `gh` login, and stage threads run with full access. Label only issues you have read. The issue's text reaches an agent as untrusted data, but it is still a prompt. Protect the factory folder's branch on GitHub if your plan allows; `factory use` warns when it is open.
 - **It spends your subscriptions.** Threads use the pool like any session, and wait while no account has room. An item that passes `limits.itemTokens` in `factory.yaml` (30 million tokens by default) stops and waits for you.
-- **It learns.** Once a week by default, a learning thread studies how runs went and proposes changes to the folder in a PR on the factory repository, which you review like any other, and files issues for checks or setup fixes a repository needs. For a folder kept in agentgate, the proposal waits in the app's Factory settings and in `agentgate factory proposal <run>` for you to apply or discard. AI judges grade a sample of runs.
 - Every machine must run this release before you turn the factory on or set a factory secret, because older releases drop them.
 
 ## Commands

@@ -537,13 +537,13 @@ test("a stage's note from factory.yaml follows its brief, whether built in or re
   );
 });
 
-test("a stage thread and the T3 subagents under it may use the servers its stage names, as the mapping spells them, a judge thread none, and every other thread every server but not the run tools", async () => {
+test("a stage thread and the T3 subagents under it may use the servers its stage names, as the mapping spells them, a scout thread whose source names none may use none, and every other thread every server but not the run tools", async () => {
   const n = await factoryNode(cleanup, { files: { "stages/triage.md": "---\nmcp: [docs, Acme-Prod]\n---\n" } });
   const scope = (thread: string | undefined) => {
     const found = n.ctx.gateway.scope!(thread)!;
     return found.hidden ? { hidden: found.hidden.toSorted() } : found;
   };
-  const others = { hidden: ["factory_history", "factory_item", "factory_pr_threads", "factory_report", "factory_run"] };
+  const others = { hidden: ["factory_item", "factory_pr_threads", "factory_report"] };
   await n.command("add", n.repo, "Crash on save");
   await n.dispatch();
   const [run] = triageRuns(n);
@@ -571,15 +571,15 @@ test("a stage thread and the T3 subagents under it may use the servers its stage
   });
 
   runs.insert(n.s, {
-    id: "run_judge",
-    kind: "judge",
+    id: "run_scout",
+    kind: "scout",
     attempt: 1,
     state: "running",
     nudges: 0,
-    threadId: "thread-judge",
+    threadId: "thread-scout",
     configCommit: n.commit,
   });
-  expect(scope("thread-judge")).toEqual({ servers: [] });
+  expect(scope("thread-scout")).toEqual({ servers: [] });
   expect(scope("thread-of-the-maintainer")).toEqual(others);
   expect(scope(undefined)).toEqual(others);
 
@@ -643,12 +643,16 @@ test("a running run whose turn ended unseen, as across a restart, is reminded on
 });
 
 test("a run without an item whose launch fails three times in a row ends failed, so its schedule can queue a fresh one, though the daemon restarted between", async () => {
-  const n = await factoryNode(cleanup);
+  const n = await factoryNode(cleanup, {
+    files: (repo) => ({
+      "scouts/perf.md": `---\n${JSON.stringify({ repo, schedule: { every: "6h" } })}\n---\n\nLook at the p95 latency of every endpoint.`,
+    }),
+  });
   const failing = () => {
     throw new Error("the worktree could not be created");
   };
   n.mcp.answer("t3_thread_launch", failing);
-  const run = enqueueRun(n.f, { kind: "learn" });
+  const run = enqueueRun(n.f, { kind: "scout", checked: { kind: "scout", source: "perf" } });
   for (let i = 0; i < 2; i++) {
     await n.dispatch();
     n.advance(16 * 60_000);

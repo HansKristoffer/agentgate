@@ -287,12 +287,11 @@ test("factory status and GET /api/factory show one board, with the board parts m
     inPhaseSince: 1,
     updatedAt: 1,
   });
-  const scorer = (name: string) => ({ name, passRate: 1, runs: 1, byConfig: [] });
   f.boardParts.push(
     async () => ({
       items: [item("it_1", "First"), item("it_2", "Second")],
       sources: [hookSource],
-      metrics: { merged: 3, mergeRate: 0.5, reverts14d: 0, scorers: [scorer("tests")] },
+      metrics: { merged: 3, mergeRate: 0.5, reverts14d: 0 },
       config: { commit: "aaaaaaa", name: "old", loadedAt: 1 },
     }),
     async () => {
@@ -300,7 +299,7 @@ test("factory status and GET /api/factory show one board, with the board parts m
     },
     async () => ({
       items: [item("it_1", "First, renamed")],
-      metrics: { merged: 4, mergeRate: 0.8, reverts14d: 1, medianHoursToMerge: 2, scorers: [scorer("review")] },
+      metrics: { merged: 4, mergeRate: 0.8, reverts14d: 1, medianHoursToMerge: 2 },
       config: { commit: "bbbbbbb", name: "new", loadedAt: 2 },
     }),
   );
@@ -324,7 +323,6 @@ test("factory status and GET /api/factory show one board, with the board parts m
     mergeRate: 0.8,
     reverts14d: 1,
     medianHoursToMerge: 2,
-    scorers: [scorer("tests"), scorer("review")],
   });
   expect(api.config?.name).toBe("new");
   expect(api.sources).toEqual([hookSource]);
@@ -406,40 +404,21 @@ async function renderPage(fetchBoard: (path: string, init: { headers: object }) 
   return (id: string) => document.getElementById(id);
 }
 
-test("the page and factory status show the last 7 days' outcomes and each judge's pass rate by factory commit", async () => {
+test("the page and factory status show the last 7 days' outcomes", async () => {
   const { s, f, ctx } = fixture();
   useFactory(s, "a");
   s.put("node", "a", { id: "a", protocol: 8, healthDashboard: true });
-  // As records.ts and scorers.ts report them.
-  f.boardParts.push(
-    async () => ({
-      metrics: {
-        merged: 4,
-        mergeRate: 0.8,
-        reverts14d: 1,
-        medianHoursToMerge: 5.25,
-        humanTouchesPerItem: 1.5,
-        tokensPerMergedPr: 1_234_567,
-        scorers: [],
-      },
-    }),
-    async () =>
-      ({
-        metrics: {
-          scorers: [
-            {
-              name: "review",
-              passRate: 0.75,
-              runs: 4,
-              byConfig: [
-                { commit: "aaaaaaa1111", passRate: 1, runs: 2 },
-                { commit: "bbbbbbb2222", passRate: 0.5, runs: 2 },
-              ],
-            },
-          ],
-        },
-      }) as Partial<FactoryBoard>,
-  );
+  // As records.ts reports them.
+  f.boardParts.push(async () => ({
+    metrics: {
+      merged: 4,
+      mergeRate: 0.8,
+      reverts14d: 1,
+      medianHoursToMerge: 5.25,
+      humanTouchesPerItem: 1.5,
+      tokensPerMergedPr: 1_234_567,
+    },
+  }));
   const call = caller(app(ctx));
 
   const page = await renderPage((path, init) => call(path, init));
@@ -448,12 +427,10 @@ test("the page and factory status show the last 7 days' outcomes and each judge'
   expect(page("metrics").textContent).toBe(
     "4 merged 80% merge rate 1 reverted within 14 days 5.3h median time to merge 1.5 human touches per item 1.2M tokens per merged PR",
   );
-  expect(page("judges").textContent).toContain("review 75% 4 aaaaaaa 100% of 2 · bbbbbbb 50% of 2");
 
   const res = await call("/api/factory/command", { method: "POST", body: { name: "status", args: [] } });
   const text = ((await res.json()) as { output: string[] }).output;
   expect(text).toContain(
     "Last 7 days: 4 merged, merge rate 80%, 1 reverted within 14 days, median 5.3h to merge, 1.5 human touches per item, 1.2M tokens per merged PR",
   );
-  expect(text).toContain("  review: 75% passed of 4 runs");
 });

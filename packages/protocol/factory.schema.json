@@ -152,18 +152,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "learning": {
-      "default": {},
-      "type": "object",
-      "properties": { "every": { "default": "7d", "type": "string", "pattern": "^\\d+(m|h|d)$" } },
-      "additionalProperties": false
-    },
-    "scoring": {
-      "default": {},
-      "type": "object",
-      "properties": { "sample": { "default": 25, "type": "number", "minimum": 0, "maximum": 100 } },
-      "additionalProperties": false
     }
   },
   "required": ["version", "name", "repositories"],

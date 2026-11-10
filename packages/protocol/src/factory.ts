@@ -2,7 +2,7 @@ import { z } from "zod";
 import { safePath } from "./skills.ts";
 
 /**
- * The software factory: the folder format that defines one (`factory.yaml`, `stages/`, `scorers/`), the records and
+ * The software factory: the folder format that defines one (`factory.yaml`, `stages/`, `scouts/`), the records and
  * reports the daemon keeps about its items and runs, and the board the CLI, app and page show.
  */
 
@@ -12,7 +12,7 @@ import { safePath } from "./skills.ts";
  */
 export const T3_THREAD_META_KEY = "dev.agentgate/t3Thread";
 
-const name = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/); // source and scorer ids
+const name = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/); // source ids
 /** owner/repo; the daemon canonicalizes the case like canonicalProject. */
 export const factoryRepoSchema = z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/);
 const repo = factoryRepoSchema;
@@ -173,14 +173,6 @@ export const factoryConfigSchema = z
       .object({ triage: stageNote, spec: stageNote, implement: stageNote, review: stageNote })
       .strict()
       .prefault({}),
-    learning: z
-      .object({ every: duration.default("7d") })
-      .strict()
-      .prefault({}),
-    scoring: z
-      .object({ sample: z.number().min(0).max(100).default(25) })
-      .strict()
-      .prefault({}),
   })
   .strict();
 /** `factory.yaml` as loaded: its sources, then a scout source for each `scouts/<id>.md`. */
@@ -200,30 +192,6 @@ export const stageFileSchema = z
   })
   .strict();
 export type StageFile = z.infer<typeof stageFileSchema>;
-
-/** Frontmatter of scorers/<name>.md; the body is the judge's rubric. */
-export const scorerFileSchema = z
-  .object({
-    description: z.string().min(1).max(300),
-    stages: z.array(z.enum(stageNames)).min(1),
-    labels: z
-      .array(
-        z
-          .object({
-            value: z.string().regex(/^[a-z0-9_-]{1,40}$/),
-            description: z.string().max(300),
-            score: z.number().min(0).max(1),
-          })
-          .strict(),
-      )
-      .min(2)
-      .max(10),
-    pass: z.number().min(0).max(1),
-    sample: z.number().min(0).max(100).optional(), // overrides scoring.sample
-    model: modelSchema.optional(),
-  })
-  .strict();
-export type ScorerFile = z.infer<typeof scorerFileSchema>;
 
 const pointerNode = z.string().min(1).max(512); // the machine that runs the factory
 /**
@@ -322,7 +290,7 @@ export const itemPhases = [
   "closed",
 ] as const;
 export type ItemPhase = (typeof itemPhases)[number];
-export const runKinds = ["triage", "spec", "implement", "review", "judge", "learn", "scout"] as const;
+export const runKinds = ["triage", "spec", "implement", "review", "scout"] as const;
 export type RunKind = (typeof runKinds)[number];
 /** waiting: the thread asked a person a question. silent: the thread ended without a report. */
 export const runStates = [
@@ -467,31 +435,6 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
-      kind: z.literal("judge"),
-      scorer: name,
-      label: z.string().regex(/^[a-z0-9_-]{1,40}$/),
-      reasoning: z.string().max(4000),
-    })
-    .strict(),
-  z
-    .object({
-      kind: z.literal("learn"),
-      prUrl: z.string().url().max(2048).optional(), // a folder on GitHub
-      // A folder agentgate stores: the files to write (null deletes one), which the maintainer applies or discards.
-      proposal: z
-        .object({
-          files: z.record(z.string().min(1).max(200), z.string().max(MAX_STORED_FOLDER).nullable()),
-          body: z.string().min(1).max(16_000), // the sections a learning PR's body has
-        })
-        .strict()
-        .optional(),
-      lessons: z.array(z.string().min(1).max(2000)).max(50),
-      // Changes a repository needs rather than the folder (a check, a hook, its setup); each becomes an unlabelled issue.
-      issues: z.array(suggestedIssue.extend({ repo }).strict()).max(10).optional(),
-    })
-    .strict(),
-  z
-    .object({
       kind: z.literal("scout"),
       findings: z
         .array(
@@ -528,8 +471,6 @@ export const factoryReportSchema = z
       .strict()
       .optional(),
     duplicateOf: z.string().min(1).max(2048).optional(),
-    // What slowed the run down or what it worked around (a missing tool, a broken setup, a flaky check), for learning.
-    friction: z.array(z.string().trim().min(1).max(500)).max(10).optional(),
     result: stageResultSchema.optional(),
   })
   .strict();
@@ -721,20 +662,10 @@ export const factoryBoardSchema = z.object({
     medianHoursToMerge: z.number().optional(),
     humanTouchesPerItem: z.number().optional(),
     tokensPerMergedPr: z.number().optional(),
-    scorers: z.array(
-      z.object({
-        name: z.string(),
-        passRate: z.number(),
-        runs: z.number(),
-        byConfig: z.array(z.object({ commit: z.string(), passRate: z.number(), runs: z.number() })),
-      }),
-    ),
   }), // the last 7 days
   events: z.array(
     z.object({ seq: z.number(), at: z.number(), item: z.string().optional(), kind: z.string(), text: z.string() }),
   ), // the newest 50
-  /** Learning runs' changes to a folder agentgate stores, waiting for the maintainer to apply or discard them. */
-  proposals: z.array(z.object({ run: z.string(), at: z.number(), files: z.array(z.string()) })).optional(),
 });
 export type FactoryBoard = z.infer<typeof factoryBoardSchema>;
 
@@ -782,16 +713,6 @@ export const factoryInitResultSchema = z.object({
   config: factoryBoardSchema.shape.config,
 });
 export type FactoryInitResult = z.infer<typeof factoryInitResultSchema>;
-
-/** `factory folder proposal <run>`: what a learning run proposes for a stored folder, each file as a line diff. */
-export const folderProposalSchema = z.object({
-  run: z.string(),
-  state: z.enum(["open", "applied", "discarded"]),
-  at: z.number(),
-  body: z.string(),
-  files: z.array(z.object({ path: z.string(), change: z.enum(["added", "changed", "deleted"]), diff: z.string() })),
-});
-export type FolderProposal = z.infer<typeof folderProposalSchema>;
 
 /** PUT /api/factory: a folder on GitHub (`store` may be left out), or the one agentgate stores. */
 export const factoryUseInputSchema = z.union([

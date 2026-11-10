@@ -118,7 +118,7 @@ test("when GitHub refuses the summary, the item is ready anyway and the events s
   expect(notes.some((t) => t.startsWith(`Writing the summary on ${item.key}'s PR failed:`))).toBe(true);
 });
 
-test("a merge ships the item and a PR closed unmerged closes it, each with one comment; a merge before ready is noted, not judged", async () => {
+test("a merge ships the item and a PR closed unmerged closes it, each with one comment; a merge before ready is noted", async () => {
   const n = await prFactory(cleanup, noReview);
   const ready = await n.opened(1, { checks: "passing" });
   const early = await n.opened(2);
@@ -136,9 +136,7 @@ test("a merge ships the item and a PR closed unmerged closes it, each with one c
     "shipped",
     "closed",
   ]);
-  // A maintainer who merges early usually means the PR was good: the event list says so, and no run is judged by it.
-  expect(runs.get(n.s, ready.run.id)!.verdict).toBeUndefined();
-  expect(runs.get(n.s, early.run.id)!.verdict).toBeUndefined();
+  // A maintainer who merges early usually means the PR was good: the event list says so.
   expect(n.f.events.recent(50).map((e) => e.text)).toContain(
     `${early.item.key}'s PR was merged before the factory called it ready`,
   );

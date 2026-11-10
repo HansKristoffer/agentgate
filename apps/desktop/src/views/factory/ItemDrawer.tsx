@@ -13,8 +13,6 @@ const STAGES: Record<string, string> = {
   spec: "Spec",
   implement: "Implement",
   review: "Review",
-  judge: "Judge",
-  learn: "Learning",
   scout: "Scout",
 };
 const RUN_TONES: Record<string, Tone> = {

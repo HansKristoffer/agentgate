@@ -60,7 +60,7 @@ test("a run that ends twice without reporting is retried as attempt 2 with what 
   await n.intake();
   await n.dispatch();
   const [first] = runs.list(n.s);
-  const checked = { kind: "judge" as const, run: "run_graded", scorer: "tests" };
+  const checked = { kind: "review" as const, head: "a".repeat(40), round: 1 };
   runs.update(n.s, first!.id, { checked });
   const threadId = first!.threadId!;
 

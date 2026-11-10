@@ -27,7 +27,7 @@ export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
   return record && !record.deleted ? JSON.stringify([record.rev, record.node, record.updated_at]) : null;
 };
-/** Skills the software factory installs from its folder (factory/learning.ts); only a folder load changes them. */
+/** Skills the software factory installs from its folder (factory/skills.ts); only a folder load changes them. */
 const isFactorySource = (source: string) => source.startsWith("factory:");
 const contentHash = (files: Skill["files"]) =>
   new Bun.CryptoHasher("sha256").update(JSON.stringify(files)).digest("hex");

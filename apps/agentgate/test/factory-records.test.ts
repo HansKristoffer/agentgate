@@ -1,8 +1,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
-import { MARKER_PREFIX } from "../src/factory/markers.ts";
-import { itemOutcome, runTokens, runTranscript } from "../src/factory/records.ts";
+import { itemOutcome, runTokens } from "../src/factory/records.ts";
 import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { recordSessionUsage } from "../src/llm/sessions.ts";
 import { host } from "../src/logins.ts";
@@ -17,7 +16,6 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-const KiB = 1024;
 const MERGED_AT = "2026-11-05T12:00:00Z"; // the fake GitHub's mergedAt
 
 /** One response's tokens, as the proxy records them under the session. */
@@ -31,15 +29,10 @@ const loop = (f: FactoryRuntime, name: string) =>
     f.loops.find((l) => l.name === name)!,
   );
 
-test("a run that ends records the tokens of its thread and its subagent threads, and its transcript is read live: the start and the newest in 256 KiB", async () => {
+test("a run that ends records the tokens of its thread and its subagent threads", async () => {
   const n = await prFactory(cleanup);
   const { item, run } = await n.implementing(1);
   const thread = n.t3.threads.get(run.threadId!)!;
-  const conversation = [
-    { id: "m1", role: "user", text: "Implement gh-1", attachments: [] },
-    { id: "m2", role: "assistant", text: `${"x".repeat(300 * KiB)}Opened the draft PR.`, attachments: [] },
-  ];
-  thread.conversation = conversation;
   // A subagent the implement thread delegated to, as T3's shell stream reports it. The sequence is past the
   // fixture's own, so the mirror applies it.
   const subagent = n.t3.addThread({ projectId: thread.projectId, sessionId: crypto.randomUUID(), subagent: true });
@@ -70,14 +63,7 @@ test("a run that ends records the tokens of its thread and its subagent threads,
   expect(recorded).toMatchObject({
     report: { outcome: "done", result: { kind: "implement", prUrl: pr.url } },
     checked: { kind: "implement", pr: pr.url, head: pr.headRefOid },
-    commitSha: pr.headRefOid,
   });
-  const transcript = (await runTranscript(n.f, recorded))!;
-  expect(new TextEncoder().encode(transcript).length).toBeLessThanOrEqual(256 * KiB);
-  // The brief and the first steps stay, and so does the end of the run.
-  expect(transcript).toStartWith("## user\n\nImplement gh-1");
-  expect(transcript).toContain("bytes of this transcript were cut here.");
-  expect(transcript).toEndWith("Opened the draft PR.");
   expect(items.get(n.s, item.id)!.tokens).toBe(6800);
   expect(await runTokens(n.f, recorded)).toBe(6800);
 });
@@ -261,25 +247,8 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
     items.update(n.s, opened.item.id, { phase: "ready" });
     return opened;
   };
-  const marker = { item: "it_x", key: "gh-1", stage: "review", outcome: null, route: null, commit: null };
-  const factoryComment = `**gh-1**: Reviewed.\n\n${MARKER_PREFIX}${JSON.stringify({ ...marker, factory: "abc1234", node: "a", state: "open" })} -->`;
 
   const merged = await ready(1);
-  merged.pr.comments.push(
-    { body: "Please rename the flag.", authorAssociation: "OWNER", createdAt: MERGED_AT },
-    { body: factoryComment, authorAssociation: "OWNER", createdAt: MERGED_AT },
-    // A bot's comment is not a person's, whatever GitHub calls its association.
-    {
-      body: "Deployed to preview.",
-      author: { login: "vercel[bot]" },
-      authorAssociation: "CONTRIBUTOR",
-      createdAt: MERGED_AT,
-    },
-  );
-  merged.pr.reviews.push(
-    { body: "Looks right now.", authorAssociation: "OWNER", submittedAt: MERGED_AT, state: "APPROVED" },
-    { body: "", authorAssociation: "OWNER", submittedAt: MERGED_AT, state: "APPROVED" },
-  );
   items.update(n.s, merged.item.id, { touches: 1 });
   merged.pr.state = "MERGED";
   const early = await n.opened(2);
@@ -294,7 +263,6 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
   expect(searches).toBe(1);
 
   const outcome = (id: string) => itemOutcome(items.get(n.s, id)!);
-  const verdicts = (id: string) => runs.forItem(n.s, id).map((r) => r.verdict);
   expect(outcome(merged.item.id)).toEqual({
     pr: {
       number: 101,
@@ -302,8 +270,6 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
       state: "MERGED",
       mergedAt: MERGED_AT,
       reverted: false,
-      peopleComments: 2,
-      peopleReviews: 2,
     },
     humanTouches: 1,
     hoursToMerge: (Date.parse(MERGED_AT) - merged.item.createdAt) / 3600_000,
@@ -311,8 +277,6 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
   });
   expect(outcome(closed.item.id).pr).toMatchObject({ state: "CLOSED", reverted: false });
   expect(outcome(reverted.item.id).pr).toMatchObject({ state: "MERGED", reverted: true });
-  // A run's verdict is what judged that run: a triage that did its job is not flawed because a PR was closed.
-  for (const { item } of [merged, early, closed, reverted]) expect(verdicts(item.id)).toEqual([undefined, undefined]);
 
   const { metrics } = await buildBoard(n.f, { includeWebhookUrls: false });
   expect(metrics).toMatchObject({
@@ -322,6 +286,5 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
     medianHoursToMerge: expect.any(Number),
     humanTouchesPerItem: 0.25,
     tokensPerMergedPr: 0,
-    scorers: [],
   });
 });

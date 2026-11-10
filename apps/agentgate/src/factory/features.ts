@@ -15,8 +15,7 @@ import { setup as move } from "./move.ts";
 import { setup as review } from "./review.ts";
 import { setup as records } from "./records.ts";
 import { setup as spec } from "./spec.ts";
-import { setup as scorers } from "./scorers.ts";
-import { setup as learning } from "./learning.ts";
+import { setup as skills } from "./skills.ts";
 import { setup as init } from "./init.ts";
 import { setup as scouts } from "./scouts.ts";
 import { setup as sourceAdd } from "./source-add.ts";
@@ -43,8 +42,7 @@ const features = [
   review,
   records,
   spec,
-  scorers,
-  learning,
+  skills,
   scouts,
   sourceAdd,
   outbox,

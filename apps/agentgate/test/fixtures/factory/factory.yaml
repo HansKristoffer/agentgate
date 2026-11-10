@@ -34,5 +34,3 @@ sources:
 stages:
   implement:
     note: Run `bun test` in the package you changed before you open the PR.
-learning:
-  every: 14d

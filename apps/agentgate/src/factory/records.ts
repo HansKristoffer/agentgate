@@ -5,38 +5,22 @@ import { sessionUsage } from "../llm/sessions.ts";
 import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
 import { interruptItem, setNeedsYou, writeBack } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
-import { COLLABORATORS, isRevertOf, prState, prView, revertsSince } from "./gh.ts";
-import { parseMarkers } from "./markers.ts";
+import { isRevertOf, prState, prView, revertsSince } from "./gh.ts";
 import { mirrorOf } from "./mirror.ts";
 import { shortError, withItem, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * What each run cost and how each item turned out. A run's tokens are the `session_usage` rows of the provider sessions
  * behind its T3 thread and the subagent threads under it, counted by the proxy of every machine that served them.
- * Outcomes come from the item's PR on GitHub. A run's own verdict comes only from what judged that run: a judge, or a
- * check such as a person retrying an issue its triage closed.
+ * Outcomes come from the item's PR on GitHub.
  */
 
 const MINUTE = 60_000;
 const HOUR = 3600_000;
 const DAY = 86_400_000;
-const TRANSCRIPT_BYTES = 256 * 1024;
-/** The start of a transcript holds the brief and the first steps, which judges read too. */
-const HEAD_BYTES = 64 * 1024;
 const SESSION_ID = /^[\w-]{1,128}$/;
 
-// ---- a thread's sessions and transcript, read on the machine whose T3 holds it
-
-/** The first 64 KiB and the newest of the rest, at most 256 KiB in all. */
-export function capped(text: string) {
-  const bytes = new TextEncoder().encode(text);
-  if (bytes.length <= TRANSCRIPT_BYTES) return text;
-  const decode = (part: Uint8Array) => new TextDecoder().decode(part).replace(/^�+|�+$/g, "");
-  const cut = `\n\n[${bytes.length - TRANSCRIPT_BYTES} bytes of this transcript were cut here.]\n\n`;
-  const head = decode(bytes.subarray(0, HEAD_BYTES));
-  const tail = decode(bytes.subarray(bytes.length - (TRANSCRIPT_BYTES - HEAD_BYTES - cut.length)));
-  return head + cut + tail;
-}
+// ---- a thread's sessions, read on the machine whose T3 holds it
 
 /** The thread's subagents, and theirs, from this machine's mirror. */
 function subagents(f: FactoryRuntime, thread: string) {
@@ -49,12 +33,9 @@ function subagents(f: FactoryRuntime, thread: string) {
   return found;
 }
 
-type ThreadRecord = { sessions: string[]; transcript?: string };
-
-/** One read of T3's projections gives both: each provider thread's native session id (a subagent thread has its own
- * session), and the thread's messages. It works on any machine connected to T3 Code, unlike the factory's T3 MCP
- * sign-in. */
-async function threadRecord(f: FactoryRuntime, thread: string, withTranscript: boolean): Promise<ThreadRecord> {
+/** Each provider thread's native session id, read from T3's projections: a subagent thread has its own session. It
+ * works on any machine connected to T3 Code, unlike the factory's T3 MCP sign-in. */
+async function threadSessions(f: FactoryRuntime, thread: string): Promise<string[]> {
   const ids = [thread, ...subagents(f, thread)];
   const projections = await t3Client(f.s).rpc((call) =>
     Promise.all(
@@ -70,14 +51,7 @@ async function threadRecord(f: FactoryRuntime, thread: string, withTranscript: b
   const sessions = projections
     .flatMap((p) => p?.providerThreads.map((pt) => pt.nativeThreadRef?.nativeId) ?? [])
     .filter((id): id is string => !!id && SESSION_ID.test(id));
-  const record: ThreadRecord = { sessions: [...new Set(sessions)] };
-  if (withTranscript) {
-    const messages = projections[0]!.messages.map(
-      (m) => `## ${typeof m.role === "string" ? m.role : "message"}\n\n${m.text}`,
-    );
-    record.transcript = capped(messages.join("\n\n"));
-  }
-  return record;
+  return [...new Set(sessions)];
 }
 
 const usageSchema = z.array(
@@ -90,18 +64,13 @@ const total = (rows: z.infer<typeof usageSchema>) =>
 /** Tokens and the provider sessions found of a run's thread, which is always this machine's: a handoff detaches it. */
 async function measure(f: FactoryRuntime, run: FactoryRun) {
   if (!run.threadId) return undefined;
-  const record = await threadRecord(f, run.threadId, false);
-  return { tokens: total(sessionUsage(f.s, record.sessions)), sessions: record.sessions };
+  const sessions = await threadSessions(f, run.threadId);
+  return { tokens: total(sessionUsage(f.s, sessions)), sessions };
 }
 
 /** The run's tokens now, read from T3 and the proxies' counts. */
 export async function runTokens(f: FactoryRuntime, run: FactoryRun): Promise<number> {
   return (await measure(f, run))?.tokens ?? 0;
-}
-
-/** The run's thread as T3 holds it now, for the judge grading it: nothing is stored, so a thread T3 deleted has none. */
-export async function runTranscript(f: FactoryRuntime, run: FactoryRun): Promise<string | undefined> {
-  return run.threadId ? (await threadRecord(f, run.threadId, true)).transcript : undefined;
 }
 
 // ---- recording runs
@@ -215,7 +184,7 @@ async function measureOpen(f: FactoryRuntime) {
   for (const id of m.failed.keys()) if (!measured.has(id)) m.failed.delete(id);
 }
 
-// ---- outcomes and verdicts
+// ---- outcomes
 
 const prOutcomeSchema = z.object({
   number: z.number(),
@@ -223,12 +192,6 @@ const prOutcomeSchema = z.object({
   state: z.enum(["OPEN", "CLOSED", "MERGED"]),
   mergedAt: z.string().optional(),
   reverted: z.boolean(),
-  /** Comments and review bodies from the repository's people without a factory marker: all GitHub text carries the
-   * maintainer's login (D42), and bots and outsiders are not the people whose reviews the factory learns from. */
-  peopleComments: z.number(),
-  /** Reviews people submitted on the PR, approvals without a body included. The factory posts none: its rounds are
-   * its review runs. */
-  peopleReviews: z.number(),
 });
 type PrOutcome = z.infer<typeof prOutcomeSchema>;
 
@@ -253,18 +216,12 @@ export function itemOutcome(item: FactoryItem) {
 
 async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome> {
   const view = await prView(item.prUrl);
-  const text = [
-    ...view.comments.map((c) => ({ body: c.body, by: c.authorAssociation })),
-    ...view.reviews.filter((r) => r.body.trim()).map((r) => ({ body: r.body, by: r.authorAssociation })),
-  ];
   return {
     number: view.number,
     title: view.title,
     state: view.state,
     ...(view.mergedAt && { mergedAt: view.mergedAt }),
     reverted: false, // the revert pass sets it
-    peopleComments: text.filter((c) => COLLABORATORS.includes(c.by) && !parseMarkers(c.body).length).length,
-    peopleReviews: view.reviews.length,
   };
 }
 
@@ -321,7 +278,7 @@ const median = (values: number[]) => {
 };
 
 /** The board's outcome metrics over the items that finished in the last 7 days; reverts over the last 14. */
-function metrics(f: FactoryRuntime): Omit<FactoryBoard["metrics"], "scorers"> {
+function metrics(f: FactoryRuntime): FactoryBoard["metrics"] {
   const { s } = f;
   const finished = (days: number) =>
     items.list(s, { open: false, finishedSince: s.now() - days * DAY }).map((item) => itemOutcome(item));
@@ -350,6 +307,5 @@ export function setup(f: FactoryRuntime): void {
     where: "factory-node",
     run: () => refreshOutcomes(f),
   });
-  // Metrics merge key by key; scorers.ts adds the judges' pass rates.
-  f.boardParts.push(async () => ({ metrics: metrics(f) }) as Partial<FactoryBoard>);
+  f.boardParts.push(async () => ({ metrics: metrics(f) }));
 }

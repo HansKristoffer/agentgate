@@ -436,7 +436,7 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
   // A push makes what was checked before stale.
   if (view.headRefOid !== data.head) {
     data = { ...data, head: view.headRefOid, headAt: s.now() };
-    runs.update(s, run.id, { checked: data, commitSha: view.headRefOid });
+    runs.update(s, run.id, { checked: data });
     items.update(s, item.id, { prCommit: view.headRefOid });
   }
   // While the item waits for the maintainer, nothing else moves it; a stall clears itself when the problem goes.
@@ -658,7 +658,7 @@ export async function takeReview(f: FactoryRuntime, id: string) {
   const final = !open.length || round >= max;
   // Recorded before anything is posted, so a restart never posts this round twice.
   const checked: RunDataOf<"review"> = { kind: "review", head, round, final };
-  runs.update(f.s, run.id, { commitSha: head, checked });
+  runs.update(f.s, run.id, { checked });
   f.events.emit({
     kind: "note",
     item: item.id,

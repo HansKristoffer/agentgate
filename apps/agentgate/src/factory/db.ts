@@ -46,7 +46,7 @@ export interface FactoryItem {
 }
 
 /** What the factory recorded about a run as it went: the PR an implement run opened and its nudges, a review round,
- * the run a judge grades, a learning PR's check or proposal. Stored as JSON in `checked`. */
+ * a scout's source and what it filed. Stored as JSON in `checked`. */
 export const runDataSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("implement"),
@@ -83,21 +83,6 @@ export const runDataSchema = z.discriminatedUnion("kind", [
     /** The item goes to `ready` with this round; retried until marking the PR ready works. */
     final: z.boolean().optional(),
   }),
-  z.object({ kind: z.literal("judge"), run: z.string(), scorer: z.string() }),
-  z.object({
-    kind: z.literal("learn"),
-    /** A folder on GitHub: the learning PR the factory checked, at its head. */
-    pr: z.string().optional(),
-    head: z.string().optional(),
-    problems: z.array(z.string()),
-    /** A stored folder: each proposed file's text when the run reported (null: absent), and what the maintainer did. */
-    proposal: z
-      .object({
-        before: z.record(z.string(), z.string().nullable()),
-        state: z.enum(["open", "applied", "discarded"]),
-      })
-      .optional(),
-  }),
   /** Set when queued; `filed` (item keys) and `skipped` (finding keys) once the report is accepted. */
   z.object({
     kind: z.literal("scout"),
@@ -111,17 +96,15 @@ export type RunDataOf<K extends RunData["kind"]> = Extract<RunData, { kind: K }>
 
 export interface FactoryRun {
   id: string; // also T3's clientRequestId
-  item?: string; // absent for judge and learn runs
+  item?: string; // absent for scout runs
   kind: RunKind;
   attempt: number;
   state: RunState;
   node?: string; // machine whose T3 holds the thread; changes on handoff
   threadId?: string;
   threadLink?: string;
-  commitSha?: string; // the commit the result applies to
   report?: FactoryReport;
   checked?: RunData;
-  verdict?: "success" | "flawed";
   nudges: number;
   error?: string;
   configCommit: string;
@@ -141,17 +124,6 @@ export interface FactoryRun {
   endedAt?: number;
 }
 
-export interface FactoryScore {
-  run: string;
-  scorer: string;
-  label: string;
-  score: number;
-  passed: boolean;
-  reasoning: string;
-  judgeRun: string;
-  at: number;
-}
-
 export function ensureFactoryTables(s: Store) {
   s.transaction(() => {
     s.db.run(`create table if not exists factory_items (
@@ -166,9 +138,8 @@ export function ensureFactoryTables(s: Store) {
     s.db.run("create index if not exists factory_items_dedupe on factory_items(source, dedupe, created_at)");
     s.db.run(`create table if not exists factory_runs (
       id text primary key, item text, kind text not null, attempt integer not null default 1, state text not null,
-      node text, thread_id text, thread_link text, commit_sha text, report text, checked text, verdict text,
-      nudges integer not null default 0, error text, config_commit text not null, launch_session text,
-      failed_launches integer, source text,
+      node text, thread_id text, thread_link text, report text, checked text, nudges integer not null default 0,
+      error text, config_commit text not null, launch_session text, failed_launches integer, source text,
       tokens integer not null default 0, sessions integer not null default 0, measured_at integer,
       queued_at integer not null, started_at integer, ended_at integer)`);
     s.db.run("create index if not exists factory_runs_item on factory_runs(item)");
@@ -177,17 +148,13 @@ export function ensureFactoryTables(s: Store) {
     s.db.run("create index if not exists factory_runs_kind on factory_runs(kind, source, queued_at)");
     // The MCP gateway finds a session's run by its thread on every tool call.
     s.db.run("create index if not exists factory_runs_thread on factory_runs(thread_id)");
-    s.db.run(`create table if not exists factory_scores (
-      run text not null, scorer text not null, label text not null, score real not null, passed integer not null,
-      reasoning text not null, judge_run text not null, at integer not null, primary key (run, scorer))`);
     s.db.run(`create table if not exists factory_events (
       seq integer primary key autoincrement, at integer not null, item text, run text, kind text not null,
       text text not null)`);
     s.db.run("create index if not exists factory_events_item on factory_events(item, kind)");
     // The outbox: every write to GitHub or Linear whose outcome can be uncertain, claimed with its body before it is
-    // sent (outbox.ts). `item` is the owner: an item, or a run without one. `refusals` counts the times the service
-    // said no, `claimed` is when it was claimed and `at` when it was last sent. Its own table: the event log is
-    // trimmed.
+    // sent (outbox.ts). `refusals` counts the times the service said no, `claimed` is when it was claimed and `at`
+    // when it was last sent. Its own table: the event log is trimmed.
     s.db.run(`create table if not exists factory_writebacks (
       item text not null, moment text not null, ref text not null, status text not null, body text not null,
       what text not null, refusals integer not null default 0, claimed integer not null, at integer not null,
@@ -248,10 +215,8 @@ const runColumns = {
   node: "node",
   threadId: "thread_id",
   threadLink: "thread_link",
-  commitSha: "commit_sha",
   report: "report",
   checked: "checked",
-  verdict: "verdict",
   nudges: "nudges",
   error: "error",
   configCommit: "config_commit",
@@ -324,10 +289,8 @@ const toRun = (r: Row): FactoryRun => ({
   node: opt(r.node as string | null),
   threadId: opt(r.thread_id as string | null),
   threadLink: opt(r.thread_link as string | null),
-  commitSha: opt(r.commit_sha as string | null),
   report: json(r.report),
   checked: runData(r.checked),
-  verdict: opt(r.verdict as FactoryRun["verdict"] | null),
   nudges: r.nudges as number,
   error: opt(r.error as string | null),
   configCommit: r.config_commit as string,
@@ -503,36 +466,6 @@ export const runs = {
     ]),
 };
 
-const toScore = (r: Row): FactoryScore => ({
-  run: r.run as string,
-  scorer: r.scorer as string,
-  label: r.label as string,
-  score: r.score as number,
-  passed: r.passed === 1,
-  reasoning: r.reasoning as string,
-  judgeRun: r.judge_run as string,
-  at: r.at as number,
-});
-
-export const scores = {
-  put: (s: Store, x: FactoryScore) => {
-    s.db.run("insert or replace into factory_scores values (?, ?, ?, ?, ?, ?, ?, ?)", [
-      x.run,
-      x.scorer,
-      x.label,
-      x.score,
-      x.passed ? 1 : 0,
-      x.reasoning,
-      x.judgeRun,
-      x.at,
-    ]);
-  },
-  forRun: (s: Store, run: string) =>
-    (s.db.query("select * from factory_scores where run=? order by scorer").all(run) as Row[]).map(toScore),
-  since: (s: Store, at: number) =>
-    (s.db.query("select * from factory_scores where at >= ? order by at").all(at) as Row[]).map(toScore),
-};
-
 const KEEP_MS = 90 * 24 * 3600_000;
 
 /** Items, their runs and everything recorded about them 90 days after the item finished; runs without an item 90
@@ -543,10 +476,7 @@ export function trimFactory(s: Store) {
     s.db.run("delete from factory_runs where item in (select id from factory_items where finished_at < ?)", [before]);
     s.db.run("delete from factory_items where finished_at < ?", [before]);
     s.db.run("delete from factory_runs where item is null and ended_at < ?", [before]);
-    s.db.run("delete from factory_scores where run not in (select id from factory_runs)");
-    s.db.run(
-      "delete from factory_writebacks where item not in (select id from factory_items) and item not in (select id from factory_runs)",
-    );
+    s.db.run("delete from factory_writebacks where item not in (select id from factory_items)");
     s.db.run("delete from factory_events where seq <= (select max(seq) from factory_events) - ?", [
       s.settings().logRetention,
     ]);

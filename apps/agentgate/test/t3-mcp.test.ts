@@ -136,7 +136,7 @@ test("the loop does not renew a token while a launch sent under it waits for its
   // A launch whose answer did not come: only its session can find the thread again, so the session must stay.
   runs.insert(s, {
     id: "run_launching",
-    kind: "learn",
+    kind: "scout",
     attempt: 1,
     state: "queued",
     nudges: 0,

@@ -68,7 +68,7 @@ function prBody(repo: string) {
   return [
     "This adds a software factory for this repository: AgentGate works issues labelled `factory` in T3 Code threads, up to a pull request ready for review. It never merges.",
     "",
-    `- \`${FOLDER}/factory.yaml\` names the repository and its source, open issues labelled \`${LABEL}\`. Stage briefs, judges and skills can be added next to it.`,
+    `- \`${FOLDER}/factory.yaml\` names the repository and its source, open issues labelled \`${LABEL}\`. Stage briefs, scouts and skills can be added next to it.`,
     `- \`${FOLDER}/rulings.md\` holds your standing decisions, added to every brief.`,
     "",
     `The factory already runs at this branch. Merging this PR moves it to the default branch; change the folder later through PRs like this one. Label an issue in ${repo} with \`${LABEL}\` to start.`,

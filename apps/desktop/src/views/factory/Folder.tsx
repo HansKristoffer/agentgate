@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import type { FactoryBoard, FolderProposal, StoredFolderView } from "@agentgate/protocol";
+import type { StoredFolderView } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
-import { ActionButton, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
+import { Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
 import type { Run } from "./Settings.tsx";
 
@@ -72,74 +72,6 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
               Save
             </Button>
           </form>
-        </Modal>
-      )}
-    </Panel>
-  );
-}
-
-/** `agentgate factory proposal`: what learning runs propose for the stored folder, to read, apply or discard. */
-export function Proposals({
-  connection,
-  board,
-  run,
-}: Pick<ViewProps, "connection"> & { board: FactoryBoard; run: Run }) {
-  const [shown, setShown] = useState<FolderProposal>();
-  const proposals = board.proposals ?? [];
-  if (!proposals.length) return null;
-  const act = (id: string, action: "apply" | "discard") =>
-    run(
-      async () => {
-        await request(connection, `/factory/proposals/${id}/${action}`, "POST");
-        setShown(undefined);
-      },
-      action === "apply" ? "Proposal applied" : "Proposal discarded",
-    );
-  return (
-    <Panel title="Learning proposals" detail="Changes a learning run suggests for the stored folder.">
-      {proposals.map((p) => (
-        <div className="item" key={p.run}>
-          <div className="grow">
-            <strong>{p.files.join(", ")}</strong>
-            <small className="muted">
-              {p.run} · {new Date(p.at).toLocaleDateString()}
-            </small>
-          </div>
-          <ActionButton
-            size="sm"
-            variant="tertiary"
-            pendingKey={`factory:proposal:${p.run}`}
-            onPress={() =>
-              void run(
-                async () => setShown(await request<FolderProposal>(connection, `/factory/proposals/${p.run}`)),
-                undefined,
-                `factory:proposal:${p.run}`,
-              )
-            }
-          >
-            Review…
-          </ActionButton>
-        </div>
-      ))}
-      {shown && (
-        <Modal title={`Proposal of ${shown.run}`} close={() => setShown(undefined)} size="lg">
-          <pre className="muted">{shown.body}</pre>
-          {shown.files.map((file) => (
-            <div key={file.path}>
-              <strong>
-                {file.path} ({file.change})
-              </strong>
-              <pre>{file.diff}</pre>
-            </div>
-          ))}
-          <div className="row">
-            <Button size="sm" onPress={() => void act(shown.run, "apply")}>
-              Apply
-            </Button>
-            <Button size="sm" variant="danger-soft" onPress={() => void act(shown.run, "discard")}>
-              Discard
-            </Button>
-          </div>
         </Modal>
       )}
     </Panel>

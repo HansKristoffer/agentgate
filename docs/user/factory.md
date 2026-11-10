@@ -56,7 +56,6 @@ factory/                  any folder in a git repository, or the one agentgate k
   factory.yaml            required
   rulings.md              your standing rulings, added to every brief
   stages/<stage>.md       replaces a stage's built-in brief: triage, spec, implement or review
-  scorers/<name>.md       an AI judge that grades a sample of runs
   scouts/<id>.md          a scout: its settings as frontmatter, and its prompt
   skills/<name>/SKILL.md  a skill installed into every repository the factory works in
 ```
@@ -87,8 +86,6 @@ Durations are a number and `m`, `h` or `d`, such as `15m` or `7d`. Unknown keys 
 | `limits.stalledAfter`      | `15m`      | How long a thread may sit idle on a failing check, a conflict, a review comment or review findings before the factory nudges it, or sends the PR to you.                                                                                                          |
 | `sources`                  | `[]`       | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
 | `stages.<stage>.note`      |            | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
-| `learning.every`           | `7d`       | How often the learning thread runs, counted from the last one. It is skipped while no item finished since.                                                                                                                                                        |
-| `scoring.sample`           | `25`       | The percentage of finished stage runs each judge grades (0 to 100). `0` turns them off.                                                                                                                                                                           |
 
 Repository names are matched without regard to case, and a source names a repository listed under `repositories`.
 
@@ -117,24 +114,9 @@ A note follows the brief, built in or from this file, so a project keeps getting
 
 The built-in briefs are a starting point. Triage closes reports that do not come from production (a CI runner, a developer's machine, test data) or that a third-party outage caused, asks you before anything about accounts, permissions, payments, other people's data, CI, deployment or secrets, and sends changes over about 400 lines to spec, which cuts a first slice. The implement thread fixes the cause everywhere it shows up, checks a change that shows on screen in the running app, stops what it started, and reads its whole diff as a reviewer would before it opens the PR. The review thread runs focused passes, as subagents where its agent can start them: correctness, tests (with the fix reverted), reuse and simplicity, efficiency, security, and the repository's own rules. It reports only findings it confirmed in the code, and the risk of the change. A `stages/review.md` replaces those passes with your own.
 
-### scorers/\<name\>.md
-
-A judge is a thread of its own that grades a sample of finished stage runs against the rubric in the file's body, and reports one label. A run whose judge score falls below `pass` counts as flawed, which the learning thread studies. Judges change nothing in the repositories. The name is up to 40 lowercase letters, digits and dashes.
-
-| Key           | Meaning                                                                                   |
-| ------------- | ----------------------------------------------------------------------------------------- |
-| `description` | Required. What the judge checks, up to 300 characters.                                    |
-| `stages`      | Required. The stages whose runs it grades: `triage`, `spec`, `implement`, `review`.       |
-| `labels`      | Required. 2 to 10 labels, each with a `value`, a `description` and a `score` from 0 to 1. |
-| `pass`        | Required. The lowest passing score, from 0 to 1, at most the best label's score.          |
-| `sample`      | The percentage of runs to grade; overrides `scoring.sample`.                              |
-| `model`       | The judge's model, as for stages.                                                         |
-
-The sample is picked by run id, so asking again picks the same runs.
-
 ### rulings.md
 
-Your standing decisions for the factory, added to every stage's brief. Only you change it. The learning thread may cite it, and a learning PR that changes it is marked flawed and gets a comment saying so. HTML comments (`<!-- -->`) are notes for whoever edits the file and never reach a brief; the file `factory init` writes asks two questions in one: whether the project is greenfield or has live data, and which packages you own, so causes in them are fixed there.
+Your standing decisions for the factory, added to every stage's brief. Only you change it. HTML comments (`<!-- -->`) are notes for whoever edits the file and never reach a brief; the file `factory init` writes asks two questions in one: whether the project is greenfield or has live data, and which packages you own, so causes in them are fixed there.
 
 ### skills/\<name\>/SKILL.md
 
@@ -180,8 +162,6 @@ sources:
 stages:
   implement:
     note: Run `bun test` in the package you changed before you open the PR.
-learning:
-  every: 14d
 ```
 
 `stages/triage.md`:
@@ -220,29 +200,6 @@ model:
 ---
 
 Review the PR in focused passes, and report only findings you confirmed in the code.
-```
-
-`scorers/tests.md`:
-
-```text
----
-description: Whether the PR's tests fail without the fix
-stages: [implement, review]
-labels:
-  - value: proves
-    description: A new test fails without the fix and passes with it
-    score: 1
-  - value: partial
-    description: Tests cover the change but would pass without the fix
-    score: 0.5
-  - value: none
-    description: No test covers the change
-    score: 0
-pass: 0.5
-sample: 50
----
-
-Read the diff and the tests. Check out the base commit and run the new tests against it.
 ```
 
 `rulings.md`:
@@ -436,9 +393,9 @@ Secrets are copied to every paired machine, so whichever machine runs the factor
 
 ## While it runs
 
-The app's **Factory** view is the place to follow and steer it. Items that wait for you come first, with their question, the recommendation, buttons to approve, answer, reject, retry or drop, and **Open in T3 Code** for the thread that asks. Below are the stages as columns; an item opens to its runs (each with its thread), the comments the factory posted and its events. Tabs show the status, sources with their webhook URLs and scout schedules (and buttons to add a webhook or scout), every machine's threads, the week's metrics and recent events, and Settings has pause and resume, reload, learning, the T3 Code sign-in, moving the factory, turning it off, and secrets (on a local connection only). It works the same whichever machine the app is connected to.
+The app's **Factory** view is the place to follow and steer it. Items that wait for you come first, with their question, the recommendation, buttons to approve, answer, reject, retry or drop, and **Open in T3 Code** for the thread that asks. Below are the stages as columns; an item opens to its runs (each with its thread), the comments the factory posted and its events. Tabs show the status, sources with their webhook URLs and scout schedules (and buttons to add a webhook or scout), every machine's threads, the week's metrics and recent events, and Settings has pause and resume, reload, the T3 Code sign-in, moving the factory, turning it off, and secrets (on a local connection only). It works the same whichever machine the app is connected to.
 
-Watch the board with `agentgate factory status`, or turn on the page with `agentgate dashboard on` (add `--node` for another machine) and open `/factory` on that machine's address. The page needs no sign-in, like the [machine dashboard](../../README.md#machine-dashboard), so anyone on your tailnet can read item titles and questions while it is on. It shows the items by stage with their PRs, review rounds and open findings, what waits for you, capacity, sources, every machine's T3 Code threads, recent events, and the last 7 days' numbers: PRs merged, merge rate, reverts within 14 days, median hours to merge, how often a person stepped in per item, tokens per merged PR, and each judge's pass rate by folder commit. Agents read the same board through the `agentgate__factory_status` tool.
+Watch the board with `agentgate factory status`, or turn on the page with `agentgate dashboard on` (add `--node` for another machine) and open `/factory` on that machine's address. The page needs no sign-in, like the [machine dashboard](../../README.md#machine-dashboard), so anyone on your tailnet can read item titles and questions while it is on. It shows the items by stage with their PRs, review rounds and open findings, what waits for you, capacity, sources, every machine's T3 Code threads, recent events, and the last 7 days' numbers: PRs merged, merge rate, reverts within 14 days, median hours to merge, how often a person stepped in per item, and tokens per merged PR. Agents read the same board through the `agentgate__factory_status` tool.
 
 An item is in one of these stages: `held`, `triage`, `spec`, `implement`, `pr` (a draft PR exists and its checks run), `review`, `ready`, and when it ends, `shipped` (the PR was merged) or `closed`. Items are named by their key, such as `api-42`, or their id; a bare number works while only one item has it.
 
@@ -461,7 +418,7 @@ When an item waits for you, it stays in its stage and the board says why:
 | `stopped`    | Someone stopped one of its threads in T3 Code, or deleted the thread of a stage that was still working. The factory never starts a thread you stopped again by itself.    | `retry` goes on: with its PR, or the stage in a new thread; `drop` closes the item.             |
 
 - `reject` on a spec card answers **Change** with your reason as the feedback, and the spec gets another round.
-- `retry` takes an item that waits as `failed`, `budget`, `stalled`, `stuck`, `handed-off` or `stopped` back to work: an item with a PR goes on with that PR, and any other starts its stage again in a new thread. A `closed` item starts again at triage, and a triage that had closed it counts as a wrong call for learning.
+- `retry` takes an item that waits as `failed`, `budget`, `stalled`, `stuck`, `handed-off` or `stopped` back to work: an item with a PR goes on with that PR, and any other starts its stage again in a new thread. A `closed` item starts again at triage.
 - `drop` stops the item's threads and closes it with a comment. Its PR, if it has one, stays open for you to close.
 
 A stage thread whose turn ends without a report is reminded once, then the stage starts again in a new thread; a second silent end makes the item wait for you as `failed`. A turn that waits on a command or a subagent is still working. The factory comments on the item's issue at most once for each moment, even when GitHub or Linear did not confirm the comment.
@@ -480,11 +437,6 @@ The factory wakes the thread once for each new problem, and again after `limits.
 
 When a branch requires checks, through a branch protection rule or a ruleset, only those count; otherwise every check does. The PR waits until each check that counts has passed, so a failing check the branch does not require, such as a preview deploy, holds nothing back, and a PR without checks counts as passing once its head is 10 minutes old. The factory reads a commit's first 100 checks, so a commit with more never counts as passing, though a failure among those 100 still counts. A new fix waits while a check that counts fails on the default branch's newest commit; a required check that runs only on pull requests is not waited for there.
 
-## Learning and judges
-
-- **Learning**: every `learning.every`, or now with `agentgate factory learn`, a thread in a worktree of the factory repository studies the finished runs (their outcomes, judge scores, review findings and the friction threads reported, such as a missing tool or a broken setup), review comments, reverts and the repositories' own merged PRs, and opens one PR against the folder with the sections Targets, Runs addressed, Evidence and Expected effect. It first checks whether earlier learning PRs had their expected effect, judges a file only by runs made under its current wording once at least 10 finished, changes it only for a miss seen twice or once with a person's written reason, and makes at most one change per file and three in all. What a repository needs instead of a brief, such as a check for a mechanical rule or a fix to its setup, it files as issues there, without your source's label. It never merges and never changes `rulings.md`; you review its PR like any other, and the factory loads the change once it is merged. A folder kept in agentgate has no repository to open a PR on: the thread runs in a worktree of the folder's first repository and hands the files it would change to the factory, which refuses a proposal that touches `rulings.md`, lacks a section or leaves a broken folder. The proposal waits under **Learning proposals** in the app's Factory settings, and in `agentgate factory status`. `agentgate factory proposal <run>` shows it as a diff, and `proposal apply <run>` or `proposal discard <run>` settles it. Apply refuses when a file it changes was edited since the run proposed it.
-- **Judges**: the files in `scorers/`, described above.
-
 ## Several machines
 
 One machine runs the factory. It polls the sources, starts the threads in its T3 Code, and holds the items. On your other machines, `agentgate factory` commands and the agents' factory tools reach it over Tailscale or the relay, and `status` shows its board.
@@ -500,7 +452,6 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory use <owner/repo>[:<path>] [--ref <branch\|tag>] [--node <machine>]`        | Turn the factory on, or point it at another folder or machine.                                                       |
 | `factory use --store agentgate [--node <machine>]`                                  | Turn the factory on with the folder agentgate keeps.                                                                 |
 | `factory folder ls\|cat <path>\|put <path>\|rm <path>\|delete`                      | Read and edit the folder agentgate keeps; `put` reads the file from stdin.                                           |
-| `factory proposal [apply\|discard] <run>`                                           | Show, apply or discard a learning run's proposal for that folder.                                                    |
 | `factory move <machine>`                                                            | Run the same folder on another machine.                                                                              |
 | `factory off`                                                                       | Turn it off.                                                                                                         |
 | `factory reload`                                                                    | Fetch and check the folder now.                                                                                      |
@@ -511,7 +462,6 @@ One machine runs the factory. It polls the sources, starts the threads in its T3
 | `factory pause` / `resume`                                                          | Stop intake, new threads and nudges, and start them again.                                                           |
 | `factory secret set <NAME>` / `list` / `delete <NAME>`                              | Manage secrets; `set` reads the value from stdin.                                                                    |
 | `factory t3 [sign-in]`                                                              | The factory's sign-in to T3 Code's MCP.                                                                              |
-| `factory learn`                                                                     | Start the learning thread now.                                                                                       |
 | `factory scout <id>`                                                                | Run a scout now.                                                                                                     |
 | `factory source add [--json] < source.yaml`                                         | Add a webhook source or scout: a PR, or at once for a folder kept in agentgate.                                      |
 

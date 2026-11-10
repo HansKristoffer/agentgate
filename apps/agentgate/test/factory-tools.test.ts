@@ -293,7 +293,7 @@ test("retry starts the failed stage again, and drop interrupts and settles the t
   expect(await n.command("retry", "gh-404")).toEqual({ code: 1, output: ["a holds no factory item gh-404"] });
 });
 
-test("retry takes in again an item its triage closed: that triage run counts as flawed, and the issue hears the factory took it again", async () => {
+test("retry takes in again an item its triage closed, and the issue hears the factory took it again", async () => {
   const n = await triaging(1);
   const [run] = n.started;
   expect(await n.report(run!, { outcome: "not-a-bug", summary: "Works as designed." })).toEqual({ accepted: true });
@@ -302,7 +302,6 @@ test("retry takes in again an item its triage closed: that triage run counts as 
   expect(await n.command("retry", "gh-1")).toEqual({ code: 0, output: ["Retrying triage for gh-1"] });
   await idle(n.f);
   expect(item(n, run!)).toMatchObject({ phase: "triage", touches: 1 });
-  expect(runs.get(n.s, run!.id)!.verdict).toBe("flawed");
   expect(runs.forItem(n.s, run!.item!).map((r) => [r.kind, r.state])).toEqual([
     ["triage", "reported"],
     ["triage", "queued"],
@@ -402,11 +401,9 @@ test("agents see the factory's tools, without the ones only routes call", async 
   const names = (await builtin.listTools()).tools.map((t) => t.name).filter((t) => t.startsWith("factory_"));
   expect(names.sort()).toEqual([
     "factory_add",
-    "factory_history",
     "factory_item",
     "factory_pr_threads",
     "factory_report",
-    "factory_run",
     "factory_status",
   ]);
 });

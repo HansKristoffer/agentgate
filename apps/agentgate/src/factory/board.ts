@@ -91,7 +91,7 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
     items: [],
     machines: await machines(f),
     sources: [],
-    metrics: { merged: 0, mergeRate: 0, reverts14d: 0, scorers: [] },
+    metrics: { merged: 0, mergeRate: 0, reverts14d: 0 },
     events: f.events.recent(50),
   };
   const parts = await Promise.all(
@@ -108,11 +108,11 @@ export async function buildBoard(f: FactoryRuntime, opts: { includeWebhookUrls: 
 const defined = <T extends object>(o: T | undefined) =>
   Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined)) as Partial<T>;
 
-/** Arrays add up (items by id, the later part winning), sources by id key by key, `metrics`, `t3` and `capacity`
- * merge key by key, and any other key is the later part's. `t3` merges because the mirror and the T3 sign-in each
- * report half of it, and a source row because the controller reports its polls and the webhooks its URL. */
+/** Arrays add up (items by id, the later part winning), sources by id key by key, `t3` and `capacity` merge key by
+ * key, and any other key is the later part's. `t3` merges because the mirror and the T3 sign-in each report half of
+ * it, and a source row because the controller reports its polls and the webhooks its URL. */
 function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
-  const { items, sources, machines, events, metrics, t3, capacity, ...rest } = part;
+  const { items, sources, machines, events, t3, capacity, ...rest } = part;
   const byId = new Map(board.sources.map((row) => [row.id, row]));
   for (const row of sources ?? []) byId.set(row.id, { ...byId.get(row.id), ...row });
   return {
@@ -122,11 +122,6 @@ function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
     sources: [...byId.values()],
     machines: [...board.machines, ...(machines ?? [])],
     events: [...board.events, ...(events ?? [])],
-    metrics: {
-      ...board.metrics,
-      ...defined(metrics),
-      scorers: [...board.metrics.scorers, ...(metrics?.scorers ?? [])],
-    },
     t3: { ...board.t3, ...defined(t3) },
     capacity: { ...board.capacity, ...defined(capacity) },
   };
@@ -295,8 +290,8 @@ const percent = (rate: number) => `${Math.round(rate * 100)}%`;
 const tokens = (n: number) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n));
 
-/** The last 7 days' outcomes, and each judge's pass rate. */
-function metricsText(m: FactoryBoard["metrics"]): string[] {
+/** The last 7 days' outcomes. */
+function metricsText(m: FactoryBoard["metrics"]): string {
   const outcomes = [
     `${m.merged} merged`,
     `merge rate ${percent(m.mergeRate)}`,
@@ -305,8 +300,7 @@ function metricsText(m: FactoryBoard["metrics"]): string[] {
     ...(m.humanTouchesPerItem !== undefined ? [`${m.humanTouchesPerItem.toFixed(1)} human touches per item`] : []),
     ...(m.tokensPerMergedPr !== undefined ? [`${tokens(m.tokensPerMergedPr)} tokens per merged PR`] : []),
   ];
-  const judges = m.scorers.map((x) => `  ${x.name}: ${percent(x.passRate)} passed of ${x.runs} runs`);
-  return [`Last 7 days: ${outcomes.join(", ")}`, ...(judges.length ? ["Judges, last 7 days:", ...judges] : [])];
+  return `Last 7 days: ${outcomes.join(", ")}`;
 }
 
 /** The board for a terminal or an agent. `short` leaves out each machine's threads and the event list. */
@@ -333,7 +327,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
     ...(c.mainRed.length ? [`main is red in ${c.mainRed.join(", ")}`] : []),
   ];
   lines.push(capacity.join(", "));
-  if (p) lines.push(...metricsText(b.metrics));
+  if (p) lines.push(metricsText(b.metrics));
 
   const waiting = b.items.filter((i) => i.needsYou || i.phase === "ready");
   if (waiting.length) lines.push("", "Needs you:");
@@ -343,10 +337,6 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
         ? `  ${key} ${title}: ${n.reason}${when(n.question, `: ${n.question}`)}${when(n.link, ` ${n.link}`)}`
         : `  ${key} ${title}: ready for your review${when(pr, ` ${pr?.url}`)}`,
     );
-
-  if (b.proposals?.length) lines.push("", "Learning proposals for the stored folder:");
-  for (const { run, files } of b.proposals ?? [])
-    lines.push(`  ${run}: ${files.join(", ")} (agentgate factory proposal ${run})`);
 
   if (b.items.length) lines.push("", "Items:");
   for (const phase of itemPhases)

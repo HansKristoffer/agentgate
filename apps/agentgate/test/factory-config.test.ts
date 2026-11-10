@@ -90,7 +90,6 @@ test("the example folder loads with every file type, defaults applied and source
   expect(folder.config.stages).toEqual({
     implement: { note: "Run `bun test` in the package you changed before you open the PR." },
   });
-  expect(folder.scorers.tests!.file.sample).toBe(50);
   expect(folder.rulings).toStartWith("# Rulings");
   expect(folder.skillsDir).toBe(join(FIXTURE, "skills"));
 });
@@ -110,11 +109,6 @@ test.each([
     "an unknown frontmatter key in a stage",
     edited("stages/implement.md", (t) => t.replace("start: manual", "start: manual\ncolor: red")),
     "stages/implement.md: color: unknown key",
-  ],
-  [
-    "a scorer whose pass is above its best label",
-    edited("scorers/tests.md", (t) => t.replace("score: 1\n", "score: 0.4\n").replace("score: 0.5\n", "score: 0.3\n")),
-    "scorers/tests.md: pass: 0.5 is above the best label's score, 0.4, so nothing passes",
   ],
   [
     "a note for a stage that does not exist",
@@ -183,7 +177,6 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
   expect(readdirSync(join(fetcher.root, good)).sort()).toEqual([
     "factory.yaml",
     "rulings.md",
-    "scorers",
     "scouts",
     "skills",
     "stages",

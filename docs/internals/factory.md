@@ -31,11 +31,9 @@ is `factoryConfigSchema` in [`packages/protocol/src/factory.ts`](../../packages/
 - A folder may live outside every repository, as the one synced `factoryFolder` record
   ([`stored.ts`](../../apps/agentgate/src/factory/stored.ts)), for projects that may not hold it; the pointer's
   `store` says which. Its commit is the SHA-256 of its files, written to `<home>/factory/<commit>` like a fetched
-  commit, so items, judges and pruning treat both the same. Unlike a push, every write checks that the folder loads and
+  commit, so items and pruning treat both the same. Unlike a push, every write checks that the folder loads and
   refuses one that does not: other machines only ever see the newest record, so a broken one would leave a new factory
-  machine nothing to run. Two saves at once keep the later, like any record. With no repository to open a PR on, a
-  learn run reports the files it would change; the factory keeps each file's text from that moment, and `apply`
-  refuses a file edited since, so a proposal never overwrites a newer edit.
+  machine nothing to run. Two saves at once keep the later, like any record.
 - `settings.factory` (the pointer to the folder and the machine that runs it), the `secret` and the `factoryFolder`
   record kinds are gated on every node advertising node protocol 8 (`FACTORY_PROTOCOL` in `store.ts`), because older nodes drop the settings
   field when they save and stall on an unknown kind. `SYNC_PROTOCOL` did not change. Only `use`, `move`, `off` and
@@ -67,7 +65,7 @@ still ends it. There is no `failed` phase, so `retry` knows where to resume, and
 
 ## Items are tables; markers are the shared truth
 
-Items, runs, events, scores and write-backs are node-local SQLite tables
+Items, runs, events and write-backs are node-local SQLite tables
 ([`db.ts`](../../apps/agentgate/src/factory/db.ts)), not synced records. They change every few seconds, and an item
 must have exactly one machine driving its threads, which last-writer-wins records cannot promise. Every machine
 drives the items in its own tables (dispatch, the PR follower, and the token and stuck loops run on every node) and no
@@ -108,9 +106,9 @@ work resumes from those.
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.
-- Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation, the note on
-  a flawed learning PR) goes through one outbox ([`outbox.ts`](../../apps/agentgate/src/factory/outbox.ts)): claimed
-  with its body in `factory_writebacks` in the step that decides it, so it is posted at most once. What happens to a
+- Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation) goes through
+  one outbox ([`outbox.ts`](../../apps/agentgate/src/factory/outbox.ts)): claimed with its body in
+  `factory_writebacks` in the step that decides it, so it is posted at most once. What happens to a
   claim next depends on whether the request can have arrived, which the `gh` boundary
   ([`ask` in `gh.ts`](../../apps/agentgate/src/factory/gh.ts)) and the Linear adapter decide from the HTTP status,
   `gh`'s exit code and the kind of network error, never from the wording of a message. One that certainly never
@@ -122,7 +120,7 @@ work resumes from those.
   log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or the ready
   summary in the PR body, need no claim; the summary is written before the item moves to `ready`.
 - Work the factory turns up and leaves alone (a review's findings in code the PR did not change, a spec's later
-  slices, a learning run's repository fixes) is filed as new issues through the same outbox
+  slices) is filed as new issues through the same outbox
   ([`fileIssue`](../../apps/agentgate/src/factory/outbox.ts)), without a source's label. Labelling one is the
   maintainer's approval, so the label stays the only gate (D40), and none of it counts toward `waitingForYou`, which
   held items would and so pause intake.
@@ -146,8 +144,7 @@ The factory depends on T3 Code interfaces that are not a stable public API, in t
   after the factory moved.
 - **T3 Code's WebSocket RPC**, through the handoff's T3 client: the `orchestration.subscribeShell` stream feeds the
   mirror ([`mirror.ts`](../../apps/agentgate/src/factory/mirror.ts)), which falls back to polling the shell; thread
-  projections give each run's provider sessions ([`records.ts`](../../apps/agentgate/src/factory/records.ts)), and a
-  judge's `factory_run` reads the graded run's transcript from them when it asks; the factory stores none.
+  projections give each run's provider sessions ([`records.ts`](../../apps/agentgate/src/factory/records.ts)).
 - A run's thread is always on the machine that holds the run. A stage thread a person hands to another machine leaves
   the factory: its run ends, and the item waits as `handed-off` until the maintainer retries or drops it; a PR it owns
   is still followed to its merge. Following threads across machines (reports, reminders, tokens and spec cards there)
@@ -188,15 +185,15 @@ elsewhere do not break it.
 
 The MCP shim adds the session's `T3CODE_THREAD_ID` to every call it forwards as `_meta["dev.agentgate/t3Thread"]`
 (`T3_THREAD_META_KEY`). `factory_report` and `factory_item` accept a run only from the thread and machine it belongs
-to, and `factory_run` answers only a judge run's own thread. This guards against misrouted reports, such as a subagent or another thread reporting
-the wrong run id. It is not a security boundary. Any process on the machine can reach the loopback `/mcp` and set
+to. This guards against misrouted reports, such as a subagent or another thread reporting the wrong run id. It is not
+a security boundary. Any process on the machine can reach the loopback `/mcp` and set
 `_meta`, and a full-access thread can already do anything the maintainer's login can.
 
 The shim also names its thread when it connects (`/mcp?thread=` and `/api/shim?thread=`), and the gateway narrows
 the session by it (`threadScope` in [`controller.ts`](../../apps/agentgate/src/factory/controller.ts)). A stage
 run's thread, and the T3 subagent threads under it, are listed agentgate's tools and the servers their stage file
-names in `mcp`, none by default; judge and learn threads get agentgate's tools only. `factory_report`,
-`factory_item` and `factory_run` are listed only to run threads. The gateway checks the scope again on every call,
+names in `mcp`, none by default; a scout's thread gets the servers its file names. `factory_report`, `factory_item`
+and `factory_pr_threads` are listed only to run threads. The gateway checks the scope again on every call,
 and tells a session its tools changed when its run starts or ends. This is defense in depth on the same label: it
 keeps a destructive cloud tool away from a stage unless the folder grants it, but a thread can start a process that
 names no thread.
@@ -277,4 +274,4 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
   counts nothing, so the board shows its item's tokens as unknown after 10 minutes.
 - The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the
   machine that holds the item. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
-  out, and the outcome metrics count comments without a factory marker as people's.
+  out.

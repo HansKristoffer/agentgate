@@ -2,15 +2,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import { revision } from "../src/configuration.ts";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
-import {
-  ensureFactoryTables,
-  items,
-  runs,
-  scores,
-  trimFactory,
-  type FactoryItem,
-  type FactoryRun,
-} from "../src/factory/db.ts";
+import { ensureFactoryTables, items, runs, trimFactory, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
 import { later, loopTask, readsStdin, withItem, type ForwardOp, type ToolCaller } from "../src/factory/runtime.ts";
 import { getSecret } from "../src/factory/secrets.ts";
 import { Store } from "../src/store.ts";
@@ -58,7 +50,7 @@ function caller(handler: ReturnType<typeof app>) {
 const useFactory = (s: Store, node: string) =>
   s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: "acme/api", node } });
 
-test("items, runs and scores keep every field, and the tables survive being created again", () => {
+test("items and runs keep every field, and the tables survive being created again", () => {
   const { s } = fixture();
   ensureFactoryTables(s);
 
@@ -107,10 +99,8 @@ test("items, runs and scores keep every field, and the tables survive being crea
     node: "a",
     threadId: "thread-1",
     threadLink: "t3://thread-1",
-    commitSha: "abc1234",
     report: { run: "run_1", outcome: "done", summary: "fixed" },
     checked: { kind: "implement", pr: "https://github.com/acme/api/pull/13", head: "abc1234", headAt: 4 },
-    verdict: "success",
     nudges: 1,
     tokens: 0,
     sessions: 0,
@@ -126,42 +116,28 @@ test("items, runs and scores keep every field, and the tables survive being crea
   // A value no kind reads is no run data.
   s.db.run("update factory_runs set checked=? where id=?", [JSON.stringify({ checks: "passing" }), "run_1"]);
   expect(runs.get(s, "run_1")!.checked).toBeUndefined();
-  const learn = runs.insert(s, {
+  const scout = runs.insert(s, {
     id: "run_2",
-    kind: "learn",
+    kind: "scout",
     attempt: 1,
     state: "queued",
     nudges: 0,
     configCommit: "3f2c1a9",
   });
-  expect(runs.get(s, "run_2")).toEqual(learn);
+  expect(runs.get(s, "run_2")).toEqual(scout);
   expect(runs.update(s, "run_2", { state: "running", startedAt: 5 })).toEqual({
-    ...learn,
+    ...scout,
     state: "running",
     startedAt: 5,
   });
   expect(runs.forItem(s, "it_1").map((r) => r.id)).toEqual(["run_1"]);
-  expect(runs.list(s, { states: ["running"], kinds: ["learn"] }).map((r) => r.id)).toEqual(["run_2"]);
+  expect(runs.list(s, { states: ["running"], kinds: ["scout"] }).map((r) => r.id)).toEqual(["run_2"]);
   expect(runs.list(s, { endedSince: 3 }).map((r) => r.id)).toEqual(["run_1"]);
   expect(runs.heads(s, ["running", "reported"]).map((r) => r.id)).toEqual(["run_2"]);
   expect(runs.byThreads(s, ["thread-1", "elsewhere"]).map((r) => [r.id, r.item])).toEqual([["run_1", "it_1"]]);
-
-  const score = {
-    run: "run_1",
-    scorer: "tests",
-    label: "good",
-    score: 1,
-    passed: true,
-    reasoning: "ok",
-    judgeRun: "run_3",
-    at: 50,
-  };
-  scores.put(s, score);
-  expect(scores.forRun(s, "run_1")).toEqual([score]);
-  expect(scores.since(s, 51)).toEqual([]);
 });
 
-test("open items stay; items finished 90 days ago go with their runs and scores", () => {
+test("open items stay; items finished 90 days ago go with their runs", () => {
   const { s } = fixture();
   const day = 24 * 3600_000;
   const base = { source: "bugs", repo: "acme/api", title: "t", snapshot: {}, configCommit: "c", tokens: 0 };
@@ -176,16 +152,6 @@ test("open items stay; items finished 90 days ago go with their runs and scores"
       nudges: 0,
       configCommit: "c",
     });
-    scores.put(s, {
-      run: `run_${id}`,
-      scorer: "x",
-      label: "y",
-      score: 1,
-      passed: true,
-      reasoning: "",
-      judgeRun: "j",
-      at: 0,
-    });
   };
   s.now = () => 0;
   add("old-open", "review");
@@ -197,8 +163,6 @@ test("open items stay; items finished 90 days ago go with their runs and scores"
   trimFactory(s);
   expect(items.list(s).map((i) => i.id)).toEqual(["old-open", "recent-done"]);
   expect(runs.list(s).map((r) => r.id)).toEqual(["run_old-open", "run_recent-done"]);
-  expect(scores.forRun(s, "run_old-done")).toEqual([]);
-  expect(scores.forRun(s, "run_old-open")).toHaveLength(1);
   expect(items.list(s, { open: true }).map((i) => i.id)).toEqual(["old-open"]);
   expect(items.list(s, { finishedSince: 85 * day }).map((i) => i.id)).toEqual(["old-open"]);
 });

@@ -11,15 +11,7 @@ export type FactoryEvent =
   | { kind: "run.queued"; run: string; item?: string; text: string }
   | { kind: "run.started"; run: string; item?: string; text: string }
   | { kind: "run.ended"; run: string; item?: string; state: RunState; text: string }
-  /** `item`, or `run` for a write a run without an item owns (a learning PR's note). */
-  | {
-      kind: "writeback";
-      item?: string;
-      run?: string;
-      moment: string;
-      status: PostResult["status"];
-      text: string;
-    }
+  | { kind: "writeback"; item: string; moment: string; status: PostResult["status"]; text: string }
   | { kind: "config"; commit?: string; error?: string; text: string }
   | { kind: "factory.off"; text: string }
   | { kind: "note"; item?: string; run?: string; text: string }

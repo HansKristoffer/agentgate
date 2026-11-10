@@ -140,7 +140,7 @@ const implement = (f: FactoryRuntime) => ({
       head: view.headRefOid,
       headAt: f.s.now(),
     };
-    runs.update(f.s, run.id, { checked, commitSha: view.headRefOid });
+    runs.update(f.s, run.id, { checked });
     return undefined;
   },
 

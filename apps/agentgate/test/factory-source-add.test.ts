@@ -68,12 +68,12 @@ test("a source is written as YAML that reads back the same, with times, template
 test.each([
   [
     "sources followed by another key, with comments",
-    TEMPLATE.replace("\n", "\n# the folder's settings\n") + "# learning\nlearning:\n  every: 7d\n",
+    TEMPLATE.replace("\n", "\n# the folder's settings\n") + "# limits\nlimits:\n  threads: 2\n",
   ],
   ["sources last", TEMPLATE],
   ["sources: []", TEMPLATE.replace(/sources:[\s\S]*$/, "sources: []\n")],
   ["no sources key", TEMPLATE.replace(/sources:[\s\S]*$/, "")],
-  ["sources with nothing under them", TEMPLATE.replace(/sources:[\s\S]*$/, "sources:\nlearning:\n  every: 7d\n")],
+  ["sources with nothing under them", TEMPLATE.replace(/sources:[\s\S]*$/, "sources:\nlimits:\n  threads: 2\n")],
 ])("a webhook source is added to a factory.yaml with %s, which keeps its comments and loads", (_, yaml) => {
   const next = insertSource(yaml, webhook);
   expect(next).toStartWith(yaml.split("\n")[0]!); // the schema comment stays first

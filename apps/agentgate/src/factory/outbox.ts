@@ -3,13 +3,13 @@ import { later, shortError } from "./runtime.ts";
 import { currentFolder } from "./config.ts";
 import { adapterOf } from "./controller.ts";
 import { items } from "./db.ts";
-import { createIssue, postIssueComment, replyToConversation } from "./gh.ts";
+import { createIssue, replyToConversation } from "./gh.ts";
 import { defuse } from "./markers.ts";
 
 /**
  * The outbox: every write to GitHub or Linear whose outcome can be uncertain (a comment on an item's issue, a reply in a
- * review conversation, the note on a flawed learning PR) goes through one claim. A write is claimed with its body,
- * once per owner, moment and `ref`, in the step that decides it, and sent after that step:
+ * review conversation, an issue the factory files) goes through one claim. A write is claimed with its body, once per
+ * item, moment and `ref`, in the step that decides it, and sent after that step:
  *
  * - `pending` is sent, by the step after the claim or by the loop: it was never attempted, or the service refused
  *   it, which wrote nothing, fewer than three times;
@@ -22,9 +22,8 @@ import { defuse } from "./markers.ts";
  * Writes that are safe to repeat, such as resolving a conversation or rewriting the PR body, do not need a claim.
  */
 
-/** "reply": `ref` is `<conversation id>@<commit>`. "learn": the owner is the learn run and `ref` its PR's number.
- * "issue": a new issue (`fileIssue`), its body the JSON of repo, title and text. Any other moment is a comment on the
- * owning item's source. */
+/** "reply": `ref` is `<conversation id>@<commit>`. "issue": a new issue (`fileIssue`), its body the JSON of repo,
+ * title and text. Any other moment is a comment on the item's source. */
 export type WriteMoment = string;
 
 /** How many refusals end a write. */
@@ -33,7 +32,7 @@ const REFUSALS = 3;
 const GIVE_UP = 86_400_000;
 const EVERY = 2 * 60_000;
 
-/** The writes this daemon is sending now, by owner, moment and ref. */
+/** The writes this daemon is sending now, by item, moment and ref. */
 const inFlight = new WeakMap<FactoryRuntime, Set<string>>();
 const flying = (f: FactoryRuntime) => {
   let set = inFlight.get(f);
@@ -41,10 +40,10 @@ const flying = (f: FactoryRuntime) => {
   return set;
 };
 
-/** Claims a write; false when this owner, moment and `ref` already has one. The send follows the current step. */
+/** Claims a write; false when this item, moment and `ref` already has one. The send follows the current step. */
 export function claimWrite(
   f: FactoryRuntime,
-  owner: string,
+  item: string,
   moment: WriteMoment,
   ref: string,
   body: string,
@@ -52,10 +51,10 @@ export function claimWrite(
 ) {
   const claimed = f.s.db.run(
     "insert or ignore into factory_writebacks (item, moment, ref, status, body, what, claimed, at) values (?, ?, ?, 'pending', ?, ?, ?, ?)",
-    [owner, moment, ref, body, what, f.s.now(), f.s.now()],
+    [item, moment, ref, body, what, f.s.now(), f.s.now()],
   );
   if (!claimed.changes) return false;
-  later(f, owner, what, () => sendWrite(f, owner, moment, ref));
+  later(f, item, what, () => sendWrite(f, item, moment, ref));
   return true;
 }
 
@@ -70,10 +69,10 @@ interface Row {
 /** The statuses the loop sends. */
 const UNSENT = ["pending", "unreachable"];
 
-/** Sends an unsent write as a step of its owner. */
-async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, ref: string) {
+/** Sends an unsent write as a step of its item. */
+async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, ref: string) {
   const { s } = f;
-  const key = [owner, moment, ref];
+  const key = [item, moment, ref];
   const row = s.db
     .query("select status, body, what, refusals, claimed from factory_writebacks where item=? and moment=? and ref=?")
     .get(...key) as Row | null;
@@ -81,7 +80,7 @@ async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, 
   s.db.run("update factory_writebacks set status='sending' where item=? and moment=? and ref=?", key);
   const id = JSON.stringify(key);
   flying(f).add(id);
-  const result = await deliver(f, owner, moment, ref, row.body)
+  const result = await deliver(f, item, moment, ref, row.body)
     .catch((e): PostResult => ({ status: "uncertain", error: shortError(e) }))
     .finally(() => flying(f).delete(id));
   // A refusal wrote nothing, so the write goes back to pending until the service has refused it REFUSALS times. One
@@ -98,10 +97,9 @@ async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, 
   ]);
   // The loop sends an unreachable write every pass: its history says so when that starts, not each time.
   if (status === "unreachable" && row.status === "unreachable") return;
-  const item = items.get(s, owner);
   f.events.emit({
     kind: "writeback",
-    ...(item ? { item: owner } : { run: owner }),
+    item,
     moment,
     status: result.status,
     text: `${row.what}: ${result.status}${result.error ? ` (${result.error})` : ""}${
@@ -110,20 +108,13 @@ async function sendWrite(f: FactoryRuntime, owner: string, moment: WriteMoment, 
   });
 }
 
-async function deliver(f: FactoryRuntime, owner: string, moment: WriteMoment, ref: string, body: string) {
+async function deliver(f: FactoryRuntime, id: string, moment: WriteMoment, ref: string, body: string) {
   if (moment === "reply") return replyToConversation(ref.slice(0, ref.lastIndexOf("@")), body);
   if (moment === "issue") {
     const issue = JSON.parse(body) as SuggestedIssue;
     return createIssue(issue.repo, issue.title, issue.body);
   }
-  if (moment === "learn") {
-    const pointer = f.pointer();
-    const repo = pointer?.store === "github" ? pointer.repo : undefined;
-    return repo
-      ? postIssueComment(repo, Number(ref), body)
-      : ({ status: "failed", error: "the factory is off" } satisfies PostResult);
-  }
-  const item = items.get(f.s, owner);
+  const item = items.get(f.s, id);
   const post = item && adapterOf(f, item)?.post;
   if (!item || !post) return { status: "failed", error: "its source no longer takes comments" } satisfies PostResult;
   return post(item, body);
@@ -147,9 +138,9 @@ function labelHint(f: FactoryRuntime, repo: string) {
 
 /**
  * Claims an issue for work the factory found but leaves alone, filed without a source's label: labelling it is the
- * maintainer's approval, through the same gate as any other issue. Once per owner and `ref`, like any claimed write.
+ * maintainer's approval, through the same gate as any other issue. Once per item and `ref`, like any claimed write.
  */
-export function fileIssue(f: FactoryRuntime, owner: string, ref: string, issue: SuggestedIssue, why: string) {
+export function fileIssue(f: FactoryRuntime, item: string, ref: string, issue: SuggestedIssue, why: string) {
   const title = defuse(issue.title.split("\n")[0]!.trim(), 200);
   const body = [
     defuse(issue.body, 6000),
@@ -158,7 +149,7 @@ export function fileIssue(f: FactoryRuntime, owner: string, ref: string, issue: 
   ].join("\n\n");
   return claimWrite(
     f,
-    owner,
+    item,
     "issue",
     ref,
     JSON.stringify({ repo: issue.repo, title, body }),

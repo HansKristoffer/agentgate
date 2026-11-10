@@ -34,10 +34,10 @@ test("with 500 reported runs, a dispatch pass and a board each take under 25 ms"
       phase: "shipped",
       configCommit: n.commit,
     });
-    for (const kind of ["triage", "implement", "review", "judge"] as const) {
+    for (const kind of ["triage", "implement", "review", "scout"] as const) {
       runs.insert(n.s, {
         id: newId("run"),
-        ...(kind !== "judge" && { item: item.id }),
+        ...(kind !== "scout" && { item: item.id }),
         kind,
         attempt: 1,
         state: "reported",

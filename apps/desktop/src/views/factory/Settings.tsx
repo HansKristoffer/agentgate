@@ -6,7 +6,7 @@ import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
 import { ActionButton, Badge, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { field } from "../utils.ts";
-import { Proposals, StoredFolder } from "./Folder.tsx";
+import { StoredFolder } from "./Folder.tsx";
 
 export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 
@@ -171,25 +171,6 @@ export function FactorySettings({
         </div>
         <div className="item">
           <div className="grow">
-            <strong>Learning</strong>
-            <small className="muted">
-              A thread studies finished runs and proposes folder changes
-              {pointer.store === "agentgate" ? " for you to apply here" : " in a PR"}.
-            </small>
-          </div>
-          <ActionButton
-            size="sm"
-            variant="tertiary"
-            pendingKey="factory:learn"
-            onPress={() =>
-              void run(() => request(connection, "/factory/learn", "POST"), "Learning thread started", "factory:learn")
-            }
-          >
-            Start now
-          </ActionButton>
-        </div>
-        <div className="item">
-          <div className="grow">
             <strong>Turn the factory off</strong>
             <small className="muted">
               Takes in no new items and starts no threads on any machine, and signs out of T3 Code.
@@ -216,7 +197,6 @@ export function FactorySettings({
         </div>
       </Panel>
       {pointer.store === "agentgate" && <StoredFolder connection={connection} run={run} />}
-      <Proposals connection={connection} board={board} run={run} />
       <Secrets connection={connection} local={local} run={run} />
       {moving && (
         <Modal title="Move the factory" close={() => setMoving(false)}>

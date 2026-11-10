@@ -25,9 +25,6 @@ const RESULTS: Record<RunKind, string> = {
     '`done` needs `result: { kind: "implement", prUrl, commit, claims: [{ claim, evidence }], notChecked: [], decisions: [{ decision, confidence: "low" | "medium" | "high" }] }`.',
   review:
     '`done` needs `result: { kind: "review", prUrl, commit, findings: [{ file, line?, severity: "important" | "nit" | "pre-existing", text, title? }], testsFailWithoutFix, risk?: { door: "one-way" | "two-way", reach: "local" | "module" | "app" | "data", unrelated: [], focus: [] } }`. A `pre-existing` finding becomes an issue of its own: give it a `title` of a few words that names the problem without referring to this PR.',
-  judge: '`done` needs `result: { kind: "judge", scorer, label, reasoning }`.',
-  learn:
-    '`done` needs `result: { kind: "learn", prUrl? or proposal?, lessons, issues?: [{ repo, title, body }] }` with a PR, a proposal or issues, as this run\'s section says; report `nothing-to-do` when there is nothing to learn.',
   scout:
     'Report only `done` or `nothing-to-do`. `done` needs `result: { kind: "scout", findings: [{ key, title, body }] }` with at least one finding; report `nothing-to-do` when nothing needs a ticket.',
 };
@@ -60,7 +57,6 @@ function reportSection(kind: RunKind, run: FactoryRun) {
       "- Outcomes: `done`, `not-a-bug`, `duplicate`, `already-fixed`, `blocked`, `needs-decision` and `nothing-to-do`.",
       "- `blocked` needs `blocked: { missing }`, `needs-decision` needs `decision: { question, recommendation, options? }` with one question, and `duplicate` needs `duplicateOf`.",
       `- ${RESULTS[kind]}`,
-      "- Add `friction`, up to 10 short lines, for whatever slowed you down or you worked around: a missing tool or access, a broken setup, a flaky check. The factory's learning thread reads it.",
       "- Never comment on GitHub or Linear yourself, and never close, label or move issues: the factory writes back for you.",
     ].join("\n"),
   ].join("\n\n");

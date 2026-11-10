@@ -468,35 +468,21 @@ function Metrics({ board }: { board: FactoryBoard }) {
     ["Tokens per merged PR", m.tokensPerMergedPr === undefined ? "–" : tokens(m.tokensPerMergedPr)],
   ];
   return (
-    <>
-      <section className="section">
-        <div className="section-head">
-          <div>
-            <h2>Last 7 days</h2>
+    <section className="section">
+      <div className="section-head">
+        <div>
+          <h2>Last 7 days</h2>
+        </div>
+      </div>
+      <div className="stats">
+        {rows.map(([label, value, tone]) => (
+          <div className={tone ? "stat toned" : "stat"} key={label} style={tone && toneStyle(tone)}>
+            <strong>{value}</strong>
+            <span>{label}</span>
           </div>
-        </div>
-        <div className="stats">
-          {rows.map(([label, value, tone]) => (
-            <div className={tone ? "stat toned" : "stat"} key={label} style={tone && toneStyle(tone)}>
-              <strong>{value}</strong>
-              <span>{label}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-      {m.scorers.length > 0 && (
-        <Panel title="Judges" detail="Pass rate of each judge's graded runs, by factory commit.">
-          {m.scorers.map((s) => (
-            <div className="item" key={s.name}>
-              <span className="grow">{s.name}</span>
-              <span>
-                {pct(s.passRate)} of {s.runs}
-              </span>
-            </div>
-          ))}
-        </Panel>
-      )}
-    </>
+        ))}
+      </div>
+    </section>
   );
 }
 

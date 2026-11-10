@@ -1,9 +1,7 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { makeCtx } from "../src/daemon.ts";
 import { currentFolder, folderAt } from "../src/factory/config.ts";
-import { items, newId, runs, type FactoryRun } from "../src/factory/db.ts";
+import { items } from "../src/factory/db.ts";
 import { fetcher, storedCommit, storedFiles } from "../src/factory/folder.ts";
 import { initTemplate } from "../src/factory/init.ts";
 import { loopTask, runCommand, type FactoryRuntime } from "../src/factory/runtime.ts";
@@ -12,7 +10,6 @@ import { Store } from "../src/store.ts";
 import { peers, pullPeer } from "../src/sync.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
-import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
 
 const REPO = "acme/api";
 const realGh = host.gh;
@@ -34,8 +31,6 @@ afterEach(async () => {
 afterAll(removeTmp);
 
 const YAML = (name: string) => `version: 1\nname: ${name}\nrepositories:\n  ${REPO}: {}\n`;
-const BODY =
-  "## Targets\n\nstages/implement.md\n\n## Runs addressed\n\nrun_1\n\n## Evidence\n\n#12\n\n## Expected effect\n\nFewer reverts.";
 
 function node(name = "a") {
   const s = new Store(":memory:");
@@ -189,106 +184,4 @@ test("source add on a stored folder changes it at once, with no PR", async () =>
     `---\nrepo: ${REPO}\nschedule:\n  every: "6h"\n---\n\nLook at the logs.\n`,
   );
   expect((await command(f, "source", ["add"], scout)).output).toEqual(["The factory already has a scout perf"]);
-});
-
-test("a learn run on a stored folder proposes files, which apply refuses once a file moved on and discard leaves alone", async () => {
-  const n = await factoryNode(cleanup, { config: { learning: { every: "7d" } } });
-  const yaml = JSON.stringify({ version: 1, name: "acme", repositories: { [n.repo]: {} } });
-  const put = (files: Record<string, string | null>) => n.api("/api/factory/folder", "PUT", { files });
-  expect((await put({ "factory.yaml": yaml, "rulings.md": "# Rulings\n" })).status).toBe(200);
-  expect((await n.command("use", "--store", "agentgate", "--node", "a")).code).toBe(0);
-
-  const builtin = (await n.ctx.gateway.builtin!()).client;
-  const report = async (run: FactoryRun, body: Record<string, unknown>) => {
-    const result = await builtin.callTool({
-      name: "factory_report",
-      arguments: { run: run.id, ...body },
-      _meta: { "dev.agentgate/t3Thread": runs.get(n.s, run.id)!.threadId },
-    });
-    await idle(n.f);
-    const text = (result.content as { text: string }[])[0]!.text;
-    return result.isError ? { error: text } : JSON.parse(text);
-  };
-  const learnRun = async () => {
-    items.insert(n.s, {
-      id: newId("it"),
-      source: "manual",
-      externalId: crypto.randomUUID(),
-      key: `k-${crypto.randomUUID().slice(0, 6)}`,
-      repo: n.repo,
-      title: "Shipped",
-      snapshot: {},
-      phase: "shipped",
-      configCommit: n.commit,
-    });
-    expect((await n.command("learn")).output[0]).toStartWith("Queued the learn run");
-    await n.dispatch();
-    return runs.list(n.s, { kinds: ["learn"] }).at(-1)!;
-  };
-  const proposed = (files: Record<string, string | null>, body = BODY) => ({
-    outcome: "done",
-    summary: "Tightened the implement brief.",
-    result: { kind: "learn", lessons: ["Tests first."], proposal: { files, body } },
-  });
-
-  const run = await learnRun();
-  const launch = n.mcp.calls.find((c) => c.tool === "t3_thread_launch" && c.args.clientRequestId === run.id)!;
-  // In a worktree of the folder's repository, reading the folder from its directory.
-  expect(n.t3.projects.find((p) => p.id === launch.args.projectId)!.title).toBe(n.repo.split("/")[1]!);
-  const brief = String(launch.args.message);
-  expect(brief).toContain(`Its files are in \`${join(fetcher.root, currentFolder(n.f)!.commit)}\``);
-  expect(brief).toContain("Hand in your change as `result.proposal`");
-  expect(brief).not.toContain("gh pr create");
-
-  expect(
-    await report(run, {
-      outcome: "done",
-      summary: "A PR.",
-      result: { kind: "learn", lessons: [], prUrl: `https://github.com/${n.repo}/pull/3` },
-    }),
-  ).toEqual({ error: "AgentGate stores the factory's folder: hand in result.proposal, not a PR" });
-  expect(await report(run, proposed({ "rulings.md": "# Mine\n" }))).toEqual({
-    error: "The proposal changes rulings.md, which only the maintainer changes",
-  });
-  expect(await report(run, proposed({ "stages/implement.md": "x" }, "## Targets\n\nx"))).toEqual({
-    error:
-      "The proposal's body is missing sections: it has no Runs addressed section; it has no Evidence section; it has no Expected effect section",
-  });
-  expect(await report(run, proposed({ "stages/nope.md": "x" }))).toEqual({
-    error:
-      "With the proposal, the folder does not load: stages/nope.md: not a stage; the stages are triage, spec, implement, review",
-  });
-  expect(await report(run, proposed({ "stages/implement.md": "Write the failing test first.\n" }))).toEqual({
-    accepted: true,
-  });
-
-  const board = async () => (await (await n.api("/api/factory")).json()) as { proposals: unknown[] };
-  expect((await board()).proposals).toEqual([{ run: run.id, at: expect.any(Number), files: ["stages/implement.md"] }]);
-  const shown = await n.command("proposal", run.id);
-  expect(shown.output).toContain("--- stages/implement.md (added)");
-  expect(shown.output).toContain("+Write the failing test first.");
-  expect(await n.command("proposal", "apply", run.id)).toMatchObject({ code: 0 });
-  expect(storedFiles(n.s)!["stages/implement.md"]).toBe("Write the failing test first.\n");
-  expect(currentFolder(n.f)?.stages.implement?.brief).toBe("Write the failing test first.");
-  expect((await board()).proposals).toEqual([]);
-  expect((await n.command("proposal", "discard", run.id)).output).toEqual([
-    `The proposal of ${run.id} was applied already`,
-  ]);
-
-  const second = await learnRun();
-  expect(await report(second, proposed({ "stages/implement.md": "Read the issue twice.\n" }))).toEqual({
-    accepted: true,
-  });
-  expect((await n.command("proposal", second.id)).output).toContain(
-    "-Write the failing test first.\n+Read the issue twice.",
-  );
-  // The maintainer edited the file since: applying would overwrite that.
-  expect((await put({ "stages/implement.md": "My own words.\n" })).status).toBe(200);
-  expect((await n.command("proposal", "apply", second.id)).output).toEqual([
-    `stages/implement.md changed since ${second.id} proposed this; read it with agentgate factory proposal ${second.id} and change the folder by hand`,
-  ]);
-  const discarded = await n.api(`/api/factory/proposals/${second.id}/discard`, "POST");
-  expect(await discarded.json()).toMatchObject({ run: second.id, state: "discarded" });
-  expect(storedFiles(n.s)!["stages/implement.md"]).toBe("My own words.\n");
-  expect(existsSync(join(fetcher.root, storedCommit(storedFiles(n.s)!)))).toBe(true);
 });

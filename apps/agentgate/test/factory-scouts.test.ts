@@ -1,7 +1,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import type { FactoryBoard } from "@agentgate/protocol";
 import { boardText } from "../src/factory/board.ts";
-import { threadScope } from "../src/factory/controller.ts";
+import { threadScope, workingCount } from "../src/factory/controller.ts";
 import { items, newId, runs, type FactoryRun } from "../src/factory/db.ts";
 import { loopTask } from "../src/factory/runtime.ts";
 import { SLOT_GRACE_MS, scheduleText, scoutDue } from "../src/factory/scouts.ts";
@@ -290,4 +290,58 @@ test("a holding scout's findings wait for approval, and stop at 20 waiting", asy
   expect(held).toHaveLength(20);
   expect(held.every((i) => i.phase === "held" && i.needsYou?.reason === "held")).toBe(true);
   expect(runs.get(n.s, run.id)!.checked).toMatchObject({ skipped: ["slow-20"] });
+});
+
+/** The factory machine with `threads` threads and a scout for each id, none of which is due by itself. */
+async function scoutsOnThreads(threads: number, ...ids: string[]) {
+  const n = await factoryNode(cleanup, {
+    config: { limits: { threads } },
+    files: (repo) =>
+      Object.fromEntries(
+        ids.map((id) => [
+          `scouts/${id}.md`,
+          `---\n${JSON.stringify({ repo, schedule: { every: "6h" }, enabled: false })}\n---\n\nLook for what is slow.`,
+        ]),
+      ),
+  });
+  const scoutRun = (id: string) => runs.list(n.s, { kinds: ["scout"], source: id }).at(-1)!;
+  const triageRun = () => runs.list(n.s, { kinds: ["triage"] }).at(-1)!;
+  /** Queues the scout's run a moment after whatever was queued before it. */
+  const queue = async (id: string) => {
+    expect((await n.command("scout", id)).code).toBe(0);
+    n.advance(1000);
+  };
+  return { ...n, scoutRun, triageRun, queue };
+}
+
+test("a scout run takes a thread like a stage run, and a stage run queued after it starts first", async () => {
+  const n = await scoutsOnThreads(1, "perf");
+  await n.queue("perf");
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  // The scout was queued first, but an item's work goes first and takes the only thread.
+  expect(n.triageRun().state).toBe("running");
+  expect(n.scoutRun("perf").state).toBe("queued");
+  expect(workingCount(n.f)).toBe(1);
+
+  // Once the item waits for its maintainer, its thread no longer counts, and the scout takes it.
+  n.mcp.setThread(n.triageRun().threadId!, { needsYou: true });
+  await n.until(() => n.triageRun().state === "waiting", "the triage run to wait");
+  await n.dispatch();
+  expect(n.scoutRun("perf").state).toBe("running");
+  expect(workingCount(n.f)).toBe(1);
+});
+
+test("with two threads and a scout at work, a second scout leaves the free thread to an item's triage", async () => {
+  const n = await scoutsOnThreads(2, "perf", "deps");
+  await n.queue("perf");
+  await n.queue("deps");
+  await n.dispatch();
+  expect([n.scoutRun("perf").state, n.scoutRun("deps").state]).toEqual(["running", "queued"]);
+
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  expect(n.triageRun().state).toBe("running");
+  expect(n.scoutRun("deps").state).toBe("queued");
+  expect(workingCount(n.f)).toBe(2);
 });
