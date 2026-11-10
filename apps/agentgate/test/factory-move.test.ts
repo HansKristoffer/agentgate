@@ -47,7 +47,7 @@ function fakeGitHub(repo: string) {
       );
     if (args[0] === "issue" && args[1] === "view") {
       const issue = issues.get(Number(args[2]))!;
-      return ok({ state: "OPEN", comments: issue.comments });
+      return ok({ state: "OPEN", comments: issue.comments.map((c, i) => ({ id: `IC_${args[2]}_${i}`, ...c })) });
     }
     // Every machine's gh acts as the maintainer's login (D42), so each one's markers count on the others.
     if (args[0] === "api" && args[1] === "user") return ok({ login: "maintainer" });

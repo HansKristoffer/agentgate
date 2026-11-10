@@ -147,6 +147,9 @@ export interface SourceAdapter {
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
   newestMarker?(item: Pick<FactoryItem, "source" | "externalId" | "repo">): Promise<MarkerPayload | undefined>;
+  /** The comments of people the source trusts after the factory's newest comment and after the comment `after`,
+   * oldest first, for answers given on the issue (`readAnswers` in controller.ts). None before the factory's first. */
+  replies?(item: FactoryItem, after: string | undefined): Promise<Array<{ id: string; body: string }>>;
 }
 export interface LaunchSpec {
   repo: string; // owner/repo; the controller resolves or creates the T3 project

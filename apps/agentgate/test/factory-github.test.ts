@@ -86,7 +86,10 @@ function fakeGitHub(repo: string) {
       if (args[0] === "issue" && args[1] === "view") {
         const i = issues.get(Number(args[2]))!;
         const fields = flag(args, "--json")!.split(",");
-        return ok({ ...(fields.includes("state") && { state: i.state }), comments: i.comments });
+        return ok({
+          ...(fields.includes("state") && { state: i.state }),
+          comments: i.comments.map((c, j) => ({ id: `IC_${i.number}_${j}`, ...c })),
+        });
       }
       if (args[0] === "api" && args[1] === "user") return ok({ login: FACTORY_LOGIN });
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
@@ -970,5 +973,86 @@ test("review requests skip the PR's author, and a failed gh pr command passes on
     new Error(
       `gh could not mark ${SCRATCH}#6 ready for review: Post "https://proxy.example/graphql": refused for [redacted]`,
     ),
+  );
+});
+
+/** A comment on an issue as GitHub lists it. */
+const comment = (body: string, login = FACTORY_LOGIN, authorAssociation = "OWNER") => ({
+  body,
+  author: { login },
+  authorAssociation,
+  createdAt: "2026-11-06T10:00:00Z",
+});
+
+test("a comment on the issue answers its question: free text goes to the thread once, and an outsider's comment or one with a marker is not an answer", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  await n.intake();
+  await n.dispatch();
+  await idle(n.f);
+  const [run] = runs.list(n.s, { kinds: ["triage"] });
+  await n.report(run!, {
+    outcome: "needs-decision",
+    summary: "Two ways.",
+    decision: { question: "Keep v1 alive?", recommendation: "Yes" },
+  });
+  const issue = n.github.issues.get(1)!;
+  expect(issue.comments.at(-1)!.body).toContain("Keep v1 alive?");
+  const sent = () => n.mcp.calls.filter((c) => c.tool === "t3_thread_send").map((c) => String(c.args.message));
+  const before = sent().length;
+
+  // Someone outside the repository, and a comment carrying a marker, answer nothing.
+  const waiting = issue.comments.at(-1)!.body;
+  issue.comments.push(comment("/approve", "mallory", "NONE"));
+  issue.comments.push(comment(`/approve\n\n${waiting.slice(waiting.indexOf(MARKER_PREFIX))}`, "teammate", "MEMBER"));
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, run!.item!)!.needsYou).toMatchObject({ cause: "decision" });
+
+  // The maintainer's own login, which the factory also comments as, answers in its own words.
+  issue.comments.push(comment("Keep it for a week, then drop it."));
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, run!.item!)!.needsYou).toBeUndefined();
+  expect(sent()).toHaveLength(before + 1);
+  expect(sent().at(-1)).toStartWith("The maintainer answered: Keep it for a week, then drop it.");
+
+  // Asked again, the comment already used is not a second answer.
+  await n.report(run!, {
+    outcome: "needs-decision",
+    summary: "?",
+    decision: { question: "And v0?", recommendation: "No" },
+  });
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, run!.item!)!.needsYou).toMatchObject({ question: "And v0?" });
+  expect(sent()).toHaveLength(before + 1);
+
+  // /reject takes its reason along.
+  issue.comments.push(comment("/reject v0 still has users", "teammate", "MEMBER"));
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, run!.item!)!.needsYou).toBeUndefined();
+  expect(sent().at(-1)).toStartWith("The maintainer rejected your recommendation: v0 still has users.");
+});
+
+test("/approve on a held issue starts it, and free text there is not an approval", async () => {
+  const n = await githubFactory((repo) => [{ ...source(repo), intake: "hold" }]);
+  n.github.add(1);
+  await n.intake();
+  await idle(n.f);
+  const [item] = items.list(n.s);
+  expect(item).toMatchObject({ phase: "held", needsYou: { kind: "start" } });
+  const issue = n.github.issues.get(1)!;
+  issue.comments.push(comment("Looks real to me."));
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, item!.id)!.phase).toBe("held");
+  issue.comments.push(comment("/approve"));
+  await n.intake();
+  await idle(n.f);
+  expect(items.get(n.s, item!.id)!.phase).toBe("triage");
+  expect(n.f.events.recent(20).map((e) => e.text)).toContain(
+    `Approved ${item!.key}; triage is queued, from a comment on its issue`,
   );
 });

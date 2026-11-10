@@ -35,7 +35,7 @@ import {
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { problems } from "./attention.ts";
-import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
+import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./desktopTray.ts";
 
 import type { Perform } from "./types.ts";
 import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./components/ui.tsx";
@@ -219,6 +219,7 @@ export function App() {
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
+  const factoryWaiting = useFactoryAttention(connection, !!data?.settings.factory, changes);
   const props = data && { data, connection, perform, local, desktop, changes };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
@@ -243,6 +244,7 @@ export function App() {
     : {};
   // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
+  if (factoryWaiting) attention.add("factory");
   return (
     <BusyContext value={busy}>
       <PendingContext value={pending}>

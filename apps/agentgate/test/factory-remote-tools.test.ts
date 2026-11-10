@@ -1,11 +1,12 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { items } from "../src/factory/db.ts";
+import { ask, moveItem } from "../src/factory/controller.ts";
+import { items, runs } from "../src/factory/db.ts";
 import { newInstance } from "../src/mcp/templates.ts";
-import { deliver, delivery } from "../src/factory/notify.ts";
+import { delivery } from "../src/factory/notify.ts";
 import { saveProject, setFactoryTools, setFactoryWebhook } from "../src/operations.ts";
 import { exportBackup } from "../src/store.ts";
 import { removeTmp } from "./fixtures/git.ts";
-import { factoryNode } from "./fixtures/t3-mcp.ts";
+import { factoryNode, idle, postOp } from "./fixtures/t3-mcp.ts";
 
 afterAll(removeTmp);
 const cleanup: (() => unknown)[] = [];
@@ -85,70 +86,112 @@ test("only virtual projects offer the factory's tools, and they keep the factory
   expect(await response.json()).toMatchObject({ id: "@grok", factoryTools: true });
 });
 
-test("the factory posts its updates to the webhook Grok sets, again after a failure, and never its history", async () => {
-  const n = await factoryNode(cleanup);
-  n.s.put("node", "a", { ...n.s.get("node", "a")!, protocol: 9 });
-  saveProject(n.s, "@grok", { mcp: {} });
-  setFactoryTools(n.s, "@grok", true);
+/** Every POST the outlets send, answered with `status`. */
+function capturePosts() {
   const posts: {
     url: string;
-    body: { node: string; updates: { seq: number; kind: string; item?: { key: string } }[] };
+    body: { text: string; node: string; updates: { seq: number; kind: string; item: { key: string } }[] };
   }[] = [];
-  let status = 200;
-  const realPost = delivery.post;
+  const answer = { status: 200 };
+  const real = { ...delivery };
   delivery.post = async (url, body) => {
     posts.push({ url, body: JSON.parse(body) });
-    return new Response(null, { status });
+    return new Response(null, { status: answer.status });
   };
-  cleanup.push(() => (delivery.post = realPost));
-  const tool = async (args: Record<string, unknown>) => {
-    const { response } = await n.ctx.gateway.handleRemote(
-      "@grok",
-      rpc("tools/call", { name: "factory__webhook", arguments: args }),
-      {},
-      AbortSignal.timeout(5000),
-    );
-    return ((await response.json()) as { result: { isError?: boolean; content: { text: string }[] } }).result;
-  };
+  delivery.retryMs = 0;
+  cleanup.push(() => Object.assign(delivery, real));
+  return { posts, answer };
+}
 
-  expect((await tool({ url: "http://bot.example/hook" })).content[0]!.text).toBe("The webhook must be an https URL");
-  await n.command("add", n.repo, "Before the webhook");
-  const url = "https://bot.example/hook?token=receiver-token";
-  expect((await tool({ url })).isError).toBeUndefined();
-  await deliver(n.f);
-  expect(posts).toEqual([]); // the item added before is history
+test("an item that waits for you, and a PR that is ready, are posted once to your notify URL and to Grok's webhook, and the asking thread is marked unread", async () => {
+  const n = await factoryNode(cleanup);
+  n.s.put("node", "a", { ...n.s.get("node", "a")!, protocol: 9 });
+  const { posts, answer } = capturePosts();
+  const logged: string[] = [];
+  const realError = console.error;
+  console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+  cleanup.push(() => (console.error = realError));
 
+  const mine = "https://hooks.slack.example/services/T0/B0/notify-token";
+  expect((await n.command("notify", "http://hooks.slack.example/x")).output).toEqual([
+    "The webhook must be an https URL",
+  ]);
+  expect(await n.command("notify", mine)).toEqual({
+    code: 0,
+    output: ["Posts to hooks.slack.example when an item waits for you or a PR is ready."],
+  });
+  saveProject(n.s, "@grok", { mcp: {} });
+  setFactoryTools(n.s, "@grok", true);
+  const grok = "https://bot.example/hook?token=receiver-token";
+  setFactoryWebhook(n.s, "@grok", grok);
+
+  // Adding work and starting it is not a moment to tell.
   const { output } = await n.command("add", n.repo, "Crash on save", "--json");
-  const added = JSON.parse(output[0]!) as { key: string };
-  await deliver(n.f);
-  expect(posts).toHaveLength(1);
-  expect(posts[0]!.url).toBe(url);
-  expect(posts[0]!.body.node).toBe("a");
-  expect(posts[0]!.body.updates.map((u) => [u.kind, u.item?.key])).toEqual([["item.created", added.key]]);
+  const added = JSON.parse(output[0]!) as { id: string; key: string };
+  await n.dispatch();
+  await n.until(() => runs.forItem(n.s, added.id)[0]?.threadId, "the triage thread");
+  expect(posts).toEqual([]);
 
-  // A refused post keeps its updates, waits out the backoff and sends them again with the newer ones.
-  await n.command("drop", added.key);
-  status = 503;
-  await deliver(n.f);
-  await deliver(n.f);
-  expect(posts).toHaveLength(2);
-  status = 200;
-  n.advance(31_000);
-  await deliver(n.f);
-  expect(posts).toHaveLength(3);
-  expect(posts[2]!.body).toEqual(posts[1]!.body);
-  expect(posts[2]!.body.updates.map((u) => u.kind)).toContain("item.phase");
-  await deliver(n.f);
-  expect(posts).toHaveLength(3);
+  const run = runs.forItem(n.s, added.id)[0]!;
+  ask(n.f, items.get(n.s, added.id)!, { cause: "decision", question: "Keep v1 alive?", recommendation: "Yes", run });
+  await n.until(() => posts.length === 2, "the two posts");
+  expect(posts.map((p) => p.url).sort()).toEqual([grok, mine].sort());
+  const link = run.threadLink ?? "";
+  expect(posts[0]!.body.text).toBe(
+    `${added.key} needs you (Needs a decision): Keep v1 alive?${link ? ` ${link}` : ""}`,
+  );
+  expect(posts[0]!.body.updates).toEqual([
+    expect.objectContaining({ kind: "item.needs-you", item: expect.objectContaining({ key: added.key }) }),
+  ]);
+  await n.until(
+    () => n.mcp.calls.some((c) => c.tool === "t3_thread_organize" && c.args.action === "mark_unread"),
+    "the thread marked unread",
+  );
+  expect(n.mcp.calls.find((c) => c.args.action === "mark_unread")!.args.threadId).toBe(run.threadId);
 
-  // The API and backups without secrets never show the URL's token; clearing it forgets the cursor.
-  const shown = (await (await n.api("/api/status")).json()) as { projects: { id: string; factoryWebhook?: string }[] };
-  expect(shown.projects.find((p) => p.id === "@grok")!.factoryWebhook).toBe("https://bot.example");
-  expect(JSON.stringify(exportBackup(n.s, false))).not.toContain("receiver-token");
-  await tool({ url: "" });
-  expect(n.s.get("project", "@grok")!.factoryWebhook).toBeUndefined();
-  await deliver(n.f);
-  expect(n.s.db.query("select count(*) as n from local where key like 'factory:webhook:%'").get()).toEqual({ n: 0 });
+  // A PR that is ready is the other moment; a failing receiver is tried once more and logged once, without its URL.
+  answer.status = 503;
+  items.update(n.s, added.id, { prUrl: `https://github.com/${n.repo}/pull/7` });
+  moveItem(n.f, added.id, "ready", true);
+  await n.until(() => posts.length === 6, "the posts and their retries");
+  expect(posts.at(-1)!.body.text).toBe(
+    `${added.key}'s PR is ready for you: Crash on save https://github.com/${n.repo}/pull/7`,
+  );
+  await n.until(() => logged.length === 2, "the failures logged");
+  expect(logged).toEqual([
+    "factory: a notify URL did not take an update: HTTP 503",
+    "factory: a notify URL did not take an update: HTTP 503",
+  ]);
+
+  // The URL is shown only by its host, never in status, the board, the API, a backup without secrets or a log.
+  expect(await n.command("notify")).toEqual({
+    code: 0,
+    output: ["Posts to hooks.slack.example when an item waits for you or a PR is ready."],
+  });
+  expect(await (await n.op("notify", {})).json()).toEqual({ host: "hooks.slack.example" });
+  expect(
+    (await postOp(n.ctx, "notify", { url: null }, "tailnet", { authorization: "Bearer admin-secret" })).status,
+  ).toBe(403);
+  const shown = [
+    (await n.command("status")).output.join("\n"),
+    await (await n.api("/api/factory")).text(),
+    await (await n.api("/api/status")).text(),
+    JSON.stringify(exportBackup(n.s, false)),
+    (await n.command("secret", "list")).output.join("\n"),
+    logged.join("\n"),
+  ].join("\n");
+  expect(shown).not.toContain("notify-token");
+  expect(shown).not.toContain("receiver-token");
+
+  // Off stops it.
+  expect((await n.command("notify", "off")).output).toEqual(["Notifications are off."]);
+  setFactoryWebhook(n.s, "@grok", undefined);
+  const before = posts.length;
+  moveItem(n.f, added.id, "review");
+  moveItem(n.f, added.id, "ready");
+  await idle(n.f);
+  expect(posts).toHaveLength(before);
+  expect((await n.command("notify")).output).toEqual(["No notify URL is set: agentgate factory notify <https-url>"]);
 });
 
 test("a webhook needs the factory's tools, https and no credentials before the host, and goes when they are off", async () => {

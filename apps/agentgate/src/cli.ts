@@ -947,7 +947,9 @@ async function main() {
           const url = rest[1] ?? die("remote webhook @name <https-url>|off");
           setFactoryWebhook(s, id, url === "off" ? undefined : url);
           return console.log(
-            url === "off" ? "Updates are no longer posted." : "Every machine posts its factory updates there.",
+            url === "off"
+              ? "Updates are no longer posted."
+              : "The factory posts there when an item waits for you or a PR is ready.",
           );
         }
       } catch (e) {

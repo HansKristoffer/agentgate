@@ -113,6 +113,15 @@ test("secret set takes the value from stdin and reaches a peer once every node u
   await pull(a!, b!);
   expect(getSecret(a!.s, "LINEAR_KEY")).toBeUndefined();
   expect(a!.s.record("secret", "LINEAR_KEY")?.deleted).toBe(1);
+
+  // The notify URL is one of these secrets: it reaches b, and its `off` travels as a tombstone too.
+  const url = "https://hooks.example/notify-token";
+  expect((await runTerminal(a!.ctx.factory, ["notify", url])).code).toBe(0);
+  await pull(b!, a!);
+  expect(getSecret(b!.s, "~notify")).toBe(url);
+  expect((await runTerminal(b!.ctx.factory, ["notify", "off"])).code).toBe(0);
+  await pull(a!, b!);
+  expect(a!.s.record("secret", "~notify")?.deleted).toBe(1);
 });
 
 test("secret list shows names only, with the names factory.yaml uses that this machine lacks, and hides agentgate's hook keys", async () => {

@@ -101,6 +101,71 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
   );
 }
 
+/** The person's own notify URL (factory/notify.ts): a secret, so loopback only, and shown by its host. */
+function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
+  const [host, setHost] = useState<string | null>();
+  const [editing, setEditing] = useState(false);
+  const load = async () => setHost((await factoryOp(connection, "notify", {})).host ?? null);
+  useEffect(() => {
+    if (local) void load().catch(() => setHost(undefined));
+  }, [connection, local]);
+  return (
+    <Panel
+      title="Notifications"
+      detail="An https URL, such as a Slack incoming webhook, that hears when an item waits for you or a PR is ready. GitHub does not notify you of the factory's comments, which it writes as you."
+    >
+      {local ? (
+        <div className="item">
+          <span className="grow">{host ? <code>{host}</code> : host === null ? "Not set" : "Loading…"}</span>
+          <Button size="sm" variant="tertiary" onPress={() => setEditing(true)}>
+            {host ? "Replace" : "Set"}
+          </Button>
+          {host && (
+            <Button
+              size="sm"
+              variant="ghost"
+              onPress={() =>
+                void run(async () => {
+                  await factoryOp(connection, "notify", { url: null });
+                  await load();
+                }, "Notifications are off")
+              }
+            >
+              Turn off
+            </Button>
+          )}
+        </div>
+      ) : (
+        <Empty>
+          <p>
+            The notify URL is set on a machine itself. Connect the app to that machine, or use agentgate factory notify.
+          </p>
+        </Empty>
+      )}
+      {editing && (
+        <Modal title="Notify URL" close={() => setEditing(false)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const url = field(new FormData(e.currentTarget), "url");
+              setEditing(false);
+              void run(async () => {
+                await factoryOp(connection, "notify", { url });
+                await load();
+              }, "Notify URL set");
+            }}
+          >
+            <Field label="URL" name="url" type="password" isRequired />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
+        </Modal>
+      )}
+    </Panel>
+  );
+}
+
 /** Steering the whole factory: its T3 Code sign-in, the folder, the machine it runs on, and turning it off. */
 export function FactorySettings({
   data,
@@ -198,6 +263,7 @@ export function FactorySettings({
         </div>
       </Panel>
       {pointer.store === "agentgate" && <StoredFolder connection={connection} run={run} />}
+      <Notify connection={connection} local={local} run={run} />
       <Secrets connection={connection} local={local} run={run} />
       {moving && (
         <Modal title="Move the factory" close={() => setMoving(false)}>

@@ -1306,9 +1306,80 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
  * board stays current, and adds nothing; paused by the maintainer, or waiting to move, it reads nothing. */
 async function intake(f: FactoryRuntime) {
   const folder = currentFolder(f);
-  if (!folder || intakeState(f) === "off") return;
+  if (!folder) return;
+  // An answer is the person's action, like one from the CLI, so it is read while intake is off too.
+  await readAnswers(f);
+  if (intakeState(f) === "off") return;
   for (const source of folder.config.sources)
     if (sourceMemory(f, source.id).retryAt <= f.s.now()) await pollSource(f, source.id);
+}
+
+/** The newest issue comment `readAnswers` used for each item, so no comment is used twice. */
+const ANSWER_SEEN = "factory:answer-seen:";
+
+/** An issue comment as an answer: `/approve` or `/reject`, each with optional text, or free text, which answers
+ * only a question (it goes to the thread as the answer). */
+function issueAnswer(body: string, kind: NeedsYou["kind"]) {
+  const text = body.trim();
+  const command = /^\/(approve|reject)\b([\s\S]*)$/.exec(text);
+  if (command)
+    return { action: command[1] as "approve" | "reject", ...(command[2]!.trim() && { text: command[2]!.trim() }) };
+  return kind === "answer" && text ? { action: "approve" as const, text } : undefined;
+}
+
+/** Whether the item's question is on its issue: its `waiting` comment was posted, so a later comment can answer it. */
+const askedOnIssue = (f: FactoryRuntime, item: FactoryItem, wait: NeedsYou) =>
+  (
+    f.s.db
+      .query("select status from factory_writebacks where item=? and moment='waiting' and ref=?")
+      .get(item.id, questionRef(wait.run ?? wait.cause, wait.question)) as { status: string } | null
+  )?.status === "posted";
+
+/**
+ * Answers given on the issue (N3): for each item that waits for a start or an answer, at most
+ * `limits.waitingForYou` per pass and one issue read each, the trusted comments after the factory's newest one. The
+ * first that reads as an answer is taken as if the person had typed it in the CLI, so the next comment the factory
+ * posts is the acknowledgement. A comment is used at most once, even when the answer is refused.
+ */
+async function readAnswers(f: FactoryRuntime) {
+  const waiting = items
+    .list(f.s, { open: true })
+    .filter((i) => i.needsYou?.kind === "start" || (i.needsYou?.kind === "answer" && askedOnIssue(f, i, i.needsYou)))
+    .slice(0, limitsOf(f).waitingForYou);
+  for (const item of waiting) {
+    const replies = adapterOf(f, item)?.replies;
+    if (!replies) continue;
+    const seen = ANSWER_SEEN + item.id;
+    let found: Awaited<ReturnType<typeof replies>>;
+    try {
+      found = await replies(item, f.s.local(seen));
+    } catch (e) {
+      f.events.emit({
+        kind: "note",
+        item: item.id,
+        text: `Reading answers on ${item.key}'s issue failed: ${shortError(e)}`,
+      });
+      continue;
+    }
+    for (const reply of found) {
+      f.s.setLocal(seen, reply.id);
+      const answer = issueAnswer(reply.body, item.needsYou!.kind);
+      if (!answer) continue;
+      await withItem(f, item.id, async () => {
+        // Answered another way since the list was read.
+        if (items.get(f.s, item.id)?.needsYou?.since !== item.needsYou!.since) return;
+        const done = await act(f, item.id, answer.action, answer.text);
+        f.events.emit({ kind: "note", item: item.id, text: `${done}, from a comment on its issue` });
+      }).catch((e) =>
+        f.events.emit({
+          kind: "note",
+          item: item.id,
+          text: `The answer on ${item.key}'s issue was not taken: ${shortError(e)}`,
+        }),
+      );
+      break;
+    }
+  }
 }
 
 // ---- items and runs nobody moves

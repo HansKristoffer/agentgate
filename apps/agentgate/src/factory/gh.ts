@@ -193,8 +193,8 @@ export async function viewerLogin(): Promise<string> {
   return viewer;
 }
 
-// A deleted account's comments come without an author.
-const issueComment = comment.extend({ author: login.nullish() });
+// A deleted account's comments come without an author. `id` is the comment's node id, which issue answers remember.
+const issueComment = comment.extend({ id: z.string(), author: login.nullish() });
 
 /** An issue's state and every comment, oldest first, in one read. Issues and pull requests share numbers, so a number
  * can answer MERGED, which counts as closed. */
@@ -214,7 +214,7 @@ export async function issueStateAndComments(repo: string, number: number) {
 export async function issueComments(
   repo: string,
   number: number,
-): Promise<Array<{ body: string; author: string; authorAssociation: string; createdAt: string }>> {
+): Promise<Array<{ id: string; body: string; author: string; authorAssociation: string; createdAt: string }>> {
   const view = await ghJson(`read the comments on ${repo}#${number}`, z.object({ comments: z.array(issueComment) }), [
     "issue",
     "view",

@@ -165,7 +165,8 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
                 <span className="grow">
                   <strong>Updates webhook</strong>
                   <small>
-                    Every machine posts items added, moved or waiting for you to <code>{project.factoryWebhook}</code>
+                    The factory posts items that wait for you or have a ready PR to{" "}
+                    <code>{project.factoryWebhook}</code>
                   </small>
                 </span>
                 <Button size="sm" variant="ghost" className="delete" onPress={() => void setWebhook(null)}>

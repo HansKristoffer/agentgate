@@ -32,12 +32,11 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
   is gated on node protocol 9, since older nodes drop the field when they save the project. Unlike the agent tool
   `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
   control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.
-- The endpoint's `factoryWebhook` gets factory updates from every machine, each posting what its own event log holds
-  ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), since items live in the node-local tables of
-  the machine that runs the factory. Each machine keeps a cursor per URL; a new URL starts at the newest event and a removed one's
-  cursor is forgotten, so setting one never replays history. Delivery is at least once. The URL is a capability, so
-  the API shows its origin only, logs show a status or an error's name, and backups without secrets and the seeded dev
-  store drop it.
+- The endpoint's `factoryWebhook` is one more URL on the factory's notify outlets
+  ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), beside the person's own `factory notify` URL:
+  it hears when an item starts waiting for the person and when a PR is ready, from the factory machine, with one retry
+  and no replay. The URL is a capability, so the API shows its origin only, logs show a status or an error's name, and
+  backups without secrets and the seeded dev store drop it.
 - The factory's webhook URLs reuse this machinery as endpoints of kind `hook`, served at `POST /hook/:key`
   ([factory](factory.md#hook-endpoints-hookkey)). Like `/mcp/:key`, the route needs neither a bearer token nor
   `RELAY_KEY`, because senders such as GitHub cannot send them. The serving machine checks the sender's signature

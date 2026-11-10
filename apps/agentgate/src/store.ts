@@ -194,7 +194,7 @@ export const schemas = {
       )
       .max(20000),
   }),
-  /** A factory secret by name, or agentgate's own `~hook:<source>` webhook key, shared with every node (factory/secrets.ts). */
+  /** A factory secret by name, or one of agentgate's own (`~hook:<source>`, `~notify`), shared with every node (factory/secrets.ts). */
   secret: secretRecordSchema,
   /** The factory folder agentgate stores (id `folder`), for a factory whose pointer says `store: agentgate` (factory/stored.ts). */
   factoryFolder: factoryFolderSchema,

@@ -162,7 +162,10 @@ test("each outcome moves its item as the state table says, with one comment carr
 
   // Stages that finished are settled in T3 once the turn that reported ends, since T3 refuses to settle a running
   // thread; one that asked a question keeps its thread for the answer.
-  const settles = () => n.mcp.calls.filter((c) => c.tool === "t3_thread_organize").map((c) => c.args.threadId);
+  const settles = () =>
+    n.mcp.calls
+      .filter((c) => c.tool === "t3_thread_organize" && c.args.action === "settle")
+      .map((c) => c.args.threadId);
   expect(settles()).toEqual([]);
   for (const run of n.started) n.mcp.setThread(run.threadId!, { status: "idle" });
   await n.until(() => settles().length >= 6, "the finished threads to settle");

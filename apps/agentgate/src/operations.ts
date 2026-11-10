@@ -250,18 +250,24 @@ export function setFactoryWebhook(s: Store, id: string, url: string | undefined)
       throw new Error(`${id} does not offer the factory's tools; turn them on first`);
     const { factoryWebhook: _, ...rest } = p;
     if (!url) return s.put("project", id, rest);
-    let parsed: URL;
-    try {
-      parsed = new URL(url);
-    } catch {
-      throw new Error("The webhook must be a URL");
-    }
-    if (parsed.protocol !== "https:") throw new Error("The webhook must be an https URL");
-    if (parsed.username || parsed.password)
-      throw new Error("Put the receiver's token in the webhook's path or query, not before the host");
-    if (url.length > 2000) throw new Error("The webhook URL is too long");
-    return s.put("project", id, { ...rest, factoryWebhook: parsed.href });
+    return s.put("project", id, { ...rest, factoryWebhook: webhookUrl(url) });
   });
+}
+
+/** A webhook URL the factory may post to (factory/notify.ts): `https`, without credentials in the authority, since
+ * only the path and query are kept out of what agentgate shows. Errors never repeat the URL. */
+export function webhookUrl(url: string) {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("The webhook must be a URL");
+  }
+  if (parsed.protocol !== "https:") throw new Error("The webhook must be an https URL");
+  if (parsed.username || parsed.password)
+    throw new Error("Put the receiver's token in the webhook's path or query, not before the host");
+  if (url.length > 2000) throw new Error("The webhook URL is too long");
+  return parsed.href;
 }
 
 /** The node protocol that keeps `healthDashboard` on node records (see NODE_PROTOCOL in remote.ts). Pinned, not

@@ -275,9 +275,10 @@ export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
  * its paths and size included, so its refusal names the file. */
 export const storedFolderChangeSchema = z.object({ files: z.record(z.string(), z.string().nullable()) }).strict();
 
-/** The synced `secret` record. `~hook:` ids are agentgate's own (webhook URL keys), never declared in a folder. */
+/** The synced `secret` record. `~` ids are agentgate's own, never declared in a folder: `~hook:` webhook URL keys, and
+ * `~notify`, the person's notify URL (factory/notify.ts). */
 export const secretRecordSchema = z.object({
-  id: z.union([secretNameSchema, z.string().regex(/^~hook:[a-z0-9][a-z0-9-]{0,39}$/)]),
+  id: z.union([secretNameSchema, z.string().regex(/^~hook:[a-z0-9][a-z0-9-]{0,39}$/), z.literal("~notify")]),
   value: z.string().min(1).max(16384),
   from: z.string().min(1).max(512), // node that set it
 });
@@ -847,6 +848,8 @@ export interface FactoryOps extends Record<
   "secret set": { input: z.input<typeof factorySecretInputSchema>; result: { name: string } };
   "secret delete": { input: { name: string }; result: { name: string; deleted: boolean } };
   "t3 sign-in": { input: NoInput; result: { mcp: string; expiresAt?: number } };
+  /** `url` sets the notify URL, `null` turns it off, and neither shows it: only its host, never the URL. */
+  notify: { input: { url?: string | null }; result: { host?: string } };
 }
 /** An operation that takes nothing: `{}`. */
 type NoInput = Record<string, never>;

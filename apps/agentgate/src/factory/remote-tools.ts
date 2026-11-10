@@ -18,7 +18,7 @@ import { runOperation, shortError, type FactoryRuntime, type Operation } from ".
 const WEBHOOK = {
   name: "webhook",
   description:
-    'Set the https URL the factory posts its updates to (an item added, moved to another phase, or waiting for the maintainer), or clear it with an empty url. Each POST is JSON: { type: "agentgate.factory.updates", node, updates: [{ seq, at, kind, text, item }] }; dedupe by node and seq, since a failed post is sent again.',
+    'Set the https URL the factory posts to when an item starts waiting for the maintainer or its PR is ready, or clear it with an empty url. Each POST is JSON: { type: "agentgate.factory.updates", node, text, updates: [{ seq, at, kind, text, item }] }; dedupe by node and seq, since a failed post is tried once more.',
   input: z.object({
     url: z
       .string()

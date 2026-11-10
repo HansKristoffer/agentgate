@@ -89,7 +89,11 @@ asked once per T3 request id, and the run records the id it answered, since T3 c
 answered and two cards can read the same. Waits that need nobody (a thread slot, quota, CI, PR checks) live in the
 controller's memory and show as the board item's `waiting`, never as a run's `error`. A running run whose
 thread sat idle that long ended a turn the watcher missed, such as across a restart, and is reminded. While it waits, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR
-still ends it. There is no `failed` phase, so `retry` knows where to resume, and an item with a PR resumes with it.
+still ends it. `notify.ts` is the one place that tells the person: `item.needs-you` and a move to `ready` go to every
+outlet (the notify URL, each factory endpoint's webhook, and the asking thread marked unread in T3 Code), since GitHub
+never notifies the login the factory comments as (D42). An answer given on a GitHub issue goes through `act`, like the
+CLI's, and the id of the last comment read is kept in local state, so an answer is never used twice even when it was
+refused. There is no `failed` phase, so `retry` knows where to resume, and an item with a PR resumes with it.
 
 ## Items are tables; markers are the shared truth
 

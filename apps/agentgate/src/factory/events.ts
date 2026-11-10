@@ -20,7 +20,8 @@ export type FactoryEvent =
 
 export type HumanAct = "approve" | "reject" | "retry" | "answer" | "add";
 
-type Listener = (event: FactoryEvent) => void | Promise<void>;
+/** `seq` is the event's place in the log, which a webhook receiver dedupes by. */
+type Listener = (event: FactoryEvent, seq: number) => void | Promise<void>;
 
 export class FactoryEvents {
   private listeners = new Map<FactoryEvent["kind"], Set<Listener>>();
@@ -31,17 +32,14 @@ export class FactoryEvents {
     // A late event after shutdown, such as a thread's answer arriving as the daemon stops, has nowhere to go.
     if (this.s.closed) return;
     const kind = event.kind === "writeback" ? `writeback:${event.moment}` : event.kind;
-    this.s.db.run("insert into factory_events (at, item, run, kind, text) values (?, ?, ?, ?, ?)", [
-      this.s.now(),
-      ("item" in event && event.item) || null,
-      ("run" in event && event.run) || null,
-      kind,
-      event.text,
-    ]);
+    const { lastInsertRowid } = this.s.db.run(
+      "insert into factory_events (at, item, run, kind, text) values (?, ?, ?, ?, ?)",
+      [this.s.now(), ("item" in event && event.item) || null, ("run" in event && event.run) || null, kind, event.text],
+    );
     const failed = (e: unknown) => console.error(`factory: ${event.kind} listener failed: ${logError(e)}`);
     for (const listener of this.listeners.get(event.kind) ?? []) {
       try {
-        const result = listener(event);
+        const result = listener(event, Number(lastInsertRowid));
         if (result) result.catch(failed);
       } catch (e) {
         failed(e);
@@ -52,7 +50,7 @@ export class FactoryEvents {
   /** Returns a function that removes the listener. */
   on<K extends FactoryEvent["kind"]>(
     kind: K,
-    listener: (event: Extract<FactoryEvent, { kind: K }>) => void | Promise<void>,
+    listener: (event: Extract<FactoryEvent, { kind: K }>, seq: number) => void | Promise<void>,
   ): () => void {
     const set = this.listeners.get(kind) ?? new Set();
     this.listeners.set(kind, set);

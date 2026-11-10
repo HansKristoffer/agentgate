@@ -1,6 +1,7 @@
 import { currentFolder } from "./config.ts";
 import type { FactoryItem } from "./db.ts";
 import {
+  COLLABORATORS,
   ISSUE_LIMIT,
   issueComments,
   issueStateAndComments,
@@ -80,6 +81,24 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
     const { repo, number } = issueOf(item);
     const [comments, viewer] = await Promise.all([issueComments(repo, number), viewerLogin()]);
     return newestOf(comments, viewer);
+  },
+  /** The trust rule for PR comments (D40): the repository's own people. A comment without a marker is a person's, even
+   * from the factory's own login, which is the maintainer's (D42). */
+  async replies(item, after) {
+    const { repo, number } = issueOf(item);
+    const [comments, viewer] = await Promise.all([issueComments(repo, number), viewerLogin()]);
+    const own = (c: { author: string }) => c.author.toLowerCase() === viewer.toLowerCase();
+    const factory = comments.findLastIndex((c) => own(c) && parseMarkers(c.body).length);
+    if (factory < 0) return [];
+    return comments
+      .slice(
+        Math.max(
+          factory,
+          comments.findIndex((c) => c.id === after),
+        ) + 1,
+      )
+      .filter((c) => !parseMarkers(c.body).length && (own(c) || COLLABORATORS.includes(c.authorAssociation)))
+      .map(({ id, body }) => ({ id, body }));
   },
 });
 

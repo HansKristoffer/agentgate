@@ -238,10 +238,10 @@ agentgate skills projects release-notes @grok
 agentgate remote enable @grok        # prints the URL and Authorization header
 agentgate remote secret @grok        # new secret, same URL
 agentgate remote factory @grok on    # also let Grok see and steer the software factory
-agentgate remote webhook @grok https://bot.example/agentgate?token=…   # post factory updates there
+agentgate remote webhook @grok https://bot.example/agentgate?token=…   # tell Grok what waits for you
 ```
 
-With the **Software factory** switch on (or `remote factory @grok on`), Grok can also follow and steer the [software factory](#software-factory) from anywhere: `factory__status` shows the board and the repositories it works, `factory__show` one item, and `factory__add` adds a task in any of those repositories, which starts at triage without waiting for your approval. Grok can also approve, reject, retry and drop items, and pause or resume the factory. To hear about changes without asking, set an **updates webhook** in the app, with `remote webhook`, or let Grok set one with `factory__webhook`: every machine then posts each item it adds, moves to another phase or starts waiting for you on as JSON (`{ "type": "agentgate.factory.updates", "node", "updates": [{ "seq", "at", "kind", "text", "item" }] }`). Put the receiver's token in the URL's path or query; the app shows only its host. A failed post is sent again, so dedupe by `node` and `seq`. Every machine must run a release that knows the switch; turning it on names the machines to update.
+With the **Software factory** switch on (or `remote factory @grok on`), Grok can also follow and steer the [software factory](#software-factory) from anywhere: `factory__status` shows the board and the repositories it works, `factory__show` one item, and `factory__add` adds a task in any of those repositories, which starts at triage without waiting for your approval. Grok can also approve, reject, retry and drop items, and pause or resume the factory. To hear about changes without asking, set an **updates webhook** in the app, with `remote webhook`, or let Grok set one with `factory__webhook`: it then gets the same posts as your own [notify URL](#software-factory), when an item starts waiting for you and when a PR is ready. Put the receiver's token in the URL's path or query; the app shows only its host. Every machine must run a release that knows the switch; turning it on names the machines to update.
 
 Unlike sync, this traffic is readable by the relay (your logins stay on your machines), and anyone with the URL and secret can use those tools. With the factory switch on, that includes starting full-access T3 Code threads on your machines with text they choose. See [remote MCP endpoints](docs/operations/relay.md#remote-mcp-endpoints).
 
@@ -270,7 +270,9 @@ You act in three places:
 
 - **T3 Code**: answer the questions threads ask, including the spec card. A thread you stop stays stopped: its item waits for you until you `retry` or `drop` it.
 - **The CLI**: `agentgate factory approve|reject|retry|drop <item>` answers or stops an item, `show <item>` tells what happened to it, `pause` and `resume` stop and restart the whole factory, and `add <owner/repo> <title>` adds an item by hand.
-- **GitHub**: review the PR, ask for changes in a review comment, and merge it.
+- **GitHub**: answer a question on its issue (`/approve`, `/reject <reason>`, or your answer in your own words), review the PR, ask for changes in a review comment, and merge it.
+
+The factory comments as your `gh` login, and GitHub never notifies you of your own comments. To hear when an item waits for you or a PR is ready, give it a URL of your own, such as a Slack incoming webhook: `agentgate factory notify https://hooks.slack.com/services/…` (or **Notifications** in the app's Factory settings; `notify off` stops it). The app also marks the Factory view and sends a system notification, and the thread that asks is marked unread in T3 Code.
 
 ```sh
 agentgate factory use acme/factory:factory   # turn it on; off turns it off, reload fetches the folder now

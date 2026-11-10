@@ -10,7 +10,7 @@ import { noWords, operation, requireFactoryProtocol, UsageError, type FactoryRun
  * names, and no error names a value.
  */
 
-/** A user secret by name, or agentgate's own `~hook:<source>` key. */
+/** A user secret by name, or one of agentgate's own: a `~hook:<source>` key or the `~notify` URL. */
 export function getSecret(s: Store, name: string) {
   return s.get("secret", name)?.value;
 }
@@ -26,12 +26,12 @@ export function deleteSecret(s: Store, name: string) {
   s.del("secret", name);
 }
 
-/** User secrets only: `~hook:` keys are agentgate's own. */
+/** User secrets only: `~` ids are agentgate's own. */
 export function secretNames(s: Store) {
   return s
     .list("secret")
     .map((r) => r.id)
-    .filter((id) => !id.startsWith("~hook:"));
+    .filter((id) => !id.startsWith("~"));
 }
 
 /** `secret:NAME` to its value; undefined for any other string or a name that is not set. */
