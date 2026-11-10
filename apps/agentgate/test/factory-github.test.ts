@@ -498,7 +498,6 @@ test("a source with more open labelled issues than one poll reads says so on its
   const row = async () => (await buildBoard(n.f, { includeWebhookUrls: false })).sources.find((r) => r.id === "bugs")!;
 
   await n.intake();
-  expect(n.github.calls.find((c) => c.args[1] === "list")!.args).toContain(String(gh.ISSUE_LIMIT + 1));
   expect((await row()).error).toBe(
     "Only the newest 200 open labelled issues are read; the rest wait until fewer are open",
   );

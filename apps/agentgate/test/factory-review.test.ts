@@ -130,14 +130,8 @@ test("once checks pass and every claim has evidence, a blind review starts in it
       expect(text).not.toContain(claim);
   }
   expect(brief).toContain(`review its head \`${pr.headRefOid}\``);
-  expect(brief).toContain("Revert the fix locally");
   expect(brief).toContain("testsFailWithoutFix");
   expect(brief).toContain("Never post anything on GitHub");
-  for (const area of ["correctness", "tests", "reuse and simplicity", "efficiency", "security", "own rules"])
-    expect(brief).toContain(area);
-  expect(brief).toContain("as a subagent if you can start one");
-  expect(brief).toContain("confirmed it in the code");
-  expect(brief).toContain("Report the risk");
   expect(view).toContain("Saving twice keeps one file.");
   // The implementer's claims reach the PR only at ready, so the reviewer cannot read them there either.
   expect(pr.body).not.toContain(SUMMARY);

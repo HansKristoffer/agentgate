@@ -22,18 +22,18 @@ afterEach(async () => {
 const SCRATCH = "HansKristoffer/factory-scratch";
 
 /**
- * `gh` for the preflight's own reads, answered by their arguments. Only the label's 404 is a recording; the login
- * (`api user --include`) and push access were never recorded, so they are stubbed here in the shape gh prints them.
+ * `gh` for the preflight's own reads, from the recordings: the login with its scopes (or other scopes in their place),
+ * push access, which every repository's check gets in the scratch repository's shape, and the label's 404.
  */
-function ghAnswers(scopes = "repo, read:org") {
+function ghAnswers(scopes?: string) {
   login.gh = async (args): Promise<GhAnswer> => {
-    if (args.join(" ") === "api user --include")
-      return {
-        ok: true,
-        exit: 0,
-        out: `HTTP/2.0 200 OK\nContent-Type: application/json; charset=utf-8\nX-Oauth-Scopes: ${scopes}\n\n{"login":"factory-bot","id":1}`,
-      };
-    if (args[0] === "api" && args.at(-1) === ".permissions.push") return { ok: true, exit: 0, out: "true" };
+    if (args.join(" ") === "api user --include") {
+      const answer = recorded("user.scopes");
+      return scopes === undefined
+        ? answer
+        : { ...answer, out: answer.out.replace(/^X-Oauth-Scopes:.*$/im, `X-Oauth-Scopes: ${scopes}`) };
+    }
+    if (args[0] === "api" && args.slice(2).join(" ") === "--jq .permissions.push") return recorded("push");
     if (args[1] === `repos/${SCRATCH}/labels/no-such-label`) return recorded("label.missing");
     throw new Error(`unexpected gh ${args.join(" ")}`);
   };
@@ -62,7 +62,7 @@ test("doctor passes, exit 0, when T3 Code, its MCP, gh, the provider home, the f
   expect(output.filter((l) => !l.startsWith("ok "))).toEqual(["", "Nothing failing."]);
   expect(code).toBe(0);
   expect(output.find((l) => l.includes("gh is signed in"))).toBe(
-    "ok    gh is signed in with the repo scope: as factory-bot",
+    "ok    gh is signed in with the repo scope: as HansKristoffer",
   );
 });
 

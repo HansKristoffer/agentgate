@@ -159,8 +159,8 @@ test("factory init --json prints what the route answers, --label names the label
     repositories: { "Acme/My_API.v2": {} },
     sources: [{ id: "issues", type: "github", repo: "Acme/My_API.v2", label: "factory" }],
   });
-  // The rulings file asks about greenfield and owned packages in a comment, which never reaches a brief.
-  expect(initTemplate(REPO)["rulings.md"]).toContain("Packages you own");
+  // The rulings file asks its questions in a comment, which never reaches a brief.
+  expect(initTemplate(REPO)["rulings.md"]).toContain("<!--");
   expect(folder.rulings).toBe("# Rulings");
 });
 

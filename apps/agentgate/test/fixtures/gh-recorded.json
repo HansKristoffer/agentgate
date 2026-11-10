@@ -1,5 +1,5 @@
 {
-  "_source": "What gh 2.102.0 really printed on 2026-11-10 for the reads factory/gh.ts makes: each entry is the arguments gh.ts passed, the exit code, stdout and stderr. Recorded against HansKristoffer/factory-scratch (a private scratch repository), aldevvv/zerolabs (a repository without commits), a repository that does not exist, pytorch/pytorch#203997 (more than 100 checks) and cli/cli (reverts). `offline.*` ran with HTTPS_PROXY=http://127.0.0.1:9, `noDns.*` with HTTPS_PROXY=http://proxy.invalid:8080, `loggedOut.*` with an empty GH_CONFIG_DIR and no GH_TOKEN, `badToken.*` with a GH_TOKEN GitHub does not know. Cut after recording: `branch` keeps only its commit's sha, and `followed.manyChecks` has no comments or reviews. To refresh an entry, run gh with its arguments (and that environment) and copy the three values; when gh.ts changes what it asks, the replay in fixtures/gh.ts fails until the entry is recorded again. Only reads are recorded: a write is never run for a recording. Check a new entry for tokens before saving it.",
+  "_source": "What gh 2.102.0 really printed on 2026-11-10 for the reads factory/gh.ts makes: each entry is the arguments gh.ts passed, the exit code, stdout and stderr. Recorded against HansKristoffer/factory-scratch (a private scratch repository), aldevvv/zerolabs (a repository without commits), a repository that does not exist, pytorch/pytorch#203997 (more than 100 checks) and cli/cli (reverts). `offline.*` ran with HTTPS_PROXY=http://127.0.0.1:9, `noDns.*` with HTTPS_PROXY=http://proxy.invalid:8080, `loggedOut.*` with an empty GH_CONFIG_DIR and no GH_TOKEN, `badToken.*` with a GH_TOKEN GitHub does not know. Cut after recording: `branch` keeps only its commit's sha, `user` and `user.scopes` only the login and the scope headers, and `followed.manyChecks` has no comments or reviews. `bun scripts/record-gh.ts` records again every entry it can and says which it cannot; for those, run gh with the entry's arguments (and that environment) and copy the three values; when gh.ts changes what it asks, the replay in fixtures/gh.ts fails until the entry is recorded again. Only reads are recorded: a write is never run for a recording. Check a new entry for tokens before saving it.",
   "repoView": {
     "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "defaultBranchRef"],
     "exit": 0,
@@ -468,5 +468,35 @@
     "exit": 1,
     "stdout": "",
     "stderr": "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login -h github.com\n"
+  },
+  "visibility": {
+    "args": ["repo", "view", "HansKristoffer/factory-scratch", "--json", "visibility"],
+    "exit": 0,
+    "stdout": "{\"visibility\":\"PRIVATE\"}\n",
+    "stderr": ""
+  },
+  "protection": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch/branches/main/protection"],
+    "exit": 1,
+    "stdout": "{\"message\":\"Upgrade to GitHub Pro or make this repository public to enable this feature.\",\"documentation_url\":\"https://docs.github.com/rest/branches/branch-protection#get-branch-protection\",\"status\":\"403\"}",
+    "stderr": "gh: Upgrade to GitHub Pro or make this repository public to enable this feature. (HTTP 403)\n"
+  },
+  "user": {
+    "args": ["api", "user"],
+    "exit": 0,
+    "stdout": "{\"login\":\"HansKristoffer\"}\n",
+    "stderr": ""
+  },
+  "user.scopes": {
+    "args": ["api", "user", "--include"],
+    "exit": 0,
+    "stdout": "HTTP/2.0 200 OK\nContent-Type: application/json; charset=utf-8\nX-Accepted-Oauth-Scopes: \nX-Oauth-Scopes: gist, read:org, repo, workflow\n\n{\"login\":\"HansKristoffer\"}\n",
+    "stderr": ""
+  },
+  "push": {
+    "args": ["api", "repos/HansKristoffer/factory-scratch", "--jq", ".permissions.push"],
+    "exit": 0,
+    "stdout": "true\n",
+    "stderr": ""
   }
 }

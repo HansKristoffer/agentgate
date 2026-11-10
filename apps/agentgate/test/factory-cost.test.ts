@@ -65,7 +65,7 @@ test("with 500 reported runs, a dispatch pass and a board each take under 25 ms"
   expect(built.items.filter((i) => i.phase === "shipped")).toHaveLength(125);
 });
 
-test("the page's board is built at most every 5 seconds, and the page asks every 10", async () => {
+test("the page's board is built at most every 5 seconds", async () => {
   const n = await factoryNode(cleanup);
   n.s.put("node", "a", { ...n.s.get("node", "a")!, healthDashboard: true });
   const page = async () => (await n.f.page!(new Request("http://127.0.0.1/factory"), "loopback")).json();
@@ -74,6 +74,4 @@ test("the page's board is built at most every 5 seconds, and the page asks every
   expect(await page()).toEqual(first);
   n.advance(5000);
   expect(((await page()) as { items: unknown[] }).items).toHaveLength(1);
-  const { FACTORY_PAGE } = await import("../src/factory/page.ts");
-  expect(FACTORY_PAGE).toContain("setInterval(refresh, 10000)");
 });

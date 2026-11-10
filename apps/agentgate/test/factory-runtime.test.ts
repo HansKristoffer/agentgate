@@ -455,13 +455,12 @@ test("only the operations that take input on stdin are said to read it", async (
   const operations = (await listed.json()) as FactoryOperationInfo[];
   const reads = (line: string) => !!operationFor(operations, line.split(" "))?.stdin;
 
-  expect(operations.filter((op) => op.stdin).map((op) => op.name)).toEqual([
-    "folder put",
-    "secret set",
-    "source test",
-    "deliver",
-    "source add",
-  ]);
+  expect(
+    operations
+      .filter((op) => op.stdin)
+      .map((op) => op.name)
+      .toSorted(),
+  ).toEqual(["deliver", "folder put", "secret set", "source add", "source test"]);
   expect(
     [
       "status",

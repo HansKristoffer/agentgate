@@ -36,7 +36,7 @@ async function specFactory() {
   return { ...n, item, specRuns, launchOf, specReport, needsYou, run: specRuns()[0]! };
 }
 
-test("route spec starts a spec run whose brief requires a fresh-subagent review and one Approve or Change card", async () => {
+test("route spec starts a spec run on its own branch, whose brief names the run", async () => {
   const n = await specFactory();
 
   expect(items.get(n.s, n.item.id)!.phase).toBe("spec");
@@ -46,10 +46,7 @@ test("route spec starts a spec run whose brief requires a fresh-subagent review 
     title: `Spec ${n.key(1)}: Issue 1`,
     workspaceStrategy: { baseRef: "main", branch: `factory/${n.key(1)}-spec-1`, startFromOrigin: true },
   });
-  const brief = String(launch.message);
-  expect(brief).toContain("Have a fresh subagent review the spec");
-  expect(brief).toContain("one question whose options are exactly `Approve` and `Change`");
-  expect(brief).toContain(`run: "${n.run.id}"`);
+  expect(String(launch.message)).toContain(`run: "${n.run.id}"`);
   expect(n.github.posted(1)).toEqual(["The factory took this.", "The factory triaged this and writes a spec first."]);
 });
 

@@ -23,7 +23,7 @@ folder format is `factoryConfigSchema` in the same protocol file.
 
 ## Decisions
 
-- The factory lives inside the daemon and is off until `agentgate factory use`. This bends "quiet and dependable":
+- The factory lives inside the daemon and is off until `agentgate factory init` or `use`. This bends "quiet and dependable":
   the maintainer accepted it on the condition that factory work runs only in `schedule()` loops and never on a model
   request's path. Keep it that way; a proxy request must never wait on the factory.
 - The folder is a public contract. `factory.schema.json` is generated from the zod schema
@@ -64,16 +64,16 @@ folder format is `factoryConfigSchema` in the same protocol file.
   `/peer/factory/op` ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)) as its name, its input and its
   caller, whichever way it was asked. The machine that was asked checks the input first and words the result: a
   terminal's words are parsed, and the answer printed, where they were typed, so only typed input and JSON cross
-  machines. Operations marked `local` run where they are asked: those that write the pointer or another synced
-  record, or open a PR with this machine's `gh` login (`use`, `move`, `off`, `init`, `source add`, `repo add`, the
-  secrets, the stored folder), and `status`, which fetches the factory machine's board itself. `repo remove` runs on
-  the factory machine, the only one that knows the repository's open items. A machine that does not run the
-  factory answers `/peer/factory/op` with a 409, so two machines that disagree on where it runs never forward to
-  each other in a loop.
-- The terminal's route (`POST /api/factory/terminal`) is loopback only as a whole, and the secret operations and
-  `folder export|import` are loopback only on every route: a remote-management connection never sets or lists a
-  secret, or reads or writes this machine's disk. The CLI sends its working directory with the words, since the
-  daemon's is not the person's, so a relative directory means what they typed.
+  machines. An operation marked `local` runs where it is asked: one that writes the pointer or another synced record,
+  or opens a PR with this machine's `gh` login, and `status` and `doctor`, which ask the factory machine themselves
+  and say so when it does not answer. `repo remove` is not local: only the factory machine knows the repository's
+  open items. A machine that does not run the factory answers `/peer/factory/op` with a 409, so two machines that
+  disagree on where it runs never forward to each other in a loop.
+- The terminal's route (`POST /api/factory/terminal`) is loopback only as a whole, and an operation marked
+  `loopbackOnly` is loopback only on every route: a remote-management connection never sets or lists a secret (the
+  notify URL is one), reads or writes this machine's disk, or adds an item as `deliver` would. The CLI sends its
+  working directory with the words, since the daemon's is not the person's, so a relative directory means what they
+  typed.
 
 ## One step at a time per item
 
@@ -93,15 +93,16 @@ When an item waits for the maintainer, it keeps its phase and gets `needsYou`, s
 [`controller.ts`](../../apps/agentgate/src/factory/controller.ts) and answered only through `answer` in
 [`actions.ts`](../../apps/agentgate/src/factory/actions.ts). Its cause (a
 question, a silent end, a stall, its token budget, an uncertain launch, or nothing moving it for four times
-`stalledAfter`: no active run, no working PR thread, and no run, push, nudge or person's act in that window) maps to one
+`stalledAfter`: no active run, no working PR thread, and no run, push, nudge or person's act in that window; a running
+run whose thread sat idle that long ended a turn the watcher missed, such as across a restart, and is reminded
+instead) maps to one
 of three kinds, and the kind decides whether the issue hears it (`POSTS` in
 [`needs-you.ts`](../../apps/agentgate/src/factory/needs-you.ts)): a start does not, an answer and a stop do. The daemon
 builds each item's actions with their effects, so no client keys buttons or text by cause. A thread's question card is
 asked once per T3 request id, and the run records the id it answered, since T3 can show a request again after it was
 answered and two cards can read the same. Waits that need nobody (a thread slot, quota, CI, PR checks) live in the
-controller's memory and show as the board item's `waiting`, never as a run's `error`. A running run whose
-thread sat idle that long ended a turn the watcher missed, such as across a restart, and is reminded. While it waits, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR
-still ends it. `notify.ts` is the one place that tells the person: `item.needs-you` and a move to `ready` go to every
+controller's memory and show as the board item's `waiting`, never as a run's `error`. While an item waits for the
+maintainer, it starts no thread, gets no nudge and is not measured; a merge or a close of its PR still ends it. `notify.ts` is the one place that tells the person: `item.needs-you` and a move to `ready` go to every
 outlet (the notify URL, each factory endpoint's webhook, and the asking thread marked unread in T3 Code), since GitHub
 never notifies the login the factory comments as (D42). An answer given on a GitHub issue goes through `act`, like the
 CLI's, and the id of the last comment read is kept in local state, so an answer is never used twice even when it was
@@ -342,6 +343,9 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
 - Two checks read T3 Code beyond the channels above: the running version (`serverVersion` of
   `/.well-known/t3/environment`) against the `runtime/versions/<version>/t3` path of the `t3` agentgate runs, and the
   worktree cleanup in `server.getConfig` (`worktreeCleanup`, else `storageCleanup`). Either missing reads `unknown`.
+  The `mcp` check only sees whether the provider homes T3 Code names have an `agentgate` entry, so it passes for one
+  that points at another daemon and never sees a repository's `.mcp.json`. The canary is the check that proves the
+  route.
 - The canary is a run kind of its own with no item, so nothing posts. It is queued as its last attempt, so a turn that
   ends without a report ends it with no reminder and no second thread, and it runs only where `doctor` is asked on the
   factory machine: a forwarded call ends after 60 seconds, before most threads report.
@@ -354,8 +358,10 @@ token; the factory machine checks the sender's HMAC-SHA256 signature over the ex
   on disk (`<home>/factory/<commit>/`). Branch protection is the remedy where the GitHub plan allows it, so `use`
   warns when the branch is unprotected and could be protected; a check inside the factory would also refuse the maintainer's own pushes. A
   stored folder has no such remedy: a thread can write it through the control API with the admin token on disk.
-- Token budgets count what agentgate's proxy saw for a run's T3 sessions. A thread whose sessions bypass the proxy
-  counts nothing, so the board shows its item's tokens as unknown after 10 minutes.
+- Token budgets count what this machine's proxy saw for the provider sessions T3 Code names for a run's threads. A
+  session that goes to the provider directly, or through another daemon's proxy, counts 0, and the budget never
+  stops its item; the `proxy` check warns about it. The board shows tokens as unknown only when T3 Code names no
+  session for a run, or measuring keeps failing, for 10 minutes.
 - The factory acts as the maintainer's GitHub login (D42): its comments and PRs carry the `gh` login of the
   factory machine. GitHub refuses a review request to a PR's author, so `reviewers` leaves that login
   out.

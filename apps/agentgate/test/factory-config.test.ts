@@ -62,6 +62,20 @@ function edited(file: string, edit: (text: string) => string) {
   return dir;
 }
 
+/** A GitHub repository holding the example folder at `factory/`, and a push that returns the new commit. */
+function folderRepo() {
+  const git = repos("work");
+  const repo = git.url.replace(/^https:\/\/github\.com\/(.+)\.git$/, "$1");
+  const push = (message: string) => {
+    sh(git.work, "add", "-A");
+    sh(git.work, "commit", "-m", message);
+    sh(git.work, "push", "origin", "main");
+    return sh(git.work, "rev-parse", "HEAD");
+  };
+  cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
+  return { work: git.work, repo, push };
+}
+
 test("the example folder loads with every file type, defaults applied and source repos spelled as in repositories", () => {
   const folder = loadFolder(FIXTURE, "c0ffee");
   expect(folder.config.name).toBe("acme");
@@ -155,15 +169,8 @@ test.each([
 
 test("use loads the folder from git; a broken commit keeps the last good one; folders open items use are kept", async () => {
   const { s, f } = node();
-  const git = repos("work");
-  const repo = git.url.replace(/^https:\/\/github\.com\/(.+)\.git$/, "$1");
-  const push = (message: string) => {
-    sh(git.work, "add", "-A");
-    sh(git.work, "commit", "-m", message);
-    sh(git.work, "push", "origin", "main");
-    return sh(git.work, "rev-parse", "HEAD");
-  };
-  cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
+  const git = folderRepo();
+  const { repo, push } = git;
   const good = push("factory");
 
   expect(await command(f, "use", `${repo}:factory`)).toEqual({
@@ -229,15 +236,8 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
 
 test("a commit that leaves the folder as it was keeps the loaded folder, its commit and its directory", async () => {
   const { f } = node();
-  const git = repos("work");
-  const repo = git.url.replace(/^https:\/\/github\.com\/(.+)\.git$/, "$1");
-  const push = (message: string) => {
-    sh(git.work, "add", "-A");
-    sh(git.work, "commit", "-m", message);
-    sh(git.work, "push", "origin", "main");
-    return sh(git.work, "rev-parse", "HEAD");
-  };
-  cpSync(FIXTURE, join(git.work, "factory"), { recursive: true });
+  const git = folderRepo();
+  const { repo, push } = git;
   const first = push("factory");
   expect((await command(f, "use", `${repo}:factory`)).code).toBe(0);
   const loaded = () => f.events.recent(50).filter((e) => e.text.startsWith("Loaded "));

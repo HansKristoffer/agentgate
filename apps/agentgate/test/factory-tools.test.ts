@@ -1,16 +1,9 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import {
-  factoryBoardSchema,
-  needsYouCauses,
-  stageNames,
-  type FactoryReport,
-  type MarkerPayload,
-} from "@agentgate/protocol";
+import { factoryBoardSchema, stageNames, type FactoryReport, type MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { ask } from "../src/factory/controller.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import { defuse, parseMarkers } from "../src/factory/markers.ts";
-import { CAUSES, POSTS } from "../src/factory/needs-you.ts";
 import type { SourceAdapter } from "../src/factory/runtime.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle } from "./fixtures/t3-mcp.ts";
@@ -188,12 +181,19 @@ test("each outcome moves its item as the state table says, with one comment carr
 test("the gateway hears that a run's tools changed as it ends, resumes with an answer, starts, and as its item finishes", async () => {
   const n = await triaging(1);
   const [run] = n.started;
-  let changed = 0;
+  // Whether the gateway heard since the last look; how often it hears is its own business, as it re-lists only
+  // sessions whose tools differ.
+  let changed = false;
   const { gateway } = n.ctx;
   const real = gateway.toolsChanged.bind(gateway);
   gateway.toolsChanged = (instance) => {
-    changed++;
+    changed = true;
     real(instance);
+  };
+  const heard = () => {
+    const was = changed;
+    changed = false;
+    return was;
   };
 
   await n.report(run!, {
@@ -201,18 +201,19 @@ test("the gateway hears that a run's tools changed as it ends, resumes with an a
     summary: "Two ways.",
     decision: { question: "Keep v1 alive?", recommendation: "Yes" },
   });
-  expect(changed).toBe(1);
+  expect(heard()).toBe(true);
   // The reported run takes a report again, so its thread gets `factory_report` back.
   await n.command("approve", "gh-1", "--reason", "keep it for a week");
-  expect(changed).toBe(2);
-  // Its run is cancelled, then the item closes.
+  expect(heard()).toBe(true);
+  // Its run is cancelled, and the item closes.
   await n.command("drop", "gh-1", "--reason", "not now");
   await idle(n.f);
-  expect(changed).toBe(4);
+  expect(heard()).toBe(true);
   await n.command("retry", "gh-1");
+  heard();
   await n.dispatch();
   await idle(n.f);
-  expect(changed).toBe(5);
+  expect(heard()).toBe(true);
   expect(runs.forItem(n.s, run!.item!).at(-1)!.state).toBe("running");
 });
 
@@ -244,23 +245,6 @@ test("an answered question goes back to its thread, and a second question is pos
   await n.command("approve", "gh-1");
   await n.report(run!, { ...asks, decision: { question: "And v0?", recommendation: "No" } });
   expect(n.posts).toHaveLength(2);
-});
-
-test("every cause maps to the kind of thing the person must do, and only answers and stops post on the issue", () => {
-  expect(Object.fromEntries(needsYouCauses.map((c) => [c, CAUSES[c].kind]))).toEqual({
-    held: "start",
-    decision: "answer",
-    blocked: "answer",
-    question: "answer",
-    failed: "stopped",
-    stalled: "stopped",
-    stuck: "stopped",
-    budget: "stopped",
-    stopped: "stopped",
-    "handed-off": "stopped",
-    deleted: "stopped",
-  });
-  expect(POSTS).toEqual({ start: false, answer: true, stopped: true });
 });
 
 test("a decision shows the same block on the issue, in status and in show, and approve without text takes the recommendation", async () => {

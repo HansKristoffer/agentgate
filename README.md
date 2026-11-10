@@ -261,7 +261,7 @@ The factory comments on the issue when it takes it in, when it triages it, when 
 
 To start one:
 
-1. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary` or `--mcp`). Stage threads report back through it.
+1. On the machine that will run it, connect T3 Code (`agentgate t3 connect`), sign `gh` in to an account that can push to the repositories, and give the Claude Code or Codex that T3 Code runs agentgate's MCP server (`agentgate setup --primary`, which also counts their tokens, or `--mcp`). Stage threads report back through it. `agentgate factory doctor` checks all of this once the factory is on.
 2. Press **Start a factory** in the app's Factory view, or run `agentgate factory init owner/repo`. It keeps the factory's folder in agentgate, so nothing is pushed to the repository, every machine gets a copy, and you edit it in the app's Factory settings or with `agentgate factory folder`. More repositories join with **Add to the factory** in a project's menu, or `agentgate factory repo add owner/repo`. To run from a folder in a git repository instead (the [factory guide](docs/user/factory.md) has the format and an example, and `agentgate factory folder export` writes one out), run `agentgate factory use owner/repo[:folder]`. The factory runs on your always-on machine, or the one you name with `--node`; `agentgate factory move <machine>` moves it later, once the items it has open are finished. Other machines forward factory commands to it.
 3. Watch it in the app's Factory view, which shows what waits for you, every stage, and links that open each thread in T3 Code. `agentgate factory status` and the `/factory` page (`agentgate dashboard on`) show the same board.
 4. Label an issue with your source's label (`factory` for a folder `init` made). The factory looks every 2 minutes.
@@ -275,7 +275,7 @@ You act in three places:
 The factory comments as your `gh` login, and GitHub never notifies you of your own comments. To hear when an item waits for you or a PR is ready, give it a URL of your own, such as a Slack incoming webhook: `agentgate factory notify https://hooks.slack.com/services/…` (or **Notifications** in the app's Factory settings; `notify off` stops it). The app also marks the Factory view and sends a system notification, and the thread that asks is marked unread in T3 Code.
 
 ```sh
-agentgate factory use acme/factory:factory   # turn it on; off turns it off, reload fetches the folder now
+agentgate factory init acme/api              # a factory for one repository, on at once; off turns it off
 agentgate factory status                     # the board: items, what waits for you, sources and webhook URLs
 agentgate factory doctor                     # what the factory still needs, with the fix for each
 printf %s "$LINEAR_KEY" | agentgate factory secret set LINEAR_KEY

@@ -286,8 +286,9 @@ test("a source removed from the folder loses its URL: the ~hook secret goes and 
 
   await n.f.loops.find((l) => l.name === "factory-hooks")!.run();
   expect(getSecret(n.s, "~hook:alerts")).toBeUndefined();
-  expect(JSON.parse(n.s.local("remote:delete")!)).toEqual([expect.objectContaining({ key })]);
   await n.until(() => relay.sockets.get(key)?.readyState === WebSocket.CLOSED, "the hook socket to close");
+  await n.until(() => relay.deletes.includes(key), "the relay endpoint to be deleted");
+  expect(relay.deletes).toEqual([key]);
 });
 
 test("when the factory moves to another machine, this one closes its hook socket but leaves the URL at the relay for the next", async () => {

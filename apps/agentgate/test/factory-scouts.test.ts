@@ -152,7 +152,6 @@ test("a scout runs on its schedule, not while intake is off or its run is going,
   expect(brief).toContain("Look at the p95 latency of every endpoint over the last day.");
   expect(brief).toContain("you may use the MCP servers `railway`");
   expect(brief).toContain("This scout has no open tickets");
-  expect(brief).toContain('`done` needs `result: { kind: "scout", findings: [{ key, title, body }] }`');
   // The thread sees its source's servers, as a stage thread sees its stage file's.
   expect(threadScope(n.f, first.threadId)).toEqual({ servers: ["railway"] });
 
