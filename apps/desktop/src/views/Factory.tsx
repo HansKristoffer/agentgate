@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Card, Tabs } from "@heroui/react";
-import { ExternalLink, GitPullRequest, Pause, Play, Plus, RefreshCw, SquareTerminal } from "lucide-react";
+import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import {
   folderLabel,
-  itemPhases,
   type BoardItem,
   type FactoryBoard,
   type ItemAction,
@@ -12,7 +11,7 @@ import {
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
-import { ActionButton, Badge, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
+import { ActionButton, Badge, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
@@ -125,7 +124,7 @@ function NeedsYouQueue({
       title="Needs you"
       detail={
         waiting.length
-          ? `${waitingForYou} wait for you; intake pauses at ${waitingForYouLimit}.`
+          ? `${waitingForYou} waiting for you. New items pause at ${waitingForYouLimit}.`
           : "Nothing waits for you."
       }
     >
@@ -138,7 +137,7 @@ function NeedsYouQueue({
                 <button type="button" className="factory-link" onClick={() => open(item.id)}>
                   <strong>{item.key}</strong> {item.title}
                 </button>
-                <small className="muted">{PHASE_TITLES[item.phase]}</small>
+                {item.phase !== "ready" && <small className="muted">{PHASE_TITLES[item.phase]}</small>}
               </div>
               {item.needsYou?.question && <p className="factory-question">{item.needsYou.question}</p>}
               {item.needsYou?.detail && (
@@ -170,70 +169,99 @@ function NeedsYouQueue({
   );
 }
 
-function ItemCard({ item, here, open }: { item: BoardItem; here?: string; open: (id: string) => void }) {
+/** What is happening to an item, in words: the stage's work while its run goes, else where it stands. */
+export function statusOf(item: BoardItem): string {
+  const run = item.run;
+  const working = run && ["starting", "running", "waiting"].includes(run.state);
+  const queued = run?.state === "queued";
+  switch (item.phase) {
+    case "held":
+      return "Waits for your go-ahead";
+    case "triage":
+      return queued ? "Waiting to triage" : "Triaging";
+    case "spec":
+      return queued ? "Waiting to write the spec" : "Writing the spec";
+    case "implement":
+      return queued ? "Waiting to implement" : "Implementing";
+    case "pr":
+      return working ? "Fixing the PR" : "PR open, waiting for its checks";
+    case "review":
+      return item.pr?.reviewRound ? `Review round ${item.pr.reviewRound + (working ? 1 : 0)}` : "Reviewing the PR";
+    case "ready":
+      return item.pr?.openFindings
+        ? `Ready for your review, ${item.pr.openFindings} findings open`
+        : "Ready for your review";
+    case "shipped":
+      return "Merged";
+    case "closed":
+      return "Closed";
+  }
+}
+
+function ItemCard({
+  item,
+  here,
+  showRepo,
+  open,
+}: {
+  item: BoardItem;
+  here?: string;
+  showRepo: boolean;
+  open: (id: string) => void;
+}) {
   const link = threadOf(item);
   return (
     <Card className="factory-card" onClick={() => open(item.id)}>
       <div className="factory-card-key">
-        {item.key} · {item.repo}
+        {item.key}
+        {showRepo ? ` · ${item.repo}` : ""}
       </div>
       <strong>{item.title}</strong>
       <div className="factory-card-meta">
-        {item.needsYou && <Badge>{REASONS[item.needsYou.reason]}</Badge>}
-        {item.run && (
-          <small>
-            {item.run.kind} {item.run.state}
-            {item.run.node && item.run.node !== item.heldBy ? ` on ${item.run.node}` : ""}
-          </small>
-        )}
-        {item.pr && (
-          <small>
-            PR
-            {item.pr.reviewRound ? `, round ${item.pr.reviewRound}` : ""}
-            {item.pr.openFindings ? `, ${item.pr.openFindings} open` : ""}
-          </small>
-        )}
-        {here && item.heldBy !== here && <small>held by {item.heldBy}</small>}
-        {item.tokensUnknown ? (
-          <small>tokens unknown</small>
-        ) : (
-          item.tokens > 0 && <small>{tokens(item.tokens)} tokens</small>
-        )}
+        {item.needsYou ? <Badge>{REASONS[item.needsYou.reason]}</Badge> : <small>{statusOf(item)}</small>}
+        {here && item.heldBy !== here && <small>on {item.heldBy}</small>}
+        {item.tokens > 0 && <small>{tokens(item.tokens)} tokens</small>}
         {item.inPhaseSince > 0 && <small>{ago(item.inPhaseSince)}</small>}
       </div>
       <div className="factory-card-links" onClick={(e) => e.stopPropagation()}>
         {link && (
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Open ${item.key} in T3 Code`}
-            onPress={() => void openExternal(link)}
-          >
-            <SquareTerminal size={14} />
-          </Button>
+          <span title="Open its thread in T3 Code">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={`Open ${item.key} in T3 Code`}
+              onPress={() => void openExternal(link)}
+            >
+              <SquareTerminal size={14} />
+            </Button>
+          </span>
         )}
         {item.pr && (
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Open ${item.key}'s PR`}
-            onPress={() => void openExternal(item.pr!.url)}
-          >
-            <GitPullRequest size={14} />
-          </Button>
+          <span title="Open the pull request">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={`Open ${item.key}'s PR`}
+              onPress={() => void openExternal(item.pr!.url)}
+            >
+              <GitPullRequest size={14} />
+            </Button>
+          </span>
         )}
         {item.url && (
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label={`Open ${item.key}'s issue`}
-            onPress={() => void openExternal(item.url!)}
-          >
-            <ExternalLink size={14} />
-          </Button>
+          <span title="Open the issue">
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label={`Open ${item.key}'s issue`}
+              onPress={() => void openExternal(item.url!)}
+            >
+              <ExternalLink size={14} />
+            </Button>
+          </span>
         )}
       </div>
     </Card>
@@ -244,20 +272,24 @@ const tokens = (n: number) =>
   n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 
 function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => void }) {
-  const phases = itemPhases.filter((p) => OPEN_PHASES.includes(p) || board.items.some((i) => i.phase === p));
+  const showRepo = new Set(board.items.map((i) => i.repo)).size > 1;
+  const finished = board.items
+    .filter((i) => !OPEN_PHASES.includes(i.phase))
+    .toSorted((a, b) => b.updatedAt - a.updatedAt);
+  const inPhase = (phase: ItemPhase) => board.items.filter((i) => i.phase === phase);
   return (
     <section className="section">
       <div className="section-head">
         <div>
           <h2>Stages</h2>
-          <p>Every open item, and those that finished in the last 7 days.</p>
+          <p>Every open item, where it is now.</p>
         </div>
       </div>
       {/* Every stage in one line, and a column only for those that hold items: seven columns at a card's width
           do not fit the page, and the ones out of view were the ones waiting for you. */}
       <div className="factory-pipeline">
-        {phases.map((phase) => {
-          const count = board.items.filter((i) => i.phase === phase).length;
+        {OPEN_PHASES.map((phase) => {
+          const count = inPhase(phase).length;
           return (
             <span key={phase} className={count ? undefined : "muted"}>
               {PHASE_TITLES[phase]} <strong>{count}</strong>
@@ -265,48 +297,78 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
           );
         })}
       </div>
-      <div className="factory-stages">
-        {phases.map((phase) => {
-          const here = board.items.filter((i) => i.phase === phase);
-          if (!here.length) return null;
-          return (
-            <div className="factory-stage" key={phase}>
-              <h3>
-                {PHASE_TITLES[phase]} <span className="muted">{here.length}</span>
-              </h3>
-              {here.map((item) => (
-                <ItemCard key={item.id} item={item} here={board.factory?.node} open={open} />
-              ))}
-            </div>
-          );
-        })}
-      </div>
+      {OPEN_PHASES.some((p) => inPhase(p).length) ? (
+        <div className="factory-stages">
+          {OPEN_PHASES.map((phase) => {
+            const here = inPhase(phase);
+            if (!here.length) return null;
+            return (
+              <div className="factory-stage" key={phase}>
+                <h3>
+                  {PHASE_TITLES[phase]} <span className="muted">{here.length}</span>
+                </h3>
+                {here.map((item) => (
+                  <ItemCard key={item.id} item={item} here={board.factory?.node} showRepo={showRepo} open={open} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <Empty>
+          <p>Nothing is in the works. Label an issue, or add an item.</p>
+        </Empty>
+      )}
+      {finished.length > 0 && (
+        <Panel title="Finished" detail="Merged or closed in the last 7 days.">
+          {finished.map((item) => (
+            <button type="button" className="item factory-finished" key={item.id} onClick={() => open(item.id)}>
+              <span className="factory-card-key">{item.key}</span>
+              <span className="grow">{item.title}</span>
+              <Badge good={item.phase === "shipped"}>{statusOf(item)}</Badge>
+              <small className="muted">{ago(item.updatedAt)}</small>
+            </button>
+          ))}
+        </Panel>
+      )}
     </section>
   );
 }
 
 function Status({ board }: { board: FactoryBoard }) {
   const c = board.capacity;
+  const t3 = board.t3.stream === "live" && board.t3.mcp === "signed-in";
   const rows: [string, ReactNode][] = [
-    ["Folder", board.factory && folderLabel(board.factory)],
-    ["Runs on", board.factory && `${board.factory.node}${board.factory.online ? "" : " (offline)"}`],
     [
-      "Loaded",
+      "Folder",
       board.config
-        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}`
+        ? `${board.config.name} at ${board.config.commit.slice(0, 7)}${board.config.error ? `: ${board.config.error}` : ""}${board.factory ? `, ${folderLabel(board.factory)}` : ""}`
         : "Not loaded yet",
     ],
-    ["T3 Code", `stream ${board.t3.stream}, MCP ${board.t3.mcp}${board.t3.error ? `: ${board.t3.error}` : ""}`],
-    ["Threads", `${c.working} of ${c.threads} working`],
-    ["Intake", c.paused ? "paused" : c.intake],
-    ["Waiting for you", `${c.waitingForYou} of ${c.waitingForYouLimit}`],
+    ["Runs on", board.factory && `${board.factory.node}${board.factory.online ? "" : " (offline)"}`],
     [
-      "Quota",
-      c.quota === "ok"
-        ? "ok"
-        : `waiting${c.quota.waitingUntil ? ` until ${new Date(c.quota.waitingUntil).toLocaleTimeString()}` : ""}`,
+      "T3 Code",
+      t3 ? "Connected" : `Stream ${board.t3.stream}, MCP ${board.t3.mcp}${board.t3.error ? `: ${board.t3.error}` : ""}`,
     ],
-    ["Default branch CI", c.mainRed.length ? `red in ${c.mainRed.join(", ")}` : "green"],
+    ["Threads working", `${c.working} of ${c.threads}`],
+    [
+      "New items",
+      c.paused
+        ? "Paused"
+        : c.intake === "on"
+          ? "Taken in"
+          : c.intake === "paused-for-you"
+            ? "Paused until fewer wait for you"
+            : "Off",
+    ],
+    ["Waiting for you", `${c.waitingForYou}; new items pause at ${c.waitingForYouLimit}`],
+    [
+      "Subscriptions",
+      c.quota === "ok"
+        ? "Have room"
+        : `Full${c.quota.waitingUntil ? ` until ${new Date(c.quota.waitingUntil).toLocaleTimeString()}` : ""}`,
+    ],
+    ["Default branch CI", c.mainRed.length ? `Failing in ${c.mainRed.join(", ")}` : "Passing"],
   ];
   return (
     <Panel title="Status">
@@ -326,8 +388,8 @@ function Machines({ board }: { board: FactoryBoard }) {
       {board.machines.map((m) => (
         <Panel
           key={m.node}
-          title={`${m.node}${m.node === board.node ? " (this machine)" : ""}`}
-          detail={m.online ? `${m.threads.length} active threads` : "Offline"}
+          title={`T3 Code threads on ${m.node}${m.node === board.node ? " (this machine)" : ""}`}
+          detail={m.online ? `${m.threads.length} open in T3 Code` : "Offline"}
         >
           {m.threads.length ? (
             m.threads.map((t) => (
@@ -358,25 +420,29 @@ function Metrics({ board }: { board: FactoryBoard }) {
   const pct = (n: number) => `${Math.round(n * 100)}%`;
   const rows: [string, string][] = [
     ["PRs merged", String(m.merged)],
-    ["Merge rate", pct(m.mergeRate)],
-    ["Reverts within 14 days", String(m.reverts14d)],
-    ["Median hours to merge", m.medianHoursToMerge === undefined ? "–" : m.medianHoursToMerge.toFixed(1)],
-    [
-      "Times a person stepped in, per item",
-      m.humanTouchesPerItem === undefined ? "–" : m.humanTouchesPerItem.toFixed(2),
-    ],
+    ["Merge rate", m.merged ? pct(m.mergeRate) : "–"],
+    ["Reverted within 14 days", String(m.reverts14d)],
+    ["Hours to merge, median", m.medianHoursToMerge === undefined ? "–" : m.medianHoursToMerge.toFixed(1)],
+    ["Times you stepped in, per item", m.humanTouchesPerItem === undefined ? "–" : m.humanTouchesPerItem.toFixed(1)],
     ["Tokens per merged PR", m.tokensPerMergedPr === undefined ? "–" : tokens(m.tokensPerMergedPr)],
   ];
   return (
     <>
-      <Panel title="Last 7 days">
-        {rows.map(([label, value]) => (
-          <div className="item" key={label}>
-            <span className="grow">{label}</span>
-            <span>{value}</span>
+      <section className="section">
+        <div className="section-head">
+          <div>
+            <h2>Last 7 days</h2>
           </div>
-        ))}
-      </Panel>
+        </div>
+        <div className="stats">
+          {rows.map(([label, value]) => (
+            <div className="stat" key={label}>
+              <strong>{value}</strong>
+              <span>{label}</span>
+            </div>
+          ))}
+        </div>
+      </section>
       {m.scorers.length > 0 && (
         <Panel title="Judges" detail="Pass rate of each judge's graded runs, by factory commit.">
           {m.scorers.map((s) => (
@@ -395,10 +461,10 @@ function Metrics({ board }: { board: FactoryBoard }) {
 
 function Events({ board }: { board: FactoryBoard }) {
   return (
-    <Panel title="Recent events">
+    <Panel title="History" detail="What the factory did lately, newest first.">
       {board.events.length ? (
         board.events.map((e) => (
-          <div className="item" key={e.seq}>
+          <div className="item factory-event" key={e.seq}>
             <span className="grow">{e.text}</span>
             <small className="muted">{ago(e.at)}</small>
           </div>
@@ -431,15 +497,22 @@ function AddItem({
           add({ repo: field(form, "repo"), title: field(form, "title"), ...(body && { body }) });
         }}
       >
-        <Field
-          label="Repository"
-          name="repo"
-          isRequired
-          defaultValue={repos[0]}
-          description={repos.length ? `One of ${repos.join(", ")}` : undefined}
-        />
+        {/* The factory works only the folder's repositories: one needs no choosing, several a list to pick from. */}
+        {repos.length > 1 ? (
+          <Choice
+            label="Repository"
+            name="repo"
+            defaultValue={repos[0]}
+            options={repos.map((r) => ({ id: r, label: r }))}
+          />
+        ) : (
+          <>
+            <input type="hidden" name="repo" value={repos[0] ?? ""} />
+            {repos[0] && <p className="muted">For {repos[0]}. Triage starts at once.</p>}
+          </>
+        )}
         <Field label="Title" name="title" isRequired />
-        <Field label="Details" name="body" multiline />
+        <Field label="Details" name="body" multiline description="What happens, and what should happen instead." />
         <Button type="submit" size="sm">
           Add and triage
         </Button>
@@ -563,9 +636,6 @@ export function Factory(props: ViewProps) {
           {paused ? <Play size={14} /> : <Pause size={14} />}
           {paused ? "Resume" : "Pause"}
         </ActionButton>
-        <Button isIconOnly size="sm" variant="ghost" aria-label="Refresh" onPress={() => void load()}>
-          <RefreshCw size={14} />
-        </Button>
       </HeaderActions>
       {error && <p className="danger">{error}</p>}
       {paused && (
@@ -579,9 +649,7 @@ export function Factory(props: ViewProps) {
             {[
               ["items", "Items"],
               ["status", "Status"],
-              ["machines", "Machines"],
-              ["metrics", "Metrics"],
-              ["events", "Events"],
+              ["history", "History"],
               ["settings", "Settings"],
             ].map(([id, title]) => (
               <Tabs.Tab key={id} id={id!}>
@@ -602,11 +670,11 @@ export function Factory(props: ViewProps) {
         <>
           <Status board={board} />
           <Sources {...props} board={board} run={run} />
+          <Metrics board={board} />
+          <Machines board={board} />
         </>
       )}
-      {tab === "machines" && <Machines board={board} />}
-      {tab === "metrics" && <Metrics board={board} />}
-      {tab === "events" && <Events board={board} />}
+      {tab === "history" && <Events board={board} />}
       {tab === "settings" && <FactorySettings {...props} board={board} run={run} />}
       {selected && (
         <ItemDrawer

@@ -174,6 +174,10 @@ pre {
   padding: 10px 14px;
   min-height: 52px;
 }
+/* HeroUI's modal body mutes its text; a panel's rows inside a dialog read like the same rows on a page. */
+.modal__body .card {
+  color: var(--foreground);
+}
 /* React Aria selects leave an invisible <template> ahead of themselves; it must not count as a row above. */
 .item ~ .item,
 .rows > :not(template) + .item {
@@ -1050,6 +1054,7 @@ h3 {
   font-size: 13px;
 }
 .factory-stages {
+  margin-bottom: 16px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
@@ -1060,6 +1065,30 @@ h3 {
   flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+/* A log line: denser than a settings row. */
+.item.factory-event {
+  min-height: 0;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.factory-history summary {
+  cursor: pointer;
+  margin: 8px 0;
+}
+/* A finished item: one row that opens its drawer. */
+.factory-finished {
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.factory-finished:hover {
+  background: var(--hover, rgba(127, 127, 127, 0.08));
 }
 .factory-stage h3 {
   font-size: 13px;

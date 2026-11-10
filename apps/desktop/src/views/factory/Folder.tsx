@@ -50,7 +50,7 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
           <p>Loading…</p>
         </Empty>
       )}
-      <div className="row">
+      <div className="item">
         <Button size="sm" variant="tertiary" onPress={() => setEditing({ path: "", text: "", isNew: true })}>
           New file…
         </Button>
