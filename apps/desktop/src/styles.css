@@ -1045,11 +1045,92 @@ h3 {
   }
 }
 
+/* The factory's colours. Stages run from understanding (think) through building and checking to ready; what waits
+   for you is amber and what failed red, whatever stage it is in. Violet and teal are Apple's system colours, beside
+   the theme's own blue, green, amber and red. */
+:root {
+  --tone-held: #8e8e93;
+  --tone-think: #af52de;
+  --tone-build: var(--accent);
+  --tone-check: #0f9fb5;
+  --tone-ready: var(--success);
+  --tone-you: var(--warning);
+  --tone-bad: var(--danger);
+}
+.dark,
+[data-theme="dark"] {
+  --tone-held: #98989d;
+  --tone-think: #bf5af2;
+  --tone-check: #40c8e0;
+}
+/* A state in its colour: a tinted pill with a dot, its text mixed toward the foreground so it reads in both themes. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
+  background: color-mix(in oklab, var(--tone) 15%, transparent);
+  color: color-mix(in oklab, var(--tone) 62%, var(--foreground));
+}
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone);
+  flex-shrink: 0;
+}
+/* A card or row in a state's colour: a stripe down its leading edge. */
+.factory-toned {
+  position: relative;
+  overflow: hidden;
+}
+.factory-toned::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--tone);
+}
+/* The pipeline: each stage a pill, tinted when it holds items. */
+.pipe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  color: var(--muted);
+}
+.pipe::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--tone);
+  opacity: 0.55;
+}
+.pipe.on {
+  background: color-mix(in oklab, var(--tone) 15%, transparent);
+  color: color-mix(in oklab, var(--tone) 62%, var(--foreground));
+}
+.pipe.on::before {
+  opacity: 1;
+}
+/* A number that means something good or bad is in that colour; the rest stay plain. */
+.stat.toned strong {
+  color: color-mix(in oklab, var(--tone) 75%, var(--foreground));
+}
+
 /* The factory: stage columns of item cards. */
 .factory-pipeline {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 16px;
+  gap: 6px;
   margin-bottom: 12px;
   font-size: 13px;
 }
@@ -1091,9 +1172,19 @@ h3 {
   background: var(--hover, rgba(127, 127, 127, 0.08));
 }
 .factory-stage h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 13px;
   font-weight: 600;
   margin: 0 0 2px;
+}
+.factory-stage h3::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
 }
 .factory-card {
   display: flex;

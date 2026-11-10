@@ -6,7 +6,7 @@ import { openExternal, request } from "../../api.ts";
 import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
 import { useGeneration } from "../../features/proxy/useGeneration.ts";
 import { ago } from "../utils.ts";
-import { NeedsYouActions, OpenInT3, statusOf, type Act, type AskReason } from "../Factory.tsx";
+import { NeedsYouActions, OpenInT3, Pill, statusOf, toneOf, type Act, type AskReason, type Tone } from "../Factory.tsx";
 
 const STAGES: Record<string, string> = {
   triage: "Triage",
@@ -16,6 +16,16 @@ const STAGES: Record<string, string> = {
   judge: "Judge",
   learn: "Learning",
   scout: "Scout",
+};
+const RUN_TONES: Record<string, Tone> = {
+  queued: "held",
+  starting: "build",
+  running: "build",
+  waiting: "you",
+  reported: "ready",
+  silent: "bad",
+  failed: "bad",
+  cancelled: "held",
 };
 const RUN_STATES: Record<string, string> = {
   queued: "queued",
@@ -100,7 +110,7 @@ export function ItemDrawer({
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
-        <Badge good={item.phase === "shipped"}>{item.needsYou ? "Needs you" : statusOf(item)}</Badge>
+        <Pill tone={toneOf(item)}>{item.needsYou ? "Needs you" : statusOf(item)}</Pill>
         {item.heldBy !== board.factory?.node && <Badge>on {item.heldBy}</Badge>}
         {item.url && (
           <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.url!)}>
@@ -149,7 +159,7 @@ export function ItemDrawer({
                     {STAGES[r.kind] ?? r.kind}
                     {r.attempt > 1 ? ` (attempt ${r.attempt})` : ""}
                   </strong>
-                  <Badge good={r.state === "reported"}>{RUN_STATES[r.state] ?? r.state}</Badge>
+                  <Pill tone={RUN_TONES[r.state] ?? "held"}>{RUN_STATES[r.state] ?? r.state}</Pill>
                   {r.node && r.node !== item.heldBy && <small className="muted">on {r.node}</small>}
                 </div>
                 {/* An error on a run that reported is housekeeping, not why it stopped. */}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import {
@@ -11,7 +11,7 @@ import {
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
-import { ActionButton, Badge, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
+import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
@@ -54,6 +54,33 @@ const REASONS: Record<NeedsYou["reason"], string> = {
   "handed-off": "Handed to another machine",
   stopped: "Stopped in T3 Code",
 };
+
+/** The colour family of a state, defined in styles.css for light and dark: the stages run from understanding (think)
+ * through building and checking to ready, and anything that waits for you, or failed, stands out from all of them. */
+export type Tone = "held" | "think" | "build" | "check" | "ready" | "you" | "bad";
+const STAGE_TONES: Record<ItemPhase, Tone> = {
+  held: "held",
+  triage: "think",
+  spec: "think",
+  implement: "build",
+  pr: "build",
+  review: "check",
+  ready: "ready",
+  shipped: "ready",
+  closed: "held",
+};
+export const toneStyle = (tone: Tone) => ({ "--tone": `var(--tone-${tone})` }) as CSSProperties;
+/** An item's colour: what waits for you, or failed, before the stage it is in. */
+export const toneOf = (item: BoardItem): Tone =>
+  item.needsYou ? (["failed", "stuck"].includes(item.needsYou.reason) ? "bad" : "you") : STAGE_TONES[item.phase];
+/** A state in its colour, with a dot, so the eye finds what waits for you before reading. */
+export function Pill({ tone, children }: { tone: Tone; children: ReactNode }) {
+  return (
+    <span className="pill" style={toneStyle(tone)}>
+      {children}
+    </span>
+  );
+}
 
 /** The T3 Code thread an item points at: the one asking, else its newest run's. */
 export const threadOf = (item: BoardItem) => item.needsYou?.link ?? item.run?.threadLink;
@@ -130,10 +157,12 @@ function NeedsYouQueue({
     >
       {waiting.length ? (
         waiting.map((item) => (
-          <div className="item factory-waiting" key={item.id}>
+          <div className="item factory-waiting factory-toned" key={item.id} style={toneStyle(toneOf(item))}>
             <div className="grow">
               <div className="row">
-                <Badge>{item.needsYou ? REASONS[item.needsYou.reason] : "Ready for your review"}</Badge>
+                <Pill tone={toneOf(item)}>
+                  {item.needsYou ? REASONS[item.needsYou.reason] : "Ready for your review"}
+                </Pill>
                 <button type="button" className="factory-link" onClick={() => open(item.id)}>
                   <strong>{item.key}</strong> {item.title}
                 </button>
@@ -211,14 +240,14 @@ function ItemCard({
 }) {
   const link = threadOf(item);
   return (
-    <Card className="factory-card" onClick={() => open(item.id)}>
+    <Card className="factory-card factory-toned" style={toneStyle(toneOf(item))} onClick={() => open(item.id)}>
       <div className="factory-card-key">
         {item.key}
         {showRepo ? ` · ${item.repo}` : ""}
       </div>
       <strong>{item.title}</strong>
       <div className="factory-card-meta">
-        {item.needsYou ? <Badge>{REASONS[item.needsYou.reason]}</Badge> : <small>{statusOf(item)}</small>}
+        <Pill tone={toneOf(item)}>{item.needsYou ? REASONS[item.needsYou.reason] : statusOf(item)}</Pill>
         {here && item.heldBy !== here && <small>on {item.heldBy}</small>}
         {item.tokens > 0 && <small>{tokens(item.tokens)} tokens</small>}
         {item.inPhaseSince > 0 && <small>{ago(item.inPhaseSince)}</small>}
@@ -291,7 +320,7 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
         {OPEN_PHASES.map((phase) => {
           const count = inPhase(phase).length;
           return (
-            <span key={phase} className={count ? undefined : "muted"}>
+            <span key={phase} className={count ? "pipe on" : "pipe"} style={toneStyle(STAGE_TONES[phase])}>
               {PHASE_TITLES[phase]} <strong>{count}</strong>
             </span>
           );
@@ -303,7 +332,7 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
             const here = inPhase(phase);
             if (!here.length) return null;
             return (
-              <div className="factory-stage" key={phase}>
+              <div className="factory-stage" key={phase} style={toneStyle(STAGE_TONES[phase])}>
                 <h3>
                   {PHASE_TITLES[phase]} <span className="muted">{here.length}</span>
                 </h3>
@@ -325,7 +354,7 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
             <button type="button" className="item factory-finished" key={item.id} onClick={() => open(item.id)}>
               <span className="factory-card-key">{item.key}</span>
               <span className="grow">{item.title}</span>
-              <Badge good={item.phase === "shipped"}>{statusOf(item)}</Badge>
+              <Pill tone={STAGE_TONES[item.phase]}>{statusOf(item)}</Pill>
               <small className="muted">{ago(item.updatedAt)}</small>
             </button>
           ))}
@@ -338,7 +367,8 @@ function Stages({ board, open }: { board: FactoryBoard; open: (id: string) => vo
 function Status({ board }: { board: FactoryBoard }) {
   const c = board.capacity;
   const t3 = board.t3.stream === "live" && board.t3.mcp === "signed-in";
-  const rows: [string, ReactNode][] = [
+  // A row's tone says at a glance whether it is fine; rows that only inform have none.
+  const rows: [string, ReactNode, Tone?][] = [
     [
       "Folder",
       board.config
@@ -349,8 +379,9 @@ function Status({ board }: { board: FactoryBoard }) {
     [
       "T3 Code",
       t3 ? "Connected" : `Stream ${board.t3.stream}, MCP ${board.t3.mcp}${board.t3.error ? `: ${board.t3.error}` : ""}`,
+      t3 ? "ready" : "bad",
     ],
-    ["Threads working", `${c.working} of ${c.threads}`],
+    ["Threads working", `${c.working} of ${c.threads}`, c.working ? "build" : "held"],
     [
       "New items",
       c.paused
@@ -360,22 +391,32 @@ function Status({ board }: { board: FactoryBoard }) {
           : c.intake === "paused-for-you"
             ? "Paused until fewer wait for you"
             : "Off",
+      !c.paused && c.intake === "on" ? "ready" : "you",
     ],
-    ["Waiting for you", `${c.waitingForYou}; new items pause at ${c.waitingForYouLimit}`],
+    [
+      "Waiting for you",
+      `${c.waitingForYou}; new items pause at ${c.waitingForYouLimit}`,
+      c.waitingForYou ? "you" : "held",
+    ],
     [
       "Subscriptions",
       c.quota === "ok"
         ? "Have room"
         : `Full${c.quota.waitingUntil ? ` until ${new Date(c.quota.waitingUntil).toLocaleTimeString()}` : ""}`,
+      c.quota === "ok" ? "ready" : "you",
     ],
-    ["Default branch CI", c.mainRed.length ? `Failing in ${c.mainRed.join(", ")}` : "Passing"],
+    [
+      "Default branch CI",
+      c.mainRed.length ? `Failing in ${c.mainRed.join(", ")}` : "Passing",
+      c.mainRed.length ? "bad" : "ready",
+    ],
   ];
   return (
     <Panel title="Status">
-      {rows.map(([label, value]) => (
+      {rows.map(([label, value, tone]) => (
         <div className="item" key={label}>
           <span className="grow">{label}</span>
-          <span className="muted">{value}</span>
+          {tone ? <Pill tone={tone}>{value}</Pill> : <span className="muted">{value}</span>}
         </div>
       ))}
     </Panel>
@@ -418,10 +459,10 @@ function Machines({ board }: { board: FactoryBoard }) {
 function Metrics({ board }: { board: FactoryBoard }) {
   const m = board.metrics;
   const pct = (n: number) => `${Math.round(n * 100)}%`;
-  const rows: [string, string][] = [
-    ["PRs merged", String(m.merged)],
+  const rows: [string, string, Tone?][] = [
+    ["PRs merged", String(m.merged), m.merged ? "ready" : undefined],
     ["Merge rate", m.merged ? pct(m.mergeRate) : "–"],
-    ["Reverted within 14 days", String(m.reverts14d)],
+    ["Reverted within 14 days", String(m.reverts14d), m.reverts14d ? "bad" : undefined],
     ["Hours to merge, median", m.medianHoursToMerge === undefined ? "–" : m.medianHoursToMerge.toFixed(1)],
     ["Times you stepped in, per item", m.humanTouchesPerItem === undefined ? "–" : m.humanTouchesPerItem.toFixed(1)],
     ["Tokens per merged PR", m.tokensPerMergedPr === undefined ? "–" : tokens(m.tokensPerMergedPr)],
@@ -435,8 +476,8 @@ function Metrics({ board }: { board: FactoryBoard }) {
           </div>
         </div>
         <div className="stats">
-          {rows.map(([label, value]) => (
-            <div className="stat" key={label}>
+          {rows.map(([label, value, tone]) => (
+            <div className={tone ? "stat toned" : "stat"} key={label} style={tone && toneStyle(tone)}>
               <strong>{value}</strong>
               <span>{label}</span>
             </div>
