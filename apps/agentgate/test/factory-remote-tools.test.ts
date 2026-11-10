@@ -151,7 +151,8 @@ test("an item that waits for you, and a PR that is ready, are posted once to you
 
   // A PR that is ready is the other moment; a failing receiver is tried once more and logged once, without its URL.
   answer.status = 503;
-  items.update(n.s, added.id, { prUrl: `https://github.com/${n.repo}/pull/7` });
+  const url = `https://github.com/${n.repo}/pull/7`;
+  items.update(n.s, added.id, { pr: { url, head: "c1", headAt: 0, run: run.id, thread: run.threadId!, nudges: 0 } });
   moveItem(n.f, added.id, "ready", true);
   await n.until(() => posts.length === 6, "the posts and their retries");
   expect(posts.at(-1)!.body.text).toBe(

@@ -1,5 +1,11 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { factoryBoardSchema, needsYouCauses, type FactoryReport, type MarkerPayload } from "@agentgate/protocol";
+import {
+  factoryBoardSchema,
+  needsYouCauses,
+  stageNames,
+  type FactoryReport,
+  type MarkerPayload,
+} from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { ask } from "../src/factory/controller.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
@@ -304,6 +310,29 @@ test("a report missing what its outcome needs is refused, naming the field", asy
   expect(
     (await n.report(run!, { outcome: "done", summary: "x", result: { kind: "triage", route: "ship" } } as never)).error,
   ).toStartWith("result.route:");
+  expect(runs.get(n.s, run!.id)!.state).toBe("running");
+});
+
+test("every stage's report carries a result of its own kind, and done needs one", async () => {
+  const n = await triaging(1);
+  const [run] = n.started;
+  const spec = { kind: "spec", spec: "The spec.", review: "No findings.", approved: true } as const;
+  const triage = {
+    kind: "triage",
+    route: "implement",
+    reproduction: { notPossible: "needs production data" },
+  } as const;
+  for (const kind of stageNames) {
+    // The same thread's run as each stage in turn: the controller refuses these before a stage's own checks.
+    runs.update(n.s, run!.id, { kind });
+    const other = kind === "triage" ? spec : triage;
+    expect(await n.report(run!, { outcome: "done", summary: "Done.", result: other })).toEqual({
+      error: `A ${kind} run reports a ${kind} result, not ${other.kind}`,
+    });
+    expect((await n.report(run!, { outcome: "done", summary: "Done." })).error).toStartWith(
+      `The outcome done needs result: { kind: "${kind}"`,
+    );
+  }
   expect(runs.get(n.s, run!.id)!.state).toBe("running");
 });
 

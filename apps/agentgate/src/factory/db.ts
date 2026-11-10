@@ -25,8 +25,8 @@ export interface FactoryItem {
   snapshot: unknown; // the source item at intake; untrusted
   phase: ItemPhase;
   needsYou?: NeedsYou;
-  prUrl?: string;
-  prCommit?: string;
+  /** The PR its implement run opened, which the item owns until it finishes. */
+  pr?: ItemPr;
   configCommit: string; // keeps <agentgate home>/factory/<commit>/ alive while the item is open
   /** The sum of its runs' tokens, derived when read. */
   tokens: number;
@@ -44,35 +44,39 @@ export interface FactoryItem {
   finishedAt?: number;
 }
 
-/** What the factory recorded about a run as it went: the PR an implement run opened and its nudges, a review round,
- * a scout's source and what it filed. Stored as JSON in `checked`. */
+/** An item's PR and what the PR follower (pr.ts) keeps about it. Set when an implement report is accepted. */
+export interface ItemPr {
+  url: string;
+  /** Its head as the factory last read it, and when the factory first saw that head. */
+  head: string;
+  headAt: number;
+  /** The implement run whose thread owns the PR, and that thread: only it is nudged about the PR. */
+  run: string;
+  thread: string;
+  /** The nudges about the PR since the owning thread reported or `retry`, and the problems (`problemsOf` keys) the
+   * last one was about, and when. */
+  nudges: number;
+  nudged?: string;
+  nudgedAt?: number;
+  /** GitHub's time of the newest comment or review a nudge quoted: newer trusted ones are what the thread has not seen. */
+  quotedUntil?: string;
+  /** The `updatedAt` of the thread when the factory found it stopped in T3 Code; a later stop is a new one. */
+  stopSeen?: number;
+  /** What the thread did with each review conversation, by id, and whether the factory has replied on GitHub. */
+  conversations?: Record<
+    string,
+    {
+      outcome: "fixed" | "declined";
+      commit: string; // the PR's head when the thread reported
+      note?: string;
+      seen: string; // GitHub's time of the conversation's newest comment then; a newer trusted one reopens it
+    }
+  >;
+}
+
+/** What the factory recorded about a run as it went: a review round, a scout's source and what it filed. Stored as
+ * JSON in `checked`. */
 export const runDataSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("implement"),
-    pr: z.string(),
-    head: z.string(),
-    /** When the factory first saw this head. */
-    headAt: z.number(),
-    /** The problems the factory last nudged the thread about (`problemsOf` keys), and when. */
-    nudged: z.string().optional(),
-    nudgedAt: z.number().optional(),
-    /** GitHub's time of the newest comment or review a nudge quoted: newer trusted ones are what the thread has not seen. */
-    quotedUntil: z.string().optional(),
-    /** The `updatedAt` of the thread when the factory found it stopped in T3 Code; a later stop is a new one. */
-    stopSeen: z.number().optional(),
-    /** What the thread did with each review conversation, by id, and whether the factory has replied on GitHub. */
-    conversations: z
-      .record(
-        z.string(),
-        z.object({
-          outcome: z.enum(["fixed", "declined"]),
-          commit: z.string(), // the PR's head when the thread reported
-          note: z.string().optional(),
-          seen: z.string(), // GitHub's time of the conversation's newest comment then; a newer trusted one reopens it
-        }),
-      )
-      .optional(),
-  }),
   z.object({
     kind: z.literal("review"),
     head: z.string(),
@@ -104,6 +108,7 @@ export interface FactoryRun {
   threadLink?: string;
   report?: FactoryReport;
   checked?: RunData;
+  /** Reminders sent because a turn ended without a report. */
   nudges: number;
   error?: string;
   configCommit: string;
@@ -131,8 +136,8 @@ export function ensureFactoryTables(s: Store) {
   s.transaction(() => {
     s.db.run(`create table if not exists factory_items (
       id text primary key, source text not null, external_id text not null, key text not null, repo text not null,
-      title text not null, url text, snapshot text not null, phase text not null, needs_you text, pr_url text,
-      pr_commit text, config_commit text not null, dedupe text, outcome text,
+      title text not null, url text, snapshot text not null, phase text not null, needs_you text, pr text,
+      config_commit text not null, dedupe text, outcome text,
       touches integer not null default 0, phase_at integer not null, created_at integer not null,
       updated_at integer not null, finished_at integer)`);
     s.db.run("create unique index if not exists factory_items_external on factory_items(external_id)");
@@ -196,8 +201,7 @@ const itemColumns = {
   snapshot: "snapshot",
   phase: "phase",
   needsYou: "needs_you",
-  prUrl: "pr_url",
-  prCommit: "pr_commit",
+  pr: "pr",
   configCommit: "config_commit",
   dedupe: "dedupe",
   outcome: "outcome",
@@ -207,7 +211,7 @@ const itemColumns = {
   updatedAt: "updated_at",
   finishedAt: "finished_at",
 } as const;
-const itemJson = new Set(["snapshot", "needsYou", "outcome"]);
+const itemJson = new Set(["snapshot", "needsYou", "pr", "outcome"]);
 
 const runColumns = {
   item: "item",
@@ -261,8 +265,7 @@ const toItem = (r: Row): FactoryItem => ({
   snapshot: json(r.snapshot),
   phase: r.phase as ItemPhase,
   needsYou: json(r.needs_you),
-  prUrl: opt(r.pr_url as string | null),
-  prCommit: opt(r.pr_commit as string | null),
+  pr: json(r.pr),
   configCommit: r.config_commit as string,
   tokens: r.tokens as number,
   dedupe: opt(r.dedupe as string | null),

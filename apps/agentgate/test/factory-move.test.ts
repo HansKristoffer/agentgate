@@ -287,7 +287,9 @@ test("move --now freezes the old machine's items: it starts no thread, follows n
   const second = await triaging(2);
   // One item with a stage queued, and one whose PR the follower would read.
   expect(await report(first.id, toSpec)).toEqual({ accepted: true });
-  items.update(a.s, second.item!, { phase: "pr", prUrl: `https://github.com/${a.repo}/pull/9` });
+  const url = `https://github.com/${a.repo}/pull/9`;
+  const pr = { url, head: "c1", headAt: 0, run: second.id, thread: second.threadId!, nudges: 0 };
+  items.update(a.s, second.item!, { phase: "pr", pr });
 
   expect((await onB("move", "b", "--now")).output[0]).toBe("Factory folder acme/factory, run by b.");
   toA();

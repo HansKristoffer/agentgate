@@ -252,9 +252,7 @@ const scoutRun = (f: FactoryRuntime) => ({
   },
 
   async validate(report: FactoryReport) {
-    const { result } = report;
-    if (result && result.kind !== "scout") return `A scout run reports a scout result, not ${result.kind}`;
-    const findings = result?.findings ?? [];
+    const findings = report.result?.kind === "scout" ? report.result.findings : [];
     if (report.outcome === "nothing-to-do")
       return findings.length
         ? "Report the findings with the outcome done, or report nothing-to-do without them"

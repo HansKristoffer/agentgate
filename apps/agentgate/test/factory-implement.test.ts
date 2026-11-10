@@ -92,8 +92,12 @@ test("a draft on factory/<key> with the reported head moves to pr, gets the mark
 
   pr.isDraft = true;
   expect(await n.done(run, pr)).toEqual({ accepted: true });
-  expect(items.get(n.s, item.id)).toMatchObject({ phase: "pr", prUrl: pr.url, prCommit: pr.headRefOid });
-  expect(runs.get(n.s, run.id)).toMatchObject({ state: "reported", nudges: 0 });
+  expect(items.get(n.s, item.id)).toMatchObject({
+    phase: "pr",
+    pr: { url: pr.url, head: pr.headRefOid, run: run.id, thread: run.threadId, nudges: 0 },
+  });
+  // The correction spent the run's one reminder; nudges about the PR are the item's.
+  expect(runs.get(n.s, run.id)).toMatchObject({ state: "reported", nudges: 1 });
   // The PR body is the thread's own: the factory's marker travels on the issue.
   expect(pr.body).toBe("Fixes #1");
   expect(n.github.posted(1)).toEqual([

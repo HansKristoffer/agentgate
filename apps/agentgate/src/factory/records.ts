@@ -215,8 +215,8 @@ export function itemOutcome(item: FactoryItem) {
   };
 }
 
-async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome> {
-  const view = await prView(item.prUrl);
+async function readPr(url: string): Promise<PrOutcome> {
+  const view = await prView(url);
   return {
     number: view.number,
     title: view.title,
@@ -227,9 +227,9 @@ async function readPr(item: FactoryItem & { prUrl: string }): Promise<PrOutcome>
 }
 
 /** The PR is read in full once its item finished, and again once an open one changes state: `drop` leaves it open. */
-async function refreshPr(item: FactoryItem & { prUrl: string }, known: PrOutcome | undefined) {
+async function refreshPr(item: FactoryItem, url: string, known: PrOutcome | undefined) {
   if (known && (known.state !== "OPEN" || (await prState(item.repo, known.number)) === "OPEN")) return known;
-  return readPr(item);
+  return readPr(url);
 }
 
 const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
@@ -246,11 +246,11 @@ async function refreshOutcomes(f: FactoryRuntime) {
   };
   const watching: { item: FactoryItem; pr: PrOutcome & { mergedAt: string } }[] = [];
   for (const item of items.list(s, { open: false, finishedSince: s.now() - 14 * DAY })) {
-    if (!item.prUrl) continue;
+    if (!item.pr) continue;
     const known = storedPr(item);
     let pr = known;
     try {
-      pr = await refreshPr({ ...item, prUrl: item.prUrl }, known);
+      pr = await refreshPr(item, item.pr.url, known);
       errors.delete(item.id);
     } catch (e) {
       note(item.id, `Reading the outcome of ${item.key}'s PR failed: ${shortError(e)}`, item.id);

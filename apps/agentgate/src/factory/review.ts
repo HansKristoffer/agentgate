@@ -1,11 +1,10 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
-import { folderFor } from "./config.ts";
-import { cancelLaunch, defaultBranch } from "./controller.ts";
+import { cancelLaunch } from "./controller.ts";
 import { dataOf, type FactoryItem, type FactoryRun } from "./db.ts";
 import { prView } from "./gh.ts";
-import { describe, findingsOf, limitsOf, reviewRuns, rounds, takeReview } from "./pr.ts";
-import { later, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
+import { describe, findingsOf, limitsOf, rounds, takeReview } from "./pr.ts";
+import { later, type FactoryRuntime, type NoLaunch, type StageLaunch } from "./runtime.ts";
 
 /**
  * The review stage: a fresh thread in its own worktree reviews the PR's head, blind to what the implementer said
@@ -28,13 +27,12 @@ const REVIEW_BRIEF = `You review one pull request for AgentGate's software facto
 
 const review = (f: FactoryRuntime) => ({
   kind: "review" as const,
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch> {
-    if (!item?.prUrl) throw new Error(`the review run ${run.id} has no item with a PR`);
+  async launch(run: FactoryRun, item: FactoryItem): Promise<StageLaunch | NoLaunch> {
+    if (!item.pr) throw new Error(`the review run ${run.id} has no item with a PR`);
     const max = limitsOf(f, item).reviewRounds;
     // Review was switched off after this run was queued: the PR follower sends the PR to the maintainer.
     if (max === 0) return cancelLaunch(f, run, "reviewRounds is 0");
-    const view = await prView(item.prUrl);
-    const baseRef = await defaultBranch(f, item.repo);
+    const view = await prView(item.pr.url);
     const done = rounds(f, item);
     const round = done.length + 1;
     const previous = done.at(-1);
@@ -58,35 +56,25 @@ const review = (f: FactoryRuntime) => ({
           ]
         : []),
     ].join("\n\n");
-    const n = reviewRuns(f, item).filter((r) => r.queuedAt <= run.queuedAt).length;
-    const model = folderFor(f, item.configCommit)?.stages.review?.file.model;
     return {
-      repo: item.repo,
       title: `Review ${item.key} (round ${round}): ${item.title}`,
       brief: renderBrief(f, { kind: "review", run, item, builtIn: REVIEW_BRIEF, context }),
-      baseRef,
-      branch: `factory/${item.key}-review-${n}`,
-      startFromOrigin: true,
-      ...(model && { model }),
     };
   },
 
-  async validate(report: FactoryReport, _run: FactoryRun, item: FactoryItem | undefined) {
+  async validate(report: FactoryReport, _run: FactoryRun, item: FactoryItem) {
     const { result } = report;
-    if (result && result.kind !== "review") return `A review run reports a review result, not ${result.kind}`;
     if (report.outcome === "blocked" || report.outcome === "needs-decision") return undefined;
     if (report.outcome !== "done")
       return `A review run reports done, blocked or needs-decision, not ${report.outcome}; put what you found in findings`;
-    if (!result)
-      return 'The outcome done needs result: { kind: "review", prUrl, commit, findings, testsFailWithoutFix, risk? }';
-    if (item?.prUrl && result.prUrl.toLowerCase() !== item.prUrl.toLowerCase())
-      return `You were asked to review ${item.prUrl}, not ${result.prUrl}`;
+    if (result?.kind === "review" && item.pr && result.prUrl.toLowerCase() !== item.pr.url.toLowerCase())
+      return `You were asked to review ${item.pr.url}, not ${result.prUrl}`;
     return undefined;
   },
 
-  async accept(_report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined) {
+  async accept(_report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     // GitHub is read and written after the report is answered, as the item's next step.
-    if (item) later(f, item.id, `Taking ${item.key}'s review`, () => takeReview(f, run.id));
+    later(f, item.id, `Taking ${item.key}'s review`, () => takeReview(f, run.id));
   },
 });
 

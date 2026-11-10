@@ -24,8 +24,11 @@ folder format is `factoryConfigSchema` in the same protocol file.
 - Each commit of the folder is fetched into its own directory (`<home>/factory/<commit>`). An item records the commit
   it started under and finishes under it, and a commit that fails to load never replaces the last good one.
 - Prompts judge; code moves items. Every transition, limit and write-back is in the controller, and a stage only
-  reports through `factory_report`, which the controller validates against GitHub before it moves the item. An
-  implement report names a draft PR on the expected branch at the reported head, and a review report is discarded
+  reports through `factory_report`, which the controller validates against GitHub before it moves the item. What every
+  stage shares (the run it starts, its branch and model, the result its `done` needs, the PR phases) is one table,
+  `PHASES` in [`controller.ts`](../../apps/agentgate/src/factory/controller.ts); a stage file keeps its brief, its own
+  checks and what its result does. An implement report names a draft PR on the expected branch at the reported head,
+  and a review report is discarded
   when the PR moved past the reviewed commit. Some rules are only prompts, because a thread runs at full access with
   the maintainer's login: not merging or marking its PR ready, not pushing elsewhere, and asking the spec card before
   reporting a spec approved. The PR follower notices a PR merged or closed by anyone, and the docs never call these
@@ -94,6 +97,13 @@ outlet (the notify URL, each factory endpoint's webhook, and the asking thread m
 never notifies the login the factory comments as (D42). An answer given on a GitHub issue goes through `act`, like the
 CLI's, and the id of the last comment read is kept in local state, so an answer is never used twice even when it was
 refused. There is no `failed` phase, so `retry` knows where to resume, and an item with a PR resumes with it.
+
+The item owns its PR (`item.pr`): the URL, the head the follower last saw, its nudges and replies, and the implement
+run whose thread owns the PR. That thread is the only one nudged, and it is never settled while the item is open.
+When T3 Code deletes it (the mirror's removal, or the stuck loop for a deletion nobody watched), the item waits as
+`deleted`, and `retry` moves it back to `implement` with a run that checks the PR out and reports the same PR, which
+may no longer be a draft. The new run then owns the PR and keeps the replies already posted; until it reports, the
+follower only watches for the PR's merge or close.
 
 ## Items are tables; markers are the shared truth
 

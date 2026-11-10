@@ -1,9 +1,8 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
-import { folderFor } from "./config.ts";
-import { ask, closeItem, defaultBranch, enqueueRun, moveItem, writeBack } from "./controller.ts";
+import { ask, closeItem, enqueueRun, moveOn } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
-import type { FactoryRuntime, LaunchSpec } from "./runtime.ts";
+import type { FactoryRuntime, StageLaunch } from "./runtime.ts";
 import { pendingRequests, t3Mcp } from "./t3-mcp.ts";
 
 /**
@@ -59,13 +58,10 @@ async function findCard(f: FactoryRuntime, run: FactoryRun & { threadId: string 
 const spec = (f: FactoryRuntime) => ({
   kind: "spec" as const,
 
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec> {
-    if (!item) throw new Error(`the spec run ${run.id} has no item`);
+  async launch(run: FactoryRun, item: FactoryItem): Promise<StageLaunch> {
     // The next spec run is queued only after this one ends, so every other spec run of the item came before it. A
-    // retry after a silent end repeats its round, but still gets a branch of its own.
-    const before = specRuns(f, item);
-    const round = before.filter(asksForChanges).length + 1;
-    const model = folderFor(f, item.configCommit)?.stages.spec?.file.model;
+    // retry after a silent end repeats its round.
+    const round = specRuns(f, item).filter(asksForChanges).length + 1;
     const context = [
       "## This run",
       [
@@ -80,22 +76,12 @@ const spec = (f: FactoryRuntime) => ({
         .filter((line): line is string => !!line)
         .join("\n"),
     ].join("\n\n");
-    return {
-      repo: item.repo,
-      title: `Spec ${item.key}: ${item.title}`,
-      brief: renderBrief(f, { kind: "spec", run, item, builtIn: SPEC_BRIEF, context }),
-      baseRef: await defaultBranch(f, item.repo),
-      branch: `factory/${item.key}-spec-${before.length}`,
-      startFromOrigin: true,
-      ...(model && { model }),
-    };
+    return { brief: renderBrief(f, { kind: "spec", run, item, builtIn: SPEC_BRIEF, context }) };
   },
 
   async validate(report: FactoryReport) {
     const { result } = report;
-    if (result && result.kind !== "spec") return `A spec run reports a spec result, not ${result.kind}`;
-    if (report.outcome !== "done") return undefined;
-    if (!result) return 'The outcome done needs result: { kind: "spec", spec, review, approved, feedback? }';
+    if (report.outcome !== "done" || result?.kind !== "spec") return undefined;
     if (!result.spec.trim()) return "result.spec is empty; report the spec the maintainer saw";
     if (!result.review.trim())
       return "result.review is empty; have a fresh subagent review the spec, and report its findings and how you resolved each";
@@ -104,14 +90,11 @@ const spec = (f: FactoryRuntime) => ({
     return undefined;
   },
 
-  async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined) {
-    if (!item) return;
+  async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     const { result } = report;
     if (result?.kind !== "spec") return closeItem(f, item, "There is nothing to do.", report);
     if (result.approved) {
-      const moved = moveItem(f, item.id, "implement");
-      enqueueRun(f, { kind: "implement", item: item.id });
-      writeBack(f, moved, "spec-approved", { report, text: result.spec });
+      moveOn(f, item, "implement", { moment: "spec-approved", comment: { report, text: result.spec } });
       return;
     }
     // Every round past the second waits too, including one the maintainer started with `retry`.

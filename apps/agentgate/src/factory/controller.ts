@@ -36,7 +36,6 @@ import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
 import { currentFolder, DEFAULT_LIMITS, durationMs, folderFor, type LoadedFolder } from "./config.ts";
 import {
   ACTIVE,
-  dataOf,
   isOpenPhase,
   isStage,
   items,
@@ -44,6 +43,7 @@ import {
   runs,
   type FactoryItem,
   type FactoryRun,
+  type ItemPr,
   type RunData,
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
@@ -64,6 +64,7 @@ import {
   type IncomingItem,
   type LaunchSpec,
   type SourceAdapter,
+  type StageLaunch,
 } from "./runtime.ts";
 import { claimWrite } from "./outbox.ts";
 import { pendingRequests, T3McpError, t3Mcp } from "./t3-mcp.ts";
@@ -144,6 +145,84 @@ export function repositoryOf(f: FactoryRuntime, item: Pick<FactoryItem, "repo" |
   const repos = folderFor(f, item.configCommit)?.config.repositories ?? {};
   const name = Object.keys(repos).find((r) => r.toLowerCase() === item.repo.toLowerCase());
   return name ? repos[name] : undefined;
+}
+
+// ---- phases
+
+/**
+ * What the controller does the same for every phase. A phase with `done` is a stage, named like its run kind: entering
+ * it queues that run (`moveOn`), and the run's report with the outcome done needs a result of this shape (`takeReport`).
+ * In a phase with `pr` the PR follower (pr.ts) follows the item's PR.
+ */
+export const PHASES: Record<ItemPhase, { done?: string; pr?: true }> = {
+  held: {},
+  triage: { done: '{ kind: "triage", route, reproduction }' },
+  spec: { done: '{ kind: "spec", spec, review, approved, feedback? }' },
+  implement: { done: '{ kind: "implement", prUrl, commit, claims, notChecked, decisions }' },
+  pr: { pr: true },
+  review: { done: '{ kind: "review", prUrl, commit, findings, testsFailWithoutFix, risk? }', pr: true },
+  ready: { pr: true },
+  shipped: {},
+  closed: {},
+};
+
+/** Whether the PR follower follows the item's PR now. */
+export const followsPr = (item: FactoryItem | undefined): item is FactoryItem & { pr: ItemPr } =>
+  !!item?.pr && !!PHASES[item.phase].pr;
+
+/** Whether the run's thread owns its item's PR while the item is open: such a thread is not settled, can still work,
+ * and is the one the PR follower nudges. */
+function ownsPr(f: FactoryRuntime, run: Pick<FactoryRun, "id" | "item">) {
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  return !!item?.pr && item.pr.run === run.id && isOpenPhase(item.phase);
+}
+
+/** A stage run's branch: `factory/<key>-<kind>-<n>` for its item's n-th run of the kind, so a retry never meets the
+ * worktree of the one before it. */
+function stageBranch(f: FactoryRuntime, run: FactoryRun, item: FactoryItem) {
+  const n = runs.forItem(f.s, item.id).filter((r) => r.kind === run.kind && r.queuedAt <= run.queuedAt).length;
+  return `factory/${item.key}-${run.kind}-${n}`;
+}
+
+/** The part of a stage run's launch every stage shares: the item's repository, a title naming the stage and the item,
+ * the default branch to start from, a branch of its own, and its stage file's model. */
+async function stageLaunch(
+  f: FactoryRuntime,
+  run: FactoryRun,
+  item: FactoryItem,
+  own: StageLaunch,
+  model: FactoryModel | undefined,
+): Promise<LaunchSpec> {
+  return {
+    repo: item.repo,
+    title: own.title ?? `${run.kind[0]!.toUpperCase()}${run.kind.slice(1)} ${item.key}: ${item.title}`,
+    brief: own.brief,
+    baseRef: await defaultBranch(f, item.repo),
+    branch: own.branch ?? stageBranch(f, run, item),
+    startFromOrigin: true,
+    ...(model && { model }),
+  };
+}
+
+/**
+ * How a stage's result moves the item on: it enters `to`, the run of that phase's stage is queued, and the issue hears
+ * `moment`, when given. `approved` and `clearWait` are `enqueueRun`'s and `moveItem`'s.
+ */
+export function moveOn(
+  f: FactoryRuntime,
+  item: FactoryItem,
+  to: ItemPhase,
+  options: {
+    moment?: Moment;
+    comment?: Parameters<typeof writeBack>[3];
+    approved?: boolean;
+    clearWait?: boolean;
+  } = {},
+): FactoryItem {
+  const moved = moveItem(f, item.id, to, options.clearWait);
+  if (isStage(to)) enqueueRun(f, { kind: to, item: item.id, ...(options.approved && { approved: true }) });
+  if (options.moment) writeBack(f, moved, options.moment, options.comment);
+  return moved;
 }
 
 // ---- items and runs
@@ -473,7 +552,7 @@ export function writeBack(
     factory: item.configCommit.slice(0, 7),
     node: s.nodeId,
     state: moment === "shipped" || moment === "closed" ? "finished" : "open",
-    pr: item.prUrl ?? null,
+    pr: item.pr?.url ?? null,
   };
   const body = renderComment(moment, item, {
     ...(report?.summary && { summary: report.summary }),
@@ -803,7 +882,7 @@ async function prepareLaunch(
   const openAt = memory(f).openAt;
   if (item && s.now() - (openAt.get(run.id) ?? 0) >= 2 * 60_000) {
     if (await issueOpen(f, item)) openAt.set(run.id, s.now());
-    else if (!item.prUrl) {
+    else if (!item.pr) {
       // The source closed it, so the item closes without a comment: the issue already says so. Once the item has a
       // PR, the PR decides instead: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
       await finishItem(f, item, "closed", {
@@ -814,13 +893,15 @@ async function prepareLaunch(
       return {};
     }
   }
-  const spec = await definition.launch(run, item);
-  if ("cancelled" in spec) return {};
-  if ("wait" in spec) {
-    if (run.item) waitFor(f, run.item, spec.wait, spec.text, run);
+  const launch = await definition.launch(run, item);
+  if ("cancelled" in launch) return {};
+  if ("wait" in launch) {
+    if (run.item) waitFor(f, run.item, launch.wait, launch.text, run);
     return {};
   }
-  return { run, ...(item && { item }), spec };
+  if ("repo" in launch) return { run, ...(item && { item }), spec: launch };
+  if (!item) throw new Error(`the ${run.kind} run ${run.id} has no item`);
+  return { run, item, spec: await stageLaunch(f, run, item, launch, model) };
 }
 
 /** Starts one queued run. The launch itself is outside the item's step, since creating a worktree can take minutes:
@@ -890,9 +971,9 @@ function watch(f: FactoryRuntime) {
     );
   });
   mirror.onRemove((thread) => {
-    const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
-    if (run)
-      later(f, run.item ?? run.id, `Ending ${run.id} after its thread was deleted`, () => threadDeleted(f, run.id));
+    for (const run of runs.byThreads(f.s, [thread.id]))
+      if (ACTIVE.includes(run.state) || ownsPr(f, run))
+        later(f, run.item ?? run.id, `Ending ${run.id} after its thread was deleted`, () => threadDeleted(f, run.id));
   });
 }
 
@@ -912,17 +993,13 @@ function rootOf(f: FactoryRuntime, thread: MirrorThread) {
 }
 
 /** The run a thread works for, its own or, for a T3 subagent thread, its root thread's: a run that is active, or the
- * implement run whose thread owns its item's open PR. */
+ * one whose thread owns its item's PR. */
 function runOfThread(f: FactoryRuntime, thread: string) {
   const known = mirrorOf(f).thread(thread);
   const ids = known ? [...new Set([thread, rootOf(f, known).id])] : [thread];
   return runs
     .byThreads(f.s, ids)
-    .filter((r) => {
-      if (ACTIVE.includes(r.state)) return true;
-      const item = r.kind === "implement" && r.state === "reported" && r.item ? items.get(f.s, r.item) : undefined;
-      return !!item?.prUrl && isOpenPhase(item.phase);
-    })
+    .filter((r) => ACTIVE.includes(r.state) || ownsPr(f, r))
     .at(-1);
 }
 
@@ -1045,19 +1122,28 @@ export function markStopped(f: FactoryRuntime, item: FactoryItem, run: FactoryRu
 /**
  * A run's thread was deleted in T3 Code, so nothing can report for the run any more: it ends failed. Its item waits for
  * the maintainer to retry or drop it. A run without an item, such as a scout's, has nobody to wait for, and its schedule
- * queues the next one.
+ * queues the next one. A deleted thread that owned its item's PR leaves the PR with nobody to nudge: the item waits the
+ * same way, and `retry` starts an implement run that takes the PR over.
  */
 async function threadDeleted(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id);
-  if (!run?.threadId || (run.state !== "running" && run.state !== "waiting")) return;
   // The step may have waited behind another of its item, and the mirror may have learned of the thread meanwhile.
-  if (mirrorOf(f).thread(run.threadId)) return;
-  endRun(f, run, "failed", { error: "its thread was deleted in T3 Code" });
+  if (!run?.threadId || mirrorOf(f).thread(run.threadId)) return;
+  const active = run.state === "running" || run.state === "waiting";
+  // A handed-off thread leaves its machine: that is `detach`'s, not a deletion.
+  const owner = !active && ownsPr(f, run) && !handoffOfThread(f, run.threadId);
+  if (!active && !owner) return;
+  if (active) endRun(f, run, "failed", { error: "its thread was deleted in T3 Code" });
   const item = run.item ? items.get(f.s, run.item) : undefined;
   if (!item || !isOpenPhase(item.phase)) return;
+  // The stuck loop finds a gone PR thread on every pass: the item is asked once.
+  if (owner && item.needsYou?.cause === "deleted" && item.needsYou.run === run.id) return;
   ask(f, item, {
     cause: "deleted",
-    question: `${item.key}'s ${run.kind} thread was deleted in T3 Code, so its ${run.kind} stage ended.`,
+    question: owner
+      ? `${item.key}'s implement thread, which owned its PR, was deleted in T3 Code, so nothing works on the PR.`
+      : `${item.key}'s ${run.kind} thread was deleted in T3 Code, so its ${run.kind} stage ended.`,
+    ...(owner && { link: item.pr!.url }),
     run,
   });
 }
@@ -1096,8 +1182,8 @@ function detachHandedOff(f: FactoryRuntime) {
       const run = runs.get(f.s, head.id);
       if (!run) continue;
       const item = run.item ? items.get(f.s, run.item) : undefined;
-      const owner = run.kind === "implement" && run.state === "reported" && !!item?.prUrl && isOpenPhase(item.phase);
-      if (!ACTIVE.includes(run.state) && !(owner && item.needsYou?.cause !== "handed-off")) continue;
+      const owner = ownsPr(f, run);
+      if (!ACTIVE.includes(run.state) && !(owner && item?.needsYou?.cause !== "handed-off")) continue;
       later(f, run.item ?? run.id, `Detaching ${run.id} from its handed-off thread`, async () =>
         detach(f, run.id, job.target),
       );
@@ -1193,7 +1279,13 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   const definition = f.runKinds.get(run.kind);
   if (!definition) throw new ReportError(`This machine has no ${run.kind} stage`);
   const item = run.item ? items.get(s, run.item) : undefined;
-  const problem = await definition.validate(report, run, item);
+  if (isStage(run.kind) && !item) throw new ReportError(`Run ${run.id} has no item`);
+  const { result } = report;
+  if (result && result.kind !== run.kind)
+    throw new ReportError(`A ${run.kind} run reports a ${run.kind} result, not ${result.kind}`);
+  const done = isStage(run.kind) && PHASES[run.kind].done;
+  if (done && report.outcome === "done" && !result) throw new ReportError(`The outcome done needs result: ${done}`);
+  const problem = await definition.validate?.(report, run, item);
   if (problem) throw new ReportError(problem);
   if (!takes(runs.get(s, run.id))) throw new ReportError(`Run ${run.id} already ended`);
 
@@ -1220,14 +1312,14 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   return { accepted: true };
 }
 
-/** A finished stage's thread is settled; one that asked keeps waiting for the answer, and an implement thread owns
- * its PR until the item ships. */
-const settlesAfterReport = (run: FactoryRun) =>
+/** A finished stage's thread is settled; one that asked keeps waiting for the answer, and one that owns its item's PR
+ * keeps it until the item finishes. */
+const settlesAfterReport = (f: FactoryRuntime, run: FactoryRun) =>
   run.state === "reported" &&
   !!run.report &&
   run.report.outcome !== "blocked" &&
   run.report.outcome !== "needs-decision" &&
-  !(run.kind === "implement" && run.report.outcome === "done");
+  !ownsPr(f, run);
 
 /** Settles a thread once its turn ended, since T3 refuses to settle a running thread: a finished stage's, whose report
  * came from that turn, and one the factory interrupted. */
@@ -1236,7 +1328,7 @@ async function settleFinished(f: FactoryRuntime, thread: MirrorThread) {
   const head = runs.byThreads(f.s, [thread.id]).at(-1);
   const run = head && runs.get(f.s, head.id);
   const stopped = memory(f).stopping.delete(thread.id);
-  if (!run || (!stopped && !settlesAfterReport(run))) return;
+  if (!run || (!stopped && !settlesAfterReport(f, run))) return;
   await withItem(f, run.item ?? run.id, () =>
     actOnThread(f, run, { action: "settle" }).catch(threadFailed(f, run, "Settling")),
   );
@@ -1404,9 +1496,8 @@ function findStuck(f: FactoryRuntime) {
     const itemRuns = runs.forItem(s, item.id);
     const failing = (r: FactoryRun) => (r.failedLaunches ?? 0) >= STUCK_LAUNCHES;
     if (itemRuns.some((r) => ACTIVE.includes(r.state) && !failing(r))) continue;
-    const owner = itemRuns.findLast((r) => r.kind === "implement" && r.threadId);
-    if (item.prUrl && owner?.threadId && working(f, mirror.thread(owner.threadId))) continue;
-    const pr = dataOf(owner, "implement");
+    const { pr } = item;
+    if (pr && working(f, mirror.thread(pr.thread))) continue;
     const last = Math.max(
       item.phaseAt,
       item.updatedAt,
@@ -1424,6 +1515,10 @@ function findStuck(f: FactoryRuntime) {
   // Only a mirror that has read T3 Code's threads can tell that one is gone: at start-up, and while T3 Code cannot be
   // read, it knows none of them, or old ones.
   const loaded = mirror.status().stream !== "down";
+  if (loaded)
+    for (const item of items.list(s, { open: true }))
+      if (followsPr(item) && !mirror.thread(item.pr.thread))
+        later(f, item.id, `Checking ${item.key}'s PR thread, which is gone`, () => threadDeleted(f, item.pr.run));
   for (const run of runs.list(s, { states: ["running", "waiting"] })) {
     if (!run.threadId) continue;
     const thread = mirror.thread(run.threadId);
@@ -1491,10 +1586,13 @@ export function findItem(f: FactoryRuntime, ref: string) {
   return matches[0];
 }
 
-/** What `retry` does for an item that stopped: go on with its PR when it has one, or start the stage it stopped in
- * again in a new thread. */
+/** What `retry` does for an item that stopped: go on with its PR when it has one, or start a stage again in a new
+ * thread: an implement run that takes the PR over when the PR's thread was deleted, otherwise the stage it stopped in. */
 function retryTarget(f: FactoryRuntime, item: FactoryItem): { pr: true } | { kind: StageName } {
-  if (item.prUrl && ["pr", "review", "ready"].includes(item.phase)) return { pr: true };
+  if (followsPr(item)) {
+    const deleted = item.needsYou?.cause === "deleted" && item.needsYou.run === item.pr.run;
+    return deleted ? { kind: "implement" } : { pr: true };
+  }
   const kind =
     runs
       .forItem(f.s, item.id)
@@ -1557,7 +1655,12 @@ export function actionsOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
           {
             name: "retry" as const,
             label: "Retry",
-            effect: "pr" in target ? "Go on with its PR" : `Start ${target.kind} again in a new thread`,
+            effect:
+              "pr" in target
+                ? "Go on with its PR"
+                : item.pr
+                  ? "Start a new implement thread that takes its PR over"
+                  : `Start ${target.kind} again in a new thread`,
             takesText: false,
           },
         ]
@@ -1644,8 +1747,7 @@ async function answer(f: FactoryRuntime, item: FactoryItem, action: "approve" | 
       return `Rejected ${item.key}`;
     }
     if (held) {
-      moveItem(f, item.id, "triage", true);
-      enqueueRun(f, { kind: "triage", item: item.id, approved: true });
+      moveOn(f, item, "triage", { approved: true, clearWait: true });
       touched(f, item, "approve", "approved to start");
       return `Approved ${item.key}; triage is queued`;
     }
@@ -1689,9 +1791,9 @@ async function answer(f: FactoryRuntime, item: FactoryItem, action: "approve" | 
 function reopen(f: FactoryRuntime, item: FactoryItem) {
   const { s } = f;
   s.db.run("delete from factory_writebacks where item=?", [item.id]);
-  const reopened = moveItem(f, item.id, "triage", true);
-  enqueueRun(f, { kind: "triage", item: item.id, approved: true });
-  writeBack(f, reopened, "taken", {});
+  // The PR of the pass before is done with; this pass opens its own.
+  items.update(s, item.id, { pr: undefined });
+  moveOn(f, item, "triage", { approved: true, clearWait: true, moment: "taken" });
   touched(f, item, "retry", "taken in again after it finished");
   return `Retrying triage for ${item.key}`;
 }
@@ -1705,17 +1807,16 @@ function retryStage(f: FactoryRuntime, item: FactoryItem) {
   stopAsking(f, item.id);
   const target = retryTarget(f, item);
   if ("pr" in target) {
-    // The PR follower takes it from here: it nudges the implement thread again and reviews the PR as before.
-    const implement = runs.forItem(s, item.id).findLast((r) => r.kind === "implement" && r.report?.result);
-    if (implement) runs.update(s, implement.id, { nudges: 0 });
+    // The PR follower takes it from here: it nudges the PR's thread again and reviews the PR as before.
+    items.update(s, item.id, { pr: { ...item.pr!, nudges: 0 } });
     touched(f, item, "retry", "retried with its PR");
     return `Retrying ${item.key} with its PR`;
   }
   const { kind } = target;
-  if (item.phase !== kind) moveItem(f, item.id, kind);
-  enqueueRun(f, { kind, item: item.id, approved: true });
+  // The item leaves its PR phase while the new implement thread takes the PR over, so the follower waits for its report.
+  moveOn(f, item, kind, { approved: true });
   touched(f, item, "retry", `retried ${kind}`);
-  return `Retrying ${kind} for ${item.key}`;
+  return item.pr ? `Retrying implement for ${item.key}, taking its PR over` : `Retrying ${kind} for ${item.key}`;
 }
 
 // ---- tools, the item view and the board
@@ -1757,23 +1858,22 @@ function itemView(f: FactoryRuntime, run: FactoryRun) {
           ...(r.report?.result && !blind && { result: r.report.result }),
         };
       }),
-    ...(item.prUrl && { pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }) } }),
+    ...(item.pr && { pr: { url: item.pr.url, commit: item.pr.head } }),
   };
 }
 
 /** The review rounds so far, and the findings the last one left open when the item went to `ready` with them. */
 function reviewState(item: FactoryItem, itemRuns: FactoryRun[]) {
-  const counted = itemRuns.filter((r) => r.kind === "review" && r.state === "reported" && r.checked?.kind === "review");
-  const last = counted.filter((r) => !dataOf(r, "review")!.stale);
-  const final = last.at(-1);
+  const counted = itemRuns.filter((r) => r.state === "reported" && r.checked?.kind === "review" && !r.checked.stale);
+  const final = counted.at(-1);
   if (!final) return {};
   const result = final.report?.result;
   // Pre-existing findings are not this PR's to fix, so they never count as open (review.ts).
   const open =
-    item.phase !== "review" && dataOf(final, "review")!.final && result?.kind === "review"
+    item.phase !== "review" && final.checked?.kind === "review" && final.checked.final && result?.kind === "review"
       ? result.findings.filter((x) => x.severity !== "pre-existing").length
       : 0;
-  return { reviewRound: last.length, ...(open > 0 && { openFindings: open }) };
+  return { reviewRound: counted.length, ...(open > 0 && { openFindings: open }) };
 }
 
 /** Whether an item's tokens are unknown: a run that started over 10 minutes ago named no provider session (its sessions
@@ -1817,9 +1917,7 @@ export function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
     ...(item.needsYou && { needsYou: item.needsYou }),
     ...(waiting && { waiting }),
     actions: actionsOf(f, item),
-    ...(item.prUrl && {
-      pr: { url: item.prUrl, ...(item.prCommit && { commit: item.prCommit }), ...reviewState(item, itemRuns) },
-    }),
+    ...(item.pr && { pr: { url: item.pr.url, commit: item.pr.head, ...reviewState(item, itemRuns) } }),
     tokens: item.tokens,
     ...(tokensUnknown(f, item) && { tokensUnknown: true }),
     inPhaseSince: item.phaseAt,
@@ -1929,35 +2027,12 @@ export function detailText(d: FactoryItemDetail): string[] {
 
 const triage = (f: FactoryRuntime) => ({
   kind: "triage" as const,
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec> {
-    if (!item) throw new Error(`the triage run ${run.id} has no item`);
-    const model = folderFor(f, item.configCommit)?.stages.triage?.file.model;
-    // Each triage run gets a branch of its own, so a retry never meets the worktree of the one before it.
-    const n = runs.forItem(f.s, item.id).filter((r) => r.kind === "triage" && r.queuedAt <= run.queuedAt).length;
-    return {
-      repo: item.repo,
-      title: `Triage ${item.key}: ${item.title}`,
-      brief: renderBrief(f, { kind: "triage", run, item, builtIn: TRIAGE_BRIEF }),
-      baseRef: await defaultBranch(f, item.repo),
-      branch: `factory/${item.key}-triage-${n}`,
-      startFromOrigin: true,
-      ...(model && { model }),
-    };
+  async launch(run: FactoryRun, item: FactoryItem): Promise<StageLaunch> {
+    return { brief: renderBrief(f, { kind: "triage", run, item, builtIn: TRIAGE_BRIEF }) };
   },
-  async validate(report: FactoryReport) {
-    const kind = report.result?.kind;
-    if (kind && kind !== "triage") return `A triage run reports a triage result, not ${kind}`;
-    if (report.outcome === "done" && !kind)
-      return 'The outcome done needs result: { kind: "triage", route, reproduction }';
-    return undefined;
-  },
-  async accept(report: FactoryReport, _run: FactoryRun, item: FactoryItem | undefined) {
-    if (!item) return;
+  async accept(report: FactoryReport, _run: FactoryRun, item: FactoryItem) {
     if (report.result?.kind !== "triage") return closeItem(f, item, "There is nothing to do.", report);
-    const { route } = report.result;
-    moveItem(f, item.id, route);
-    enqueueRun(f, { kind: route, item: item.id });
-    writeBack(f, item, "triaged", { report });
+    moveOn(f, item, report.result.route, { moment: "triaged", comment: { report } });
   },
 });
 

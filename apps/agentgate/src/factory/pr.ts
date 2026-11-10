@@ -10,9 +10,10 @@ import {
   ask,
   enqueueRun,
   finishItem,
+  followsPr,
   isPaused,
   markStopped,
-  moveItem,
+  moveOn,
   ownRun,
   ReportError,
   repositoryOf,
@@ -20,9 +21,18 @@ import {
   stopAsking,
   stopWaiting,
   waitFor,
-  writeBack,
 } from "./controller.ts";
-import { ACTIVE, dataOf, isOpenPhase, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
+import {
+  ACTIVE,
+  dataOf,
+  isOpenPhase,
+  items,
+  runs,
+  type FactoryItem,
+  type FactoryRun,
+  type ItemPr,
+  type RunDataOf,
+} from "./db.ts";
 import {
   COLLABORATORS,
   followedPrs,
@@ -45,19 +55,18 @@ import { claimWrite, fileIssue } from "./outbox.ts";
 import { later, operation, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
 
 /**
- * The PR follower: every 2 minutes, one step per item with a PR (`pr`, `review` and `ready`). It ships or closes the
- * item when its PR is merged or closed, follows the PR's head, moves a green PR on to review or ready, takes the review
- * rounds, and wakes the implement thread when it sits idle on a problem. The implement thread owns its PR until the
- * item ships; only this follower wakes it, with what the repository's own people and bots wrote. The thread says which
- * review conversations it fixed or declined with `factory_pr_threads`, and the follower answers them on GitHub.
+ * The PR follower: every 2 minutes, one step per open item with a PR. It ships or closes the item when its PR is merged
+ * or closed, and in the PR phases (`PHASES`) it follows the PR's head, moves a green PR on to review or ready, takes the
+ * review rounds, and wakes the implement thread when it sits idle on a problem. The item keeps its PR and the follower's state
+ * in `item.pr`, which names the implement thread that owns the PR until the item finishes; only this follower wakes it,
+ * with what the repository's own people and bots wrote. The thread says which review conversations it fixed or
+ * declined with `factory_pr_threads`, and the follower answers them on GitHub.
  */
 
 /** A PR without checks counts as green only once its head is this old: CI may not have registered its checks yet. */
 const CHECKS_SETTLE = 10 * 60_000;
 /** The most of collaborators' comments a nudge quotes. */
 const COMMENTS_CHARS = 8000;
-
-type Implement = RunDataOf<"implement">;
 
 const noted = new WeakMap<FactoryRuntime, Map<string, string>>();
 /** A failure the event list hears once while the item's PR is followed. */
@@ -72,9 +81,8 @@ function failed(f: FactoryRuntime, item: FactoryItem, text: string) {
 export const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
   folderFor(f, item.configCommit)?.config.limits ?? DEFAULT_LIMITS;
 
-/** The implement run that opened the item's PR. */
-export const prRun = (f: FactoryRuntime, item: FactoryItem) =>
-  runs.forItem(f.s, item.id).findLast((r) => r.kind === "implement" && r.report?.result?.kind === "implement");
+/** The implement run whose thread owns the item's PR. */
+export const prRun = (f: FactoryRuntime, item: FactoryItem) => (item.pr ? runs.get(f.s, item.pr.run) : undefined);
 
 /** The follower's read of a PR without its reviews and conversations. */
 type Followed = Omit<FollowedPr, "feedback">;
@@ -116,12 +124,15 @@ export async function toReady(
   await prView(view.url)
     .then((fresh) => prSetBody(view.url, withSummary(fresh.body, readySummary(f, item))))
     .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
-  const ready = moveItem(f, item.id, "ready", item.needsYou?.cause === "stalled");
-  fileLeftovers(f, ready, view.url);
+  fileLeftovers(f, item, view.url);
   const text = open.length
     ? `${view.url}\n\n${why} These findings are still open:\n\n${open.map((o) => `- ${o}`).join("\n")}`
     : view.url;
-  writeBack(f, ready, "ready", { text, commit: view.headRefOid });
+  moveOn(f, item, "ready", {
+    clearWait: item.needsYou?.cause === "stalled",
+    moment: "ready",
+    comment: { text, commit: view.headRefOid },
+  });
   return true;
 }
 
@@ -240,8 +251,7 @@ export function withSummary(body: string, summary: string): string {
 /** In `pr` with a green PR and every claim backed: a review run when review rounds are on, otherwise ready. */
 async function advance(f: FactoryRuntime, item: FactoryItem, view: PrState) {
   if (limitsOf(f, item).reviewRounds > 0) {
-    moveItem(f, item.id, "review");
-    enqueueRun(f, { kind: "review", item: item.id });
+    moveOn(f, item, "review");
     return;
   }
   await toReady(f, item, view, [], "");
@@ -264,11 +274,11 @@ const listed = (names: string[]) =>
 
 /** Open review conversations with a trusted comment the thread has not answered: never reported, or with a trusted
  * comment newer than the newest one when it reported. Outdated ones count, since moved lines answer nothing. */
-function openConversations(feedback: PrFeedback, data: Implement) {
+function openConversations(feedback: PrFeedback, pr: ItemPr) {
   return feedback.conversations.flatMap((c) => {
     const comments = c.comments.filter(trusted);
     if (c.resolved || !comments.length) return [];
-    const handled = data.conversations?.[c.id];
+    const handled = pr.conversations?.[c.id];
     if (handled && !comments.some((m) => Date.parse(m.at) > Date.parse(handled.seen))) return [];
     return [{ ...c, comments }];
   });
@@ -278,7 +288,7 @@ function openConversations(feedback: PrFeedback, data: Implement) {
  * of its people and bots that no nudge has quoted yet, and open review conversations. Times compare on GitHub's clock
  * only, so a comment made between a push and the follower's next pass is not lost. Plain PR comments from bots never
  * count: deploy previews and coverage reports ask for nothing. */
-function problemsOf(view: Followed, feedback: PrFeedback, data: Implement) {
+function problemsOf(view: Followed, feedback: PrFeedback, pr: ItemPr) {
   const problems: Problem[] = [];
   if (view.checks === "failing")
     problems.push({ key: `checks@${view.headRefOid}`, text: `its checks fail: ${listed(view.failing)}` });
@@ -289,14 +299,14 @@ function problemsOf(view: Followed, feedback: PrFeedback, data: Implement) {
       .map((c) => ({ body: c.body, association: c.authorAssociation, bot: false, at: c.createdAt }))
       .filter((c) => COLLABORATORS.includes(c.association)),
     ...feedback.reviews.filter((r) => r.body.trim() || r.state === "CHANGES_REQUESTED"),
-  ].filter((c) => trusted(c) && (!data.quotedUntil || Date.parse(c.at) > Date.parse(data.quotedUntil)));
+  ].filter((c) => trusted(c) && (!pr.quotedUntil || Date.parse(c.at) > Date.parse(pr.quotedUntil)));
   if (asked.length) {
     problems.push({
       key: `comments@${newest(asked.map((c) => c.at))}`,
       text: `${asked.length} comment${asked.length > 1 ? "s" : ""} from the repository's people or bots that you have not seen`,
     });
   }
-  const conversations = openConversations(feedback, data);
+  const conversations = openConversations(feedback, pr);
   if (conversations.length) {
     const ids = conversations.map((c) => c.id).sort();
     problems.push({
@@ -309,50 +319,49 @@ function problemsOf(view: Followed, feedback: PrFeedback, data: Implement) {
 
 const by = (c: FeedbackComment) => (c.bot ? "a bot" : c.association.toLowerCase());
 
-/** Wakes the implement thread when it sits idle on a problem: at once for a new one, again after `stalledAfter` for one
- * it left alone. Past `nudges` nudges, the item waits for the maintainer as `stalled`. */
+/** Wakes the PR's thread when it sits idle on a problem: at once for a new one, again after `stalledAfter` for one it
+ * left alone. Past `nudges` nudges, the item waits for the maintainer as `stalled`. */
 async function nudge(
   f: FactoryRuntime,
-  item: FactoryItem,
+  item: FactoryItem & { pr: ItemPr },
   run: FactoryRun,
   view: Followed,
   feedback: PrFeedback,
-  data: Implement,
 ) {
   const { s } = f;
-  const { problems, comments, conversations } = problemsOf(view, feedback, data);
+  const { pr } = item;
+  const { problems, comments, conversations } = problemsOf(view, feedback, pr);
   if (!problems.length) {
     if (item.needsYou?.cause === "stalled") stopAsking(f, item.id);
     return;
   }
   if (isPaused(f) || item.needsYou) return;
-  const thread = run.threadId ? mirrorOf(f).thread(run.threadId) : undefined;
+  const thread = mirrorOf(f).thread(pr.thread);
   const idle = !!thread && !thread.needsYou && !isWorkingStatus(thread.status);
   if (!idle) return;
   // Someone stopped the thread in T3 Code: waking it would undo that. The factory settles the threads it stops itself,
   // such as on a budget stop, and a retry after a person's stop lets the next nudge through.
-  if (thread.status === "interrupted" && !thread.settled && data.stopSeen !== thread.updatedAt) {
-    runs.update(s, run.id, { checked: { ...data, stopSeen: thread.updatedAt } });
+  if (thread.status === "interrupted" && !thread.settled && pr.stopSeen !== thread.updatedAt) {
+    items.update(s, item.id, { pr: { ...pr, stopSeen: thread.updatedAt } });
     markStopped(f, item, run);
     return;
   }
   const key = problems.map((p) => p.key).join(" ");
   const limits = limitsOf(f, item);
-  if (data.nudged === key && s.now() - (data.nudgedAt ?? 0) < durationMs(limits.stalledAfter)) return;
+  if (pr.nudged === key && s.now() - (pr.nudgedAt ?? 0) < durationMs(limits.stalledAfter)) return;
   const what = problems.map((p) => p.text).join("; ");
-  if (run.nudges >= limits.nudges) {
+  if (pr.nudges >= limits.nudges) {
     ask(f, item, {
       cause: "stalled",
-      question: `${item.key}'s PR still needs work after ${run.nudges} nudge${run.nudges === 1 ? "" : "s"}: ${what}. Fix it in the thread, or retry to nudge it again.`,
+      question: `${item.key}'s PR still needs work after ${pr.nudges} nudge${pr.nudges === 1 ? "" : "s"}: ${what}. Fix it in the thread, or retry to nudge it again.`,
       link: run.threadLink ?? view.url,
       run,
     });
     return;
   }
-  const quotedUntil = comments.length ? newest(comments.map((c) => c.at)) : data.quotedUntil;
-  runs.update(s, run.id, {
-    nudges: run.nudges + 1,
-    checked: { ...data, nudged: key, nudgedAt: s.now(), ...(quotedUntil && { quotedUntil }) },
+  const quotedUntil = comments.length ? newest(comments.map((c) => c.at)) : pr.quotedUntil;
+  items.update(s, item.id, {
+    pr: { ...pr, nudges: pr.nudges + 1, nudged: key, nudgedAt: s.now(), ...(quotedUntil && { quotedUntil }) },
   });
   f.events.emit({ kind: "note", item: item.id, run: run.id, text: `Nudged ${item.key}'s thread: ${what}` });
   // Conversations first: their ids are what the thread reports, so they are the last thing to cut.
@@ -391,14 +400,13 @@ async function nudge(
 async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error) {
   const { s } = f;
   const item = items.get(s, id);
-  if (!item?.prUrl || !isOpenPhase(item.phase) || !["pr", "review", "ready"].includes(item.phase)) return;
+  if (!item?.pr || !isOpenPhase(item.phase)) return;
   if (read instanceof Error) {
     failed(f, item, `Reading ${item.key}'s PR failed: ${shortError(read)}`);
     return;
   }
   const { feedback, ...view } = read;
-  const run = prRun(f, item);
-  if (run) await resolveFixed(f, item, run.id, feedback);
+  await resolveFixed(f, item, feedback);
 
   // A merge or a close ends the item even while it waits for the maintainer.
   if (view.state === "MERGED") {
@@ -412,7 +420,7 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
     await finishItem(f, item, "shipped", {
       interrupt: true,
       reason: "The PR was merged",
-      comment: { text: item.prUrl!, commit: view.headRefOid },
+      comment: { text: item.pr.url, commit: view.headRefOid },
     });
     return;
   }
@@ -426,13 +434,14 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
     return;
   }
 
-  let data = dataOf(run, "implement");
-  if (!run || !data) return;
+  // A run that takes the PR over works on it in `implement`: until it reports, only a merge or a close moves the item.
+  const run = prRun(f, item);
+  if (!followsPr(item) || !run) return;
+  let { pr } = item;
   // A push makes what was checked before stale.
-  if (view.headRefOid !== data.head) {
-    data = { ...data, head: view.headRefOid, headAt: s.now() };
-    runs.update(s, run.id, { checked: data });
-    items.update(s, item.id, { prCommit: view.headRefOid });
+  if (view.headRefOid !== pr.head) {
+    pr = { ...pr, head: view.headRefOid, headAt: s.now() };
+    items.update(s, item.id, { pr });
   }
   // While the item waits for the maintainer, nothing else moves it; a stall clears itself when the problem goes.
   if (item.needsYou && item.needsYou.cause !== "stalled") return;
@@ -440,18 +449,19 @@ async function followPr(f: FactoryRuntime, id: string, read: FollowedPr | Error)
   stopWaiting(f, item.id, ["checks", "review"]);
   const result = run.report?.result;
   const backed = result?.kind === "implement" && result.claims.every((c) => c.evidence.trim());
-  if (item.phase === "pr" && green(f, view, data.headAt) && backed) {
+  if (item.phase === "pr" && green(f, view, pr.headAt) && backed) {
     await advance(f, item, view);
     return;
   }
-  if (item.phase === "pr" && checksPending(f, view, data.headAt))
+  if (item.phase === "pr" && checksPending(f, view, pr.headAt))
     waitFor(f, item.id, "checks", "Waits for the PR's checks");
-  if (item.phase === "review") await followReview(f, item, view, data.headAt);
-  await nudge(f, items.get(s, id)!, runs.get(s, run.id)!, view, feedback, data);
+  if (item.phase === "review") await followReview(f, item, view, pr.headAt);
+  const now = items.get(s, id);
+  if (followsPr(now)) await nudge(f, now, run, view, feedback);
 }
 
 /** The factory's reply in a review conversation: the fix's commit, or why the thread left it. */
-function replyBody(f: FactoryRuntime, item: FactoryItem, c: NonNullable<Implement["conversations"]>[string]) {
+function replyBody(f: FactoryRuntime, item: FactoryItem, c: NonNullable<ItemPr["conversations"]>[string]) {
   const marker: MarkerPayload = {
     item: item.id,
     key: item.key,
@@ -462,7 +472,7 @@ function replyBody(f: FactoryRuntime, item: FactoryItem, c: NonNullable<Implemen
     factory: item.configCommit.slice(0, 7),
     node: f.s.nodeId,
     state: "open",
-    pr: item.prUrl ?? null,
+    pr: item.pr?.url ?? null,
   };
   const text =
     c.outcome === "fixed"
@@ -473,8 +483,8 @@ function replyBody(f: FactoryRuntime, item: FactoryItem, c: NonNullable<Implemen
 
 /** Resolves the fixed conversations GitHub still shows open, once their reply was posted. Resolving again is harmless,
  * so it needs no claim; the replies go through the outbox. */
-async function resolveFixed(f: FactoryRuntime, item: FactoryItem, runId: string, feedback: PrFeedback) {
-  const owed = dataOf(runs.get(f.s, runId), "implement")?.conversations ?? {};
+async function resolveFixed(f: FactoryRuntime, item: FactoryItem, feedback: PrFeedback) {
+  const owed = items.get(f.s, item.id)?.pr?.conversations ?? {};
   for (const [id, c] of Object.entries(owed)) {
     const live = feedback.conversations.find((x) => x.id === id);
     if (c.outcome !== "fixed" || !live || live.resolved) continue;
@@ -498,21 +508,19 @@ async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInp
   const owner = runs.get(f.s, input.run)?.item ?? input.run;
   return withItem(f, owner, async () => {
     const run = ownRun(f, input.run, caller);
-    const data = dataOf(run, "implement");
     const item = run.item ? items.get(f.s, run.item) : undefined;
-    if (!data || !item?.prUrl || !["pr", "review", "ready"].includes(item.phase))
+    if (!followsPr(item) || item.pr.run !== run.id)
       throw new ReportError(`Run ${run.id} has no open PR that the factory follows`);
+    const { pr } = item;
     const silent = input.conversations.find((c) => c.outcome === "declined" && !c.note);
     if (silent)
       throw new ReportError(`Declining ${silent.id} needs a note with your reason; the factory replies with it`);
     let view: PrView;
     let feedback: PrFeedback;
     try {
-      [view, feedback] = await Promise.all([prView(item.prUrl), prFeedback(item.prUrl)]);
+      [view, feedback] = await Promise.all([prView(pr.url), prFeedback(pr.url)]);
     } catch (e) {
-      throw new ReportError(
-        `The factory could not read ${item.prUrl} on GitHub (${shortError(e)}); try again in a minute`,
-      );
+      throw new ReportError(`The factory could not read ${pr.url} on GitHub (${shortError(e)}); try again in a minute`);
     }
     if (!view.headRefOid.startsWith(input.commit))
       throw new ReportError(
@@ -526,7 +534,7 @@ async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInp
       throw new ReportError(
         `${unknown.id} is not an open review conversation from the repository's people or a bot on ${view.url}`,
       );
-    const conversations = { ...data.conversations };
+    const conversations = { ...pr.conversations };
     for (const c of input.conversations)
       conversations[c.id] = {
         outcome: c.outcome,
@@ -534,7 +542,7 @@ async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInp
         ...(c.note && { note: c.note }),
         seen: newest(open.get(c.id)!.comments.map((m) => m.at)),
       };
-    runs.update(f.s, run.id, { checked: { ...data, conversations } });
+    items.update(f.s, item.id, { pr: { ...pr, conversations } });
     for (const c of input.conversations)
       claimWrite(
         f,
@@ -552,20 +560,19 @@ async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInp
       text: `${item.key}'s thread fixed ${fixed} and declined ${input.conversations.length - fixed} review conversation${input.conversations.length > 1 ? "s" : ""}`,
     });
     // After the replies' sends, which were queued first: the fixed conversations whose reply went out are resolved.
-    const url = item.prUrl;
     later(f, item.id, `Resolving the fixed review conversations on ${item.key}'s PR`, async () =>
-      resolveFixed(f, item, run.id, await prFeedback(url)),
+      resolveFixed(f, item, await prFeedback(pr.url)),
     );
     return { accepted: input.conversations.length };
   });
 }
 
-/** One read per repository of every PR this machine follows there, then one step per item. */
+/** One read per repository of every open item's PR, then one step per item. */
 async function followPrs(f: FactoryRuntime) {
   const followed = items.list(f.s, { open: true }).flatMap((item) => {
-    if (!item.prUrl || !["pr", "review", "ready"].includes(item.phase)) return [];
+    if (!item.pr) return [];
     try {
-      return [{ item, pr: prOf(item.prUrl) }];
+      return [{ item, pr: prOf(item.pr.url) }];
     } catch (e) {
       failed(f, item, `Checking ${item.key}'s PR failed: ${shortError(e)}`);
       return [];
@@ -627,13 +634,13 @@ export async function takeReview(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id);
   const item = run?.item ? items.get(f.s, run.item) : undefined;
   const result = run?.report?.result;
-  if (!run || !item?.prUrl || result?.kind !== "review" || dataOf(run, "review")) return;
+  if (!run || !item?.pr || result?.kind !== "review" || dataOf(run, "review")) return;
   if (item.phase !== "review") {
     f.events.emit({ kind: "note", item: item.id, run: run.id, text: `${item.key} left review; the report is unused` });
     return;
   }
   // The report is a claim about one commit, checked against the PR as GitHub has it now.
-  const view = await prView(item.prUrl);
+  const view = await prView(item.pr.url);
   const round = rounds(f, item).length + 1;
   if (!view.headRefOid.startsWith(result.commit.toLowerCase())) {
     runs.update(f.s, run.id, { checked: { kind: "review", head: result.commit, round, stale: true } });
@@ -729,8 +736,7 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
       waitFor(f, item.id, "checks", `Waits for the PR's checks before review round ${data.round + 1}`);
     return;
   }
-  const implement = prRun(f, item);
-  const thread = implement?.threadId ? mirrorOf(f).thread(implement.threadId) : undefined;
+  const thread = item.pr ? mirrorOf(f).thread(item.pr.thread) : undefined;
   const busy = !!thread && (thread.needsYou || isWorkingStatus(thread.status));
   if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) {
     waitFor(f, item.id, "review", `Waits for the implement thread to push fixes for review round ${data.round}`);

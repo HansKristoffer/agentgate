@@ -160,16 +160,25 @@ export interface LaunchSpec {
   startFromOrigin: boolean;
   model?: FactoryModel;
 }
+/** A stage's own part of its launch: its brief, and a title or branch when the shared ones (`stageLaunch` in
+ * controller.ts) do not fit. */
+export interface StageLaunch {
+  brief: string;
+  title?: string;
+  branch?: string;
+}
 /** A launch that does not start now: it waits (the board shows why), or `cancelLaunch` ended the run. */
 export type NoLaunch = { wait: ItemWaiting["on"]; text: string } | { cancelled: true };
+/** A kind of run. A stage's run always has its item, which the controller checks before it calls a stage, so a stage's
+ * methods take the item as given; a scout's run has none. */
 export interface RunKindDefinition {
   kind: RunKind;
-  launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch>;
+  launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | StageLaunch | NoLaunch>;
   /** The model a run of a kind that does not take it from its stage file starts with, so dispatch can check quota
    * before building the launch, whose work (a PR read, a brief) would otherwise repeat every pass while it waits. */
   model?(run: FactoryRun): FactoryModel | undefined;
-  /** An error message, or undefined. */
-  validate(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<string | undefined>;
+  /** The kind's own checks of a report, past the controller's (`takeReport`): an error message, or undefined. */
+  validate?(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<string | undefined>;
   accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined): Promise<void>;
   /** `approve`/`reject` of a waiting run. */
   answer?(run: FactoryRun, decision: { approve: boolean; reason?: string }): Promise<void>;

@@ -244,7 +244,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
   );
   expect(n.sent(thread)[1]).toContain("Rename this.");
   expect(n.sent(thread)[1]).not.toContain("delete the database");
-  expect(runs.get(n.s, run.id)!.nudges).toBe(2);
+  expect(items.get(n.s, item.id)!.pr!.nudges).toBe(2);
 
   // The nudges are spent: after stalledAfter the item waits for the maintainer instead.
   await n.thread(thread, "idle");
@@ -258,7 +258,7 @@ test("an idle thread is nudged at once about a new problem and again after stall
   // A push that fixes everything answers the comment, clears the wait, and the PR goes on to ready.
   Object.assign(pr, { headRefOid: "f".repeat(40), checks: "passing", mergeable: "MERGEABLE" });
   await n.pollPrs();
-  expect(items.get(n.s, item.id)).toMatchObject({ phase: "ready", prCommit: pr.headRefOid });
+  expect(items.get(n.s, item.id)).toMatchObject({ phase: "ready", pr: { head: pr.headRefOid } });
   expect(items.get(n.s, item.id)!.needsYou).toBeUndefined();
 });
 
@@ -581,6 +581,77 @@ test("retry of an item whose review stage failed twice reviews the PR again once
       .filter((r) => r.kind === "review")
       .map((r) => r.state),
   ).toEqual(["silent", "running"]);
+});
+
+test("a PR whose implement thread is deleted waits as deleted, and retry starts an implement thread that takes the PR over", async () => {
+  const n = await prFactory(cleanup, noReview);
+  const { item, run, pr } = await n.opened(1);
+  const thread = run.threadId!;
+  await n.until(() => n.mirror.thread(thread), "the thread in the mirror");
+
+  n.t3.removeThread(thread);
+  await n.until(() => items.get(n.s, item.id)!.needsYou, "the item to wait");
+  await idle(n.f);
+  expect(items.get(n.s, item.id)).toMatchObject({
+    phase: "pr",
+    needsYou: {
+      kind: "stopped",
+      cause: "deleted",
+      question: expect.stringContaining("implement thread, which owned its PR, was deleted"),
+      link: pr.url,
+      run: run.id,
+    },
+  });
+  const { output } = await n.command("show", item.key);
+  expect(output.join("\n")).toContain("Start a new implement thread that takes its PR over");
+
+  expect((await n.command("retry", item.key)).output).toEqual([
+    `Retrying implement for ${item.key}, taking its PR over`,
+  ]);
+  expect(items.get(n.s, item.id)).toMatchObject({ phase: "implement", needsYou: undefined, pr: { url: pr.url } });
+  await n.dispatch();
+  const [, takeover] = n.implementRuns(item);
+  expect(takeover).toMatchObject({ state: "running", branch: pr.headRefName });
+  const launch = n.mcp.calls.findLast((c) => c.tool === "t3_thread_launch")!.args;
+  expect(launch.workspaceStrategy).toMatchObject({ branch: `factory/${item.key}-implement-2` });
+  expect(String(launch.message)).toContain(`gh pr checkout ${pr.number}`);
+
+  // It reports the PR it took over, and no other.
+  const other = n.github.openPr(102, pr.headRefName);
+  expect((await n.done(takeover!, other)).error).toContain(`it is not ${pr.url}, the PR you took over`);
+  Object.assign(pr, { headRefOid: "c".repeat(40), checks: "failing" });
+  expect(await n.done(takeover!, pr)).toEqual({ accepted: true });
+  expect(items.get(n.s, item.id)).toMatchObject({
+    phase: "pr",
+    pr: { url: pr.url, head: pr.headRefOid, run: takeover!.id, thread: takeover!.threadId, nudges: 0 },
+  });
+  // The follower wakes the new thread about the PR once its turn ends.
+  await n.thread(takeover!.threadId!, "idle");
+  await n.pollPrs();
+  expect(n.sent(takeover!.threadId!)).toEqual([expect.stringContaining("its checks fail")]);
+});
+
+test("a PR thread deleted while the daemon was down is found by the stuck loop, and a merge while a new thread takes the PR over ships the item", async () => {
+  const n = await prFactory(cleanup, noReview);
+  const { item, run, pr } = await n.opened(1);
+  n.t3.threads.delete(run.threadId!);
+  const m = await n.restart();
+  await m.until(() => m.mirror.status().stream !== "down", "the mirror to read T3 Code");
+  await loopTask(
+    m.f,
+    m.f.loops.find((l) => l.name === "factory-stuck")!,
+  )();
+  await idle(m.f);
+  expect(items.get(m.s, item.id)!.needsYou).toMatchObject({ cause: "deleted", run: run.id });
+
+  await m.command("retry", item.key);
+  await m.dispatch();
+  const [, takeover] = m.implementRuns(item);
+  expect(takeover!.state).toBe("running");
+  pr.state = "MERGED";
+  await m.pollPrs();
+  expect(items.get(m.s, item.id)!.phase).toBe("shipped");
+  expect(runs.get(m.s, takeover!.id)!.state).toBe("cancelled");
 });
 
 test("a claim whose evidence is only whitespace is refused, so the PR is not stuck waiting for backed claims", async () => {

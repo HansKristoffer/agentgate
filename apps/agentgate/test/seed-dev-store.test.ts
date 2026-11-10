@@ -21,7 +21,14 @@ test("a seeded dev store keeps no factory pointer, factory items, webhooks or se
     title: "Crash",
     snapshot: {},
     phase: "pr",
-    prUrl: "https://github.com/acme/api/pull/7",
+    pr: {
+      url: "https://github.com/acme/api/pull/7",
+      head: "abc1234",
+      headAt: 1,
+      run: "run_1",
+      thread: "thread-1",
+      nudges: 0,
+    },
     configCommit: "a".repeat(40),
   });
   s.put("project", "@grok", { id: "@grok", factoryTools: true, factoryWebhook: "https://bot.example/hook" });

@@ -1,15 +1,16 @@
 import type { FactoryBoard, FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, moveItem, originBranches, writeBack } from "./controller.ts";
-import { dataOf, items, runs, type FactoryItem, type FactoryRun, type RunDataOf } from "./db.ts";
+import { closeItem, defaultBranch, moveOn, originBranches } from "./controller.ts";
+import { items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { defaultBranchCi, prView, type PrView } from "./gh.ts";
-import { shortError, type FactoryRuntime, type LaunchSpec, type NoLaunch } from "./runtime.ts";
+import { shortError, type FactoryRuntime, type NoLaunch, type StageLaunch } from "./runtime.ts";
 
 /**
  * The implement stage. The thread works on a `factory/<key>` branch and opens a draft PR; the factory checks that PR on
  * GitHub before the item moves to `pr`. From there the PR follower (pr.ts) takes it to ready or shipped, and the thread
- * keeps owning the PR.
+ * keeps owning the PR (`item.pr`). When that thread is gone, `retry` starts an implement run that takes the PR over: it
+ * works on the PR's branch and reports the same PR.
  */
 
 const IMPLEMENT_BRIEF = `You implement one item for AgentGate's software factory.
@@ -37,6 +38,9 @@ function ciOf(f: FactoryRuntime) {
 }
 
 const folderOf = (f: FactoryRuntime, item: FactoryItem) => folderFor(f, item.configCommit);
+
+/** The PR's full head as GitHub showed it when `validate` checked a report, for `accept` in the same step. */
+const heads = new WeakMap<FactoryReport, string>();
 
 /**
  * The branch a run starts on: the first of `factory/<key>`, `factory/<key>-2`, `-3`… that origin does not have and no
@@ -86,43 +90,47 @@ const mainRed = (f: FactoryRuntime) =>
 
 const implement = (f: FactoryRuntime) => ({
   kind: "implement" as const,
-  async launch(run: FactoryRun, item: FactoryItem | undefined): Promise<LaunchSpec | NoLaunch> {
-    if (!item) throw new Error(`the implement run ${run.id} has no item`);
+  async launch(run: FactoryRun, item: FactoryItem): Promise<StageLaunch | NoLaunch> {
     if ((await defaultCi(f, item.repo)) === "failing")
       return { wait: "default-branch", text: `Waits for the default branch of ${item.repo} to pass CI` };
     const baseRef = await defaultBranch(f, item.repo);
-    const branch = await branchFor(f, run, item);
-    const model = folderOf(f, item)?.stages.implement?.file.model;
     const wakes =
       "the factory wakes you with what the PR needs: failing checks, a conflict, or the review comments of the repository's people and bots";
+    const report =
+      "- Report `commit` as the PR's head after your last push. The factory checks the PR, its branch and its head on GitHub before it accepts the report.";
+    const after = `- After the report, end your turn. The factory follows the PR, and ${wakes}.`;
+    if (item.pr) {
+      // The thread that owned the PR is gone, so this run takes the PR over: its worktree starts on a branch of its own
+      // (the controller's), the thread checks the PR out there, and its report must come from the PR's branch.
+      const view = await prView(item.pr.url);
+      if (run.branch !== view.headRefName) runs.update(f.s, run.id, { branch: view.headRefName });
+      const context = [
+        "## This run",
+        [
+          `- The thread that opened ${view.url} is gone; you take that PR over. Check it out here with \`gh pr checkout ${view.number}\`, read its diff, its checks and the review comments of the repository's people and bots, and finish the item on it. Push to \`${view.headRefName}\`; do not open another PR.`,
+          "- Read the triage result and any approved spec with the `factory_item` tool.",
+          report,
+          after,
+        ].join("\n"),
+      ].join("\n\n");
+      return { brief: renderBrief(f, { kind: "implement", run, item, builtIn: IMPLEMENT_BRIEF, context }) };
+    }
+    const branch = await branchFor(f, run, item);
     const context = [
       "## This run",
       [
         `- Your branch is \`${branch}\`, started from \`${baseRef}\`. Push it to origin and open the PR from it against \`${baseRef}\` as a draft (\`gh pr create --draft\`). ${sourceRef(f, item)}`,
         "- Read the triage result and any approved spec with the `factory_item` tool.",
-        "- Report `commit` as the PR's head after your last push. The factory checks the PR, its branch and its head on GitHub before it accepts the report.",
-        `- After the report, end your turn. The factory follows the PR, and ${wakes}.`,
+        report,
+        after,
       ].join("\n"),
     ].join("\n\n");
-    return {
-      repo: item.repo,
-      title: `Implement ${item.key}: ${item.title}`,
-      brief: renderBrief(f, { kind: "implement", run, item, builtIn: IMPLEMENT_BRIEF, context }),
-      baseRef,
-      branch,
-      startFromOrigin: true,
-      ...(model && { model }),
-    };
+    return { brief: renderBrief(f, { kind: "implement", run, item, builtIn: IMPLEMENT_BRIEF, context }), branch };
   },
 
-  async validate(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined) {
+  async validate(report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     const { result } = report;
-    if (result && result.kind !== "implement")
-      return `An implement run reports an implement result, not ${result.kind}`;
-    if (report.outcome !== "done") return undefined;
-    if (!result)
-      return 'The outcome done needs result: { kind: "implement", prUrl, commit, claims, notChecked, decisions }';
-    if (!item) return undefined;
+    if (report.outcome !== "done" || result?.kind !== "implement") return undefined;
     let view: PrView;
     try {
       view = await prView(result.prUrl);
@@ -130,11 +138,14 @@ const implement = (f: FactoryRuntime) => ({
       return `The factory could not read ${result.prUrl} on GitHub (${shortError(e)}). Fix the URL, or report again in a minute`;
     }
     const { branch } = run;
+    // A run that takes a PR over reports that PR, which may have been marked ready already.
+    const taken = item.pr?.url;
     const problems = [
       !result.prUrl.toLowerCase().startsWith(`https://github.com/${item.repo.toLowerCase()}/pull/`) &&
         `it is not a PR in ${item.repo}`,
+      !!taken && result.prUrl.toLowerCase() !== taken.toLowerCase() && `it is not ${taken}, the PR you took over`,
       view.state !== "OPEN" && `it is ${view.state.toLowerCase()}`,
-      !view.isDraft && "it is not a draft",
+      !taken && !view.isDraft && "it is not a draft",
       view.headRefName !== branch && `its branch is ${view.headRefName}, not ${branch}`,
       !view.headRefOid.startsWith(result.commit.toLowerCase()) &&
         `its head is ${view.headRefOid.slice(0, 12)}, not ${result.commit}`,
@@ -143,33 +154,34 @@ const implement = (f: FactoryRuntime) => ({
       // The correction takes the place of the run's one reminder, so the next turn that ends without a good report
       // is a silent end.
       if (run.nudges === 0) runs.update(f.s, run.id, { nudges: 1 });
-      return `The factory checked ${result.prUrl} on GitHub, and it does not match your report: ${problems.join("; ")}. Open a draft PR from ${branch} whose head is the commit you report, then call factory_report again.`;
+      const open = taken ? `Push to ${branch} on ${taken}` : `Open a draft PR from ${branch}`;
+      return `The factory checked ${result.prUrl} on GitHub, and it does not match your report: ${problems.join("; ")}. ${open} whose head is the commit you report, then call factory_report again.`;
     }
-    const checked: RunDataOf<"implement"> = {
-      kind: "implement",
-      pr: result.prUrl,
-      head: view.headRefOid,
-      headAt: f.s.now(),
-    };
-    runs.update(f.s, run.id, { checked });
+    heads.set(report, view.headRefOid);
     return undefined;
   },
 
-  async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem | undefined) {
-    if (!item) return;
+  async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     const { result } = report;
     if (result?.kind !== "implement") return closeItem(f, item, "There is nothing to do.", report);
-    const data = dataOf(run, "implement") ?? {
-      kind: "implement" as const,
-      pr: result.prUrl,
-      head: result.commit,
+    const head = heads.get(report) ?? result.commit;
+    // A run that took the PR over keeps what GitHub was already told: the conversations answered and the comments
+    // quoted. Its nudges start again.
+    const { conversations, quotedUntil } = item.pr ?? {};
+    const pr = {
+      url: result.prUrl,
+      head,
       headAt: f.s.now(),
+      run: run.id,
+      thread: run.threadId!,
+      nudges: 0,
+      ...(conversations && { conversations }),
+      ...(quotedUntil && { quotedUntil }),
     };
-    // The reminder is spent once the run reported: from here `nudges` counts nudges about the PR.
-    runs.update(f.s, run.id, { nudges: 0, checked: data });
-    items.update(f.s, item.id, { prUrl: data.pr, prCommit: data.head });
-    const moved = moveItem(f, item.id, "pr");
-    writeBack(f, moved, "pr-opened", { report, text: data.pr, commit: data.head });
+    moveOn(f, items.update(f.s, item.id, { pr }), "pr", {
+      moment: "pr-opened",
+      comment: { report, text: pr.url, commit: head },
+    });
   },
 });
 

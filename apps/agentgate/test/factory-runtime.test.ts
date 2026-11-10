@@ -87,8 +87,15 @@ test("items and runs keep every field, and the tables survive being created agai
       since: 1,
       run: "run_1",
     },
-    prUrl: "https://github.com/acme/api/pull/13",
-    prCommit: "abc1234",
+    pr: {
+      url: "https://github.com/acme/api/pull/13",
+      head: "abc1234",
+      headAt: 4,
+      run: "run_1",
+      thread: "thread-1",
+      nudges: 1,
+      conversations: { PRRT_1: { outcome: "fixed", commit: "abc1234", seen: "2026-11-05T00:00:00Z" } },
+    },
     configCommit: "3f2c1a9",
   });
   ensureFactoryTables(s);
@@ -122,7 +129,7 @@ test("items and runs keep every field, and the tables survive being created agai
     threadId: "thread-1",
     threadLink: "t3://thread-1",
     report: { run: "run_1", outcome: "done", summary: "fixed" },
-    checked: { kind: "implement", pr: "https://github.com/acme/api/pull/13", head: "abc1234", headAt: 4 },
+    checked: { kind: "review", head: "abc1234", round: 1 },
     nudges: 1,
     tokens: 0,
     sessions: 0,

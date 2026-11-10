@@ -60,10 +60,8 @@ test("a run that ends records the tokens of its thread and its subagent threads"
   await n.until(() => items.get(n.s, item.id)!.tokens > 0, "the run's tokens");
 
   const recorded = runs.get(n.s, run.id)!;
-  expect(recorded).toMatchObject({
-    report: { outcome: "done", result: { kind: "implement", prUrl: pr.url } },
-    checked: { kind: "implement", pr: pr.url, head: pr.headRefOid },
-  });
+  expect(recorded).toMatchObject({ report: { outcome: "done", result: { kind: "implement", prUrl: pr.url } } });
+  expect(items.get(n.s, item.id)!.pr).toMatchObject({ url: pr.url, head: pr.headRefOid, run: run.id });
   expect(items.get(n.s, item.id)!.tokens).toBe(6800);
   expect(await runTokens(n.f, recorded)).toBe(6800);
 });
@@ -130,7 +128,7 @@ test("a report that races its item's budget stop is refused: the item stays stop
   await measuring;
   expect(await reporting).toEqual({ error: `Run ${second.id} is cancelled and takes no report` });
   expect(items.get(n.s, item.id)).toMatchObject({ phase: "implement", needsYou: { cause: "budget" } });
-  expect(items.get(n.s, item.id)!.prUrl).toBeUndefined();
+  expect(items.get(n.s, item.id)!.pr).toBeUndefined();
   expect(runs.forItem(n.s, item.id).filter((r) => r.state === "queued")).toEqual([]);
 });
 
@@ -171,7 +169,7 @@ test("a budget stop in pr reads no thread and sends no nudge, a merge still ship
   expect(await n.command("retry", n.key(2))).toEqual({ code: 0, output: [`Retrying ${n.key(2)} with its PR`] });
   await n.dispatch();
   const after = items.get(n.s, retried.item.id)!;
-  expect(after).toMatchObject({ phase: "pr", prUrl: retried.pr.url });
+  expect(after).toMatchObject({ phase: "pr", pr: { url: retried.pr.url, nudges: 0 } });
   expect(after.needsYou).toBeUndefined();
   expect(n.implementRuns(after).map((r) => r.state)).toEqual(["reported"]);
   await n.pollPrs();

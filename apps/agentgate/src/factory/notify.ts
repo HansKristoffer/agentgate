@@ -46,7 +46,7 @@ function itemUpdate(item: FactoryItem) {
     repo: item.repo,
     phase: item.phase,
     ...(item.url && { url: item.url }),
-    ...(item.prUrl && { pr: item.prUrl }),
+    ...(item.pr && { pr: item.pr.url }),
     ...(item.needsYou && {
       needsYou: {
         kind: item.needsYou.kind,
@@ -123,7 +123,7 @@ export function setup(f: FactoryRuntime) {
     if (!item?.needsYou) return;
     // Where to answer: the asking thread, else the issue or the PR.
     const thread = item.needsYou.run ? runs.get(f.s, item.needsYou.run)?.threadLink : undefined;
-    const link = item.needsYou.link ?? thread ?? item.url ?? item.prUrl;
+    const link = item.needsYou.link ?? thread ?? item.url ?? item.pr?.url;
     await Promise.all([
       tell(f, seq, event.kind, item, `${cap(event.text)}${link ? ` ${link}` : ""}`),
       markUnread(f, item),
@@ -137,7 +137,7 @@ export function setup(f: FactoryRuntime) {
       seq,
       event.kind,
       item,
-      `${item.key}'s PR is ready for you: ${cap(item.title, 200)} ${item.prUrl ?? ""}`.trim(),
+      `${item.key}'s PR is ready for you: ${cap(item.title, 200)} ${item.pr?.url ?? ""}`.trim(),
     );
   });
 
