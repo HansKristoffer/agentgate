@@ -76,9 +76,13 @@ export function fakeT3(options: {
     for (const sub of streams) sub.ws.send(JSON.stringify({ _tag: "Exit", requestId: sub.id, exit }));
     streams.clear();
   };
+  /** The highest sequence of the stream items pushed so far. */
+  let pushed = 0;
   const shell = {
     /** Send a stream item (`thread.updated`, `project.updated`…) to every open subscription. */
     push(item: unknown) {
+      const sequence = (item as { sequence?: unknown } | null)?.sequence;
+      if (typeof sequence === "number") pushed = Math.max(pushed, sequence);
       for (const sub of streams) sub.ws.send(JSON.stringify({ _tag: "Chunk", requestId: sub.id, values: [item] }));
     },
     /** End every open subscription successfully. */
@@ -444,6 +448,15 @@ export function fakeT3(options: {
       };
       threads.set(thread.id, thread);
       return thread;
+    },
+    /** A person deletes the thread: the shell no longer lists it, and every open subscription hears `thread.removed`. */
+    removeThread(id: string) {
+      threads.delete(id);
+      // T3 numbers its stream items from one counter, while fixtures/t3-mcp.ts and tests number theirs themselves. The
+      // removal takes a number between the last one sent and the next whole one, so a client applies it and whatever
+      // those number next.
+      const last = Math.max(pushed, commands.length);
+      shell.push({ kind: "thread.removed", sequence: (last + Math.floor(last) + 1) / 2, threadId: id });
     },
     stop: () => server.stop(true),
   };

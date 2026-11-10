@@ -10,6 +10,7 @@ import { loopTask, type IncomingItem, type SourceAdapter } from "../src/factory/
 import { setSecret } from "../src/factory/secrets.ts";
 import { t3Mcp } from "../src/factory/t3-mcp.ts";
 import type { SourceState } from "../src/handoff/source.ts";
+import { connectT3, disconnectT3 } from "../src/handoff/t3.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
 import { removeTmp } from "./fixtures/git.ts";
@@ -696,6 +697,111 @@ test("a stage thread a person stops in T3 Code is left alone: its run ends, the 
   const [, again] = triageRuns(n);
   expect(again).toMatchObject({ state: "running" });
   expect(again!.threadId).not.toBe(thread);
+});
+
+test("a stage thread deleted in T3 Code ends its run as failed: the item waits, and retry starts the stage again in a new thread", async () => {
+  const n = await factoryNode(cleanup);
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const thread = run!.threadId!;
+  await n.until(() => n.mirror.thread(thread), "the thread in the mirror");
+
+  n.t3.removeThread(thread);
+  await n.until(() => runs.get(n.s, run!.id)!.state === "failed", "the run to end");
+  await idle(n.f);
+  expect(runs.get(n.s, run!.id)!.error).toBe("its thread was deleted in T3 Code");
+  const item = items.get(n.s, run!.item!)!;
+  expect(item.needsYou).toEqual({
+    reason: "stopped",
+    question: expect.stringContaining("triage thread was deleted in T3 Code"),
+  });
+
+  expect((await n.command("retry", item.key)).output).toEqual([`Retrying triage for ${item.key}`]);
+  await n.dispatch();
+  const [, again] = triageRuns(n);
+  expect(again).toMatchObject({ state: "running" });
+  expect(again!.threadId).not.toBe(thread);
+  // The mirror follows T3 Code's stream past the removal.
+  await n.until(() => n.mirror.thread(again!.threadId!), "the new thread in the mirror");
+});
+
+test("a run whose thread was deleted while the daemon was down ends failed once it started four stalledAfter ago, and its item waits", async () => {
+  const n = await factoryNode(cleanup, { config: { limits: { stalledAfter: "15m" } } });
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  // Deleted with nothing watching: the next daemon's mirror never had the thread, so it hears of no removal.
+  n.t3.threads.delete(run!.threadId!);
+  const m = await n.restart();
+
+  const stuck = () => loopTaskOf(m, "factory-stuck");
+  // A thread just launched may not have reached the mirror yet either.
+  m.advance(59 * 60_000);
+  await stuck();
+  await idle(m.f);
+  expect(runs.get(m.s, run!.id)!.state).toBe("running");
+  m.advance(2 * 60_000);
+  await stuck();
+  await idle(m.f);
+  expect(runs.get(m.s, run!.id)).toMatchObject({ state: "failed", error: "its thread was deleted in T3 Code" });
+  expect(items.get(m.s, run!.item!)!.needsYou).toMatchObject({ reason: "stopped" });
+});
+
+test("a run whose thread the mirror does not know because it cannot read T3 Code is left running", async () => {
+  const n = await factoryNode(cleanup, { config: { limits: { stalledAfter: "15m" } } });
+  await n.command("add", n.repo, "Crash on save");
+  await n.dispatch();
+  const [run] = triageRuns(n);
+  const thread = run!.threadId!;
+  await n.until(() => n.mirror.thread(thread), "the thread in the mirror");
+
+  // T3 Code is disconnected: the mirror stops and forgets its threads, as at start-up. None of them was deleted.
+  disconnectT3(n.s);
+  n.advance(61 * 60_000);
+  const stuck = () => loopTaskOf(n, "factory-stuck");
+  await stuck();
+  await idle(n.f);
+  expect(n.mirror.status().stream).toBe("down");
+  expect(n.mirror.thread(thread)).toBeUndefined();
+  expect(runs.get(n.s, run!.id)!.state).toBe("running");
+
+  // Connected again, the mirror reads every thread anew, and the run goes on with its own.
+  await connectT3(n.s, { url: n.t3.url, token: n.t3.pairingToken() });
+  await stuck();
+  await n.until(() => n.mirror.thread(thread), "the thread in the mirror again");
+  await stuck();
+  await idle(n.f);
+  expect(runs.get(n.s, run!.id)!.state).toBe("running");
+  expect(items.get(n.s, run!.item!)!.needsYou).toBeUndefined();
+});
+
+test("a scout run whose thread is gone from T3 Code's next poll ends failed, and the scout's next slot starts a new run", async () => {
+  const n = await factoryNode(cleanup, {
+    files: (repo) => ({
+      "scouts/perf.md": `---\n${JSON.stringify({ repo, schedule: { every: "6h" } })}\n---\n\nLook at the p95 latency of every endpoint.`,
+    }),
+  });
+  const scouts = () => loopTaskOf(n, "factory-scouts");
+  const scoutRuns = () => runs.list(n.s, { kinds: ["scout"] });
+  await scouts();
+  await n.dispatch();
+  const [first] = scoutRuns();
+  expect(first!.state).toBe("running");
+  const thread = first!.threadId!;
+  await n.until(() => n.mirror.thread(thread), "the thread in the mirror");
+
+  // The stream is down when the thread is deleted, so the mirror learns of it from the poll that follows.
+  n.t3.threads.delete(thread);
+  n.t3.shell.end();
+  await n.until(() => runs.get(n.s, first!.id)!.state === "failed", "the run to end");
+  expect(runs.get(n.s, first!.id)!.error).toBe("its thread was deleted in T3 Code");
+
+  // The run has no item to wait for anyone, and no longer holds its scout back.
+  n.advance(6 * 3600_000);
+  await scouts();
+  await n.dispatch();
+  expect(scoutRuns().map((r) => r.state)).toEqual(["failed", "running"]);
 });
 
 test("a stage thread handed to another machine leaves the factory: its run ends, the item waits, and retry starts the stage again here", async () => {

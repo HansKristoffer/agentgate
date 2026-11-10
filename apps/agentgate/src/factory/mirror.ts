@@ -32,6 +32,12 @@ export interface T3Mirror {
   /** The project's title in T3 Code. */
   projectTitle(id: string): string | undefined;
   onChange(listener: (thread: MirrorThread, previous: MirrorThread | undefined) => void): () => void;
+  /** Tells of a thread the mirror had and T3 Code deleted: the stream said so, or a snapshot or a poll, which list every
+   * thread, came without it. An archived thread is still listed. A thread the mirror only does not know is never told:
+   * it starts empty, keeps what it had while T3 Code cannot be read, and forgets everything when it stops. */
+  onRemove(listener: (thread: MirrorThread) => void): () => void;
+  /** While `down`, the mirror has not read T3 Code's threads, or could not at its last try, so a thread missing from it
+   * may still exist. `live` and `polling` hold every thread T3 Code has. */
   status(): { stream: "live" | "polling" | "down"; error?: string };
 }
 
@@ -108,11 +114,13 @@ function reason(e: unknown) {
 }
 
 type Listener = Parameters<T3Mirror["onChange"]>[0];
+type RemoveListener = Parameters<T3Mirror["onRemove"]>[0];
 
 class Mirror implements T3Mirror {
   private byId = new Map<string, MirrorThread>();
   private projects = new Map<string, string>();
   private listeners = new Set<Listener>();
+  private removeListeners = new Set<RemoveListener>();
   private state: ReturnType<T3Mirror["status"]> = { stream: "down" };
   /** The last sequence applied, to resume the stream after a drop. */
   private sequence: number | undefined;
@@ -127,6 +135,10 @@ class Mirror implements T3Mirror {
   onChange(listener: Listener) {
     this.listeners.add(listener);
     return () => void this.listeners.delete(listener);
+  }
+  onRemove(listener: RemoveListener) {
+    this.removeListeners.add(listener);
+    return () => void this.removeListeners.delete(listener);
   }
 
   /** Starts or stops the stream to match the T3 connection and whether this machine drives factory work. */
@@ -209,7 +221,7 @@ class Mirror implements T3Mirror {
     if (this.sequence !== undefined && item.sequence <= this.sequence) return;
     this.sequence = item.sequence;
     if (item.kind === "thread.updated") this.set(mirrored(item.thread, item.location === "archive"));
-    else if (item.kind === "thread.removed") this.byId.delete(item.threadId);
+    else if (item.kind === "thread.removed") this.remove(item.threadId);
     else if (item.kind === "project.updated") this.projects.set(item.project.id, item.project.title);
     else this.projects.delete(item.projectId);
   }
@@ -224,15 +236,26 @@ class Mirror implements T3Mirror {
     this.projects = new Map(projects.map((p) => [p.id, p.title]));
     for (const t of active) this.set(mirrored(t, false), previous);
     for (const t of archived) this.set(mirrored(t, true), previous);
+    // The list holds every thread T3 has, so one it no longer names was deleted.
+    for (const [id, thread] of previous) if (!this.byId.has(id)) this.tell(this.removeListeners, thread);
   }
 
   private set(thread: MirrorThread, previous = this.byId) {
     const before = previous.get(thread.id);
     this.byId.set(thread.id, thread);
     if (before && JSON.stringify(before) === JSON.stringify(thread)) return;
-    for (const listener of this.listeners) {
+    this.tell(this.listeners, thread, before);
+  }
+
+  private remove(id: string) {
+    const thread = this.byId.get(id);
+    if (thread && this.byId.delete(id)) this.tell(this.removeListeners, thread);
+  }
+
+  private tell<A extends unknown[]>(listeners: Set<(...args: A) => void>, ...args: A) {
+    for (const listener of listeners) {
       try {
-        listener(thread, before);
+        listener(...args);
       } catch (e) {
         console.error(`factory: mirror listener failed: ${logError(e)}`);
       }

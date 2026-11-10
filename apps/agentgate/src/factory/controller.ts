@@ -817,10 +817,16 @@ function watch(f: FactoryRuntime) {
   const m = memory(f);
   if (m.watching) return;
   m.watching = true;
-  mirrorOf(f).onChange((thread, previous) => {
+  const mirror = mirrorOf(f);
+  mirror.onChange((thread, previous) => {
     onThread(f, thread, previous).catch((e) =>
       console.error(`factory: watching thread ${thread.id} failed: ${logError(e)}`),
     );
+  });
+  mirror.onRemove((thread) => {
+    const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
+    if (run)
+      later(f, run.item ?? run.id, `Ending ${run.id} after its thread was deleted`, () => threadDeleted(f, run.id));
   });
 }
 
@@ -958,6 +964,25 @@ export function markStopped(f: FactoryRuntime, item: FactoryItem, run: FactoryRu
     reason: "stopped",
     question: `Someone stopped ${item.key}'s ${run.kind} thread in T3 Code, so the factory leaves it alone. Run agentgate factory retry ${item.key} to go on, or drop it.`,
     ...(run.threadLink && { link: run.threadLink }),
+  });
+}
+
+/**
+ * A run's thread was deleted in T3 Code, so nothing can report for the run any more: it ends failed. Its item waits for
+ * the maintainer to retry or drop it. A run without an item, such as a scout's, has nobody to wait for, and its schedule
+ * queues the next one.
+ */
+async function threadDeleted(f: FactoryRuntime, id: string) {
+  const run = runs.get(f.s, id);
+  if (!run?.threadId || (run.state !== "running" && run.state !== "waiting")) return;
+  // The step may have waited behind another of its item, and the mirror may have learned of the thread meanwhile.
+  if (mirrorOf(f).thread(run.threadId)) return;
+  endRun(f, run, "failed", { error: "its thread was deleted in T3 Code" });
+  const item = run.item ? items.get(f.s, run.item) : undefined;
+  if (!item || !isOpenPhase(item.phase)) return;
+  setNeedsYou(f, item.id, {
+    reason: "stopped",
+    question: `${item.key}'s ${run.kind} thread was deleted in T3 Code, so its ${run.kind} stage ended. Run agentgate factory retry ${item.key} to go on in a new thread, or drop it.`,
   });
 }
 
@@ -1246,7 +1271,9 @@ const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
  * launch that keeps failing does not count; waiting for a thread or quota does), its PR's thread at work, or a change
  * within four times `stalledAfter`: a run queued, started or ended, the PR's head moving, a nudge, or a person's act.
  * Otherwise it waits as `stuck`. And a running run whose thread has sat idle and unchanged that long ended a turn the
- * watcher missed (a restart, a gap while polling): it takes the silent-end path.
+ * watcher missed (a restart, a gap while polling): it takes the silent-end path. A run that started that long ago and
+ * whose thread T3 Code no longer has, deleted while nothing watched (the daemon was down), ends the way a run does when
+ * the mirror sees its thread deleted.
  */
 function findStuck(f: FactoryRuntime) {
   const { s } = f;
@@ -1273,10 +1300,21 @@ function findStuck(f: FactoryRuntime) {
       question: `Nothing moved ${item.key} in ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read what happened with agentgate factory show ${item.key}, then retry or drop it.`,
     });
   }
-  for (const run of runs.list(s, { states: ["running"] })) {
-    const thread = run.threadId ? mirror.thread(run.threadId) : undefined;
-    if (!thread || thread.needsYou || working(f, thread)) continue;
-    if (s.now() - Math.max(thread.updatedAt, run.startedAt ?? 0) < stalledWindow(f, run.configCommit)) continue;
+  // Only a mirror that has read T3 Code's threads can tell that one is gone: at start-up, and while T3 Code cannot be
+  // read, it knows none of them, or old ones.
+  const loaded = mirror.status().stream !== "down";
+  for (const run of runs.list(s, { states: ["running", "waiting"] })) {
+    if (!run.threadId) continue;
+    const thread = mirror.thread(run.threadId);
+    const window = stalledWindow(f, run.configCommit);
+    if (!thread) {
+      // The window also covers a thread just launched, which the mirror may not have heard of yet.
+      if (loaded && s.now() - (run.startedAt ?? run.queuedAt) >= window)
+        later(f, run.item ?? run.id, `Ending ${run.id}, whose thread is gone`, () => threadDeleted(f, run.id));
+      continue;
+    }
+    if (run.state !== "running" || thread.needsYou || working(f, thread)) continue;
+    if (s.now() - Math.max(thread.updatedAt, run.startedAt ?? 0) < window) continue;
     later(f, run.item ?? run.id, `Ending ${run.id}'s missed turn`, () => threadChanged(f, run.id, true));
   }
 }
