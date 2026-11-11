@@ -154,6 +154,8 @@ test("an item that waits for you, and a PR that is ready, are posted once to you
   answer.status = 503;
   const url = `https://github.com/${n.repo}/pull/7`;
   items.update(n.s, added.id, { pr: { url, head: "c1", headAt: 0, run: run.id, thread: run.threadId!, nudges: 0 } });
+  // Its PR passed review: the PR follower moves it to ready from there.
+  items.update(n.s, added.id, { phase: "review" });
   moveItem(n.f, added.id, "ready", true);
   const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
   const pass = async () => {
@@ -200,7 +202,7 @@ test("an item that waits for you, and a PR that is ready, are posted once to you
   expect((await n.command("notify", "off")).output).toEqual(["Notifications are off."]);
   setFactoryWebhook(n.s, "@grok", undefined);
   const before = posts.length;
-  moveItem(n.f, added.id, "review");
+  items.update(n.s, added.id, { phase: "review" });
   moveItem(n.f, added.id, "ready");
   await idle(n.f);
   expect(posts).toHaveLength(before);

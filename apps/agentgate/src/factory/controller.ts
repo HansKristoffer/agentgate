@@ -14,6 +14,7 @@ import {
   type Outcome,
   type RunKind,
   type RunState,
+  runStates,
   type StageName,
 } from "@agentgate/protocol";
 import { z } from "zod";
@@ -287,10 +288,26 @@ export function addItem(
   return held ? ask(f, item, { cause: "held", question: "Start triage?" }) : item;
 }
 
+/** The phases an item may move to from each. Any open item can close; a PR phase ships once its PR merges, also while
+ * an implement run takes the PR over; a closed item is taken in again at triage. Staying in a phase is no move. */
+const PHASE_TRANSITIONS: Record<ItemPhase, readonly ItemPhase[]> = {
+  held: ["triage", "closed"],
+  triage: ["spec", "implement", "closed"],
+  spec: ["implement", "closed"],
+  implement: ["pr", "shipped", "closed"],
+  pr: ["review", "ready", "implement", "shipped", "closed"],
+  review: ["ready", "implement", "shipped", "closed"],
+  ready: ["implement", "shipped", "closed"],
+  shipped: [],
+  closed: ["triage"],
+};
+
 /** `clearWait` also ends what the item waits for the person to do. */
 export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, clearWait = false): FactoryItem {
   const before = items.get(f.s, item);
   if (!before) throw new Error(`no factory item ${item}`);
+  if (before.phase !== to && !PHASE_TRANSITIONS[before.phase].includes(to))
+    throw new Error(`${before.key} cannot move from ${before.phase} to ${to}`);
   const after = items.update(f.s, item, {
     phase: to,
     ...(before.phase !== to && { phaseAt: f.s.now() }),
@@ -389,10 +406,48 @@ const runName = (f: FactoryRuntime, run: FactoryRun) => {
   return item ? `${item.key}'s ${run.kind}` : `${run.kind} run ${run.id}`;
 };
 
-/** Ends a run; records.ts reads its tokens when it hears `run.ended`. The event names `patch.error`, when given, as why
- * the run ended. */
-export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
-  const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
+/** The moves a run's state may make. A launch takes a run from queued through starting to running, and one a restart
+ * cut off is sent again from starting; its thread waits on a person and goes on; the run ends reported, silent, failed
+ * or cancelled; and a reported run whose question the maintainer answered runs again. */
+const RUN_TRANSITIONS: Record<RunState, readonly RunState[]> = {
+  queued: ["starting", "failed", "cancelled"],
+  starting: ["starting", "queued", "running", "failed", "cancelled"],
+  running: ["waiting", "reported", "silent", "failed", "cancelled"],
+  waiting: ["running", "reported", "failed", "cancelled"],
+  reported: ["running"],
+  silent: [],
+  failed: [],
+  cancelled: [],
+};
+
+/**
+ * The one way a run's state changes: to `to` with `patch`, only while the run is in one of `from`, in one write. A
+ * caller that lost a race, because a report, a drop or a launch moved the run first, gets undefined and changes
+ * nothing. A move the table does not allow is a bug, and throws.
+ */
+export function setRunState(
+  f: FactoryRuntime,
+  id: string,
+  from: readonly RunState[],
+  to: RunState,
+  patch: Parameters<typeof runs.updateIn>[3] = {},
+) {
+  const wrong = from.find((state) => !RUN_TRANSITIONS[state].includes(to));
+  if (wrong) throw new Error(`a factory run cannot move from ${wrong} to ${to}`);
+  return runs.updateIn(f.s, id, from, { ...patch, state: to });
+}
+
+/** Ends a run that has not ended; records.ts reads its tokens when it hears `run.ended`. The event names
+ * `patch.error`, when given, as why the run ended. Undefined, and nothing changes, when the run ended already. */
+export function endRun(
+  f: FactoryRuntime,
+  run: FactoryRun,
+  state: RunState,
+  patch: Parameters<typeof runs.updateIn>[3] = {},
+) {
+  const from = runStates.filter((s) => RUN_TRANSITIONS[s].includes(state));
+  const ended = setRunState(f, run.id, from, state, { ...patch, endedAt: f.s.now() });
+  if (!ended) return undefined;
   memory(f).seen.delete(run.id);
   memory(f).openAt.delete(run.id);
   f.events.emit({
@@ -521,8 +576,9 @@ export async function sendToThread(f: FactoryRuntime, run: FactoryRun, text: str
 /** A reported run goes on once its thread got the message that resumes it. T3 can show the new turn before the send
  * answers, while the run was not running yet, so a thread at work now counts as seen. */
 export function resumeRun(f: FactoryRuntime, run: FactoryRun) {
-  runs.update(f.s, run.id, { state: "running", endedAt: undefined });
+  if (!setRunState(f, run.id, ["reported"], "running", { endedAt: undefined })) return false;
   if (working(f, run.threadId ? mirrorOf(f).thread(run.threadId) : undefined)) memory(f).seen.add(run.id);
+  return true;
 }
 
 /** Interrupts the item's running threads, settles every thread it used, and cancels its runs that have not ended. */
@@ -554,16 +610,14 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
 const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().optional() });
 
 /** A run cancelled while its launch was in flight ended without a thread to stop. Its new thread is interrupted and
- * settled, so it spends nothing; true when the run ended. */
+ * settled, so it spends nothing. */
 async function endedWhileStarting(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id)!;
-  if (run.state === "starting") return false;
   // Settled once the mirror shows the turn stopped (`settleFinished`).
   memory(f).stopping.add(run.threadId!);
   await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
     threadFailed(f, run, "Interrupting"),
   );
-  return true;
 }
 
 /** True when the run's thread started. */
@@ -574,9 +628,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   // T3 finds the thread of a retried launch by `clientRequestId` within one MCP session only, so the session is noted
   // first: a launch whose answer was lost is sent again only under it. A drop meanwhile ended the run: nothing starts.
   const launchSession = await mcp.sessionId();
-  const current = runs.get(s, run.id);
-  if (current?.state !== "queued" && current?.state !== "starting") return false;
-  runs.update(s, run.id, { state: "starting", launchSession });
+  if (!setRunState(f, run.id, ["queued", "starting"], "starting", { launchSession })) return false;
   const answer = launchAnswer.safeParse(
     await mcp.call(
       "t3_thread_launch",
@@ -600,8 +652,10 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   if (!answer.success) throw new Error("T3 Code's t3_thread_launch answered without a thread id");
   const { threadId, link } = answer.data;
   runs.update(s, run.id, { threadId, ...(link && { threadLink: link }), node: s.nodeId });
-  if (await endedWhileStarting(f, run.id)) return false;
-  runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
+  if (!setRunState(f, run.id, ["starting"], "running", { startedAt: s.now(), error: undefined })) {
+    await endedWhileStarting(f, run.id);
+    return false;
+  }
   if (run.item) stopWaiting(f, run.item);
   // T3 may show the turn running before the launch answers, when the run did not know its thread yet. A launch sent
   // again after a restart can find its turn already over, which the watcher saw before the run knew its thread.
@@ -859,11 +913,9 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       // After a send whose answer was lost, the thread may exist: only that session can find it again.
       const answered = e instanceof T3McpError && e.answered && !queued.launchSession;
       const error = `starting it failed: ${shortError(e)}`;
-      runs.update(s, run.id, {
-        ...(current.state === "starting" && { state: "queued" as const }),
-        ...(answered && { launchSession: undefined }),
-        error,
-      });
+      const patch = { ...(answered && { launchSession: undefined }), error };
+      if (current.state === "starting") setRunState(f, run.id, ["starting"], "queued", patch);
+      else runs.update(s, run.id, patch);
       if (current.item) waitFor(f, current.item, "launch", `Waits to try again at ${time(retryAt)}: ${error}`, current);
       else if (current.error !== error)
         f.events.emit({ kind: "note", run: run.id, text: `${runName(f, run)}: ${error}` });
@@ -980,15 +1032,14 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
-    if (run.state === "running") runs.update(s, run.id, { state: "waiting" });
+    setRunState(f, run.id, ["running"], "waiting");
     // Once per T3 request: one answered, or already asked, is not asked again when T3 shows it again.
     const request = thread.request ?? "";
     if (run.item && run.answered !== request && items.get(s, run.item)?.needsYou?.request !== request)
       later(f, run.item, `Reading what ${run.id}'s thread asks`, () => askThreadQuestion(f, run.id, request));
     return;
   }
-  if (run.state === "waiting") {
-    runs.update(s, run.id, { state: "running" });
+  if (setRunState(f, run.id, ["waiting"], "running")) {
     const item = run.item ? items.get(s, run.item) : undefined;
     if (asksInT3(item, run)) answeredInT3(f, item!, run);
   }
@@ -1205,8 +1256,8 @@ async function acceptReport(f: FactoryRuntime, report: FactoryReport, caller: Ca
 async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Caller): Promise<{ accepted: true }> {
   const { s } = f;
   const run = ownRun(f, report.run, caller);
-  const takes = (r: FactoryRun | undefined) => r?.state === "running" || r?.state === "waiting";
-  if (!takes(run)) throw new ReportError(`Run ${run.id} is ${run.state} and takes no report`);
+  if (run.state !== "running" && run.state !== "waiting")
+    throw new ReportError(`Run ${run.id} is ${run.state} and takes no report`);
   const required = REQUIRED[report.outcome];
   if (required && report[required.key] === undefined)
     throw new ReportError(`The outcome ${report.outcome} needs ${required.name}`);
@@ -1221,9 +1272,9 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   if (done && report.outcome === "done" && !result) throw new ReportError(`The outcome done needs result: ${done}`);
   const problem = await definition.validate?.(report, run, item);
   if (problem) throw new ReportError(problem);
-  if (!takes(runs.get(s, run.id))) throw new ReportError(`Run ${run.id} already ended`);
-
+  // The checks above wait on GitHub, while a drop or a handoff can end the run.
   const reported = endRun(f, run, "reported", { report });
+  if (!reported) throw new ReportError(`Run ${run.id} already ended`);
   // The thread could only go on to report once the person answered it.
   if (asksInT3(item, run)) answeredInT3(f, item!, run);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";

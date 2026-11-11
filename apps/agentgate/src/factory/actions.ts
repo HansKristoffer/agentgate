@@ -169,13 +169,13 @@ async function answer(f: FactoryRuntime, item: FactoryItem, action: "approve" | 
     : `The maintainer rejected your recommendation${because}.`;
   // Sent first: a send that fails, or a restart before it answers, leaves the run reported and the question open.
   await sendToThread(f, run, `${reply} Continue the ${run.kind} stage, then report again with \`factory_report\`.`);
-  resumeRun(f, run);
-  f.events.emit({
-    kind: "run.resumed",
-    run: run.id,
-    item: item.id,
-    text: `${item.key}'s ${run.kind} goes on with the maintainer's answer`,
-  });
+  if (resumeRun(f, run))
+    f.events.emit({
+      kind: "run.resumed",
+      run: run.id,
+      item: item.id,
+      text: `${item.key}'s ${run.kind} goes on with the maintainer's answer`,
+    });
   stopAsking(f, item.id);
   touched(f, item, action, `answered the ${run.kind} thread's ${wait.recommendation ? "question" : "blocker"}`);
   return `Sent the answer to ${item.key}'s ${run.kind} thread`;
