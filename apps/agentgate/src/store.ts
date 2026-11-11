@@ -8,6 +8,8 @@ import {
   providerSchema,
   secretRecordSchema,
   factoryFolderSchema,
+  loginIdSchema,
+  usageSourceSchema,
   MAX_RECORD,
   type Topic,
 } from "@agentgate/protocol";
@@ -112,7 +114,7 @@ export const schemas = {
     windows: z.array(Window),
     status: z.enum(["ok", "limited", "exhausted"]),
     exhaustedUntil: timestamp.optional(),
-    source: z.enum(["headers", "poll", "manual"]).optional(),
+    source: usageSourceSchema.optional(),
   }),
   mcp: z.object({
     id: z.string(),
@@ -153,9 +155,14 @@ export const schemas = {
   setting: settingsSchema,
   /** A GitHub CLI or Infisical CLI login, or an Infisical machine identity, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
-    z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
     z.object({
-      id: z.literal("infisical"),
+      id: z.literal(loginIdSchema.enum.github),
+      from: id,
+      account: z.string().max(320),
+      token: z.string().min(1).max(4096),
+    }),
+    z.object({
+      id: z.literal(loginIdSchema.enum.infisical),
       from: id,
       // Names the keyring file the Infisical CLI keeps the session in, so it must stay a plain file name.
       account: z
@@ -181,7 +188,7 @@ export const schemas = {
     }),
     /** An Infisical machine identity (Universal Auth) set in agentgate; `account` is its client id. */
     z.object({
-      id: z.literal("infisical-identity"),
+      id: z.literal(loginIdSchema.enum["infisical-identity"]),
       from: id,
       account: z.string().max(512),
       clientSecret: z.string().min(1).max(4096),

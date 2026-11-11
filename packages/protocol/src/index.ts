@@ -242,6 +242,8 @@ export const accountStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("cooling"), until: z.number(), reason: failureSchema }),
 ]);
 export type AccountState = z.infer<typeof accountStateSchema>;
+/** Where an account's usage was last read: a model response's headers, a usage poll, or `accounts exhaust`. */
+export const usageSourceSchema = z.enum(["headers", "poll", "manual"]);
 export const accountStatusSchema = z.object({
   account: accountSchema,
   windows: z.array(quotaWindowSchema),
@@ -258,7 +260,7 @@ export const accountStatusSchema = z.object({
   exhaustedUntil: z.number().optional(),
   observedAt: z.number().optional(),
   observedBy: z.string().optional(),
-  observationSource: z.enum(["headers", "poll", "manual"]).optional(),
+  observationSource: usageSourceSchema.optional(),
   holder: z.string().optional(),
   /** This machine's copy has expired, and the machine holding the login refreshes it; nothing to sign in to. */
   waitingFor: z.string().optional(),
@@ -269,31 +271,33 @@ export const accountStatusSchema = z.object({
   state: accountStateSchema.optional().catch(undefined),
 });
 export type AccountStatus = z.infer<typeof accountStatusSchema>;
-export interface ServerSummary {
-  id: string;
+export const serverSummarySchema = z.object({
+  id: z.string(),
   /** The name the user gave it; `id` is its slug and tool prefix. */
-  label?: string;
-  template: string;
-  transport: "http" | "stdio";
-  mode: "shared" | "perSession";
-  endpoint: string;
-  loggedIn: boolean;
-  needsLogin: boolean;
+  label: z.string().optional(),
+  template: z.string(),
+  transport: z.enum(["http", "stdio"]),
+  mode: z.enum(["shared", "perSession"]),
+  endpoint: z.string(),
+  loggedIn: z.boolean(),
+  needsLogin: z.boolean(),
   /** Whether this node reached it when it last connected (Test or a session); absent until then. */
-  available?: boolean;
-  checkedAt?: number;
-  refreshError?: string;
-}
-export interface SkillSummary {
-  id: string;
-  description: string;
+  available: z.boolean().optional(),
+  checkedAt: z.number().optional(),
+  refreshError: z.string().optional(),
+});
+export type ServerSummary = z.infer<typeof serverSummarySchema>;
+export const skillSummarySchema = z.object({
+  id: skillIdSchema,
+  description: z.string(),
   /** What `npx skills add` was given; absent for skills written by hand. */
-  source?: string;
-  hash?: string;
-  contentHash?: string;
-  updatedAt: number;
-  size: number;
-}
+  source: z.string().optional(),
+  hash: z.string().optional(),
+  contentHash: z.string().optional(),
+  updatedAt: z.number(),
+  size: z.number().int().nonnegative(),
+});
+export type SkillSummary = z.infer<typeof skillSummarySchema>;
 /** A skill found by `npx skills add`, not yet installed. */
 export interface SkillPreview {
   id: string;
@@ -311,21 +315,23 @@ export interface SkillPreviewResponse {
   skills: SkillPreview[];
 }
 /** A connected GitHub repository; `projects` are where its skills are linked when they first appear. */
-export interface SkillRepoSummary {
-  url: string;
-  projects: string[];
-  skills: string[];
-  commit?: string;
-  syncedAt?: number;
-  error?: string;
+export const skillRepoSummarySchema = z.object({
+  url: z.string(),
+  projects: z.array(z.string()),
+  skills: z.array(z.string()),
+  commit: z.string().optional(),
+  syncedAt: z.number().optional(),
+  error: z.string().optional(),
   /** Skills in the repository that could not be installed, with the reason. */
-  skipped: string[];
-}
-export interface SkillHealth {
-  attemptedAt?: number;
-  succeededAt?: number;
-  errors: { path: string; message: string }[];
-}
+  skipped: z.array(z.string()),
+});
+export type SkillRepoSummary = z.infer<typeof skillRepoSummarySchema>;
+export const skillHealthSchema = z.object({
+  attemptedAt: z.number().optional(),
+  succeededAt: z.number().optional(),
+  errors: z.array(z.object({ path: z.string(), message: z.string() })),
+});
+export type SkillHealth = z.infer<typeof skillHealthSchema>;
 export interface SkillSearchResult {
   source: string;
   skill: string;
@@ -438,55 +444,15 @@ export const statusSchema = z.object({
   detected: z.array(
     z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() }),
   ),
-  servers: z.array(
-    z.object({
-      id: z.string(),
-      label: z.string().optional(),
-      template: z.string(),
-      transport: z.enum(["http", "stdio"]),
-      mode: z.enum(["shared", "perSession"]),
-      endpoint: z.string(),
-      loggedIn: z.boolean(),
-      needsLogin: z.boolean(),
-      available: z.boolean().optional(),
-      checkedAt: z.number().optional(),
-      refreshError: z.string().optional(),
-    }),
-  ),
+  servers: z.array(serverSummarySchema),
   projects: z.array(publicProjectSchema),
-  skills: z.array(
-    z.object({
-      id: skillIdSchema,
-      description: z.string(),
-      source: z.string().optional(),
-      hash: z.string().optional(),
-      contentHash: z.string().optional(),
-      updatedAt: z.number(),
-      size: z.number().int().nonnegative(),
-    }),
-  ),
+  skills: z.array(skillSummarySchema),
   /** Skill links this node skipped because something else already uses the name. */
   skillConflicts: z.array(z.string()),
   /** Clashes the user settled by keeping what was there; Agentgate's copy isn't linked at these paths. */
   skillKept: z.array(z.string()).default([]),
-  skillRepos: z
-    .array(
-      z.object({
-        url: z.string(),
-        projects: z.array(z.string()),
-        skills: z.array(z.string()),
-        commit: z.string().optional(),
-        syncedAt: z.number().optional(),
-        error: z.string().optional(),
-        skipped: z.array(z.string()),
-      }),
-    )
-    .default([]),
-  skillHealth: z.object({
-    attemptedAt: z.number().optional(),
-    succeededAt: z.number().optional(),
-    errors: z.array(z.object({ path: z.string(), message: z.string() })),
-  }),
+  skillRepos: z.array(skillRepoSummarySchema).default([]),
+  skillHealth: skillHealthSchema,
   /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */
   fileErrors: z.record(z.string(), z.string()).default({}),
   /** Local checkouts that receive project skills on this node, with the skills the repository itself contains. */
