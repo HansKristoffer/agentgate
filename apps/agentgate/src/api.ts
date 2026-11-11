@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { accounts } from "./api/accounts.ts";
 import { desktopRoutes } from "./api/desktop.ts";
-import { nodes } from "./api/nodes.ts";
 import { ops } from "./api/ops.ts";
 import { projects } from "./api/projects.ts";
 import { servers } from "./api/servers.ts";
@@ -21,7 +20,6 @@ export function management(ctx: Ctx) {
       .route("/", servers(ctx))
       .route("/", skills(ctx))
       .route("/", projects(ctx))
-      .route("/", nodes(ctx))
       .route("/", t3(ctx))
       .route("/", desktopRoutes(ctx))
       .route("/", ops(ctx))

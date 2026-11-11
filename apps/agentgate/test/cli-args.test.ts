@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { parseFor } from "../src/cli.ts";
+import { terminalOpFor } from "../src/ops/index.ts";
 
 const words = (line: string) => line.match(/"[^"]*"|\S+/g)!.map((w) => w.replace(/^"|"$/g, ""));
 
@@ -25,7 +26,8 @@ describe("parseFor", () => {
     expect(parseFor(words("factory use --store agentgate"))).toEqual({ values: {}, positionals: ["factory"] });
   });
 
-  // From README.md and docs/user, plus one use of every option the CLI read before options became per command.
+  // From README.md and docs/user, plus one use of every option the CLI read before options became per command. A
+  // registered operation reads its own words (ops/).
   test.each([
     "init --always-on --name srv",
     "login claude --label work",
@@ -64,7 +66,10 @@ describe("parseFor", () => {
     "status -h",
     "--help",
   ])("%s", (line) => {
-    expect(() => parseFor(words(line))).not.toThrow();
+    const argv = words(line);
+    const op = terminalOpFor(argv);
+    if (op) expect(() => op.terminal.parse(argv.slice(op.name.split(" ").length), undefined, "/")).not.toThrow();
+    else expect(() => parseFor(argv)).not.toThrow();
   });
 });
 

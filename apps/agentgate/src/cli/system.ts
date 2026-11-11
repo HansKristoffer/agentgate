@@ -209,7 +209,8 @@ export const run: Run = async (cmd, [sub], opts) => {
         initialized(s);
         return console.log(
           (
-            await management<{ message: string }>(`/nodes/${encodeURIComponent(str("node")!)}/primary`, "POST", {
+            await management<{ message: string }>(`/ops/${encodeURIComponent("nodes route")}`, "POST", {
+              node: str("node"),
               on: sub !== "off",
             })
           ).message,
@@ -231,8 +232,9 @@ export const run: Run = async (cmd, [sub], opts) => {
       if (sub) {
         initialized(s);
         const r = await management<{ version?: string; restarting: boolean }>(
-          `/nodes/${encodeURIComponent(sub)}/update`,
+          `/ops/${encodeURIComponent("nodes update")}`,
           "POST",
+          { node: sub },
         );
         if (!r.version || !r.restarting)
           return console.log(

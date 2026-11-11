@@ -683,25 +683,23 @@ test("rotation cannot revoke a removed machine's Tailscale path", async () => {
   c.db.run("insert into peers values ('b', ?, 'tok', 0, null)", [`http://127.0.0.1:${server.port}`]);
   await sync(a); // a now sees c through the relay
 
-  // Remove c through the API: the relay path forces a rotation, which is local-only.
+  // Remove c through the API (loopback-only, ops.test.ts): the relay path forces a rotation.
   const ctx = makeCtx(a);
   const handler = app(ctx);
-  a.setLocal("adminToken", "admin");
-  const remote = await handler.fetch(
-    new Request("http://x/api/nodes/c", { method: "DELETE", headers: { authorization: "Bearer admin" } }),
-    { listener: "tailnet" },
-  );
-  expect(remote.status).toBe(403);
   const removed = await handler.fetch(
-    new Request("http://127.0.0.1/api/nodes/c", { method: "DELETE", headers: { host: "127.0.0.1" } }),
+    new Request("http://127.0.0.1/api/ops/unpair", {
+      method: "POST",
+      headers: { host: "127.0.0.1", "content-type": "application/json" },
+      body: JSON.stringify({ node: "c" }),
+    }),
     { listener: "loopback" },
   );
-  const body = (await removed.json()) as { rotated: boolean; command: string };
-  expect(body.rotated).toBe(true);
+  const { rotated } = (await removed.json()) as { rotated?: { command: string } };
+  expect(rotated).toBeDefined();
   await ctx.gateway.close();
 
   await leaveRelay(b);
-  await joinRelay(b, body.command.split(" ").at(-1)!);
+  await joinRelay(b, rotated!.command.split(" ").at(-1)!);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "secret after rotation" });
   await sync(a);
   await sync(b);
@@ -924,21 +922,21 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
     );
   const handlerA = app(ctxA),
     handlerB = app(ctxB);
-  expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
+  expect((await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
   expect(relayInvite(a)).toBeUndefined();
   // The name lands in a shell line the user pastes, and must not collide with an existing node.
   for (const name of ["Mac Mini", "x;rm -rf ~", a.nodeId])
-    expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
+    expect((await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
   const paired = (await (
-    await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })
+    await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })
   ).json()) as { command: string };
   expect(paired.command).toContain("| AGENTGATE_NAME=mac-mini sh -s -- join agr1.");
-  const bad = await call(handlerB, "/api/nodes/join", { command: `${paired.command} && curl evil` });
+  const bad = await call(handlerB, "/api/ops/join", { command: `${paired.command} && curl evil` });
   expect(bad.status).toBe(400);
   expect(await bad.text()).not.toContain(paired.command.split(".")[2]!);
-  expect((await call(handlerB, "/api/nodes/join", { command: paired.command })).status).toBe(200);
+  expect((await call(handlerB, "/api/ops/join", { command: paired.command })).status).toBe(200);
   expect(b.get("account", "acc")).toBeDefined();
-  expect((await call(handlerA, "/api/relay/rotate", undefined, "tailnet")).status).toBe(403);
+  expect((await call(handlerA, "/api/ops/relay%20rotate", {}, "tailnet")).status).toBe(403);
   // A Tailscale join URL is an origin: it cannot be aimed at this daemon's own routes.
   for (const url of [
     "http://127.0.0.1:7878/api/relay/rotate?x=",
