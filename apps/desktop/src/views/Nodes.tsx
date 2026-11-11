@@ -558,9 +558,10 @@ function HandoffFolders({ data, connection, perform }: ViewProps) {
 const LOGINS = [
   { id: "github", name: "GitHub", tool: "gh" },
   { id: "infisical", name: "Infisical", tool: "the Infisical CLI" },
+  { id: "opencode", name: "OpenCode", tool: "OpenCode" },
 ] as const;
 
-/** The gh and Infisical CLI logins one machine shares; every other machine signs in with them. */
+/** The gh and Infisical CLI logins and OpenCode API keys one machine shares; every other machine signs in with them. */
 function SharedLogins({ data, connection, perform, local }: ViewProps) {
   const share = (id: SharedLogin["id"]) =>
     void perform(async () => {
@@ -578,7 +579,7 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
   return (
     <Panel
       title="Shared logins"
-      detail="Sign every machine in to GitHub and Infisical, including servers that join later."
+      detail="Sign every machine in to GitHub, Infisical and OpenCode, including servers that join later."
       foot={
         local
           ? undefined

@@ -3,7 +3,12 @@ import { outdatedNodes, type AccountState, type AccountStatus, type Status } fro
 export type Page = "accounts" | "servers" | "skills" | "projects" | "nodes";
 /** `signIn`: signing in to Infisical again, from the daemon's own machine, fixes it. */
 export type Problem = { key: string; page: Page; title: string; detail?: string; signIn?: boolean };
-const loginName = { github: "GitHub", infisical: "Infisical", "infisical-identity": "Infisical machine identity" };
+const loginName = {
+  github: "GitHub",
+  infisical: "Infisical",
+  "infisical-identity": "Infisical machine identity",
+  opencode: "OpenCode",
+};
 
 /** The daemon's `state`, or for a daemon too old to send one, the derivation the app used before it did. */
 export const accountState = (a: AccountStatus): AccountState =>

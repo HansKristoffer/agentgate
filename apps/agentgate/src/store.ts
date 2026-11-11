@@ -153,7 +153,7 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
-  /** A GitHub CLI or Infisical CLI login, or an Infisical machine identity, shared with every node (logins.ts). */
+  /** A GitHub CLI or Infisical CLI login, an Infisical machine identity, or OpenCode's API keys, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
     z.object({
       id: z.literal(loginIdSchema.enum.github),
@@ -193,6 +193,25 @@ export const schemas = {
       account: z.string().max(512),
       clientSecret: z.string().min(1).max(4096),
       siteUrl: z.string().url().max(2048),
+    }),
+    /** OpenCode's API keys (`opencode auth export`); `account` names their providers. */
+    z.object({
+      id: z.literal(loginIdSchema.enum.opencode),
+      from: id,
+      account: z.string().max(320),
+      credentials: z
+        .array(
+          z.object({
+            // Both go on OpenCode's command line, so neither may read as a flag.
+            id: z.string().regex(/^[A-Za-z0-9_][\w.:@-]{0,255}$/),
+            integrationID: z.string().regex(/^[A-Za-z0-9_][\w.:@-]{0,255}$/),
+            label: z.string().max(256),
+            active: z.boolean(),
+            key: z.string().min(1).max(4096),
+          }),
+        )
+        .min(1)
+        .max(64),
     }),
   ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
