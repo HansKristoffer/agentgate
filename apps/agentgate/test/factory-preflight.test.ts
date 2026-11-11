@@ -149,6 +149,8 @@ test("the board never waits for gh: it shows the last answers while the loop ask
   expect(byId(first.checks, "gh")).toBeUndefined();
   release();
   await refreshing;
+  // The new answers change nothing in the factory's records, so the board shows them once its 2 s reuse ends.
+  n.advance(2000);
   expect(byId((await board(n)).checks, "gh")).toMatchObject({ state: "fail", detail: "gh is not installed" });
 });
 
