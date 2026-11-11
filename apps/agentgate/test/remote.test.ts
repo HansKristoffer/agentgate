@@ -8,7 +8,7 @@ import { app, makeCtx } from "../src/daemon.ts";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
-import { relaySocket } from "../src/channel.ts";
+import { relaySocket } from "../src/relay-socket.ts";
 import { enableRemote, queueDelete, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
@@ -494,4 +494,26 @@ test("a relay socket that never opens is closed at the deadline and connects aga
   const { error } = serve();
   await error("could not connect to the relay");
   while (relay.upgrades.length < 2) await Bun.sleep(5);
+});
+
+test("a failed request shows a fixed message in status, never the error's text", async () => {
+  const { relay, serve } = serving();
+  const { endpoints } = serve();
+  const project = await relay.connected();
+  endpoints.hooks = () => [
+    {
+      source: "github",
+      relay: relay.url,
+      key: "hook-key",
+      token: "hook-token",
+      secret: "hook-secret",
+      handle: () => Promise.reject(new Error("upstream said: Bearer fake-token-123")),
+    },
+  ];
+  endpoints.reconcile();
+  let hook = project;
+  while (hook === project) hook = await Bun.sleep(5).then(relay.connected);
+  hook.send(JSON.stringify({ t: "req", id: "1", headers: {}, body: "{}" }));
+  expect(JSON.parse((await relay.next()).body)).toEqual({ error: "agentgate failed to handle the request" });
+  expect(endpoints.hookState("github")).toEqual({ connected: true, error: "a request failed" });
 });

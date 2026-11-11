@@ -1,6 +1,6 @@
 import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
-import { exponentialBackoff, getErrorMessage } from "hanzio";
+import { exponentialBackoff } from "hanzio";
 import {
   REMOTE_LIMITS,
   relayFrame,
@@ -9,9 +9,9 @@ import {
   type RemoteResponseFrame,
 } from "@agentgate/protocol/remote";
 import { z } from "zod";
-import { closeUnopened } from "./channel.ts";
 import { defineLocal } from "./local-state.ts";
 import type { Gateway } from "./mcp/gateway.ts";
+import { RelaySocket } from "./relay-socket.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
 import type { Store } from "./store.ts";
@@ -172,23 +172,27 @@ interface Conn {
   id: string;
   remote: Remote;
   hook?: HookEndpoint;
-  ws?: WebSocket;
+  socket?: RelaySocket;
   connected: boolean;
-  closed: boolean;
   error?: string;
   failed: string[];
   lastCall?: number;
-  backoff: number;
-  openedAt?: number;
-  retry?: ReturnType<typeof setTimeout>;
-  ping?: ReturnType<typeof setInterval>;
-  lastPong: number;
-  inflight: Map<string, AbortController>;
   /** Secret pushes in order, so an older one can never land after a newer one. */
   pushing?: Promise<void>;
 }
 
-const describe = (e: unknown) => getErrorMessage(e).slice(0, 200);
+/** A refusal from the relay, worded here: the only error text status shows as it is. */
+class EndpointError extends Error {}
+
+/** Status text for a failed push or request. Any other error's text can carry a URL, a header or an upstream server's
+ * answer, so it is named by kind only. */
+function describe(e: unknown, failed: string) {
+  if (e instanceof EndpointError) return e.message;
+  if (e instanceof Error && e.name === "TimeoutError") return `${failed}: timed out`;
+  return failed;
+}
+const PUSH_FAILED = "could not reach the relay";
+const REQUEST_FAILED = "a request failed";
 
 /** Keeps one socket per endpoint this node serves and pushes the secret hash the relay checks. */
 export class RemoteEndpoints {
@@ -235,15 +239,16 @@ export class RemoteEndpoints {
         c.remote = next;
         c.pushing = (c.pushing ?? Promise.resolve()).then(() =>
           this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
-            this.report(c, c.connected, describe(e));
+            this.report(c, c.connected, describe(e, PUSH_FAILED));
           }),
         );
       }
     }
     for (const [id, next] of wanted) if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
-    for (const row of this.s.db.query("select key from local where key like 'remote:deleted:%'").all() as {
-      key: string;
-    }[])
+    // A key range rather than LIKE, which ignores case and so cannot use the primary key. ';' sorts right after ':'.
+    for (const row of this.s.db
+      .query("select key from local where key >= 'remote:deleted:' and key < 'remote:deleted;'")
+      .all() as { key: string }[])
       if (!used(row.key.slice("remote:deleted:".length))) this.s.setLocal(row.key, undefined);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
     for (const p of projects)
@@ -283,7 +288,7 @@ export class RemoteEndpoints {
     // The relay deleted this endpoint (another machine made a new URL or deleted the project): pushing it again would
     // recreate it with the old token, so wait for the record to change.
     if (this.s.local(`remote:deleted:${r.key}`) === r.secret.slice(0, 8))
-      throw new Error("the relay deleted this endpoint; create a new URL");
+      throw new EndpointError("the relay deleted this endpoint; create a new URL");
     const marker = this.pushedValue(r, r.enabled);
     if (this.s.local(`remote:pushed:${r.key}`) === marker) return;
     const key = serviceKeyFor(this.s, r.relay);
@@ -305,9 +310,10 @@ export class RemoteEndpoints {
       10_000,
     );
     await res.body?.cancel();
-    if (res.status === 401) throw new Error("the relay refused this endpoint's token; create a new URL");
-    if (res.status === 409) throw new Error("the relay holds another kind of endpoint at this URL; create a new URL");
-    if (!res.ok) throw new Error(`the relay answered ${res.status}`);
+    if (res.status === 401) throw new EndpointError("the relay refused this endpoint's token; create a new URL");
+    if (res.status === 409)
+      throw new EndpointError("the relay holds another kind of endpoint at this URL; create a new URL");
+    if (!res.ok) throw new EndpointError(`the relay answered ${res.status}`);
     this.s.setLocal(`remote:pushed:${r.key}`, marker);
   }
 
@@ -317,25 +323,17 @@ export class RemoteEndpoints {
       remote,
       ...(hook && { hook }),
       connected: false,
-      closed: false,
       failed: [],
-      backoff: 1000,
-      lastPong: 0,
-      inflight: new Map(),
     };
     this.conns.set(id, c);
-    void this.connect(c);
+    c.socket = this.connect(c);
   }
 
   private stop(id: string) {
     const c = this.conns.get(id);
     if (!c) return;
-    c.closed = true;
     this.conns.delete(id);
-    clearTimeout(c.retry);
-    clearInterval(c.ping);
-    for (const a of c.inflight.values()) a.abort(new Error("endpoint stopped"));
-    c.ws?.close();
+    c.socket?.stop("endpoint stopped");
   }
 
   /** Status shows each endpoint's connection and error: mark it changed when either moves, not on every retry. */
@@ -346,94 +344,55 @@ export class RemoteEndpoints {
     this.s.bump("status");
   }
 
-  private later(c: Conn, error?: string) {
-    if (c.closed || this.closed) return;
-    this.report(c, false, error ?? c.error);
-    clearInterval(c.ping);
-    const delay = c.backoff * (0.5 + Math.random());
-    c.backoff = Math.min(c.backoff * 2, 60_000);
-    c.retry = setTimeout(() => void this.connect(c), delay);
-    c.retry.unref?.();
-  }
-
-  private async connect(c: Conn) {
-    if (c.closed || this.closed) return;
-    try {
-      await this.put(c.remote, c.hook ? "hook" : "mcp");
-    } catch (e) {
-      return this.later(c, describe(e));
-    }
-    if (c.closed || this.closed) return;
-    const key = serviceKeyFor(this.s, c.remote.relay);
-    // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
-    const ws = new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
-      headers: {
-        authorization: `Bearer ${c.remote.token}`,
-        "x-agentgate-node": this.s.nodeId,
-        ...(key && { "x-relay-key": key }),
+  /** A stopped endpoint's socket reports nothing, as the store may be closing with the daemon. */
+  private connect(c: Conn) {
+    const socket: RelaySocket = new RelaySocket({
+      dial: async () => {
+        await this.put(c.remote, c.hook ? "hook" : "mcp");
+        const key = serviceKeyFor(this.s, c.remote.relay);
+        // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
+        return new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
+          headers: {
+            authorization: `Bearer ${c.remote.token}`,
+            "x-agentgate-node": this.s.nodeId,
+            ...(key && { "x-relay-key": key }),
+          },
+        } as unknown as string[]);
       },
-    } as unknown as string[]);
-    c.ws = ws;
-    closeUnopened(ws);
-    ws.onopen = () => {
-      this.report(c, true, undefined);
-      c.openedAt = Date.now();
-      c.lastPong = Date.now();
-      const pingMs = 30_000;
-      c.ping = setInterval(() => {
-        if (Date.now() - c.lastPong > pingMs * 2) return ws.close();
+      onOpen: () => this.report(c, true, undefined),
+      onMessage: (data, ws) => {
+        let frame;
         try {
-          ws.send("ping");
+          frame = relayFrame.parse(JSON.parse(data));
         } catch {
-          /* closing */
+          return;
         }
-      }, pingMs);
-      c.ping.unref?.();
-    };
-    ws.onmessage = (e) => {
-      if (e.data === "pong") {
-        c.lastPong = Date.now();
-        return;
-      }
-      let frame;
-      try {
-        frame = relayFrame.parse(JSON.parse(String(e.data)));
-      } catch {
-        return;
-      }
-      if (frame.t === "cancel") return c.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
-      void this.answer(c, ws, frame);
-    };
-    ws.onclose = (e) => {
-      // A stopped endpoint's socket: stop() already aborted its calls, and nothing is retried or recorded, as the store
-      // may be closing with the daemon.
-      if (c.ws !== ws || c.closed) return;
-      for (const a of c.inflight.values()) a.abort(new Error("relay connection closed"));
-      const upFor = c.openedAt ? Date.now() - c.openedAt : 0;
-      c.openedAt = undefined;
-      // Close codes from apps/relay/src/remote.ts.
-      if (e.code === 4001) {
-        this.s.setLocal(`remote:deleted:${c.remote.key}`, c.remote.secret.slice(0, 8));
-        return this.later(c, "the relay deleted this endpoint; create a new URL");
-      }
-      if (e.code === 4000) {
-        // Another connection took the endpoint, e.g. a second machine serving it: reconnecting at once would only
-        // take it back and start a duel.
-        c.backoff = Math.max(c.backoff, 30_000);
-        return this.later(c, "another connection took over this endpoint");
-      }
-      // A socket that stayed up reconnects quickly; one that keeps dropping right after opening backs off.
-      if (upFor > 60_000) c.backoff = 1000;
-      // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
-      if (!c.connected) this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
-      this.later(c, c.connected ? undefined : "could not connect to the relay");
-    };
-    ws.onerror = () => {
-      /* onclose follows */
-    };
+        if (frame.t === "cancel") return socket.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
+        void this.answer(c, ws, socket.inflight, frame);
+      },
+      onDown: (down) => {
+        if ("error" in down) return void this.report(c, false, describe(down.error, PUSH_FAILED));
+        // Close codes from apps/relay/src/remote.ts.
+        if (down.code === 4001) {
+          this.s.setLocal(`remote:deleted:${c.remote.key}`, c.remote.secret.slice(0, 8));
+          return void this.report(c, false, "the relay deleted this endpoint; create a new URL");
+        }
+        if (down.code === 4000) {
+          // Another connection took the endpoint, e.g. a second machine serving it: reconnecting at once would only
+          // take it back and start a duel.
+          this.report(c, false, "another connection took over this endpoint");
+          return 30_000;
+        }
+        if (down.upFor !== undefined) return void this.report(c, false, c.error);
+        // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
+        this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
+        this.report(c, false, "could not connect to the relay");
+      },
+    });
+    return socket;
   }
 
-  private async answer(c: Conn, ws: WebSocket, frame: RequestFrame) {
+  private async answer(c: Conn, ws: WebSocket, inflight: Map<string, AbortController>, frame: RequestFrame) {
     const { id } = frame;
     const send = (frame: RemoteResponseFrame) => {
       try {
@@ -442,10 +401,10 @@ export class RemoteEndpoints {
         /* socket closed; the relay already failed it */
       }
     };
-    if (c.inflight.size >= REMOTE_LIMITS.inFlight)
+    if (inflight.size >= REMOTE_LIMITS.inFlight)
       return send({ t: "res", id, status: 503, headers: {}, body: "", retry: true });
     const abort = new AbortController();
-    c.inflight.set(id, abort);
+    inflight.set(id, abort);
     const started = Date.now();
     // Webhook senders read plain JSON errors; MCP clients read JSON-RPC ones.
     const failure = (status: number, code: number, message: string): RemoteResponseFrame => ({
@@ -487,9 +446,9 @@ export class RemoteEndpoints {
     } catch (e) {
       if (abort.signal.aborted) return; // the relay already answered the client
       send(failure(500, -32603, "agentgate failed to handle the request"));
-      this.report(c, c.connected, describe(e));
+      this.report(c, c.connected, describe(e, REQUEST_FAILED));
     } finally {
-      c.inflight.delete(id);
+      inflight.delete(id);
       c.lastCall = Date.now();
       this.s.log("remote", c.id, label.slice(0, 200), status, Date.now() - started);
     }
