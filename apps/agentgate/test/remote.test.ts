@@ -9,7 +9,7 @@ import { Gateway } from "../src/mcp/gateway.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
 import { relaySocket } from "../src/channel.ts";
-import { enableRemote, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
+import { enableRemote, queueDelete, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
 import { exportBackup, Store } from "../src/store.ts";
@@ -413,6 +413,54 @@ test("a machine that stops serving an endpoint no record names any more deletes 
   s.setLocal("remote:delete", undefined); // ...whose deletion queue lives on that machine
   endpoints.reconcile();
   while (!relay.deletes.includes(key)) await Bun.sleep(5);
+});
+
+test("a deletion the relay keeps failing is retried less and less often, at most hourly", async () => {
+  process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  cleanup.push(() => {
+    delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
+  });
+  let deletes = 0;
+  const relay = Bun.serve({
+    port: 0,
+    fetch: () => {
+      deletes++;
+      return new Response("down", { status: 503 });
+    },
+  });
+  cleanup.push(() => relay.stop(true));
+  const s = store();
+  let T = Date.now();
+  s.now = () => T;
+  const gateway = new Gateway(s),
+    endpoints = new RemoteEndpoints(s, gateway);
+  cleanup.push(async () => {
+    endpoints.close();
+    await gateway.close();
+  });
+  queueDelete(s, { relay: `http://127.0.0.1:${relay.port}`, key: "gone", token: "t" });
+  const attempts = () => JSON.parse(s.local("remote:delete")!)[0].attempts ?? 0;
+  /** A reconcile pass `after` ms later. A due deletion is awaited until its failure is recorded. One not due sends
+   * nothing, which the count after the next due pass would show; a macrotask lets its empty drain settle, since a
+   * drain asked for while the last one is finishing is dropped (serialTask in runtime.ts). */
+  const pass = async (after: number, due: boolean) => {
+    T += after;
+    const before = attempts();
+    endpoints.reconcile();
+    if (!due) return Bun.sleep(0);
+    while (attempts() === before) await Bun.sleep(1);
+  };
+
+  await pass(0, true);
+  await pass(30_000, true);
+  await pass(30_000, false); // the wait doubled to 60 s
+  await pass(30_000, true);
+  await pass(60_000, false); // and to 120 s
+  await pass(60_000, true);
+  expect(deletes).toBe(4);
+  // Doubling would pass an hour by the ninth failure; every hourly pass still sends.
+  for (let i = 0; i < 8; i++) await pass(3_600_000, true);
+  expect(deletes).toBe(12);
 });
 
 test("a new secret the relay refused is pushed again on the next pass, and only until the relay has it", async () => {

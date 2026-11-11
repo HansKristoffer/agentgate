@@ -25,7 +25,7 @@ import {
   peerRoutes,
   peers,
   poke,
-  pullAll,
+  startPulls,
   tailscale,
 } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
@@ -359,12 +359,14 @@ export async function serve(
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => {
+  // Tailscale and the relay run apart, and each peer's pull on its own, so a sleeping machine whose connection hangs
+  // delays nobody else.
+  schedule(async () => {
     noteSyncTurn(s);
-    return Promise.all([pullAll(s), relaySync(s)]).finally(() => {
-      if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s);
-    });
+    startPulls(s);
+    if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s);
   }, PULL_INTERVAL);
+  schedule(() => relaySync(s), PULL_INTERVAL);
   schedule(async () => {
     await ctx.creds.tick(ctx.abort.signal);
     await tickMcp(s, ctx.abort.signal);

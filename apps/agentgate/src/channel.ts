@@ -1,7 +1,16 @@
 import { CHANNEL_LIMITS, MiB, channelRelayFrame } from "@agentgate/protocol/relay";
 import { encodeBase64Url } from "hanzio/crypto";
 import { z } from "zod";
-import { deriveKeys, parseInvite, relayInvite, serviceKey, type Keys } from "./relay.ts";
+import {
+  deriveKeys,
+  onOwnPush,
+  parseInvite,
+  relayInvite,
+  relayNodes,
+  relaySync,
+  serviceKey,
+  type Keys,
+} from "./relay.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
@@ -153,6 +162,20 @@ export async function relayCall(
   });
 }
 
+/** A call with no body asking a member to pull from the relay now rather than on its next turn, so a machine paired
+ * only through the relay hears of a change in about a second. A member from before it answers 404 and keeps pulling
+ * on its timer. */
+const POKE_PATH = "/sync/poke";
+/** Members the relay has not seen pull for this long are asleep or gone; poking them only costs relay calls. */
+const POKE_SEEN_WITHIN = 5 * 60_000;
+
+/** Pokes each member seen lately, without waiting for any answer. */
+function pokeMembers(s: Store) {
+  for (const { node, lastSeen } of relayNodes(s))
+    if (s.now() - lastSeen < POKE_SEEN_WITHIN)
+      relayCall(s, node, POKE_PATH, { method: "POST", timeout: 10_000 }).catch(() => {});
+}
+
 /** The relay's own refusal, as a message for the user. Its body is a known code at most, never shown raw. */
 function relayFailure(status: number, text: string, node: string) {
   let code: string | undefined;
@@ -200,12 +223,15 @@ export class NodeChannel {
   private lastPong = 0;
   private inflight = new Map<string, AbortController>();
   private closed = false;
+  private unsubscribe: () => void;
   connected = false;
 
   constructor(
     private s: Store,
     private handler: (from: string, req: Request) => Promise<Response>,
-  ) {}
+  ) {
+    this.unsubscribe = onOwnPush(s, () => pokeMembers(s));
+  }
 
   /** Open, reopen or close the socket to match the relay group and whether this node can take handoffs. */
   async reconcile() {
@@ -315,6 +341,10 @@ export class NodeChannel {
     }
     // Recorded only once authentic, so a hostile relay can't fill the store with ids.
     if (!this.fresh(env.id, now)) return refuse();
+    if (call.meta.method === "POST" && call.meta.path === POKE_PATH) {
+      void relaySync(this.s, { push: false }).catch(() => {});
+      return send(await seal(g.keys, sealedFor("res"), { status: 204 }, new Uint8Array()));
+    }
 
     const abort = new AbortController();
     this.inflight.set(frameId, abort);
@@ -371,6 +401,7 @@ export class NodeChannel {
 
   close() {
     this.closed = true;
+    this.unsubscribe();
     this.stop();
   }
 }

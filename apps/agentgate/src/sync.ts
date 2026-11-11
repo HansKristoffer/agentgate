@@ -44,7 +44,11 @@ const batchSchema = z.object({
 // Shown per peer in `/status`; a pull that fails the same way again changes nothing.
 const syncError = defineLocal("syncError:", z.string(), { topic: "status" });
 const pairUsed = defineLocal("pair:used", z.object({ code: z.string(), node: z.string(), expires: z.number() }));
-const pulls = new WeakMap<Store, Map<string, Promise<number>>>();
+interface PeerPull {
+  work: Promise<number>;
+  again: boolean;
+}
+const pulls = new WeakMap<Store, Map<string, PeerPull>>();
 const CODE_TTL = 10 * 60_000;
 const WORDS =
   "amber anchor apple arrow basil beacon birch bison cable canyon cedar cobalt comet coral delta dune ember falcon fern fjord flint gecko glacier harbor hazel heron indigo ivory jasper juniper kelp lagoon lantern lemon lilac lotus maple meadow mesa nectar nimbus oak onyx orbit otter pebble pine plume quartz raven reef saffron sequoia sierra slate sparrow spruce tango thistle tundra velvet walnut willow zephyr".split(
@@ -134,14 +138,36 @@ export function lastSeen(s: Store, node: string): number {
   return Math.max(direct, Number(s.local(`seen:${node}`) ?? 0));
 }
 
-export async function pullPeer(s: Store, p: Peer): Promise<number> {
+/** Pulls from `p` now. A call while that peer's pull runs asks for one more after it, since the poke that caused it may
+ * announce a change the running pull read past; the promise settles once that one is done too. */
+export function pullPeer(s: Store, p: Peer): Promise<number> {
   let pending = pulls.get(s);
   if (!pending) pulls.set(s, (pending = new Map()));
-  const existing = pending.get(p.node);
-  if (existing) return existing;
-  const work = doPull(s, p).finally(() => pending!.delete(p.node));
-  pending.set(p.node, work);
-  return work;
+  const current = pending.get(p.node);
+  if (current) {
+    current.again = true;
+    return current.work;
+  }
+  const entry: PeerPull = { again: false, work: Promise.resolve(0) };
+  entry.work = (async () => {
+    let total = 0;
+    let peer: Peer | undefined = p;
+    try {
+      do {
+        entry.again = false;
+        total += await doPull(s, peer);
+        // The row as it is now: the peer may have been re-paired or removed meanwhile.
+        peer = entry.again ? peers(s).find((x) => x.node === p.node) : undefined;
+      } while (peer);
+    } finally {
+      // In the same step as the last check of `again`: a promise's .finally() runs later, and a call in between
+      // would set `again` on a pull that has already stopped.
+      pending.delete(p.node);
+    }
+    return total;
+  })();
+  pending.set(p.node, entry);
+  return entry.work;
 }
 
 async function doPull(s: Store, requested: Peer): Promise<number> {
@@ -195,19 +221,26 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
 }
 
 export async function drainPulls(s: Store) {
-  await Promise.allSettled(pulls.get(s)?.values() ?? []);
+  await Promise.allSettled([...(pulls.get(s)?.values() ?? [])].map((p) => p.work));
 }
 
+const pullRecordingErrors = (s: Store, p: Peer) =>
+  pullPeer(s, p).catch((e) => {
+    syncError.set(s, p.node, String(e));
+    throw e;
+  });
+
+/** Every peer's pull, awaited; errors per peer. */
 export async function pullAll(s: Store) {
-  const results = await Promise.allSettled(
-    peers(s).map((p) =>
-      pullPeer(s, p).catch((e) => {
-        syncError.set(s, p.node, String(e));
-        throw e;
-      }),
-    ),
-  );
+  const results = await Promise.allSettled(peers(s).map((p) => pullRecordingErrors(s, p)));
   return results.filter((r) => r.status === "rejected").map((r) => String((r as PromiseRejectedResult).reason));
+}
+
+/** The daemon's scheduled round: starts a pull from each peer that has none running, and waits for none of them, so a
+ * peer whose connection hangs holds back neither the others nor their next round. */
+export function startPulls(s: Store) {
+  const running = pulls.get(s);
+  for (const p of peers(s)) if (!running?.has(p.node)) void pullRecordingErrors(s, p).catch(() => {});
 }
 
 export function poke(s: Store) {
