@@ -483,8 +483,11 @@ export async function factoryNode(
   const first = makeCtx(s);
   contexts.add(first);
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
-  // No test reaches GitHub: one that needs gh answers stubs it after this.
-  login.gh = async () => undefined;
+  // No test reaches GitHub: one that needs gh answers stubs it after this. Every repository's default branch is main.
+  login.gh = async (args) =>
+    args[0] === "repo" && args[1] === "view"
+      ? { ok: true, out: JSON.stringify({ defaultBranchRef: { name: "main" } }) }
+      : undefined;
   cleanup.push(() => (login.gh = realGh));
   const used = await terminal(first.factory, ["use", "acme/factory", "--node", "a"]);
   if (used.code) throw new Error(`the factory folder did not load: ${used.output.join("\n")}`);

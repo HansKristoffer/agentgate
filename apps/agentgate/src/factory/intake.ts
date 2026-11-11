@@ -1,7 +1,7 @@
 import type { MarkerPayload, NeedsYou } from "@agentgate/protocol";
 import { act } from "./actions.ts";
-import { currentFolder, durationMs } from "./config.ts";
-import { addItem, intakeState, limitsOf } from "./controller.ts";
+import { currentFolder, durationMs, limits } from "./config.ts";
+import { addItem, intakeState } from "./controller.ts";
 import { items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
 import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
@@ -149,7 +149,7 @@ async function readAnswers(f: FactoryRuntime) {
   const waiting = items
     .list(f.s, { open: true })
     .filter((i) => i.needsYou?.kind === "start" || (i.needsYou?.kind === "answer" && askedOnIssue(f, i, i.needsYou)))
-    .slice(0, limitsOf(f).waitingForYou);
+    .slice(0, limits(f).waitingForYou);
   for (const item of waiting) {
     const replies = adapterOf(f, item)?.replies;
     if (!replies) continue;

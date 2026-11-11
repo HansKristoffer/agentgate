@@ -7,13 +7,12 @@ import {
 } from "@agentgate/protocol";
 import { z } from "zod";
 import { findItem, itemRef } from "./actions.ts";
-import { folderFor } from "./config.ts";
+import { folderFor, limits } from "./config.ts";
 import {
   actionsOf,
   frozenHere,
   intakeState,
   isPaused,
-  limitsOf,
   namesFrozen,
   ownRun,
   quotaWait,
@@ -149,7 +148,7 @@ export const frozenItems = (f: FactoryRuntime): BoardItem[] =>
 /** The items and capacity part of the board; implement.ts adds `capacity.mainRed`, intake.ts the sources. */
 function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
   const { s } = f;
-  const limits = limitsOf(f);
+  const limit = limits(f);
   const quota = quotaWait(f);
   // While another machine runs the factory, the items are on its board, and this machine's open ones are frozen.
   const elsewhere = frozenHere(f);
@@ -158,10 +157,10 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
     items: elsewhere ? [] : boardItems(f, items.list(s, { finishedSince: s.now() - 7 * DAY })),
     ...(frozen.length && { frozen }),
     capacity: {
-      threads: limits.threads,
+      threads: limit.threads,
       working: f.isFactoryNode() ? workingCount(f) : 0,
       waitingForYou: elsewhere ? 0 : waitingForYou(f),
-      waitingForYouLimit: limits.waitingForYou,
+      waitingForYouLimit: limit.waitingForYou,
       quota: quota ?? "ok",
       intake: intakeState(f),
       ...(isPaused(f) && { paused: true }),

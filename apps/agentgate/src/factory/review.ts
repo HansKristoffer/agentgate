@@ -3,7 +3,8 @@ import { renderBrief } from "./briefs.ts";
 import { cancelLaunch } from "./controller.ts";
 import { dataOf, type FactoryItem, type FactoryRun } from "./db.ts";
 import { prView } from "./gh.ts";
-import { describe, findingsOf, limitsOf, rounds, takeReview } from "./pr.ts";
+import { limits } from "./config.ts";
+import { describe, findingsOf, rounds, takeReview } from "./pr.ts";
 import { later, type FactoryRuntime, type NoLaunch, type StageLaunch } from "./runtime.ts";
 
 /**
@@ -29,7 +30,7 @@ const review = (f: FactoryRuntime) => ({
   kind: "review" as const,
   async launch(run: FactoryRun, item: FactoryItem): Promise<StageLaunch | NoLaunch> {
     if (!item.pr) throw new Error(`the review run ${run.id} has no item with a PR`);
-    const max = limitsOf(f, item).reviewRounds;
+    const max = limits(f, item).reviewRounds;
     // Review was switched off after this run was queued: the PR follower sends the PR to the maintainer.
     if (max === 0) return cancelLaunch(f, run, "reviewRounds is 0");
     const view = await prView(item.pr.url);

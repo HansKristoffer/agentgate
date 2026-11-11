@@ -235,7 +235,14 @@ test("an implement stage with start: manual holds a triaged item, named on the b
   // Implement reads the default branch's CI before it starts: no checks there.
   const realGh = host.gh;
   const main = { refUpdateRule: null, rules: { nodes: [] }, target: { statusCheckRollup: null } };
-  host.gh = async () => ({ ok: true, out: JSON.stringify({ data: { repository: { defaultBranchRef: main } } }) });
+  host.gh = async (args) => ({
+    ok: true,
+    out: JSON.stringify(
+      args[0] === "repo"
+        ? { defaultBranchRef: { name: "main" } }
+        : { data: { repository: { defaultBranchRef: main } } },
+    ),
+  });
   cleanup.push(() => (host.gh = realGh));
   await n.command("add", n.repo, "Crash on save");
   await n.dispatch();

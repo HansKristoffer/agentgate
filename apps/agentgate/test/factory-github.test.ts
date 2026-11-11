@@ -92,6 +92,7 @@ function fakeGitHub(repo: string) {
         });
       }
       if (args[0] === "api" && args[1] === "user") return ok({ login: FACTORY_LOGIN });
+      if (args[0] === "repo" && args[1] === "view") return ok({ defaultBranchRef: { name: "main" } });
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
       if (args[0] === "api" && comment) {
         const { body } = JSON.parse(stdin!);

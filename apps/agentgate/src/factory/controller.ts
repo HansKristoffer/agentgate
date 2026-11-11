@@ -23,7 +23,7 @@ import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
-import { currentFolder, DEFAULT_LIMITS, durationMs, folderFor, type LoadedFolder } from "./config.ts";
+import { currentFolder, durationMs, folderFor, limits, type LoadedFolder } from "./config.ts";
 import {
   ACTIVE,
   isOpenPhase,
@@ -38,6 +38,7 @@ import {
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
+import { defaultBranch as readDefaultBranch } from "./gh.ts";
 import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { adapterOf, questionRef, writeBack } from "./outbox.ts";
 import {
@@ -85,7 +86,12 @@ interface Memory {
   quota?: { waitingUntil?: number };
   /** Why each item that needs nobody waits (`waitFor`), by item; `run` is the queued run a dispatch wait is about. */
   waits: Map<string, ItemWaiting & { run?: string }>;
-  projects: Map<string, { projectId: string; root: string; branch?: string }>;
+  /** Each repository's T3 project, by lowercased name, and the ones being found or cloned now, so two launches in one
+   * repository clone it once. */
+  projects: Map<string, Project>;
+  resolving: Map<string, Promise<Project>>;
+  /** Each repository's default branch as GitHub last named it, and when. */
+  branches: Map<string, { name: string; at: number }>;
   /** When each queued run last read its item's issue as open, so a run that waits (red CI) reads it every 2 minutes,
    * not every pass; every new run reads it before it starts. */
   openAt: Map<string, number>;
@@ -97,14 +103,14 @@ const memory = (f: FactoryRuntime) =>
     stopping: new Set(),
     launches: new Backoff(f.s, { baseMs: 30_000, maxMs: 15 * 60_000 }),
     projects: new Map(),
+    resolving: new Map(),
+    branches: new Map(),
     openAt: new Map(),
     waits: new Map(),
   }));
 
 /** How long dispatch waits for quota now, for the board; undefined while it waits for none. */
 export const quotaWait = (f: FactoryRuntime) => memory(f).quota;
-
-export const limitsOf = (f: FactoryRuntime) => currentFolder(f)?.config.limits ?? DEFAULT_LIMITS;
 
 /** `agentgate factory pause`: on the factory machine, no intake, no launches and no nudges until `resume`. */
 export const isPaused = (f: FactoryRuntime) => f.s.local(PAUSED) === "1";
@@ -437,39 +443,54 @@ export const closeItem = (f: FactoryRuntime, item: FactoryItem, reason: string, 
 
 // ---- T3
 
+type Project = { projectId: string; root: string };
+
 /** This machine's T3 project for the repository, cloned and registered when it has none. */
-async function project(f: FactoryRuntime, repo: string): Promise<{ projectId: string; root: string; branch?: string }> {
+async function project(f: FactoryRuntime, repo: string): Promise<Project> {
   const m = memory(f);
-  const known = m.projects.get(repo.toLowerCase());
+  const key = repo.toLowerCase();
+  const known = m.projects.get(key);
   if (known && existsSync(known.root)) return known;
+  const pending = m.resolving.get(key);
+  if (pending) return pending;
   const url = `https://github.com/${repo}.git`;
-  const found = await findProject(f.ctx.handoffs, url);
-  const resolved = found
-    ? { projectId: found.id, root: found.workspaceRoot }
-    : await cloneProject(f.ctx.handoffs, url).then((c) => ({ projectId: c.projectId, root: c.main }));
-  m.projects.set(repo.toLowerCase(), resolved);
-  return resolved;
+  const resolving = findProject(f.ctx.handoffs, url)
+    .then(async (found) =>
+      found
+        ? { projectId: found.id, root: found.workspaceRoot }
+        : await cloneProject(f.ctx.handoffs, url).then((c) => ({ projectId: c.projectId, root: c.main })),
+    )
+    .then((resolved) => {
+      m.projects.set(key, resolved);
+      return resolved;
+    })
+    .finally(() => m.resolving.delete(key));
+  m.resolving.set(key, resolving);
+  return resolving;
 }
 
-/** The repository's default branch, read from its T3 project's checkout. */
+const BRANCH_TTL = 3600_000;
+
+/** The repository's default branch, as GitHub names it, read again after an hour: the one source the factory's work
+ * and its folder both use (`gh.ts`). */
 export async function defaultBranch(f: FactoryRuntime, repo: string) {
-  const p = await project(f, repo);
-  if (p.branch) return p.branch;
-  const local = await git(p.root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-  let branch = local.ok ? local.out.replace(/^origin\//, "") : undefined;
-  if (!branch) {
-    const remote = await git(p.root, ["ls-remote", "--symref", "origin", "HEAD"]);
-    branch = remote.out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1];
-  }
-  if (!branch) throw new Error(`git cannot read the default branch of ${repo} in ${p.root}`);
-  p.branch = branch;
-  return branch;
+  const { branches } = memory(f);
+  const key = repo.toLowerCase();
+  const known = branches.get(key);
+  if (known && f.s.now() - known.at < BRANCH_TTL) return known.name;
+  const name = await readDefaultBranch(repo);
+  branches.set(key, { name, at: f.s.now() });
+  return name;
 }
+
+/** How long asking origin for its branches may take: GitHub answers in a second, and a launch waits on it. */
+const LS_REMOTE_MS = 30_000;
 
 /** The branches origin has under `prefix`, asked of origin itself: the checkout's own copy of them can be stale. */
 export async function originBranches(f: FactoryRuntime, repo: string, prefix: string): Promise<string[]> {
   const { root } = await project(f, repo);
-  const listed = await git(root, ["ls-remote", "--heads", "origin", `refs/heads/${prefix}*`]);
+  const signal = AbortSignal.any([f.ctx.abort.signal, AbortSignal.timeout(LS_REMOTE_MS)]);
+  const listed = await git(root, ["ls-remote", "--heads", "origin", `refs/heads/${prefix}*`], {}, { signal });
   if (!listed.ok) throw new Error(`git cannot list the branches of ${repo} in ${root}`);
   return listed.out.split("\n").flatMap((line) => line.match(/\trefs\/heads\/(.+)$/)?.[1] ?? []);
 }
@@ -695,7 +716,7 @@ async function dispatch(f: FactoryRuntime) {
   detachHandedOff(f);
   if (isPaused(f)) return;
   const m = memory(f);
-  const limits = limitsOf(f);
+  const { threads } = limits(f);
   const counts = workingCounts(f);
   let quota: Memory["quota"];
   // A run left `starting` was cut off by a restart; launching it again finds the same thread.
@@ -703,13 +724,12 @@ async function dispatch(f: FactoryRuntime) {
     if (!f.runKinds.has(queued.kind)) continue;
     if (!m.launches.due(queued.id)) continue;
     const stage = isStage(queued.kind);
-    if (counts.stage + counts.scout >= limits.threads) {
-      if (queued.item)
-        waitFor(f, queued.item, "thread", `Waits for a free thread; all ${limits.threads} are working`, queued);
+    if (counts.stage + counts.scout >= threads) {
+      if (queued.item) waitFor(f, queued.item, "thread", `Waits for a free thread; all ${threads} are working`, queued);
       continue;
     }
     // Scout runs leave a slot for the items' work.
-    if (!stage && counts.scout >= Math.max(1, limits.threads - 1)) continue;
+    if (!stage && counts.scout >= Math.max(1, threads - 1)) continue;
     const outcome = await launchRun(f, queued);
     if (outcome.quota) quota = outcome.quota;
     if (outcome.started) counts[stage ? "stage" : "scout"]++;
@@ -752,7 +772,7 @@ async function prepareLaunch(
       const credential = s.get("credential", a.id);
       return a.provider === provider && a.enabled && credential && !credential.needsLogin;
     });
-  if (limitsOf(f).waitForQuota && pooled && !candidates(s, provider).length) {
+  if (limits(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
     if (run.item)
       waitFor(
@@ -1227,12 +1247,12 @@ export const waitingForYou = (f: FactoryRuntime) => items.list(f.s, { open: true
 /** Off, too, while the factory waits to move (`factory move`): its machine takes nothing new and finishes what is open. */
 export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
   if (!f.isFactoryNode() || f.pointer()?.moveTo || !currentFolder(f) || isPaused(f)) return "off";
-  return waitingForYou(f) >= limitsOf(f).waitingForYou ? "paused-for-you" : "on";
+  return waitingForYou(f) >= limits(f).waitingForYou ? "paused-for-you" : "on";
 }
 // ---- items and runs nobody moves
 
-const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
-  4 * durationMs((folderFor(f, configCommit)?.config.limits ?? DEFAULT_LIMITS).stalledAfter);
+const stalledWindow = (f: FactoryRuntime, started: { configCommit: string }) =>
+  4 * durationMs(limits(f, started).stalledAfter);
 
 /**
  * Progress, not states. An open item that does not wait for the maintainer (`ready` does) must have an active run (a
@@ -1268,7 +1288,7 @@ function findStuck(f: FactoryRuntime) {
   for (const run of runs.list(s, { states: ["running", "waiting"] })) {
     if (!run.threadId) continue;
     const thread = mirror.thread(run.threadId);
-    const window = stalledWindow(f, run.configCommit);
+    const window = stalledWindow(f, run);
     if (!thread) {
       // The window also covers a thread just launched, which the mirror may not have heard of yet.
       if (loaded && s.now() - (run.startedAt ?? run.queuedAt) >= window)
@@ -1303,7 +1323,7 @@ function stalledFor(f: FactoryRuntime, id: string) {
     ...itemRuns.map((r) => Math.max(r.queuedAt, r.startedAt ?? 0, r.endedAt ?? 0)),
   );
   const ms = s.now() - last;
-  return ms < stalledWindow(f, item.configCommit) ? undefined : { item, ms };
+  return ms < stalledWindow(f, item) ? undefined : { item, ms };
 }
 
 // ---- what a person can do to an item (actions.ts takes the actions)

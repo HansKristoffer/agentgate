@@ -256,7 +256,21 @@ export function currentFolder(f: FactoryRuntime): LoadedFolder | undefined {
 /** The folder an item or run started under, or the current one once that commit's folder is gone. */
 export const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? currentFolder(f);
 
-export const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+
+/**
+ * The folder's `limits`, by one rule. What paces one item's own work, its review rounds, its nudges and how long it may
+ * stall, follows the folder the item or run (`item`) started under, so a folder change never rewrites the rules of
+ * work already under way. Everything else follows the current folder: the factory-wide caps (`threads`,
+ * `waitForQuota`, `waitingForYou`), and the token budget, `itemTokens`, so raising it lets an item that went over go on
+ * with `retry`.
+ */
+export function limits(f: FactoryRuntime, item?: { configCommit: string }) {
+  const now = currentFolder(f)?.config.limits ?? DEFAULT_LIMITS;
+  if (!item) return now;
+  const { reviewRounds, nudges, stalledAfter } = folderFor(f, item.configCommit)?.config.limits ?? now;
+  return { ...now, reviewRounds, nudges, stalledAfter };
+}
 
 const MIN_SCOUT_EVERY = 3600_000;
 const knownTimezone = (zone: string) => {

@@ -5,7 +5,7 @@ import {
   type StageResult,
 } from "@agentgate/protocol";
 import { fenced } from "./briefs.ts";
-import { DEFAULT_LIMITS, durationMs, folderFor } from "./config.ts";
+import { durationMs, limits } from "./config.ts";
 import {
   ask,
   enqueueRun,
@@ -74,9 +74,6 @@ const noted = (f: FactoryRuntime) => f.memory("PR failures said", () => new SayO
 function failed(f: FactoryRuntime, item: FactoryItem, text: string) {
   if (noted(f).fresh(item.id, text)) f.events.emit({ kind: "note", item: item.id, text });
 }
-
-export const limitsOf = (f: FactoryRuntime, item: FactoryItem) =>
-  folderFor(f, item.configCommit)?.config.limits ?? DEFAULT_LIMITS;
 
 /** The implement run whose thread owns the item's PR. */
 export const prRun = (f: FactoryRuntime, item: FactoryItem) => (item.pr ? runs.get(f.s, item.pr.run) : undefined);
@@ -213,7 +210,7 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
     else lines.push("**Decided where the item was silent:** nothing listed", "");
   }
   const last = lastRound(f, item);
-  if (limitsOf(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");
+  if (limits(f, item).reviewRounds === 0) lines.push("**Review:** No review stage ran.");
   else if (!last) lines.push("**Review:** No review round finished.");
   else {
     const rounds = `${last.count} round${last.count === 1 ? "" : "s"}, the last at \`${last.head.slice(0, 12)}\``;
@@ -248,7 +245,7 @@ export function withSummary(body: string, summary: string): string {
 
 /** In `pr` with a green PR and every claim backed: a review run when review rounds are on, otherwise ready. */
 async function advance(f: FactoryRuntime, item: FactoryItem, view: PrState) {
-  if (limitsOf(f, item).reviewRounds > 0) {
+  if (limits(f, item).reviewRounds > 0) {
     moveOn(f, item, "review");
     return;
   }
@@ -345,10 +342,10 @@ async function nudge(
     return;
   }
   const key = problems.map((p) => p.key).join(" ");
-  const limits = limitsOf(f, item);
-  if (pr.nudged === key && s.now() - (pr.nudgedAt ?? 0) < durationMs(limits.stalledAfter)) return;
+  const { stalledAfter, nudges } = limits(f, item);
+  if (pr.nudged === key && s.now() - (pr.nudgedAt ?? 0) < durationMs(stalledAfter)) return;
   const what = problems.map((p) => p.text).join("; ");
-  if (pr.nudges >= limits.nudges) {
+  if (pr.nudges >= nudges) {
     ask(f, item, {
       cause: "stalled",
       question: `${item.key}'s PR still needs work after ${pr.nudges} nudge${pr.nudges === 1 ? "" : "s"}: ${what}. Fix it in the thread, or retry to nudge it again.`,
@@ -651,7 +648,7 @@ export async function takeReview(f: FactoryRuntime, id: string, read?: Followed)
     return;
   }
   const head = view.headRefOid;
-  const max = limitsOf(f, item).reviewRounds;
+  const max = limits(f, item).reviewRounds;
   const open = result.findings.filter(holds);
   const final = !open.length || round >= max;
   // Recorded before anything is posted, so a restart never posts this round twice.
@@ -701,7 +698,7 @@ export async function takeReview(f: FactoryRuntime, id: string, read?: Followed)
  * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
  * before. */
 export async function followReview(f: FactoryRuntime, item: FactoryItem, view: Followed, headAt: number) {
-  const max = limitsOf(f, item).reviewRounds;
+  const max = limits(f, item).reviewRounds;
   // Review was switched off while the item was in it.
   if (max === 0) {
     if (green(f, view, headAt)) await toReady(f, item, view, [], "");
@@ -740,7 +737,7 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
   }
   const thread = item.pr ? mirrorOf(f).thread(item.pr.thread) : undefined;
   const busy = !!thread && (thread.needsYou || isWorkingStatus(thread.status));
-  if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limitsOf(f, item).stalledAfter)) {
+  if (busy || f.s.now() - (last.endedAt ?? 0) < durationMs(limits(f, item).stalledAfter)) {
     waitFor(f, item.id, "review", `Waits for the implement thread to push fixes for review round ${data.round}`);
     return;
   }
