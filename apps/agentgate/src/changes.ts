@@ -174,6 +174,7 @@ export class Changes {
       const version = this.readDataVersion();
       if (version === this.dataVersion) return;
       this.dataVersion = version;
+      this.s.externalWrite();
       this.readKinds();
       for (const kind of this.kinds) for (const topic of topicsOf(kind)) this.bump(topic);
       // The CLI may also have written factory events or node-local state, which have no record kind.

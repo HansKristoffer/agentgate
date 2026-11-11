@@ -300,6 +300,10 @@ export class Store {
   /** Set by the daemon's change hub (changes.ts); the CLI leaves it unset. Called synchronously, possibly inside a
    * transaction, so the listener must defer its own work. */
   onChange?: (topic: Topic) => void;
+  /** Parsed records by kind and id, each with the `seq` of the row it came from. Every local write and merge gives the
+   * row a new `seq`, as does a write from another process, so a read that finds a different `seq` parses again. */
+  private readonly cache = new Map<Kind, Map<string, Cached>>();
+  private node?: string;
 
   constructor(path = join(CONFIG_DIR, "agentgate.db")) {
     if (path !== ":memory:") {
@@ -386,8 +390,15 @@ export class Store {
     });
   }
 
+  /** Read on every write, so it is kept; `init` renames it through `setLocal` here, or from the CLI while the daemon
+   * runs, which the daemon hears through `externalWrite`. */
   get nodeId(): string {
-    return this.local("node") ?? "unnamed";
+    return (this.node ??= this.local("node") ?? "unnamed");
+  }
+
+  /** Another process (the CLI) committed to this database. */
+  externalWrite() {
+    this.node = undefined;
   }
 
   local(key: string): string | undefined {
@@ -406,6 +417,7 @@ export class Store {
   }
 
   setLocal(key: string, value: string | undefined) {
+    if (key === "node") this.node = undefined;
     if (value === undefined) this.db.run("delete from local where key = ?", [key]);
     else this.db.run("insert or replace into local values (?, ?)", [key, value]);
   }
@@ -433,15 +445,56 @@ export class Store {
   }
 
   get<K extends Kind>(kind: K, id: string): Data<K> | undefined {
-    const r = this.record(kind, id);
-    return r && !r.deleted ? (schemas[kind].parse(JSON.parse(r.data)) as Data<K>) : undefined;
+    const row = this.db
+      .query<{ seq: number; deleted: number }, [string, string]>(
+        "select seq, deleted from records where kind = ? and id = ?",
+      )
+      .get(kind, id);
+    const cache = this.cacheOf(kind);
+    if (!row || row.deleted) {
+      cache.delete(id);
+      return undefined;
+    }
+    return this.parsed(kind, id, row.seq, cache);
   }
 
   list<K extends Kind>(kind: K): Data<K>[] {
-    const rows = this.db.query("select data from records where kind = ? and deleted = 0 order by id").all(kind) as {
-      data: string;
-    }[];
-    return rows.map((r) => schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
+    const rows = this.db
+      .query<{ id: string; seq: number }, [string]>(
+        "select id, seq from records where kind = ? and deleted = 0 order by id",
+      )
+      .all(kind);
+    const cache = this.cacheOf(kind),
+      live = new Map<string, Cached>();
+    const values = rows.flatMap((r) => {
+      const value = this.parsed(kind, r.id, r.seq, cache);
+      const entry = cache.get(r.id);
+      if (entry) live.set(r.id, entry);
+      return value ? [value] : [];
+    });
+    this.cache.set(kind, live); // drops records deleted since the last list, which no `get` would ever drop
+    return values;
+  }
+
+  private cacheOf(kind: Kind) {
+    let cache = this.cache.get(kind);
+    if (!cache) this.cache.set(kind, (cache = new Map()));
+    return cache;
+  }
+
+  /** The record parsed at `seq`, from the cache, or read and parsed again when the row has moved on. Another process
+   * may write between the two reads, so the entry keeps the `seq` of the row it was parsed from. */
+  private parsed<K extends Kind>(kind: K, id: string, seq: number, cache: Map<string, Cached>) {
+    const hit = cache.get(id);
+    if (hit?.seq === seq) return hit.value as Data<K>;
+    const r = this.record(kind, id);
+    if (!r || r.deleted) {
+      cache.delete(id);
+      return undefined;
+    }
+    const value = deepFreeze(schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
+    cache.set(id, { seq: r.seq!, value });
+    return value;
   }
 
   put<K extends Kind>(kind: K, id: string, data: z.input<(typeof schemas)[K]> | Data<K>): Data<K> {
@@ -641,6 +694,20 @@ function staleRotation(s: Store, incoming: Rec) {
   if (!theirs || !mine || theirs === mine || ours.needsLogin) return false;
   const rotated = rotatedAway(s, incoming.kind, incoming.id);
   return rotated.includes(theirs) && !rotated.includes(mine);
+}
+
+interface Cached {
+  seq: number;
+  value: unknown;
+}
+
+/** Cached values are handed to every later reader, so a change to one would show in all of them; frozen, it throws. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }
 
 type Version = Pick<Rec, "rev" | "updated_at" | "node">;
