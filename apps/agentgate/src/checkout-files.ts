@@ -14,7 +14,7 @@ import {
   writeFileSync,
   type FSWatcher,
 } from "node:fs";
-import { getErrorMessage, getUniqueValues, safeJsonParse, sortBy, trimTrailingSlash } from "hanzio";
+import { getErrorMessage, getUniqueValues, sortBy, trimTrailingSlash } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { checkoutFileSchema, projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
@@ -23,7 +23,8 @@ import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
 import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, sqliteDetail, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, sqliteDetail, timerSync, type Store } from "./store.ts";
+import { registeredCheckouts } from "./skill-links.ts";
 
 /** Checkout files (docs/internals/checkout-files.md): buncargo's per-machine file store of a repository's gitignored
  * files, carried between machines on the synced `project` record. Buncargo owns what happens inside a checkout; this
@@ -405,15 +406,10 @@ export class CheckoutFiles {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [100, 1000, 5000].map((ms) => {
-      // The daemon exits on an uncaught exception, so a locked or full database must not escape the timer.
-      const t = setTimeout(() => {
-        try {
-          this.sync();
-        } catch (e) {
-          const why = sqliteDetail(e, this.s.db.filename) ?? (e instanceof Error ? e.name : "failed");
-          console.error(`checkout files: sync failed: ${why}`);
-        }
-      }, ms);
+      const t = setTimeout(
+        timerSync(this.s, "checkout files", () => this.sync()),
+        ms,
+      );
       t.unref?.();
       return t;
     });
@@ -682,7 +678,7 @@ export function fileContent(s: Store, root: string, project: string, path: strin
 /** This machine's checkouts of a repository: the main checkouts SkillLinks registered and the checkouts agentgate
  * created, each with every worktree of its repository. */
 async function checkoutsOf(s: Store, project: string, key: string): Promise<string[]> {
-  const registered = safeJsonParse<Record<string, string>>(s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
+  const registered = registeredCheckouts(s);
   const known = [
     ...Object.entries(registered)
       .filter(([, p]) => p.toLowerCase() === project.toLowerCase())

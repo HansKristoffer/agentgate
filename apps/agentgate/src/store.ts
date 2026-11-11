@@ -60,6 +60,17 @@ export function sqliteDetail(e: unknown, file: string) {
   return `${getErrorMessage(e)} (${code}; ${free(dirname(file))}, ${free(tmpdir())})`;
 }
 
+/** `sync` for a timer: the daemon exits on an uncaught exception, so a locked or full database must not escape it. */
+export const timerSync = (s: Store, label: string, sync: () => void) => () => {
+  try {
+    sync();
+  } catch (e) {
+    console.error(
+      `${label}: sync failed: ${sqliteDetail(e, s.db.filename) ?? (e instanceof Error ? e.name : "failed")}`,
+    );
+  }
+};
+
 const id = z.string().min(1).max(512);
 const timestamp = z.number().int().nonnegative();
 const Window = quotaWindowSchema;
@@ -279,8 +290,8 @@ export class Store {
   closed = false;
   /** Overridable clock, so tests can fake time. */
   now = () => Date.now();
-  /** Set by the daemon's change hub; the CLI leaves it unset. Called synchronously, possibly inside a transaction:
-   * the listener must defer its own work (task 3.1 does, with queueMicrotask). */
+  /** Set by the daemon's change hub (changes.ts); the CLI leaves it unset. Called synchronously, possibly inside a
+   * transaction, so the listener must defer its own work. */
   onChange?: (topic: Topic) => void;
 
   constructor(path = join(CONFIG_DIR, "agentgate.db")) {

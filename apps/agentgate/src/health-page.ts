@@ -180,13 +180,20 @@ function renderTiles(data) {
 		? "images " + dockerSize(containers.disk.images) + ", volumes " + dockerSize(containers.disk.volumes)
 		: "disk use not measured yet";
 	var oom = w.oom_kills;
+	// How late agentgate's own event loop ran: a tenth of a second is noticeable, half a second stalls requests.
+	var lag = data.daemon_lag;
+	var lagTile = lag
+		? tile("Agentgate event loop", lag.worstMs + " ms worst", "p99 " + lag.p99Ms + " ms, last minute",
+			{ share: lag.worstMs / 1000, high: 0.1, critical: 0.5, meter: false })
+		: "";
 	document.getElementById("workload").innerHTML =
 		tile("Agents running", String(w.agents.claude + w.agents.codex), "Claude Code " + w.agents.claude + " · Codex " + w.agents.codex) +
 		tile("CI runners busy", runners.busy + " of " + runners.total, runners.busy >= runners.total && runners.total > 0 ? "every runner busy, jobs queue" : (runners.total - runners.busy) + " idle",
 			{ share: runners.total ? runners.busy / runners.total : 0, high: 0.75, critical: 1 }) +
 		tile("Containers running", String(containers.running), dockerDisk) +
 		tile("Out-of-memory kills", String(oom.since_boot), oom.last_hour + " in the last hour, since boot " + oom.since_boot,
-			{ share: oom.last_hour > 0 ? 1 : 0, high: 1, critical: 1, meter: false });
+			{ share: oom.last_hour > 0 ? 1 : 0, high: 1, critical: 1, meter: false }) +
+		lagTile;
 
 	var p = data.pressure;
 	var io = data.disk_io;

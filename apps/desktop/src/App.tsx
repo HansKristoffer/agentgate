@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useChanges } from "./useChanges.ts";
 import { useDaemon } from "./useDaemon.ts";
-import { AppContext, Feed, useFeed } from "./AppContext.tsx";
+import { AppContext, boardEvery, Feed, useFeed } from "./AppContext.tsx";
 import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
@@ -111,7 +111,7 @@ export function App() {
       cancelled = true;
     };
   }, []);
-  const { versions } = useChanges(connection, ready);
+  const versions = useChanges(connection, ready);
   const cache = useMemo(() => new Map<string, unknown>(), [connection]);
   return (
     <Feed value={{ connection, versions, cache }}>
@@ -167,12 +167,10 @@ function Main({
     hidden: 60_000,
   });
   const desktop = desktopRead.data;
-  const factory = data?.settings.factory;
   // Read while the factory is off too: the Factory page shows the way to turn it on from the same board.
   const boardRead = useDaemon(ready && (() => factoryBoard(connection)), {
     topics: ["factory"],
-    // The daemon's feed carries a factory on another machine only over Tailscale; over a relay this poll is all there is.
-    every: factory && factory.node !== data.node ? 30_000 : undefined,
+    every: data && boardEvery(data),
     hidden: 60_000,
   });
   const board = boardRead.data;

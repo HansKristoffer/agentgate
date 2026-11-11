@@ -256,7 +256,7 @@ The factory polls every source every 2 minutes, and backs off while one fails. A
 
 Items are named after the repository and the issue, such as `api-42`, or `acme-api-42` when two of the folder's repositories share a name; the branch is `factory/api-42`, or `factory/api-42-2` when GitHub already has a branch of that name. The PR says `Fixes #<number>`, so merging it closes the issue. An issue that carries the labels of two sources is one item.
 
-When the factory takes an issue in, it comments "The factory took this." While its machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed.
+When the factory takes an issue in, it comments "The factory took this." While its machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed. A comment GitHub's rate limit turns away waits, and is sent once the limit lifts.
 
 ### Linear
 

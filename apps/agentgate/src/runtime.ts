@@ -164,13 +164,18 @@ export function serialTask(task: () => Promise<unknown>): () => Promise<void> {
       return running;
     }
     running = (async () => {
-      do {
-        again = false;
-        await task();
-      } while (again);
-    })().finally(() => {
-      running = undefined;
-    });
+      try {
+        do {
+          again = false;
+          // Wrapped, so a task that throws before its first await still yields here before `finally` clears `running`.
+          await (async () => task())();
+        } while (again);
+      } finally {
+        // In the same step as the last check of `again`: a promise's .finally() runs later, and a call in between
+        // would set `again` on a loop that has already stopped.
+        running = undefined;
+      }
+    })();
     return running;
   };
 }
