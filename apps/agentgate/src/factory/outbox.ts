@@ -107,6 +107,7 @@ export function claimWrite(
     [item, moment, ref, body, what, f.s.now(), f.s.now()],
   );
   if (!claimed.changes) return false;
+  f.s.bump("factory");
   later(f, item, what, () => sendWrite(f, item, moment, ref));
   return true;
 }
@@ -131,6 +132,7 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
     .get(...key) as Row | null;
   if (!row || !UNSENT.includes(row.status)) return;
   s.db.run("update factory_writebacks set status='sending' where item=? and moment=? and ref=?", key);
+  s.bump("factory");
   const id = JSON.stringify(key);
   flying(f).add(id);
   const result = await deliver(f, item, moment, ref, row.body)
@@ -151,6 +153,7 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
     s.now(),
     ...key,
   ]);
+  s.bump("factory");
   // The loop sends an unreachable write every pass: its history says so when that starts, not each time.
   if (status === "unreachable" && row.status === "unreachable") return;
   f.events.emit({

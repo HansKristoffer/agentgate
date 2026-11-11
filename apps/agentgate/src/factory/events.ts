@@ -38,6 +38,7 @@ export class FactoryEvents {
       "insert into factory_events (at, item, run, kind, text) values (?, ?, ?, ?, ?)",
       [this.s.now(), ("item" in event && event.item) || null, ("run" in event && event.run) || null, kind, event.text],
     );
+    this.s.bump("factory");
     const failed = (e: unknown) => console.error(`factory: ${event.kind} listener failed: ${logError(e)}`);
     for (const listener of this.listeners.get(event.kind) ?? []) {
       try {

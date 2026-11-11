@@ -97,6 +97,8 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
     st.error = error;
     backoff.failed(source.id);
   }
+  // The board shows each source's last poll and error, which live only in memory.
+  s.bump("factory");
 }
 
 /** Every source's poll. Paused for the maintainer (too many items wait), it still reads each source, so its row on the
