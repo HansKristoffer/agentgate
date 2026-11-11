@@ -41,7 +41,7 @@ import {
 } from "../src/skills.ts";
 import { readRepoSkills, type RepoFetch, type RepoFetcher } from "../src/skill-import.ts";
 import { MAX_SKILL, SkillConflict } from "@agentgate/protocol";
-import { parseData, parseRecord, importBackup, Store } from "../src/store.ts";
+import { parseData, importBackup, Store } from "../src/store.ts";
 
 const md = (name: string, text = "Do it.") => `---\nname: ${name}\ndescription: ${name} helps.\n---\n${text}\n`;
 const fetched = (id: string, text?: string): FetchedSkill => ({
@@ -311,7 +311,7 @@ test("all bundle ingestion paths reject malformed content before committing", ()
     const data = { id: "x", description: "x", files, updatedAt: 1 };
     expect(() => s.put("skill", "x", data)).toThrow();
     expect(() =>
-      parseRecord({
+      s.merge({
         kind: "skill",
         id: "x",
         rev: 1,
