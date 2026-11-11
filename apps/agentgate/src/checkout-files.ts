@@ -330,11 +330,13 @@ export function reconcile(s: Store, root: string, key: string): boolean {
     // An unreadable note counts as none: nothing is taken as deleted here.
   }
 
-  // This store as entries, plus a deletion for each file that left it since the last pass.
+  // This store as entries, plus a deletion for each file that left it since the last pass. A missing store (a
+  // cleaned-up ~/.buncargo, a restore, another HOME) says nothing about its files, so it is refilled from the record
+  // instead: only removing a file from a store deletes it everywhere.
   const local: CheckoutFile[] = [];
   for (const [path, f] of store.files)
     if (!f.machine) local.push({ path, updatedAt: f.updatedAt, data: f.data!.toString("base64") });
-  for (const b of base) {
+  for (const b of store.state === "missing" ? [] : base) {
     if (store.files.has(b.path)) continue;
     local.push(b.deleted ? b : { path: b.path, updatedAt: iso(s.now()), deleted: true });
   }
@@ -407,7 +409,15 @@ export class CheckoutFiles {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [100, 1000, 5000].map((ms) => {
-      const t = setTimeout(() => this.sync(), ms);
+      // The daemon exits on an uncaught exception, so a locked or full database must not escape the timer.
+      const t = setTimeout(() => {
+        try {
+          this.sync();
+        } catch (e) {
+          const why = sqliteDetail(e, this.s.db.filename) ?? (e instanceof Error ? e.name : "failed");
+          console.error(`checkout files: sync failed: ${why}`);
+        }
+      }, ms);
       t.unref?.();
       return t;
     });

@@ -23,7 +23,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
-import { CONFIG_DIR, liveOnly, SKILL_ID, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, SKILL_ID, sqliteDetail, type Store } from "./store.ts";
 
 export const SKILLS_DIR = join(CONFIG_DIR, "skills");
 const EXCLUDE_HEADER = "# agentgate skills (symlinks into ~/.config/agentgate/skills)";
@@ -213,7 +213,7 @@ export class SkillLinks {
   /** Remember the main checkout of the repo containing `path`. Returns it, or undefined for non-repos. */
   register(path: string, project?: string, sync = true): string | undefined {
     const git = (...args: string[]) => {
-      const r = Bun.spawnSync(["git", ...args], { cwd: path, stderr: "ignore" });
+      const r = Bun.spawnSync(["git", ...args], { cwd: path, stderr: "ignore", timeout: 5000 });
       return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
     };
     if (!existsSync(path)) return;
@@ -238,7 +238,15 @@ export class SkillLinks {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [50, 600, 2000, 5000, 10000].map((ms) => {
-      const t = setTimeout(() => this.sync(), ms);
+      // The daemon exits on an uncaught exception, so a locked or full database must not escape the timer.
+      const t = setTimeout(() => {
+        try {
+          this.sync();
+        } catch (e) {
+          const why = sqliteDetail(e, this.s.db.filename) ?? (e instanceof Error ? e.name : "failed");
+          console.error(`skills: sync failed: ${why}`);
+        }
+      }, ms);
       t.unref?.();
       return t;
     });
@@ -253,6 +261,9 @@ export class SkillLinks {
       this.write(this.root!);
       this.link(this.root!);
     });
+    // Written only when the errors change, not on every pass: attemptedAt is when the current errors were first seen,
+    // succeededAt when the last clean run of passes began.
+    if (previous.attemptedAt !== undefined && JSON.stringify(previous.errors) === JSON.stringify(this.errors)) return;
     this.s.setLocal(
       "skillHealth",
       JSON.stringify({
@@ -465,8 +476,9 @@ export class SkillLinks {
    * Returns the names it links. An owned, untracked mirror is removed once its source is gone. */
   private mirror(root: string, tree: string): string[] {
     const names: string[] = [];
-    const key = `skillMirrors:${tree}`;
-    const owned = safeJsonParse<Record<string, string>>(this.s.local(key) ?? "{}").data ?? {};
+    const key = `skillMirrors:${tree}`,
+      before = this.s.local(key);
+    const owned = safeJsonParse<Record<string, string>>(before ?? "{}").data ?? {};
     const pairs = [
       [".claude", ".agents"],
       [".agents", ".claude"],
@@ -502,15 +514,20 @@ export class SkillLinks {
           readlinkSync(path) === owned[path] &&
           !existsSync(path)
         ) {
-          const tracked =
-            Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", path], { cwd: tree, stderr: "ignore" })
-              .exitCode === 0;
-          if (!tracked) unlinkSync(path);
+          const tracked = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", path], {
+            cwd: tree,
+            stderr: "ignore",
+            timeout: 5000,
+          }).exitCode;
+          // Timed out: the repository may track the link, so the next pass asks again.
+          if (tracked === null) continue;
+          if (tracked !== 0) unlinkSync(path);
           delete owned[path];
         }
       }
     }
-    this.s.setLocal(key, JSON.stringify(owned));
+    const after = JSON.stringify(owned);
+    if (after !== (before ?? "{}")) this.s.setLocal(key, after);
     return names;
   }
 
@@ -567,7 +584,11 @@ export class SkillLinks {
         if (current?.inode === inode) return;
         current?.watcher.close();
         this.watchers.delete(path);
-        const watcher = (this.io.watch ?? watch)(path, () => this.soon());
+        // In the git dir only `worktrees` matters: `git status` alone rewrites `index` there. No name: assume it might.
+        const watcher = (this.io.watch ?? watch)(path, (_, name) => {
+          const worktreesMayHaveChanged = path !== common || !name || String(name).startsWith("worktrees");
+          if (worktreesMayHaveChanged) this.soon();
+        });
         watcher.on("error", (error) => {
           watcher.close();
           this.watchers.delete(path);
