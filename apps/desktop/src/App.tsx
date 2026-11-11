@@ -34,7 +34,7 @@ import {
   T3Code,
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
-import { problems } from "./attention.ts";
+import { problems } from "@agentgate/protocol/attention";
 import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./desktopTray.ts";
 
 import type { Perform } from "./types.ts";

@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import {
   factoryReportSchema,
+  waitsForYou,
   type BoardAction,
   type FactoryBoard,
   type FactoryModel,
@@ -1221,8 +1222,7 @@ async function settleFinished(f: FactoryRuntime, thread: MirrorThread) {
 // ---- capacity
 
 /** Items that wait for the maintainer: a question, or a PR ready for their review. */
-export const waitingForYou = (f: FactoryRuntime) =>
-  items.list(f.s, { open: true }).filter((i) => i.needsYou || i.phase === "ready").length;
+export const waitingForYou = (f: FactoryRuntime) => items.list(f.s, { open: true }).filter(waitsForYou).length;
 
 /** Off, too, while the factory waits to move (`factory move`): its machine takes nothing new and finishes what is open. */
 export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {

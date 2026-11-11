@@ -13,9 +13,11 @@ import {
   modelPolicySchema,
   operationFor,
   outdatedNodes,
+  statusSchema,
   type FactoryCommandResult,
   type FactoryOperationInfo,
 } from "@agentgate/protocol";
+import { problems } from "@agentgate/protocol/attention";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { accountStatus } from "./llm/pool.ts";
 import { relevant } from "./llm/quota.ts";
@@ -272,6 +274,14 @@ const tuning = (i: McpInstance) => {
   return notes.length ? `  (${notes.join(", ")})` : "";
 };
 
+/** `agentgate status`'s "needs attention" block: what the user must fix by hand, the list the app's overview shows. */
+export function attentionLines(st: Parameters<typeof problems>[0]) {
+  const list = problems(st);
+  return list.length
+    ? ["", "needs attention", ...list.map((p) => `  ${p.title}${p.detail ? `: ${p.detail}` : ""}`)]
+    : [];
+}
+
 async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const signal = AbortSignal.timeout(100000);
   const res = await fetchHeaders(
@@ -424,6 +434,11 @@ async function main() {
             console.log("    no quota data yet (or unrecognised quota headers)");
         }
       }
+      // Some problems (skill links, file sync) only the running daemon knows, so the list needs it.
+      const res = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).catch(() => undefined);
+      const up = !!res?.ok;
+      const daemonStatus = res?.ok ? statusSchema.safeParse(await res.json().catch(() => undefined)).data : undefined;
+      if (daemonStatus) for (const line of attentionLines(daemonStatus)) console.log(line);
       console.log("\nnodes");
       for (const n of s.list("node")) {
         const seen = lastSeen(s, n.id);
@@ -441,10 +456,6 @@ async function main() {
       console.log(
         `\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`,
       );
-      const up = await fetch(`${LOCAL_URL}/api/status`, { signal: AbortSignal.timeout(5000) }).then(
-        (r) => r.ok,
-        () => false,
-      );
       const setupMod = await import("./setup.ts"),
         claude = setupMod.claudeStatus(),
         codex = setupMod.primaryState().codex,
@@ -460,6 +471,8 @@ async function main() {
           `  agentgate put its MCP server back in Claude Code at ${new Date(restored).toLocaleTimeString()}; to remove it for good: agentgate setup --mcp off`,
         );
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
+      const lag = daemonStatus?.daemon?.lag;
+      if (lag) console.log(`Event loop: worst ${lag.worstMs} ms, p99 ${lag.p99Ms} ms in the last minute`);
       return;
     }
 

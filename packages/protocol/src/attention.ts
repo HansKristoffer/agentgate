@@ -1,4 +1,4 @@
-import { outdatedNodes, type AccountStatus, type Status } from "@agentgate/protocol";
+import { outdatedNodes, type AccountStatus, type Status } from "./index.ts";
 
 export type Page = "accounts" | "servers" | "skills" | "projects" | "nodes";
 /** `signIn`: signing in to Infisical again, from the daemon's own machine, fixes it. */

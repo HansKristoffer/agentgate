@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import type { Connection, DesktopLogin, DesktopStatus, FactoryBoard, Status } from "@agentgate/protocol";
+import {
+  waitsForYou,
+  type Connection,
+  type DesktopLogin,
+  type DesktopStatus,
+  type FactoryBoard,
+  type Status,
+} from "@agentgate/protocol";
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { TrayIcon } from "@tauri-apps/api/tray";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -198,5 +205,5 @@ export function useFactoryAttention(connection: Connection, on: boolean, changes
       for (const m of moments) await notify(m.key, m.title, m.body);
     })();
   }, [board]);
-  return board?.items.filter((i) => i.needsYou).length ?? 0;
+  return board?.items.filter(waitsForYou).length ?? 0;
 }
