@@ -8,6 +8,7 @@ import {
   labelInstance,
   parseCommand,
   renameInstance,
+  saveProject,
   setAccount,
   setServerProjects,
 } from "../src/operations.ts";
@@ -135,6 +136,22 @@ test("legacy MCP tokens migrate separately once and full backups round trip", ()
   s.close();
   restored.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a deleted skill no longer exists, so a project can't be saved naming it", () => {
+  const s = new Store(":memory:");
+  for (const id of ["kept", "gone"])
+    s.put("skill", id, { id, updatedAt: 0, files: [{ path: "SKILL.md", data: btoa("# skill") }] });
+  s.del("skill", "gone");
+  expect([s.has("skill", "kept"), s.has("skill", "gone"), s.has("skill", "missing"), s.has("mcp", "kept")]).toEqual([
+    true,
+    false,
+    false,
+    false,
+  ]);
+  expect(() => saveProject(s, "acme/web", { skills: ["kept", "gone"] })).toThrow("no skill gone");
+  expect(saveProject(s, "acme/web", { skills: ["kept"] }).skills).toEqual(["kept"]);
+  s.close();
 });
 
 test("change feed cursor and records use one SQLite snapshot despite another writer", () => {

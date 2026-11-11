@@ -1,6 +1,7 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type CallToolResult, type ListToolsResult } from "@modelcontextprotocol/server";
 import { isVirtual, safePath } from "@agentgate/protocol";
+import { skillSummaries } from "../skills.ts";
 import type { Store } from "../store.ts";
 import type { Source } from "./gateway.ts";
 
@@ -18,7 +19,7 @@ function assigned(s: Store, project: string): string[] {
   // A virtual project's endpoint is public: only what it names explicitly, never the `*` defaults (see aliasesFor).
   const defaults = p?.inheritDefaults && !isVirtual(project) ? (s.get("project", "*")?.skills ?? []) : [];
   const ids = new Set([...(p?.skills ?? []), ...defaults]);
-  return [...ids].filter((id) => s.get("skill", id)).sort();
+  return [...ids].filter((id) => s.has("skill", id)).sort();
 }
 
 /** Skills for clients that can't install them (Grok): list them, then read SKILL.md and the files it references. */
@@ -62,9 +63,10 @@ export function skillsServer(s: Store, project: string): Server {
     if (req.params.name === "list") {
       const start = Number(args.cursor ?? 0);
       if (!Number.isInteger(start) || start < 0) return fail("invalid cursor");
+      const descriptions = new Map(skillSummaries(s).map((skill) => [skill.id, skill.description]));
       const page = ids
         .slice(start, start + PAGE)
-        .map((id) => ({ id, description: (s.get("skill", id)?.description ?? "").slice(0, DESCRIPTION) }));
+        .map((id) => ({ id, description: (descriptions.get(id) ?? "").slice(0, DESCRIPTION) }));
       return text(
         JSON.stringify({ skills: page, ...(start + PAGE < ids.length && { nextCursor: String(start + PAGE) }) }),
       );
