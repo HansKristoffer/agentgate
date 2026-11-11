@@ -496,6 +496,13 @@ export async function sendToThread(f: FactoryRuntime, run: FactoryRun, text: str
   await actOnThread(f, run, { action: "send", text });
 }
 
+/** A reported run goes on once its thread got the message that resumes it. T3 can show the new turn before the send
+ * answers, while the run was not running yet, so a thread at work now counts as seen. */
+export function resumeRun(f: FactoryRuntime, run: FactoryRun) {
+  runs.update(f.s, run.id, { state: "running", endedAt: undefined });
+  if (working(f, run.threadId ? mirrorOf(f).thread(run.threadId) : undefined)) memory(f).seen.add(run.id);
+}
+
 /** Interrupts the item's running threads, settles every thread it used, and cancels its runs that have not ended. */
 export async function interruptItem(f: FactoryRuntime, item: string, reason: string): Promise<void> {
   const mirror = mirrorOf(f);
@@ -605,12 +612,14 @@ function launchUncertain(f: FactoryRuntime, run: FactoryRun, item: FactoryItem |
 
 /** A thread whose turn goes on: a T3 run that has not finished (`waiting` counts: the turn waits on background work or
  * a subagent), or a subagent thread under it that works. A thread that waits for a person does not count. */
-function working(f: FactoryRuntime, t: MirrorThread | undefined): boolean {
-  if (!t || t.needsYou) return false;
+function working(f: FactoryRuntime, t: MirrorThread | undefined, visited = new Set<string>()): boolean {
+  // The parent links are T3's: two threads that name each other must not recurse forever.
+  if (!t || t.needsYou || visited.has(t.id)) return false;
+  visited.add(t.id);
   if (isWorkingStatus(t.status)) return true;
   return mirrorOf(f)
     .threads()
-    .some((child) => child.parentThreadId === t.id && working(f, child));
+    .some((child) => child.parentThreadId === t.id && working(f, child, visited));
 }
 
 /** Working runs: stage runs, and scout runs. A starting run counts; a thread that waits for a person, or sits idle
@@ -851,13 +860,16 @@ function watch(f: FactoryRuntime) {
 const reminder = (run: FactoryRun) =>
   `Your turn ended without a report to the factory. Finish the ${run.kind} stage and call the AgentGate MCP tool \`factory_report\` with \`run: "${run.id}"\`. If you cannot finish, report \`blocked\` with what is missing, or \`needs-decision\` with one question and your recommendation.`;
 
-/** The thread a run would own: the top of the subagent chain. */
+/** The thread a run would own: the top of the subagent chain. It runs on every thread change, so a cycle in T3's
+ * parent links ends the walk rather than freezing the daemon. */
 function rootOf(f: FactoryRuntime, thread: MirrorThread) {
   const mirror = mirrorOf(f);
+  const visited = new Set([thread.id]);
   let root = thread;
-  for (let parent = root.parentThreadId; parent; parent = root.parentThreadId) {
+  for (let parent = root.parentThreadId; parent && !visited.has(parent); parent = root.parentThreadId) {
     const next = mirror.thread(parent);
-    if (!next || next === root) break;
+    if (!next) break;
+    visited.add(parent);
     root = next;
   }
   return root;
@@ -1234,27 +1246,18 @@ const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
 function findStuck(f: FactoryRuntime) {
   const { s } = f;
   const mirror = mirrorOf(f);
-  for (const item of items.list(s, { open: true })) {
-    if (item.needsYou || item.phase === "ready" || item.phase === "held") continue;
-    const itemRuns = runs.forItem(s, item.id);
-    const failing = (r: FactoryRun) => (r.failedLaunches ?? 0) >= STUCK_LAUNCHES;
-    if (itemRuns.some((r) => ACTIVE.includes(r.state) && !failing(r))) continue;
-    const { pr } = item;
-    if (pr && working(f, mirror.thread(pr.thread))) continue;
-    const last = Math.max(
-      item.phaseAt,
-      item.updatedAt,
-      pr?.headAt ?? 0,
-      pr?.nudgedAt ?? 0,
-      ...itemRuns.map((r) => Math.max(r.queuedAt, r.startedAt ?? 0, r.endedAt ?? 0)),
-    );
-    if (s.now() - last < stalledWindow(f, item.configCommit)) continue;
-    const hours = Math.round((s.now() - last) / HOUR);
-    ask(f, item, {
-      cause: "stuck",
-      question: `Nothing moved ${item.key} in ${item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read its history before you retry it.`,
-    });
-  }
+  // Asked again in the item's step: the step that held the item meanwhile, such as a report, may have moved it.
+  for (const item of items.list(s, { open: true }))
+    if (stalledFor(f, item.id))
+      later(f, item.id, `Checking whether ${item.key} is stuck`, async () => {
+        const stalled = stalledFor(f, item.id);
+        if (!stalled) return;
+        const hours = Math.round(stalled.ms / HOUR);
+        ask(f, stalled.item, {
+          cause: "stuck",
+          question: `Nothing moved ${item.key} in ${stalled.item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read its history before you retry it.`,
+        });
+      });
   // Only a mirror that has read T3 Code's threads can tell that one is gone: at start-up, and while T3 Code cannot be
   // read, it knows none of them, or old ones.
   const loaded = mirror.status().stream !== "down";
@@ -1276,6 +1279,31 @@ function findStuck(f: FactoryRuntime) {
     if (s.now() - Math.max(thread.updatedAt, run.startedAt ?? 0) < window) continue;
     later(f, run.item ?? run.id, `Ending ${run.id}'s missed turn`, () => threadChanged(f, run.id, true));
   }
+}
+
+/** The open item and how long nothing moved it, when that long makes it stuck. */
+function stalledFor(f: FactoryRuntime, id: string) {
+  const { s } = f;
+  const mirror = mirrorOf(f);
+  // The mirror forgets its threads while T3 Code cannot be read, so a PR's thread at work would read idle.
+  if (mirror.status().stream === "down") return;
+  const item = items.get(s, id);
+  if (!item || item.finishedAt !== undefined) return;
+  if (item.needsYou || item.phase === "ready" || item.phase === "held") return;
+  const itemRuns = runs.forItem(s, item.id);
+  const failing = (r: FactoryRun) => (r.failedLaunches ?? 0) >= STUCK_LAUNCHES;
+  if (itemRuns.some((r) => ACTIVE.includes(r.state) && !failing(r))) return;
+  const { pr } = item;
+  if (pr && working(f, mirror.thread(pr.thread))) return;
+  const last = Math.max(
+    item.phaseAt,
+    item.updatedAt,
+    pr?.headAt ?? 0,
+    pr?.nudgedAt ?? 0,
+    ...itemRuns.map((r) => Math.max(r.queuedAt, r.startedAt ?? 0, r.endedAt ?? 0)),
+  );
+  const ms = s.now() - last;
+  return ms < stalledWindow(f, item.configCommit) ? undefined : { item, ms };
 }
 
 // ---- what a person can do to an item (actions.ts takes the actions)
