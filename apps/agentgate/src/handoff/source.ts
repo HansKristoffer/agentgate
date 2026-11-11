@@ -49,6 +49,7 @@ export interface SourceState {
   codeTaken?: boolean;
   lostSince?: number;
   finishAt?: number;
+  finishTries?: number;
   warnings: string[];
   timings: Timing[];
   remoteTimings?: Timing[];
@@ -57,6 +58,7 @@ export interface SourceState {
 /** Most one handoff may move through the relay; Tailscale has only the destination's 1 GiB cap. */
 const RELAY_MAX = 512 * 1024 * 1024;
 const LOST = 30 * 60_000;
+const FINISH_TRIES = 120;
 const BEFORE_IMPORT = new Set(["resolve", "stop", "package", "send", "await"]);
 
 /** Start handing `threadId` (on this node) to `target`. Resolves the thread before returning, so a thread that
@@ -168,6 +170,8 @@ export async function runSource(h: Handoffs, id: string) {
           return;
       }
     } catch (e) {
+      // A stop cuts the step short (its git is killed); it runs again on the next start.
+      if (h.closed) return;
       const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       if (!BEFORE_IMPORT.has(job.step)) {
         st.warnings.push(message);
@@ -292,7 +296,7 @@ async function pack(h: Handoffs, job: Job<SourceState>) {
     const out = join(h.dir(job.id), "out");
     rmSync(out, { recursive: true, force: true });
     mkdirSync(out, { recursive: true, mode: 0o700 });
-    st.bundle = await createBundle(st.cwd!, job.id, st.snapshot.sha, join(out, "bundle"));
+    st.bundle = await createBundle(st.cwd!, job.id, st.snapshot.sha, join(out, "bundle"), h.signal);
 
     const located = sessionProviders[st.driver!]!.locate(st.claudeHome!, st.sessionId!, st.cwd!);
     if (!located)
@@ -460,6 +464,8 @@ async function wait(h: Handoffs, job: Job<SourceState>): Promise<boolean> {
 
     if (r.status === "failed") throw new Error(r.error ?? `${job.target} failed`);
     if (r.status === "imported") {
+      // The destination has everything it needs: the packed output (up to 1 GiB) need not wait for finish.
+      rmSync(h.dir(job.id), { recursive: true, force: true });
       st.timings.push({ step: `await ${job.target}`, node: h.s.nodeId, ms: Math.round(elapsed()) });
       Object.assign(st, {
         destThreadId: r.threadId,
@@ -541,7 +547,8 @@ export async function cancelHandoff(h: Handoffs, id: string): Promise<HandoffCan
   };
 }
 
-/** After B imported: archive here and park the sent uncommitted files. Retried until it succeeds. */
+/** After B imported: archive here and park the sent uncommitted files. Retried every 30 seconds for an hour, then left
+ * to the user. */
 async function finish(h: Handoffs, job: Job<SourceState>) {
   const st = job.state;
   if (st.finishAt && h.s.now() < st.finishAt) return;
@@ -560,9 +567,13 @@ async function finish(h: Handoffs, job: Job<SourceState>) {
       else
         st.warnings.push(`Left the uncommitted changes in ${st.worktreePath}: the worktree changed after it was sent`);
     }
-    rmSync(h.dir(job.id), { recursive: true, force: true });
     h.advance(job, "done");
   } catch (e) {
+    st.finishTries = (st.finishTries ?? 0) + 1;
+    if (st.finishTries >= FINISH_TRIES) {
+      st.warnings.push(`Stopped retrying on ${h.s.nodeId}: archive the thread in T3 Code there if it is still open`);
+      return h.advance(job, "done");
+    }
     if (!st.finishAt)
       st.warnings.push(`Could not archive the thread on ${h.s.nodeId} yet (${getErrorMessage(e)}); retrying`);
     st.finishAt = h.s.now() + 30_000;

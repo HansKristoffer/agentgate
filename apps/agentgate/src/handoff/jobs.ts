@@ -51,7 +51,8 @@ export interface HandoffOptions {
   retryPauseMs?: number;
 }
 
-const TERMINAL_STEPS = new Set(["done", "failed"]);
+/** Finished jobs stay this long, for the thread views and a look back at what happened. */
+const KEEP_FINISHED = 30 * 86_400_000;
 
 /** Node-local notes about a Claude session that outlive one handoff: the thread that held it when it left this node
  * (so a round trip brings that thread back), the stash of changes parked then (dropped when they come back), and how
@@ -149,10 +150,11 @@ export class Handoffs {
   setupProcesses = new Set<{ pid: number; kill(signal?: number | NodeJS.Signals): void }>();
   /** Short-lived listing cache: T3's Claude provider instances. */
   cache = createCache({ now: () => this.s.now() });
-  closed = false;
-  private stopped = Promise.withResolvers<void>();
+  private stop = new AbortController();
+  /** Aborts on close and kills the git clones, fetches and bundles in flight; their steps run again on restart. */
+  readonly signal = this.stop.signal;
   /** Resolves on close, so a step waiting on setup lets shutdown go; the step resumes on restart. */
-  readonly closing = this.stopped.promise;
+  readonly closing = new Promise<void>((resolve) => this.signal.addEventListener("abort", () => resolve()));
   /** One T3 project sync at a time: the timer, record changes and the app's T3 Code page all ask for it. */
   syncProjects = serialTask(() => syncT3Projects(this));
 
@@ -163,6 +165,9 @@ export class Handoffs {
     readonly register: (checkouts: { path: string; project?: string }[]) => void = () => {},
   ) {}
 
+  get closed() {
+    return this.signal.aborted;
+  }
   get pollMs() {
     return this.options.pollMs ?? 1000;
   }
@@ -226,8 +231,10 @@ export class Handoffs {
 
   /** Resume unfinished jobs after a restart, and give up on prepares whose source never started. */
   tick() {
-    for (const job of this.list()) {
-      if (TERMINAL_STEPS.has(job.step) || this.starting.has(job.id)) continue;
+    // Only unfinished rows: a finished one can hold thousands of file entries, and nothing here reads them.
+    const rows = this.s.db.query("select * from handoffs where step not in ('done', 'failed')").all() as Row[];
+    for (const job of rows.map((r) => fromRow<SourceState | DestState>(r))) {
+      if (this.starting.has(job.id)) continue;
       const waiting =
         job.role === "destination" &&
         (job.step === "prepare" || job.step === "prepared") &&
@@ -238,6 +245,12 @@ export class Handoffs {
       }
       void this.drive(job.role, job.id);
     }
+  }
+
+  trim() {
+    this.s.db.run("delete from handoffs where step in ('done', 'failed') and updated_at < ?", [
+      this.s.now() - KEEP_FINISHED,
+    ]);
   }
 
   advance<S>(job: Job<S>, step: string) {
@@ -272,8 +285,7 @@ export class Handoffs {
 
   /** Waits for step loops; setup scripts keep running on their own. */
   async close() {
-    this.closed = true;
-    this.stopped.resolve();
+    this.stop.abort();
     for (const child of this.setupProcesses) killGroup(child);
     await Promise.allSettled([...this.running]);
   }

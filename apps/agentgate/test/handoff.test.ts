@@ -194,6 +194,14 @@ test("ignored files the file store carries stay out of the snapshot", async () =
   expect(await snapshot(r.a, "h1", head, [".env"])).toEqual({ sha: head, uncommitted: false });
 });
 
+test("a token in the origin URL stays on the source; an SSH user travels", async () => {
+  const r = repos("a");
+  sh(r.a, "remote", "set-url", "origin", "https://user:tok@host/x.git");
+  expect((await describe(r.a)).remoteUrl).toBe("https://host/x.git");
+  sh(r.a, "remote", "set-url", "origin", "ssh://git@host/x.git");
+  expect((await describe(r.a)).remoteUrl).toBe("ssh://git@host/x.git");
+});
+
 test("a destination with its own changes or commits keeps its code", async () => {
   const r = repos("a", "b");
   writeFileSync(join(r.a, "a.txt"), "a\n");
