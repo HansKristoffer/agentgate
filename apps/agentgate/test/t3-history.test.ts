@@ -7,7 +7,7 @@ import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 const NOW = "2026-10-15T08:00:00.000Z";
 const line = (r: unknown) => JSON.stringify(r) + "\n";
 
-test("the records added after a count become the messages T3 Code's import would show", () => {
+test("the records added after a count become the messages T3 Code's import would show", async () => {
   const before = line({ type: "user", message: { content: "earlier" } });
   const after = [
     line({
@@ -34,20 +34,20 @@ test("the records added after a count become the messages T3 Code's import would
     line({ type: "summary", summary: "a title" }),
     line({ type: "user", timestamp: "not a time", message: { content: "Skriv ready igen!" } }),
   ].join("");
-  const text = before + after;
+  const text = new Blob([before + after]);
 
-  expect(sessionLines(before)).toBe(1);
-  expect(sessionMessages(text, 1, NOW)).toEqual([
+  expect(await sessionLines(new Blob([before]))).toBe(1);
+  expect(await sessionMessages(text, 1, NOW)).toEqual([
     { role: "user", text: "This thread just moved here.", createdAt: "2026-10-14T21:46:04.425Z" },
     { role: "assistant", text: "Ready", createdAt: "2026-10-14T21:46:05.000Z" },
     { role: "user", text: "Skriv ready igen!", createdAt: NOW },
   ]);
-  expect(sessionMessages(text, sessionLines(text), NOW)).toEqual([]);
+  expect(await sessionMessages(text, await sessionLines(text), NOW)).toEqual([]);
   // Fewer records than counted: the file was rewritten, so what is new is unknown.
-  expect(sessionMessages(before, 2, NOW)).toBeUndefined();
+  expect(await sessionMessages(new Blob([before]), 2, NOW)).toBeUndefined();
 });
 
-test("messages are appended after the thread's last item, as T3 Code's import writes them, once per key", () => {
+test("messages are appended after the thread's last item, as T3 Code's import writes them, once per key", async () => {
   const dir = t3StateDir("3773", ["thread-1"]);
   const db = t3Database(dir, "http://127.0.0.1:3773");
   const messages = [
@@ -55,9 +55,11 @@ test("messages are appended after the thread's last item, as T3 Code's import wr
     { role: "assistant", text: "Tests.", createdAt: NOW },
   ] as const;
 
-  expect(appendToThread(db, "thread-1", "job-1", [...messages], NOW)).toBe(2);
-  expect(appendToThread(db, "thread-1", "job-1", [...messages], NOW)).toBe(0);
-  expect(appendToThread(db, "thread-1", "job-2", [{ role: "user", text: "and again", createdAt: NOW }], NOW)).toBe(1);
+  expect(await appendToThread(db, "thread-1", "job-1", [...messages], NOW)).toBe(2);
+  expect(await appendToThread(db, "thread-1", "job-1", [...messages], NOW)).toBe(0);
+  expect(
+    await appendToThread(db, "thread-1", "job-2", [{ role: "user", text: "and again", createdAt: NOW }], NOW),
+  ).toBe(1);
 
   expect(timeline(dir, "thread-1")).toEqual([
     { ordinal: 1_000_001, type: "assistant_message", text: "earlier" },
@@ -98,24 +100,24 @@ test("messages are appended after the thread's last item, as T3 Code's import wr
   check.close();
 });
 
-test("a T3 Code whose state is not as expected gets nothing written", () => {
+test("a T3 Code whose state is not as expected gets nothing written", async () => {
   const dir = t3StateDir("3773", ["thread-1"]);
   const path = t3Database(dir, "http://127.0.0.1:3773");
   const message = [{ role: "user" as const, text: "hi", createdAt: NOW }];
   const fails = (threadId: string) =>
-    expect(() => appendToThread(path, threadId, "job", message, NOW)).toThrow(HistoryError);
+    expect(appendToThread(path, threadId, "job", message, NOW)).rejects.toThrow(HistoryError);
 
-  fails("no-such-thread");
+  await fails("no-such-thread");
   const db = new Database(path);
   db.run("UPDATE orchestration_v2_projection_metadata SET last_sequence = last_sequence - 1");
   db.close();
-  fails("thread-1");
+  await fails("thread-1");
 
   const changed = t3StateDir("3773", ["thread-1"]);
   const other = new Database(join(changed, "statev2.sqlite"));
   other.run("ALTER TABLE orchestration_v2_projection_messages DROP COLUMN node_id");
   other.close();
-  expect(() => appendToThread(join(changed, "statev2.sqlite"), "thread-1", "job", message, NOW)).toThrow(
+  await expect(appendToThread(join(changed, "statev2.sqlite"), "thread-1", "job", message, NOW)).rejects.toThrow(
     "orchestration_v2_projection_messages table has changed",
   );
 
@@ -123,4 +125,17 @@ test("a T3 Code whose state is not as expected gets nothing written", () => {
   // The state folder must belong to the T3 Code agentgate is connected to.
   expect(() => t3Database(dir, "http://127.0.0.1:3774")).toThrow(HistoryError);
   expect(() => t3Database(join(dir, "missing"), "http://127.0.0.1:3773")).toThrow(HistoryError);
+});
+
+test("while T3 Code holds its write lock, the append waits for it without stopping the daemon", async () => {
+  const dir = t3StateDir("3773", ["thread-1"]);
+  const path = t3Database(dir, "http://127.0.0.1:3773");
+  const t3 = new Database(path);
+  t3.run("BEGIN IMMEDIATE");
+  // T3 finishes its write a moment later; with the event loop stopped, this timer could not fire.
+  setTimeout(() => t3.run("COMMIT"), 200);
+
+  expect(await appendToThread(path, "thread-1", "job", [{ role: "user", text: "hi", createdAt: NOW }], NOW)).toBe(1);
+  t3.close();
+  expect(timeline(dir, "thread-1").at(-1)).toMatchObject({ type: "user_message", text: "hi" });
 });

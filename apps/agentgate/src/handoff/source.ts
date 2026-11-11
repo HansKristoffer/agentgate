@@ -1,6 +1,8 @@
-import { copyFileSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, rmSync, statSync } from "node:fs";
+import { copyFile } from "node:fs/promises";
 import { getErrorMessage, getUniqueValues, startTimer, sumBy } from "hanzio";
-import { gzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
 import { dirname, join } from "node:path";
 import { sleep } from "../runtime.ts";
 import { createBundle, describe, snapshot, stashIfUnchanged } from "./code.ts";
@@ -95,6 +97,8 @@ const RELAY_MAX = 512 * 1024 * 1024;
 const LOST = 30 * 60_000;
 const FINISH_TRIES = 120;
 const BEFORE_IMPORT = new Set(["resolve", "stop", "package", "send", "await"]);
+/** On zlib's thread pool: a session can be hundreds of megabytes, and every other stream here waits while one gzips. */
+const gzip = promisify(gzipCallback);
 
 /** Start handing `threadId` (on this node) to `target`. Resolves the thread before returning, so a thread that
  * cannot move fails here; the agent is interrupted only after the caller has the job id. */
@@ -343,12 +347,12 @@ async function pack(h: Handoffs, job: SourceJob<"package">) {
     // Copied now, while the agent is stopped, so a retried send resends the same bytes.
     for (const file of located.files) {
       mkdirSync(dirname(join(out, "session", file)), { recursive: true });
-      copyFileSync(join(located.root, file), join(out, "session", file));
+      await copyFile(join(located.root, file), join(out, "session", file));
     }
     const edits = await carriedFiles(h, job);
     for (const path of edits) {
       mkdirSync(dirname(join(out, "checkout-files", path)), { recursive: true });
-      copyFileSync(join(st.cwd, path), join(out, "checkout-files", path));
+      await copyFile(join(st.cwd, path), join(out, "checkout-files", path));
     }
     const paths = [
       ...(st.bundle ? ["bundle"] : []),
@@ -364,7 +368,7 @@ async function pack(h: Handoffs, job: SourceJob<"package">) {
     if (transcript)
       h.s.setLocal(
         sessionNote.lines(st.sessionId),
-        String(sessionLines(readFileSync(join(located.root, transcript), "utf8"))),
+        String(await sessionLines(Bun.file(join(out, "session", transcript)))),
       );
   });
   h.advance(job, "send");
@@ -421,7 +425,7 @@ async function send(h: Handoffs, job: SourceJob<"send">) {
     for (const f of st.files) {
       const file = Bun.file(join(out, f.path));
       for (let offset = 0; offset === 0 || offset < f.size; offset += CHANNEL_CHUNK) {
-        const chunk = gzipSync(await file.slice(offset, Math.min(f.size, offset + CHANNEL_CHUNK)).bytes());
+        const chunk = await gzip(await file.slice(offset, Math.min(f.size, offset + CHANNEL_CHUNK)).bytes());
         const query = new URLSearchParams({ path: f.path, offset: String(offset) });
         await peerCall(h.s, job.target, `/handoff/${job.id}/files?${query}`, ignored, {
           method: "PUT",

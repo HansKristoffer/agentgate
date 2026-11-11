@@ -1,7 +1,9 @@
-import { Database } from "bun:sqlite";
+import { Database, SQLiteError } from "bun:sqlite";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { sleep } from "../runtime.ts";
+import { splitLines } from "./session.ts";
 
 /** A thread that comes back to a machine reuses the T3 Code thread it had there, which lacks the messages it got
  * elsewhere. T3 Code cannot add history to an existing thread (its session import only creates threads), so these are
@@ -43,41 +45,52 @@ const record = z
   .passthrough();
 
 /** The complete records in a Claude session file. Claude only appends, so a count marks what a thread had. */
-export const sessionLines = (text: string) => text.split("\n").length - 1;
+export async function sessionLines(file: Blob): Promise<number> {
+  let count = 0;
+  for await (const bytes of file.stream())
+    for (let i = bytes.indexOf(10); i >= 0; i = bytes.indexOf(10, i + 1)) count++;
+  return count;
+}
 
 /** The messages T3's import would show for the records after the first `from`; undefined when the file has fewer
  * records, because then it was rewritten and what is new is unknown. */
-export function sessionMessages(text: string, from: number, now: string): SessionMessage[] | undefined {
-  const lines = text.split("\n");
-  if (lines.length - 1 < from) return undefined;
+export async function sessionMessages(file: Blob, from: number, now: string): Promise<SessionMessage[] | undefined> {
   const messages: SessionMessage[] = [];
-  for (const line of lines.slice(from)) {
-    let parsed;
-    try {
-      parsed = record.safeParse(JSON.parse(line));
-    } catch {
-      continue; // the empty piece after the last newline
+  let pieces = 0;
+  for await (const lines of splitLines(file))
+    for (const line of lines) {
+      if (pieces++ < from) continue;
+      const message = sessionMessage(line, now);
+      if (message && messages.push(message) > MAX_MESSAGES) messages.shift();
     }
-    const r = parsed.data;
-    if (!r || r.isSidechain || r.isMeta || r.isCompactSummary || (r.type !== "user" && r.type !== "assistant"))
-      continue;
-    const content = r.message?.content;
-    let body =
-      typeof content === "string"
-        ? content.trim()
-        : (content ?? [])
-            .filter((b) => b.type === "text")
-            .map((b) => b.text?.trim() ?? "")
-            .filter(Boolean)
-            .join("\n");
-    if (r.type === "user" && body.startsWith(HANDOFF_CONTEXT) && body.includes(USER_MESSAGE)) {
-      body = body.slice(body.lastIndexOf(USER_MESSAGE) + USER_MESSAGE.length).trim();
-    }
-    if (!body) continue; // tool results and thinking
-    const at = r.timestamp && !Number.isNaN(Date.parse(r.timestamp)) ? new Date(r.timestamp).toISOString() : now;
-    messages.push({ role: r.type, text: body, createdAt: at });
+  // One piece more than records: the one after the last newline.
+  return pieces - 1 < from ? undefined : messages;
+}
+
+function sessionMessage(line: string, now: string): SessionMessage | undefined {
+  let parsed;
+  try {
+    parsed = record.safeParse(JSON.parse(line));
+  } catch {
+    return; // the empty piece after the last newline
   }
-  return messages.slice(-MAX_MESSAGES);
+  const r = parsed.data;
+  if (!r || r.isSidechain || r.isMeta || r.isCompactSummary || (r.type !== "user" && r.type !== "assistant")) return;
+  const content = r.message?.content;
+  let body =
+    typeof content === "string"
+      ? content.trim()
+      : (content ?? [])
+          .filter((b) => b.type === "text")
+          .map((b) => b.text?.trim() ?? "")
+          .filter(Boolean)
+          .join("\n");
+  if (r.type === "user" && body.startsWith(HANDOFF_CONTEXT) && body.includes(USER_MESSAGE)) {
+    body = body.slice(body.lastIndexOf(USER_MESSAGE) + USER_MESSAGE.length).trim();
+  }
+  if (!body) return; // tool results and thinking
+  const at = r.timestamp && !Number.isNaN(Date.parse(r.timestamp)) ? new Date(r.timestamp).toISOString() : now;
+  return { role: r.type, text: body, createdAt: at };
 }
 
 /** The database of the T3 Code agentgate is connected to: its state folder must belong to the server on that port. */
@@ -143,15 +156,18 @@ const COLUMNS: Record<string, string[]> = {
 /** T3 numbers a run's turn items from `run ordinal × this`; items after the thread's last one stay in its last band. */
 const RUN_BAND = 1_000_000;
 
+/** How long to wait for T3's write lock; its own writer waits this long too. */
+const LOCK_WAIT = 5_000;
+
 /** Append `messages` to the end of thread `threadId`'s history. `key` names this copy: a repeated call writes nothing.
  * Returns how many messages were added. */
-export function appendToThread(
+export async function appendToThread(
   dbPath: string,
   threadId: string,
   key: string,
   messages: SessionMessage[],
   now: string,
-): number {
+): Promise<number> {
   if (!messages.length) return 0;
   let db: Database;
   try {
@@ -160,9 +176,17 @@ export function appendToThread(
     throw new HistoryError(`T3 Code's database ${dbPath} could not be opened`);
   }
   try {
-    // T3's own writer takes the write lock with BEGIN IMMEDIATE and waits this long for it too.
-    db.run("PRAGMA busy_timeout = 5000");
-    return db.transaction(() => append(db, threadId, key, messages, now)).immediate();
+    // T3 takes the write lock with BEGIN IMMEDIATE. SQLite's busy_timeout would wait for it inside the call, with the
+    // event loop stopped, so a held lock is retried between sleeps instead.
+    const deadline = Date.now() + LOCK_WAIT;
+    for (;;) {
+      try {
+        return db.transaction(() => append(db, threadId, key, messages, now)).immediate();
+      } catch (e) {
+        if (!(e instanceof SQLiteError && e.code === "SQLITE_BUSY") || Date.now() > deadline) throw e;
+      }
+      await sleep(50);
+    }
   } finally {
     db.close();
   }

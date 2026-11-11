@@ -606,7 +606,7 @@ async function place(h: Handoffs, job: DestJob<"place">) {
     const files = m.files.filter((f) => f.path.startsWith("session/")).map((f) => f.path.slice(8));
     // Claude resumes from the key of the checkout the thread runs in; T3 imports only from a main checkout's key.
     const places = st.imported ? [st.main, st.cwd] : [st.cwd];
-    for (const cwd of new Set(places)) provider.place(home, m.sessionId, from, files, cwd, m.oldPaths);
+    for (const cwd of new Set(places)) await provider.place(home, m.sessionId, from, files, cwd, m.oldPaths);
   });
   h.advance(job, "import");
 }
@@ -632,7 +632,7 @@ async function importThread(h: Handoffs, job: DestJob<"import">) {
       const threadId = st.threadId;
       if (!threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
       if (st.imported) live();
-      else copyHistory(h, job, threadId);
+      else await copyHistory(h, job, threadId);
 
       const p = await projection(call, threadId);
       live();
@@ -665,7 +665,7 @@ async function importThread(h: Handoffs, job: DestJob<"import">) {
 
 /** A reused thread lacks what the session got on other machines since it left here: write those messages into its
  * T3 Code history (see history.ts). Never fails the handoff; the agent has them in its session either way. */
-function copyHistory(h: Handoffs, job: DestJob<"import">, threadId: string) {
+async function copyHistory(h: Handoffs, job: DestJob<"import">, threadId: string) {
   const st = job.state;
   const m = st.manifest;
   const from = Number(h.s.local(sessionNote.lines(m.sessionId)));
@@ -673,10 +673,10 @@ function copyHistory(h: Handoffs, job: DestJob<"import">, threadId: string) {
   if (!h.s.settings().t3HandoffHistory || !h.options.t3StateDir || !(from > 0)) return;
   try {
     const now = new Date(h.s.now()).toISOString();
-    const text = readFileSync(join(h.dir(job.id), "files", "session", `${m.sessionId}.jsonl`), "utf8");
-    const messages = sessionMessages(text, from, now);
+    const transcript = Bun.file(join(h.dir(job.id), "files", "session", `${m.sessionId}.jsonl`));
+    const messages = await sessionMessages(transcript, from, now);
     if (!messages) throw new HistoryError("the session was rewritten there");
-    appendToThread(t3Database(h.options.t3StateDir, t3State(h.s).url), threadId, job.id, messages, now);
+    await appendToThread(t3Database(h.options.t3StateDir, t3State(h.s).url), threadId, job.id, messages, now);
   } catch (e) {
     st.warnings.push(
       `The messages from ${st.source} are not in this thread's history in T3 Code (${getErrorMessage(e)}); the agent still has them. agentgate t3 history off stops copying them.`,
