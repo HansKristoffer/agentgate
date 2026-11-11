@@ -1,5 +1,4 @@
 import { API_VERSION, providerSchema, settingsPatchSchema, type Status } from "@agentgate/protocol";
-import { recordFromKeys } from "hanzio";
 import { Hono } from "hono";
 import { z } from "zod";
 import packageInfo from "../../../../package.json";
@@ -9,8 +8,8 @@ import { refreshFailure } from "../credentials.ts";
 import type { Ctx, Env } from "../daemon.ts";
 import { jsonInput as json } from "../http.ts";
 import { lag } from "../lag.ts";
-import { accountStatus } from "../llm/pool.ts";
-import { providerCapabilities, providerLogins } from "../llm/providers.ts";
+import { accountStatus, unknownQuota } from "../llm/pool.ts";
+import { providerCapabilities, providerLogins, providers } from "../llm/providers.ts";
 import { listLogins } from "../logins.ts";
 import { serverHealth } from "../mcp/gateway.ts";
 import { readableEndpoint } from "../mcp/templates.ts";
@@ -109,7 +108,7 @@ export function system(ctx: Ctx) {
       })),
       relay: relayStatus(s),
       logins: listLogins(s),
-      unknownQuota: recordFromKeys(["claude", "codex"], (p) => s.local(`quotaUnknown:${p}`)),
+      unknownQuota: unknownQuota(s, Object.values(providers)),
     };
     return c.json(status);
   });

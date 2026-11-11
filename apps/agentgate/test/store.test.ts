@@ -3,16 +3,14 @@ import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { saveProject, setAccount } from "../src/operations.ts";
 import {
+  changeServerProjects,
   createInstance,
   deleteInstance,
   labelInstance,
-  parseCommand,
   renameInstance,
-  saveProject,
-  setAccount,
-  setServerProjects,
-} from "../src/operations.ts";
+} from "../src/ops/servers.ts";
 import { Store, exportBackup, importBackup, schemas } from "../src/store.ts";
 
 test("choosing a server's projects keeps existing tool prefixes and refuses a prefix another server has", () => {
@@ -21,13 +19,15 @@ test("choosing a server's projects keeps existing tool prefixes and refuses a pr
   s.put("project", "acme/web", { id: "acme/web", mcp: { ph: "posthog" } });
   s.put("project", "acme/api", { id: "acme/api", mcp: { posthog: "other" } });
   s.put("project", "acme/docs", { id: "acme/docs" });
-  setServerProjects(s, "posthog", ["*", "acme/web"]);
+  changeServerProjects(s, "posthog", { projects: ["*", "acme/web"] });
   expect(s.get("project", "*")?.mcp).toEqual({ posthog: "posthog" });
   expect(s.get("project", "acme/web")?.mcp).toEqual({ ph: "posthog" });
-  setServerProjects(s, "posthog", ["acme/docs"]);
+  changeServerProjects(s, "posthog", { projects: ["acme/docs"] });
   expect([s.get("project", "*")?.mcp, s.get("project", "acme/web")?.mcp]).toEqual([{}, {}]);
   expect(s.get("project", "acme/docs")?.mcp).toEqual({ posthog: "posthog" });
-  expect(() => setServerProjects(s, "posthog", ["acme/api"])).toThrow("already uses the tool prefix posthog for other");
+  expect(() => changeServerProjects(s, "posthog", { projects: ["acme/api"] })).toThrow(
+    "already uses the tool prefix posthog for other",
+  );
   expect(s.get("project", "acme/docs")?.mcp).toEqual({ posthog: "posthog" });
   s.close();
 });
@@ -171,10 +171,10 @@ test("change feed cursor and records use one SQLite snapshot despite another wri
     }
     return value;
   };
-  const snapshot = s.changes(0);
+  const snapshot = s.changePage(0);
   expect(JSON.parse(snapshot.records[0]!.data).label).toBe("old");
   expect(snapshot.records[0]!.seq).toBeLessThanOrEqual(snapshot.seq);
-  expect(JSON.parse(s.changes(snapshot.seq).records[0]!.data).label).toBe("new");
+  expect(JSON.parse(s.changePage(snapshot.seq).records[0]!.data).label).toBe("new");
   s.close();
   other.close();
   rmSync(dir, { recursive: true, force: true });
@@ -182,14 +182,9 @@ test("change feed cursor and records use one SQLite snapshot despite another wri
 
 test("shared operations preserve quoted args and preset headers, clean references and roll back conflicting renames", () => {
   const s = new Store(":memory:");
-  expect(parseCommand('bun "file with spaces.ts" --key \'a b\' ""')).toEqual([
-    "bun",
-    "file with spaces.ts",
-    "--key",
-    "a b",
-    "",
-  ]);
-  expect(() => parseCommand('bun "unfinished')).toThrow();
+  const local = createInstance(s, { name: "local", command: 'bun "file with spaces.ts" --key \'a b\' ""' });
+  expect([local.command, local.args]).toEqual(["bun", ["file with spaces.ts", "--key", "a b", ""]]);
+  expect(() => createInstance(s, { name: "broken", command: 'bun "unfinished' })).toThrow("unfinished quote");
   expect(
     createInstance(s, { name: "posthog", target: "posthog", headers: "x-posthog-project-id: 123" }).headers?.[
       "x-posthog-project-id"

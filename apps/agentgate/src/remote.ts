@@ -14,7 +14,7 @@ import type { Gateway } from "./mcp/gateway.ts";
 import { RelaySocket } from "./relay-socket.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
-import { sent, type Data, type Project, type Store } from "./store.ts";
+import { nodesBelow, requireNodeProtocol, sent, type Data, type Project, type Store } from "./store.ts";
 
 /**
  * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
@@ -48,25 +48,16 @@ function virtualProject(s: Store, id: string): Project {
   return p;
 }
 
-/** Every node record must come from a daemon that keeps `remote` intact; older ones drop it when they edit a project. */
-function versionGate(s: Store) {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < REMOTE_PROTOCOL)
-    .map((n) => n.id);
-  if (old.length)
-    throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't keep remote endpoints in sync`);
-}
-
 /** An always-on node is the natural host; otherwise this one. */
 function defaultServer(s: Store): string {
-  return s.list("node").find((n) => n.alwaysOn && (n.protocol ?? 0) >= REMOTE_PROTOCOL)?.id ?? s.nodeId;
+  const old = nodesBelow(s, REMOTE_PROTOCOL);
+  return s.list("node").find((n) => n.alwaysOn && !old.includes(n.id))?.id ?? s.nodeId;
 }
 
 export function enableRemote(s: Store, id: string, servedBy?: string): { url: string; secret: string } {
   return s.transaction(() => {
     const p = virtualProject(s, id);
-    versionGate(s);
+    requireNodeProtocol(s, REMOTE_PROTOCOL, "can't keep remote endpoints in sync");
     if (servedBy && !s.get("node", servedBy)) throw new Error(`no machine ${servedBy}`);
     const remote: Remote = p.remote
       ? { ...p.remote, enabled: true, servedBy: servedBy ?? p.remote.servedBy }

@@ -6,7 +6,7 @@ import type { Ctx, Env } from "../daemon.ts";
 import { jsonInput as json } from "../http.ts";
 import { providerLogins } from "../llm/providers.ts";
 import { route } from "../llm/routing.ts";
-import { metrics, requestDetail, requests, tokenHours, tokenUsage } from "../llm/telemetry.ts";
+import { requestDetail, requests, tokenHours, tokenUsage } from "../llm/telemetry.ts";
 import { forgetLogin, infisicalSite, setInfisicalIdentity, shareLogins, startInfisicalSignIn } from "../logins.ts";
 import { input, inputAsync, local, optionalJson, required, signal } from "./http.ts";
 
@@ -45,7 +45,6 @@ export function accounts(ctx: Ctx) {
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));
   app.get("/proxy/tokens/hours", (c) => c.json(tokenHours(s, since.parse(c.req.query()).since)));
-  app.get("/proxy/metrics", (c) => c.json(metrics(s)));
   app.get("/proxy/route", (c) => {
     const f = z.object({ provider: providerSchema, model: modelIdSchema.optional() }).strict().parse(c.req.query());
     return c.json(route(s, f.provider, f.model));

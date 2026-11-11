@@ -31,6 +31,11 @@ export { recordUsage } from "./quota.ts";
 const SHORT_RATE_WAIT = 5000;
 /** Since when a provider's responses have carried no quota headers, per provider. */
 const quotaUnknown = defineLocal("quotaUnknown:", z.string(), { topic: "status" });
+/** `/status`'s `unknownQuota`: for each of `providers` that reports quota in its headers, since when it has not. */
+export const unknownQuota = (s: Store, providers: Provider[]) =>
+  Object.fromEntries(
+    providers.filter((p) => p.headerQuota !== false).map((p) => [p.name, quotaUnknown.get(s, p.name)]),
+  );
 const HOP_HEADERS = [
   "host",
   "connection",

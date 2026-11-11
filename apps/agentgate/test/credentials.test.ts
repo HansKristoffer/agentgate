@@ -52,7 +52,7 @@ function node(name: string) {
 }
 /** Copy everything from one store into another, like a pull. */
 const pull = (into: Store, from: Store) => {
-  for (const r of from.changes(0).records) into.merge(r);
+  for (const r of from.changePage(0).records) into.merge(r);
   into.db.run("insert or replace into peers values (?, 'http://x', 't', 0, ?)", [from.nodeId, T]);
 };
 /** Let time pass while `s` keeps syncing every 15 s, as an awake daemon with a working network does, without hearing from the holder. */

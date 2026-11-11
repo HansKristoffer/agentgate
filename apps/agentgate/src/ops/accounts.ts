@@ -8,9 +8,10 @@ import { checkRevision, revision } from "../configuration.ts";
 import { pkce } from "../credentials.ts";
 import * as cursor from "../llm/cursor.ts";
 import { resetCooldown } from "../llm/policy.ts";
+import { recordUsage } from "../llm/quota.ts";
 import { providerLogins } from "../llm/providers.ts";
 import { resetRouting } from "../llm/routing.ts";
-import { deleteAccount, setAccount } from "../operations.ts";
+import { setAccount } from "../operations.ts";
 import type { Account, Store } from "../store.ts";
 import { controlOp, UserError } from "./registry.ts";
 
@@ -148,6 +149,20 @@ for (const [name, patch, summary, done] of [
     terminal: { usage: `${name} <id>`, parse: justId, print: (a) => [`${a.id} ${done}`] },
   });
 
+/** Removes the account, its login and usage from every machine, and this machine's state about it. */
+export function deleteAccount(s: Store, id: string) {
+  s.transaction(() => {
+    const provider = s.get("account", id)?.provider;
+    for (const kind of ["account", "credential", "usage"] as const) s.del(kind, id);
+    s.del("refreshRequest", `credential:${id}`);
+    s.setLocal(`refreshError:credential:${id}`, undefined);
+    for (const key of ["models", "modelError", "quotaHealth"]) s.setLocal(`${key}:${id}`, undefined);
+    resetCooldown(s, id);
+    resetRouting(s, id);
+    if (provider && s.local(`active:${provider}`) === id) s.setLocal(`active:${provider}`, undefined);
+  });
+}
+
 controlOp({
   name: "accounts rm",
   summary: "remove an account and its login from every machine",
@@ -177,16 +192,7 @@ controlOp({
   needs: "store",
   run(input, { s }) {
     existing(s, input.id);
-    const until = s.now() + input.minutes * 60_000;
-    s.put("usage", input.id, {
-      accountId: input.id,
-      observedAt: s.now(),
-      observedBy: s.nodeId,
-      windows: [],
-      status: "exhausted",
-      exhaustedUntil: until,
-      source: "manual",
-    });
+    recordUsage(s, input.id, { windows: [], status: "exhausted" }, s.now() + input.minutes * 60_000, "manual");
     return input;
   },
   terminal: {

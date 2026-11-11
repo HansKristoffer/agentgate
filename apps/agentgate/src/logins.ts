@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import { atomicWrite } from "./files.ts";
-import { liveOnly, type Data, type Store } from "./store.ts";
+import { liveOnly, requireNodeProtocol, type Data, type Store } from "./store.ts";
 
 /**
  * The GitHub CLI (gh) and Infisical CLI logins of one machine, shared with every paired machine so a new server clones
@@ -102,13 +102,7 @@ const infisical = () => ({
   keyring: join(host.home, "infisical-keyring"),
   identity: join(host.home, ".infisical", "universal-auth.json"),
 });
-const requireProtocol = (s: Store, protocol: number) => {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < protocol)
-    .map((n) => n.id);
-  if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't sync this login`);
-};
+const requireProtocol = (s: Store, protocol: number) => requireNodeProtocol(s, protocol, "can't sync this login");
 
 /** This machine's login, or why it has none to share. */
 async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | string> {

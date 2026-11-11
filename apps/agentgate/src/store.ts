@@ -8,6 +8,8 @@ import {
   providerSchema,
   secretRecordSchema,
   factoryFolderSchema,
+  loginIdSchema,
+  usageSourceSchema,
   MAX_RECORD,
   type Topic,
 } from "@agentgate/protocol";
@@ -112,7 +114,7 @@ export const schemas = {
     windows: z.array(Window),
     status: z.enum(["ok", "limited", "exhausted"]),
     exhaustedUntil: timestamp.optional(),
-    source: z.enum(["headers", "poll", "manual"]).optional(),
+    source: usageSourceSchema.optional(),
   }),
   mcp: z.object({
     id: z.string(),
@@ -153,9 +155,14 @@ export const schemas = {
   setting: settingsSchema,
   /** A GitHub CLI or Infisical CLI login, or an Infisical machine identity, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
-    z.object({ id: z.literal("github"), from: id, account: z.string().max(320), token: z.string().min(1).max(4096) }),
     z.object({
-      id: z.literal("infisical"),
+      id: z.literal(loginIdSchema.enum.github),
+      from: id,
+      account: z.string().max(320),
+      token: z.string().min(1).max(4096),
+    }),
+    z.object({
+      id: z.literal(loginIdSchema.enum.infisical),
       from: id,
       // Names the keyring file the Infisical CLI keeps the session in, so it must stay a plain file name.
       account: z
@@ -181,7 +188,7 @@ export const schemas = {
     }),
     /** An Infisical machine identity (Universal Auth) set in agentgate; `account` is its client id. */
     z.object({
-      id: z.literal("infisical-identity"),
+      id: z.literal(loginIdSchema.enum["infisical-identity"]),
       from: id,
       account: z.string().max(512),
       clientSecret: z.string().min(1).max(4096),
@@ -217,17 +224,24 @@ export const schemas = {
  * nodes drop the setting when they save settings, and stall on an unknown record kind. */
 export const FACTORY_PROTOCOL = 8;
 
-/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
-export function requireFactoryProtocol(s: Store) {
-  const old = s
+/** The nodes whose daemon does not advertise `protocol` yet, the gate before writing a field or record kind they would
+ * drop or stall on. A node record without one comes from a daemon older than protocols. */
+export function nodesBelow(s: Store, protocol: number) {
+  return s
     .list("node")
-    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
+    .filter((n) => (n.protocol ?? 0) < protocol)
     .map((n) => n.id);
-  if (old.length)
-    throw new Error(
-      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
-    );
 }
+
+/** Throws "Update agentgate on <nodes> first: older versions <what>" while any node is below `protocol`. */
+export function requireNodeProtocol(s: Store, protocol: number, what: string) {
+  const old = nodesBelow(s, protocol);
+  if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions ${what}`);
+}
+
+/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
+export const requireFactoryProtocol = (s: Store) =>
+  requireNodeProtocol(s, FACTORY_PROTOCOL, "cannot sync factory settings and secrets");
 /** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
 export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
@@ -537,19 +551,8 @@ export class Store {
     return this.get("setting", "settings") ?? schemas.setting.parse({});
   }
 
-  /** Change feed for peers: every record (secrets and tombstones included) newer than `since`. */
-  changes(since: number): { records: Rec[]; seq: number } {
-    timestamp.parse(since);
-    return this.db.transaction(() => {
-      const seq = this.seq(); // establish the read snapshot before reading its records
-      const records = this.db
-        .query<Rec, [number, number]>("select * from records where seq > ? and seq <= ? order by seq")
-        .all(since, seq);
-      return { records, seq };
-    })();
-  }
-
-  /** A peer cursor acknowledges only records actually present in this page, bounded by bytes and by count. */
+  /** Change feed for peers and the relay: records (secrets and tombstones included) newer than `since`, read in one
+   * snapshot. A cursor acknowledges only records actually present in this page, bounded by bytes and by count. */
   changePage(
     since: number,
     maxBytes = 8 * 1024 * 1024,

@@ -82,7 +82,7 @@ test("signing in pairs with the four scopes, approves at full access with the pa
   expect(client.status()).toEqual({ mcp: "signed-in", expiresAt: s.now() + 30 * DAY });
 
   mcp.answer("t3_pending_request", () => ({ requestIds: ["r1"] }));
-  expect(await client.call<unknown>("t3_pending_request", { action: "list", threadId: "t1" })).toEqual({
+  expect(await client.call("t3_pending_request", { action: "list", threadId: "t1" })).toEqual({
     requestIds: ["r1"],
   });
   expect(mcp.calls).toEqual([{ tool: "t3_pending_request", args: { action: "list", threadId: "t1" } }]);

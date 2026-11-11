@@ -16,6 +16,7 @@ import { QUEUED_MAX, peerStatusSchema, send as sendMessage, type Manifest } from
 import { FILES_PROTOCOL, localEdits, managedFiles } from "../checkout-files.ts";
 import { canonicalProject, parseRemote } from "../mcp/gateway.ts";
 import { handoffTimingSchema, type HandoffCancel } from "@agentgate/protocol";
+import { nodesBelow } from "../store.ts";
 
 /** The steps on the thread's own machine (A): resolve → stop → package → send → await → finish.
  * B prepares its checkout while A stops the agent and packs. Until B reports `imported`, A may abort: the user's
@@ -394,7 +395,7 @@ async function carriedFiles(h: Handoffs, job: SourceJob<"package">): Promise<str
     const repo = parseRemote(st.remoteUrl);
     const listed = repo ? (h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? []) : [];
     const paths = await localEdits(root, st.cwd, listed);
-    if (paths.length && (h.s.get("node", job.target)?.protocol ?? 0) < FILES_PROTOCOL) {
+    if (paths.length && nodesBelow(h.s, FILES_PROTOCOL).includes(job.target)) {
       st.warnings.push(
         `Your changes to ${paths.join(", ")} stayed on ${h.s.nodeId}: update agentgate on ${job.target} to carry them`,
       );

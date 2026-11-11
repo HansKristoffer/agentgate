@@ -67,10 +67,11 @@ export class T3McpError extends Error {
 }
 
 export interface T3McpClient {
-  /** Parses the tool's JSON result; throws T3McpError on a tool error or transport failure. With `session`, the call
+  /** The tool's result, unchecked: its structured content, else its text parsed as JSON, else the text. Callers parse it
+   * with a schema. Throws T3McpError on a tool error or transport failure. With `session`, the call
    * goes only under that MCP session: a sign-in that changed meanwhile, even one this call made after T3 refused the
    * token, fails it unsent, as an answered error. */
-  call<T = unknown>(tool: T3Tool, args: Record<string, unknown>, options?: { session?: string }): Promise<T>;
+  call(tool: T3Tool, args: Record<string, unknown>, options?: { session?: string }): Promise<unknown>;
   /** The MCP session the current token belongs to, or undefined while signed out. T3 dedupes `clientRequestId`
    * within one session only. */
   session(): string | undefined;
@@ -383,11 +384,7 @@ function create(f: FactoryRuntime) {
       const mcp = signing ? "signing-in" : failed ? "failed" : token ? "signed-in" : "off";
       return { mcp, ...(token && { expiresAt: token.expiresAt }), ...(error && { error }) } as const;
     },
-    async call<T = unknown>(
-      tool: T3Tool,
-      args: Record<string, unknown>,
-      options: { session?: string } = {},
-    ): Promise<T> {
+    async call(tool: T3Tool, args: Record<string, unknown>, options: { session?: string } = {}): Promise<unknown> {
       if (missing?.length) throw new T3McpError(error ?? `T3 Code's MCP lacks ${missing.join(", ")}`);
       return session(async (mcp, token) => {
         if (options.session && sessionOf(token) !== options.session) {
@@ -405,12 +402,12 @@ function create(f: FactoryRuntime) {
           refused.answered = true;
           throw refused;
         }
-        if (result.structuredContent !== undefined) return result.structuredContent as T;
-        if (text === undefined) return undefined as T;
+        if (result.structuredContent !== undefined) return result.structuredContent;
+        if (text === undefined) return undefined;
         try {
-          return JSON.parse(text) as T;
+          return JSON.parse(text) as unknown;
         } catch {
-          return text as T;
+          return text;
         }
       });
     },

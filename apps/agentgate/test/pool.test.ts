@@ -2,7 +2,8 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
-import { accountStatus, proxy, recordUsage } from "../src/llm/pool.ts";
+import { accountStatus, proxy, recordUsage, unknownQuota } from "../src/llm/pool.ts";
+import { providers } from "../src/llm/providers.ts";
 import { route } from "../src/llm/routing.ts";
 import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
@@ -200,14 +201,15 @@ test("a request whose telemetry cannot be created is still proxied", async () =>
   expect(await res.text()).toContain("event: message_start");
 });
 
-test("unknown quota is recorded when it starts, not on every response", async () => {
+test("unknown quota is recorded when it starts, not on every response, and only for providers with quota headers", async () => {
   modes["tok-a"] = "unmetered";
   const start = Date.now();
   s.now = () => start;
   await (await send()).text();
   s.now = () => start + 60_000;
   await (await send()).text();
-  expect(s.local("quotaUnknown:claude")).toBe(String(start));
+  // Cursor reports no quota in its headers, so it never shows as unknown.
+  expect(unknownQuota(s, Object.values(providers))).toStrictEqual({ claude: String(start), codex: undefined });
 });
 
 test("the app hears of a switch of active account once, and not of later requests on it", async () => {

@@ -70,7 +70,7 @@ function pair(...nodes: ReturnType<typeof node>[]) {
   for (const n of nodes) for (const m of nodes) n.s.put("node", m.s.nodeId, { id: m.s.nodeId, protocol: m.protocol });
 }
 const copy = (from: Store, to: Store) => {
-  for (const r of from.changes(0).records) to.merge(r);
+  for (const r of from.changePage(0).records) to.merge(r);
 };
 
 const KEY = "github.com/bliss-budget/budget-app";

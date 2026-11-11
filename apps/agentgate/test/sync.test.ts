@@ -52,10 +52,10 @@ test("tombstones propagate and remain after 30 days to prevent resurrection", ()
   const a = node("a");
   const b = node("b");
   a.put("mcp", "x", { id: "x", template: "custom-http", transport: "http", url: "http://x" });
-  const stale = a.changes(0).records.find((r) => r.kind === "mcp")!;
-  for (const r of a.changes(0).records) b.merge(r);
+  const stale = a.changePage(0).records.find((r) => r.kind === "mcp")!;
+  for (const r of a.changePage(0).records) b.merge(r);
   a.del("mcp", "x");
-  for (const r of a.changes(0).records) b.merge(r);
+  for (const r of a.changePage(0).records) b.merge(r);
   expect(b.get("mcp", "x")).toBeUndefined();
   expect(b.record("mcp", "x")!.deleted).toBe(1);
   b.now = () => Date.now() + 31 * 86400_000;
@@ -192,7 +192,7 @@ test("byte-bounded pages let initial pairing and offline catch-up exceed 16 MiB"
           { path: "assets/data", data: payload },
         ],
       });
-    expect(Buffer.byteLength(JSON.stringify(a.changes(0)))).toBeGreaterThan(16 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(a.changePage(0, Infinity)))).toBeGreaterThan(16 * 1024 * 1024);
     const url = listen(a);
     a.db.run("insert into peers values ('large-b', 'http://unused', 'token', 0, null)");
     b.db.run("insert into peers values ('large-a', ?, 'token', 0, null)", [url]);

@@ -88,6 +88,8 @@ export const host = {
 };
 
 type Row = Record<string, string | number | null | { b64: string }>;
+/** A cookie column as SQLite gives it, or as a saved login keeps it (blobs in base64). */
+type Cell = Row[string] | Uint8Array;
 interface Login {
   accountUuid: string;
   capturedAt: number;
@@ -107,7 +109,7 @@ const gatewayFile = () => join(DESKTOP.data3p, "claude_desktop_config.json");
 const libraryDir = () => join(DESKTOP.data3p, "configLibrary");
 const gatewayUrl = () => `${LOCAL_URL}/anthropic`;
 
-function readJson(file: string): Record<string, any> {
+function readJson(file: string): Record<string, unknown> {
   if (!existsSync(file)) return {};
   const value = JSON.parse(readFileSync(file, "utf8"));
   if (!isRecord(value)) throw new Error(`${file}: expected an object`);
@@ -222,8 +224,8 @@ function writeLogin(login: Login | undefined) {
       if (problem) throw new Error(problem);
     }
     const { where, params } = hostFilter();
-    const before = db.query<Record<string, unknown>, string[]>(`select * from cookies where ${where}`).all(...params);
-    const replace = (rows: Record<string, unknown>[]) =>
+    const before = db.query<Record<string, Cell>, string[]>(`select * from cookies where ${where}`).all(...params);
+    const replace = (rows: Record<string, Cell>[]) =>
       db
         .transaction(() => {
           // Accounts carry different cookie sets, so delete them all before inserting (not an upsert by name).
@@ -234,12 +236,8 @@ function writeLogin(login: Login | undefined) {
               `insert into cookies (${cols.map((c) => `"${c.replace(/"/g, "")}"`).join(",")}) values (${cols.map(() => "?").join(",")})`,
             ).run(
               ...cols.map((c) => {
-                const v = row[c] as any;
-                return v instanceof Uint8Array
-                  ? v
-                  : v && typeof v === "object"
-                    ? Buffer.from(v.b64, "base64")
-                    : (v ?? null);
+                const v = row[c] ?? null;
+                return v && typeof v === "object" && !(v instanceof Uint8Array) ? Buffer.from(v.b64, "base64") : v;
               }),
             );
           }
@@ -571,7 +569,9 @@ function writeGatewayMode(s: Store, on: boolean) {
     });
     // Keep any other configurations the user has; only add ours and select it.
     const meta = readJson(join(libraryDir(), "_meta.json"));
-    const entries = (Array.isArray(meta.entries) ? meta.entries : []).filter((e: any) => e?.id !== id);
+    const entries = (Array.isArray(meta.entries) ? (meta.entries as unknown[]) : []).filter(
+      (e) => !isRecord(e) || e.id !== id,
+    );
     writeJson(join(libraryDir(), "_meta.json"), {
       ...meta,
       appliedId: id,

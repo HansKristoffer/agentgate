@@ -4,7 +4,6 @@ import {
   type ModelTokens,
   type TokenHour,
   type ProxyAttempt,
-  type ProxyMetrics,
   type ProxyRequest,
   type RequestDetail,
   type RequestPage,
@@ -209,38 +208,6 @@ export function requestDetail(s: Store, id: string): RequestDetail | undefined {
           .map((r) => JSON.parse(r.data)),
       }
     : undefined;
-}
-export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
-  const row = s.db
-    .query<
-      Omit<ProxyMetrics, "since" | "averageHeadersMs" | "averageFirstByteMs"> & {
-        averageHeadersMs: number | null;
-        averageFirstByteMs: number | null;
-      },
-      [number]
-    >(
-      `
-    select count(*) as total,
-      coalesce(sum(outcome = 'success'), 0) as succeeded,
-      coalesce(sum(outcome = 'failed'), 0) as failed,
-      coalesce(sum(outcome = 'interrupted'), 0) as interrupted,
-      coalesce(sum(outcome = 'cancelled'), 0) as cancelled,
-      coalesce(sum((
-        select count(distinct json_extract(attempt.data, '$.account'))
-        from proxy_attempts as attempt where attempt.request_id = request.id
-      ) > 1), 0) as fallback,
-      round(avg(json_extract(data, '$.headersMs'))) as averageHeadersMs,
-      round(avg(json_extract(data, '$.firstByteMs'))) as averageFirstByteMs
-    from proxy_requests as request where at >= ? and outcome != 'pending'
-  `,
-    )
-    .get(since)!;
-  return {
-    ...row,
-    since,
-    averageHeadersMs: row.averageHeadersMs ?? undefined,
-    averageFirstByteMs: row.averageFirstByteMs ?? undefined,
-  };
 }
 
 /** Every hourly token count this node knows after `?1`, summed by `key`: its own, the `tokens` records other nodes

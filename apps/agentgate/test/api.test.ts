@@ -121,7 +121,7 @@ test("proxy management returns validated capabilities, revision-safe patches, an
 
 test("proxy management retains authentication and browser-origin guards", async () => {
   const { call } = fixture();
-  for (const path of ["/api/requests", "/api/proxy/metrics", "/api/proxy/route?provider=claude"]) {
+  for (const path of ["/api/requests", "/api/proxy/route?provider=claude"]) {
     expect((await call(path, "GET", undefined, "tailnet")).status).toBe(401);
     expect((await call(path, "GET", undefined, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(200);
     expect((await call(path, "GET", undefined, "loopback", { origin: "https://example.com" })).status).toBe(403);
