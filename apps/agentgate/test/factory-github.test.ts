@@ -1,6 +1,7 @@
 import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import type { FactoryReport, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
+import { moveItem } from "../src/factory/controller.ts";
 import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import * as gh from "../src/factory/gh.ts";
@@ -1209,4 +1210,10 @@ test("/approve on a held issue starts it, and free text there is not an approval
   expect(n.f.events.recent(20).map((e) => e.text)).toContain(
     `Approved ${item!.key}; triage is queued, from a comment on its issue`,
   );
+
+  // The comment it used is remembered while the item is open, and forgotten once it closes.
+  const seen = `factory:answer-seen:${item!.id}`;
+  expect(n.s.local(seen)).toBeDefined();
+  moveItem(n.f, item!.id, "closed", true);
+  expect(n.s.local(seen)).toBeUndefined();
 });

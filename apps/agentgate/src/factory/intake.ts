@@ -2,7 +2,7 @@ import type { MarkerPayload, NeedsYou } from "@agentgate/protocol";
 import { act } from "./actions.ts";
 import { currentFolder, durationMs, limits } from "./config.ts";
 import { addItem, holdsNewItems, intakeState } from "./controller.ts";
-import { items, type FactoryItem } from "./db.ts";
+import { isOpenPhase, items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
 import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
 
@@ -188,6 +188,11 @@ async function readAnswers(f: FactoryRuntime) {
 
 export function setup(f: FactoryRuntime): void {
   f.loops.push({ name: "factory-intake", everyMs: 2 * 60_000, where: "factory-node", run: () => intake(f) });
+  // A finished item waits for nothing, so its comment pointer goes; one taken in again reads from the factory's newest
+  // comment, as a new item does.
+  f.events.on("item.phase", (event) => {
+    if (!isOpenPhase(event.to)) f.s.setLocal(ANSWER_SEEN + event.item, undefined);
+  });
   // Each source's row on the board; the webhook feature merges its part into it later.
   f.boardParts.push(async () => ({
     sources: (currentFolder(f)?.config.sources ?? []).map((source) => {
