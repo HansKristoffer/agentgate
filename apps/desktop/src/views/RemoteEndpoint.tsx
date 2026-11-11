@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button } from "@heroui/react";
 import type { PublicProject } from "@agentgate/protocol";
@@ -6,22 +6,25 @@ import { Badge, Choice, Field, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { idPath, relative } from "./utils.ts";
+import { useDaemon } from "../useDaemon.ts";
 
 type Endpoint = { url: string; secret: string };
 
 /** A virtual project's public endpoint, shown in its Projects row: what to paste into Grok, who serves it, and its controls. */
 export function EndpointDetails({ project, data, connection, perform, local }: ViewProps & { project: PublicProject }) {
   const remote = project.remote;
-  const [shown, setShown] = useState<Endpoint>();
   const [reveal, setReveal] = useState(false);
-  // The secret is only ever read over a local connection.
-  useEffect(() => {
-    if (local && remote?.enabled)
-      void request<Endpoint>(connection, `/projects/remote?id=${idPath(project.id)}`).then(setShown, () => {});
-  }, [local, remote?.enabled, remote?.url, connection, project.id]);
+  // The secret is only ever read over a local connection, and is kept out of the app's answer cache. A secret rotated
+  // elsewhere keeps the URL, so the read also follows `status`, which every project change bumps.
+  const secret = useDaemon(
+    local && !!remote?.enabled && (() => request<Endpoint>(connection, `/projects/remote?id=${idPath(project.id)}`)),
+    { topics: ["status"], deps: [project.id, remote?.url] },
+  );
+  const shown = secret.data;
   const call = (path: string, body: Record<string, unknown>, message: string) =>
     perform(async () => {
-      setShown(await request<Endpoint>(connection, path, "POST", { id: project.id, ...body }));
+      await request(connection, path, "POST", { id: project.id, ...body });
+      await secret.reload();
     }, message);
   const setWebhook = (url: string | null) =>
     perform(
@@ -82,7 +85,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
                   {shown
                     ? `Bearer ${reveal ? shown.secret : "•".repeat(24)}`
                     : local
-                      ? "Loading…"
+                      ? secret.error || "Loading…"
                       : "Run this on that machine to see the secret"}
                 </code>
               </small>
@@ -219,10 +222,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               variant="ghost"
               className="delete"
               onPress={() =>
-                void perform(async () => {
-                  await request(connection, `/projects/remote?id=${idPath(project.id)}`, "DELETE");
-                  setShown(undefined);
-                }, "Endpoint turned off")
+                void perform(
+                  () => request(connection, `/projects/remote?id=${idPath(project.id)}`, "DELETE"),
+                  "Endpoint turned off",
+                )
               }
             >
               Turn off

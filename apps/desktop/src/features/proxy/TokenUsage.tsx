@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Tabs } from "@heroui/react";
 import { sumBy, typedSwitch } from "hanzio";
 import type { Connection, ModelTokens } from "@agentgate/protocol";
 import { request } from "../../api.ts";
 import { Empty, Panel } from "../../components/ui.tsx";
-import { useGeneration } from "./useGeneration.ts";
+import { useDaemon } from "../../useDaemon.ts";
 
 const RANGES = [
   { id: "today", label: "Today" },
@@ -26,28 +26,11 @@ const total = (t: ModelTokens) => t.input + t.output + t.cacheRead + t.cacheWrit
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
 
 export function TokenUsage({ connection }: { connection: Connection }) {
-  const [range, setRange] = useState<Range>("today"),
-    [rows, setRows] = useState<ModelTokens[]>(),
-    [error, setError] = useState("");
-  const capture = useGeneration(connection);
-  useEffect(() => {
-    const current = capture();
-    const load = () =>
-      request<ModelTokens[]>(connection, `/proxy/tokens?since=${since(range)}`).then(
-        (r) => {
-          if (current()) {
-            setRows(r);
-            setError("");
-          }
-        },
-        (e) => {
-          if (current()) setError(String(e));
-        },
-      );
-    void load();
-    const timer = setInterval(load, 30000);
-    return () => clearInterval(timer);
-  }, [range, connection]);
+  const [range, setRange] = useState<Range>("today");
+  const { data: rows, error } = useDaemon(
+    () => request<ModelTokens[]>(connection, `/proxy/tokens?since=${since(range)}`),
+    { topics: ["activity"], deps: [range], every: 60_000, key: `tokens:${range}` },
+  );
 
   // Rows are per provider and model, so the same model name can appear for Cursor and for its own provider.
   const top = (rows ?? []).slice(0, SLICES).map((r) => ({
