@@ -13,7 +13,7 @@ import {
   tuneInstance,
   tuneTool,
 } from "../operations.ts";
-import type { McpInstance, Store } from "../store.ts";
+import { sent, type Data, type McpInstance, type Store, type Stored } from "../store.ts";
 import { controlOp, UserError } from "./registry.ts";
 
 /** The MCP servers family's control operations. None is loopback-only: a remote node's servers are managed from the
@@ -57,16 +57,13 @@ function words<O extends ParseArgsOptionsConfig>(args: string[], options: O) {
 
 type ServerTuning = ControlOps["mcp test"]["result"]["tuning"];
 
-const tuningOf = ({ id, tools, instructions, maxResultChars, toolOptions }: McpInstance): ServerTuning => ({
-  id,
-  tools,
-  instructions,
-  maxResultChars,
-  toolOptions,
-});
+const tuningOf = (inst: McpInstance): ServerTuning => {
+  const { id, tools, instructions, maxResultChars, toolOptions } = sent<Data<"mcp">>(inst);
+  return { id, tools, instructions, maxResultChars, toolOptions };
+};
 
 /** How a server is offered to agents, where it differs from the default, for `mcp ls` and `mcp test`. */
-export function tuningNotes(t: ServerTuning) {
+export function tuningNotes(t: Stored<ServerTuning>) {
   const notes = [
     t.tools && `${t.tools.length} tools offered`,
     t.instructions !== undefined && `instructions ${t.instructions ? "replaced" : "hidden"}`,

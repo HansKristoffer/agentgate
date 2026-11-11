@@ -23,7 +23,7 @@ import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
 import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, sqliteDetail, timerSync, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, sqliteDetail, timerSync, type Store, type Stored } from "./store.ts";
 import { killGroup } from "./runtime.ts";
 import { registeredCheckouts } from "./skill-links.ts";
 
@@ -222,8 +222,8 @@ export function writeStore(
 
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
 const digest = (f: CheckoutFile) => (f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64")));
-const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
-  const plain = (fs: CheckoutFile[]) =>
+const same = (a: readonly CheckoutFile[], b: readonly CheckoutFile[]) => {
+  const plain = (fs: readonly CheckoutFile[]) =>
     JSON.stringify(
       sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })),
     );
@@ -231,7 +231,7 @@ const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
 };
 
 /** Per file, the newer by `updatedAt`. A file missing on one side is unknown there, not deleted: deletions are entries. */
-function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
+function mergeFiles(a: readonly CheckoutFile[], b: readonly CheckoutFile[]): CheckoutFile[] {
   const out = new Map(a.map((f) => [f.path, f]));
   for (const f of b) {
     const mine = out.get(f.path);
@@ -242,7 +242,7 @@ function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
 }
 
 /** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */
-function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
+function fitsRelay(s: Store, project: Stored<z.input<typeof projectSchema>>) {
   const record = {
     kind: "project",
     id: project.id,
@@ -553,7 +553,7 @@ function regularFile(path: string): Buffer | undefined {
 
 /** The checkout files that differ from the store in `cwd`, which a handoff carries: buncargo's local edits and
  * conflicts, or, without buncargo, the listed files that differ from the store. Never a machine file. */
-export async function localEdits(root: string, cwd: string, listed: string[]): Promise<string[]> {
+export async function localEdits(root: string, cwd: string, listed: readonly string[]): Promise<string[]> {
   if (usesBuncargo(cwd)) {
     const out = await buncargo(root, cwd, ["files", "status", "--json"]);
     let status: z.infer<typeof statusSchema>;
@@ -579,7 +579,7 @@ export async function localEdits(root: string, cwd: string, listed: string[]): P
 
 /** Every file the file store manages for this checkout, machine-specific ones included: a handoff's snapshot leaves
  * them to the store, which carries the edits (`localEdits`) and keeps each machine's own. */
-export async function managedFiles(root: string, cwd: string, listed: string[]): Promise<string[]> {
+export async function managedFiles(root: string, cwd: string, listed: readonly string[]): Promise<string[]> {
   return getUniqueValues([...listed, ...readStore(join(root, await checkoutKey(cwd))).files.keys()]);
 }
 

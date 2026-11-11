@@ -678,7 +678,7 @@ test("a connected repository installs, links, updates and removes its skills, an
   writeSkillMd(s, "gamma", md("gamma"));
   next = { commit: "c1", skills: [fetched("alpha"), fetched("beta"), fetched("gamma")], skipped: [] };
   await connectSkillRepo(s, "owner/pack", ["*"], fetch);
-  expect(s.get("project", "*")!.skills.sort()).toEqual(["alpha", "beta"]);
+  expect(s.get("project", "*")!.skills.toSorted()).toEqual(["alpha", "beta"]);
   expect(s.get("skill", "alpha")!.source).toBe(url);
   expect(skillRepoSummaries(s)).toEqual([
     expect.objectContaining({
@@ -710,7 +710,7 @@ test("a connected repository installs, links, updates and removes its skills, an
   // A skill that went missing locally forces a full fetch even at the same commit.
   setSkillRepoProjects(s, url, ["owner/repo"]);
   expect(s.get("project", "*")!.skills).toEqual([]);
-  expect(s.get("project", "owner/repo")!.skills.sort()).toEqual(["alpha", "delta"]);
+  expect(s.get("project", "owner/repo")!.skills.toSorted()).toEqual(["alpha", "delta"]);
   s.del("skill", "delta");
   since = [];
   next = { commit: "c2", skills: [fetched("alpha", "Changed."), fetched("delta")], skipped: [] };
@@ -733,6 +733,7 @@ test("repository summaries read the project and skill records once however many 
       skills: [fetched(name)],
       skipped: [],
     }));
+  skillRepoSummaries(s); // the first read after a write also loads the changed rows, once per kind
   const query = spyOn(s.db, "query");
   const summaries = skillRepoSummaries(s);
   const recordReads = query.mock.calls.filter(([sql]) => sql.includes("from records")).length;

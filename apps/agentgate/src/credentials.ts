@@ -2,7 +2,7 @@ import { z } from "zod";
 import { encodeBase64Url, randomToken, sha256 } from "hanzio/crypto";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
 import { defineLocal } from "./local-state.ts";
-import { refreshHash, rotatedAway, rotations, type Credential, type Data, type Store } from "./store.ts";
+import { refreshHash, rotatedAway, rotations, type Credential, type Data, type Store, type Stored } from "./store.ts";
 import { awakeFor, lastSeen, listeningFor } from "./sync.ts";
 
 export interface Tokens {
@@ -76,16 +76,16 @@ export function refreshOwned<K extends OwnedKind>(
   s: Store,
   kind: K,
   id: string,
-  refresh: (c: Data<K>) => Promise<Data<K>>,
+  refresh: (c: Stored<Data<K>>) => Promise<Data<K>>,
   pull: () => Promise<unknown>,
   force = true,
-): Promise<Data<K>> {
+): Promise<Data<K> | Stored<Data<K>>> {
   let active = flights.get(s);
   if (!active) flights.set(s, (active = new Map()));
   const key = `${kind}:${id}`;
   const running = active.get(key);
-  if (running) return running as Promise<Data<K>>;
-  const task = (async (): Promise<Data<K>> => {
+  if (running) return running as Promise<Data<K> | Stored<Data<K>>>;
+  const task = (async (): Promise<Data<K> | Stored<Data<K>>> => {
     let c = s.get(kind, id);
     if (!c || c.needsLogin) throw new NeedsLogin(id);
     // A holder back from sleep may have lost the role meanwhile, and the taker rotated the refresh token this one holds.

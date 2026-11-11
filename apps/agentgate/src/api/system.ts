@@ -16,7 +16,7 @@ import { serverHealth } from "../mcp/gateway.ts";
 import { readableEndpoint } from "../mcp/templates.ts";
 import { relayStatus, via } from "../relay.ts";
 import { skillRepoSummaries, skillSummaries } from "../skills.ts";
-import { exportBackup, importBackup } from "../store.ts";
+import { exportBackup, importBackup, sent, type Data } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { nodeUpdate } from "../update.ts";
 import { moduleFor } from "./accounts.ts";
@@ -98,7 +98,7 @@ export function system(ctx: Ctx) {
         skills: ctx.skills.repoSkills(path),
         mirror: ctx.skills.mirroring(path),
       })),
-      settings: s.settings(),
+      settings: sent<Data<"setting">>(s.settings()),
       nodes: s.list("node").map((n) => ({
         ...n,
         lastSeen: lastSeen(s, n.id),

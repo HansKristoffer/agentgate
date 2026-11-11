@@ -233,14 +233,23 @@ export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequ
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
-export type Account = Data<"account">;
-export type Credential = Data<"credential">;
-export type Usage = Data<"usage">;
-export type McpInstance = Data<"mcp">;
-export type Project = Data<"project">;
-export type Settings = Data<"setting">;
-export type McpCredential = Data<"mcpCredential">;
-export type Skill = Data<"skill">;
+export type Account = Stored<Data<"account">>;
+export type Credential = Stored<Data<"credential">>;
+export type Usage = Stored<Data<"usage">>;
+export type McpInstance = Stored<Data<"mcp">>;
+export type Project = Stored<Data<"project">>;
+export type Settings = Stored<Data<"setting">>;
+export type McpCredential = Stored<Data<"mcpCredential">>;
+export type Skill = Stored<Data<"skill">>;
+/** What `get` and `list` return. Later reads share the value, so it is read-only: copy it before changing it. */
+export type Stored<T> = T extends readonly (infer U)[]
+  ? readonly Stored<U>[]
+  : T extends object
+    ? { readonly [P in keyof T]: Stored<T[P]> }
+    : T;
+/** A stored value going out in an answer: the protocol's types are mutable, and nothing changes the value between here
+ * and the JSON it is sent as. */
+export const sent = <T>(value: Stored<T>) => value as T;
 
 export interface Rec {
   kind: Kind;
@@ -444,36 +453,45 @@ export class Store {
     return !!this.db.query("select 1 from records where kind = ? and id = ? and deleted = 0").get(kind, id);
   }
 
-  get<K extends Kind>(kind: K, id: string): Data<K> | undefined {
+  get<K extends Kind>(kind: K, id: string): Stored<Data<K>> | undefined {
+    const cache = this.cacheOf(kind);
     const row = this.db
       .query<{ seq: number; deleted: number }, [string, string]>(
         "select seq, deleted from records where kind = ? and id = ?",
       )
       .get(kind, id);
-    const cache = this.cacheOf(kind);
-    if (!row || row.deleted) {
-      cache.delete(id);
-      return undefined;
+    if (!row || row.deleted) cache.delete(id);
+    else if (cache.get(id)?.seq !== row.seq) {
+      const r = this.record(kind, id);
+      if (r) this.remember(cache, r);
+      else cache.delete(id);
     }
-    return this.parsed(kind, id, row.seq, cache);
+    return cache.get(id)?.value as Stored<Data<K>> | undefined;
   }
 
-  list<K extends Kind>(kind: K): Data<K>[] {
+  list<K extends Kind>(kind: K): Stored<Data<K>>[] {
+    const cache = this.cacheOf(kind);
     const rows = this.db
       .query<{ id: string; seq: number }, [string]>(
         "select id, seq from records where kind = ? and deleted = 0 order by id",
       )
       .all(kind);
-    const cache = this.cacheOf(kind),
-      live = new Map<string, Cached>();
-    const values = rows.flatMap((r) => {
-      const value = this.parsed(kind, r.id, r.seq, cache);
-      const entry = cache.get(r.id);
-      if (entry) live.set(r.id, entry);
-      return value ? [value] : [];
-    });
-    this.cache.set(kind, live); // drops records deleted since the last list, which no `get` would ever drop
-    return values;
+    const stale = rows.filter((r) => cache.get(r.id)?.seq !== r.seq).map((r) => r.id);
+    if (stale.length) {
+      for (const id of stale) cache.delete(id);
+      const changed = this.db
+        .query<Rec, [string, string]>("select * from records where kind = ? and id in (select value from json_each(?))")
+        .all(kind, JSON.stringify(stale));
+      for (const r of changed) this.remember(cache, r);
+    }
+    // Rebuilt from this list, which drops records deleted since the last one.
+    const live = new Map<string, Cached>();
+    for (const { id } of rows) {
+      const entry = cache.get(id);
+      if (entry) live.set(id, entry);
+    }
+    this.cache.set(kind, live);
+    return Array.from(live.values(), (entry) => entry.value as Stored<Data<K>>);
   }
 
   private cacheOf(kind: Kind) {
@@ -482,22 +500,18 @@ export class Store {
     return cache;
   }
 
-  /** The record parsed at `seq`, from the cache, or read and parsed again when the row has moved on. Another process
-   * may write between the two reads, so the entry keeps the `seq` of the row it was parsed from. */
-  private parsed<K extends Kind>(kind: K, id: string, seq: number, cache: Map<string, Cached>) {
-    const hit = cache.get(id);
-    if (hit?.seq === seq) return hit.value as Data<K>;
-    const r = this.record(kind, id);
-    if (!r || r.deleted) {
-      cache.delete(id);
-      return undefined;
-    }
-    const value = deepFreeze(schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
-    cache.set(id, { seq: r.seq!, value });
-    return value;
+  /** Caches a row read after its `seq`: another process may have written between the two reads, so the entry keeps the
+   * `seq` of the row it was parsed from. */
+  private remember(cache: Map<string, Cached>, r: Rec) {
+    if (r.deleted) cache.delete(r.id);
+    else cache.set(r.id, { seq: r.seq!, value: deepFreeze(schemas[r.kind].parse(JSON.parse(r.data))) });
   }
 
-  put<K extends Kind>(kind: K, id: string, data: z.input<(typeof schemas)[K]> | Data<K>): Data<K> {
+  put<K extends Kind>(
+    kind: K,
+    id: string,
+    data: Data<K> | Stored<z.input<(typeof schemas)[K]>> | Stored<Data<K>>,
+  ): Data<K> {
     const parsed = parseData(kind, id, data);
     this.write(kind, id, JSON.stringify(parsed), 0);
     return parsed;

@@ -23,7 +23,7 @@ import {
   type RepoFetcher,
   type SkillFetcher,
 } from "./skill-import.ts";
-import type { Skill, Store } from "./store.ts";
+import type { Skill, Store, Stored } from "./store.ts";
 
 export { SkillLinks } from "./skill-links.ts";
 export { description, readSkill, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
@@ -101,7 +101,7 @@ export function skillSummaries(s: Store): SkillSummary[] {
     });
 }
 
-function putSkill(s: Store, input: Omit<z.input<typeof skillSchema>, "updatedAt">) {
+function putSkill(s: Store, input: Stored<Omit<z.input<typeof skillSchema>, "updatedAt">>) {
   const skill = skillSchema.parse({ ...input, updatedAt: s.now() });
   skill.contentHash = contentHash(skill.files);
   const prev = s.get("skill", skill.id);

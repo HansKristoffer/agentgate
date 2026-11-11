@@ -1,4 +1,4 @@
-import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
+import { isVirtual, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
 import { exponentialBackoff } from "hanzio";
 import {
@@ -14,7 +14,7 @@ import type { Gateway } from "./mcp/gateway.ts";
 import { RelaySocket } from "./relay-socket.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
-import type { Store } from "./store.ts";
+import { sent, type Data, type Project, type Store } from "./store.ts";
 
 /**
  * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
@@ -522,7 +522,7 @@ function hookRequest(frame: RequestFrame, signal: AbortSignal) {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, files, factoryWebhook, ...rest } = p;
+  const { remote, files, factoryWebhook, ...rest } = sent<Data<"project">>(p);
   const summary = endpoints.summary(p);
   const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
   return {
