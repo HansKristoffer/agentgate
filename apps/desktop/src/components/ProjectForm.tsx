@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Boxes, Sparkles } from "lucide-react";
 import { isVirtual, type Project, type Status } from "@agentgate/protocol";
+import type { ControlOps } from "@agentgate/protocol/control";
 import { Button, Input, Tabs, TextField } from "@heroui/react";
 import { Check, Empty, Field, Toggle } from "./ui.tsx";
 import { aliasOf } from "./Assignments.tsx";
@@ -25,7 +26,7 @@ export function ProjectForm({
   edit: Editing;
   /** A repository chosen with Find on this machine. */
   picked: string;
-  save: (project: Editing) => void;
+  save: (project: ControlOps["project set"]["input"]) => void;
 }) {
   const virtual = edit.virtual || isVirtual(edit.id);
   const repository = edit.id !== "*" && !virtual;
@@ -88,8 +89,11 @@ export function ProjectForm({
       onSubmit={(e) => {
         e.preventDefault();
         const typed = String(new FormData(e.currentTarget).get("id") ?? "").trim();
-        // Keep an existing custom alias; new picks use the server id.
-        const mcp: Record<string, string> = {};
+        // Keep an existing custom alias; new picks use the server id. The operation changes only the prefixes it is
+        // given, so each one the form started with and dropped is removed by name.
+        const mcp: Record<string, string | null> = Object.fromEntries(
+          Object.keys(base.mcp).map((alias) => [alias, null]),
+        );
         for (const id of servers) if (serverRows.some((r) => r.id === id)) mcp[aliasOf(base, id) ?? id] = id;
         save({
           id: edit.id || (virtual ? `@${typed}` : typed),

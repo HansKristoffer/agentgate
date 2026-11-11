@@ -83,8 +83,9 @@ test("only virtual projects offer the factory's tools, and they keep the factory
   expect(() => saveProject(n.s, "@grok", { mcp: { factory: "docs" } })).toThrow("reserved");
   // Through the control API, as the app turns it on.
   saveProject(n.s, "@grok", { mcp: {} });
-  const response = await n.api("/api/projects/factory-tools", "PUT", { id: "@grok", on: true });
-  expect(await response.json()).toMatchObject({ id: "@grok", factoryTools: true });
+  const response = await n.api("/api/ops/remote%20factory", "POST", { id: "@grok", on: true });
+  expect(response.status).toBe(200);
+  expect(n.s.get("project", "@grok")?.factoryTools).toBe(true);
 });
 
 /** Every POST the outlets send, answered with `status`. */

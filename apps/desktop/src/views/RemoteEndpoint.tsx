@@ -4,7 +4,7 @@ import { Button } from "@heroui/react";
 import type { PublicProject } from "@agentgate/protocol";
 import { Badge, Choice, Field, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
+import { control, request } from "../api.ts";
 import { idPath, relative } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
 
@@ -21,16 +21,14 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
     { topics: ["status"], deps: [project.id, remote?.url] },
   );
   const shown = secret.data;
-  const call = (path: string, body: Record<string, unknown>, message: string) =>
+  const id = project.id;
+  const changeEndpoint = (change: () => Promise<unknown>, message: string) =>
     perform(async () => {
-      await request(connection, path, "POST", { id: project.id, ...body });
+      await change();
       await secret.reload();
     }, message);
   const setWebhook = (url: string | null) =>
-    perform(
-      () => request(connection, "/projects/factory-webhook", "PUT", { id: project.id, url }),
-      url ? "Webhook saved" : "Webhook removed",
-    );
+    perform(() => control(connection, "remote webhook", { id, url }), url ? "Webhook saved" : "Webhook removed");
   const copy = (text: string, what: string) => perform(() => navigator.clipboard.writeText(text), `${what} copied`);
   const nodes = data.nodes.map((n) => ({
     id: n.id,
@@ -53,7 +51,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             size="sm"
             variant="tertiary"
             isDisabled={!local}
-            onPress={() => void call("/projects/remote", {}, "Endpoint created")}
+            onPress={() => void changeEndpoint(() => control(connection, "remote enable", { id }), "Endpoint created")}
           >
             {remote ? "Turn endpoint on" : "Create endpoint for Grok"}
           </Button>
@@ -147,7 +145,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               onSelectionChange={(key) =>
                 key &&
                 key !== remote.servedBy &&
-                void call("/projects/remote", { servedBy: String(key) }, "Serving machine changed")
+                void changeEndpoint(
+                  () => control(connection, "remote enable", { id, servedBy: String(key) }),
+                  "Serving machine changed",
+                )
               }
             />
           </div>
@@ -157,7 +158,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             isSelected={!!project.factoryTools}
             onChange={(on) =>
               perform(
-                () => request(connection, "/projects/factory-tools", "PUT", { id: project.id, on }),
+                () => control(connection, "remote factory", { id, on }),
                 on ? "Grok can steer the factory" : "Factory tools removed",
               )
             }
@@ -203,7 +204,12 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="tertiary"
               isDisabled={!local}
-              onPress={() => void call("/projects/remote/secret", {}, "New secret created; update it in Grok")}
+              onPress={() =>
+                void changeEndpoint(
+                  () => control(connection, "remote secret", { id }),
+                  "New secret created; update it in Grok",
+                )
+              }
             >
               New secret
             </Button>
@@ -212,7 +218,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               variant="tertiary"
               isDisabled={!local}
               onPress={() =>
-                void call("/projects/remote/regenerate", {}, "New URL and secret created; update both in Grok")
+                void changeEndpoint(
+                  () => control(connection, "remote regenerate", { id }),
+                  "New URL and secret created; update both in Grok",
+                )
               }
             >
               New URL
@@ -221,12 +230,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="ghost"
               className="delete"
-              onPress={() =>
-                void perform(
-                  () => request(connection, `/projects/remote?id=${idPath(project.id)}`, "DELETE"),
-                  "Endpoint turned off",
-                )
-              }
+              onPress={() => void perform(() => control(connection, "remote disable", { id }), "Endpoint turned off")}
             >
               Turn off
             </Button>

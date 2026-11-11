@@ -1,30 +1,17 @@
 import { getErrorMessage } from "hanzio";
 import { realpathSync } from "node:fs";
 import { relative as relativePath, resolve } from "node:path";
-import { FILES_ROOT, addFiles, checkoutProject, fileContent, listFiles, removeFiles } from "../checkout-files.ts";
+import { FILES_ROOT, checkoutProject, fileContent, listFiles } from "../checkout-files.ts";
+import { revision } from "../configuration.ts";
 import { aliasesFor } from "../mcp/gateway.ts";
-import { saveProject, setFactoryTools, setFactoryWebhook } from "../operations.ts";
-import {
-  deleteProject,
-  disableRemote,
-  enableRemote,
-  endpointUrl,
-  regenerate,
-  rotateSecret,
-  showRemote,
-} from "../remote.ts";
-import { schemas, store } from "../store.ts";
-import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
+import { endpointUrl, showRemote } from "../remote.ts";
+import { store } from "../store.ts";
+import { die, initialized, showHelp, type Run } from "./common.ts";
 
-/** `project` and `remote`. */
-export const run: Run = async (cmd, [sub, ...rest], opts) => {
+/** The reads of `project` and `remote`; their changes are control operations (ops/projects.ts). */
+export const run: Run = async (cmd, [sub, ...rest]) => {
   const s = initialized(store());
-  const str = stringOption(opts);
   if (cmd === "remote") {
-    const printEndpoint = (r: { url: string; secret: string }) =>
-      console.log(
-        `URL:            ${r.url}\nAuthorization:  Bearer ${r.secret}\n\nThe relay can read requests and results for this endpoint; your logins stay on your machines.`,
-      );
     if (sub === "ls" || sub === undefined) {
       for (const p of s.list("project"))
         if (p.remote)
@@ -33,38 +20,16 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
           );
       return;
     }
-    const id = rest[0] ?? die(`remote ${sub} @name`);
+    if (sub !== "show") return showHelp();
+    const id = rest[0] ?? die("remote show @name");
     try {
-      if (sub === "enable") return printEndpoint(enableRemote(s, id, str("node")));
-      if (sub === "show") return printEndpoint(showRemote(s, id));
-      if (sub === "secret") return printEndpoint(rotateSecret(s, id));
-      if (sub === "regenerate") return printEndpoint(regenerate(s, id));
-      if (sub === "disable") {
-        disableRemote(s, id);
-        return console.log("ok");
-      }
-      if (sub === "factory") {
-        const on = rest[1] === "on" ? true : rest[1] === "off" ? false : die("remote factory @name on|off");
-        setFactoryTools(s, id, on);
-        return console.log(
-          on
-            ? `${id} offers the factory's tools. Anyone with its URL and secret can add tasks and approve, retry or drop items.`
-            : `${id} no longer offers the factory's tools.`,
-        );
-      }
-      if (sub === "webhook") {
-        const url = rest[1] ?? die("remote webhook @name <https-url>|off");
-        setFactoryWebhook(s, id, url === "off" ? undefined : url);
-        return console.log(
-          url === "off"
-            ? "Updates are no longer posted."
-            : "The factory posts there when an item waits for you or a PR is ready.",
-        );
-      }
+      const r = showRemote(s, id);
+      return console.log(
+        `URL:            ${r.url}\nAuthorization:  Bearer ${r.secret}\n\nThe relay can read requests and results for this endpoint; your logins stay on your machines.`,
+      );
     } catch (e) {
       return die(getErrorMessage(e));
     }
-    return showHelp();
   }
 
   if (sub === "ls") {
@@ -79,34 +44,15 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
     return;
   }
   if (sub === "files") {
-    const git = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stderr: "ignore" });
+    const git = Bun.spawnSync(["git", "rev-parse", "--show-toplevel"], { stderr: "ignore", timeout: 5000 });
     const top =
       git.exitCode === 0 ? git.stdout.toString().trim() : die("Run project files in a checkout of the repository");
     const [action, ...paths] = rest;
     // Paths are relative to where you are, stored relative to the checkout.
     const relative = paths.map((p) => relativePath(top, resolve(realpathSync(process.cwd()), p)));
-    if (action === "add" && paths.length)
-      return console.log(`saved for ${await addFiles(s, FILES_ROOT, top, relative)} on every machine`);
-    if (action === "rm" && paths.length) {
+    if (action === "cat" && relative.length === 1) {
       const { project } = await checkoutProject(s, top);
-      return console.log(`removed from ${removeFiles(s, FILES_ROOT, project, relative)} on every machine`);
-    }
-    if ((action === "cat" || action === "set") && relative.length === 1) {
-      const { project } = await checkoutProject(s, top);
-      if (action === "cat") return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
-      // Through the daemon, which follows the save into this machine's checkouts and logs it.
-      const edit = { project, path: relative[0]!, content: await Bun.stdin.text(), sha256: str("if-sha") };
-      const saved = await management<{ project: string; checkouts: Record<string, number> }>(
-        "/projects/files/content",
-        "PUT",
-        edit,
-      ).catch((e: Error) => die(e.message));
-      const followed = Object.entries(saved.checkouts)
-        .filter(([, n]) => n)
-        .map(([outcome, n]) => `${n} ${outcome}`);
-      return console.log(
-        `saved for ${saved.project} on every machine${followed.length ? `; checkouts here: ${followed.join(", ")}` : ""}`,
-      );
+      return process.stdout.write(fileContent(s, FILES_ROOT, project, relative[0]!).content);
     }
     if (action === "ls" || action === undefined) {
       const list = await listFiles(s, FILES_ROOT, top);
@@ -121,27 +67,13 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
     }
     return die("project files add|rm <path> [...] | cat <path> | set <path> [--if-sha <sha256>] | ls");
   }
-  const id = rest[0] ?? die(`project ${sub} <owner/repo>`);
   if (sub === "show") {
+    const id = rest[0] ?? die("project show <owner/repo>");
     for (const [alias, inst] of Object.entries(aliasesFor(s, id)))
       console.log(`${alias.padEnd(16)} → ${inst}${s.get("mcp", inst) ? "" : "  (missing)"}`);
+    // What `project set --if-revision` names to refuse a change made since.
+    if (s.get("project", id)) console.log(`revision ${revision(s, "project", id)}`);
     return;
   }
-  const p = s.get("project", id) ?? schemas.project.parse({ id });
-  if (sub === "set") {
-    const mcp = { ...p.mcp };
-    for (const pair of rest.slice(1)) {
-      const [alias, inst] = pair.split("=");
-      if (!alias) die(`bad mapping ${pair}`);
-      if (inst) {
-        if (!s.get("mcp", inst)) die(`no MCP instance ${inst}`);
-        mcp[alias!] = inst;
-      } else delete mcp[alias!];
-    }
-    saveProject(s, id, { mcp });
-    return console.log("ok");
-  }
-  if (sub === "defaults") return void saveProject(s, id, { inheritDefaults: rest[1] !== "off" });
-  if (sub === "rm") return deleteProject(s, id);
   return showHelp();
 };

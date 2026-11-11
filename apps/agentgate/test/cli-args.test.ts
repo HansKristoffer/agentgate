@@ -42,8 +42,6 @@ describe("parseFor", () => {
     "mcp limit railway 10000 --tool get-logs",
     "skills add vercel-labs/agent-skills --skill web-design-guidelines --project Lullu-ai/lullu --project *",
     "skills new release-notes --file SKILL.md",
-    "project files set .env.local --if-sha abc",
-    "remote enable @grok --node srv",
     "pair --name srv --tailnet",
     "pair --relay --relay-url https://relay.example",
     "join agr1.x --force",
