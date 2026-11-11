@@ -217,17 +217,24 @@ export const schemas = {
  * nodes drop the setting when they save settings, and stall on an unknown record kind. */
 export const FACTORY_PROTOCOL = 8;
 
-/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
-export function requireFactoryProtocol(s: Store) {
-  const old = s
+/** The nodes whose daemon does not advertise `protocol` yet, the gate before writing a field or record kind they would
+ * drop or stall on. A node record without one comes from a daemon older than protocols. */
+export function nodesBelow(s: Store, protocol: number) {
+  return s
     .list("node")
-    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
+    .filter((n) => (n.protocol ?? 0) < protocol)
     .map((n) => n.id);
-  if (old.length)
-    throw new Error(
-      `Update agentgate on ${old.join(", ")} first: older versions cannot sync factory settings and secrets`,
-    );
 }
+
+/** Throws "Update agentgate on <nodes> first: older versions <what>" while any node is below `protocol`. */
+export function requireNodeProtocol(s: Store, protocol: number, what: string) {
+  const old = nodesBelow(s, protocol);
+  if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions ${what}`);
+}
+
+/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
+export const requireFactoryProtocol = (s: Store) =>
+  requireNodeProtocol(s, FACTORY_PROTOCOL, "cannot sync factory settings and secrets");
 /** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
 export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 

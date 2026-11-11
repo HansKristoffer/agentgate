@@ -1,6 +1,13 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
 import { getUniqueValues } from "hanzio";
-import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
+import {
+  requireNodeProtocol,
+  type Account,
+  type Credential,
+  type McpInstance,
+  type Project,
+  type Store,
+} from "./store.ts";
 import { isVirtual, projectIdSchema, slugify, type ProjectChange } from "@agentgate/protocol";
 import { checkRevision } from "./configuration.ts";
 import { setSkillProjects } from "./skills.ts";
@@ -249,14 +256,7 @@ export function setFactoryTools(s: Store, id: string, on: boolean) {
     if (!isVirtual(id)) throw new Error("Only virtual projects (@name) can offer the factory's tools");
     const p = s.get("project", id);
     if (!p) throw new Error(`no project ${id}`);
-    if (on) {
-      const old = s
-        .list("node")
-        .filter((n) => (n.protocol ?? 0) < FACTORY_TOOLS_PROTOCOL)
-        .map((n) => n.id);
-      if (old.length)
-        throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the factory tools setting`);
-    }
+    if (on) requireNodeProtocol(s, FACTORY_TOOLS_PROTOCOL, "drop the factory tools setting");
     // Turning the tools off drops the webhook too: it was set for them, and turning them on again must not resume posting.
     const { factoryTools: _, factoryWebhook: __, ...rest } = p;
     return s.put("project", id, on ? { ...p, factoryTools: true } : rest);
@@ -303,14 +303,7 @@ export function setHealthDashboard(s: Store, node: string, on: boolean) {
   return s.transaction(() => {
     const n = s.get("node", node);
     if (!n) throw new Error(`no machine ${node}`);
-    if (on) {
-      const old = s
-        .list("node")
-        .filter((m) => (m.protocol ?? 0) < HEALTH_PROTOCOL)
-        .map((m) => m.id);
-      if (old.length)
-        throw new Error(`Update agentgate on ${old.join(", ")} first: older versions drop the dashboard setting`);
-    }
+    if (on) requireNodeProtocol(s, HEALTH_PROTOCOL, "drop the dashboard setting");
     return s.put("node", node, { ...n, healthDashboard: on });
   });
 }

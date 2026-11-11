@@ -21,7 +21,7 @@ import {
 import { getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
 import { PeerError } from "../handoff/jobs.ts";
-import type { Store } from "../store.ts";
+import { nodesBelow, type Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
@@ -587,10 +587,7 @@ const printed = (status: FactoryStatus & { warning?: string }) => ({
 
 /** The preflight's checks of the pointer: every paired machine can sync it, and the folder it names loads. */
 function folderChecks(f: FactoryRuntime): FactoryCheck[] {
-  const old = f.s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
-    .map((n) => n.id);
+  const old = nodesBelow(f.s, FACTORY_PROTOCOL);
   const checks: FactoryCheck[] = [
     {
       id: "releases",

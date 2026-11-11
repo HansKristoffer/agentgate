@@ -23,7 +23,7 @@ import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
 import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, sqliteDetail, timerSync, type Store, type Stored } from "./store.ts";
+import { CONFIG_DIR, DEV, nodesBelow, sqliteDetail, timerSync, type Store, type Stored } from "./store.ts";
 import { killGroup } from "./runtime.ts";
 import { registeredCheckouts } from "./skill-links.ts";
 
@@ -259,10 +259,7 @@ function fitsRelay(s: Store, project: Stored<z.input<typeof projectSchema>>) {
 /** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project.
  * FILES_PROTOCOL arrived in 0.20.0, so nodes on 0.20.0 or later keep them. */
 function oldNodesError(s: Store) {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < FILES_PROTOCOL)
-    .map((n) => n.id);
+  const old = nodesBelow(s, FILES_PROTOCOL);
   return old.length
     ? `Update agentgate on ${old.join(", ")} to 0.20.0 or later: older versions drop env files when they save a project, so none are saved until then`
     : undefined;

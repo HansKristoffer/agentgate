@@ -16,7 +16,7 @@ import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin, status as desktopStatus } from "./desktop.ts";
 import { Changes } from "./changes.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Kind, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, nodesBelow, PORT, sqliteDetail, type Kind, type Store } from "./store.ts";
 import {
   PULL_INTERVAL,
   drainPulls,
@@ -309,13 +309,13 @@ export async function serve(
   // Once the port is ours no other daemon serves this store, and this one has served nothing yet: anything still
   // pending belonged to a daemon that is gone.
   interruptPending(s);
-  // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate), and which
-  // release it runs, so the app can offer to update the nodes left behind.
+  // Tell other nodes which sync features this daemon keeps (see `nodesBelow` in store.ts), and which release it runs,
+  // so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);
-  if (me && ((me.protocol ?? 0) < NODE_PROTOCOL || me.version !== packageInfo.version))
+  if (me && (nodesBelow(s, NODE_PROTOCOL).includes(me.id) || me.version !== packageInfo.version))
     s.put("node", s.nodeId, {
       ...me,
-      protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL),
+      protocol: Math.max(me.protocol ?? NODE_PROTOCOL, NODE_PROTOCOL),
       version: packageInfo.version,
     });
   let tailnet: ReturnType<typeof listen> | undefined;

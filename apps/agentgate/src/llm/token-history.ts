@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { groupBy, typedEntries } from "hanzio";
 import { listClaudeCodeFiles, listCodexFiles, parseClaudeCodeFile, parseCodexFile } from "llm-usage-extraction";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR } from "../setup.ts";
-import { parseData, type Data, type Rec, type Store } from "../store.ts";
+import { nodesBelow, parseData, type Data, type Rec, type Store } from "../store.ts";
 import type { Tokens } from "./telemetry.ts";
 
 const HOUR = 3_600_000,
@@ -130,8 +130,7 @@ function foldTokens(s: Store) {
  * holds the login reads it. */
 export function publishTokens(s: Store) {
   // An older daemon stalls its Tailscale sync on a record kind it does not know.
-  const nodes = s.list("node");
-  if (!nodes.some((n) => n.id === s.nodeId) || nodes.some((n) => (n.protocol ?? 0) < TOKENS_PROTOCOL)) return;
+  if (!s.has("node", s.nodeId) || nodesBelow(s, TOKENS_PROTOCOL).length) return;
   const from = Number(s.local("tokens:published") ?? 0);
   const rows = s.db
     .query<Data<"tokens">["rows"][number] & { account: string | null }, [number]>(
