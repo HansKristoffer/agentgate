@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import type { FactoryReport, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
 import { writeBack } from "../src/factory/outbox.ts";
@@ -304,7 +304,15 @@ test("triage posts one comment with the template, the marker, defused mentions a
   expect(await n.report(first!, { ...triaged, summary })).toEqual({ accepted: true });
   expect(n.posts()).toHaveLength(taken + 1);
   const post = n.posts().at(-1);
-  expect(post!.args).toEqual(["api", `repos/${n.repo}/issues/1/comments`, "--method", "POST", "--input", "-"]);
+  expect(post!.args).toEqual([
+    "api",
+    `repos/${n.repo}/issues/1/comments`,
+    "--method",
+    "POST",
+    "--input",
+    "-",
+    "--include",
+  ]);
   const body: string = JSON.parse(post!.stdin!).body;
   const [text] = body.split(`\n\n${MARKER_PREFIX}`);
   expect(text).toStartWith(
@@ -412,6 +420,60 @@ test("a comment claimed while gh is offline or logged out is sent once gh reache
   n.github.fail = undefined;
   await outboxPass(n);
   expect(n.github.issues.get(2)!.comments).toEqual([]);
+});
+
+/** A `gh api --include` call GitHub answered with an error status, as gh prints it: headers and body on stdout. */
+const ghError = (status: string, headers: string[], message: string) =>
+  ghAnswer({
+    exit: 1,
+    stdout: `HTTP/2.0 ${status}\r\n${headers.join("\r\n")}\r\n\r\n${JSON.stringify({ message })}`,
+    stderr: `gh: ${message} (HTTP ${status.slice(0, 3)})\n`,
+  });
+/** GitHub's secondary rate limit, which posting several comments in a row meets. */
+const SECONDARY = "You have exceeded a secondary rate limit.";
+const secondaryLimit = ghError("403 Forbidden", ["Retry-After: 60"], SECONDARY);
+
+/** gh.ts holds GitHub calls back by the system clock: each test that meets a rate limit runs at a moment of its own,
+ * long before the real time the clock returns to, so its limit has lifted for the tests after it. */
+function pinClock(at: string) {
+  let clock = Date.parse(at);
+  setSystemTime(clock);
+  cleanup.push(() => setSystemTime());
+  return (ms: number) => setSystemTime((clock += ms));
+}
+
+test("a comment GitHub's rate limit turns away is sent once the limit lifts, without counting as a refusal, and no gh call runs until then", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  await n.intake();
+  await idle(n.f);
+  const item = items.list(n.s)[0]!;
+  const advance = pinClock("2026-01-01T00:00:00Z");
+  const writeRow = () => n.s.db.query("select status, refusals from factory_writebacks where moment='triaged'").get();
+
+  n.github.fail = (args) => (args[1]?.endsWith("/1/comments") ? secondaryLimit : undefined);
+  writeBack(n.f, item, "triaged");
+  await idle(n.f);
+  const calls = n.github.calls.length;
+  // Three attempts in a row: the first met the limit, and the two passes after it are held back without asking.
+  for (let pass = 0; pass < 2; pass++) await outboxPass(n);
+  expect(n.github.calls).toHaveLength(calls);
+  expect(writeRow()).toEqual({ status: "pending", refusals: 0 });
+  await expect(gh.issueComments(n.repo, 1)).rejects.toThrow(
+    "GitHub's rate limit holds calls until 2026-01-01T00:01:00.000Z",
+  );
+  expect(n.f.events.recent(50).map((e) => e.text)).toContain(
+    `The triaged comment on ${n.key(1)}: limited (gh could not comment on ${n.repo}#1 yet: ${SECONDARY}); it is tried again`,
+  );
+
+  advance(60_000);
+  n.github.fail = undefined;
+  await outboxPass(n);
+  expect(writeRow()).toEqual({ status: "posted", refusals: 0 });
+  expect(n.github.issues.get(1)!.comments.map((c) => c.body.split("\n")[0])).toEqual([
+    `**${n.key(1)}**: The factory took this.`,
+    `**${n.key(1)}**: The factory triaged this and starts on a fix.`,
+  ]);
 });
 
 test("the issue is re-checked before every stage, and one closed on GitHub closes its item without a comment", async () => {
@@ -934,6 +996,57 @@ test("gh.ts writes: a post GitHub refused failed, one that never left this machi
   });
   expect((await reply(recorded("offline.followed"))).status).toBe("unreachable");
   expect((await reply(noAnswer)).status).toBe("uncertain");
+});
+
+test("a write is rate limited by a 429, a GraphQL RATE_LIMITED error or a 403 whose headers say so, and held back until the limit's own time; a 403 or 422 without them is a refusal", async () => {
+  const advance = pinClock("2026-02-01T00:00:00Z");
+  const comment = (answer: Answer) => {
+    stubGh(() => answer);
+    return gh.postIssueComment(SCRATCH, 4, "Hello");
+  };
+  const refused = (message: string) => ({
+    status: "failed" as const,
+    error: `GitHub refused to comment on ${SCRATCH}#4: ${message}`,
+  });
+  expect(await comment(ghError("403 Forbidden", ["X-Ratelimit-Remaining: 4999"], "Resource not accessible"))).toEqual(
+    refused("Resource not accessible"),
+  );
+  expect(await comment(ghError("422 Unprocessable Entity", [], "Validation Failed"))).toEqual(
+    refused("Validation Failed"),
+  );
+
+  // A spent primary limit lifts at its reset, in epoch seconds; until then nothing reaches gh.
+  const reset = Date.parse("2026-02-01T00:05:00Z") / 1000;
+  const spent = ghError(
+    "403 Forbidden",
+    ["X-Ratelimit-Remaining: 0", `X-Ratelimit-Reset: ${reset}`],
+    "API rate limit exceeded",
+  );
+  expect(await comment(spent)).toEqual({
+    status: "limited",
+    error: `gh could not comment on ${SCRATCH}#4 yet: API rate limit exceeded`,
+  });
+  advance(4 * 60_000);
+  const calls = stubGh(() => ok({ id: 1 }));
+  expect(await gh.postIssueComment(SCRATCH, 4, "Hello")).toEqual({
+    status: "limited",
+    error: `gh could not comment on ${SCRATCH}#4 yet: GitHub's rate limit holds calls until 2026-02-01T00:05:00.000Z`,
+  });
+  expect(calls).toEqual([]);
+  advance(60_000);
+  expect((await gh.postIssueComment(SCRATCH, 4, "Hello")).status).toBe("posted");
+
+  // Neither a 429 nor GraphQL's limit says when it lifts: a minute later it has.
+  expect((await comment(ghError("429 Too Many Requests", [], "Too many requests"))).status).toBe("limited");
+  advance(60_000);
+  stubGh(() => ({
+    ok: false,
+    exit: 1,
+    out: JSON.stringify({ errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] }),
+  }));
+  expect((await gh.replyToConversation("PRRT_kwDOVpGbC861ncLB", "Fixed.")).status).toBe("limited");
+  advance(60_000);
+  expect((await comment(ok({ id: 1 }))).status).toBe("posted");
 });
 
 test("review requests skip the PR's author, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {

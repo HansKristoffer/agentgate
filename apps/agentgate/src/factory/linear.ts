@@ -31,12 +31,13 @@ type LinearSource = Extract<FactorySource, { type: "linear" }>;
 class LinearError extends Error {
   override name = "LinearError";
   /**
-   * What became of the call. `refused`: Linear answered no, so it applied nothing. `unreachable`: the request
-   * certainly never reached Linear. `unknown`: no answer said either way, so a mutation may have been applied.
+   * What became of the call. `refused`: Linear answered no, so it applied nothing. `limited`: Linear's rate limit
+   * turned it away, or this daemon holds calls back while that limit lasts, so nothing was applied. `unreachable`: the
+   * request certainly never reached Linear. `unknown`: no answer said either way, so a mutation may have been applied.
    */
   constructor(
     message: string,
-    readonly outcome: "refused" | "unreachable" | "unknown" = "refused",
+    readonly outcome: "refused" | "limited" | "unreachable" | "unknown" = "refused",
   ) {
     super(message);
   }
@@ -46,10 +47,33 @@ class LinearError extends Error {
  * them, because the request may have arrived first. */
 const NO_CONNECTION = ["ECONNREFUSED", "ENOTFOUND"];
 
+/** How long calls wait after a rate limit that does not say when it lifts. */
+const PAUSE = 60_000;
+/** Until when this daemon sends Linear nothing: one rate limit holds back every loop's calls, not only the one that
+ * met it. */
+const pauseOf = (f: FactoryRuntime) => f.memory("linear rate limit", () => ({ until: 0 }));
+
 const graphqlResponse = z.object({
   data: z.unknown().optional(),
-  errors: z.array(z.object({ message: z.string().optional() })).optional(),
+  errors: z
+    .array(
+      z.object({
+        message: z.string().optional(),
+        extensions: z.object({ code: z.string().optional() }).optional(),
+      }),
+    )
+    .optional(),
 });
+
+/** When a rate limit Linear answered lifts, or undefined when the answer is no rate limit: HTTP 429 or a `RATELIMITED`
+ * error code, with `retry-after` in seconds or `x-ratelimit-requests-reset` in epoch milliseconds. */
+function limitLifts(f: FactoryRuntime, status: number, headers: Headers, body?: z.infer<typeof graphqlResponse>) {
+  if (status !== 429 && !body?.errors?.some((e) => e.extensions?.code === "RATELIMITED")) return undefined;
+  const retry = headers.get("retry-after");
+  if (retry !== null && Number(retry) >= 0) return f.s.now() + Number(retry) * 1000;
+  const reset = Number(headers.get("x-ratelimit-requests-reset"));
+  return reset > 0 ? reset : f.s.now() + PAUSE;
+}
 
 /** Linear's own text, cut short, with the key taken out in case a message ever echoes it. */
 const scrub = (text: string, apiKey: string) => {
@@ -64,8 +88,12 @@ async function graphql<T>(
   query: string,
   variables: Record<string, unknown>,
 ): Promise<T> {
+  const pause = pauseOf(f);
+  if (f.s.now() < pause.until)
+    throw new LinearError(`Linear's rate limit holds calls until ${new Date(pause.until).toISOString()}`, "limited");
   const signal = AbortSignal.any([f.ctx.abort.signal, AbortSignal.timeout(TIMEOUT)]);
   let status = 0;
+  let headers = new Headers();
   let text: string;
   try {
     const res = await linearApi.fetch(ENDPOINT, {
@@ -75,6 +103,7 @@ async function graphql<T>(
       signal,
     });
     status = res.status;
+    headers = res.headers;
     text = await res.text();
   } catch (e) {
     // The error itself could name the request, so only its code is read.
@@ -93,9 +122,17 @@ async function graphql<T>(
   } catch {
     // Not GraphQL: reported by status below.
   }
+  const message = body?.errors?.find((e) => e.message)?.message;
+  const lifts = limitLifts(f, status, headers, body);
+  if (lifts !== undefined) {
+    pause.until = Math.max(pause.until, lifts);
+    throw new LinearError(
+      message ? `Linear: ${scrub(message, apiKey)}` : "Linear's rate limit turned the call away",
+      "limited",
+    );
+  }
   // A GraphQL error or a 4xx means Linear did not apply the call; a 5xx or a 2xx we cannot read might have.
   const ok = status >= 200 && status < 300;
-  const message = body?.errors?.find((e) => e.message)?.message;
   if (message) throw new LinearError(`Linear: ${scrub(message, apiKey)}`, status >= 500 ? "unknown" : "refused");
 
   const data = schema.safeParse(body?.data);
@@ -253,6 +290,7 @@ async function post(f: FactoryRuntime, item: FactoryItem, body: string): Promise
   } catch (e) {
     if (!(e instanceof LinearError)) throw e;
     if (e.outcome === "refused") return { status: "failed", error: e.message };
+    if (e.outcome === "limited") return { status: "limited", error: e.message };
     // Anything else is safe to send again, unless the mutation may have arrived.
     return { status: e.outcome === "unknown" && mutating ? "uncertain" : "unreachable", error: e.message };
   }

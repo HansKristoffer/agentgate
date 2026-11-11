@@ -274,6 +274,45 @@ test("a comment Linear never received is sent again until it goes through; one w
   expect(texts()).toContain("The closed comment on eng-42: failed (Linear: Argument Validation Error)");
 });
 
+test("a comment Linear's rate limit turns away is sent once the limit lifts, without counting as a refusal, and Linear hears nothing until then", async () => {
+  const n = await factoryNode(cleanup, { config: linearConfig });
+  setSecret(n.s, "LINEAR_KEY", KEY);
+  const linear = fakeLinear();
+  linear.add("ENG-42");
+  await n.intake();
+  await idle(n.f);
+  const item = items.byExternal(n.s, "ENG-42")!;
+  const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
+  const writeRow = () => n.s.db.query("select status, refusals from factory_writebacks where moment='triaged'").get();
+
+  // Linear answers a rate limit as a GraphQL error with its own code, and says nothing of when it lifts.
+  linear.answerWith((operation) =>
+    operation === "FactoryComment"
+      ? Response.json(
+          { errors: [{ message: "Rate limit exceeded", extensions: { code: "RATELIMITED" } }] },
+          { status: 400 },
+        )
+      : undefined,
+  );
+  writeBack(n.f, item, "triaged");
+  await idle(n.f);
+  const requests = linear.requests.length;
+  for (let pass = 0; pass < 2; pass++) {
+    await loopTask(n.f, outbox)();
+    await idle(n.f);
+  }
+  expect(linear.requests).toHaveLength(requests);
+  expect(writeRow()).toEqual({ status: "pending", refusals: 0 });
+  expect(await statusOf(n, item.id, "triaged")).toBe("pending");
+
+  n.advance(60_000);
+  linear.answerWith(undefined);
+  await loopTask(n.f, outbox)();
+  await idle(n.f);
+  expect(writeRow()).toEqual({ status: "posted", refusals: 0 });
+  expect(linear.issues.get("ENG-42")!.comments).toHaveLength(2);
+});
+
 test("a missing API key shows on the source's row without a request, and Linear's errors never carry the key", async () => {
   const n = await factoryNode(cleanup, { config: linearConfig });
   const linear = fakeLinear();

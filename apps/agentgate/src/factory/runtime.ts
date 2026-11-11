@@ -133,9 +133,10 @@ export interface IncomingItem {
 }
 /** How a write to a source ended, which decides what the outbox does next (outbox.ts). `failed`: the service refused
  * it, so nothing was written. `unreachable`: the request certainly never reached the service, so sending it again is
- * safe. `uncertain`: no answer said either way, so it may have been written. */
+ * safe. `limited`: the service's rate limit turned it away, so nothing was written and it is sent later. `uncertain`:
+ * no answer said either way, so it may have been written. */
 export interface PostResult {
-  status: "posted" | "failed" | "unreachable" | "uncertain";
+  status: "posted" | "failed" | "unreachable" | "limited" | "uncertain";
   error?: string;
 }
 export interface SourceAdapter {
