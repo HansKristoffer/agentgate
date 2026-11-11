@@ -4,6 +4,7 @@ import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
 import { proxy, recordUsage } from "../src/llm/pool.ts";
 import { route } from "../src/llm/routing.ts";
+import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
@@ -12,6 +13,7 @@ import { Store } from "../src/store.ts";
 type Mode = "ok" | "quota" | "rate-once" | "unmetered" | "disk-full";
 let modes: Record<string, Mode> = {};
 let seen: string[] = [];
+let bodies: string[] = [];
 const soon = Math.floor(Date.now() / 1000) + 3600;
 const later = Math.floor(Date.now() / 1000) + 7200;
 
@@ -50,9 +52,11 @@ const upstream = Bun.serve({
       s.db.run = () => {
         throw new Error("database or disk is full");
       };
-    const body = (await req.json()) as any;
+    const raw = await req.text();
+    bodies.push(raw);
+    const body = JSON.parse(raw) as { metadata?: { user_id?: string } };
     return new Response(
-      `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta") })}\n\n`,
+      `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta"), usage: { input_tokens: 1 } })}\n\n`,
       {
         headers: { ...(mode === "unmetered" ? {} : quota), "content-type": "text/event-stream" },
       },
@@ -73,6 +77,7 @@ afterEach(() => s?.close());
 beforeEach(() => {
   modes = {};
   seen = [];
+  bodies = [];
   s = new Store(":memory:");
   s.setLocal("node", "n1");
   for (const [id, prio] of [
@@ -96,7 +101,13 @@ beforeEach(() => {
   );
 });
 
-const send = () =>
+const send = (
+  body = JSON.stringify({
+    model: "claude-sonnet-4-5",
+    metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" },
+  }),
+  headers: Record<string, string> = {},
+) =>
   proxy(
     s,
     creds,
@@ -107,11 +118,9 @@ const send = () =>
         "content-type": "application/json",
         authorization: "Bearer agentgate",
         "anthropic-beta": "claude-code-20250219",
+        ...headers,
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" },
-      }),
+      body,
     }),
     "/v1/messages?beta=true",
   );
@@ -126,6 +135,31 @@ test("forwards with the account's token, oauth beta and account uuid; records qu
   const u = s.get("usage", "a")!;
   expect(u.windows.find((w) => w.name === "5h")!.usedPct).toBeCloseTo(42);
   expect(s.local("active:claude")).toBe("a");
+});
+
+test("a body whose user_id already names the account is forwarded byte for byte", async () => {
+  const body = '{ "model": "claude-sonnet-4-5",\n  "metadata": { "user_id": "user_abc_account_uuid-a_session_xyz" } }';
+  await (await send(body)).text();
+  expect(bodies).toEqual([body]);
+});
+
+test("a Claude session's affinity and usage both follow its X-Claude-Code-Session-Id", async () => {
+  s.put("setting", "settings", {
+    ...s.settings(),
+    strategy: "round-robin",
+    sessionAffinity: true,
+    factory: { store: "github", repo: "acme/factory", path: "", node: "n1" },
+  });
+  // Each request's metadata names a different session; only the header is the same.
+  for (const metadata of ["first", "second"])
+    await (
+      await send(
+        JSON.stringify({ model: "claude-sonnet-4-5", metadata: { user_id: JSON.stringify({ session_id: metadata }) } }),
+        { "x-claude-code-session-id": "header-session" },
+      )
+    ).text();
+  expect(seen).toEqual(["tok-a", "tok-a"]);
+  expect(sessionUsage(s, ["header-session"])).toMatchObject([{ session: "header-session", requests: 2 }]);
 });
 
 test("a quota 429 is retried on the next account; the client never sees it", async () => {
@@ -204,7 +238,7 @@ test("whenExhausted fail returns 429 with retry-after of the earliest reset", as
   const retry = Number(res.headers.get("retry-after"));
   expect(retry).toBeGreaterThan(3500);
   expect(retry).toBeLessThanOrEqual(3600);
-  expect(((await res.json()) as any).error.type).toBe("rate_limit_error");
+  expect(await res.json()).toMatchObject({ error: { type: "rate_limit_error" } });
 });
 
 test("pinned account wins while it is a candidate", async () => {

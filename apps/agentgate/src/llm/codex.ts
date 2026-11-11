@@ -1,12 +1,20 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { isRecord } from "hanzio";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
-import { jwtClaims, tokenRequest, type Tokens } from "../credentials.ts";
-import { saveAccount } from "../operations.ts";
-import type { Store } from "../store.ts";
-import type { Observation, Provider, Window } from "./provider.ts";
+import { tokenRequest } from "../credentials.ts";
+import type { Credential, Store } from "../store.ts";
+import { fetchJson } from "./http.ts";
+import {
+  jwtClaims,
+  loginInTempDir,
+  toTokens,
+  upsertAccount,
+  type Observation,
+  type Provider,
+  type Window,
+} from "./provider.ts";
 import { codexSession } from "./sessions.ts";
-import { fetchHeaders, readBody } from "../runtime.ts";
 
 // Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
 export const CODEX = {
@@ -22,15 +30,8 @@ export const CODEX = {
 
 const AUTH_CLAIM = "https://api.openai.com/auth";
 
-function toTokens(t: { access_token: string; refresh_token?: string }, previousRefresh = ""): Tokens {
-  const exp = jwtClaims(t.access_token).exp;
-  return {
-    accessToken: t.access_token,
-    refreshToken: t.refresh_token ?? previousRefresh,
-    expiresAt:
-      typeof exp === "number" && Number.isFinite(exp) && exp > 0 ? Math.floor(exp * 1000) : Date.now() + 3600_000,
-  };
-}
+const text = (value: unknown) => (typeof value === "string" && value ? value : undefined);
+const record = (value: unknown) => (isRecord(value) ? value : undefined);
 
 /** Windows are named by their length, never by the primary/secondary slot they arrive in. */
 function windowName(minutes: number, family: string): string {
@@ -45,17 +46,15 @@ export const codex: Provider = {
     /^\/backend-api\/codex\/models(?:\?|$)/.test(path) ? { collection: "models", id: "slug" } : undefined,
   fetchQuota: async (credential, signal) => parseQuota(await readCodex(CODEX.usagePath, credential, signal)),
   discoverModels: async (credential, signal) => {
-    const payload = await readCodex(CODEX.modelsPath, credential, signal);
-    const models = payload.models ?? payload.data;
+    const payload = record(await readCodex(CODEX.modelsPath, credential, signal));
+    const models = payload?.models ?? payload?.data;
     if (!Array.isArray(models)) throw new Error("Unrecognized model response");
-    return models.flatMap((m: { slug?: unknown; id?: unknown }) =>
-      typeof (m.slug ?? m.id) === "string" ? [String(m.slug ?? m.id)] : [],
-    );
+    return models.flatMap((m) => {
+      const id = record(m)?.slug ?? record(m)?.id;
+      return typeof id === "string" ? [id] : [];
+    });
   },
-  session: (headers) => {
-    const id = codexSession(headers);
-    return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
-  },
+  session: codexSession,
   stateful: (body) => typeof body?.previous_response_id === "string" && !!body.previous_response_id,
   classifyFailure: (status, _headers, body) =>
     (status === 404 || status === 400) && /model_not_found|model_not_supported/.test(body)
@@ -120,19 +119,19 @@ export const codex: Provider = {
       refresh_token: refreshToken,
       scope: "openid profile email",
     });
-    return toTokens(t, refreshToken);
+    return toTokens(t.access_token, t.refresh_token ?? refreshToken);
   },
 };
 
-async function readCodex(path: string, credential: import("../store.ts").Credential, signal: AbortSignal) {
-  const headers = new Headers({ authorization: `Bearer ${credential.accessToken}`, accept: "application/json" });
-  if (credential.chatgptAccountId) headers.set(CODEX.accountHeader, credential.chatgptAccountId);
-  const result = await fetchHeaders(CODEX.api + path, { headers, signal, redirect: "manual" }, 10000);
-  if (!result.ok) {
-    await result.body?.cancel();
-    throw new Error("Codex read-only check failed");
-  }
-  return JSON.parse(new TextDecoder().decode(await readBody(result.body, 256 * 1024, signal)));
+function readCodex(path: string, credential: Credential, signal: AbortSignal) {
+  return fetchJson(CODEX.api + path, credential.accessToken, () => "Codex read-only check failed", {
+    headers: {
+      accept: "application/json",
+      ...(credential.chatgptAccountId && { [CODEX.accountHeader]: credential.chatgptAccountId }),
+    },
+    signal,
+    redirect: "manual",
+  });
 }
 export function parseQuota(payload: unknown): Observation | undefined {
   const object = payload as {
@@ -234,25 +233,17 @@ function save(
   label?: string,
 ) {
   if (!t.refresh_token) throw new Error("login did not issue a refresh token");
-  const claims = jwtClaims(t.id_token ?? "");
-  const auth = claims[AUTH_CLAIM] ?? jwtClaims(t.access_token)[AUTH_CLAIM] ?? {};
-  const chatgptAccountId: string | undefined = t.account_id ?? auth.chatgpt_account_id;
-  const email: string | undefined = claims.email;
+  const claims = jwtClaims(t.id_token);
+  const auth = record(claims[AUTH_CLAIM]) ?? record(jwtClaims(t.access_token)[AUTH_CLAIM]);
+  const chatgptAccountId = t.account_id ?? text(auth?.chatgpt_account_id);
+  const email = text(claims.email);
   const id = `codex-${(chatgptAccountId ?? crypto.randomUUID()).replace(/-/g, "").slice(0, 8)}${email ? "-" + email.split("@")[0]!.replace(/\W/g, "").slice(0, 8) : ""}`;
-  const prev = s.get("account", id);
-  return saveAccount(
+  return upsertAccount(
     s,
-    {
-      ...prev,
-      id,
-      provider: "codex",
-      enabled: prev?.enabled ?? true,
-      priority: prev?.priority ?? 0,
-      label: label ?? prev?.label ?? email ?? id,
-      email,
-      plan: auth.chatgpt_plan_type,
-    },
-    { accountId: id, ...toTokens(t), chatgptAccountId, holder: s.nodeId },
+    "codex",
+    id,
+    { label, email, plan: text(auth?.chatgpt_plan_type) },
+    { ...toTokens(t.access_token, t.refresh_token), chatgptAccountId },
   );
 }
 
@@ -262,12 +253,9 @@ export function detect(
   dir = process.env.CODEX_HOME ?? join(homedir(), ".codex"),
 ): { email: string; plan?: string } | undefined {
   try {
-    const claims = jwtClaims(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")).tokens?.id_token) as
-      { email?: unknown; "https://api.openai.com/auth"?: { chatgpt_plan_type?: unknown } } | undefined;
-    const plan = claims?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
-    return typeof claims?.email === "string"
-      ? { email: claims.email, plan: typeof plan === "string" ? plan : undefined }
-      : undefined;
+    const claims = jwtClaims(JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")).tokens?.id_token);
+    const email = text(claims.email);
+    return email ? { email, plan: text(record(claims[AUTH_CLAIM])?.chatgpt_plan_type) } : undefined;
   } catch {
     return undefined;
   }
@@ -285,22 +273,12 @@ export async function importFrom(s: Store, dir: string, label?: string) {
 }
 
 /** `agentgate login codex`: the official login in a throwaway CODEX_HOME, then import and delete it. */
-export async function login(s: Store, label?: string) {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-codex-"));
-  let imported = false;
-  try {
-    writeFileSync(join(dir, "config.toml"), 'cli_auth_credentials_store = "file"\n');
-    const p = Bun.spawn(["codex", "login"], {
-      env: { ...process.env, CODEX_HOME: dir },
-      stdio: ["inherit", "inherit", "inherit"],
-    });
-    if ((await p.exited) !== 0) throw new Error("codex login failed");
-    const id = await importFrom(s, dir, label);
-    imported = true;
-    return id;
-  } catch (e) {
-    throw new Error(`Login was not imported: ${e}. Temporary login retained at ${dir}; retry import from that folder.`);
-  } finally {
-    if (imported) rmSync(dir, { recursive: true, force: true });
-  }
+export function login(s: Store, label?: string) {
+  return loginInTempDir(
+    "codex",
+    ["codex", "login"],
+    "CODEX_HOME",
+    (dir) => importFrom(s, dir, label),
+    (dir) => writeFileSync(join(dir, "config.toml"), 'cli_auth_credentials_store = "file"\n'),
+  );
 }

@@ -1,5 +1,6 @@
 import { isRecord } from "hanzio";
 import type { Store } from "../store.ts";
+import type { ProviderName } from "./provider.ts";
 
 /** Token totals for one coding-agent session and model, so the factory can sum what a run's threads used. Node-local:
  * each machine counts the sessions it proxied, and the factory asks the machine that ran them. */
@@ -20,7 +21,7 @@ const RETENTION = 90 * 86_400_000,
   SESSION_ID = /^[\w-]{1,128}$/;
 
 /** Claude Code's session id inside `metadata.user_id`, which is either JSON or `user_…_account_<uuid>_session_<id>`. */
-export function claudeMetadataSession(body: unknown) {
+function claudeMetadataSession(body: unknown) {
   const metadata = isRecord(body) ? body.metadata : undefined,
     userId = isRecord(metadata) ? metadata.user_id : undefined;
   if (typeof userId !== "string") return undefined;
@@ -33,21 +34,20 @@ export function claudeMetadataSession(body: unknown) {
   return userId.match(/_session_([\w-]{1,128})$/)?.[1];
 }
 
+/** Claude Code names its session in a header; older versions only inside `metadata.user_id`. */
+export function claudeSession(headers: Headers, body: unknown) {
+  return headers.get("x-claude-code-session-id") ?? claudeMetadataSession(body);
+}
+
 export function codexSession(headers: Headers) {
   const id = headers.get("session_id") ?? headers.get("x-codex-session-id");
   return id && id.length <= 128 ? id : undefined;
 }
 
-/** The session id the client named, unhashed, so it matches `CLAUDE_CODE_SESSION_ID` or Codex's own id. Cursor's
- * conversation id names no agent session the factory tracks. */
-export function sessionFromRequest(provider: "claude" | "codex" | "cursor", headers: Headers, body: unknown) {
-  const id =
-    provider === "claude"
-      ? (headers.get("x-claude-code-session-id") ?? claudeMetadataSession(body))
-      : provider === "codex"
-        ? codexSession(headers)
-        : undefined;
-  return id && SESSION_ID.test(id) ? id : undefined;
+/** The session id to count usage under: the client's own, unhashed, so it matches `CLAUDE_CODE_SESSION_ID` or Codex's
+ * own id. Cursor's conversation id names no agent session the factory tracks. */
+export function trackedSession(provider: ProviderName, id: string | undefined) {
+  return provider !== "cursor" && id && SESSION_ID.test(id) ? id : undefined;
 }
 
 const ready = new WeakSet<Store>();

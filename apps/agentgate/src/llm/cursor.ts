@@ -3,11 +3,11 @@ import { clamp, isRecord, safeJsonParse } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type Credentials, InvalidGrant, jwtClaims, pkce, type Tokens } from "../credentials.ts";
-import { saveAccount } from "../operations.ts";
+import { type Credentials, InvalidGrant, pkce, type Tokens } from "../credentials.ts";
 import { fetchHeaders, readBody, sleep } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import type { Observation, Provider } from "./provider.ts";
+import { fetchJson } from "./http.ts";
+import { jwtClaims, toTokens, upsertAccount, type Observation, type Provider } from "./provider.ts";
 
 // Undocumented upstream details from the Cursor CLI and IDE bundles, kept in one place. Mutable so tests can point them at fakes.
 export const CURSOR = {
@@ -22,18 +22,8 @@ export const CURSOR = {
   historySpan: 366 * 86400_000,
 };
 
-function toTokens(accessToken: string, refreshToken: string): Tokens {
-  const exp = jwtClaims(accessToken).exp;
-  return {
-    accessToken,
-    refreshToken,
-    expiresAt:
-      typeof exp === "number" && Number.isFinite(exp) && exp > 0 ? Math.floor(exp * 1000) : Date.now() + 3600_000,
-  };
-}
-
 /** A Connect unary call in Cursor's JSON encoding. `path` is the service method, such as `/agent.v1.AgentService/GetUsableModels`. */
-async function connect(
+function connect(
   path: string,
   accessToken: string,
   signal: AbortSignal,
@@ -41,22 +31,20 @@ async function connect(
   timeoutMs = 10_000,
   maxBytes = 256 * 1024,
 ) {
-  const headers = {
-    authorization: `Bearer ${accessToken}`,
-    "content-type": "application/json",
-    "connect-protocol-version": "1",
-    "x-cursor-client-type": "cli",
-  };
-  const res = await fetchHeaders(
+  return fetchJson(
     `${CURSOR.api}${path}`,
-    { method: "POST", headers, body, signal, redirect: "manual" },
-    timeoutMs,
+    accessToken,
+    (status) => `Cursor ${path.split("/").pop()} failed (${status})`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json", "connect-protocol-version": "1", "x-cursor-client-type": "cli" },
+      body,
+      signal,
+      redirect: "manual",
+      timeoutMs,
+      maxBytes,
+    },
   );
-  if (!res.ok) {
-    await res.body?.cancel();
-    throw new Error(`Cursor ${path.split("/").pop()} failed (${res.status})`);
-  }
-  return JSON.parse(new TextDecoder().decode(await readBody(res.body, maxBytes, signal)));
 }
 
 function dashboard(method: string, accessToken: string, signal: AbortSignal) {
@@ -132,7 +120,7 @@ export const cursor: Provider = {
   rewriteModel,
   session: (_headers, body) => {
     const id = text(body?.conversationId);
-    return id && id.length <= 128 ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
+    return id && id.length <= 128 ? id : undefined;
   },
   probe: { path: "/aiserver.v1.AiService/TestModelStatus", body: (model) => ({ modelName: model }) },
   prepare(path, headers, body, cred) {
@@ -199,34 +187,15 @@ export async function finish(
 
 async function save(s: Store, tokens: Tokens, label?: string) {
   const signal = AbortSignal.timeout(10_000);
-  const me = (await dashboard("GetMe", tokens.accessToken, signal).catch(() => ({}))) as {
-    authId?: unknown;
-    email?: unknown;
-  };
+  const me = record(await dashboard("GetMe", tokens.accessToken, signal).catch(() => undefined));
   const plan = await dashboard("GetPlanInfo", tokens.accessToken, signal).then(
-    (p) => p?.planInfo?.planName,
+    (p) => text(record(record(p)?.planInfo)?.planName),
     () => undefined,
   );
-  const subject = typeof me.authId === "string" && me.authId ? me.authId : jwtClaims(tokens.accessToken).sub;
-  if (typeof subject !== "string" || !subject) throw new Error("Cursor login did not identify the account");
-  const email = typeof me.email === "string" && me.email ? me.email : undefined;
-  // Same Cursor account signed in twice → same record, fresh tokens.
+  const subject = text(me?.authId) ?? text(jwtClaims(tokens.accessToken).sub);
+  if (!subject) throw new Error("Cursor login did not identify the account");
   const id = `cursor-${new Bun.CryptoHasher("sha256").update(subject).digest("hex").slice(0, 8)}`;
-  const prev = s.get("account", id);
-  return saveAccount(
-    s,
-    {
-      ...prev,
-      id,
-      provider: "cursor",
-      enabled: prev?.enabled ?? true,
-      priority: prev?.priority ?? 0,
-      label: label ?? prev?.label ?? email ?? id,
-      email: email ?? prev?.email,
-      plan: typeof plan === "string" && plan ? plan : prev?.plan,
-    },
-    { accountId: id, ...tokens, holder: s.nodeId },
-  );
+  return upsertAccount(s, "cursor", id, { label, email: text(me?.email), plan }, tokens);
 }
 
 /** Who the Cursor CLI is signed in as on this machine. Reads only its settings file, never the Keychain or tokens. */
@@ -341,9 +310,7 @@ export async function usageHistory(
   until: number,
   signal: AbortSignal,
 ): Promise<Hourly> {
-  const userId = String(jwtClaims(accessToken).sub ?? "")
-    .split("|")
-    .at(-1);
+  const userId = (text(jwtClaims(accessToken).sub) ?? "").split("|").at(-1);
   if (!userId || !/^[\w-]+$/.test(userId)) throw new Error("Cursor login did not identify the account");
   const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`;
   const hours: Hourly = new Map(),

@@ -8,6 +8,7 @@ import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody
 import type { Store } from "../store.ts";
 import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
+import { PLACEHOLDER_TOKEN } from "../setup.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
 import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
 import {
@@ -23,10 +24,9 @@ import {
   resolveModel,
   route,
 } from "./routing.ts";
-import { recordSessionUsage, sessionFromRequest } from "./sessions.ts";
+import { recordSessionUsage, trackedSession } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
-export const PLACEHOLDER_TOKEN = "agentgate";
 /** Rate-limit waits up to this long retry the same account; longer ones move to the next account. */
 const SHORT_RATE_WAIT = 5000;
 /** Since when a provider's responses have carried no quota headers, per provider. */
@@ -140,9 +140,11 @@ export async function proxy(
   for (const key of HOP_HEADERS) headers.delete(key);
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
     own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
-  const session = provider.session?.(req.headers, json);
+  // One id serves affinity, which keys on its hash, and session usage, which counts under it as the client named it.
+  const clientSession = provider.session?.(req.headers, json);
+  const session = clientSession && new Bun.CryptoHasher("sha256").update(clientSession).digest("hex");
   // Session usage counts the factory's runs; with the factory off nothing reads it, so nothing is written.
-  const usageSession = settings.factory ? sessionFromRequest(provider.name, req.headers, json) : undefined;
+  const usageSession = settings.factory ? trackedSession(provider.name, clientSession) : undefined;
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount =
     options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);
@@ -319,7 +321,7 @@ export async function proxy(
       rateRetries = 0;
     for (;;) {
       if (budget.signal.aborted) break;
-      const up = provider.prepare(path, new Headers(headers), body, credential);
+      const up = provider.prepare(path, new Headers(headers), body, credential, json);
       const attempt = attemptOn(account.id, decision.reason),
         elapsed = startTimer();
       const release = beginRoute(s, provider.name, account.id, session);

@@ -277,14 +277,6 @@ export async function pkce() {
   return { verifier, challenge, state: randomToken(32) };
 }
 
-export function jwtClaims(jwt: string): Record<string, any> {
-  try {
-    return JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString());
-  } catch {
-    return {};
-  }
-}
-
 /** POST a token request; maps OAuth errors that mean "this refresh token is dead" to InvalidGrant. */
 const tokenResponse = z.object({
   access_token: z.string().min(1),

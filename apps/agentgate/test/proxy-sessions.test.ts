@@ -1,5 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
+import { claude } from "../src/llm/claude.ts";
+import { codex } from "../src/llm/codex.ts";
 import { proxy } from "../src/llm/pool.ts";
 import type { Provider } from "../src/llm/provider.ts";
 import { recordSessionUsage, sessionUsage, trimSessionUsage } from "../src/llm/sessions.ts";
@@ -57,6 +59,7 @@ function upstream(stream: string) {
 
 const adapter = (name: "claude" | "codex"): Provider => ({
   name,
+  session: name === "claude" ? claude.session : codex.session,
   prepare: (path, headers, body, c) => {
     headers.set("authorization", c.accessToken);
     return { url: path, headers, body };
