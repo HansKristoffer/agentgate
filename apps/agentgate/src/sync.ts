@@ -1,7 +1,8 @@
 import { Hono } from "hono";
-import { trimTrailingSlash } from "hanzio";
+import { recordFromKeys, trimTrailingSlash } from "hanzio";
 import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
+import { PEER_TOPICS, type Changes, type PeerTopic } from "./changes.ts";
 import { defineLocal } from "./local-state.ts";
 import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
@@ -252,8 +253,78 @@ export function poke(s: Store) {
     }).catch(() => {});
 }
 
-/** Routes served on the tailnet listener. */
-export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer(s, p).catch(() => {})) {
+const TOPICS_WAIT = 25_000;
+const topicsAnswer = z.object({
+  token: z.string().max(200),
+  versions: z.object(recordFromKeys(PEER_TOPICS, () => z.number())),
+});
+
+/** While an app waits on this daemon's `/api/changes`, one long-poll to each peer seen in the last minute turns a
+ * change to that peer's factory or threads into a local one, so the app shows it within a second. With no app open
+ * nothing runs; after the last app leaves, each poll ends with its peer's next answer. Relay-only machines have no
+ * such feed; the app's slower board poll covers them. */
+export function followPeers(
+  s: Store,
+  changes: Changes,
+  signal: AbortSignal,
+  onMove: (node: string, topic: PeerTopic) => void,
+) {
+  const running = new Set<string>();
+  const retryAt = new Map<string, number>();
+  // Each peer's last answer, kept between runs, so a change made while no app waited still shows when one returns.
+  const known = new Map<string, z.infer<typeof topicsAnswer>>();
+
+  const follow = async (node: string) => {
+    try {
+      while (changes.appWaiting && !signal.aborted) {
+        // The row as it is now: the peer may have been re-paired or removed meanwhile.
+        const p = peers(s).find((x) => x.node === node);
+        if (!p) return;
+        const last = known.get(node);
+        const query = last ? `?after=${encodeURIComponent(last.token)}&wait=${TOPICS_WAIT / 1000}` : "";
+        const deadline = AbortSignal.any([AbortSignal.timeout(TOPICS_WAIT + 10_000), signal]);
+        const res = await fetchHeaders(
+          `${p.url}/peer/topics${query}`,
+          { headers: { authorization: `Bearer ${p.token}` }, signal: deadline },
+          TOPICS_WAIT + 10_000,
+        );
+        if (res.status === 404) {
+          // A release without the feed: ask again later, in case it updated.
+          await res.body?.cancel();
+          retryAt.set(node, s.now() + 10 * 60_000);
+          return;
+        }
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new Error(`topics ${node}: ${res.status}`);
+        }
+        const body = await readBody(res.body, 64 * 1024, deadline);
+        const next = topicsAnswer.parse(JSON.parse(new TextDecoder().decode(body)));
+        if (last)
+          for (const topic of PEER_TOPICS) if (next.versions[topic] !== last.versions[topic]) onMove(node, topic);
+        known.set(node, next);
+      }
+    } catch {
+      if (!signal.aborted) retryAt.set(node, s.now() + PULL_INTERVAL);
+    }
+  };
+
+  changes.onAppWaiting = () => {
+    for (const p of peers(s)) {
+      if (running.has(p.node) || s.now() < (retryAt.get(p.node) ?? 0)) continue;
+      if (s.now() - lastSeen(s, p.node) > ROUND_GAP) continue;
+      running.add(p.node);
+      void follow(p.node).finally(() => running.delete(p.node));
+    }
+  };
+}
+
+/** Routes served on the tailnet listener. `changes` serves `/topics`, which daemons follow with followPeers. */
+export function peerRoutes(
+  s: Store,
+  onPoke: (p: Peer) => void = (p) => pullPeer(s, p).catch(() => {}),
+  changes?: Changes,
+) {
   const app = new Hono<{ Variables: { peer: Peer } }>();
 
   app.post("/join", async (c) => {
@@ -318,6 +389,13 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
       seen: Object.fromEntries(Object.entries(seen).slice(0, 1000)),
     });
   });
+
+  if (changes)
+    app.get("/topics", async (c) => {
+      const wait = Math.min(TOPICS_WAIT, Math.max(0, Number(c.req.query("wait") ?? 0) * 1000 || 0));
+      await changes.waitPeer(c.req.query("after"), wait, c.req.raw.signal);
+      return c.json(changes.peerSnapshot());
+    });
 
   app.post("/poke", (c) => {
     onPoke(c.get("peer"));

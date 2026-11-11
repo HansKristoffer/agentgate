@@ -1,6 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
+import { Changes } from "../src/changes.ts";
 import { type Rec, Store } from "../src/store.ts";
+import { removeTmp } from "./fixtures/git.ts";
+import { startNodes } from "./fixtures/nodes.ts";
 import {
   listeningFor,
   pairCode,
@@ -20,6 +23,7 @@ function node(name: string) {
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterAll(() => servers.forEach((x) => x.stop(true)));
+afterAll(removeTmp);
 
 function listen(s: Store) {
   const app = new Hono().route(
@@ -410,4 +414,65 @@ test("a pull failure marks status changed once, until the peer recovers", async 
   b.db.run("update peers set url = ? where node = 'a'", [listen(a)]);
   expect(await pullAll(b)).toEqual([]);
   expect(bumps).toEqual(["status", "status"]);
+});
+
+test("/peer/topics needs the peer token and holds the answer until this machine's own factory or threads change", async () => {
+  const s = node("a");
+  s.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
+  const changes = new Changes(s);
+  const routes = new Hono().route(
+    "/peer",
+    peerRoutes(s, () => {}, changes),
+  );
+  const topics = async (query = "", token = "tok") =>
+    routes.request(`/peer/topics${query}`, { headers: { authorization: `Bearer ${token}` } });
+
+  expect((await topics("", "wrong")).status).toBe(401);
+  const { token } = (await (await topics()).json()) as { token: string };
+  let answered = false;
+  const held = topics(`?after=${token}&wait=25`).then((res) => {
+    answered = true;
+    return res.json();
+  });
+  // A request without `after` answers at once; by then the held one, on the same path, is waiting.
+  await topics();
+  // Neither moves what peers follow: a status change, or a change this machine heard from another peer.
+  changes.bump("status");
+  changes.bumpFromPeer("factory");
+  await topics();
+  expect(answered).toBe(false);
+
+  changes.bump("factory");
+  expect(await held).toMatchObject({ versions: { factory: 1, threads: 0 } });
+  changes.close();
+});
+
+test("a factory change on a paired machine wakes this machine's app, and a machine with no app waiting polls no one", async () => {
+  const [a, b] = await startNodes("a", "b");
+  const polled: string[] = [];
+  let baselineTaken!: () => void;
+  const baseline = new Promise<void>((resolve) => (baselineTaken = resolve));
+  const realFetch = globalThis.fetch;
+  const spy = spyOn(globalThis, "fetch").mockImplementation(((input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes("/peer/topics")) polled.push(url);
+    // a asks with `after` once it holds b's first answer: a change from then on is one a must see.
+    if (url.includes("/peer/topics?after=")) baselineTaken();
+    return realFetch(input, init);
+  }) as typeof fetch);
+  try {
+    const app = new AbortController();
+    const before = a!.ctx.changes.snapshot();
+    const woke = a!.ctx.changes.wait(before.token, 60_000, app.signal);
+    await baseline;
+    b!.s.bump("factory");
+    await woke;
+    app.abort();
+    expect(a!.ctx.changes.snapshot().versions.factory).toBe(before.versions.factory + 1);
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled.every((url) => url.startsWith(`${b!.url}/peer/topics`))).toBe(true);
+  } finally {
+    spy.mockRestore();
+    await Promise.all([a!.stop(), b!.stop()]);
+  }
 });

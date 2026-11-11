@@ -2,6 +2,17 @@ import { TOPICS, type Topic } from "@agentgate/protocol";
 import { recordFromKeys } from "hanzio";
 import { topicsOf, type Kind, type Store } from "./store.ts";
 
+/** The topics paired machines follow from each other (`/peer/topics`), so an app on one machine shows the factory and
+ * the threads of the others as they change. */
+export const PEER_TOPICS = ["factory", "threads"] as const;
+export type PeerTopic = (typeof PEER_TOPICS)[number];
+
+interface Waiter {
+  token: () => string;
+  after: string | undefined;
+  done: () => void;
+}
+
 /** What changed in this daemon, per topic, so `/api/changes` waiters wake the moment it changes. The daemon's own writes
  * arrive through `Store.onChange`; the CLI writes the store from its own process, which only `pragma data_version`
  * notices. */
@@ -9,7 +20,12 @@ export class Changes {
   /** Random per start, so a client holding a token from before a restart sees everything as changed. */
   private readonly bootId = crypto.randomUUID().slice(0, 8);
   private readonly versions = recordFromKeys(TOPICS, () => 0);
-  private readonly waiters = new Set<() => void>();
+  /** This machine's own changes: one heard from a peer and served on to it would bounce between the two forever. */
+  private readonly own = recordFromKeys(PEER_TOPICS, () => 0);
+  private readonly waiters = new Set<Waiter>();
+  private apps = 0;
+  /** Called each time an app starts waiting on `/api/changes`: the peer feed runs only while one does. */
+  onAppWaiting?: () => void;
   private readonly listeners = new Set<(kinds: Set<Kind>) => void>();
   private readonly kinds = new Set<Kind>();
   private seq: number;
@@ -33,11 +49,13 @@ export class Changes {
 
   /** Marks a topic changed. Bumps in one tick wake waiters once (queueMicrotask). */
   bump(topic: Topic) {
-    this.versions[topic]++;
-    if (this.scheduled) return;
-    this.scheduled = true;
-    // The store calls onChange inside its transactions; read the records and wake waiters after they commit.
-    queueMicrotask(() => this.flush());
+    if (topic === "factory" || topic === "threads") this.own[topic]++;
+    this.move(topic);
+  }
+
+  /** A paired machine's factory or threads changed, which this machine's app shows too. */
+  bumpFromPeer(topic: PeerTopic) {
+    this.move(topic);
   }
 
   /** Token = `${bootId}.${sum of versions}`; versions per topic. */
@@ -46,20 +64,23 @@ export class Changes {
     return { token: `${this.bootId}.${sum}`, versions: { ...this.versions } };
   }
 
-  /** Resolves when the token differs from `after`, after `ms`, or when the signal aborts. No polling. */
+  /** What `/peer/topics` serves: this machine's own factory and thread changes. */
+  peerSnapshot() {
+    return { token: `${this.bootId}.${this.own.factory + this.own.threads}`, versions: { ...this.own } };
+  }
+
+  /** An app waits: resolves when the token differs from `after`, after `ms`, or when the signal aborts. No polling. */
   wait(after: string | undefined, ms: number, signal: AbortSignal): Promise<void> {
-    if (after !== this.snapshot().token || signal.aborted) return Promise.resolve();
-    return new Promise((resolve) => {
-      const done = () => {
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", done);
-        this.waiters.delete(done);
-        resolve();
-      };
-      const timeout = setTimeout(done, ms);
-      signal.addEventListener("abort", done);
-      this.waiters.add(done);
-    });
+    return this.park(() => this.snapshot().token, after, ms, signal, true);
+  }
+
+  /** A peer waits on `peerSnapshot`. It never counts as an app, or two machines would keep each other polling. */
+  waitPeer(after: string | undefined, ms: number, signal: AbortSignal): Promise<void> {
+    return this.park(() => this.peerSnapshot().token, after, ms, signal, false);
+  }
+
+  get appWaiting() {
+    return this.apps > 0;
   }
 
   /** Record kinds changed since the last call, for the daemon's reactions. Called after the writes commit. */
@@ -71,13 +92,46 @@ export class Changes {
   close() {
     clearInterval(this.timer);
     this.s.onChange = undefined;
+    this.onAppWaiting = undefined;
     this.listeners.clear();
-    for (const done of [...this.waiters]) done();
+    for (const w of [...this.waiters]) w.done();
+  }
+
+  private move(topic: Topic) {
+    this.versions[topic]++;
+    if (this.scheduled) return;
+    this.scheduled = true;
+    // The store calls onChange inside its transactions; read the records and wake waiters after they commit.
+    queueMicrotask(() => this.flush());
+  }
+
+  private park(token: () => string, after: string | undefined, ms: number, signal: AbortSignal, app: boolean) {
+    if (after !== token() || signal.aborted) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const waiter: Waiter = {
+        token,
+        after,
+        done: () => {
+          if (!this.waiters.delete(waiter)) return;
+          if (app) this.apps--;
+          clearTimeout(timeout);
+          signal.removeEventListener("abort", waiter.done);
+          resolve();
+        },
+      };
+      const timeout = setTimeout(waiter.done, ms);
+      signal.addEventListener("abort", waiter.done, { once: true });
+      this.waiters.add(waiter);
+      if (app) {
+        this.apps++;
+        this.onAppWaiting?.();
+      }
+    });
   }
 
   private flush() {
     this.scheduled = false;
-    for (const done of [...this.waiters]) done();
+    for (const w of [...this.waiters]) if (w.token() !== w.after) w.done();
     if (this.s.closed) return;
     try {
       this.readKinds();
