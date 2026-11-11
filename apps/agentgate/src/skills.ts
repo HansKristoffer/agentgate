@@ -5,8 +5,9 @@ import {
   type SkillRepoSummary,
   type SkillSummary,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage, getUniqueValues, safeJsonParse } from "hanzio";
-import type { z } from "zod";
+import { exponentialBackoff, getErrorMessage, getUniqueValues } from "hanzio";
+import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
 import {
   description,
@@ -259,14 +260,19 @@ const repoSkills = (s: Store, url: string) =>
   skillSummaries(s)
     .filter((k) => k.source === url)
     .map((k) => k.id);
-interface RepoState {
-  commit?: string;
-  syncedAt?: number;
-  error?: string;
-  skills?: string[];
-  skipped?: string[];
-}
-const repoState = (s: Store, url: string) => safeJsonParse<RepoState>(s.local(`skillRepo:${url}`) ?? "{}").data ?? {};
+// Each connected repository's last sync, shown in `/status`.
+const repoStates = defineLocal(
+  "skillRepo:",
+  z.object({
+    commit: z.string().optional(),
+    syncedAt: z.number().optional(),
+    error: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    skipped: z.array(z.string()).optional(),
+  }),
+  { topic: "status" },
+);
+const repoState = (s: Store, url: string) => repoStates.get(s, url) ?? {};
 
 export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
   const urls = getUniqueValues(s.list("project").flatMap((p) => p.skillRepos)).sort();
@@ -295,7 +301,7 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
     }
     if (!targets.length) {
       for (const id of ids) removeSkill(s, id);
-      s.setLocal(`skillRepo:${url}`, undefined);
+      repoStates.set(s, url, undefined);
     }
   });
 }
@@ -338,10 +344,7 @@ function applyRepo(s: Store, url: string, fetched: { commit: string; skills: Fet
       applied.push(f.id);
     }
     for (const id of repoSkills(s, url)) if (!applied.includes(id)) removeSkill(s, id);
-    s.setLocal(
-      `skillRepo:${url}`,
-      JSON.stringify({ commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped } satisfies RepoState),
-    );
+    repoStates.set(s, url, { commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped });
     return s.seq() !== before;
   });
 }
@@ -368,12 +371,10 @@ export function syncSkillRepo(
       const fetched = await fetch(url, since, signal);
       signal?.throwIfAborted();
       if (fetched) return applyRepo(s, url, fetched);
-      if (repoProjects(s, url).length)
-        s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, syncedAt: s.now(), error: undefined }));
+      if (repoProjects(s, url).length) repoStates.set(s, url, { ...state, syncedAt: s.now(), error: undefined });
       return false;
     } catch (error) {
-      if (repoProjects(s, url).length)
-        s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: getErrorMessage(error) }));
+      if (repoProjects(s, url).length) repoStates.set(s, url, { ...state, error: getErrorMessage(error) });
       throw error;
     }
   })().finally(() => flights!.delete(url));

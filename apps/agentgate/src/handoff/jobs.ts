@@ -180,8 +180,9 @@ export class Handoffs {
       .all(role ?? null) as Row[];
     return rows.map((r) => fromRow<S>(r));
   }
+  // Jobs are shown with the threads, so every write the user can see marks `threads` changed; `touch` does not.
   create<S>(job: Omit<Job<S>, "createdAt" | "updatedAt">) {
-    this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+    const { changes } = this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
       job.id,
       job.role,
       job.thread,
@@ -192,18 +193,20 @@ export class Handoffs {
       this.s.now(),
       this.s.now(),
     ]);
+    if (changes) this.s.bump("threads");
     return this.load<S>(job.role, job.id)!;
   }
   /** The job's step loop is the only writer after creation; a job that failed (an abort) is never brought back.
    * Returns false when it had failed already. */
   save<S>(job: Job<S>): boolean {
     job.updatedAt = this.s.now();
-    return (
+    const saved =
       this.s.db.run(
         "update handoffs set thread = ?, step = ?, state = ?, error = ?, updated_at = ? where role = ? and id = ? and step != 'failed'",
         [job.thread, job.step, JSON.stringify(job.state), job.error ?? null, job.updatedAt, job.role, job.id],
-      ).changes > 0
-    );
+      ).changes > 0;
+    if (saved) this.s.bump("threads");
+    return saved;
   }
 
   /** Run a job's step loop, one at a time per job; a call while it runs makes it look again afterwards. */
@@ -259,6 +262,7 @@ export class Handoffs {
       job.role,
       job.id,
     ]);
+    this.s.bump("threads");
   }
 
   /** Mark activity without taking the step loop's place as the writer (a received chunk keeps a slow upload alive). */

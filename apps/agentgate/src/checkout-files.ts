@@ -17,10 +17,11 @@ import {
 import { getErrorMessage, getUniqueValues, safeJsonParse, sortBy, trimTrailingSlash } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
+import { checkoutFileSchema, projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
 import { RELAY_LIMITS } from "@agentgate/protocol/relay";
 import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
+import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
 import { CONFIG_DIR, DEV, sqliteDetail, type Store } from "./store.ts";
 
@@ -265,14 +266,9 @@ function oldNodesError(s: Store) {
     : undefined;
 }
 
-const errorsKey = "checkoutFiles:errors";
-function storedErrors(s: Store): Record<string, string> {
-  try {
-    return JSON.parse(s.local(errorsKey) ?? "{}");
-  } catch {
-    return {};
-  }
-}
+// Shown in `/status` as `fileErrors`.
+const errorsLocal = defineLocal("checkoutFiles:errors", z.record(z.string(), z.string()), { topic: "status" });
+const storedErrors = (s: Store) => errorsLocal.get(s) ?? {};
 /** Why each project's env files are not syncing. An old node blocks every project with files, whether or not a pass
  * has had something to send since. */
 export function filesErrors(s: Store): Record<string, string> {
@@ -290,7 +286,7 @@ function report(s: Store, project: string, message: string | undefined) {
   } else {
     delete errors[project];
   }
-  s.setLocal(errorsKey, Object.keys(errors).length ? JSON.stringify(errors) : undefined);
+  errorsLocal.set(s, undefined, Object.keys(errors).length ? errors : undefined);
 }
 
 /** Name the write, so the cause in sqliteDetail shows against what failed. */
@@ -306,8 +302,8 @@ function dbWrite<T>(s: Store, what: string, fn: () => T): T {
 
 /** What this node last made the store and the record agree on, without data: a file in it that left the store was
  * deleted here. Node-local. */
-const baseKey = (project: string) => `checkoutFiles:base:${project.toLowerCase()}`;
-const createdKey = "checkoutFiles:checkouts";
+const baseLocal = defineLocal("checkoutFiles:base:", z.array(checkoutFileSchema));
+const createdLocal = defineLocal("checkoutFiles:checkouts", z.record(z.string(), z.string()));
 
 /** Bring one repository's store and record together. Returns whether the store changed. Throws StoreBusy to retry. */
 export function reconcile(s: Store, root: string, key: string): boolean {
@@ -323,12 +319,8 @@ export function reconcile(s: Store, root: string, key: string): boolean {
 
   const record = s.get("project", project);
   const remote = record?.files ?? [];
-  let base: CheckoutFile[] = [];
-  try {
-    base = JSON.parse(s.local(baseKey(project)) ?? "[]");
-  } catch {
-    // An unreadable note counts as none: nothing is taken as deleted here.
-  }
+  // An unreadable note counts as none: nothing is taken as deleted here.
+  const base = baseLocal.get(s, project.toLowerCase()) ?? [];
 
   // This store as entries, plus a deletion for each file that left it since the last pass. A missing store (a
   // cleaned-up ~/.buncargo, a restore, another HOME) says nothing about its files, so it is refilled from the record
@@ -355,7 +347,11 @@ export function reconcile(s: Store, root: string, key: string): boolean {
     );
   }
   dbWrite(s, "saving what this pass reconciled", () =>
-    s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f))),
+    baseLocal.set(
+      s,
+      project.toLowerCase(),
+      merged.map(({ data: _, ...f }) => f),
+    ),
   );
 
   let error: string | undefined;
@@ -448,7 +444,7 @@ export class CheckoutFiles {
     for (const [path, k] of Object.entries(all)) {
       if (!existsSync(path)) {
         delete all[path];
-        this.s.setLocal(createdKey, JSON.stringify(all));
+        createdLocal.set(this.s, undefined, all);
       } else if (k === key) {
         void fillCheckout(this.root!, path, key).catch((e) =>
           console.error(`checkout files: ${path}: ${getErrorMessage(e)}`),
@@ -479,16 +475,10 @@ export class CheckoutFiles {
   }
 }
 
-function createdCheckouts(s: Store): Record<string, string> {
-  try {
-    return JSON.parse(s.local(createdKey) ?? "{}");
-  } catch {
-    return {};
-  }
-}
+const createdCheckouts = (s: Store) => createdLocal.get(s) ?? {};
 /** Remember a checkout agentgate made, so later store updates reach it too. */
 export const rememberCheckout = (s: Store, path: string, key: string) =>
-  s.setLocal(createdKey, JSON.stringify({ ...createdCheckouts(s), [path]: key }));
+  createdLocal.set(s, undefined, { ...createdCheckouts(s), [path]: key });
 
 // ---------------------------------------------------------------- inside a checkout
 

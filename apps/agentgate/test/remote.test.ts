@@ -381,6 +381,20 @@ test("an endpoint the relay deleted is not pushed again until its record changes
   expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(secret));
 });
 
+test("an endpoint connecting and dropping each mark status changed", async () => {
+  const { s, relay, serve } = serving();
+  const bumps: string[] = [];
+  s.onChange = (topic) => bumps.push(topic);
+  const { endpoints } = serve();
+  const connected = () => endpoints.summary(s.get("project", "@grok")!)?.connected;
+  const socket = await relay.connected();
+  while (!connected()) await Bun.sleep(5);
+  expect(bumps).toEqual(["status"]);
+  socket.close(1000, "relay restarting");
+  while (connected()) await Bun.sleep(5);
+  expect(bumps).toEqual(["status", "status"]);
+});
+
 test("a connection replaced by another one backs off instead of taking the endpoint straight back", async () => {
   const { relay, serve } = serving();
   const { error } = serve();

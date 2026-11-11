@@ -871,6 +871,22 @@ test("target selection: the first available server by node id, here, or a node; 
   );
 });
 
+test("each step a handoff takes marks threads changed; activity and writes after a failure do not", () => {
+  const s = new Store(":memory:");
+  const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
+  const bumps: string[] = [];
+  s.onChange = (topic) => bumps.push(topic);
+  const job = h.create({ id: "j", role: "source", thread: "t", target: "srv", step: "start", state: {} });
+  expect(bumps).toEqual(["threads"]);
+  h.advance(job, "upload");
+  h.touch("source", "j");
+  expect(bumps).toEqual(["threads", "threads"]);
+  h.fail(job, "aborted");
+  h.advance(job, "upload");
+  expect(bumps).toEqual(["threads", "threads", "threads"]);
+  expect(h.load("source", "j")!.step).toBe("failed");
+});
+
 test("the handoff tools reach local sessions once T3 Code is connected, never a virtual project's public endpoint", async () => {
   const a = await node("a", tmp());
   const gateway = new Gateway(a.s);

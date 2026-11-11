@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { type Rec, Store } from "../src/store.ts";
-import { listeningFor, pairCode, peerRoutes, peers, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
+import { listeningFor, pairCode, peerRoutes, peers, pullAll, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
 
 function node(name: string) {
   const s = new Store(":memory:");
@@ -322,4 +322,24 @@ test("a joiner that lost the answer gets the same token for the same code; nobod
   expect((await join({ code: pairCode(a) })).status).toBe(409); // a new code still cannot pair b twice
   a.now = () => Date.now() + 11 * 60_000;
   expect((await join({})).status).toBe(403);
+});
+
+test("a pull failure marks status changed once, until the peer recovers", async () => {
+  const a = node("a");
+  const b = node("b");
+  const bumps: string[] = [];
+  b.onChange = (topic) => bumps.push(topic);
+  const down = Bun.serve({ port: 0, fetch: () => new Response("", { status: 503 }) });
+  servers.push(down);
+  a.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
+  b.db.run("insert into peers values ('a', ?, 'tok', 0, null)", [`http://127.0.0.1:${down.port}`]);
+
+  expect(await pullAll(b)).toHaveLength(1);
+  expect(bumps).toEqual(["status"]);
+  await pullAll(b);
+  expect(bumps).toEqual(["status"]);
+
+  b.db.run("update peers set url = ? where node = 'a'", [listen(a)]);
+  expect(await pullAll(b)).toEqual([]);
+  expect(bumps).toEqual(["status", "status"]);
 });

@@ -8,8 +8,9 @@ import {
   type remoteRequestFrame,
   type RemoteResponseFrame,
 } from "@agentgate/protocol/remote";
-import type { z } from "zod";
+import { z } from "zod";
 import { closeUnopened } from "./channel.ts";
+import { defineLocal } from "./local-state.ts";
 import type { Gateway } from "./mcp/gateway.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
@@ -130,11 +131,16 @@ export function deleteProject(s: Store, id: string) {
   });
 }
 
+const deletes = defineLocal(
+  "remote:delete",
+  z.array(z.object({ relay: z.string(), key: z.string(), token: z.string() })),
+);
+
 /** Deletes a relay endpoint best-effort: the endpoint manager retries until the relay confirms. */
 export function queueDelete(s: Store, r: { relay: string; key: string; token: string }) {
-  const queue = JSON.parse(s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
+  const queue = deletes.get(s) ?? [];
   queue.push({ relay: r.relay, key: r.key, token: r.token });
-  s.setLocal("remote:delete", JSON.stringify(queue.slice(-100)));
+  deletes.set(s, undefined, queue.slice(-100));
 }
 
 // ---------------------------------------------------------------- serving
@@ -220,7 +226,7 @@ export class RemoteEndpoints {
         c.remote = next;
         c.pushing = (c.pushing ?? Promise.resolve()).then(() =>
           this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
-            c.error = describe(e);
+            this.report(c, c.connected, describe(e));
           }),
         );
       }
@@ -323,10 +329,17 @@ export class RemoteEndpoints {
     c.ws?.close();
   }
 
+  /** Status shows each endpoint's connection and error: mark it changed when either moves, not on every retry. */
+  private report(c: Conn, connected: boolean, error: string | undefined) {
+    if (c.connected === connected && c.error === error) return;
+    c.connected = connected;
+    c.error = error;
+    this.s.bump("status");
+  }
+
   private later(c: Conn, error?: string) {
     if (c.closed || this.closed) return;
-    if (error) c.error = error;
-    c.connected = false;
+    this.report(c, false, error ?? c.error);
     clearInterval(c.ping);
     const delay = c.backoff * (0.5 + Math.random());
     c.backoff = Math.min(c.backoff * 2, 60_000);
@@ -354,8 +367,7 @@ export class RemoteEndpoints {
     c.ws = ws;
     closeUnopened(ws);
     ws.onopen = () => {
-      c.connected = true;
-      c.error = undefined;
+      this.report(c, true, undefined);
       c.openedAt = Date.now();
       c.lastPong = Date.now();
       const pingMs = 30_000;
@@ -466,7 +478,7 @@ export class RemoteEndpoints {
     } catch (e) {
       if (abort.signal.aborted) return; // the relay already answered the client
       send(failure(500, -32603, "agentgate failed to handle the request"));
-      c.error = describe(e);
+      this.report(c, c.connected, describe(e));
     } finally {
       c.inflight.delete(id);
       c.lastCall = Date.now();
@@ -476,7 +488,7 @@ export class RemoteEndpoints {
 
   /** One pass at a time: a slow relay would otherwise pile up a pass per reconcile. */
   private drainDeletes = serialTask(async () => {
-    const queue = JSON.parse(this.s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
+    const queue = deletes.get(this.s) ?? [];
     if (!queue.length) return;
     const left: typeof queue = [];
     for (const d of queue) {
@@ -494,9 +506,13 @@ export class RemoteEndpoints {
       }
     }
     // Re-read: regenerate may have queued more meanwhile.
-    const now = JSON.parse(this.s.local("remote:delete") ?? "[]") as typeof queue;
+    const now = deletes.get(this.s) ?? [];
     const done = new Set(queue.filter((d) => !left.includes(d)).map((d) => d.key));
-    this.s.setLocal("remote:delete", JSON.stringify(now.filter((d) => !done.has(d.key))));
+    deletes.set(
+      this.s,
+      undefined,
+      now.filter((d) => !done.has(d.key)),
+    );
   });
 
   close() {

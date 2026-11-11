@@ -8,6 +8,8 @@ import { serviceRuns } from "./service.ts";
 import { selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
 import { nodeUpdateSchema, type NodeUpdate } from "@agentgate/protocol";
+import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 
 const REPO = process.env.AGENTGATE_REPO ?? "HansKristoffer/agentgate";
 const NPM = "@hanskristoffer/agentpool";
@@ -109,21 +111,23 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
   }
 }
 
+// `from`: the version the node ran when it installed the update, for `nodeUpdate`. Kept out of NodeUpdate.
+const updates = defineLocal("update:", nodeUpdateSchema.extend({ from: z.string().nullable().optional() }), {
+  topic: "status",
+});
+
 /** Where an update this daemon started stands, until the node runs the new release: node-local, shown in status so the
  * app and `agentgate nodes` can follow it. Done once the node's record reports the version; a node that does not come
  * back in time shows as failed. */
 export function nodeUpdate(s: Store, node: string): NodeUpdate | undefined {
-  const raw = s.local(`update:${node}`);
-  if (!raw) return undefined;
-  const value = JSON.parse(raw);
-  const parsed = nodeUpdateSchema.safeParse(value);
-  if (!parsed.success) return undefined;
-  const u = parsed.data,
-    running = s.get("node", node)?.version ?? null;
+  const stored = updates.get(s, node);
+  if (!stored) return undefined;
+  const { from, ...u } = stored;
+  const running = s.get("node", node)?.version ?? null;
   if (u.version && running === u.version) return undefined;
   // Waiting for a restart onto u.version: once the node runs anything other than what it ran then (an older or newer
   // release, installed some other way), that restart is not coming.
-  if (u.state === "installed" && value.from !== undefined && running !== value.from) return undefined;
+  if (u.state === "installed" && from !== undefined && running !== from) return undefined;
   const age = s.now() - u.since;
   if (u.state === "installing" && age > 15 * 60_000) return { ...u, state: "failed", error: `${node} did not answer` };
   if (u.state === "restarting" && age > 3 * 60_000)
@@ -134,12 +138,10 @@ export function nodeUpdate(s: Store, node: string): NodeUpdate | undefined {
 
 /** `updateNode`, recorded for `nodeUpdate`. Refuses a second update of a node while one is under way. */
 export async function updateTracked(s: Store, node: string) {
-  const key = `update:${node}`;
   const running = nodeUpdate(s, node);
   if (running && running.state !== "failed") throw new Error(`${node} is already updating`);
-  // `from`: the version the node ran when it installed the update, for `nodeUpdate`. Kept out of NodeUpdate.
   const note = (u: (Omit<NodeUpdate, "since"> & { from?: string | null }) | undefined) =>
-    s.setLocal(key, u && JSON.stringify({ ...u, since: s.now() }));
+    updates.set(s, node, u && { ...u, since: s.now() });
   note({ state: "installing" });
   try {
     const result = await updateNode(s, node);
