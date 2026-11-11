@@ -1,10 +1,11 @@
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { exponentialBackoff } from "hanzio";
 import { LOCAL_URL, schemas, type McpInstance } from "../store.ts";
 import {
   SHIM_CLIENT_NAME,
+  StdioTransport,
   VERSION,
   connect,
   mergeInstructions,
@@ -17,10 +18,10 @@ import { mcpFetch } from "./oauth.ts";
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
 
-/** A per-session server that failed to start is tried again after this, doubling up to RETRY_MAX while its
+/** A per-session server that failed to start is tried again after 5 s, doubling up to 5 minutes while its
  * configuration stays the same: each try may run npx or uvx. */
-const RETRY_MIN = 5_000;
-const RETRY_MAX = 5 * 60_000;
+const retryDelay = (failures: number) =>
+  exponentialBackoff(failures, { baseMs: 5_000, maxMs: 5 * 60_000, jitter: false });
 
 /** The daemon answered 404 for this session: it forgot the session (idle sweep or restart) before running the request. */
 class SessionLost extends Error {}
@@ -70,7 +71,7 @@ export async function buildShim(
   let closed = false,
     flight: Promise<void> | undefined;
   const children = new Map<string, { config: string; instance: McpInstance; client: Client }>();
-  const failed = new Map<string, { config: string; delay: number; retryAt: number }>();
+  const failed = new Map<string, { config: string; failures: number; retryAt: number }>();
   let server: ReturnType<typeof mergedServer> | undefined;
   const changed = () => {
     void server?.sendToolListChanged().catch(() => {});
@@ -135,8 +136,8 @@ export async function buildShim(
             if (children.get(alias)?.client === client) children.delete(alias);
           };
         } catch (e) {
-          const delay = last ? Math.min(last.delay * 2, RETRY_MAX) : RETRY_MIN;
-          failed.set(alias, { config: serialized, delay, retryAt: Date.now() + delay });
+          const failures = (last?.failures ?? 0) + 1;
+          failed.set(alias, { config: serialized, failures, retryAt: Date.now() + retryDelay(failures) });
           console.error(`agentgate: ${alias}: ${e}`);
         }
       }),
@@ -237,11 +238,11 @@ export async function buildShim(
       try {
         if (transport?.sessionId) await transport.terminateSession();
       } catch {}
-      // A stdio server may ignore its closed stdin: SIGTERM ends it now, and the SDK's close still escalates to SIGKILL.
+      // A stdio server may ignore its closed stdin: SIGTERM ends its group now, and its close still escalates to SIGKILL.
       for (const { client } of children.values()) {
-        const pid = client.transport instanceof StdioClientTransport && client.transport.pid;
+        const pid = client.transport instanceof StdioTransport && client.transport.pid;
         try {
-          if (pid) process.kill(pid, "SIGTERM");
+          if (pid) process.kill(-pid, "SIGTERM");
         } catch {
           // already exited
         }

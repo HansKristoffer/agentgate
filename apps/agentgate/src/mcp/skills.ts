@@ -1,9 +1,8 @@
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type CallToolResult, type ListToolsResult } from "@modelcontextprotocol/server";
 import { isVirtual, safePath } from "@agentgate/protocol";
 import { skillSummaries } from "../skills.ts";
 import type { Store } from "../store.ts";
-import type { Source } from "./gateway.ts";
+import { inProcessSource } from "./source.ts";
 
 const PAGE = 100;
 const DESCRIPTION = 1024;
@@ -100,15 +99,4 @@ export function skillsServer(s: Store, project: string): Server {
 }
 
 /** The skill tools as a gateway source under the `skills` alias. */
-export async function skillsSource(s: Store, project: string): Promise<Source> {
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  const server = skillsServer(s, project),
-    client = new Client({ name: "agentgate", version: "1" });
-  await Promise.all([server.connect(a), client.connect(b)]);
-  const close = client.close.bind(client);
-  client.close = async () => {
-    await close();
-    await server.close();
-  };
-  return { alias: "skills", client };
-}
+export const skillsSource = (s: Store, project: string) => inProcessSource("skills", skillsServer(s, project));

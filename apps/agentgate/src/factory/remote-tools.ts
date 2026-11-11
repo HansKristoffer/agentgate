@@ -1,7 +1,7 @@
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { FACTORY_ALIAS, type Source } from "../mcp/gateway.ts";
+import { FACTORY_ALIAS } from "../mcp/gateway.ts";
+import { inProcessSource } from "../mcp/source.ts";
 import { setFactoryWebhook } from "../operations.ts";
 import { runOperation, shortError, type FactoryRuntime, type Operation } from "./runtime.ts";
 
@@ -77,15 +77,5 @@ function server(f: FactoryRuntime, project: string): Server {
 }
 
 /** The tools as a gateway source under the `factory` alias, for one remote request. */
-export async function factoryToolsSource(f: FactoryRuntime, project: string): Promise<Source> {
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  const srv = server(f, project),
-    client = new Client({ name: "agentgate", version: "1" });
-  await Promise.all([srv.connect(a), client.connect(b)]);
-  const close = client.close.bind(client);
-  client.close = async () => {
-    await close();
-    await srv.close();
-  };
-  return { alias: FACTORY_ALIAS, client };
-}
+export const factoryToolsSource = (f: FactoryRuntime, project: string) =>
+  inProcessSource(FACTORY_ALIAS, server(f, project));
