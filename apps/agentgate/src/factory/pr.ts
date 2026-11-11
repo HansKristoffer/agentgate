@@ -52,6 +52,7 @@ import {
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
 import { isWorkingStatus, mirrorOf } from "./mirror.ts";
 import { claimWrite, fileIssue } from "./outbox.ts";
+import { T3McpError } from "./t3-mcp.ts";
 import { later, operation, SayOnce, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
 
 /**
@@ -97,15 +98,16 @@ const checksPending = (f: FactoryRuntime, view: Pick<Followed, "checks">, headAt
 async function markReady(f: FactoryRuntime, item: FactoryItem, view: PrState) {
   const reviewers = repositoryOf(f, item)?.reviewers ?? [];
   if (view.isDraft) await prReady(view.url);
-  if (reviewers.length) await prAddReviewers(view.url, reviewers);
+  if (reviewers.length) await prAddReviewers(view.url, view.author, reviewers);
 }
 
 /** Marks the PR ready, requests the repository's reviewers and moves the item to `ready`, with the ready comment
- * listing what is still open. False when GitHub refused, so the next pass tries again. */
+ * listing what is still open. False when GitHub refused, so the next pass tries again. A `view` with its body was
+ * read just now; without one, the body is read here. */
 export async function toReady(
   f: FactoryRuntime,
   item: FactoryItem,
-  view: PrState,
+  view: PrState | PrView,
   open: string[],
   why: string,
 ): Promise<boolean> {
@@ -116,9 +118,9 @@ export async function toReady(
     return false;
   }
   // Before the item moves, so a restart between the two writes it again: it replaces its own section. A body a person
-  // edits meanwhile keeps their text, since it is read again just before.
-  await prView(view.url)
-    .then((fresh) => prSetBody(view.url, withSummary(fresh.body, readySummary(f, item))))
+  // edits meanwhile keeps their text, since it was read just before.
+  await ("body" in view ? Promise.resolve(view.body) : prView(view.url).then((fresh) => fresh.body))
+    .then((body) => prSetBody(view.url, withSummary(body, readySummary(f, item))))
     .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
   fileLeftovers(f, item, view.url);
   const text = open.length
@@ -511,13 +513,13 @@ async function acceptConversations(f: FactoryRuntime, input: FactoryPrThreadsInp
     const silent = input.conversations.find((c) => c.outcome === "declined" && !c.note);
     if (silent)
       throw new ReportError(`Declining ${silent.id} needs a note with your reason; the factory replies with it`);
-    let view: PrView;
-    let feedback: PrFeedback;
-    try {
-      [view, feedback] = await Promise.all([prView(pr.url), prFeedback(pr.url)]);
-    } catch (e) {
-      throw new ReportError(`The factory could not read ${pr.url} on GitHub (${shortError(e)}); try again in a minute`);
-    }
+    const { repo, number } = prOf(pr.url);
+    const read = (await followedPrs(repo, [number])).get(number)!;
+    if (read instanceof Error)
+      throw new ReportError(
+        `The factory could not read ${pr.url} on GitHub (${shortError(read)}); try again in a minute`,
+      );
+    const { feedback, ...view } = read;
     if (!view.headRefOid.startsWith(input.commit))
       throw new ReportError(
         `${view.url}'s head is ${view.headRefOid}, not ${input.commit}. Push your fixes, then call factory_pr_threads again with the head`,
@@ -625,8 +627,8 @@ export function lastRound(f: FactoryRuntime, item: FactoryItem) {
 }
 
 /** What a reported review means for the item, as a step of it, once: discarded when the PR moved on, otherwise its
- * findings go to the implement thread, or the item goes to `ready`. */
-export async function takeReview(f: FactoryRuntime, id: string) {
+ * findings go to the implement thread, or the item goes to `ready`. `read` is the PR follower's read of this pass. */
+export async function takeReview(f: FactoryRuntime, id: string, read?: Followed) {
   const run = runs.get(f.s, id);
   const item = run?.item ? items.get(f.s, run.item) : undefined;
   const result = run?.report?.result;
@@ -636,7 +638,7 @@ export async function takeReview(f: FactoryRuntime, id: string) {
     return;
   }
   // The report is a claim about one commit, checked against the PR as GitHub has it now.
-  const view = await prView(item.pr.url);
+  const view = read ?? (await prView(item.pr.url));
   const round = rounds(f, item).length + 1;
   if (!view.headRefOid.startsWith(result.commit.toLowerCase())) {
     runs.update(f.s, run.id, { checked: { kind: "review", head: result.commit, round, stale: true } });
@@ -681,13 +683,17 @@ export async function takeReview(f: FactoryRuntime, id: string) {
       open.map((o) => `- ${describe(o)}`).join("\n"),
       `Fix them, push to ${view.headRefName}, and end your turn. Once the checks pass, the factory reviews the new commits. Do not comment on GitHub, mark the PR ready or merge it.`,
     ].join("\n\n"),
-  ).catch((e) =>
+  ).catch((e) => {
+    // T3 answered with an error, so the thread never got them: the round is taken again on the next pass. Any other
+    // failure may have reached the thread, and the findings are never sent twice.
+    const unsent = e instanceof T3McpError && e.answered;
+    if (unsent) runs.update(f.s, run.id, { checked: undefined });
     f.events.emit({
       kind: "note",
       item: item.id,
-      text: `Sending the findings to the implement thread failed: ${shortError(e)}`,
-    }),
-  );
+      text: `Sending the findings to the implement thread failed: ${shortError(e)}${unsent ? "; the next pass sends them again" : ""}`,
+    });
+  });
 }
 
 /** For an item in `review`, as part of the PR follower's step: a report not taken yet is taken; the next round starts
@@ -712,7 +718,7 @@ export async function followReview(f: FactoryRuntime, item: FactoryItem, view: F
   if (last.state !== "reported") return;
   const data = dataOf(last, "review");
   if (!data) {
-    await takeReview(f, last.id);
+    await takeReview(f, last.id, view);
     return;
   }
   if (view.state !== "OPEN") return;

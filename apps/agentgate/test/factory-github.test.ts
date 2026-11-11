@@ -778,8 +778,8 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     () => gh.openLabelledIssues(SCRATCH, "factory"),
     () => gh.issueStateAndComments(SCRATCH, 4),
     () => gh.issueComments(SCRATCH, 4),
+    () => gh.issueState(SCRATCH, 4),
     () => gh.prView(PR),
-    () => gh.prAddReviewers(PR, ["octocat"]),
     () => gh.defaultBranchCi(SCRATCH),
     () => gh.revertsSince(SCRATCH, Date.parse("2026-11-03T17:40:14Z")),
   ];
@@ -1049,17 +1049,28 @@ test("a write is rate limited by a 429, a GraphQL RATE_LIMITED error or a 403 wh
   expect((await comment(ok({ id: 1 }))).status).toBe("posted");
 });
 
-test("review requests skip the PR's author, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {
-  const pr = (calls: ReturnType<typeof stubGh>) => calls.filter((c) => c.args[1] !== "view").map((c) => c.args);
-  const author = (args: string[]): Answer => (args[1] === "view" ? recorded("prView.author") : { ok: true, out: "" });
-  let calls = stubGh(author);
-  await gh.prAddReviewers(PR, ["hanskristoffer", "octocat"]);
-  expect(pr(calls)).toEqual([["pr", "edit", PR, "--add-reviewer", "octocat"]]);
-  calls = stubGh(author);
-  await gh.prAddReviewers(PR, ["HansKristoffer"]);
-  expect(pr(calls)).toEqual([]);
+test("an issue's state is one read that asks for no comments, and a merged pull request's number reads as closed", async () => {
+  for (const [state, expected] of [
+    ["OPEN", "OPEN"],
+    ["CLOSED", "CLOSED"],
+    ["MERGED", "CLOSED"],
+  ] as const) {
+    const calls = stubGh(() => ok({ state }));
+    expect(await gh.issueState(SCRATCH, 4)).toBe(expected);
+    expect(calls).toEqual([{ args: ["issue", "view", "4", "--repo", SCRATCH, "--json", "state"] }]);
+  }
+});
 
-  calls = stubGh(author);
+test("review requests skip the PR's author without reading the PR, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {
+  const done = (): Answer => ({ ok: true, out: "" });
+  let calls = stubGh(done);
+  await gh.prAddReviewers(PR, "HansKristoffer", ["hanskristoffer", "octocat"]);
+  expect(calls).toEqual([{ args: ["pr", "edit", PR, "--add-reviewer", "octocat"] }]);
+  calls = stubGh(done);
+  await gh.prAddReviewers(PR, "HansKristoffer", ["HansKristoffer"]);
+  expect(calls).toEqual([]);
+
+  calls = stubGh(done);
   await gh.prSetBody(PR, "Fixes #4");
   await gh.prReady(PR);
   expect(calls).toEqual([
