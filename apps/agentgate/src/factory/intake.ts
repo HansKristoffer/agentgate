@@ -92,7 +92,7 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
       if (incoming.updatedAt) markers.set(incoming.externalId, { updatedAt: incoming.updatedAt, marker });
       // Intake is asked after the read: the item before, a pause or a move may have ended it meanwhile.
       if (marker?.state === "finished" || intakeState(f) !== "on") continue;
-      addItem(f, { source: source.id, repo: source.repo, incoming, hold: holdsNewItems(f, source.intake) });
+      addItem(f, { source: source.id, repo: source.repo, incoming, hold: source.intake === "hold" });
     }
     st.markers = markers;
     if (backoff.ok(source.id)) console.log(`factory: the source ${source.id} works again`);

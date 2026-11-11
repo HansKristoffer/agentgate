@@ -38,8 +38,8 @@ import {
   type RunData,
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
-import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { defaultBranch as readDefaultBranch } from "./gh.ts";
+import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { adapterOf, questionRef, writeBack } from "./outbox.ts";
 import {
