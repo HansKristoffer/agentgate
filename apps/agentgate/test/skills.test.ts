@@ -521,8 +521,15 @@ test("worktree registrations delayed beyond 600 ms converge through bounded retr
       metadata = join(repo, ".git", "worktrees", "slow");
     mkdirSync(tree);
     mkdirSync(metadata);
+    let passes = 0;
+    const sync = links.sync.bind(links);
+    links.sync = () => {
+      passes++;
+      sync();
+    };
     for (const event of events) event();
-    await Bun.sleep(800);
+    // The worktree's metadata lands only after the retries at 50 and 600 ms have passed.
+    expect(await until(() => passes >= 2)).toBe(true);
     writeFileSync(join(metadata, "gitdir"), join(tree, ".git"));
     expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"), 3000)).toBe(true);
   } finally {

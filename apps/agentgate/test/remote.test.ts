@@ -159,7 +159,7 @@ test("aborting a remote request cancels the upstream tool call", async () => {
     {},
     abort.signal,
   );
-  await Bun.sleep(500);
+  while (!gateway.upstreams.get("slow")?.calls) await Bun.sleep(5);
   abort.abort();
   await expect(pending).rejects.toBeDefined();
   for (let i = 0; i < 50 && !existsSync(cancelled); i++) await Bun.sleep(100);
@@ -361,12 +361,27 @@ function serving() {
   return { s, relay, serve };
 }
 
+/** The delays of the timers set from now on: how a relay socket schedules its next attempt. */
+function timers() {
+  const real = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0);
+    return real(fn, ms);
+  }) as typeof setTimeout;
+  cleanup.push(() => (globalThis.setTimeout = real));
+  return delays;
+}
+
 test("an endpoint the relay deleted is not pushed again until its record changes, also after a restart", async () => {
   const { s, relay, serve } = serving();
   const first = serve();
-  (await relay.connected()).close(4001, "endpoint deleted");
+  const socket = await relay.connected();
+  const delays = timers();
+  socket.close(4001, "endpoint deleted");
   await first.error("deleted");
-  await Bun.sleep(700); // past the first retry
+  // The first retry, after 0.5 s, finds the endpoint deleted and schedules the next one after 1 s.
+  while (!delays.includes(1000)) await Bun.sleep(5);
   expect({ puts: relay.puts.length, upgrades: relay.upgrades.length }).toEqual({ puts: 1, upgrades: 1 });
   first.endpoints.close();
 
@@ -398,9 +413,12 @@ test("an endpoint connecting and dropping each mark status changed", async () =>
 test("a connection replaced by another one backs off instead of taking the endpoint straight back", async () => {
   const { relay, serve } = serving();
   const { error } = serve();
-  (await relay.connected()).close(4000, "replaced by a newer connection");
+  const socket = await relay.connected();
+  const delays = timers();
+  socket.close(4000, "replaced by a newer connection");
   await error("another connection");
-  await Bun.sleep(700); // a plain drop would have reconnected by now
+  // With Math.random at 0 a retry waits half its backoff: 0.5 s after a plain drop, 15 s here.
+  expect(delays).toEqual([15_000]);
   expect(relay.upgrades).toHaveLength(1);
 });
 
