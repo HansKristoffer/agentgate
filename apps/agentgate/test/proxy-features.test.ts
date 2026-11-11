@@ -22,7 +22,7 @@ import { Telemetry, metrics, requestDetail, requests, streamObserver, tokenUsage
 import { accountStatus, proxy } from "../src/llm/pool.ts";
 import { ProxyOperations } from "../src/llm/operations.ts";
 import { parseQuota } from "../src/llm/codex.ts";
-import { capabilities, type Provider } from "../src/llm/provider.ts";
+import { capabilities, type Observation, type Provider } from "../src/llm/provider.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -176,7 +176,7 @@ test.each([true, false])("usage refresh accepts an early quota reset (manual: %s
 
 test("quota polls coalesce and a late poll preserves newer live-response usage", async () => {
   const { s, creds } = fixture();
-  const result = gate<any>(),
+  const result = gate<Observation | undefined>(),
     entered = gate<void>();
   let count = 0;
   const quotas = new Quotas(s, creds, {
@@ -203,7 +203,7 @@ test("quota polls coalesce and a late poll preserves newer live-response usage",
 test("quota work after deletion or relogin cannot resurrect usage or health", async () => {
   for (const change of ["delete", "relogin"] as const) {
     const { s, creds } = fixture();
-    const result = gate<any>(),
+    const result = gate<Observation | undefined>(),
       entered = gate<void>();
     const quotas = new Quotas(s, creds, {
       claude: {
@@ -389,7 +389,7 @@ test("advertised model lists preserve metadata, respect policy, and expose resol
     new Request("http://127.0.0.1/models"),
     url,
   );
-  expect(((await res.json()) as any).data.map((m: any) => m.id)).toEqual(["sonnet", "friendly"]);
+  expect(await res.json()).toMatchObject({ data: [{ id: "sonnet" }, { id: "friendly" }] });
 });
 
 test("telemetry byte retention includes attempts, runs an hour after the last trim, and leaves no orphan attempts", () => {
@@ -564,22 +564,30 @@ test("request cursors remain stable during concurrent inserts and reset after re
   expect(() => requests(s, { cursor: "abc" })).toThrow();
 });
 
-test("SSE observer handles split frames, ignores oversized events, and preserves failure terminal", () => {
+test("SSE observer handles split frames, takes continuation ids from response.created, and preserves failure terminal", () => {
   const ids: string[] = [],
     observer = streamObserver((id) => ids.push(id)),
     bytes = (v: string) => new TextEncoder().encode(v);
-  observer.chunk(bytes('data: {"type":"response.completed","response":{"id":"resp-a"}}\r\n'));
+  observer.chunk(bytes('data: {"type":"response.created","response":{"id":"resp-a"}}\r\n'));
   observer.chunk(bytes("\r\n"));
+  observer.chunk(bytes('data: {"type":"response.completed","response":{"id":"resp-a"}}\n\n'));
   expect(observer.terminal).toBe("completed");
   expect(ids).toEqual(["resp-a"]);
   observer.chunk(bytes('data: {"type":"error"}\n\n'));
   observer.chunk(bytes("event: message_stop\ndata: {}\n\n"));
   expect(observer.terminal).toBe("provider-error");
-  const oversized = streamObserver();
-  oversized.chunk(bytes(`data: ${JSON.stringify({ type: "error", message: "x".repeat(200000) })}\n\n`));
-  expect(oversized.terminal).toBeUndefined();
-  oversized.chunk(bytes('data: {"type":"message_stop"}\n\n'));
-  expect(oversized.terminal).toBe("completed");
+});
+
+test("a Codex end event larger than 64 KiB still decides how the stream ended", () => {
+  const end = (type: string) => {
+    const observer = streamObserver(),
+      output = "x".repeat(100 * 1024);
+    const event = `event: ${type}\ndata: {"type":"${type}","response":{"output":[{"text":"${output}"}],"usage":{"output_tokens":7}}}\n\n`;
+    observer.chunk(new TextEncoder().encode(event));
+    return { terminal: observer.terminal, output: observer.tokens.output };
+  };
+  expect(end("response.completed")).toEqual({ terminal: "completed", output: 7 });
+  expect(end("response.failed")).toEqual({ terminal: "provider-error", output: 7 });
 });
 
 test("token usage is read from Claude and Codex streams, including oversized completions", () => {
@@ -636,7 +644,7 @@ test("quota fallback is one request with two attempts; aliases reach the upstrea
   const { s, creds } = fixture();
   const seen: string[] = [];
   const url = upstream(async (req) => {
-    const model = ((await req.json()) as any).model;
+    const model = ((await req.json()) as { model: string }).model;
     seen.push(`${req.headers.get("authorization")}:${model}`);
     return req.headers.get("authorization") === "access-a"
       ? new Response("quota", { status: 429, headers: { "retry-after": "60" } })
@@ -782,9 +790,12 @@ test("stateful continuations remain with their owner and fail explicitly when ow
   let count = 0;
   const url = upstream(() => {
     count++;
-    return new Response('data: {"type":"response.completed","response":{"id":"resp-a"}}\n\n', {
-      headers: { "content-type": "text/event-stream" },
-    });
+    return new Response(
+      'data: {"type":"response.created","response":{"id":"resp-a"}}\n\ndata: {"type":"response.completed"}\n\n',
+      {
+        headers: { "content-type": "text/event-stream" },
+      },
+    );
   });
   const stateful = {
     ...adapter,

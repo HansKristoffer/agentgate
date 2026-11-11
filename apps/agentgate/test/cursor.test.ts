@@ -305,9 +305,7 @@ test("Cursor has the same capabilities as the other providers", () => {
   expect(capabilities(cursor)).toEqual({ quota: true, models: true, session: true, probe: true });
   expect(parseModels({ models: [{ modelId: "gpt-5" }, { modelId: "" }, {}] })).toEqual(["gpt-5"]);
   expect(() => parseModels({ models: "no" })).toThrow("Unrecognized model response");
-  const session = cursor.session!(new Headers(), { conversationId: "conv-1" });
-  expect(session).toHaveLength(64);
-  expect(cursor.session!(new Headers(), { conversationId: "conv-1" })).toBe(session);
+  expect(cursor.session!(new Headers(), { conversationId: "conv-1" })).toBe("conv-1");
   expect(cursor.session!(new Headers(), {})).toBeUndefined();
   expect(cursor.session!(new Headers(), { conversationId: "x".repeat(129) })).toBeUndefined();
   expect(requestedModel({ modelName: "gpt-5", model: "other" })).toBe("gpt-5");

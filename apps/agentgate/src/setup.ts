@@ -119,7 +119,7 @@ const backup = (file: string) => {
 };
 
 /** The token Claude Code sends when it has no login of its own; the proxy replaces it with a pool account's. */
-const PLACEHOLDER_TOKEN = "agentgate";
+export const PLACEHOLDER_TOKEN = "agentgate";
 
 export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): Promise<string> {
   const codexFile = join(paths.codex, "config.toml");

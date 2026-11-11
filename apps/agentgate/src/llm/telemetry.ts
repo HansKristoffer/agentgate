@@ -9,7 +9,7 @@ import {
   type RequestDetail,
   type RequestPage,
 } from "@agentgate/protocol";
-import { clamp, startTimer } from "hanzio";
+import { clamp, safeJsonParse, startTimer } from "hanzio";
 import type { Data, Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
@@ -399,11 +399,19 @@ function trimTelemetry(s: Store) {
   });
 }
 export type Tokens = Omit<ModelTokens, "provider" | "model">;
+/** An event larger than this keeps only its head (for its name) and tail (for its usage). */
+const EVENT_LIMIT = 65536,
+  HEAD = 4096,
+  TAIL = 8192;
+/** The event's name: its `event:` line, else the leading `type` of its data, which every Claude and Codex event has. */
+const EVENT_NAME = /^event:[ \t]*(\S+)/m,
+  DATA_TYPE = /^data:[ \t]*\{\s*"type"\s*:\s*"([^"]+)"/m;
 /** Bounded SSE observation only; the original bytes continue to the client unchanged. */
 export function streamObserver(onResponse?: (id: string) => void) {
   const decoder = new TextDecoder();
   let buffer = "",
-    discarding = false;
+    /** The start of the event in progress, once it has outgrown EVENT_LIMIT. */
+    head: string | undefined;
   let terminal: "completed" | "provider-error" | undefined;
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   /** Claude reports usage in message_start and cumulatively in message_delta, Codex once in
@@ -421,6 +429,24 @@ export function streamObserver(onResponse?: (id: string) => void) {
     tokens.cacheRead = Math.max(tokens.cacheRead, field("cache_read_input_tokens") + cached);
     tokens.cacheWrite = Math.max(tokens.cacheWrite, field("cache_creation_input_tokens"));
   };
+  /** `start` is the event's beginning and `rest` what is kept of it: the same text, or its tail when it was too large. */
+  const settle = (start: string, rest: string) => {
+    readUsage(rest);
+    const name = EVENT_NAME.exec(start)?.[1] ?? DATA_TYPE.exec(start)?.[1];
+    if (name === "response.failed" || name === "response.incomplete" || name === "error") terminal = "provider-error";
+    else if ((name === "response.completed" || name === "message_stop") && terminal !== "provider-error")
+      terminal = "completed";
+    else if (name === "response.created" && start === rest) {
+      // The continuation id; this event is small and arrives first, unlike the answer-sized response.completed.
+      const data = rest
+        .split(/\r?\n/)
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).trimStart())
+        .join("\n");
+      const response = safeJsonParse<{ response?: { id?: unknown } }>(data).data?.response;
+      if (typeof response?.id === "string") onResponse?.(response.id);
+    }
+  };
   return {
     get terminal() {
       return terminal;
@@ -428,37 +454,18 @@ export function streamObserver(onResponse?: (id: string) => void) {
     tokens,
     chunk(bytes: Uint8Array) {
       for (let offset = 0; offset < bytes.length; offset += 16384) {
-        buffer += decoder.decode(bytes.subarray(offset, offset + 16384), {
-          stream: true,
-        });
-        for (;;) {
-          const match = /\r?\n\r?\n/.exec(buffer);
-          if (!match) break;
-          const event = buffer.slice(0, match.index);
-          buffer = buffer.slice(match.index + match[0].length);
-          readUsage(event);
-          if (discarding || event.length > 65536) {
-            discarding = false;
-            continue;
-          }
-          const data = event
-            .split(/\r?\n/)
-            .filter((l) => l.startsWith("data:"))
-            .map((l) => l.slice(5).trimStart())
-            .join("\n");
-          try {
-            const value = JSON.parse(data);
-            if (["response.completed", "message_stop"].includes(value.type) && terminal !== "provider-error")
-              terminal = "completed";
-            if (["response.failed", "response.incomplete", "error"].includes(value.type)) terminal = "provider-error";
-            const id = value.response?.id;
-            if (typeof id === "string") onResponse?.(id);
-          } catch {}
-          if (event.includes("event: message_stop") && terminal !== "provider-error") terminal = "completed";
+        buffer += decoder.decode(bytes.subarray(offset, offset + 16384), { stream: true });
+        let from = 0;
+        for (const match of buffer.matchAll(/\r?\n\r?\n/g)) {
+          const event = buffer.slice(from, match.index);
+          settle(head ?? event, event);
+          head = undefined;
+          from = match.index + match[0].length;
         }
-        if (buffer.length > 65536) {
-          buffer = buffer.slice(-8192);
-          discarding = true;
+        buffer = buffer.slice(from);
+        if (buffer.length > EVENT_LIMIT) {
+          head ??= buffer.slice(0, HEAD);
+          buffer = buffer.slice(-TAIL);
         }
       }
     },
