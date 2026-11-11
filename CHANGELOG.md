@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.29.0](https://github.com/HansKristoffer/agentgate/compare/v0.28.0...v0.29.0) (2026-11-11)
+
+
+### Features
+
+* **factory:** an opt-in software factory works labelled issues in T3 Code threads up to a PR ready to merge ([#134](https://github.com/HansKristoffer/agentgate/issues/134)) ([36c9a74](https://github.com/HansKristoffer/agentgate/commit/36c9a74361aaa5b403d99c1e44719860d3baef33))
+* stuck handoffs can be cancelled, and half-finished state no longer wipes tokens or strands relays and threads ([#137](https://github.com/HansKristoffer/agentgate/issues/137)) ([1fd21b2](https://github.com/HansKristoffer/agentgate/commit/1fd21b25134f1ba69fb1e33208bc807fc1afbb98))
+
+
+### Bug Fixes
+
+* **quota:** accept early resets from usage refreshes ([#145](https://github.com/HansKristoffer/agentgate/issues/145)) ([72783c6](https://github.com/HansKristoffer/agentgate/commit/72783c6c5a81d388b896fb004863746007c86bfa))
+
 ## [0.28.0](https://github.com/HansKristoffer/agentgate/compare/v0.27.2...v0.28.0) (2026-11-03)
 
 
