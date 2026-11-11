@@ -173,6 +173,19 @@ function relayFailure(status: number, text: string, node: string) {
   return new ChannelError(`the relay answered ${status}`, status);
 }
 
+export const relaySocket = { openMs: 15_000 };
+
+/** Closes a relay socket that has not opened in time: one that never opens would never close, so its `onclose`
+ * would never reconnect it. */
+export function closeUnopened(ws: WebSocket) {
+  const deadline = setTimeout(() => {
+    if (ws.readyState === WebSocket.CONNECTING) ws.close();
+  }, relaySocket.openMs);
+  deadline.unref?.();
+  ws.addEventListener("open", () => clearTimeout(deadline));
+  ws.addEventListener("close", () => clearTimeout(deadline));
+}
+
 /** Keeps this node reachable for calls through the relay while it is in a relay group (also before T3 Code is
  * connected, so another machine can set that up), and answers each call with `handler` (the handoff peer routes),
  * as the authenticated sender. */
@@ -234,6 +247,7 @@ export class NodeChannel {
       headers: { authorization: `Bearer ${g.keys.authToken}`, ...(g.serviceKey && { "x-relay-key": g.serviceKey }) },
     } as unknown as string[]);
     this.ws = ws;
+    closeUnopened(ws);
     ws.onopen = () => {
       this.connected = true;
       this.backoff = 1000;
