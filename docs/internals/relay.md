@@ -58,7 +58,9 @@ Thread handoff needs request and response between two machines, which the mailbo
 count against the group quota and reach every member. So a separate `RelayChannel` object per group
 ([`channel.ts`](../../apps/relay/src/channel.ts)) forwards a call over the WebSocket the target keeps open
 ([`channel.ts`](../../apps/agentgate/src/channel.ts) in the daemon) and keeps nothing. The daemon tunnels the same
-`/peer/handoff/*` requests it sends over Tailscale, so handoff code does not know the transport.
+`/peer/handoff/*` requests it sends over Tailscale, so handoff code does not know the transport. The channel also
+carries a sync poke with no content: after a push of its own writes, a daemon asks each member seen in the last five
+minutes to pull from the relay now. A member on an older release answers 404 and keeps pulling on its timer.
 
 - The channel object does not know the group's token; it asks the group object once (any authenticated read)
   and remembers the hash in memory. A group id never changes its token: rotation makes a new group.
