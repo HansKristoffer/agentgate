@@ -5,7 +5,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
-import { MAX_RESULT_CHARS, capResult, mergeInstructions, type Source } from "../src/mcp/gateway.ts";
+import {
+  MAX_RESULT_CHARS,
+  capResult,
+  connect,
+  mergeInstructions,
+  serverHealth,
+  type Source,
+} from "../src/mcp/gateway.ts";
 import { buildShim } from "../src/mcp/shim.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { Store, type McpInstance } from "../src/store.ts";
@@ -409,5 +416,35 @@ test("a server that cannot be reached is retried with backoff, not on every list
     expect(failures()).toBe(3);
   } finally {
     await g.done();
+  }
+});
+
+test("a health check tells the app only when the server's state flips, and still records when it ran", async () => {
+  const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+  closed.stop(true);
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "up", newInstance({ id: "up", url: upstream() }));
+  let time = Date.now();
+  s.now = () => time;
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
+  const check = () => connect(s.get("mcp", "up")!, undefined, s).then((client) => client.close());
+  try {
+    await check();
+    bumps = 0;
+    time += 1000;
+    await check();
+    expect(bumps).toBe(0);
+    expect(serverHealth(s, "up")).toEqual({ ok: true, at: time });
+
+    s.put("mcp", "up", newInstance({ id: "up", url: `http://127.0.0.1:${closed.port}/mcp` }));
+    bumps = 0;
+    await expect(check()).rejects.toThrow();
+    expect(bumps).toBe(1);
+    await expect(check()).rejects.toThrow();
+    expect(bumps).toBe(1);
+  } finally {
+    s.close();
   }
 });

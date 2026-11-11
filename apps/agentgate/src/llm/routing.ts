@@ -1,5 +1,7 @@
 import { modelSnapshotSchema, type QuotaWindow, type RouteExplanation } from "@agentgate/protocol";
 import { once } from "hanzio";
+import { z } from "zod";
+import { defineLocal } from "../local-state.ts";
 import type { Account, Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 import { exhausted, relevant } from "./quota.ts";
@@ -32,10 +34,12 @@ export function resetRouting(s: Store, id: string) {
   for (const [key, entry] of node.continuations) if (entry.id === id) node.continuations.delete(key);
   for (const [key, last] of node.rotation) if (last === id) node.rotation.delete(key);
 }
-export function modelsFor(s: Store, id: string) {
-  const raw = s.local(`models:${id}`);
-  return raw ? modelSnapshotSchema.parse(JSON.parse(raw)) : undefined;
-}
+/** The account each provider last answered from; the proxy writes it on a successful response. */
+export const activeAccount = defineLocal("active:", z.string(), { topic: "status" });
+/** Each account's last model discovery, and why the latest one failed (llm/operations.ts writes both). */
+export const modelSnapshots = defineLocal("models:", modelSnapshotSchema, { topic: "status" });
+export const modelErrors = defineLocal("modelError:", z.string(), { topic: "status" });
+export const modelsFor = (s: Store, id: string) => modelSnapshots.get(s, id);
 export function resolveModel(s: Store, provider: ProviderName, model?: string): string | undefined {
   if (!model) return undefined;
   const map = new Map(
@@ -151,7 +155,7 @@ export function route(
   }
   if (!selected) {
     const under = eligible.filter((candidate) => (candidate.window?.usedPct ?? 0) < settings.threshold);
-    const active = s.local(`active:${provider}`);
+    const active = activeAccount.get(s, provider);
     selected = under.find((candidate) => candidate.account.id === active);
     if (selected) reason = "active subscription below threshold";
     else {

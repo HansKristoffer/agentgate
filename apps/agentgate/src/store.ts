@@ -596,7 +596,7 @@ export function topicsOf(kind: Kind): Topic[] {
 }
 
 /** Hashes of the refresh tokens this node rotated away from, per `<kind>:<id>`, oldest first (credentials.ts). */
-const rotations = defineLocal("rotated:", z.array(z.string()));
+export const rotations = defineLocal("rotated:", z.array(z.string()));
 /** Read inside `merge`, so an unreadable row counts as no rotations instead of failing every sync page. */
 export const rotatedAway = (s: Store, kind: Kind, id: string) => rotations.get(s, `${kind}:${id}`) ?? [];
 
