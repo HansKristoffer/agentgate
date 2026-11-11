@@ -120,8 +120,16 @@ export const publicProjectSchema = projectSchema.extend({
   files: z.array(z.object({ path: z.string(), updatedAt: z.string() })).optional(),
 });
 export type PublicProject = z.infer<typeof publicProjectSchema>;
+/** What the app fetches, one topic each, so a change refetches only what moved. */
+export const TOPICS = ["status", "desktop", "factory", "threads", "activity"] as const;
+export type Topic = (typeof TOPICS)[number];
 /** GET /api/changes: answers once the token differs from `after`, or after `wait` seconds (at most 25). */
-export const changesSchema = z.object({ token: z.string() });
+export const changesSchema = z.object({
+  token: z.string(),
+  // Each topic's counter. Absent from older daemons: treat every topic as changed. A newer daemon may send topics
+  // this build does not know; keep them, ignore them.
+  versions: z.record(z.string(), z.number()).optional(),
+});
 export const nodeSchema = z.object({
   id: z.string(),
   url: z.string().optional(),

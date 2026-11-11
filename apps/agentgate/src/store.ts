@@ -9,6 +9,7 @@ import {
   secretRecordSchema,
   factoryFolderSchema,
   MAX_RECORD,
+  type Topic,
 } from "@agentgate/protocol";
 import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
@@ -18,6 +19,7 @@ import { chmodSync, existsSync, mkdirSync, statfsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 
 /** Running from a git checkout keeps state in its gitignored `.agentgate` on a port derived from its path,
  * so dev daemons, tests and agents never touch the live install. Compiled binaries have no checkout.
@@ -277,6 +279,9 @@ export class Store {
   closed = false;
   /** Overridable clock, so tests can fake time. */
   now = () => Date.now();
+  /** Set by the daemon's change hub; the CLI leaves it unset. Called synchronously, possibly inside a transaction:
+   * the listener must defer its own work (task 3.1 does, with queueMicrotask). */
+  onChange?: (topic: Topic) => void;
 
   constructor(path = join(CONFIG_DIR, "agentgate.db")) {
     if (path !== ":memory:") {
@@ -386,6 +391,11 @@ export class Store {
     else this.db.run("insert or replace into local values (?, ?)", [key, value]);
   }
 
+  /** Marks a topic changed. No-op without a listener. */
+  bump(topic: Topic) {
+    this.onChange?.(topic);
+  }
+
   seq(): number {
     return (this.db.query("select value from local_seq").get() as { value: number }).value;
   }
@@ -442,6 +452,7 @@ export class Store {
         ]);
       })
       .immediate();
+    for (const topic of topicsOf(kind)) this.bump(topic);
   }
 
   settings(): Settings {
@@ -488,7 +499,7 @@ export class Store {
   /** Last-writer-wins by (rev, updated_at, node). Returns true when the incoming record was taken. */
   merge(r: Rec): boolean {
     r = parseRecord(r);
-    return this.db
+    const took = this.db
       .transaction(() => {
         const cur = this.record(r.kind, r.id);
         if (cur && !newer(r, cur)) return false;
@@ -528,6 +539,8 @@ export class Store {
         return true;
       })
       .immediate();
+    if (took) for (const topic of topicsOf(r.kind)) this.bump(topic);
+    return took;
   }
 
   /** A lease shared by CLI and daemon processes using this database. */
@@ -575,9 +588,17 @@ export function refreshHash(kind: Kind, data: unknown): string | undefined {
   const token = kind === "credential" ? d?.refreshToken : kind === "mcpCredential" ? d?.tokens?.refresh_token : "";
   return typeof token === "string" && token ? new Bun.CryptoHasher("sha256").update(token).digest("hex") : undefined;
 }
-/** Hashes of the refresh tokens this node rotated away from for one credential, oldest first (credentials.ts). */
-export const rotatedAway = (s: Store, kind: Kind, id: string): string[] =>
-  JSON.parse(s.local(`rotated:${kind}:${id}`) ?? "[]");
+/** The topics whose views show records of `kind`. */
+export function topicsOf(kind: Kind): Topic[] {
+  if (kind === "tokens") return ["activity"];
+  if (kind === "node" || kind === "setting" || kind === "project") return ["status", "factory"];
+  return ["status"];
+}
+
+/** Hashes of the refresh tokens this node rotated away from, per `<kind>:<id>`, oldest first (credentials.ts). */
+const rotations = defineLocal("rotated:", z.array(z.string()));
+/** Read inside `merge`, so an unreadable row counts as no rotations instead of failing every sync page. */
+export const rotatedAway = (s: Store, kind: Kind, id: string) => rotations.get(s, `${kind}:${id}`) ?? [];
 
 /** Whether `incoming` carries a refresh token this node rotated away from while its own copy holds newer, working
  * tokens. A new login has a token this node never rotated, so it always wins. */

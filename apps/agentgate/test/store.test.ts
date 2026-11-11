@@ -1,3 +1,4 @@
+import { changesSchema } from "@agentgate/protocol";
 import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,4 +214,38 @@ test("shared operations preserve quoted args and preset headers, clean reference
   setAccount(s, "b", { pinned: true });
   expect(s.get("account", "a")?.pinned).toBe(false);
   s.close();
+});
+
+test("record writes announce the topics that show them, and a merge that loses announces nothing", () => {
+  const s = new Store(":memory:");
+  const bumps: string[] = [];
+  s.onChange = (topic) => bumps.push(topic);
+  s.put("mcp", "m", { id: "m", template: "custom-http", transport: "http", url: "https://x/mcp" });
+  expect(bumps).toEqual(["status"]);
+  bumps.length = 0;
+  s.put("tokens", "n:2026-11-11", { id: "n:2026-11-11", node: "n", rows: [] });
+  expect(bumps).toEqual(["activity"]);
+  bumps.length = 0;
+  const loser = { ...s.record("mcp", "m")!, rev: 0, node: "other" };
+  expect(s.merge(loser)).toBe(false);
+  expect(bumps).toEqual([]);
+  s.close();
+});
+
+test("a corrupt rotated-token row does not fail the merge of a credential", () => {
+  const s = new Store(":memory:");
+  const login = { accountId: "a", accessToken: "at-0", refreshToken: "rt-0", expiresAt: 1, holder: "n" };
+  s.put("credential", "a", login);
+  s.setLocal("rotated:credential:a", "{not json");
+  const theirs = { ...login, accessToken: "at-1", refreshToken: "rt-1", holder: "other" };
+  const incoming = { ...s.record("credential", "a")!, rev: 9, node: "other", data: JSON.stringify(theirs) };
+  expect(s.merge(incoming)).toBe(true);
+  expect(s.get("credential", "a")?.refreshToken).toBe("rt-1");
+  s.close();
+});
+
+test("a change answer from an older or newer daemon parses", () => {
+  expect(changesSchema.parse({ token: "1.0" })).toEqual({ token: "1.0" });
+  const newer = { token: "2.0", versions: { status: 1, someday: 3 } };
+  expect(changesSchema.parse(newer)).toEqual(newer);
 });
