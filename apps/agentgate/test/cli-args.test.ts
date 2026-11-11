@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { parseFor } from "../src/cli.ts";
+import { terminalOpFor } from "../src/ops/index.ts";
 
 const words = (line: string) => line.match(/"[^"]*"|\S+/g)!.map((w) => w.replace(/^"|"$/g, ""));
 
@@ -64,7 +65,12 @@ describe("parseFor", () => {
     "status -h",
     "--help",
   ])("%s", (line) => {
-    expect(() => parseFor(words(line))).not.toThrow();
+    const argv = words(line);
+    // A registered operation parses its own words, as main() does.
+    const op = terminalOpFor(argv);
+    const read = () =>
+      op ? op.terminal.parse(argv.slice(op.name.split(" ").length), undefined, undefined) : parseFor(argv);
+    expect(read).not.toThrow();
   });
 });
 

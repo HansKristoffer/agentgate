@@ -175,7 +175,7 @@ export function projects(ctx: Ctx) {
         });
       else
         try {
-          for (const t of await tools(s, id))
+          for (const t of await tools(ctx, id))
             if (!inst?.tools || inst.tools.includes(t.name))
               result.push({
                 name: toolName(alias, t.name),

@@ -222,10 +222,11 @@ test("browser-origin reads, JSON writes and preflights are rejected before any s
       const extra = { ...headers, authorization: "Bearer admin-secret" };
       expect((await call("/api/status", "GET", undefined, listener, extra)).status).toBe(403);
       expect(
-        (await call("/api/servers", "POST", { id: "evil", command: "touch /tmp/evil" }, listener, extra)).status,
+        (await call("/api/ops/mcp%20add", "POST", { name: "evil", command: "touch /tmp/evil" }, listener, extra))
+          .status,
       ).toBe(403);
     }
-    const preflight = await call("/api/servers", "OPTIONS", undefined, listener, { origin: "https://evil.test" });
+    const preflight = await call("/api/ops/mcp%20add", "OPTIONS", undefined, listener, { origin: "https://evil.test" });
     expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
   }
   expect(s.list("mcp")).toEqual([]);
@@ -283,7 +284,7 @@ test("native operations validate JSON and update accounts, projects and server r
   expect(s.get("account", "a")?.pinned).toBe(false);
   expect((await call("/api/accounts/b", "PATCH", { provider: "claude" })).status).toBe(400);
   expect(s.get("account", "b")?.provider).toBe("codex");
-  expect((await call("/api/servers", "POST", { id: "fs", target: "filesystem" })).status).toBe(201);
+  expect((await call("/api/ops/mcp%20add", "POST", { name: "fs", target: "filesystem" })).status).toBe(200);
   expect(
     (
       await call("/api/projects", "PUT", {
@@ -302,9 +303,9 @@ test("native operations validate JSON and update accounts, projects and server r
     ).status,
   ).toBe(400);
   expect(s.get("project", "other/repo")).toBeUndefined();
-  expect((await call("/api/servers/fs/rename", "POST", { id: "files" })).status).toBe(200);
+  expect((await call("/api/ops/mcp%20rename", "POST", { id: "fs", to: "files" })).status).toBe(200);
   expect(s.get("project", "owner/repo")?.mcp).toEqual({ files: "files" });
-  expect((await call("/api/servers/files", "DELETE")).status).toBe(200);
+  expect((await call("/api/ops/mcp%20rm", "POST", { id: "files" })).status).toBe(200);
   expect(s.get("project", "owner/repo")?.mcp).toEqual({});
   expect((await call("/api/accounts/missing", "DELETE")).status).toBe(404);
 });
