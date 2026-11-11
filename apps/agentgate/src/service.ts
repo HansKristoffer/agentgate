@@ -57,7 +57,23 @@ WantedBy=default.target
 `;
 }
 
-const run = (cmd: string[]) => Bun.spawnSync(cmd, { stdio: ["inherit", "inherit", "inherit"] }).exitCode;
+// launchctl, systemctl and loginctl answer in moments; one that hangs must not hang the CLI with it.
+const DEADLINE = 30_000;
+const run = (cmd: string[]) =>
+  Bun.spawnSync(cmd, { stdio: ["inherit", "inherit", "inherit"], timeout: DEADLINE }).exitCode;
+// `service logs` follows the log until the user stops it, so it has no deadline.
+const follow = (cmd: string[]) => Bun.spawnSync(cmd, { stdio: ["inherit", "inherit", "inherit"] }).exitCode;
+
+/** A seam so tests can answer for the service manager. Empty when the command is missing. */
+export const host = {
+  output: (cmd: string[]) => {
+    try {
+      return Bun.spawnSync(cmd, { stdio: ["ignore", "pipe", "ignore"], timeout: DEADLINE }).stdout.toString();
+    } catch {
+      return "";
+    }
+  },
+};
 
 /** launchctl/systemctl can accept a job that subsequently fails to start. */
 export async function waitForService(url = `${LOCAL_URL}/api/changes?wait=0`, timeout = 10000) {
@@ -87,7 +103,7 @@ async function bootstrap() {
     const cmd = ["launchctl", "bootstrap", `gui/${uid}`, PLIST];
     // Only the final attempt's error is worth showing; earlier ones are the expected teardown race.
     if (attempt === 5) return run(cmd);
-    if (Bun.spawnSync(cmd, { stdio: ["inherit", "ignore", "ignore"] }).exitCode === 0) return 0;
+    if (Bun.spawnSync(cmd, { stdio: ["inherit", "ignore", "ignore"], timeout: DEADLINE }).exitCode === 0) return 0;
     await Bun.sleep(1000);
   }
 }
@@ -107,7 +123,10 @@ export async function service(action: string) {
         mkdirSync(join(homedir(), "Library", "LaunchAgents"), { recursive: true });
         atomicWrite(PLIST, plist());
         // Fails harmlessly ("No such process") on a first install.
-        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${LABEL}`], { stdio: ["ignore", "ignore", "ignore"] });
+        Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${LABEL}`], {
+          stdio: ["ignore", "ignore", "ignore"],
+          timeout: DEADLINE,
+        });
         return ready(await bootstrap());
       }
       mkdirSync(join(homedir(), ".config", "systemd", "user"), { recursive: true });
@@ -133,17 +152,27 @@ export async function service(action: string) {
         : run(["systemctl", "--user", "stop", "agentgate"]);
     case "logs":
       return mac
-        ? run(["tail", "-n", "200", "-f", join(LOGS, "agentgate.log")])
-        : run(["journalctl", "--user", "-u", "agentgate", "-f"]);
+        ? follow(["tail", "-n", "200", "-f", join(LOGS, "agentgate.log")])
+        : follow(["journalctl", "--user", "-u", "agentgate", "-f"]);
     default:
       throw new Error("service install|start|restart|stop|logs");
   }
 }
 
-/** Whether the installed service runs the binary at `path`. */
+/** Whether the installed service runs the binary at `path`, so `service restart` picks up a new copy of it. */
 export function serviceRuns(path: string) {
   const file = mac ? PLIST : UNIT;
   return existsSync(file) && readFileSync(file, "utf8").includes(mac ? xml(path) : path);
+}
+
+/** Whether this process is the service's own: only then does launchd (KeepAlive) or systemd (Restart=always) start it
+ * again after it exits. A daemon started by hand from the same binary would stay down. */
+export function isServiceProcess() {
+  const status = host.output(
+    mac ? ["launchctl", "print", `gui/${uid}/${LABEL}`] : ["systemctl", "--user", "show", "-p", "MainPID", "agentgate"],
+  );
+  // launchctl prints "pid = 123" while the job runs; systemctl prints "MainPID=123", or 0 when it is stopped.
+  return Number(/^\s*(?:MainPID|pid)\s*=\s*(\d+)/m.exec(status)?.[1]) === process.pid;
 }
 
 /** Keep launchd's open log descriptor while bounding disk usage. Linux uses journald. */
