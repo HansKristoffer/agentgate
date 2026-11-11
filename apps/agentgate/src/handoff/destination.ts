@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs
 import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
-import type { HandoffJob } from "@agentgate/protocol";
+import { handoffTimingSchema, type HandoffJob } from "@agentgate/protocol";
 import { z } from "zod";
 import { parseRemote } from "../mcp/gateway.ts";
 import { killGroup, sleep } from "../runtime.ts";
@@ -18,7 +18,7 @@ import {
   run,
   worktrees,
 } from "./code.ts";
-import { sessionNote, timed, type Handoffs, type Job, type Timing } from "./jobs.ts";
+import { sessionNote, timed, type DestJob, type DestStep, type Handoffs } from "./jobs.ts";
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
 import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, t3State, type Call } from "./t3.ts";
 import { HistoryError, appendToThread, sessionMessages, t3Database } from "./history.ts";
@@ -79,43 +79,62 @@ const carried = (m: Manifest) =>
   m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
 export type Manifest = z.infer<typeof manifestSchema>;
 
-export interface DestState {
-  source: string;
-  prepare: Prepare;
-  manifest?: Manifest;
-  projectId?: string;
+const timings = z.array(handoffTimingSchema);
+/** What a destination job knows, filled in step by step. */
+const begun = z.object({
+  source: z.string(),
+  prepare: prepareSchema,
+  manifest: manifestSchema.optional(),
+  projectId: z.string().optional(),
   /** The project's main checkout. */
-  main?: string;
+  main: z.string().optional(),
   /** Where the thread runs: the main checkout or a worktree. */
-  cwd?: string;
-  setupCommand?: string;
+  cwd: z.string().optional(),
+  setupCommand: z.string().optional(),
   /** The checkout was cloned or created here, so later file store updates reach it too. */
-  created?: boolean;
+  created: z.boolean().optional(),
   /** Whether the checkout moved onto the source's code; the source parks its sent changes only then. */
-  codeTaken?: boolean;
+  codeTaken: z.boolean().optional(),
   /** Apply began writing the source's files into the checkout: after a restart, the changes there came from the source. */
-  restoring?: boolean;
-  threadId?: string;
+  restoring: z.boolean().optional(),
+  threadId: z.string().optional(),
   /** T3 Code here has the thread (imported or brought back): from then on the thread lives here, a failure is only a
    * warning, and the source must not take it back. */
-  live?: boolean;
+  live: z.boolean().optional(),
   /** The Claude provider instance the thread runs with here, and its home. */
-  instanceId?: string;
-  claudeHome?: string;
+  instanceId: z.string().optional(),
+  claudeHome: z.string().optional(),
   /** No thread here held the session, so T3 imported it from a copy under the main checkout. */
-  imported?: boolean;
+  imported: z.boolean().optional(),
   /** The checkout got the repository's file store. */
-  filled?: boolean;
+  filled: z.boolean().optional(),
   /** The setup script finished (or there was none to wait for); a restart runs an unfinished one again. */
-  setupDone?: boolean;
+  setupDone: z.boolean().optional(),
   /** Recorded before sending, so a restart never sends a message twice. */
-  readied?: boolean;
-  continued?: boolean;
+  readied: z.boolean().optional(),
+  continued: z.boolean().optional(),
   /** How many queued messages were sent, counted before each. */
-  requeued?: number;
-  warnings: string[];
-  timings: Timing[];
-}
+  requeued: z.number().optional(),
+  warnings: z.array(z.string()),
+  timings,
+});
+const prepared = begun.required({ main: true });
+const applying = prepared.required({ manifest: true });
+const placing = applying.required({ cwd: true });
+const importing = placing.required({ instanceId: true, claudeHome: true, imported: true });
+const continuing = importing.required({ threadId: true });
+/** Nothing runs a finished job; one whose state does not parse is still listed, with no warnings or timings. */
+const settled = begun.partial({ source: true, prepare: true }).catch({ warnings: [], timings: [] });
+export const destinationSteps = {
+  prepare: begun,
+  prepared,
+  apply: applying,
+  place: placing,
+  import: importing,
+  continue: continuing,
+  done: settled,
+  failed: settled,
+};
 
 export const READY = 'This thread just moved here from another machine. Reply with only "Ready".';
 export const CONTINUE = "Continue where you left off.";
@@ -127,7 +146,7 @@ const FIRST_TURN = 2 * 60_000;
  * second of that finds no login and answers "Not logged in". The retry waits this long. */
 const RETRY_PAUSE = 10_000;
 /** What A sees of each step. */
-const STATUS: Record<string, "preparing" | "running" | "imported" | "failed"> = {
+const STATUS: Record<DestStep, "preparing" | "running" | "imported" | "failed"> = {
   prepare: "preparing",
   prepared: "preparing",
   apply: "running",
@@ -138,7 +157,7 @@ const STATUS: Record<string, "preparing" | "running" | "imported" | "failed"> = 
   failed: "failed",
 };
 
-export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
+export function destinationView(h: Handoffs, job: DestJob): HandoffJob {
   const st = job.state;
   const shown = STATUS[job.step];
   const status = job.step === "done" ? "done" : shown === "imported" || shown === "failed" ? shown : "running";
@@ -146,7 +165,7 @@ export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
     id: job.id,
     role: "destination",
     node: h.s.nodeId,
-    from: st.source,
+    from: st.source ?? "unknown",
     to: h.s.nodeId,
     thread: st.manifest?.sourceThreadId ?? job.thread,
     title: st.manifest?.title,
@@ -161,12 +180,22 @@ export function destinationView(h: Handoffs, job: Job<DestState>): HandoffJob {
   };
 }
 
-/** What A polls: the status, the imported thread, and B's warnings and timings. */
-export function peerStatus(job: Job<DestState>) {
+/** What A polls: the status, the imported thread, and B's warnings and timings. `status` stays a string, so a step a
+ * newer destination adds reads as still running. */
+export const peerStatusSchema = z.object({
+  step: z.string(),
+  status: z.string(),
+  threadId: z.string().optional(),
+  codeTaken: z.boolean().optional(),
+  warnings: z.array(z.string()).optional(),
+  timings: timings.optional(),
+  error: z.string().optional(),
+});
+export function peerStatus(job: DestJob): z.input<typeof peerStatusSchema> {
   const st = job.state;
   return {
     step: job.step,
-    status: STATUS[job.step] ?? "running",
+    status: STATUS[job.step],
     threadId: st.threadId,
     codeTaken: st.codeTaken,
     warnings: st.warnings,
@@ -180,7 +209,7 @@ export const manifestFile = (h: Handoffs, id: string) => join(h.dir(id), "manife
 
 /** The job, created by whichever of prepare and start arrives first, and only ever driven for its own source. */
 function destinationJob(h: Handoffs, id: string, source: string, prepare: Prepare, thread = "") {
-  const job = h.create<DestState>({
+  const job = h.create({
     id,
     role: "destination",
     thread,
@@ -224,7 +253,7 @@ export function start(h: Handoffs, id: string, source: string, manifest: Manifes
 
 /** Abort before import. Once the import step starts, T3 Code here may already have the thread: it lives here then, and
  * only the user can move it again. */
-export function abort(h: Handoffs, job: Job<DestState>) {
+export function abort(h: Handoffs, job: DestJob) {
   if (["import", "continue", "done"].includes(job.step) || job.state.live)
     throw new T3Error("the thread was already imported here");
   if (job.step !== "failed") h.fail(job, "aborted by the source");
@@ -232,7 +261,7 @@ export function abort(h: Handoffs, job: Job<DestState>) {
 
 export async function runDestination(h: Handoffs, id: string) {
   for (;;) {
-    const job = h.load<DestState>("destination", id);
+    const job = h.load("destination", id);
     if (!job || h.closed) return;
     try {
       switch (job.step) {
@@ -259,7 +288,8 @@ export async function runDestination(h: Handoffs, id: string) {
         case "continue":
           await carryOn(h, job);
           break;
-        default:
+        case "done":
+        case "failed":
           return;
       }
     } catch (e) {
@@ -268,7 +298,7 @@ export async function runDestination(h: Handoffs, id: string) {
       const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       // Imported: the thread lives here now, and a failure must not make the source take it back.
       if (job.step === "continue" || job.state.live) {
-        const queued = job.step === "import" ? (job.state.manifest?.queued?.length ?? 0) : 0;
+        const queued = job.step === "import" ? (job.state.manifest.queued?.length ?? 0) : 0;
         job.state.warnings.push(
           `${message}; the thread is here, continue it in T3 Code` +
             (queued ? ` (${queued} queued message${queued === 1 ? " was" : "s were"} not sent again)` : ""),
@@ -284,7 +314,7 @@ export async function runDestination(h: Handoffs, id: string) {
 const repoName = (remoteUrl: string) =>
   parseRemote(remoteUrl)?.split("/")[1] ?? basename(remoteUrl).replace(/\.git$/, "");
 
-async function doPrepare(h: Handoffs, job: Job<DestState>) {
+async function doPrepare(h: Handoffs, job: DestJob<"prepare">) {
   const st = job.state;
   const p = st.prepare;
 
@@ -292,18 +322,23 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
     if (!st.main) {
       const project = await findProject(h, p.remoteUrl);
       if (project) {
-        const setupCommand = project.scripts.find((s) => s.runOnWorktreeCreate)?.command;
-        Object.assign(st, { projectId: project.id, main: project.workspaceRoot, setupCommand });
+        st.projectId = project.id;
+        st.main = project.workspaceRoot;
+        st.setupCommand = project.scripts.find((s) => s.runOnWorktreeCreate)?.command;
       } else {
-        Object.assign(st, await cloneProject(h, p.remoteUrl), { created: true });
+        const clone = await cloneProject(h, p.remoteUrl);
+        st.projectId = clone.projectId;
+        st.main = clone.main;
+        st.setupCommand = clone.setupCommand;
+        st.created = true;
         if (!p.worktree) {
-          st.cwd = st.main;
-          startSetup(h, job);
+          st.cwd = clone.main;
+          startSetup(h, job.id, st.setupCommand, clone.main, clone.main);
         }
       }
       h.save(job);
     }
-    if (!st.cwd) await workspace(h, job, p.baseSha);
+    if (!st.cwd) await workspace(h, job, st.main, p.baseSha);
     // A clone made here, or a project with no session here yet: link its skills before the thread continues.
     if (st.cwd) h.register([{ path: st.cwd }]);
   });
@@ -377,10 +412,9 @@ function repoSetupCommand(dir: string) {
 
 /** The checkout the thread runs in: B's main checkout, a worktree already on the branch (reused, so setup runs once
  * per branch and machine), or a new worktree from `start`. Without a start commit yet, wait for the code. */
-async function workspace(h: Handoffs, job: Job<DestState>, startAt: string | null) {
+async function workspace(h: Handoffs, job: DestJob<"prepare" | "apply">, main: string, startAt: string | null) {
   const st = job.state;
   const p = st.prepare;
-  const main = st.main!;
   const use = (cwd: string) => {
     st.cwd = cwd;
     h.save(job);
@@ -397,20 +431,17 @@ async function workspace(h: Handoffs, job: Job<DestState>, startAt: string | nul
   if (!existsSync(path)) await addWorktree(main, path, p.branch, startAt);
   st.created = true;
   use(path);
-  startSetup(h, job);
+  startSetup(h, job.id, st.setupCommand, main, path);
 }
 
 /** The project's setup script (`runOnWorktreeCreate`) in the background, as T3 runs it. Only for a checkout made here:
  * a reused worktree already has its dependencies. A failure is a warning, not a failed handoff. */
-function startSetup(h: Handoffs, job: Job<DestState>) {
-  const st = job.state;
-  const command = st.setupCommand;
-  const cwd = st.cwd!;
+function startSetup(h: Handoffs, id: string, command: string | undefined, main: string, cwd: string) {
   if (!command) return;
 
-  const previous = h.setups.get(job.id) ?? Promise.resolve({ warnings: [], timings: [] });
+  const previous = h.setups.get(id) ?? Promise.resolve({ warnings: [], timings: [] });
   h.setups.set(
-    job.id,
+    id,
     previous.then(async (notes) => {
       const elapsed = startTimer();
       try {
@@ -422,8 +453,8 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
           detached: true,
           env: {
             ...process.env,
-            T3CODE_PROJECT_ROOT: st.main!,
-            ...(cwd !== st.main && { T3CODE_WORKTREE_PATH: cwd }),
+            T3CODE_PROJECT_ROOT: main,
+            ...(cwd !== main && { T3CODE_WORKTREE_PATH: cwd }),
             COLORTERM: "",
           },
         });
@@ -448,10 +479,10 @@ function startSetup(h: Handoffs, job: Job<DestState>) {
   );
 }
 
-async function apply(h: Handoffs, job: Job<DestState>) {
+async function apply(h: Handoffs, job: DestJob<"apply">) {
   const st = job.state;
-  const m = st.manifest!;
-  const main = st.main!;
+  const m = st.manifest;
+  const main = st.main;
 
   await timed(h.s, st.timings, "apply", async () => {
     const present = m.bundle
@@ -464,11 +495,12 @@ async function apply(h: Handoffs, job: Job<DestState>) {
       );
     }
 
-    if (!st.cwd) await workspace(h, job, m.headSha);
-    if (!st.cwd) throw new T3Error("could not create a worktree for the thread");
+    if (!st.cwd) await workspace(h, job, main, m.headSha);
+    const cwd = st.cwd;
+    if (!cwd) throw new T3Error("could not create a worktree for the thread");
 
-    const before = await git(st.cwd, ["rev-parse", "HEAD"]);
-    const { kept, replaced } = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot, {
+    const before = await git(cwd, ["rev-parse", "HEAD"]);
+    const { kept, replaced } = await moveToSource(cwd, m.branch, m.headSha, m.snapshot, {
       resumed: st.restoring,
       restoring: () => {
         st.restoring = true;
@@ -477,25 +509,25 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     });
     st.codeTaken = !kept;
     if (kept) {
-      st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);
+      st.warnings.push(`Kept ${h.s.nodeId}'s code in ${cwd}: ${kept}`);
       const edits = carried(m);
       if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
       if (replaced.length) {
         const names = replaced.slice(0, 5).join(", ") + (replaced.length > 5 ? ` and ${replaced.length - 5} more` : "");
         st.warnings.push(
-          `Replaced ${h.s.nodeId}'s own ${names} in ${st.cwd} with the versions from ${m.source}; ${h.s.nodeId}'s are in git stash`,
+          `Replaced ${h.s.nodeId}'s own ${names} in ${cwd} with the versions from ${m.source}; ${h.s.nodeId}'s are in git stash`,
         );
       }
       // New dependencies in the arriving code: install them again once the first setup is done.
-      if (await manifestsChanged(st.cwd, before, m.snapshot.sha)) startSetup(h, job);
+      if (await manifestsChanged(cwd, before, m.snapshot.sha)) startSetup(h, job.id, st.setupCommand, main, cwd);
 
-      await placeEdits(h, job);
+      await placeEdits(h, job, cwd);
 
       // The thread came back: the changes this machine parked when it left are in the code that just arrived.
       const parked = h.s.local(sessionNote.stash(m.sessionId));
       if (parked) {
-        await dropStash(st.cwd, parked);
+        await dropStash(cwd, parked);
         h.s.setLocal(sessionNote.stash(m.sessionId), undefined);
       }
     }
@@ -506,24 +538,24 @@ async function apply(h: Handoffs, job: Job<DestState>) {
 
 /** The source checkout's own edits to gitignored files, written once the code moved here. They then differ from the file
  * store, so buncargo keeps them as local edits. A file this checkout edited itself is kept, with a warning. */
-async function placeEdits(h: Handoffs, job: Job<DestState>) {
+async function placeEdits(h: Handoffs, job: DestJob<"apply">, cwd: string) {
   const st = job.state;
-  const edits = carried(st.manifest!);
+  const edits = carried(st.manifest);
   if (!edits.length) return;
-  const key = await checkoutKey(st.cwd!);
+  const key = await checkoutKey(cwd);
   const kept = edits.filter(
     (path) =>
       !placeEdit(
         h.options.filesRoot,
         key,
-        st.cwd!,
+        cwd,
         path,
         readFileSync(join(h.dir(job.id), "files", "checkout-files", path)),
       ),
   );
   if (kept.length)
     st.warnings.push(
-      `Kept ${h.s.nodeId}'s own ${kept.join(", ")} in ${st.cwd}; the changes from ${st.source} to them are not there`,
+      `Kept ${h.s.nodeId}'s own ${kept.join(", ")} in ${cwd}; the changes from ${st.source} to them are not there`,
     );
 }
 
@@ -545,26 +577,27 @@ async function knownThread(h: Handoffs, call: Call, instanceId: string, sessionI
 }
 
 /** The same provider instance as on the source when this T3 Code has one by that id, else its default instance. */
-async function instance(h: Handoffs, call: Call, st: DestState) {
+async function instance(h: Handoffs, call: Call, st: DestJob<"place">["state"]) {
   if (!st.instanceId || !st.claudeHome) {
-    const id = st.manifest!.modelSelection.instanceId;
+    const id = st.manifest.modelSelection.instanceId;
     const found = await claudeInstance(call, typeof id === "string" ? id : undefined, h.options.claudeDir);
     st.instanceId = found.instanceId;
     st.claudeHome = found.home;
   }
-  return st.instanceId;
+  return { instanceId: st.instanceId, home: st.claudeHome };
 }
 
-async function place(h: Handoffs, job: Job<DestState>) {
+async function place(h: Handoffs, job: DestJob<"place">) {
   const st = job.state;
-  const m = st.manifest!;
+  const m = st.manifest;
   await timed(h.s, st.timings, "place", async () => {
     const provider = sessionProviders[m.driver];
     if (!provider) throw new T3Error(`${m.driver} sessions cannot be placed here`);
 
-    await t3Client(h.s).rpc(async (call) => {
-      const instanceId = await instance(h, call, st);
-      st.threadId ??= await knownThread(h, call, instanceId, m.sessionId);
+    const { home } = await t3Client(h.s).rpc(async (call) => {
+      const found = await instance(h, call, st);
+      st.threadId ??= await knownThread(h, call, found.instanceId, m.sessionId);
+      return found;
     });
     st.imported = !st.threadId;
     h.save(job);
@@ -572,18 +605,18 @@ async function place(h: Handoffs, job: Job<DestState>) {
     const from = join(h.dir(job.id), "files", "session");
     const files = m.files.filter((f) => f.path.startsWith("session/")).map((f) => f.path.slice(8));
     // Claude resumes from the key of the checkout the thread runs in; T3 imports only from a main checkout's key.
-    const places = st.imported ? [st.main!, st.cwd!] : [st.cwd!];
-    for (const cwd of new Set(places)) provider.place(st.claudeHome!, m.sessionId, from, files, cwd, m.oldPaths);
+    const places = st.imported ? [st.main, st.cwd] : [st.cwd];
+    for (const cwd of new Set(places)) provider.place(home, m.sessionId, from, files, cwd, m.oldPaths);
   });
   h.advance(job, "import");
 }
 
-async function importThread(h: Handoffs, job: Job<DestState>) {
+async function importThread(h: Handoffs, job: DestJob<"import">) {
   const st = job.state;
-  const m = st.manifest!;
+  const m = st.manifest;
+  const instanceId = st.instanceId;
   await timed(h.s, st.timings, "import", () =>
     t3Client(h.s).rpc(async (call) => {
-      const instanceId = await instance(h, call, st);
       // T3 Code has the thread from the import, or before a thread brought back is unarchived: from then on a failure
       // leaves it here with a warning, and the source can no longer take it back.
       const live = () => {
@@ -595,11 +628,11 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
         await call("agentSessions.import", { projectId: st.projectId });
         // Imported threads are named after the session.
         st.threadId = await knownThread(h, call, instanceId, m.sessionId);
-        if (!st.threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
-        live();
       }
-      const threadId = st.threadId!;
-      if (!st.imported) copyHistory(h, job, threadId);
+      const threadId = st.threadId;
+      if (!threadId) throw new T3Error(`T3 Code on ${h.s.nodeId} did not import the Claude session`);
+      if (st.imported) live();
+      else copyHistory(h, job, threadId);
 
       const p = await projection(call, threadId);
       live();
@@ -626,15 +659,15 @@ async function importThread(h: Handoffs, job: Job<DestState>) {
 
   // The main checkout's copy was only for the import; Claude resumes from the worktree's. Left behind, a later import
   // there could pick up the stale transcript.
-  if (st.imported && st.cwd !== st.main) sessionProviders[m.driver]!.remove(st.claudeHome!, m.sessionId, st.main!);
+  if (st.imported && st.cwd !== st.main) sessionProviders[m.driver]?.remove(st.claudeHome, m.sessionId, st.main);
   h.advance(job, "continue");
 }
 
 /** A reused thread lacks what the session got on other machines since it left here: write those messages into its
  * T3 Code history (see history.ts). Never fails the handoff; the agent has them in its session either way. */
-function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
+function copyHistory(h: Handoffs, job: DestJob<"import">, threadId: string) {
   const st = job.state;
-  const m = st.manifest!;
+  const m = st.manifest;
   const from = Number(h.s.local(sessionNote.lines(m.sessionId)));
   // Off, a dev daemon, or a thread that left here before agentgate counted its session's records.
   if (!h.s.settings().t3HandoffHistory || !h.options.t3StateDir || !(from > 0)) return;
@@ -654,10 +687,10 @@ function copyHistory(h: Handoffs, job: Job<DestState>, threadId: string) {
 /** After reporting `imported`: wait for setup, then get the thread ready and let a working agent go on.
  * T3 opens the first turn of an imported thread as a new Claude session under the existing id, which fails (an upstream
  * bug); the next turn resumes. A short message takes that failure so the user's first message does not. */
-async function carryOn(h: Handoffs, job: Job<DestState>) {
+async function carryOn(h: Handoffs, job: DestJob<"continue">) {
   const st = job.state;
   // The daemon stopped during setup, which stopped it too: run it again before the agent goes on.
-  if (!h.setups.has(job.id) && st.created && !st.setupDone) startSetup(h, job);
+  if (!h.setups.has(job.id) && st.created && !st.setupDone) startSetup(h, job.id, st.setupCommand, st.main, st.cwd);
   const setup = await Promise.race([h.setups.get(job.id), h.closing.then(() => "closed" as const)]);
   if (setup === "closed") return;
   h.setups.delete(job.id);
@@ -675,13 +708,13 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       t3Client(h.s).rpc(async (call) => {
         st.readied = true;
         h.save(job);
-        await turnOrRetry(h, call, st.threadId!, READY);
+        await turnOrRetry(h, call, st.threadId, READY);
       }),
     );
   }
   // Shutting down mid-turn: the restart sends what follows, after READY ran.
   if (h.closed) return;
-  const m = st.manifest!;
+  const m = st.manifest;
   const next = [m.wasWorking ? CONTINUE : "", m.background?.length ? restartTasks(m.background) : ""]
     .filter(Boolean)
     .join("\n\n");
@@ -690,7 +723,7 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
       t3Client(h.s).rpc(async (call) => {
         st.continued = true;
         h.save(job);
-        await turnOrRetry(h, call, st.threadId!, next);
+        await turnOrRetry(h, call, st.threadId, next);
       }),
     );
   }
@@ -701,10 +734,11 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
   if ((st.requeued ?? 0) < queued.length) {
     await timed(h.s, st.timings, "queue", () =>
       t3Client(h.s).rpc(async (call) => {
-        for (let i = st.requeued ?? 0; i < queued.length; i++) {
+        for (const [i, text] of queued.entries()) {
+          if (i < (st.requeued ?? 0)) continue;
           st.requeued = i + 1;
           h.save(job);
-          await send(call, st.threadId!, queued[i]!, "queue_after_active");
+          await send(call, st.threadId, text, "queue_after_active");
         }
       }),
     );
@@ -716,14 +750,14 @@ async function carryOn(h: Handoffs, job: Job<DestState>) {
 
 /** After setup (buncargo is installed by then): the repository's checkout files into the checkout. A failure is a
  * warning. */
-async function fillFiles(h: Handoffs, job: Job<DestState>) {
+async function fillFiles(h: Handoffs, job: DestJob<"continue">) {
   const st = job.state;
   const root = h.options.filesRoot;
   if (!root || st.filled) return;
   try {
-    const key = await checkoutKey(st.cwd!);
-    if (st.created) rememberCheckout(h.s, st.cwd!, key);
-    await fillCheckout(root, st.cwd!, key);
+    const key = await checkoutKey(st.cwd);
+    if (st.created) rememberCheckout(h.s, st.cwd, key);
+    await fillCheckout(root, st.cwd, key);
   } catch (e) {
     st.warnings.push(`The repository's gitignored files are not in ${st.cwd}: ${getErrorMessage(e)}`);
   }

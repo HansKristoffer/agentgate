@@ -9,16 +9,7 @@ import type { Env } from "../daemon.ts";
 import { jsonInput } from "../http.ts";
 import { MAX_BODY, readBody } from "../runtime.ts";
 import type { Peer } from "../sync.ts";
-import {
-  abort,
-  checkoutFile,
-  manifestSchema,
-  peerStatus,
-  prepare,
-  prepareSchema,
-  start,
-  type DestState,
-} from "./destination.ts";
+import { abort, checkoutFile, manifestSchema, peerStatus, prepare, prepareSchema, start } from "./destination.ts";
 import type { Handoffs } from "./jobs.ts";
 import { safeRelative } from "./session.ts";
 import { cancelHandoff, startHandoff } from "./source.ts";
@@ -43,7 +34,7 @@ export function handoffRoutes(h: Handoffs) {
   });
   // A destination job answers only the node that started it.
   const own = (c: Context<{ Variables: { peer: Peer } }>) => {
-    const job = h.load<DestState>("destination", id.parse(c.req.param("id")));
+    const job = h.load("destination", id.parse(c.req.param("id")));
     return job?.state.source === c.get("peer").node ? job : undefined;
   };
   const missing = { error: "no such handoff" };

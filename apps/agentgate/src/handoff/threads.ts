@@ -1,18 +1,21 @@
 import {
   firstServer,
+  handoffCancelSchema,
+  handoffJobSchema,
   handoffTargets,
   nodeThreadsSchema,
+  t3NodeStateSchema,
+  t3PairingLinkSchema,
   type HandoffCancel,
   type HandoffJob,
   type NodeThreads,
   type T3NodeState,
-  type T3PairingLink,
   type T3Thread,
 } from "@agentgate/protocol";
 import { getErrorMessage, getUniqueValues, isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
-import { cancelHandoff, startHandoff, type SourceState } from "./source.ts";
+import { cancelHandoff, startHandoff } from "./source.ts";
 import { z } from "zod";
 import {
   isWorkingStatus,
@@ -146,7 +149,7 @@ export async function localView(
   const recent = (j: { step: string; updatedAt: number }) =>
     !["done", "failed"].includes(j.step) || h.s.now() - j.updatedAt < RECENT;
   const jobs = h
-    .list<SourceState>("source")
+    .list("source")
     .filter(recent)
     .map((j) => h.view(j));
   const t3 = t3State(h.s);
@@ -195,15 +198,8 @@ export async function peerView(
   const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
   if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
   if (!online) return { ...base, error: "offline" };
-  const read = async () => {
-    try {
-      const answer = peerAnswer.safeParse(await peerCall(h.s, n.id, "/threads", { timeout: 8000 }));
-      if (!answer.success) return { error: `${n.id} answered with threads this machine cannot read; update agentgate` };
-      return answer.data;
-    } catch (e) {
-      return { error: getErrorMessage(e) };
-    }
-  };
+  const read = () =>
+    peerCall(h.s, n.id, "/threads", peerAnswer, { timeout: 8000 }).catch((e) => ({ error: getErrorMessage(e) }));
   return { ...base, ...(await h.cache.getOrSet(viewKey(n.id), read, { ttlMs: VIEW_TTL })) };
 }
 
@@ -242,7 +238,7 @@ export async function requestHandoff(h: Handoffs, input: { threadId: string; nod
     node === h.s.nodeId
       ? await startHandoff(h, input.threadId, to)
       : (
-          await peerCall<{ handoffId: string }>(h.s, node, "/handoff/request", {
+          await peerCall(h.s, node, "/handoff/request", z.object({ handoffId: z.string() }), {
             json: { threadId: input.threadId, to },
             timeout: 60_000,
           })
@@ -254,18 +250,18 @@ export async function requestHandoff(h: Handoffs, input: { threadId: string; nod
  * channel, like every other credential, and that node redeems it with its own T3 Code. */
 export async function connectNode(h: Handoffs, node: string | undefined, input: z.infer<typeof connectInput>) {
   if (!node || node === h.s.nodeId) return connectWith(h.s, input);
-  return peerCall<T3NodeState>(h.s, node, "/t3/connect", { json: input, timeout: 90_000 });
+  return peerCall(h.s, node, "/t3/connect", t3NodeStateSchema, { json: input, timeout: 90_000 });
 }
 
 /** A new pairing link from a node's T3 Code, to connect a T3 Code client to it. */
 export async function pairingLinkNode(h: Handoffs, node: string | undefined, input: z.infer<typeof pairingLinkInput>) {
   if (!node || node === h.s.nodeId) return createPairingLink(h.s, input);
-  return peerCall<T3PairingLink>(h.s, node, "/t3/pairing-link", { json: input, timeout: 90_000 });
+  return peerCall(h.s, node, "/t3/pairing-link", t3PairingLinkSchema, { json: input, timeout: 90_000 });
 }
 
 export async function disconnectNode(h: Handoffs, node: string | undefined) {
   if (!node || node === h.s.nodeId) return disconnectT3(h.s);
-  await peerCall(h.s, node, "/t3/disconnect", { method: "POST" });
+  await peerCall(h.s, node, "/t3/disconnect", z.unknown(), { method: "POST" });
 }
 
 /** A job by id, here or on the node that drives it. */
@@ -274,14 +270,14 @@ export async function handoffJob(h: Handoffs, id: string, node?: string): Promis
     const job = h.load("source", id) ?? h.load("destination", id);
     return job && h.view(job);
   }
-  return peerCall<HandoffJob>(h.s, node, `/handoff/${encodeURIComponent(id)}/job`);
+  return peerCall(h.s, node, `/handoff/${encodeURIComponent(id)}/job`, handoffJobSchema);
 }
 
 /** Cancel a handoff that waits for its destination, here or on the node that drives it (see cancelHandoff). */
 export async function cancelHandoffOn(h: Handoffs, id: string, node?: string): Promise<HandoffCancel> {
   if (!node || node === h.s.nodeId) return cancelHandoff(h, id);
   // That node asks the destination in turn, with its own deadline.
-  return peerCall<HandoffCancel>(h.s, node, `/handoff/${encodeURIComponent(id)}/cancel`, {
+  return peerCall(h.s, node, `/handoff/${encodeURIComponent(id)}/cancel`, handoffCancelSchema, {
     method: "POST",
     timeout: 60_000,
   });

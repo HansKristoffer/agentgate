@@ -9,7 +9,6 @@ import { items, runs } from "../src/factory/db.ts";
 import { loopTask, withItem, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { t3Mcp } from "../src/factory/t3-mcp.ts";
-import type { SourceState } from "../src/handoff/source.ts";
 import { connectT3, disconnectT3 } from "../src/handoff/t3.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
@@ -729,13 +728,13 @@ test("a run without an item whose launch fails three times in a row ends failed,
 
 /** A person hands this machine's thread to the machine `b`, as `agentgate handoff` records it. */
 const handOff = (n: Node, thread: string) =>
-  n.ctx.handoffs.create<SourceState>({
+  n.ctx.handoffs.create({
     id: crypto.randomUUID(),
     role: "source",
     thread,
     target: "b",
-    step: "export",
-    state: { warnings: [], timings: [] } as unknown as SourceState,
+    step: "done",
+    state: { warnings: [], timings: [] },
   });
 
 test("a stage thread a person stops in T3 Code is left alone: its run ends, the item waits, and retry starts the stage again", async () => {

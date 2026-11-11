@@ -46,6 +46,10 @@ const t3ThreadSchema = z.object({
 });
 export type T3Thread = z.infer<typeof t3ThreadSchema>;
 
+/** How long one step took on one node. */
+export const handoffTimingSchema = z.object({ step: z.string(), node: z.string(), ms: z.number() });
+export type HandoffTiming = z.infer<typeof handoffTimingSchema>;
+
 const handoffStatusSchema = z.enum(["running", "imported", "done", "failed"]);
 export const handoffJobSchema = z.object({
   id: z.string(),
@@ -63,7 +67,7 @@ export const handoffJobSchema = z.object({
   warnings: z.array(z.string()),
   error: z.string().optional(),
   /** Step durations on both sides, in the order they ran. */
-  timings: z.array(z.object({ step: z.string(), node: z.string(), ms: z.number() })),
+  timings: z.array(handoffTimingSchema),
   createdAt: z.number(),
   updatedAt: z.number(),
 });
