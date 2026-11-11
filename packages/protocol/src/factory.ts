@@ -546,6 +546,10 @@ export const writeBackMoments = [
   "waiting",
 ] as const;
 export type Moment = (typeof writeBackMoments)[number];
+/** Every write the outbox sends: a comment for a moment, a reply in a review conversation, an issue the factory files,
+ * and a notification to one of the person's outlets. */
+export const writeMoments = [...writeBackMoments, "reply", "issue", "notify"] as const;
+export type WriteMoment = (typeof writeMoments)[number];
 
 /**
  * The JSON in `<!-- agentgate-factory:1 {...} -->`, read back from issues and PRs. Not strict: a newer factory may add
@@ -564,6 +568,10 @@ export const markerPayloadSchema = z.object({
   node: z.string().min(1),
   state: z.enum(["open", "finished"]),
   pr: z.string().nullish(), // the item's PR, once it has one
+  // The outbox write that posted the comment, so an uncertain one is settled by reading the comments back. A string,
+  // not the enum: a moment a newer factory adds must not hide its marker from this one.
+  moment: z.string().nullish(),
+  ref: z.string().nullish(),
 });
 export type MarkerPayload = z.infer<typeof markerPayloadSchema>;
 
@@ -787,12 +795,13 @@ export const factoryItemDetailSchema = z.object({
       endedAt: z.number().optional(),
     }),
   ),
-  /** The outbox's writes for the item: comments for its moments, replies in its PR's review conversations, and the
-   * issues it filed for work it left alone. `unreachable` is sent again until it goes through; `uncertain` may have
-   * been written and is never sent again; `failed` was refused, or stayed unreachable for a day. */
+  /** The outbox's writes for the item: comments for its moments, replies in its PR's review conversations, the issues
+   * it filed for work it left alone, and its notifications. `unreachable` is sent again until it goes through;
+   * `uncertain` may have been written, and a comment stays so until the factory reads it back; `failed` was refused, or
+   * stayed unreachable for a day. */
   writebacks: z.array(
     z.object({
-      moment: z.enum([...writeBackMoments, "reply", "issue"]),
+      moment: z.enum(writeMoments),
       status: z.enum(["pending", "sending", "posted", "failed", "unreachable", "uncertain"]),
       at: z.number(),
     }),

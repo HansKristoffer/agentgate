@@ -291,9 +291,12 @@ function fakeSource(n: Node, sources: Record<string, IncomingItem[] | Error>) {
       polled.push(source.id);
       const answer = sources[source.id] ?? [];
       if (answer instanceof Error) throw answer;
-      return answer;
+      return { items: answer };
     },
-    check: async ({ externalId }) => ({ open: !closed.has(externalId), marker: markers.get(externalId) }),
+    check: async ({ externalId }) => ({
+      open: !closed.has(externalId),
+      markers: markers.has(externalId) ? [markers.get(externalId)!] : [],
+    }),
     post: async (item, body) => {
       posts.push({ item: item.key, body });
       return { status: "posted" };

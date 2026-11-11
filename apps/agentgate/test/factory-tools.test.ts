@@ -24,13 +24,14 @@ async function triaging(count: number) {
   const posts: { key: string; body: string }[] = [];
   const adapter: SourceAdapter = {
     type: "github",
-    poll: async () =>
-      Array.from({ length: count }, (_, i) => ({
+    poll: async () => ({
+      items: Array.from({ length: count }, (_, i) => ({
         externalId: `${n.repo}#${i + 1}`,
         key: `gh-${i + 1}`,
         title: `Issue ${i + 1}`,
         snapshot: { number: i + 1 },
       })),
+    }),
     post: async (item, body) => {
       posts.push({ key: item.key, body });
       return { status: "posted" };

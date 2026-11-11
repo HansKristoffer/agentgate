@@ -4,6 +4,7 @@ import { items, runs } from "../src/factory/db.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { delivery } from "../src/factory/notify.ts";
 import { saveProject, setFactoryTools, setFactoryWebhook } from "../src/operations.ts";
+import { loopTask } from "../src/factory/runtime.ts";
 import { exportBackup } from "../src/store.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { factoryNode, idle, postOp } from "./fixtures/t3-mcp.ts";
@@ -98,7 +99,6 @@ function capturePosts() {
     posts.push({ url, body: JSON.parse(body) });
     return new Response(null, { status: answer.status });
   };
-  delivery.retryMs = 0;
   cleanup.push(() => Object.assign(delivery, real));
   return { posts, answer };
 }
@@ -149,16 +149,28 @@ test("an item that waits for you, and a PR that is ready, are posted once to you
   );
   expect(n.mcp.calls.find((c) => c.args.action === "mark_unread")!.args.threadId).toBe(run.threadId);
 
-  // A PR that is ready is the other moment; a failing receiver is tried once more and logged once, without its URL.
+  // A PR that is ready is the other moment. A failing receiver is logged once, without its URL, and the outbox sends
+  // the post again on its later passes until the receiver takes it.
   answer.status = 503;
   const url = `https://github.com/${n.repo}/pull/7`;
   items.update(n.s, added.id, { pr: { url, head: "c1", headAt: 0, run: run.id, thread: run.threadId!, nudges: 0 } });
   moveItem(n.f, added.id, "ready", true);
-  await n.until(() => posts.length === 6, "the posts and their retries");
+  const outbox = n.f.loops.find((l) => l.name === "factory-outbox")!;
+  const pass = async () => {
+    await loopTask(n.f, outbox)();
+    await idle(n.f);
+  };
+  await n.until(() => posts.length === 4, "the ready posts");
+  await pass();
+  expect(posts).toHaveLength(6);
+  answer.status = 200;
+  await pass();
+  expect(posts).toHaveLength(8);
   expect(posts.at(-1)!.body.text).toBe(
     `${added.key}'s PR is ready for you: Crash on save https://github.com/${n.repo}/pull/7`,
   );
-  await n.until(() => logged.length === 2, "the failures logged");
+  await pass();
+  expect(posts).toHaveLength(8);
   expect(logged).toEqual([
     "factory: a notify URL did not take an update: HTTP 503",
     "factory: a notify URL did not take an update: HTTP 503",

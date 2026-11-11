@@ -171,8 +171,8 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
     createdAt: "2999-01-01T00:00:00.000Z",
     user: { id: FACTORY_USER },
   });
-  const { marker } = await n.f.sources.get("linear")!.check!(item);
-  expect(marker).toEqual({
+  const { markers } = await n.f.sources.get("linear")!.check!(item);
+  expect(markers.at(-1)).toEqual({
     item: item.id,
     key: "eng-42",
     stage: "triage",
@@ -183,6 +183,8 @@ test("a write-back is one commentCreate whose visible last line is the marker, a
     node: "a",
     state: "open",
     pr: null,
+    moment: "waiting",
+    ref: "q1",
   });
 });
 
@@ -210,7 +212,7 @@ test("a marker in a comment by another Linear user counts for nothing: not for c
   await n.intake();
   const item = items.byExternal(n.s, "ENG-7")!;
   expect(item.phase).toBe("triage");
-  expect((await n.f.sources.get("linear")!.check!(item)).marker).toBeUndefined();
+  expect((await n.f.sources.get("linear")!.check!(item)).markers).toEqual([]);
 });
 
 test("a comment Linear never received is sent again until it goes through; one whose mutation dropped is uncertain and never sent again; one Linear refused is tried three times, then failed", async () => {

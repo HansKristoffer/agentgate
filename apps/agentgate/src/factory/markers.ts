@@ -64,3 +64,8 @@ export function parseMarkers(text: string): MarkerPayload[] {
   }
   return found;
 }
+
+/** The markers in the factory's own comments, oldest first: anyone who can comment could otherwise forge one. `read`
+ * finds a comment's markers where its source keeps them. */
+export const ownMarkers = (comments: { body: string; own: boolean }[], read = parseMarkers) =>
+  comments.filter((c) => c.own).flatMap((c) => read(c.body));
