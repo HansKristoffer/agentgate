@@ -1,22 +1,32 @@
 import { createHash } from "node:crypto";
-import type { FactoryReport, MarkerPayload, Moment, StageName } from "@agentgate/protocol";
+import {
+  writeBackMoments,
+  type FactoryReport,
+  type MarkerPayload,
+  type Moment,
+  type StageName,
+  type WriteMoment,
+} from "@agentgate/protocol";
 import { later, shortError, type FactoryRuntime, type PostResult, type SourceAdapter } from "./runtime.ts";
 import { currentFolder, folderFor } from "./config.ts";
 import { isStage, items, type FactoryItem } from "./db.ts";
 import { createIssue, replyToConversation } from "./gh.ts";
-import { defuse, renderComment } from "./markers.ts";
+import { defuse, parseMarkers, renderComment } from "./markers.ts";
+import { sendNotification } from "./notify.ts";
 
 /**
- * The outbox: every write to GitHub or Linear whose outcome can be uncertain (a comment on an item's issue, a reply in a
- * review conversation, an issue the factory files) goes through one claim. A write is claimed with its body, once per
- * item, moment and `ref`, in the step that decides it, and sent after that step:
+ * The outbox: every write whose outcome can be uncertain (a comment on an item's issue, a reply in a review
+ * conversation, an issue the factory files, a notification) goes through one claim. A write is claimed with its body,
+ * once per item, moment and `ref`, in the step that decides it, and sent after that step:
  *
  * - `pending` is sent, by the step after the claim or by the loop: it was never attempted, the service's rate limit
  *   turned it away, or the service refused it fewer than three times. None of those wrote anything;
  * - `sending` was attempted, and a restart then leaves it as `uncertain`;
  * - `unreachable` certainly never reached the service (`gh` is logged out, the machine is offline), so the loop
  *   sends it again until it goes through, however many passes that takes;
- * - `uncertain` (the request may have been applied) is never sent again;
+ * - `uncertain` (the request may have been applied) is never sent blind. A comment's marker names its moment and
+ *   `ref`, so the loop reads the item's comments back (`settle`): one that landed is `posted`, and one that did not is
+ *   sent again. A reply, an issue or a notification stays uncertain;
  * - `failed` is given up on: refused three times, or still unreachable a day after it was claimed.
  *
  * Writes that are safe to repeat, such as resolving a conversation or rewriting the PR body, do not need a claim.
@@ -45,8 +55,7 @@ export const questionRef = (run: string, question: string) =>
 
 /**
  * The comment for a moment, claimed in the outbox now and posted after the current step of the item: at
- * most once per item, moment and `ref`, and never again once its outcome is uncertain. A source with nothing to post
- * to skips it.
+ * most once per item, moment and `ref`. A source with nothing to post to skips it.
  */
 export function writeBack(
   f: FactoryRuntime,
@@ -71,6 +80,8 @@ export function writeBack(
     node: s.nodeId,
     state: moment === "shipped" || moment === "closed" ? "finished" : "open",
     pr: item.pr?.url ?? null,
+    moment,
+    ref,
   };
   const body = renderComment(moment, item, {
     ...(report?.summary && { summary: report.summary }),
@@ -79,10 +90,6 @@ export function writeBack(
   });
   claimWrite(f, item.id, moment, ref, body, `The ${moment} comment on ${item.key}`);
 }
-
-/** "reply": `ref` is `<conversation id>@<commit>`. "issue": a new issue (`fileIssue`), its body the JSON of repo,
- * title and text. Any other moment is a comment on the item's source. */
-export type WriteMoment = string;
 
 /** How many refusals end a write. */
 const REFUSALS = 3;
@@ -110,6 +117,12 @@ export function claimWrite(
   f.s.bump("factory");
   later(f, item, what, () => sendWrite(f, item, moment, ref));
   return true;
+}
+
+interface WriteKey {
+  item: string;
+  moment: WriteMoment;
+  ref: string;
 }
 
 interface Row {
@@ -167,7 +180,10 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
   });
 }
 
+/** "reply": `ref` is `<conversation id>@<commit>`. "issue": a new issue (`fileIssue`), its body the JSON of repo,
+ * title and text. "notify": a post to one outlet (notify.ts). Any other moment is a comment on the item's source. */
 async function deliver(f: FactoryRuntime, id: string, moment: WriteMoment, ref: string, body: string) {
+  if (moment === "notify") return sendNotification(f, ref, body);
   if (moment === "reply") return replyToConversation(ref.slice(0, ref.lastIndexOf("@")), body);
   if (moment === "issue") {
     const issue = JSON.parse(body) as SuggestedIssue;
@@ -220,21 +236,60 @@ export function fileIssue(f: FactoryRuntime, item: string, ref: string, issue: S
 function drain(f: FactoryRuntime) {
   const rows = f.s.db
     .query("select item, moment, ref from factory_writebacks where status in ('pending', 'unreachable')")
-    .all() as {
-    item: string;
-    moment: string;
-    ref: string;
-  }[];
+    .all() as WriteKey[];
   for (const row of rows) later(f, row.item, "Sending a write", () => sendWrite(f, row.item, row.moment, row.ref));
 }
 
-/** A send a restart cut off may have reached the service: it is uncertain, and never sent again. */
+const COMMENT_MOMENTS = writeBackMoments.map((m) => `'${m}'`).join(", ");
+
+/**
+ * Settles uncertain comments by reading the item's comments back, once per item and pass, a pass after the send: a
+ * write still in flight at the service shows by then. A comment whose moment and `ref` show in the factory's own
+ * markers landed; one that does not was never written, so it is sent again, or failed once its claim is a day old.
+ * Only a comment whose body carries its moment is settled: one an older factory claimed could have landed unrecognized.
+ */
+function settle(f: FactoryRuntime) {
+  const rows = f.s.db
+    .query(
+      `select item, moment, ref, body, what, claimed from factory_writebacks where status='uncertain' and moment in (${COMMENT_MOMENTS}) and at <= ?`,
+    )
+    .all(f.s.now() - EVERY) as (WriteKey & Row)[];
+  const settled = rows.filter((r) => parseMarkers(r.body).at(-1)?.moment === r.moment);
+  for (const id of new Set(settled.map((r) => r.item)))
+    later(f, id, "Reading back an uncertain comment", async () => {
+      const item = items.get(f.s, id);
+      const check = item && adapterOf(f, item)?.check;
+      if (!check) return;
+      const { markers } = await check(item);
+      for (const row of settled.filter((r) => r.item === id)) {
+        const landed = markers.some((m) => m.item === id && m.moment === row.moment && (m.ref ?? "") === row.ref);
+        const status = landed ? "posted" : f.s.now() - row.claimed >= GIVE_UP ? "failed" : "pending";
+        const { changes } = f.s.db.run(
+          "update factory_writebacks set status=?, at=? where item=? and moment=? and ref=? and status='uncertain'",
+          [status, f.s.now(), id, row.moment, row.ref],
+        );
+        if (!changes) continue;
+        f.s.bump("factory");
+        if (status === "pending") await sendWrite(f, id, row.moment, row.ref);
+        else
+          f.events.emit({
+            kind: "writeback",
+            item: id,
+            moment: row.moment,
+            status: landed ? "posted" : "failed",
+            text: landed
+              ? `${row.what}: posted, as its issue's comments show`
+              : `${row.what}: not on its issue a day after it was claimed, so it is given up`,
+          });
+      }
+    });
+}
+
+/** A send a restart cut off may have reached the service: it is uncertain, and only `settle` sends it again. */
 function settleInterrupted(f: FactoryRuntime) {
-  const rows = f.s.db.query("select item, moment, ref from factory_writebacks where status='sending'").all() as {
-    item: string;
-    moment: string;
-    ref: string;
-  }[];
+  const rows = f.s.db
+    .query("select item, moment, ref from factory_writebacks where status='sending'")
+    .all() as WriteKey[];
   for (const { item, moment, ref } of rows)
     if (!flying(f).has(JSON.stringify([item, moment, ref])))
       f.s.db.run("update factory_writebacks set status='uncertain' where item=? and moment=? and ref=?", [
@@ -254,6 +309,7 @@ export function setup(f: FactoryRuntime): void {
       if (!started) settleInterrupted(f);
       started = true;
       drain(f);
+      settle(f);
     },
   });
 }

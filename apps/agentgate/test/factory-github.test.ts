@@ -268,7 +268,7 @@ test("a marker in a comment by another login counts for nothing: not for check o
   writeBack(n.f, item, "waiting", { text: "Which save path?", ref: "q1" });
   await idle(n.f);
   n.github.issues.get(1)!.comments.push(forged(1, { state: "finished" }));
-  expect((await n.f.sources.get("github")!.check!(item)).marker).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(item)).markers.at(-1)).toMatchObject({
     item: item.id,
     node: "a",
     state: "open",
@@ -289,7 +289,7 @@ const outboxPass = async (n: Awaited<ReturnType<typeof githubFactory>>) => {
   await idle(n.f);
 };
 
-test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one never again", async () => {
+test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one is not sent blind", async () => {
   const n = await githubFactory();
   for (const i of [1, 2, 3]) n.github.add(i);
   await n.intake();
@@ -334,10 +334,12 @@ test("triage posts one comment with the template, the marker, defused mentions a
       node: "a",
       state: "open",
       pr: null,
+      moment: "triaged",
+      ref: "",
     },
   ]);
   // The comment is now the issue's newest marker, read back from the factory's own login.
-  expect((await n.f.sources.get("github")!.check!(items.get(n.s, first!.item!)!)).marker).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(items.get(n.s, first!.item!)!)).markers.at(-1)).toMatchObject({
     node: "a",
     state: "open",
   });
@@ -352,7 +354,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
   await n.report(second!, triaged);
   await n.report(third!, triaged);
   const statuses = () => Promise.all([1, 2, 3].map((i) => writeStatus(n, n.key(i), "triaged")));
-  // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one never.
+  // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one is not sent.
   expect(await statuses()).toEqual(["posted", "pending", "uncertain"]);
   for (let pass = 0; pass < 2; pass++) await outboxPass(n);
   expect(await statuses()).toEqual(["posted", "failed", "uncertain"]);
@@ -372,6 +374,43 @@ test("triage posts one comment with the template, the marker, defused mentions a
   for (const run of [first!, second!, third!]) writeBack(n.f, items.get(n.s, run.item!)!, "triaged");
   await idle(n.f);
   expect(n.posts()).toHaveLength(taken + 5);
+});
+
+test("an uncertain comment that landed is marked posted once the issue's comments are read back, and one that did not is sent once more", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  n.github.add(2);
+  await n.intake();
+  await idle(n.f);
+  const [landed, lost] = items.list(n.s);
+  const statuses = () => Promise.all([1, 2].map((i) => writeStatus(n, n.key(i), "triaged")));
+  const triagedOn = (number: number) =>
+    n.github.issues.get(number)!.comments.filter((c) => parseMarkers(c.body).at(-1)?.stage === "triage");
+
+  // gh hears nothing back for either; GitHub took the first and never got the second.
+  n.github.fail = (args) => (args[1]?.endsWith("/comments") ? noAnswer : undefined);
+  writeBack(n.f, landed!, "triaged");
+  writeBack(n.f, lost!, "triaged");
+  await idle(n.f);
+  const sent = n.posts().find((c) => c.args[1]?.endsWith("/1/comments") && c.stdin?.includes("triaged this"))!;
+  n.github.issues.get(1)!.comments.push({
+    body: JSON.parse(sent.stdin!).body,
+    author: { login: FACTORY_LOGIN },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-05",
+  });
+  n.github.fail = undefined;
+  expect(await statuses()).toEqual(["uncertain", "uncertain"]);
+
+  // A send still in flight at GitHub may show late, so the comments are read back a pass later.
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["uncertain", "uncertain"]);
+  n.advance(2 * 60_000);
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["posted", "posted"]);
+  n.advance(2 * 60_000);
+  await outboxPass(n);
+  expect([triagedOn(1).length, triagedOn(2).length]).toEqual([1, 1]);
 });
 
 test("a comment claimed while gh is offline or logged out is sent once gh reaches GitHub again, and one still unsent a day after its claim is failed", async () => {

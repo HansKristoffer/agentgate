@@ -350,7 +350,7 @@ test("each factory write the board shows bumps the factory topic", async () => {
   expect(bumped(() => items.update(s, item.id, { title: "Crash on every save" }))).toEqual(["factory"]);
   expect(bumped(() => runs.update(s, "run_1", { state: "running" }))).toEqual(["factory"]);
   expect(bumped(() => runs.measured(s, "run_1", 500, 1))).toEqual(["factory"]);
-  expect(bumped(() => claimWrite(f, item.id, "note", "r1", "body", "A note"))).toEqual(["factory"]);
+  expect(bumped(() => claimWrite(f, item.id, "notify", "r1", "body", "A note"))).toEqual(["factory"]);
   expect(bumped(() => f.events.emit({ kind: "note", item: item.id, text: "Noted" }))).toEqual(["factory"]);
   await idle(f);
 });

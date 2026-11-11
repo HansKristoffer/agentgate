@@ -139,16 +139,29 @@ export interface PostResult {
   status: "posted" | "failed" | "unreachable" | "limited" | "uncertain";
   error?: string;
 }
+const POST_STATUS = {
+  refused: "failed",
+  limited: "limited",
+  unreachable: "unreachable",
+  unknown: "uncertain",
+} as const;
+/** A failed write's result from what its boundary knows of the call: the service `refused` it, its rate limit
+ * `limited` it, it was `unreachable`, or `unknown` when no answer said whether it was applied. */
+export const postFailure = (outcome: keyof typeof POST_STATUS, error: string): PostResult => ({
+  status: POST_STATUS[outcome],
+  error,
+});
 export interface SourceAdapter {
   type: SourceType;
-  /** Every open, labelled item now; intake dedupes. */
-  poll?(source: FactorySource): Promise<IncomingItem[]>;
-  /** Read before every stage, and for each listed issue intake has no item for: whether the issue is still open, and
-   * the newest marker in the factory's own comments on it (anyone who can comment could otherwise forge one). An
-   * issue intake reads has no item yet, so no `configCommit`: the current folder's source is meant. */
+  /** Every open, labelled item now; intake dedupes. `capped` says why some were left out, for the source's board row. */
+  poll?(source: FactorySource): Promise<{ items: IncomingItem[]; capped?: string }>;
+  /** Read before every stage, for each listed issue intake has no item for, and by the outbox to settle an uncertain
+   * comment: whether the issue is still open, and the markers in the factory's own comments on it, oldest first (anyone
+   * who can comment could otherwise forge one). An issue intake reads has no item yet, so no `configCommit`: the
+   * current folder's source is meant. */
   check?(
     item: Pick<FactoryItem, "source" | "externalId" | "repo"> & { configCommit?: string },
-  ): Promise<{ open: boolean; marker?: MarkerPayload }>;
+  ): Promise<{ open: boolean; markers: MarkerPayload[] }>;
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
   /** The comments of people the source trusts after the factory's newest comment and after the comment `after`,
