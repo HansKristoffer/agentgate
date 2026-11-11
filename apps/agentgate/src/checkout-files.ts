@@ -14,15 +14,18 @@ import {
   writeFileSync,
   type FSWatcher,
 } from "node:fs";
-import { getErrorMessage, getUniqueValues, safeJsonParse, sortBy, trimTrailingSlash } from "hanzio";
+import { getErrorMessage, getUniqueValues, sortBy, trimTrailingSlash } from "hanzio";
 import { homedir, hostname } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
+import { checkoutFileSchema, projectIdSchema, projectSchema, safePath, type CheckoutFile } from "@agentgate/protocol";
 import { RELAY_LIMITS } from "@agentgate/protocol/relay";
 import { z } from "zod";
 import { worktrees } from "./handoff/code.ts";
+import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
-import { CONFIG_DIR, DEV, sqliteDetail, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, nodesBelow, sqliteDetail, timerSync, type Store, type Stored } from "./store.ts";
+import { killGroup } from "./runtime.ts";
+import { registeredCheckouts } from "./skill-links.ts";
 
 /** Checkout files (docs/internals/checkout-files.md): buncargo's per-machine file store of a repository's gitignored
  * files, carried between machines on the synced `project` record. Buncargo owns what happens inside a checkout; this
@@ -219,8 +222,8 @@ export function writeStore(
 
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
 const digest = (f: CheckoutFile) => (f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64")));
-const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
-  const plain = (fs: CheckoutFile[]) =>
+const same = (a: readonly CheckoutFile[], b: readonly CheckoutFile[]) => {
+  const plain = (fs: readonly CheckoutFile[]) =>
     JSON.stringify(
       sortBy(fs, "path").map(({ path, updatedAt, data, deleted }) => ({ path, updatedAt, data, deleted })),
     );
@@ -228,7 +231,7 @@ const same = (a: CheckoutFile[], b: CheckoutFile[]) => {
 };
 
 /** Per file, the newer by `updatedAt`. A file missing on one side is unknown there, not deleted: deletions are entries. */
-function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
+function mergeFiles(a: readonly CheckoutFile[], b: readonly CheckoutFile[]): CheckoutFile[] {
   const out = new Map(a.map((f) => [f.path, f]));
   for (const f of b) {
     const mine = out.get(f.path);
@@ -239,7 +242,7 @@ function mergeFiles(a: CheckoutFile[], b: CheckoutFile[]): CheckoutFile[] {
 }
 
 /** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */
-function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
+function fitsRelay(s: Store, project: Stored<z.input<typeof projectSchema>>) {
   const record = {
     kind: "project",
     id: project.id,
@@ -256,23 +259,15 @@ function fitsRelay(s: Store, project: z.input<typeof projectSchema>) {
 /** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project.
  * FILES_PROTOCOL arrived in 0.20.0, so nodes on 0.20.0 or later keep them. */
 function oldNodesError(s: Store) {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < FILES_PROTOCOL)
-    .map((n) => n.id);
+  const old = nodesBelow(s, FILES_PROTOCOL);
   return old.length
     ? `Update agentgate on ${old.join(", ")} to 0.20.0 or later: older versions drop env files when they save a project, so none are saved until then`
     : undefined;
 }
 
-const errorsKey = "checkoutFiles:errors";
-function storedErrors(s: Store): Record<string, string> {
-  try {
-    return JSON.parse(s.local(errorsKey) ?? "{}");
-  } catch {
-    return {};
-  }
-}
+// Shown in `/status` as `fileErrors`.
+const errorsLocal = defineLocal("checkoutFiles:errors", z.record(z.string(), z.string()), { topic: "status" });
+const storedErrors = (s: Store) => errorsLocal.get(s) ?? {};
 /** Why each project's env files are not syncing. An old node blocks every project with files, whether or not a pass
  * has had something to send since. */
 export function filesErrors(s: Store): Record<string, string> {
@@ -290,7 +285,7 @@ function report(s: Store, project: string, message: string | undefined) {
   } else {
     delete errors[project];
   }
-  s.setLocal(errorsKey, Object.keys(errors).length ? JSON.stringify(errors) : undefined);
+  errorsLocal.set(s, undefined, Object.keys(errors).length ? errors : undefined);
 }
 
 /** Name the write, so the cause in sqliteDetail shows against what failed. */
@@ -306,8 +301,8 @@ function dbWrite<T>(s: Store, what: string, fn: () => T): T {
 
 /** What this node last made the store and the record agree on, without data: a file in it that left the store was
  * deleted here. Node-local. */
-const baseKey = (project: string) => `checkoutFiles:base:${project.toLowerCase()}`;
-const createdKey = "checkoutFiles:checkouts";
+const baseLocal = defineLocal("checkoutFiles:base:", z.array(checkoutFileSchema));
+const createdLocal = defineLocal("checkoutFiles:checkouts", z.record(z.string(), z.string()));
 
 /** Bring one repository's store and record together. Returns whether the store changed. Throws StoreBusy to retry. */
 export function reconcile(s: Store, root: string, key: string): boolean {
@@ -323,18 +318,16 @@ export function reconcile(s: Store, root: string, key: string): boolean {
 
   const record = s.get("project", project);
   const remote = record?.files ?? [];
-  let base: CheckoutFile[] = [];
-  try {
-    base = JSON.parse(s.local(baseKey(project)) ?? "[]");
-  } catch {
-    // An unreadable note counts as none: nothing is taken as deleted here.
-  }
+  // An unreadable note counts as none: nothing is taken as deleted here.
+  const base = baseLocal.get(s, project.toLowerCase()) ?? [];
 
-  // This store as entries, plus a deletion for each file that left it since the last pass.
+  // This store as entries, plus a deletion for each file that left it since the last pass. A missing store (a
+  // cleaned-up ~/.buncargo, a restore, another HOME) says nothing about its files, so it is refilled from the record
+  // instead: only removing a file from a store deletes it everywhere.
   const local: CheckoutFile[] = [];
   for (const [path, f] of store.files)
     if (!f.machine) local.push({ path, updatedAt: f.updatedAt, data: f.data!.toString("base64") });
-  for (const b of base) {
+  for (const b of store.state === "missing" ? [] : base) {
     if (store.files.has(b.path)) continue;
     local.push(b.deleted ? b : { path: b.path, updatedAt: iso(s.now()), deleted: true });
   }
@@ -353,7 +346,11 @@ export function reconcile(s: Store, root: string, key: string): boolean {
     );
   }
   dbWrite(s, "saving what this pass reconciled", () =>
-    s.setLocal(baseKey(project), JSON.stringify(merged.map(({ data: _, ...f }) => f))),
+    baseLocal.set(
+      s,
+      project.toLowerCase(),
+      merged.map(({ data: _, ...f }) => f),
+    ),
   );
 
   let error: string | undefined;
@@ -407,7 +404,10 @@ export class CheckoutFiles {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [100, 1000, 5000].map((ms) => {
-      const t = setTimeout(() => this.sync(), ms);
+      const t = setTimeout(
+        timerSync(this.s, "checkout files", () => this.sync()),
+        ms,
+      );
       t.unref?.();
       return t;
     });
@@ -438,7 +438,7 @@ export class CheckoutFiles {
     for (const [path, k] of Object.entries(all)) {
       if (!existsSync(path)) {
         delete all[path];
-        this.s.setLocal(createdKey, JSON.stringify(all));
+        createdLocal.set(this.s, undefined, all);
       } else if (k === key) {
         void fillCheckout(this.root!, path, key).catch((e) =>
           console.error(`checkout files: ${path}: ${getErrorMessage(e)}`),
@@ -462,23 +462,19 @@ export class CheckoutFiles {
     }
   }
 
+  /** Also stops every buncargo still running, whoever started it, so none outlives the daemon. */
   close() {
     this.closed = true;
     for (const t of this.timers) clearTimeout(t);
     this.watcher?.close();
+    for (const child of runningBuncargo) killGroup(child);
   }
 }
 
-function createdCheckouts(s: Store): Record<string, string> {
-  try {
-    return JSON.parse(s.local(createdKey) ?? "{}");
-  } catch {
-    return {};
-  }
-}
+const createdCheckouts = (s: Store) => createdLocal.get(s) ?? {};
 /** Remember a checkout agentgate made, so later store updates reach it too. */
 export const rememberCheckout = (s: Store, path: string, key: string) =>
-  s.setLocal(createdKey, JSON.stringify({ ...createdCheckouts(s), [path]: key }));
+  createdLocal.set(s, undefined, { ...createdCheckouts(s), [path]: key });
 
 // ---------------------------------------------------------------- inside a checkout
 
@@ -498,7 +494,10 @@ function buncargoBin(cwd: string): string | undefined {
 /** A checkout that uses buncargo: `dev.config.ts` and buncargo installed. Buncargo then owns its checkout files. */
 const usesBuncargo = (cwd: string) => existsSync(join(cwd, "dev.config.ts")) && !!buncargoBin(cwd);
 
-/** The checkout's buncargo, with the HOME whose store `root` is. Never reports output: it may hold values. */
+const runningBuncargo = new Set<Bun.Subprocess>();
+
+/** The checkout's buncargo, with the HOME whose store `root` is. Never reports output: it may hold values. It can start
+ * children of its own, so it runs in its own process group, which `CheckoutFiles.close` stops. */
 async function buncargo(root: string, cwd: string, args: string[]): Promise<string> {
   const bin = buncargoBin(cwd);
   if (!bin) throw new Error("buncargo is not installed in this checkout");
@@ -507,11 +506,15 @@ async function buncargo(root: string, cwd: string, args: string[]): Promise<stri
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",
+    detached: true,
     env: { ...process.env, HOME: dirname(dirname(root)) },
   });
-  const timer = setTimeout(() => child.kill(), 120_000);
-  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  clearTimeout(timer);
+  runningBuncargo.add(child);
+  const timer = setTimeout(() => killGroup(child), 120_000);
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]).finally(() => {
+    clearTimeout(timer);
+    runningBuncargo.delete(child);
+  });
   if (code !== 0) throw new Error(`buncargo ${args.slice(0, 2).join(" ")} failed (exit ${code})`);
   return out;
 }
@@ -547,7 +550,7 @@ function regularFile(path: string): Buffer | undefined {
 
 /** The checkout files that differ from the store in `cwd`, which a handoff carries: buncargo's local edits and
  * conflicts, or, without buncargo, the listed files that differ from the store. Never a machine file. */
-export async function localEdits(root: string, cwd: string, listed: string[]): Promise<string[]> {
+export async function localEdits(root: string, cwd: string, listed: readonly string[]): Promise<string[]> {
   if (usesBuncargo(cwd)) {
     const out = await buncargo(root, cwd, ["files", "status", "--json"]);
     let status: z.infer<typeof statusSchema>;
@@ -573,7 +576,7 @@ export async function localEdits(root: string, cwd: string, listed: string[]): P
 
 /** Every file the file store manages for this checkout, machine-specific ones included: a handoff's snapshot leaves
  * them to the store, which carries the edits (`localEdits`) and keeps each machine's own. */
-export async function managedFiles(root: string, cwd: string, listed: string[]): Promise<string[]> {
+export async function managedFiles(root: string, cwd: string, listed: readonly string[]): Promise<string[]> {
   return getUniqueValues([...listed, ...readStore(join(root, await checkoutKey(cwd))).files.keys()]);
 }
 
@@ -682,7 +685,7 @@ export function fileContent(s: Store, root: string, project: string, path: strin
 /** This machine's checkouts of a repository: the main checkouts SkillLinks registered and the checkouts agentgate
  * created, each with every worktree of its repository. */
 async function checkoutsOf(s: Store, project: string, key: string): Promise<string[]> {
-  const registered = safeJsonParse<Record<string, string>>(s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
+  const registered = registeredCheckouts(s);
   const known = [
     ...Object.entries(registered)
       .filter(([, p]) => p.toLowerCase() === project.toLowerCase())

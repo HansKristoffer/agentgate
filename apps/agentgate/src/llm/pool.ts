@@ -1,28 +1,41 @@
-import type { AccountStatus, Failure } from "@agentgate/protocol";
+import { isModelReason, type AccountState, type AccountStatus, type Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
+import { z } from "zod";
 import { revision } from "../configuration.ts";
+import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
-import type { Store } from "../store.ts";
+import { sent, type Account, type Data, type Store } from "../store.ts";
 import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
+import { PLACEHOLDER_TOKEN } from "../setup.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
-import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
+import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE, relevant } from "./quota.ts";
 import {
+  activeAccount,
   beginRoute,
   eligibility,
   continuationAccount,
   earliestReset,
   filterModelList,
+  modelErrors,
   modelsFor,
   rememberContinuation,
   resolveModel,
   route,
 } from "./routing.ts";
-import { recordSessionUsage, sessionFromRequest } from "./sessions.ts";
+import { recordSessionUsage, trackedSession } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
-export const PLACEHOLDER_TOKEN = "agentgate";
+/** Rate-limit waits up to this long retry the same account; longer ones move to the next account. */
+const SHORT_RATE_WAIT = 5000;
+/** Since when a provider's responses have carried no quota headers, per provider. */
+const quotaUnknown = defineLocal("quotaUnknown:", z.string(), { topic: "status" });
+/** `/status`'s `unknownQuota`: for each of `providers` that reports quota in its headers, since when it has not. */
+export const unknownQuota = (s: Store, providers: Provider[]) =>
+  Object.fromEntries(
+    providers.filter((p) => p.headerQuota !== false).map((p) => [p.name, quotaUnknown.get(s, p.name)]),
+  );
 const HOP_HEADERS = [
   "host",
   "connection",
@@ -45,6 +58,24 @@ export function exhaustedResponse(provider: ProviderName, resetAt: number | unde
   });
   return Response.json(body, { status: 429, headers: { "retry-after": String(secs) } });
 }
+/** Bookkeeping on the proxy path (telemetry, the request log, local state, observed quota) is best-effort, as in
+ * sessions.ts: a full disk or a busy store must not fail a request the upstream can serve, least of all one it already
+ * accepted. Each kind of failure is logged once, by error name and SQLite code only. */
+const bookkeepingFailed = new Set<string>();
+function bestEffort<T>(kind: string, write: () => T): T | undefined {
+  try {
+    return write();
+  } catch (e) {
+    if (bookkeepingFailed.has(kind)) return;
+    bookkeepingFailed.add(kind);
+    const code = isRecord(e) && typeof e.code === "string" ? ` ${e.code}` : "";
+    console.error(`proxy: ${kind} not recorded: ${e instanceof Error ? e.name : "error"}${code}`);
+    return undefined;
+  }
+}
+/** Telemetry over a store that reads as closed records nothing: the stand-in when the real one cannot write. */
+const silentTelemetry = (s: Store, provider: ProviderName, sensitive: string[] = []) =>
+  new Telemetry(Object.assign(Object.create(s) as Store, { closed: true }), provider, sensitive);
 function cleanHeaders(h: Headers): Headers {
   const out = new Headers(h);
   for (const key of ["content-encoding", "content-length", "transfer-encoding", "connection"]) out.delete(key);
@@ -60,16 +91,29 @@ export async function proxy(
   options: { accountId?: string } = {},
 ): Promise<Response> {
   const settings = s.settings(),
-    telemetry = new Telemetry(s, provider.name, [
+    sensitive = [
       req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "",
       req.headers.get("x-api-key") ?? "",
-    ]),
+    ],
+    telemetry =
+      bestEffort("telemetry", () => new Telemetry(s, provider.name, sensitive)) ??
+      silentTelemetry(s, provider.name, sensitive),
     budget = new Budget(req.signal, settings.bootstrapTimeoutMs);
+  const track = (write: () => void) => bestEffort("telemetry", write);
+  const attemptOn = (account: string, selection: string) =>
+    bestEffort("telemetry", () => telemetry.attempt(account, selection)) ??
+    silentTelemetry(s, provider.name).attempt(account, selection);
+  const log = (account: string, status: number, ms: number, note: string) =>
+    bestEffort("request log", () => s.log(provider.name, account, telemetry.request.routedModel, status, ms, note));
+  const observe = (id: string, observation: Parameters<typeof recordUsage>[2], until?: number) =>
+    bestEffort("quota", () => recordUsage(s, id, observation, until));
   let body: Uint8Array | undefined, json: Record<string, unknown> | undefined;
   const error = (status: number, message: string, failure: Failure) => {
     budget.close();
-    telemetry.headers(status);
-    telemetry.finish(failure === "cancelled" ? "cancelled" : "failed", failure, "none");
+    track(() => {
+      telemetry.headers(status);
+      telemetry.finish(failure === "cancelled" ? "cancelled" : "failed", failure, "none");
+    });
     return Response.json(
       { error: { type: status === 429 ? "rate_limit_error" : "api_error", message: `agentgate: ${message}` } },
       { status },
@@ -93,7 +137,7 @@ export async function proxy(
   }
   const requestedModel = provider.requestedModel?.(json) ?? (typeof json?.model === "string" ? json.model : undefined);
   const model = resolveModel(s, provider.name, requestedModel);
-  telemetry.models(requestedModel, model);
+  track(() => telemetry.models(requestedModel, model));
   if (json && model && model !== requestedModel) {
     json = provider.rewriteModel?.(json, model) ?? { ...json, model };
     body = new TextEncoder().encode(JSON.stringify(json));
@@ -102,9 +146,11 @@ export async function proxy(
   for (const key of HOP_HEADERS) headers.delete(key);
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
     own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
-  const session = provider.session?.(req.headers, json);
+  // One id serves affinity, which keys on its hash, and session usage, which counts under it as the client named it.
+  const clientSession = provider.session?.(req.headers, json);
+  const session = clientSession && new Bun.CryptoHasher("sha256").update(clientSession).digest("hex");
   // Session usage counts the factory's runs; with the factory off nothing reads it, so nothing is written.
-  const usageSession = settings.factory ? sessionFromRequest(provider.name, req.headers, json) : undefined;
+  const usageSession = settings.factory ? trackedSession(provider.name, clientSession) : undefined;
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount =
     options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);
@@ -113,7 +159,7 @@ export async function proxy(
   const headerWait = () => Math.min(json && json.stream !== true ? Infinity : limits.headerTimeout, budget.remaining());
   const deliver = (res: Response, accountId: string, release: () => void) => {
     budget.close();
-    telemetry.headers(res.status);
+    track(() => telemetry.headers(res.status));
     const observer = streamObserver((id) => {
       if (accountId) rememberContinuation(s, id, accountId);
     });
@@ -124,7 +170,7 @@ export async function proxy(
       },
       end: (outcome) => {
         release();
-        telemetry.tokens(observer.tokens);
+        track(() => telemetry.tokens(observer.tokens));
         if (usageSession)
           recordSessionUsage(s, {
             session: usageSession,
@@ -134,29 +180,31 @@ export async function proxy(
             at: s.now(),
           });
         const streamOutcome = outcome === "eof" ? (observer.terminal ?? "eof") : outcome;
-        telemetry.finish(
-          outcome === "cancelled"
-            ? "cancelled"
-            : outcome !== "eof"
-              ? "interrupted"
-              : !res.ok || observer.terminal === "provider-error"
-                ? "failed"
-                : "success",
-          outcome === "cancelled"
-            ? "cancelled"
-            : !res.ok
-              ? classify(provider, res.status, res.headers, "")
-              : observer.terminal === "provider-error" || outcome !== "eof"
-                ? "transient"
-                : undefined,
-          streamOutcome,
+        track(() =>
+          telemetry.finish(
+            outcome === "cancelled"
+              ? "cancelled"
+              : outcome !== "eof"
+                ? "interrupted"
+                : !res.ok || observer.terminal === "provider-error"
+                  ? "failed"
+                  : "success",
+            outcome === "cancelled"
+              ? "cancelled"
+              : !res.ok
+                ? classify(provider, res.status, res.headers, "")
+                : observer.terminal === "provider-error" || outcome !== "eof"
+                  ? "transient"
+                  : undefined,
+            streamOutcome,
+          ),
         );
       },
     });
     return new Response(stream, { status: res.status, statusText: res.statusText, headers: cleanHeaders(res.headers) });
   };
   const passthrough = async () => {
-    const attempt = telemetry.attempt("", "client login fallback"),
+    const attempt = attemptOn("", "client login fallback"),
       elapsed = startTimer();
     const up = provider.prepare(path, new Headers(headers), body, {
       accessToken: own,
@@ -170,13 +218,13 @@ export async function proxy(
       attempt.status = res.status;
       attempt.headersMs = Math.round(elapsed());
       if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, "");
-      telemetry.saveAttempt(attempt);
+      track(() => telemetry.saveAttempt(attempt));
       return deliver(res, "", () => {});
     } catch {
       attempt.status = 502;
       attempt.failure = "transient";
       attempt.headersMs = Math.round(elapsed());
-      telemetry.saveAttempt(attempt);
+      track(() => telemetry.saveAttempt(attempt));
       return error(
         req.signal.aborted ? 408 : 502,
         "upstream unreachable or timed out",
@@ -190,6 +238,8 @@ export async function proxy(
   const tried = new Set<string>();
   /** Accounts whose login failed during this request: no usable token, or refused even after a refresh. */
   const loginFailed = new Set<string>();
+  /** The last upstream rate-limit rejection, returned once no other account can take the request. */
+  let rateLimited: { text: string; headers: Headers } | undefined;
   let waited = false,
     accountCount = 0;
   for (;;) {
@@ -198,13 +248,21 @@ export async function proxy(
     const decision = route(s, provider.name, requestedModel, { exclude: tried, session, requiredAccount });
     const account = decision.account ? s.get("account", decision.account) : undefined;
     if (!account || accountCount >= settings.maxAccounts) {
+      if (rateLimited) {
+        budget.close();
+        track(() => {
+          telemetry.headers(429);
+          telemetry.finish("failed", "rate", "none");
+        });
+        return new Response(rateLimited.text, { status: 429, headers: rateLimited.headers });
+      }
       if (requiredAccount) return error(409, "selected account cannot serve this continuation or probe", "stateful");
       if (own) return passthrough();
       const reset = earliestReset(s, provider.name, model);
       const enabled = s.list("account").filter((a) => a.provider === provider.name && a.enabled);
-      const loginBlocked = (a: import("../store.ts").Account) =>
+      const loginBlocked = (a: Account) =>
         loginFailed.has(a.id) || !s.get("credential", a.id) || !!s.get("credential", a.id)?.needsLogin;
-      const eligible = enabled.filter((a) => !eligibility(s, a, model).some((r) => r.startsWith("model")));
+      const eligible = enabled.filter((a) => !eligibility(s, a, model).some(isModelReason));
       const usable = eligible.filter((a) => !loginBlocked(a));
       // Only when logins are why nothing could serve: an account skipped for quota or a cooldown still owes the client
       // its 429 and retry-after, or a wait for its reset.
@@ -214,7 +272,7 @@ export async function proxy(
           !enabled.length ? "no enabled accounts configured" : "no valid account login available; check account status",
           "login",
         );
-      if (decision.candidates.every((c) => c.reasons.some((r) => r.startsWith("model"))))
+      if (decision.candidates.every((c) => c.reasons.some(isModelReason)))
         return error(400, "no eligible account for this model", "model");
       if (accountCount >= settings.maxAccounts) return error(429, "maximum accounts attempted", "budget");
       if (
@@ -247,8 +305,10 @@ export async function proxy(
       }
       const response = exhaustedResponse(provider.name, reset, s.now());
       budget.close();
-      telemetry.headers(429);
-      telemetry.finish("failed", "quota", "none");
+      track(() => {
+        telemetry.headers(429);
+        telemetry.finish("failed", "quota", "none");
+      });
       return response;
     }
     accountCount++;
@@ -258,8 +318,7 @@ export async function proxy(
       credential = await raceAbort(creds.token(account.id), budget.signal);
     } catch (e) {
       if (budget.signal.aborted) continue;
-      if (!(e instanceof NeedsLogin))
-        s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "credential unavailable");
+      if (!(e instanceof NeedsLogin)) log(account.id, 0, 0, "credential unavailable");
       tried.add(account.id);
       loginFailed.add(account.id);
       continue;
@@ -268,8 +327,8 @@ export async function proxy(
       rateRetries = 0;
     for (;;) {
       if (budget.signal.aborted) break;
-      const up = provider.prepare(path, new Headers(headers), body, credential);
-      const attempt = telemetry.attempt(account.id, decision.reason),
+      const up = provider.prepare(path, new Headers(headers), body, credential, json);
+      const attempt = attemptOn(account.id, decision.reason),
         elapsed = startTimer();
       const release = beginRoute(s, provider.name, account.id, session);
       let res: Response;
@@ -284,7 +343,7 @@ export async function proxy(
         attempt.status = 502;
         attempt.headersMs = Math.round(elapsed());
         attempt.failure = req.signal.aborted ? "cancelled" : budget.signal.aborted ? "budget" : "transient";
-        telemetry.saveAttempt(attempt);
+        track(() => telemetry.saveAttempt(attempt));
         if (!budget.signal.aborted) cool(s, account.id, "transient", s.now() + 15000);
         return error(
           req.signal.aborted ? 408 : 502,
@@ -295,9 +354,12 @@ export async function proxy(
       attempt.status = res.status;
       attempt.headersMs = Math.round(elapsed());
       const observed = provider.usage(res.headers);
-      if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path))
-        s.setLocal(`quotaUnknown:${provider.name}`, String(s.now()));
-      else if (observed) s.setLocal(`quotaUnknown:${provider.name}`, undefined);
+      // Holds when quota went unknown, so it is written only when that starts or ends, not on every response.
+      bestEffort("local state", () => {
+        if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path)) {
+          if (!quotaUnknown.get(s, provider.name)) quotaUnknown.set(s, provider.name, String(s.now()));
+        } else if (observed) quotaUnknown.set(s, provider.name, undefined);
+      });
       if (res.status === 429 || res.status === 401 || res.status === 400 || res.status === 404) {
         let text = "";
         try {
@@ -311,7 +373,7 @@ export async function proxy(
         release();
         const failure = classify(provider, res.status, res.headers, text);
         attempt.failure = failure;
-        telemetry.saveAttempt(attempt);
+        track(() => telemetry.saveAttempt(attempt));
         if (res.status === 401) {
           if (!authRetried) {
             authRetried = true;
@@ -335,19 +397,12 @@ export async function proxy(
             : !windows.length
               ? s.now() + Math.max(1000, retryAfterMs(res.headers))
               : undefined;
-          recordUsage(s, account.id, { windows: observed?.windows ?? [], status: "exhausted" }, until);
-          s.log(
-            provider.name,
-            account.id,
-            telemetry.request.routedModel,
-            429,
-            Math.round(elapsed()),
-            "quota exhausted; switching",
-          );
+          observe(account.id, { windows: observed?.windows ?? [], status: "exhausted" }, until);
+          log(account.id, 429, Math.round(elapsed()), "quota exhausted; switching");
           tried.add(account.id);
           break;
         }
-        if (observed) recordUsage(s, account.id, observed);
+        if (observed) observe(account.id, observed);
         if (failure === "model" && model) {
           cool(s, account.id, "model", s.now() + 300000, model);
           tried.add(account.id);
@@ -356,7 +411,11 @@ export async function proxy(
         if (failure === "rate") {
           const delay = retryAfterMs(res.headers, s.now());
           cool(s, account.id, "rate", s.now() + delay);
-          if (rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) && delay < budget.remaining()) {
+          if (
+            delay <= SHORT_RATE_WAIT &&
+            rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) &&
+            delay < budget.remaining()
+          ) {
             try {
               await sleep(delay + clamp(budget.remaining() - delay - 1, 0, 250) * Math.random(), budget.signal);
             } catch {
@@ -364,22 +423,26 @@ export async function proxy(
             }
             continue;
           }
+          // A 429 is a certain rejection, so another account replays nothing; the client sees it only when none is left.
+          rateLimited = { text, headers: cleanHeaders(res.headers) };
+          tried.add(account.id);
+          break;
         }
         budget.close();
-        telemetry.headers(res.status);
-        telemetry.finish("failed", failure, "none");
+        track(() => {
+          telemetry.headers(res.status);
+          telemetry.finish("failed", failure, "none");
+        });
         return new Response(text, { status: res.status, headers: cleanHeaders(res.headers) });
       }
       if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, "");
       if (attempt.failure === "transient") cool(s, account.id, "transient", s.now() + 15000);
-      telemetry.saveAttempt(attempt);
-      if (observed) recordUsage(s, account.id, observed);
-      const previous = s.local(`active:${provider.name}`);
-      if (res.ok && previous !== account.id) {
-        s.setLocal(`active:${provider.name}`, account.id);
-        s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "active subscription changed");
+      track(() => telemetry.saveAttempt(attempt));
+      if (observed) observe(account.id, observed);
+      if (res.ok && activeAccount.get(s, provider.name) !== account.id) {
+        bestEffort("local state", () => activeAccount.set(s, provider.name, account.id));
+        log(account.id, 0, 0, "active subscription changed");
       }
-      s.log(provider.name, account.id, telemetry.request.routedModel, res.status, Math.round(elapsed()));
       const listing = req.method === "GET" && res.ok ? provider.modelList?.(path) : undefined;
       if (listing) {
         try {
@@ -395,12 +458,35 @@ export async function proxy(
     }
   }
 }
-export function accountStatus(s: Store, account: import("../store.ts").Account): AccountStatus {
+/** The one reading of an account's flags that the app, the CLI and the factory label it by. A login this machine holds
+ * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
+export function accountState(s: Store, account: Account, now = s.now()): AccountState {
+  const c = s.get("credential", account.id),
+    u = s.get("usage", account.id);
+  if (!c || c.needsLogin) return { kind: "needs-login" };
+  const expired = c.expiresAt <= now;
+  if (expired && c.holder !== s.nodeId) return { kind: "waiting-for-holder", holder: c.holder };
+  if (refreshFailure(s, "credential", account.id)) return { kind: "refresh-failed" };
+  if (expired) return { kind: "refreshing" };
+  if (!account.enabled) return { kind: "disabled" };
+  if (exhausted(u, undefined, now)) {
+    const resets = relevant(u, undefined, now).flatMap((w) => (w.usedPct >= 100 && w.resetsAt ? [w.resetsAt] : []));
+    if (u?.exhaustedUntil && u.exhaustedUntil > now) resets.push(u.exhaustedUntil);
+    return { kind: "exhausted", until: resets.length ? Math.max(...resets) : undefined };
+  }
+  const benched = cooldowns(s, account.id)
+    .filter((cooldown) => cooldown.scope === "account")
+    .sort((a, b) => b.retryAt - a.retryAt)[0];
+  if (benched) return { kind: "cooling", until: benched.retryAt, reason: benched.reason };
+  return { kind: "ready" };
+}
+export function accountStatus(s: Store, account: Account): AccountStatus & { state: AccountState } {
   const now = s.now(),
     u = s.get("usage", account.id),
     c = s.get("credential", account.id);
   return {
-    account,
+    state: accountState(s, account, now),
+    account: sent<Data<"account">>(account),
     windows: (u?.windows ?? []).map((w) => ({
       ...normalizedWindow(w),
       inferredReset: w.inferredReset || !!(w.resetsAt && w.resetsAt <= now),
@@ -410,7 +496,7 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     observedAt: u?.observedAt,
     observedBy: u?.observedBy,
     observationSource: u?.source,
-    active: s.local(`active:${account.provider}`) === account.id,
+    active: activeAccount.get(s, account.provider) === account.id,
     needsLogin: !c || !!c.needsLogin,
     holder: c?.holder,
     expiresAt: c?.expiresAt,
@@ -422,6 +508,6 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     quotaHealth: quotaHealth(s, account.id),
     cooldowns: cooldowns(s, account.id),
     models: modelsFor(s, account.id),
-    modelError: s.local(`modelError:${account.id}`),
+    modelError: modelErrors.get(s, account.id),
   };
 }

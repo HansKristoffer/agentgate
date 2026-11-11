@@ -1,10 +1,11 @@
 import type { MarkerPayload, NeedsYou } from "@agentgate/protocol";
 import { act } from "./actions.ts";
-import { currentFolder, durationMs } from "./config.ts";
-import { addItem, intakeState, limitsOf } from "./controller.ts";
-import { items, type FactoryItem } from "./db.ts";
+import { currentFolder, durationMs, limits } from "./config.ts";
+import { addItem, holdsNewItems, intakeState } from "./controller.ts";
+import { isOpenPhase, items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
-import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
+import { Backoff } from "../runtime.ts";
+import { shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
 
 /**
  * Intake: what the sources list becomes items. The intake loop polls each source, backing off one that fails, and reads
@@ -14,6 +15,8 @@ import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem }
 interface Poll {
   lastPollAt?: number;
   error?: string;
+  /** Why the last poll left issues out, shown as the row's error. */
+  capped?: string;
   /** Each listed issue's newest factory marker as last read, kept while the issue's `updatedAt` stays the same. */
   markers: Map<string, { updatedAt: string; marker: MarkerPayload | undefined }>;
 }
@@ -53,7 +56,7 @@ export function admission(
 ): "duplicate" | "full" | { hold: boolean } {
   const since = f.s.now() - durationMs(input.dedupeWindow);
   if (input.dedupe && items.hasDedupe(f.s, input.source, input.dedupe, since)) return "duplicate";
-  const hold = input.intake !== "auto" || intakeState(f) !== "on";
+  const hold = holdsNewItems(f, input.intake) || intakeState(f) !== "on";
   if (hold && items.heldCount(f.s, input.source) >= HELD_LIMIT) return "full";
   return { hold };
 }
@@ -76,13 +79,17 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
   polls.set(source.id, st);
   try {
     const markers: typeof st.markers = new Map();
-    for (const incoming of await adapter.poll(source)) {
+    const polled = await adapter.poll(source);
+    st.capped = polled.capped;
+    for (const incoming of polled.items) {
       if (items.byExternal(s, incoming.externalId)) continue;
       const cached = st.markers.get(incoming.externalId);
       const marker =
         incoming.updatedAt && cached?.updatedAt === incoming.updatedAt
           ? cached.marker
-          : (await adapter.check?.({ source: source.id, externalId: incoming.externalId, repo: source.repo }))?.marker;
+          : (
+              await adapter.check?.({ source: source.id, externalId: incoming.externalId, repo: source.repo })
+            )?.markers.at(-1);
       if (incoming.updatedAt) markers.set(incoming.externalId, { updatedAt: incoming.updatedAt, marker });
       // Intake is asked after the read: the item before, a pause or a move may have ended it meanwhile.
       if (marker?.state === "finished" || intakeState(f) !== "on") continue;
@@ -97,6 +104,8 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
     st.error = error;
     backoff.failed(source.id);
   }
+  // The board shows each source's last poll and error, which live only in memory.
+  s.bump("factory");
 }
 
 /** Every source's poll. Paused for the maintainer (too many items wait), it still reads each source, so its row on the
@@ -125,11 +134,11 @@ function issueAnswer(body: string, kind: NeedsYou["kind"]) {
 
 /** Whether the item's question is on its issue: its `waiting` comment was posted, so a later comment can answer it. */
 const askedOnIssue = (f: FactoryRuntime, item: FactoryItem, wait: NeedsYou) =>
-  (
-    f.s.db
-      .query("select status from factory_writebacks where item=? and moment='waiting' and ref=?")
-      .get(item.id, questionRef(wait.run ?? wait.cause, wait.question)) as { status: string } | null
-  )?.status === "posted";
+  f.s.db
+    .query<{ status: string }, [string, string]>(
+      "select status from factory_writebacks where item=? and moment='waiting' and ref=?",
+    )
+    .get(item.id, questionRef(wait.run ?? wait.cause, wait.question))?.status === "posted";
 
 /**
  * Answers given on the issue (N3): for each item that waits for a start or an answer, at most
@@ -141,7 +150,7 @@ async function readAnswers(f: FactoryRuntime) {
   const waiting = items
     .list(f.s, { open: true })
     .filter((i) => i.needsYou?.kind === "start" || (i.needsYou?.kind === "answer" && askedOnIssue(f, i, i.needsYou)))
-    .slice(0, limitsOf(f).waitingForYou);
+    .slice(0, limits(f).waitingForYou);
   for (const item of waiting) {
     const replies = adapterOf(f, item)?.replies;
     if (!replies) continue;
@@ -180,16 +189,22 @@ async function readAnswers(f: FactoryRuntime) {
 
 export function setup(f: FactoryRuntime): void {
   f.loops.push({ name: "factory-intake", everyMs: 2 * 60_000, where: "factory-node", run: () => intake(f) });
-  // Each source's row on the board; the GitHub, Linear and webhook features merge their parts into it later.
+  // A finished item waits for nothing, so its comment pointer goes; one taken in again reads from the factory's newest
+  // comment, as a new item does.
+  f.events.on("item.phase", (event) => {
+    if (!isOpenPhase(event.to)) f.s.setLocal(ANSWER_SEEN + event.item, undefined);
+  });
+  // Each source's row on the board; the webhook feature merges its part into it later.
   f.boardParts.push(async () => ({
     sources: (currentFolder(f)?.config.sources ?? []).map((source) => {
       const st = memory(f).polls.get(source.id);
+      const error = st?.error ?? st?.capped;
       return {
         id: source.id,
         type: source.type,
         repo: source.repo,
         ...(st?.lastPollAt && { lastPollAt: st.lastPollAt }),
-        ...(st?.error && { error: st.error }),
+        ...(error && { error }),
       };
     }),
   }));

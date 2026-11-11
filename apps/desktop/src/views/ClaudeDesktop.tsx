@@ -78,6 +78,7 @@ export function desktopNote(desktop: DesktopStatus, l?: DesktopLogin) {
   const days = l.sessionExpiresAt && Math.ceil((l.sessionExpiresAt - Date.now()) / DAY);
   if (days && days > 0 && days <= 5 && !isCurrent(desktop, l))
     return `Open it in Claude Desktop within ${days} day${days === 1 ? "" : "s"} to stay connected`;
+  return undefined;
 }
 
 export function forgetLogin(connection: Connection, perform: Perform, l: DesktopLogin) {

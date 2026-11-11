@@ -32,7 +32,7 @@ const node = (name: string) => {
   return s;
 };
 const sync = (from: Store, to: Store) => {
-  for (const r of from.changes(0).records) to.merge(r);
+  for (const r of from.changePage(0).records) to.merge(r);
 };
 
 /** A fake gh per home: its github.com token, and every command it ran. */

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::OnceLock, time::Duration};
 use tauri::Manager;
 use taurio::BuilderExt;
 
@@ -66,6 +66,36 @@ fn endpoint(connection: &Connection, path: &str) -> Result<reqwest::Url, String>
     Ok(url)
 }
 
+/// One client for the app's lifetime, so polls and long-polls reuse their TCP and TLS connections.
+fn client() -> Result<&'static reqwest::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                // Never forward the admin token to a redirect target.
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// `/changes` holds the request open for up to `wait` seconds (25 when absent), so it gets that plus 10;
+/// everything else gets 120 seconds.
+fn request_timeout(url: &reqwest::Url) -> Duration {
+    if url.path() != "/api/changes" {
+        return Duration::from_secs(120);
+    }
+    let wait = url
+        .query_pairs()
+        .find(|(key, _)| key == "wait")
+        .and_then(|(_, value)| value.parse::<u64>().ok())
+        .unwrap_or(25);
+    Duration::from_secs(wait.saturating_add(10))
+}
+
 async fn send(
     connection: &Connection,
     path: &str,
@@ -81,14 +111,8 @@ async fn send(
         "DELETE" => reqwest::Method::DELETE,
         _ => return Err("Unsupported method".into()),
     };
-    // Never forward the admin token to a redirect target.
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let mut req = client.request(method, url);
+    let timeout = request_timeout(&url);
+    let mut req = client()?.request(method, url).timeout(timeout);
     if let Some(token) = &connection.token {
         if !token.is_empty() {
             req = req.bearer_auth(token);

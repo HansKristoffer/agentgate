@@ -5,57 +5,49 @@ import type { RequestDetail, RequestPage, ProxyRequest } from "@agentgate/protoc
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { Badge, Choice, Empty, Field, Modal, Panel } from "../components/ui.tsx";
-import { useGeneration } from "../features/proxy/useGeneration.ts";
+import { useDaemon } from "../useDaemon.ts";
+import { providerOptions } from "./utils.ts";
 
 export function ActivityView({ data, connection, perform }: ViewProps) {
   const [query, setQuery] = useState(""),
-    [page, setPage] = useState<RequestPage>(),
     [follow, setFollow] = useState(true);
-  const [detail, setDetail] = useState<RequestDetail>(),
-    [error, setError] = useState("");
-  const serial = useRef(0),
-    pending = useRef<symbol | undefined>(undefined);
-  const capture = useGeneration(connection);
-  const load = async (cursor?: string) => {
-    if (pending.current) return;
-    const operation = Symbol();
-    pending.current = operation;
-    const current = capture(),
-      generation = ++serial.current;
+  const [detail, setDetail] = useState<RequestDetail>();
+  const latest = useDaemon(follow && (() => request<RequestPage>(connection, `/requests?${query}`)), {
+    topics: ["activity"],
+    deps: [query],
+    key: `activity?${query}`,
+  });
+  // While paused, the list is held here: it no longer reloads, and older pages are appended to it.
+  const [held, setHeld] = useState<{ page?: RequestPage; error: string }>({ error: "" });
+  const serial = useRef(0);
+  const loadHeld = async (cursor?: string) => {
+    const generation = ++serial.current;
     const q = new URLSearchParams(query);
     if (cursor) q.set("cursor", cursor);
     try {
       const result = await request<RequestPage>(connection, `/requests?${q}`);
-      if (current() && generation === serial.current) {
-        setPage((old) =>
+      if (generation !== serial.current) return;
+      setHeld((old) => ({
+        error: "",
+        page:
           cursor && !result.cursorReset
-            ? {
-                ...result,
-                requests: [...(old?.requests ?? []), ...result.requests].slice(-1000),
-              }
+            ? { ...result, requests: [...(old.page?.requests ?? []), ...result.requests].slice(-1000) }
             : result,
-        );
-        setError("");
-      }
+      }));
     } catch (e) {
-      if (current() && generation === serial.current) setError(String(e));
-    } finally {
-      if (pending.current === operation) pending.current = undefined;
+      if (generation === serial.current) setHeld((old) => ({ ...old, error: String(e) }));
     }
   };
   useEffect(() => {
-    pending.current = undefined;
-    setPage(undefined);
-    void load();
-    return () => {
-      serial.current++;
-    };
-  }, [query, connection]);
-  useEffect(() => {
-    if (!follow) return;
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
-  }, [query, follow, connection]);
+    if (!follow) void loadHeld();
+  }, [query]);
+  const page = follow ? latest.data : held.page;
+  const error = follow ? latest.error : held.error;
+  const toggleFollow = () => {
+    serial.current++;
+    setHeld({ page: follow ? latest.data : undefined, error: "" });
+    setFollow(!follow);
+  };
   const label = (r: ProxyRequest) => data.accounts.find((a) => a.account.id === r.account)?.account.label ?? r.account;
   // Filters apply as they change; a pause first, so typing doesn't ask the daemon on every letter.
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -72,20 +64,13 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
   }, [filters]);
   const extra = ["account", "failure", "model", "since", "until"].filter((key) => filters[key]).length;
   const showDetail = (id: string) =>
-    perform(async () => {
-      const current = capture();
-      const result = await request<RequestDetail>(connection, `/requests/${encodeURIComponent(id)}`);
-      if (current()) setDetail(result);
-    });
+    perform(async () => setDetail(await request<RequestDetail>(connection, `/requests/${encodeURIComponent(id)}`)));
   const copyDiagnostics = () =>
     perform(async () => {
-      const current = capture();
       const rows: RequestDetail[] = [];
-      for (const row of page?.requests ?? []) {
-        if (!current()) return;
+      for (const row of page?.requests ?? [])
         rows.push(await request<RequestDetail>(connection, `/requests/${encodeURIComponent(row.id)}`));
-      }
-      if (current()) await navigator.clipboard.writeText(rows.map((row) => JSON.stringify(row)).join("\n"));
+      await navigator.clipboard.writeText(rows.map((row) => JSON.stringify(row)).join("\n"));
     }, "Loaded diagnostics copied as NDJSON");
   const options = (all: string, ids: string[]) => [
     { id: "", label: all },
@@ -111,7 +96,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
     <>
       <Panel
         title={`Requests on ${data.node}`}
-        detail={follow ? "Updates every 5 seconds." : "Paused. Refresh to update."}
+        detail={follow ? "Updates as requests finish." : "Paused. Refresh to update."}
         action={
           <div className="row">
             <Button
@@ -123,11 +108,11 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
               <Copy size={14} />
               Copy diagnostics
             </Button>
-            <Button size="sm" variant="ghost" onPress={() => void load()}>
+            <Button size="sm" variant="ghost" onPress={() => void (follow ? latest.reload() : loadHeld())}>
               <RefreshCw size={14} />
               Refresh
             </Button>
-            <Button size="sm" variant="tertiary" onPress={() => setFollow(!follow)}>
+            <Button size="sm" variant="tertiary" onPress={toggleFollow}>
               {follow ? <Pause size={14} /> : <Play size={14} />}
               {follow ? "Pause" : "Follow"}
             </Button>
@@ -136,12 +121,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
       >
         <div className="item stack" key={cleared}>
           <div className="activity-filters">
-            {choice("provider", "Provider", [
-              { id: "", label: "All providers" },
-              { id: "claude", label: "Claude" },
-              { id: "codex", label: "Codex" },
-              { id: "cursor", label: "Cursor" },
-            ])}
+            {choice("provider", "Provider", [{ id: "", label: "All providers" }, ...providerOptions])}
             {choice(
               "outcome",
               "Outcome",
@@ -227,7 +207,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
         {page?.nextCursor && (
           <div className="item item-actions">
             {follow && <small className="grow">Pause to load older requests.</small>}
-            <Button size="sm" variant="tertiary" isDisabled={follow} onPress={() => void load(page.nextCursor)}>
+            <Button size="sm" variant="tertiary" isDisabled={follow} onPress={() => void loadHeld(page.nextCursor)}>
               Load older requests
             </Button>
           </div>

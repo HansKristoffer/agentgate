@@ -1,11 +1,18 @@
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { ProtocolError, Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
-import { MAX_RESULT_CHARS, capResult, mergeInstructions, type Source } from "../src/mcp/gateway.ts";
+import {
+  MAX_RESULT_CHARS,
+  capResult,
+  connect,
+  mergeInstructions,
+  serverHealth,
+  type Source,
+} from "../src/mcp/gateway.ts";
 import { buildShim } from "../src/mcp/shim.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { Store, type McpInstance } from "../src/store.ts";
@@ -64,8 +71,9 @@ test("a result past the limit is cut, keeps other content, and says how to ask f
   expect(result.structuredContent).toBeUndefined();
 });
 
-/** An upstream with a huge result, a strict output schema it breaks, a slow tool, an echo and a failing tool. */
-function upstream() {
+/** An upstream with a huge result, a strict output schema it breaks, a slow tool, an echo and a failing tool. Each
+ * request's JSON-RPC method goes into `methods`. */
+function upstream(methods: string[] = []) {
   const strictSchema = {
     type: "object" as const,
     properties: { fix: { type: "object", properties: { title: { type: "string" } }, additionalProperties: false } },
@@ -73,6 +81,7 @@ function upstream() {
   const server = Bun.serve({
     port: 0,
     fetch: async (req) => {
+      if (req.method === "POST") methods.push(((await req.clone().json()) as { method?: string }).method ?? "");
       const mcp = new Server(
         { name: "upstream", version: "0" },
         { capabilities: { tools: {} }, instructions: "Upstream's own instructions." },
@@ -109,10 +118,10 @@ function upstream() {
   return `http://127.0.0.1:${server.port}/mcp`;
 }
 
-async function setup(instance: Partial<McpInstance> = {}) {
+async function setup(instance: Partial<McpInstance> = {}, methods: string[] = []) {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
-  s.put("mcp", "up", { ...newInstance({ id: "up", url: upstream() }), ...instance });
+  s.put("mcp", "up", { ...newInstance({ id: "up", url: upstream(methods) }), ...instance });
   s.put("project", "o/r", { id: "o/r", mcp: { up: "up" } });
   const ctx = makeCtx(s),
     handler = app(ctx);
@@ -268,7 +277,7 @@ test("sessions hear of tool changes only when their tools may differ", async () 
     let notices = 0;
     client.setNotificationHandler("notifications/tools/list_changed", () => void notices++);
     await client.listTools();
-    await g.session(); // another session starts, and records its project
+    await g.session(); // another session starts
     g.s.put("mcpCredential", "up", {
       instanceId: "up",
       holder: "n",
@@ -282,10 +291,32 @@ test("sessions hear of tool changes only when their tools may differ", async () 
     });
     g.ctx.gateway.toolsChanged(); // a token refresh does not
     g.s.put("project", "o/r", { ...g.s.get("project", "o/r")!, seenAt: g.s.now() + 1 });
-    g.ctx.gateway.toolsChanged(); // nor does recording the project again
+    g.ctx.gateway.toolsChanged(); // nor does a project change that keeps its mapping
     for (let i = 0; i < 50 && notices < 1; i++) await Bun.sleep(10);
     await Bun.sleep(50);
     expect(notices).toBe(1);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a repo's first session creates its project, and later sessions never raise its revision", async () => {
+  const g = await setup();
+  try {
+    await g.session({ env: { AGENTGATE_PROJECT: "o/new" } });
+    expect(g.s.record("project", "o/new")?.rev).toBe(1);
+
+    // A peer on the previous version still sends the fields it stamps on session start.
+    const old = g.s.record("project", "o/new")!;
+    const data = JSON.stringify({ id: "o/new", seenAt: g.s.now(), seenOn: "old" });
+    expect(g.s.merge({ ...old, rev: 2, node: "old", data })).toBe(true);
+    expect(g.s.get("project", "o/new")?.seenOn).toBe("old");
+
+    // Hours later, another session here must not outrank an edit another machine makes offline.
+    const start = g.s.now();
+    g.s.now = () => start + 3 * 3_600_000;
+    await g.session({ env: { AGENTGATE_PROJECT: "o/new" } });
+    expect(g.s.record("project", "o/new")?.rev).toBe(2);
   } finally {
     await g.done();
   }
@@ -387,5 +418,168 @@ test("a server that cannot be reached is retried with backoff, not on every list
     expect(failures()).toBe(3);
   } finally {
     await g.done();
+  }
+});
+
+test("a health check tells the app only when the server's state flips, and still records when it ran", async () => {
+  const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+  closed.stop(true);
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("mcp", "up", newInstance({ id: "up", url: upstream() }));
+  let time = Date.now();
+  s.now = () => time;
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
+  const check = () => connect(s.get("mcp", "up")!, undefined, s).then((client) => client.close());
+  try {
+    await check();
+    bumps = 0;
+    time += 1000;
+    await check();
+    expect(bumps).toBe(0);
+    expect(serverHealth(s, "up")).toEqual({ ok: true, at: time });
+
+    s.put("mcp", "up", newInstance({ id: "up", url: `http://127.0.0.1:${closed.port}/mcp` }));
+    bumps = 0;
+    await expect(check()).rejects.toThrow();
+    expect(bumps).toBe(1);
+    await expect(check()).rejects.toThrow();
+    expect(bumps).toBe(1);
+  } finally {
+    s.close();
+  }
+});
+
+test("only a 401 from an HTTP server asks for a login, never a stdio server's own text", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const refused = Bun.serve({ port: 0, fetch: () => new Response("invalid_token for body-secret", { status: 401 }) });
+  servers.push(refused);
+  s.put("mcp", "http", newInstance({ id: "http", url: `http://127.0.0.1:${refused.port}/mcp` }));
+  s.put("mcp", "stdio", {
+    ...newInstance({ id: "stdio", command: process.execPath }),
+    args: ["-e", "console.error('401 Unauthorized'); process.exit(1)"],
+  });
+  try {
+    await expect(connect(s.get("mcp", "stdio")!, undefined, s)).rejects.toThrow();
+    expect(serverHealth(s, "stdio")).toMatchObject({ ok: false, needsLogin: false });
+    const http = await connect(s.get("mcp", "http")!, undefined, s).catch((e: Error) => e);
+    expect(serverHealth(s, "http")?.needsLogin).toBe(true);
+    expect(String(http)).not.toContain("body-secret");
+  } finally {
+    s.close();
+  }
+});
+
+test("a remote endpoint lists only the server a call names, and answers a failure with the server's alias only", async () => {
+  const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+  closed.stop(true);
+  const otherMethods: string[] = [];
+  const g = await setup();
+  g.s.put("mcp", "other", newInstance({ id: "other", url: upstream(otherMethods) }));
+  g.s.put("mcp", "down", newInstance({ id: "down", url: `http://127.0.0.1:${closed.port}/mcp` }));
+  g.s.put("project", "@grok", { id: "@grok", mcp: { up: "up", other: "other", down: "down" } });
+  const call = async (name: string) => {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } });
+    const { response } = await g.ctx.gateway.handleRemote("@grok", body, {}, AbortSignal.timeout(5000));
+    return response.text();
+  };
+  try {
+    expect(JSON.parse(await call("up__echo")).result.content[0].text).toBe("{}");
+    expect(otherMethods).toEqual([]);
+
+    for (const alias of ["up", "down"]) {
+      const answer = await call(alias === "up" ? "up__fail" : "down__anything");
+      expect(JSON.parse(answer).error.message).toContain(`${alias} failed`);
+      expect(answer).not.toContain("limit must be at most 500");
+      expect(answer).not.toContain("127.0.0.1");
+    }
+    expect(otherMethods).toEqual([]);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a new label or tool filter keeps the server's connection", async () => {
+  const methods: string[] = [];
+  const g = await setup({}, methods);
+  try {
+    const client = await g.session();
+    await client.callTool({ name: "up__echo", arguments: {} });
+    g.s.put("mcp", "up", { ...g.s.get("mcp", "up")!, label: "Upstream", tools: ["echo"] });
+    await client.callTool({ name: "up__echo", arguments: {} });
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a server without a login keeps its notification stream while no event comes for longer than 10 s", async () => {
+  const mcp = new Server({ name: "quiet", version: "0" }, { capabilities: { tools: { listChanged: true } } });
+  mcp.setRequestHandler("tools/list", async () => ({ tools: [] }));
+  const t = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID() });
+  await mcp.connect(t);
+  const opened = Promise.withResolvers<void>(),
+    closed = Promise.withResolvers<"closed">();
+  const quiet = Bun.serve({
+    port: 0,
+    idleTimeout: 0,
+    fetch: (req) => {
+      if (req.method === "GET") {
+        req.signal.addEventListener("abort", () => closed.resolve("closed"));
+        opened.resolve();
+      }
+      return t.handleRequest(req);
+    },
+  });
+  servers.push(quiet);
+  // The header deadline is a timer, and Bun sends the stream's headers only with its first event.
+  jest.useFakeTimers();
+  let client: Client | undefined;
+  try {
+    client = await connect(newInstance({ id: "quiet", url: `http://127.0.0.1:${quiet.port}/mcp` }));
+    const notified = Promise.withResolvers<"notified">();
+    client.setNotificationHandler("notifications/tools/list_changed", () => notified.resolve("notified"));
+    await opened.promise;
+    jest.advanceTimersByTime(11_000);
+    jest.useRealTimers();
+    await mcp.sendToolListChanged();
+    expect(await Promise.race([notified.promise, closed.promise])).toBe("notified");
+  } finally {
+    jest.useRealTimers();
+    await client?.close();
+    await mcp.close();
+  }
+});
+
+test("closing a stdio server also stops the processes it started", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-group-")),
+    pidFile = join(dir, "pid");
+  // The fixture server, after starting a child of its own that outlives it, as npx's node does. The server still exits
+  // when its stdin closes.
+  const script = `const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1 << 30)"], { stdio: ["ignore", "ignore", "ignore"] });
+child.unref();
+await Bun.write(${JSON.stringify(pidFile)}, String(child.pid));
+await import(${JSON.stringify(join(import.meta.dir, "fixtures", "mcp.ts"))});`;
+  const client = await connect({ ...newInstance({ id: "forks", command: process.execPath }), args: ["-e", script] });
+  const pid = Number(await Bun.file(pidFile).text());
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    expect(alive()).toBe(true);
+    await client.close();
+    // A killed process is gone a moment later, once init has reaped the orphan.
+    for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
+    expect(alive()).toBe(false);
+  } finally {
+    if (alive()) process.kill(pid, "SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
   }
 });

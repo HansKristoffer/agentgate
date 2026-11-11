@@ -1,9 +1,11 @@
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@modelcontextprotocol/client";
 import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+import { exponentialBackoff } from "hanzio";
 import { LOCAL_URL, schemas, type McpInstance } from "../store.ts";
 import {
   SHIM_CLIENT_NAME,
+  StdioTransport,
   VERSION,
   connect,
   mergeInstructions,
@@ -11,15 +13,18 @@ import {
   parseRemote,
   type Source,
 } from "./gateway.ts";
-import { headerWait } from "./oauth.ts";
+import { mcpFetch } from "./oauth.ts";
 
 import { z } from "zod";
 import { fetchHeaders, readBody } from "../runtime.ts";
 
-/** A per-session server that failed to start is tried again after this, doubling up to RETRY_MAX while its
+/** A per-session server that failed to start is tried again after 5 s, doubling up to 5 minutes while its
  * configuration stays the same: each try may run npx or uvx. */
-const RETRY_MIN = 5_000;
-const RETRY_MAX = 5 * 60_000;
+const retryDelay = (failures: number) =>
+  exponentialBackoff(failures, { baseMs: 5_000, maxMs: 5 * 60_000, jitter: false });
+
+/** The daemon answered 404 for this session: it forgot the session (idle sweep or restart) before running the request. */
+class SessionLost extends Error {}
 
 export const DAEMON_DOWN =
   "agentgate daemon is not running on this machine (run `agentgate service start`). Tools reconnect automatically when the daemon becomes available.";
@@ -66,16 +71,31 @@ export async function buildShim(
   let closed = false,
     flight: Promise<void> | undefined;
   const children = new Map<string, { config: string; instance: McpInstance; client: Client }>();
-  const failed = new Map<string, { config: string; delay: number; retryAt: number }>();
+  const failed = new Map<string, { config: string; failures: number; retryAt: number }>();
   let server: ReturnType<typeof mergedServer> | undefined;
   const changed = () => {
     void server?.sendToolListChanged().catch(() => {});
+  };
+  // While connected, the daemon's notification stream says when tools change; the timer only brings a lost daemon
+  // connection back.
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const poll = (on: boolean) => {
+    if (on && !timer && !closed) {
+      timer = setInterval(() => {
+        void ensure().catch(() => {});
+      }, options.reconnectMs ?? 5000);
+      timer.unref();
+    } else if (!on && timer) {
+      clearInterval(timer);
+      timer = undefined;
+    }
   };
   const invalidate = (client: Client) => {
     if (daemon !== client) return;
     daemon = undefined;
     transport = undefined;
     void client.close().catch(() => {});
+    poll(true);
     changed();
   };
   const reconcile = async () => {
@@ -116,8 +136,8 @@ export async function buildShim(
             if (children.get(alias)?.client === client) children.delete(alias);
           };
         } catch (e) {
-          const delay = last ? Math.min(last.delay * 2, RETRY_MAX) : RETRY_MIN;
-          failed.set(alias, { config: serialized, delay, retryAt: Date.now() + delay });
+          const failures = (last?.failures ?? 0) + 1;
+          failed.set(alias, { config: serialized, failures, retryAt: Date.now() + retryDelay(failures) });
           console.error(`agentgate: ${alias}: ${e}`);
         }
       }),
@@ -130,11 +150,14 @@ export async function buildShim(
         const client = new Client({ name: SHIM_CLIENT_NAME, version: VERSION });
         const t = new StreamableHTTPClientTransport(new URL(`${daemonUrl}/mcp?${q}`), {
           fetch: async (url, init) => {
-            // Bun.serve sends an SSE response's headers with its first event, so a call's (a POST's) headers come
-            // when the tool finishes; the handshake keeps its own deadline below.
-            const res = await fetchHeaders(url, init, headerWait(init?.method, handshake));
-            if (res.status === 404 && t.sessionId) invalidate(client);
-            return res;
+            // A call's (a POST's) headers come when the tool finishes; the handshake keeps its own deadline below.
+            const res = await mcpFetch(url, init, handshake);
+            if (res.status !== 404 || !t.sessionId) return res;
+            await res.body?.cancel();
+            // Closing the client rejects its pending requests at once, so the close waits a turn for this request
+            // to fail with SessionLost, which tells a call it may be sent again.
+            setTimeout(() => invalidate(client));
+            throw new SessionLost("the agentgate daemon no longer knows this session");
           },
         });
         try {
@@ -160,19 +183,33 @@ export async function buildShim(
       await reconcile();
     })().finally(() => {
       flight = undefined;
+      poll(!daemon);
     }));
   };
   await ensure().catch(() => {});
+  const call = (client: Client, ...[params, options]: Parameters<NonNullable<Source["invoke"]>>) =>
+    client.request(
+      {
+        method: "tools/call",
+        params: thread ? { ...params, _meta: { [T3_THREAD_META_KEY]: thread, ...params._meta } } : params,
+      },
+      options,
+    ) as Promise<CallToolResult>;
   const toDaemon = (client: Client): Source => ({
     alias: "",
     client,
-    ...(thread && {
-      invoke: (params, options) =>
-        client.request(
-          { method: "tools/call", params: { ...params, _meta: { [T3_THREAD_META_KEY]: thread, ...params._meta } } },
-          options,
-        ) as Promise<CallToolResult>,
-    }),
+    // A call the daemon refused for a forgotten session never ran, so it goes once more on a new session.
+    invoke: async (params, options) => {
+      try {
+        return await call(client, params, options);
+      } catch (e) {
+        if (!(e instanceof SessionLost)) throw e;
+        invalidate(client);
+        await ensure();
+        if (!daemon) throw e;
+        return call(daemon, params, options);
+      }
+    },
   });
   const child = (alias: string): Source | undefined => {
     const c = children.get(alias);
@@ -192,19 +229,24 @@ export async function buildShim(
       return daemon && toDaemon(daemon);
     },
   });
-  const timer = setInterval(() => {
-    void ensure().catch(() => {});
-  }, options.reconnectMs ?? 5000);
-  timer.unref();
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {
       closed = true;
-      clearInterval(timer);
+      poll(false);
       await flight?.catch(() => {});
       try {
         if (transport?.sessionId) await transport.terminateSession();
       } catch {}
+      // A stdio server may ignore its closed stdin: SIGTERM ends its group now, and its close still escalates to SIGKILL.
+      for (const { client } of children.values()) {
+        const pid = client.transport instanceof StdioTransport && client.transport.pid;
+        try {
+          if (pid) process.kill(-pid, "SIGTERM");
+        } catch {
+          // already exited
+        }
+      }
       await Promise.allSettled([
         ...(daemon ? [daemon.close()] : []),
         ...Array.from(children.values(), (c) => c.client.close()),
@@ -215,10 +257,13 @@ export async function buildShim(
   return { project, server, close };
 }
 
-export async function runShim() {
-  const { server, close } = await buildShim(process.cwd());
+export async function runShim(daemonUrl = LOCAL_URL) {
+  const { server, close } = await buildShim(process.cwd(), daemonUrl);
   const transport = new StdioServerTransport();
-  transport.onclose = () => close().finally(() => process.exit(0));
-  process.stdin.on("end", () => close().finally(() => process.exit(0)));
+  // Without a handler a signal ends the shim at once and leaves its stdio servers running.
+  const exit = () => close().finally(() => process.exit(0));
+  transport.onclose = exit;
+  process.stdin.on("end", exit);
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, exit);
   await server.connect(transport);
 }

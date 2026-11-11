@@ -1,27 +1,50 @@
-import { outdatedNodes, type AccountStatus, type Status } from "@agentgate/protocol";
+import { outdatedNodes, type AccountState, type AccountStatus, type Status } from "./index.ts";
 
 export type Page = "accounts" | "servers" | "skills" | "projects" | "nodes";
 /** `signIn`: signing in to Infisical again, from the daemon's own machine, fixes it. */
 export type Problem = { key: string; page: Page; title: string; detail?: string; signIn?: boolean };
 const loginName = { github: "GitHub", infisical: "Infisical", "infisical-identity": "Infisical machine identity" };
 
+/** The daemon's `state`, or for a daemon too old to send one, the derivation the app used before it did. */
+export const accountState = (a: AccountStatus): AccountState =>
+  a.state ??
+  (a.waitingFor
+    ? { kind: "waiting-for-holder", holder: a.waitingFor }
+    : a.needsLogin || a.expired
+      ? { kind: "needs-login" }
+      : a.refreshError
+        ? { kind: "refresh-failed" }
+        : !a.account.enabled
+          ? { kind: "disabled" }
+          : a.exhausted
+            ? { kind: "exhausted", until: a.exhaustedUntil }
+            : { kind: "ready" });
+
 /** What an account needs before it can serve sessions again, or undefined while it works. Overview and Accounts both
  * label accounts with it. */
-export const accountProblem = (a: AccountStatus) =>
-  a.waitingFor
-    ? `Waiting for ${a.waitingFor}`
-    : a.needsLogin || a.expired
-      ? "Needs sign-in"
-      : a.refreshError
-        ? "Refresh failed"
-        : !a.account.enabled
-          ? "Disabled"
-          : a.exhausted
-            ? "Limit reached"
-            : undefined;
+export function accountProblem(a: AccountStatus) {
+  const state = accountState(a);
+  switch (state.kind) {
+    case "waiting-for-holder":
+      return `Waiting for ${state.holder}`;
+    case "needs-login":
+      return "Needs sign-in";
+    case "refresh-failed":
+      return "Refresh failed";
+    case "disabled":
+      return "Disabled";
+    case "exhausted":
+      return "Limit reached";
+    case "cooling":
+      return state.reason === "rate" ? "Rate limited" : "Backing off";
+    case "refreshing":
+    case "ready":
+      return undefined;
+  }
+}
 
 /** Everything the user has to fix by hand, each pointing at the page where they fix it. States that clear on their own
- * (a reached limit, an offline laptop, a login another machine refreshes) or that the user chose (a disabled account)
+ * (a reached limit, an offline laptop, an expired login a machine refreshes by itself) or that the user chose (a disabled account)
  * are left out. */
 export function problems(
   data: Pick<
@@ -39,10 +62,10 @@ export function problems(
 ): Problem[] {
   const list: Problem[] = [];
   for (const a of data.accounts) {
-    const problem = accountProblem(a);
-    if (problem === "Needs sign-in")
+    const { kind } = accountState(a);
+    if (kind === "needs-login")
       list.push({ key: `account:${a.account.id}`, page: "accounts", title: `Sign in to ${a.account.label} again` });
-    else if (problem === "Refresh failed")
+    else if (kind === "refresh-failed")
       list.push({
         key: `account:${a.account.id}`,
         page: "accounts",

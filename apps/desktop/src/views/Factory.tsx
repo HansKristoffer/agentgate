@@ -1,27 +1,43 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Alert, Button, Card, Tabs } from "@heroui/react";
+import { useState, type ReactNode } from "react";
+import { Alert, Button, Card } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
-import { movingLabel, type BoardItem, type FactoryBoard, type ItemAction, type ItemPhase } from "@agentgate/protocol";
+import {
+  movingLabel,
+  waitsForYou,
+  type BoardItem,
+  type FactoryBoard,
+  type ItemAction,
+  type ItemPhase,
+} from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
-import { factoryOp, openExternal, request } from "../api.ts";
-import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
-import { useGeneration } from "../features/proxy/useGeneration.ts";
+import { factoryOp, openExternal } from "../api.ts";
+import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel, Segmented } from "../components/ui.tsx";
+import { boardEvery, useApp } from "../AppContext.tsx";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
 import { FactoryOff } from "./factory/Init.tsx";
 import { FactorySettings } from "./factory/Settings.tsx";
 import { Sources } from "./factory/Sources.tsx";
+import {
+  ItemActions,
+  NeedsYouText,
+  OpenInT3,
+  Pill,
+  STAGE_TONES,
+  pendingKey,
+  statusOf,
+  toneOf,
+  toneStyle,
+  type Act,
+  type AskReason,
+  type Tone,
+} from "./factory/parts.tsx";
 
 /**
- * The software factory: what waits for you first, then every stage. The board is polled from `/api/factory` and
+ * The software factory: what waits for you first, then every stage. The board is read from `/api/factory` and
  * everything else is a factory operation (`factoryOp`); both reach the factory machine from whichever machine the app
  * is connected to. Only the items frozen on the connected machine itself are that machine's to show and drop.
  */
-
-/** What the view does to an item, for the queue, the cards and the drawer. */
-export type Act = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, reason?: string) => Promise<void>;
-/** Asks for a reason, then acts. */
-export type AskReason = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, title: string) => void;
 
 const OPEN_PHASES: readonly ItemPhase[] = ["held", "triage", "spec", "implement", "pr", "review", "ready"];
 const PHASE_TITLES: Record<ItemPhase, string> = {
@@ -36,94 +52,8 @@ const PHASE_TITLES: Record<ItemPhase, string> = {
   closed: "Closed",
 };
 
-/** The colour family of a state, defined in styles.css for light and dark: the stages run from understanding (think)
- * through building and checking to ready, and anything that waits for you, or failed, stands out from all of them. */
-export type Tone = "held" | "think" | "build" | "check" | "ready" | "you" | "bad";
-const STAGE_TONES: Record<ItemPhase, Tone> = {
-  held: "held",
-  triage: "think",
-  spec: "think",
-  implement: "build",
-  pr: "build",
-  review: "check",
-  ready: "ready",
-  shipped: "ready",
-  closed: "held",
-};
-export const toneStyle = (tone: Tone) => ({ "--tone": `var(--tone-${tone})` }) as CSSProperties;
-/** An item's colour: what waits for you, or stopped, before the stage it is in. */
-export const toneOf = (item: BoardItem): Tone =>
-  item.needsYou ? (item.needsYou.kind === "stopped" ? "bad" : "you") : STAGE_TONES[item.phase];
-/** A state in its colour, with a dot, so the eye finds what waits for you before reading. */
-export function Pill({ tone, children }: { tone: Tone; children: ReactNode }) {
-  return (
-    <span className="pill" style={toneStyle(tone)}>
-      {children}
-    </span>
-  );
-}
-
 /** The T3 Code thread an item points at: the one asking, else its newest run's. */
-export const threadOf = (item: BoardItem) => item.needsYou?.link ?? item.run?.threadLink;
-
-export function OpenInT3({ link, label = "Open in T3 Code" }: { link?: string; label?: string }) {
-  if (!link) return null;
-  return (
-    <Button size="sm" variant="tertiary" onPress={() => void openExternal(link)}>
-      <SquareTerminal size={14} />
-      {label}
-    </Button>
-  );
-}
-
-/** The daemon's actions for an item, as it labels them: one that takes text asks for it first. The button's tooltip
- * says what it will do. */
-export function ItemActions({ item, act, ask }: { item: BoardItem; act: Act; ask: AskReason }) {
-  return (
-    <>
-      {item.actions.map((a) => (
-        <span key={a.name + a.label} title={a.effect}>
-          <ActionButton
-            size="sm"
-            variant="tertiary"
-            pendingKey={`factory:${a.name}:${item.id}`}
-            onPress={() =>
-              a.takesText ? ask(item, a.name, `${a.label.replace(/…$/, "")}: ${item.key}`) : void act(item, a.name)
-            }
-          >
-            {a.label}
-          </ActionButton>
-        </span>
-      ))}
-    </>
-  );
-}
-
-/** What an item waits for you to do, as the daemon renders it everywhere: what happened, the question, the
- * recommendation and the options. */
-export function NeedsYouText({ item }: { item: BoardItem }) {
-  const n = item.needsYou;
-  if (!n) return null;
-  return (
-    <>
-      <p className="factory-question">{n.question}</p>
-      {n.detail && (
-        <details>
-          <summary className="muted">Read it here</summary>
-          <div className="factory-detail">{n.detail}</div>
-        </details>
-      )}
-      {n.recommendation && <p className="muted">Recommended: {n.recommendation}</p>}
-      {n.options && (
-        <ul className="muted">
-          {n.options.map((o) => (
-            <li key={o}>{o}</li>
-          ))}
-        </ul>
-      )}
-    </>
-  );
-}
+const threadOf = (item: BoardItem) => item.needsYou?.link ?? item.run?.threadLink;
 
 function NeedsYouQueue({
   board,
@@ -136,8 +66,8 @@ function NeedsYouQueue({
   ask: AskReason;
   open: (id: string) => void;
 }) {
-  // The daemon's definition: a question, or a PR ready for your review. Intake pauses on the same count.
-  const waiting = board.items.filter((i) => i.needsYou || i.phase === "ready");
+  // Intake pauses on the same count.
+  const waiting = board.items.filter(waitsForYou);
   const { waitingForYou, waitingForYouLimit } = board.capacity;
   return (
     <Panel
@@ -180,37 +110,6 @@ function NeedsYouQueue({
       )}
     </Panel>
   );
-}
-
-/** What is happening to an item, in words: what it waits for, as the daemon says, else the stage's work while its run
- * goes, else where it stands. */
-export function statusOf(item: BoardItem): string {
-  if (item.waiting) return item.waiting.text;
-  const run = item.run;
-  const working = run && ["starting", "running", "waiting"].includes(run.state);
-  const queued = run?.state === "queued";
-  switch (item.phase) {
-    case "held":
-      return "Waits for your go-ahead";
-    case "triage":
-      return queued ? "Waiting to triage" : "Triaging";
-    case "spec":
-      return queued ? "Waiting to write the spec" : "Writing the spec";
-    case "implement":
-      return queued ? "Waiting to implement" : "Implementing";
-    case "pr":
-      return working ? "Fixing the PR" : "PR open";
-    case "review":
-      return item.pr?.reviewRound ? `Review round ${item.pr.reviewRound + (working ? 1 : 0)}` : "Reviewing the PR";
-    case "ready":
-      return item.pr?.openFindings
-        ? `Ready for your review, ${item.pr.openFindings} findings open`
-        : "Ready for your review";
-    case "shipped":
-      return "Merged";
-    case "closed":
-      return "Closed";
-  }
 }
 
 function ItemCard({ item, showRepo, open }: { item: BoardItem; showRepo: boolean; open: (id: string) => void }) {
@@ -585,50 +484,14 @@ function Reason({ title, close, submit }: { title: string; close: () => void; su
 }
 
 export function Factory(props: ViewProps) {
-  const { connection, perform } = props;
-  const [board, setBoard] = useState<FactoryBoard>();
-  const [error, setError] = useState("");
+  const { connection, perform, data } = props;
   const [tab, setTab] = useState("items");
   const [selected, setSelected] = useState<string>();
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<{ item: Pick<BoardItem, "id" | "key">; action: ItemAction; title: string }>();
-  const capture = useGeneration(connection);
-  // One read at a time, for the connection shown: a read whose answer would be dropped (another connection, or the
-  // first of StrictMode's two mounts) must not hold back the next for five seconds.
-  const loading = useRef<{ current: () => boolean; done: Promise<void>; again?: Promise<void> }>(undefined);
-
-  /** Reads the board. A poll skips while a read runs; `refresh` waits for it and reads once more, since that read may
-   * have started before the action or change it follows. Refreshes asked for meanwhile share that one read. */
-  const load = (refresh = false): Promise<void> => {
-    const running = loading.current;
-    if (running?.current()) return refresh ? (running.again ??= running.done.then(() => load())) : running.done;
-    const current = capture();
-    const done = (async () => {
-      try {
-        const next = await request<FactoryBoard>(connection, "/factory");
-        if (current()) {
-          setBoard(next);
-          setError("");
-        }
-      } catch (e) {
-        if (current()) setError(String(e));
-      } finally {
-        if (loading.current?.current === current) loading.current = undefined;
-      }
-    })();
-    loading.current = { current, done };
-    return done;
-  };
-  const refresh = () => load(true);
-  useEffect(() => {
-    setBoard(undefined);
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
-  }, [connection]);
-  useEffect(() => {
-    if (props.changes) void refresh();
-  }, [props.changes]);
+  const every = boardEvery(data);
+  // The app's shared read. A reload waits for a read under way and reads once more after an action.
+  const { board, boardError: error, reloadBoard: refresh } = useApp();
 
   /** An action, then the board as it is after it. */
   const run = (task: () => Promise<unknown>, message?: string, key?: string) =>
@@ -649,7 +512,7 @@ export function Factory(props: ViewProps) {
         retry: `Retrying ${item.key}`,
         drop: `Dropped ${item.key}`,
       }[action],
-      `factory:${action}:${item.id}`,
+      pendingKey(action, item),
     );
   const ask: AskReason = (item, action, title) => setAsking({ item, action, title });
 
@@ -704,23 +567,17 @@ export function Factory(props: ViewProps) {
           {movingLabel(board.factory.moving)}. Nothing new is taken in until then; Settings can move it now or cancel.
         </p>
       )}
-      <Tabs className="segmented" selectedKey={tab} onSelectionChange={(key) => setTab(String(key))}>
-        <Tabs.ListContainer>
-          <Tabs.List aria-label="Factory sections">
-            {[
-              ["items", "Items"],
-              ["status", "Status"],
-              ["history", "History"],
-              ["settings", "Settings"],
-            ].map(([id, title]) => (
-              <Tabs.Tab key={id} id={id!}>
-                {title}
-                <Tabs.Indicator />
-              </Tabs.Tab>
-            ))}
-          </Tabs.List>
-        </Tabs.ListContainer>
-      </Tabs>
+      <Segmented
+        label="Factory sections"
+        value={tab}
+        onChange={setTab}
+        options={[
+          { id: "items", label: "Items" },
+          { id: "status", label: "Status" },
+          { id: "history", label: "History" },
+          { id: "settings", label: "Settings" },
+        ]}
+      />
       {tab === "items" && (
         <>
           <Frozen board={board} ask={ask} />
@@ -741,7 +598,7 @@ export function Factory(props: ViewProps) {
       {selected && (
         <ItemDrawer
           connection={connection}
-          changes={props.changes ?? 0}
+          every={every}
           id={selected}
           board={board}
           act={act}

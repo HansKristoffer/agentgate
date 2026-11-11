@@ -112,7 +112,7 @@ test("each webhook-capable source gets a hook URL kept as a ~hook secret, shown 
   await n.until(() => keys.every((key) => relay.sockets.has(key)), "both hook sockets");
   for (const key of keys) expect(relay.puts.get(key)).toMatchObject({ kind: "hook", enabled: true });
 
-  n.f.sources.set("github", { type: "github", poll: async () => [] });
+  n.f.sources.set("github", { type: "github", poll: async () => ({ items: [] }) });
   await n.intake();
   const [alertsUrl, bugsUrl] = keys.map((key) => `${relay.url}/hook/${key}`) as [string, string];
   const urls = [alertsUrl, bugsUrl];
@@ -255,7 +255,7 @@ test("a valid GitHub or Linear delivery polls that source now and adds no item i
   ]);
   const polled: string[] = [];
   for (const type of ["github", "linear"] as const)
-    n.f.sources.set(type, { type, poll: async (source) => (polled.push(source.id), []) });
+    n.f.sources.set(type, { type, poll: async (source) => (polled.push(source.id), { items: [] }) });
   const body = JSON.stringify({ action: "opened" });
   const deliver = (source: string, headers: Record<string, string>) =>
     handleHook(n.f, source, new Request("http://hook.invalid/", { method: "POST", headers, body }));
@@ -298,7 +298,8 @@ test("when the factory moves to another machine, this one closes its hook socket
   n.s.put("setting", "settings", { ...n.s.settings(), factory: { ...n.s.settings().factory!, node: "b" } });
   n.ctx.remote.reconcile();
   await n.until(() => relay.sockets.get(key)?.readyState === WebSocket.CLOSED, "the hook socket to close");
-  await Bun.sleep(50); // a queued deletion is sent without being awaited
+  // Every deletion of a relay endpoint is queued first, and this one was not.
+  expect(n.s.local("remote:delete")).toBeUndefined();
   expect(relay.deletes).toEqual([]);
   expect(getSecret(n.s, "~hook:alerts")).toBeDefined();
 });

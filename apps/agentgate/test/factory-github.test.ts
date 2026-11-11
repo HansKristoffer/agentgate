@@ -1,6 +1,7 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, setSystemTime, test } from "bun:test";
 import type { FactoryReport, MarkerPayload } from "@agentgate/protocol";
 import { buildBoard } from "../src/factory/board.ts";
+import { moveItem } from "../src/factory/controller.ts";
 import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs, type FactoryRun } from "../src/factory/db.ts";
 import * as gh from "../src/factory/gh.ts";
@@ -92,6 +93,7 @@ function fakeGitHub(repo: string) {
         });
       }
       if (args[0] === "api" && args[1] === "user") return ok({ login: FACTORY_LOGIN });
+      if (args[0] === "repo" && args[1] === "view") return ok({ defaultBranchRef: { name: "main" } });
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
       if (args[0] === "api" && comment) {
         const { body } = JSON.parse(stdin!);
@@ -268,7 +270,7 @@ test("a marker in a comment by another login counts for nothing: not for check o
   writeBack(n.f, item, "waiting", { text: "Which save path?", ref: "q1" });
   await idle(n.f);
   n.github.issues.get(1)!.comments.push(forged(1, { state: "finished" }));
-  expect((await n.f.sources.get("github")!.check!(item)).marker).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(item)).markers.at(-1)).toMatchObject({
     item: item.id,
     node: "a",
     state: "open",
@@ -289,7 +291,7 @@ const outboxPass = async (n: Awaited<ReturnType<typeof githubFactory>>) => {
   await idle(n.f);
 };
 
-test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one never again", async () => {
+test("triage posts one comment with the template, the marker, defused mentions and a capped text; a refused post is tried three times and an uncertain one is not sent blind", async () => {
   const n = await githubFactory();
   for (const i of [1, 2, 3]) n.github.add(i);
   await n.intake();
@@ -304,7 +306,15 @@ test("triage posts one comment with the template, the marker, defused mentions a
   expect(await n.report(first!, { ...triaged, summary })).toEqual({ accepted: true });
   expect(n.posts()).toHaveLength(taken + 1);
   const post = n.posts().at(-1);
-  expect(post!.args).toEqual(["api", `repos/${n.repo}/issues/1/comments`, "--method", "POST", "--input", "-"]);
+  expect(post!.args).toEqual([
+    "api",
+    `repos/${n.repo}/issues/1/comments`,
+    "--method",
+    "POST",
+    "--input",
+    "-",
+    "--include",
+  ]);
   const body: string = JSON.parse(post!.stdin!).body;
   const [text] = body.split(`\n\n${MARKER_PREFIX}`);
   expect(text).toStartWith(
@@ -326,10 +336,12 @@ test("triage posts one comment with the template, the marker, defused mentions a
       node: "a",
       state: "open",
       pr: null,
+      moment: "triaged",
+      ref: "",
     },
   ]);
   // The comment is now the issue's newest marker, read back from the factory's own login.
-  expect((await n.f.sources.get("github")!.check!(items.get(n.s, first!.item!)!)).marker).toMatchObject({
+  expect((await n.f.sources.get("github")!.check!(items.get(n.s, first!.item!)!)).markers.at(-1)).toMatchObject({
     node: "a",
     state: "open",
   });
@@ -344,7 +356,7 @@ test("triage posts one comment with the template, the marker, defused mentions a
   await n.report(second!, triaged);
   await n.report(third!, triaged);
   const statuses = () => Promise.all([1, 2, 3].map((i) => writeStatus(n, n.key(i), "triaged")));
-  // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one never.
+  // A refusal wrote nothing, so the outbox tries it again, up to three attempts; the uncertain one is not sent.
   expect(await statuses()).toEqual(["posted", "pending", "uncertain"]);
   for (let pass = 0; pass < 2; pass++) await outboxPass(n);
   expect(await statuses()).toEqual(["posted", "failed", "uncertain"]);
@@ -364,6 +376,43 @@ test("triage posts one comment with the template, the marker, defused mentions a
   for (const run of [first!, second!, third!]) writeBack(n.f, items.get(n.s, run.item!)!, "triaged");
   await idle(n.f);
   expect(n.posts()).toHaveLength(taken + 5);
+});
+
+test("an uncertain comment that landed is marked posted once the issue's comments are read back, and one that did not is sent once more", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  n.github.add(2);
+  await n.intake();
+  await idle(n.f);
+  const [landed, lost] = items.list(n.s);
+  const statuses = () => Promise.all([1, 2].map((i) => writeStatus(n, n.key(i), "triaged")));
+  const triagedOn = (number: number) =>
+    n.github.issues.get(number)!.comments.filter((c) => parseMarkers(c.body).at(-1)?.stage === "triage");
+
+  // gh hears nothing back for either; GitHub took the first and never got the second.
+  n.github.fail = (args) => (args[1]?.endsWith("/comments") ? noAnswer : undefined);
+  writeBack(n.f, landed!, "triaged");
+  writeBack(n.f, lost!, "triaged");
+  await idle(n.f);
+  const sent = n.posts().find((c) => c.args[1]?.endsWith("/1/comments") && c.stdin?.includes("triaged this"))!;
+  n.github.issues.get(1)!.comments.push({
+    body: JSON.parse(sent.stdin!).body,
+    author: { login: FACTORY_LOGIN },
+    authorAssociation: "OWNER",
+    createdAt: "2026-11-05",
+  });
+  n.github.fail = undefined;
+  expect(await statuses()).toEqual(["uncertain", "uncertain"]);
+
+  // A send still in flight at GitHub may show late, so the comments are read back a pass later.
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["uncertain", "uncertain"]);
+  n.advance(2 * 60_000);
+  await outboxPass(n);
+  expect(await statuses()).toEqual(["posted", "posted"]);
+  n.advance(2 * 60_000);
+  await outboxPass(n);
+  expect([triagedOn(1).length, triagedOn(2).length]).toEqual([1, 1]);
 });
 
 test("a comment claimed while gh is offline or logged out is sent once gh reaches GitHub again, and one still unsent a day after its claim is failed", async () => {
@@ -414,6 +463,60 @@ test("a comment claimed while gh is offline or logged out is sent once gh reache
   expect(n.github.issues.get(2)!.comments).toEqual([]);
 });
 
+/** A `gh api --include` call GitHub answered with an error status, as gh prints it: headers and body on stdout. */
+const ghError = (status: string, headers: string[], message: string) =>
+  ghAnswer({
+    exit: 1,
+    stdout: `HTTP/2.0 ${status}\r\n${headers.join("\r\n")}\r\n\r\n${JSON.stringify({ message })}`,
+    stderr: `gh: ${message} (HTTP ${status.slice(0, 3)})\n`,
+  });
+/** GitHub's secondary rate limit, which posting several comments in a row meets. */
+const SECONDARY = "You have exceeded a secondary rate limit.";
+const secondaryLimit = ghError("403 Forbidden", ["Retry-After: 60"], SECONDARY);
+
+/** gh.ts holds GitHub calls back by the system clock: each test that meets a rate limit runs at a moment of its own,
+ * long before the real time the clock returns to, so its limit has lifted for the tests after it. */
+function pinClock(at: string) {
+  let clock = Date.parse(at);
+  setSystemTime(clock);
+  cleanup.push(() => setSystemTime());
+  return (ms: number) => setSystemTime((clock += ms));
+}
+
+test("a comment GitHub's rate limit turns away is sent once the limit lifts, without counting as a refusal, and no gh call runs until then", async () => {
+  const n = await githubFactory();
+  n.github.add(1);
+  await n.intake();
+  await idle(n.f);
+  const item = items.list(n.s)[0]!;
+  const advance = pinClock("2026-01-01T00:00:00Z");
+  const writeRow = () => n.s.db.query("select status, refusals from factory_writebacks where moment='triaged'").get();
+
+  n.github.fail = (args) => (args[1]?.endsWith("/1/comments") ? secondaryLimit : undefined);
+  writeBack(n.f, item, "triaged");
+  await idle(n.f);
+  const calls = n.github.calls.length;
+  // Three attempts in a row: the first met the limit, and the two passes after it are held back without asking.
+  for (let pass = 0; pass < 2; pass++) await outboxPass(n);
+  expect(n.github.calls).toHaveLength(calls);
+  expect(writeRow()).toEqual({ status: "pending", refusals: 0 });
+  await expect(gh.issueComments(n.repo, 1)).rejects.toThrow(
+    "GitHub's rate limit holds calls until 2026-01-01T00:01:00.000Z",
+  );
+  expect(n.f.events.recent(50).map((e) => e.text)).toContain(
+    `The triaged comment on ${n.key(1)}: limited (gh could not comment on ${n.repo}#1 yet: ${SECONDARY}); it is tried again`,
+  );
+
+  advance(60_000);
+  n.github.fail = undefined;
+  await outboxPass(n);
+  expect(writeRow()).toEqual({ status: "posted", refusals: 0 });
+  expect(n.github.issues.get(1)!.comments.map((c) => c.body.split("\n")[0])).toEqual([
+    `**${n.key(1)}**: The factory took this.`,
+    `**${n.key(1)}**: The factory triaged this and starts on a fix.`,
+  ]);
+});
+
 test("the issue is re-checked before every stage, and one closed on GitHub closes its item without a comment", async () => {
   const n = await githubFactory();
   n.github.add(1);
@@ -434,13 +537,10 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
     validate: async () => undefined,
     accept: async () => {},
   });
-  // Intake reads each new issue too, for its marker; only the reads after it count here.
-  let fromIntake = 0;
-  const stateChecks = () =>
-    n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state,comments").slice(fromIntake);
+  // Intake reads each new issue with its comments, for its marker; dispatch reads its state alone.
+  const stateChecks = () => n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state");
 
   await n.intake();
-  fromIntake = stateChecks().length;
   n.github.issues.get(2)!.state = "CLOSED";
   await n.dispatch();
   expect(stateChecks().map((c) => c.args[2])).toEqual(["1", "2"]);
@@ -716,8 +816,8 @@ test("each gh.ts read rejects a malformed answer with an error naming the reposi
     () => gh.openLabelledIssues(SCRATCH, "factory"),
     () => gh.issueStateAndComments(SCRATCH, 4),
     () => gh.issueComments(SCRATCH, 4),
+    () => gh.issueState(SCRATCH, 4),
     () => gh.prView(PR),
-    () => gh.prAddReviewers(PR, ["octocat"]),
     () => gh.defaultBranchCi(SCRATCH),
     () => gh.revertsSince(SCRATCH, Date.parse("2026-11-03T17:40:14Z")),
   ];
@@ -936,17 +1036,79 @@ test("gh.ts writes: a post GitHub refused failed, one that never left this machi
   expect((await reply(noAnswer)).status).toBe("uncertain");
 });
 
-test("review requests skip the PR's author, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {
-  const pr = (calls: ReturnType<typeof stubGh>) => calls.filter((c) => c.args[1] !== "view").map((c) => c.args);
-  const author = (args: string[]): Answer => (args[1] === "view" ? recorded("prView.author") : { ok: true, out: "" });
-  let calls = stubGh(author);
-  await gh.prAddReviewers(PR, ["hanskristoffer", "octocat"]);
-  expect(pr(calls)).toEqual([["pr", "edit", PR, "--add-reviewer", "octocat"]]);
-  calls = stubGh(author);
-  await gh.prAddReviewers(PR, ["HansKristoffer"]);
-  expect(pr(calls)).toEqual([]);
+test("a write is rate limited by a 429, a GraphQL RATE_LIMITED error or a 403 whose headers say so, and held back until the limit's own time; a 403 or 422 without them is a refusal", async () => {
+  const advance = pinClock("2026-02-01T00:00:00Z");
+  const comment = (answer: Answer) => {
+    stubGh(() => answer);
+    return gh.postIssueComment(SCRATCH, 4, "Hello");
+  };
+  const refused = (message: string) => ({
+    status: "failed" as const,
+    error: `GitHub refused to comment on ${SCRATCH}#4: ${message}`,
+  });
+  expect(await comment(ghError("403 Forbidden", ["X-Ratelimit-Remaining: 4999"], "Resource not accessible"))).toEqual(
+    refused("Resource not accessible"),
+  );
+  expect(await comment(ghError("422 Unprocessable Entity", [], "Validation Failed"))).toEqual(
+    refused("Validation Failed"),
+  );
 
-  calls = stubGh(author);
+  // A spent primary limit lifts at its reset, in epoch seconds; until then nothing reaches gh.
+  const reset = Date.parse("2026-02-01T00:05:00Z") / 1000;
+  const spent = ghError(
+    "403 Forbidden",
+    ["X-Ratelimit-Remaining: 0", `X-Ratelimit-Reset: ${reset}`],
+    "API rate limit exceeded",
+  );
+  expect(await comment(spent)).toEqual({
+    status: "limited",
+    error: `gh could not comment on ${SCRATCH}#4 yet: API rate limit exceeded`,
+  });
+  advance(4 * 60_000);
+  const calls = stubGh(() => ok({ id: 1 }));
+  expect(await gh.postIssueComment(SCRATCH, 4, "Hello")).toEqual({
+    status: "limited",
+    error: `gh could not comment on ${SCRATCH}#4 yet: GitHub's rate limit holds calls until 2026-02-01T00:05:00.000Z`,
+  });
+  expect(calls).toEqual([]);
+  advance(60_000);
+  expect((await gh.postIssueComment(SCRATCH, 4, "Hello")).status).toBe("posted");
+
+  // Neither a 429 nor GraphQL's limit says when it lifts: a minute later it has.
+  expect((await comment(ghError("429 Too Many Requests", [], "Too many requests"))).status).toBe("limited");
+  advance(60_000);
+  stubGh(() => ({
+    ok: false,
+    exit: 1,
+    out: JSON.stringify({ errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }] }),
+  }));
+  expect((await gh.replyToConversation("PRRT_kwDOVpGbC861ncLB", "Fixed.")).status).toBe("limited");
+  advance(60_000);
+  expect((await comment(ok({ id: 1 }))).status).toBe("posted");
+});
+
+test("an issue's state is one read that asks for no comments, and a merged pull request's number reads as closed", async () => {
+  for (const [state, expected] of [
+    ["OPEN", "OPEN"],
+    ["CLOSED", "CLOSED"],
+    ["MERGED", "CLOSED"],
+  ] as const) {
+    const calls = stubGh(() => ok({ state }));
+    expect(await gh.issueState(SCRATCH, 4)).toBe(expected);
+    expect(calls).toEqual([{ args: ["issue", "view", "4", "--repo", SCRATCH, "--json", "state"] }]);
+  }
+});
+
+test("review requests skip the PR's author without reading the PR, and a failed gh pr command passes on gh's reason without a token or a URL's credentials", async () => {
+  const done = (): Answer => ({ ok: true, out: "" });
+  let calls = stubGh(done);
+  await gh.prAddReviewers(PR, "HansKristoffer", ["hanskristoffer", "octocat"]);
+  expect(calls).toEqual([{ args: ["pr", "edit", PR, "--add-reviewer", "octocat"] }]);
+  calls = stubGh(done);
+  await gh.prAddReviewers(PR, "HansKristoffer", ["HansKristoffer"]);
+  expect(calls).toEqual([]);
+
+  calls = stubGh(done);
   await gh.prSetBody(PR, "Fixes #4");
   await gh.prReady(PR);
   expect(calls).toEqual([
@@ -1048,4 +1210,10 @@ test("/approve on a held issue starts it, and free text there is not an approval
   expect(n.f.events.recent(20).map((e) => e.text)).toContain(
     `Approved ${item!.key}; triage is queued, from a comment on its issue`,
   );
+
+  // The comment it used is remembered while the item is open, and forgotten once it closes.
+  const seen = `factory:answer-seen:${item!.id}`;
+  expect(n.s.local(seen)).toBeDefined();
+  moveItem(n.f, item!.id, "closed", true);
+  expect(n.s.local(seen)).toBeUndefined();
 });

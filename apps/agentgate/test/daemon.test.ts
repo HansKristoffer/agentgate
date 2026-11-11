@@ -1,6 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { app, makeCtx, serve } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
+import { prepare } from "../src/handoff/destination.ts";
+import { connectT3 } from "../src/handoff/t3.ts";
+import { removeTmp, tmp } from "./fixtures/git.ts";
+import { fakeT3 } from "./fixtures/t3.ts";
 
 const request = (path: string, options?: RequestInit) =>
   new Request(`http://127.0.0.1:7878${path}`, { ...options, headers: { host: "127.0.0.1:7878", ...options?.headers } });
@@ -74,13 +78,53 @@ test("daemon lifecycle closes listeners and drains work before returning", async
   s.close();
 });
 
+test("stopping mid-clone kills git and returns, leaving the handoff to resume on the next start", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  s.setLocal("handoff:cloneDir", tmp());
+  const t3 = fakeT3({ claudeDir: tmp() });
+  await connectT3(s, { url: t3.url, token: t3.pairingToken() });
+  // A remote that takes the connection and never answers, like a dead host or an SSH agent waiting for approval.
+  const reached = Promise.withResolvers<void>(),
+    dropped = Promise.withResolvers<void>();
+  const remote = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      req.signal.addEventListener("abort", () => dropped.resolve());
+      reached.resolve();
+      return new Promise<Response>(() => {});
+    },
+  });
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    const remoteUrl = `http://127.0.0.1:${remote.port}/test/hang.git`;
+    prepare(daemon.ctx.handoffs, "h1", "a", {
+      remoteUrl,
+      projectTitle: "hang",
+      branch: null,
+      baseSha: null,
+      worktree: false,
+    });
+    await reached.promise;
+    await daemon.stop();
+    await dropped.promise;
+    expect(daemon.ctx.handoffs.load("destination", "h1")?.step).toBe("prepare");
+  } finally {
+    await daemon.stop();
+    remote.stop(true);
+    t3.stop();
+    s.close();
+    removeTmp();
+  }
+});
+
 test("native login expiry is enforced when finishing without another login starting", async () => {
   const s = new Store(":memory:"),
     ctx = makeCtx(s),
     handler = app(ctx);
   try {
     const start = await handler.fetch(
-      request("/api/accounts/login", {
+      request("/api/ops/accounts%20login%20start", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ provider: "claude" }),
@@ -91,7 +135,7 @@ test("native login expiry is enforced when finishing without another login start
     expect(state).toBeDefined();
     s.now = () => Date.now() + 31 * 60000;
     const finish = await handler.fetch(
-      request("/api/accounts/login/finish", {
+      request("/api/ops/accounts%20login%20finish", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ state, code: "code#state" }),
@@ -222,5 +266,48 @@ test("a SQLite error in a request logs its code, message and free space, and the
     expect(line).not.toContain("hidden");
   } finally {
     error.mockRestore();
+  }
+});
+
+test("the daemon's own startup node write pokes peers", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("node", "n", { id: "n" }); // an older daemon's record: the start rewrites it with this release
+  let poked!: () => void;
+  const poke = new Promise<void>((resolve) => (poked = resolve));
+  const peer = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      if (new URL(req.url).pathname === "/peer/poke") poked();
+      return new Response("not found", { status: 404 });
+    },
+  });
+  s.db.run("insert into peers values ('b', ?, 'peer-token', 0, null)", [`http://127.0.0.1:${peer.port}`]);
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    await poke;
+  } finally {
+    await daemon.stop();
+    peer.stop(true);
+    s.close();
+  }
+});
+
+test("a project written after start reaches open sessions' tool lists and the skill links at once", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    const tools = new Promise<void>((resolve) =>
+      spyOn(daemon.ctx.gateway, "toolsChanged").mockImplementation(() => resolve()),
+    );
+    const skills = new Promise<void>((resolve) => spyOn(daemon.ctx.skills, "soon").mockImplementation(() => resolve()));
+    s.put("project", "acme/web", { id: "acme/web" });
+    // Microtasks only: a timer-driven reaction loses to this zero-delay timer.
+    const timer = new Promise((resolve) => setTimeout(() => resolve("timer"), 0));
+    expect(await Promise.race([Promise.all([tools, skills]).then(() => "reacted"), timer])).toBe("reacted");
+  } finally {
+    await daemon.stop();
+    s.close();
   }
 });

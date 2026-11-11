@@ -7,13 +7,14 @@ import {
   ghAccount,
   ISSUE_LIMIT,
   issueComments,
+  issueState,
   issueStateAndComments,
   labelExists,
   openLabelledIssues,
   postIssueComment,
   viewerLogin,
 } from "./gh.ts";
-import { parseMarkers } from "./markers.ts";
+import { ownMarkers, parseMarkers } from "./markers.ts";
 import { shortError, type FactoryRuntime, type SourceAdapter } from "./runtime.ts";
 
 /**
@@ -23,9 +24,6 @@ import { shortError, type FactoryRuntime, type SourceAdapter } from "./runtime.t
  */
 
 const CAPPED = `Only the newest ${ISSUE_LIMIT} open labelled issues are read; the rest wait until fewer are open`;
-
-/** Sources whose last poll found more than ISSUE_LIMIT issues, which their board row says. */
-const cappedOf = (f: FactoryRuntime) => f.memory("capped github sources", () => new Set<string>());
 
 /** `<repository name>-<number>`, such as `api-42`, or `<owner>-<name>-<number>` when another of the folder's
  * repositories has the same name. Lowercase, with anything a branch name should not hold made a dash. */
@@ -43,34 +41,32 @@ function issueOf(item: Pick<FactoryItem, "externalId">) {
   return { repo: m[1]!, number: Number(m[2]) };
 }
 
-/** The newest marker in the factory's own comments: anyone who can comment could otherwise forge one. */
-const newestOf = (comments: { body: string; author: string }[], viewer: string) =>
-  comments
-    .filter((c) => c.author.toLowerCase() === viewer.toLowerCase())
-    .flatMap((c) => parseMarkers(c.body))
-    .at(-1);
-
 export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   type: "github",
   async poll(source) {
-    // Cleared first, so a failed poll shows its own error instead.
-    cappedOf(f).delete(source.id);
-    if (source.type !== "github") return [];
+    if (source.type !== "github") return { items: [] };
     const { issues, more } = await openLabelledIssues(source.repo, source.label);
-    if (more) cappedOf(f).add(source.id);
-    return issues.map((issue) => ({
-      externalId: `${source.repo}#${issue.number}`,
-      key: issueKey(f, source.repo, issue.number),
-      title: issue.title,
-      url: issue.url,
-      snapshot: { title: issue.title, body: issue.body, url: issue.url },
-      ...(issue.updatedAt && { updatedAt: issue.updatedAt }),
-    }));
+    return {
+      items: issues.map((issue) => ({
+        externalId: `${source.repo}#${issue.number}`,
+        key: issueKey(f, source.repo, issue.number),
+        title: issue.title,
+        url: issue.url,
+        snapshot: { title: issue.title, body: issue.body, url: issue.url },
+        ...(issue.updatedAt && { updatedAt: issue.updatedAt }),
+      })),
+      ...(more && { capped: CAPPED }),
+    };
+  },
+  async isOpen(item) {
+    const { repo, number } = issueOf(item);
+    return (await issueState(repo, number)) === "OPEN";
   },
   async check(item) {
     const { repo, number } = issueOf(item);
     const [{ open, comments }, viewer] = await Promise.all([issueStateAndComments(repo, number), viewerLogin()]);
-    return { open, marker: newestOf(comments, viewer) };
+    const own = comments.map((c) => ({ body: c.body, own: c.author.toLowerCase() === viewer.toLowerCase() }));
+    return { open, markers: ownMarkers(own) };
   },
   async post(item, body) {
     const { repo, number } = issueOf(item);
@@ -156,11 +152,5 @@ async function githubChecks(f: FactoryRuntime): Promise<FactoryCheck[]> {
 
 export function setup(f: FactoryRuntime): void {
   f.checks.push({ name: "GitHub", slow: true, run: () => githubChecks(f) });
-  // Merged into intake's row for the source, which comes earlier.
-  f.boardParts.push(async () => ({
-    sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
-      cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],
-    ),
-  }));
   f.sources.set("github", githubSource(f));
 }

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
@@ -126,8 +126,14 @@ test("a clone T3 Code refuses for a permission is reported once, with how to fix
   await syncT3Projects(a.h);
   carry(a.s, b.s);
   b.t3.denyClones = true;
+  const bumps: string[] = [];
+  b.s.onChange = (topic) => bumps.push(topic);
 
   await syncT3Projects(b.h);
+  expect(bumps).toContain("threads");
+  bumps.length = 0;
+  await syncT3Projects(b.h);
+  expect(bumps).not.toContain("threads");
   expect(t3State(b.s).projectSyncError).toBe(
     "T3 Code on b has not given agentgate the source-control:write permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on b",
   );
@@ -167,6 +173,25 @@ test("a machine that already has a checkout of the repository gets a project for
   await syncT3Projects(b.h);
   expect(b.t3.clones).toHaveLength(0);
   expect(b.t3.projects.map((p) => p.workspaceRoot)).toEqual([r.b]);
+});
+
+test("a round with no new T3 project starts no git process and writes nothing, and a new one is still registered", async () => {
+  const r = repos("a", "b");
+  const repo = r.url.match(/github\.com\/(.+)\.git$/)![1]!;
+  const a = await node("a");
+  a.t3.addProject(r.a);
+  await syncT3Projects(a.h);
+
+  const spawns = [spyOn(Bun, "spawn"), spyOn(Bun, "spawnSync")];
+  const writes = spyOn(a.s, "setLocal");
+  cleanup.push(() => [...spawns, writes].forEach((s) => s.mockRestore()));
+  await syncT3Projects(a.h);
+  expect(spawns.map((s) => s.mock.calls.length)).toEqual([0, 0]);
+  expect(writes).not.toHaveBeenCalled();
+
+  a.t3.addProject(r.b);
+  await syncT3Projects(a.h);
+  expect(a.skills.checkouts()).toEqual({ [realpathSync(r.a)]: repo, [realpathSync(r.b)]: repo });
 });
 
 test("nothing moves with the setting off, but T3 Code's checkouts still get their repo's skills", async () => {

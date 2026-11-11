@@ -1,9 +1,9 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as path } from "node:path";
 import { Hono } from "hono";
-import { memoryRelay } from "../../relay/test/memory.ts";
+import { memoryRelay, serveRelay } from "../../relay/test/memory.ts";
 import { NodeChannel } from "../src/channel.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import {
@@ -170,6 +170,7 @@ test("invites and pairing commands are validated without echoing secrets", () =>
       } catch (e) {
         return String(e);
       }
+      return undefined;
     })();
     expect(error).toBeDefined();
     expect(error).not.toContain("AAAA");
@@ -219,6 +220,32 @@ test("records, credentials and tombstones converge; the relay stores only cipher
   expect(Number(a.local("seen:b"))).toBeGreaterThan(0);
 });
 
+test("relay failures, recovery and reconciling mark status changed; a quiet or repeated turn does not", async () => {
+  const r = relay();
+  const a = node("a");
+  await createRelay(a, r.url);
+  const bumps: string[] = [];
+  a.onChange = (topic) => bumps.push(topic);
+  await sync(a);
+  expect(bumps).toEqual([]);
+
+  r.ctl.mode = "down";
+  await sync(a).catch(() => {});
+  expect(relayStatus(a)!.pullError).toContain("503");
+  expect(bumps).toEqual(["status"]);
+  await sync(a).catch(() => {});
+  expect(bumps).toEqual(["status"]);
+
+  r.ctl.mode = "ok";
+  await sync(a);
+  expect(relayStatus(a)!.pullError).toBeUndefined();
+  expect(bumps).toEqual(["status", "status"]);
+
+  // A reconciliation moves the phase through "read" and "upload" back to "done".
+  await reconcileRelay(a);
+  expect(bumps).toEqual(Array(5).fill("status"));
+});
+
 test("relay policy payloads are versioned and incompatible encrypted records never merge", async () => {
   const r = relay(),
     a = node("a"),
@@ -243,6 +270,12 @@ test("relay policy payloads are versioned and incompatible encrypted records nev
   expect(JSON.parse(payload.record.data).policy.retryLimit).toBe(0);
   db.run("update entries set blob=? where key=?", [await seal(keys, aad, JSON.stringify(payload.record)), entry.key]);
   await joinRelay(b, invite);
+  expect(b.get("account", "acc")).toBeUndefined();
+  expect(relayStatus(b)?.skipped).toBe(1);
+  // A current payload whose data is invalid is skipped too, rather than failing its page on every read.
+  const invalid = { ...payload, record: { ...payload.record, rev: 99, data: '{"id":"acc","provider":"nope"}' } };
+  db.run("update entries set blob=? where key=?", [await seal(keys, aad, JSON.stringify(invalid)), entry.key]);
+  await reconcileRelay(b);
   expect(b.get("account", "acc")).toBeUndefined();
   expect(relayStatus(b)?.skipped).toBe(1);
   db.run("update entries set blob=? where key=?", [entry.blob, entry.key]);
@@ -344,6 +377,35 @@ test("restoring a whole database (and the clock) recovers newer records and coun
   expect(b.get("project", "o/r")).toBeDefined();
 });
 
+test("a restart uploads only the records that changed while the daemon was down", async () => {
+  const r = relay();
+  const aFile = file("a");
+  const a = node("a", aFile),
+    b = node("b");
+  seed(a);
+  const invite = await createRelay(a, r.url);
+  const grp = await groupOf(invite);
+  await stopRelay(a);
+  a.close();
+
+  const unchanged = node("a", aFile);
+  r.ctl.pushes = 0;
+  await sync(unchanged);
+  expect(r.ctl.pushes).toBe(0);
+  expect(relayStatus(unchanged)).toMatchObject({ reconciling: false, pushed: unchanged.seq() });
+  await stopRelay(unchanged);
+  unchanged.close();
+
+  const edited = node("a", aFile);
+  edited.put("account", "acc", { id: "acc", provider: "claude", label: "edited while down" });
+  const before = head(r, grp);
+  await sync(edited);
+  expect(head(r, grp)).toBe(before + 1);
+  await joinRelay(b, invite);
+  expect(b.get("account", "acc")!.label).toBe("edited while down");
+  expect(b.get("credential", "acc")).toEqual(edited.get("credential", "acc")!);
+});
+
 test("a wiped group is repopulated from surviving nodes, tombstones included", async () => {
   const r = relay();
   const a = node("a"),
@@ -411,16 +473,19 @@ test("large stores page and chunk without omissions, including writes made durin
   const a = node("a"),
     b = node("b");
   a.transaction(() => {
-    for (let i = 0; i < 1300; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} });
+    for (let i = 0; i < 2000; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} });
   });
   r.ctl.beforePush = () => {
     if (r.ctl.pushes === 1) a.put("account", "late", { id: "late", provider: "claude", label: "written mid-upload" });
   };
+  const pages = spyOn(a, "changePage");
   const invite = await createRelay(a, r.url);
-  expect(r.ctl.pushes).toBeGreaterThanOrEqual(3);
+  expect(r.ctl.pushes).toBeGreaterThanOrEqual(4);
+  // The feed is read one chunk at a time, not reloaded in full for every chunk.
+  expect(Math.max(...pages.mock.results.map((p) => (p.value as { records: unknown[] }).records.length))).toBe(500);
   await sync(a);
   await joinRelay(b, invite);
-  expect(b.list("project").length).toBe(1300);
+  expect(b.list("project").length).toBe(2000);
   expect(b.get("account", "late")).toBeDefined();
   expect(relayStatus(a)!.pushed).toBe(a.seq());
 });
@@ -619,25 +684,23 @@ test("rotation cannot revoke a removed machine's Tailscale path", async () => {
   c.db.run("insert into peers values ('b', ?, 'tok', 0, null)", [`http://127.0.0.1:${server.port}`]);
   await sync(a); // a now sees c through the relay
 
-  // Remove c through the API: the relay path forces a rotation, which is local-only.
+  // Remove c through the API (loopback-only, ops.test.ts): the relay path forces a rotation.
   const ctx = makeCtx(a);
   const handler = app(ctx);
-  a.setLocal("adminToken", "admin");
-  const remote = await handler.fetch(
-    new Request("http://x/api/nodes/c", { method: "DELETE", headers: { authorization: "Bearer admin" } }),
-    { listener: "tailnet" },
-  );
-  expect(remote.status).toBe(403);
   const removed = await handler.fetch(
-    new Request("http://127.0.0.1/api/nodes/c", { method: "DELETE", headers: { host: "127.0.0.1" } }),
+    new Request("http://127.0.0.1/api/ops/unpair", {
+      method: "POST",
+      headers: { host: "127.0.0.1", "content-type": "application/json" },
+      body: JSON.stringify({ node: "c" }),
+    }),
     { listener: "loopback" },
   );
-  const body = (await removed.json()) as { rotated: boolean; command: string };
-  expect(body.rotated).toBe(true);
+  const { rotated } = (await removed.json()) as { rotated?: { command: string } };
+  expect(rotated).toBeDefined();
   await ctx.gateway.close();
 
   await leaveRelay(b);
-  await joinRelay(b, body.command.split(" ").at(-1)!);
+  await joinRelay(b, rotated!.command.split(" ").at(-1)!);
   a.put("account", "acc", { id: "acc", provider: "claude", label: "secret after rotation" });
   await sync(a);
   await sync(b);
@@ -860,21 +923,21 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
     );
   const handlerA = app(ctxA),
     handlerB = app(ctxB);
-  expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
+  expect((await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url }, "tailnet")).status).toBe(403);
   expect(relayInvite(a)).toBeUndefined();
   // The name lands in a shell line the user pastes, and must not collide with an existing node.
   for (const name of ["Mac Mini", "x;rm -rf ~", a.nodeId])
-    expect((await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
+    expect((await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url, name })).status).toBe(400);
   const paired = (await (
-    await call(handlerA, "/api/nodes/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })
+    await call(handlerA, "/api/ops/pair", { method: "relay", relayUrl: r.url, name: "mac-mini" })
   ).json()) as { command: string };
   expect(paired.command).toContain("| AGENTGATE_NAME=mac-mini sh -s -- join agr1.");
-  const bad = await call(handlerB, "/api/nodes/join", { command: `${paired.command} && curl evil` });
+  const bad = await call(handlerB, "/api/ops/join", { command: `${paired.command} && curl evil` });
   expect(bad.status).toBe(400);
   expect(await bad.text()).not.toContain(paired.command.split(".")[2]!);
-  expect((await call(handlerB, "/api/nodes/join", { command: paired.command })).status).toBe(200);
+  expect((await call(handlerB, "/api/ops/join", { command: paired.command })).status).toBe(200);
   expect(b.get("account", "acc")).toBeDefined();
-  expect((await call(handlerA, "/api/relay/rotate", undefined, "tailnet")).status).toBe(403);
+  expect((await call(handlerA, "/api/ops/relay%20rotate", {}, "tailnet")).status).toBe(403);
   // A Tailscale join URL is an origin: it cannot be aimed at this daemon's own routes.
   for (const url of [
     "http://127.0.0.1:7878/api/relay/rotate?x=",
@@ -935,6 +998,62 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   await stopRelay(c);
   await hanging;
   expect(Date.now() - started).toBeLessThan(2000);
+});
+
+test("a push with this node's writes pokes the other members through the channel, and they pull at once", async () => {
+  const r = memoryRelay();
+  const calls: string[] = [];
+  const server = serveRelay(r, (req) => {
+    const { pathname } = new URL(req.url);
+    if (pathname.endsWith("/call")) calls.push(pathname.split("/")[4]!);
+    return undefined;
+  });
+  servers.push(server);
+  const url = `http://127.0.0.1:${server.port}`;
+  const a = node("a"),
+    b = node("b"),
+    old = node("old");
+  const invite = await createRelay(a, url);
+  await joinRelay(b, invite);
+  await joinRelay(old, invite);
+  // Each member pulls once, so the relay has seen it lately.
+  for (const s of [b, old, a]) await sync(s);
+
+  const channels = [a, b].map((s) => new NodeChannel(s, async () => new Response("", { status: 404 })));
+  // A member from before the poke: its channel hands the call to routes that do not know it. Standing in for that
+  // answer, this socket refuses every call; either way the caller gets no success back.
+  const keys = await deriveKeys(parseInvite(invite).secret);
+  const oldSocket = new WebSocket(`${url.replace("http", "ws")}/g/${keys.groupId}/n/old/connect`, {
+    headers: { authorization: `Bearer ${keys.authToken}` },
+  } as unknown as string[]);
+  let oldCalls = 0;
+  oldSocket.onmessage = (e) => {
+    const frame = JSON.parse(String(e.data));
+    oldCalls++;
+    oldSocket.send(JSON.stringify({ t: "res", id: frame.id, body: "" }));
+  };
+  try {
+    for (const c of channels) {
+      await c.reconcile();
+      while (!c.connected) await Bun.sleep(5);
+    }
+    while (oldSocket.readyState !== WebSocket.OPEN) await Bun.sleep(5);
+
+    a.put("account", "acc", { id: "acc", provider: "claude", label: "work" });
+    await relaySync(a, { pull: false, force: true });
+    while (!b.get("account", "acc")) await Bun.sleep(5); // b never ran a sync turn of its own
+    while (oldCalls < 1) await Bun.sleep(5);
+    expect(calls.sort()).toEqual(["b", "old"]);
+    expect(relayStatus(a)!.pushError).toBeUndefined();
+    expect(oldSocket.readyState).toBe(WebSocket.OPEN);
+
+    // b took a's record in through its pull, not as a write of its own: pushing it on pokes nobody.
+    await relaySync(b, { pull: false, force: true });
+    expect(calls).toHaveLength(2);
+  } finally {
+    channels.forEach((c) => c.close());
+    oldSocket.close();
+  }
 });
 
 /** Published in docs/operations/relay.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */

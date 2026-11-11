@@ -7,6 +7,7 @@ import { readBody } from "../runtime.ts";
 import { setAccount } from "../operations.ts";
 import { resetCooldown } from "./policy.ts";
 import { proxy } from "./pool.ts";
+import { modelErrors, modelSnapshots } from "./routing.ts";
 import type { Quotas } from "./quota.ts";
 import type { Provider, ProviderName } from "./provider.ts";
 import { streamObserver } from "./telemetry.ts";
@@ -36,8 +37,8 @@ export class ProxyOperations {
         const snapshot = modelSnapshotSchema.parse({ at: this.s.now(), models });
         if (this.s.closed || !this.s.get("account", id) || revision(this.s, "credential", id) !== before)
           throw new Error("Account changed during discovery");
-        this.s.setLocal(`models:${id}`, JSON.stringify(snapshot));
-        this.s.setLocal(`modelError:${id}`, undefined);
+        modelSnapshots.set(this.s, id, snapshot);
+        modelErrors.set(this.s, id, undefined);
         return snapshot.models;
       } catch (error) {
         if (
@@ -46,7 +47,7 @@ export class ProxyOperations {
           this.s.get("account", id) &&
           revision(this.s, "credential", id) === before
         )
-          this.s.setLocal(`modelError:${id}`, "Model discovery failed; previous results retained");
+          modelErrors.set(this.s, id, "Model discovery failed; previous results retained");
         throw error;
       }
     })();

@@ -49,7 +49,7 @@ Domain terms (account, pool, holder, record, peer, relay group, project, virtual
 
 The most common defect is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
 
-- **Entry points.** CLI (`apps/agentgate/src/cli.ts`), the control API (`api.ts`) and the desktop views. A capability reachable from one is usually expected from the others, and from the MCP gateway when an agent should reach it.
+- **Entry points.** CLI (`apps/agentgate/src/cli.ts` and `cli/`), the control API (`api.ts` and `api/`) and the desktop views. A capability reachable from one is usually expected from the others, and from the MCP gateway when an agent should reach it. A write the CLI and the app both offer is one control operation (`ops/`, `controlOp` in `ops/registry.ts`), which gives both entry points at once.
 - **Providers.** Claude, Codex and Cursor each have an adapter in `apps/agentgate/src/llm/`. Provider-shaped features need a decision for each, even if the decision is "not supported".
 - **Sync.** A new record kind or field must sync over peers and the relay, survive a tombstone, and merge with a peer on the previous version. Ask whether `SYNC_PROTOCOL` (`sync.ts`), `RELAY_PROTOCOL` or `API_VERSION` (`packages/protocol`) must change, and whether backups export and restore it, including `export --no-secrets`.
 - **Contracts.** Anything the app and daemon exchange is typed in `packages/protocol`. Change the schema and both sides follow.
@@ -107,13 +107,13 @@ Most code changes do not need a documentation change. Agents can read the code.
 
 ## How it works
 
-The daemon (`daemon.ts`) serves three kinds of traffic on loopback: the provider proxies that Claude Code and Codex send model requests to (`llm/`), the MCP gateway that per-session shims connect to (`mcp/`), and the JSON control API used by the CLI and app (`api.ts`). The proxy picks an account from the pool by quota, policy and pin, and moves to another when one is exhausted. Everything a user configures is a typed record in the store (`store.ts`) with a revision; nodes exchange record changes directly over Tailscale (`sync.ts`) or as encrypted entries through the Cloudflare relay (`relay.ts`, `apps/relay`), and merge them by last-writer-wins. Token refreshes are coordinated through a holder per credential plus a local lease, so paired machines do not race each other for a rotating token.
+The daemon (`daemon.ts`) serves three kinds of traffic on loopback: the provider proxies that Claude Code and Codex send model requests to (`llm/`), the MCP gateway that per-session shims connect to (`mcp/`), and the JSON control API used by the CLI and app (`api.ts`, `api/`). The proxy picks an account from the pool by quota, policy and pin, and moves to another when one is exhausted. Everything a user configures is a typed record in the store (`store.ts`) with a revision; nodes exchange record changes directly over Tailscale (`sync.ts`) or as encrypted entries through the Cloudflare relay (`relay.ts`, `apps/relay`), and merge them by last-writer-wins. Token refreshes are coordinated through a holder per credential plus a local lease, so paired machines do not race each other for a rotating token.
 
 Architecture and its constraints: [docs/internals/overview.md](docs/internals/overview.md).
 
 ## Where code lives
 
-- `apps/agentgate` (`@agentgate/daemon`) is the daemon and CLI. `llm/` is the provider proxies and pool, `mcp/` the gateway and shims, `factory/` the opt-in software factory ([docs/internals/factory.md](docs/internals/factory.md)), `operations.ts` the shared operations the CLI and API both call.
+- `apps/agentgate` (`@agentgate/daemon`) is the daemon and CLI. `llm/` is the provider proxies and pool, `mcp/` the gateway and shims, `factory/` the opt-in software factory ([docs/internals/factory.md](docs/internals/factory.md)), `ops/` the control operations the CLI and app both call (`operations.ts` keeps the few helpers several of them share).
 - `apps/desktop` is the Tauri app. React views in `src/views`, shared UI in `src/components/ui.tsx`, Rust commands in `src-tauri/src/lib.rs`. All HTTP goes through Rust.
 - `apps/relay` is the Cloudflare Worker and Durable Object relay. It stores ciphertext and has no sync logic.
 - `apps/site` is the static Astro landing page.

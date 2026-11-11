@@ -5,8 +5,8 @@ import { z } from "zod";
 import { revision } from "../src/configuration.ts";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { ensureFactoryTables, items, runs, trimFactory, type FactoryItem, type FactoryRun } from "../src/factory/db.ts";
+import { Backoff } from "../src/runtime.ts";
 import {
-  Backoff,
   later,
   loopTask,
   operation,

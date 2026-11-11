@@ -70,7 +70,7 @@ function pair(...nodes: ReturnType<typeof node>[]) {
   for (const n of nodes) for (const m of nodes) n.s.put("node", m.s.nodeId, { id: m.s.nodeId, protocol: m.protocol });
 }
 const copy = (from: Store, to: Store) => {
-  for (const r of from.changes(0).records) to.merge(r);
+  for (const r of from.changePage(0).records) to.merge(r);
 };
 
 const KEY = "github.com/bliss-budget/budget-app";
@@ -221,6 +221,41 @@ test("concurrent edits on two machines: each file goes to its newer save, and a 
   expect(contents(join(b.root, KEY))).toEqual(want);
 });
 
+test("a store that vanished deletes nothing: it is refilled from the record", () => {
+  const a = node("a");
+  pair(a);
+  fixtureStore(join(a.root, KEY), {
+    ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+    "apps/web/.env": { data: "W=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+  });
+  files(a).sync();
+  // A cleaned-up ~/.buncargo, a restore or another HOME.
+  rmSync(join(a.root, KEY), { recursive: true });
+  files(a).sync();
+  const record = a.s.get("project", "bliss-budget/budget-app")!;
+  expect(record.files!.filter((f) => f.deleted)).toEqual([]);
+  expect(contents(join(a.root, KEY))).toEqual({ ".env": "V=1\n", "apps/web/.env": "W=1\n" });
+});
+
+test("a sync that throws in the debounce timer is logged by name, and the daemon keeps running", async () => {
+  const a = node("a");
+  const f = files(a);
+  const thrown = Promise.withResolvers<void>();
+  spyOn(f, "sync").mockImplementationOnce(() => {
+    thrown.resolve();
+    throw new Error("database is locked near TOKEN=secret");
+  });
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    f.soon();
+    await thrown.promise;
+    f.close();
+    expect(errors.mock.calls.map((c) => c.join(" "))).toEqual(["checkout files: sync failed: Error"]);
+  } finally {
+    errors.mockRestore();
+  }
+});
+
 test("a store in a format this agentgate does not know is left alone, and old nodes hold the record back", () => {
   const a = node("a"),
     old = node("old", 5);
@@ -289,6 +324,43 @@ test("in a buncargo checkout, buncargo's status picks what a handoff carries and
   expect(await localEdits(root, cwd, [])).toEqual([".env.local", "apps/api/.env"]);
   await fillCheckout(root, cwd, KEY);
   expect(readFileSync(join(cwd, "calls.log"), "utf8")).toBe(`${home} files status --json\n${home} files pull\n`);
+});
+
+test("closing stops a running buncargo together with the processes it started", async () => {
+  const root = join(tmp(), ".buncargo", "files"),
+    cwd = tmp();
+  fakeBuncargo(cwd);
+  // This buncargo starts a child of its own, writes both pids once it has, and hangs.
+  writeFileSync(
+    join(cwd, "node_modules", "buncargo", "cli.js"),
+    `const { spawn } = require("node:child_process");
+const { renameSync, writeFileSync } = require("node:fs");
+const child = spawn("sleep", ["30"], { stdio: "ignore" });
+writeFileSync("pids.tmp", process.pid + " " + child.pid);
+renameSync("pids.tmp", "pids");
+setInterval(() => {}, 1000);
+`,
+  );
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const pull = fillCheckout(root, cwd, KEY);
+  const pidsFile = join(cwd, "pids");
+  while (!existsSync(pidsFile)) await Bun.sleep(10);
+  const pids = readFileSync(pidsFile, "utf8").split(" ").map(Number);
+  try {
+    files(node("mac")).close();
+    await expect(pull).rejects.toThrow("buncargo files pull failed");
+    // The orphaned child is gone once init reaps it, shortly after the kill.
+    while (pids.some(alive)) await Bun.sleep(10);
+  } finally {
+    for (const pid of pids.filter(alive)) process.kill(pid, "SIGKILL");
+  }
 });
 
 test("a handed-off file replaces the checkout's copy only when that copy has no edits of its own", () => {

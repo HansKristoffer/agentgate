@@ -1,33 +1,34 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button } from "@heroui/react";
 import type { PublicProject } from "@agentgate/protocol";
 import { Badge, Choice, Field, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
+import { control, request } from "../api.ts";
 import { idPath, relative } from "./utils.ts";
+import { useDaemon } from "../useDaemon.ts";
 
 type Endpoint = { url: string; secret: string };
 
 /** A virtual project's public endpoint, shown in its Projects row: what to paste into Grok, who serves it, and its controls. */
 export function EndpointDetails({ project, data, connection, perform, local }: ViewProps & { project: PublicProject }) {
   const remote = project.remote;
-  const [shown, setShown] = useState<Endpoint>();
   const [reveal, setReveal] = useState(false);
-  // The secret is only ever read over a local connection.
-  useEffect(() => {
-    if (local && remote?.enabled)
-      void request<Endpoint>(connection, `/projects/remote?id=${idPath(project.id)}`).then(setShown, () => {});
-  }, [local, remote?.enabled, remote?.url, connection, project.id]);
-  const call = (path: string, body: Record<string, unknown>, message: string) =>
+  // The secret is only ever read over a local connection, and is kept out of the app's answer cache. A secret rotated
+  // elsewhere keeps the URL, so the read also follows `status`, which every project change bumps.
+  const secret = useDaemon(
+    local && !!remote?.enabled && (() => request<Endpoint>(connection, `/projects/remote?id=${idPath(project.id)}`)),
+    { topics: ["status"], deps: [project.id, remote?.url] },
+  );
+  const shown = secret.data;
+  const id = project.id;
+  const changeEndpoint = (change: () => Promise<unknown>, message: string) =>
     perform(async () => {
-      setShown(await request<Endpoint>(connection, path, "POST", { id: project.id, ...body }));
+      await change();
+      await secret.reload();
     }, message);
   const setWebhook = (url: string | null) =>
-    perform(
-      () => request(connection, "/projects/factory-webhook", "PUT", { id: project.id, url }),
-      url ? "Webhook saved" : "Webhook removed",
-    );
+    perform(() => control(connection, "remote webhook", { id, url }), url ? "Webhook saved" : "Webhook removed");
   const copy = (text: string, what: string) => perform(() => navigator.clipboard.writeText(text), `${what} copied`);
   const nodes = data.nodes.map((n) => ({
     id: n.id,
@@ -50,7 +51,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             size="sm"
             variant="tertiary"
             isDisabled={!local}
-            onPress={() => void call("/projects/remote", {}, "Endpoint created")}
+            onPress={() => void changeEndpoint(() => control(connection, "remote enable", { id }), "Endpoint created")}
           >
             {remote ? "Turn endpoint on" : "Create endpoint for Grok"}
           </Button>
@@ -82,7 +83,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
                   {shown
                     ? `Bearer ${reveal ? shown.secret : "•".repeat(24)}`
                     : local
-                      ? "Loading…"
+                      ? secret.error || "Loading…"
                       : "Run this on that machine to see the secret"}
                 </code>
               </small>
@@ -144,7 +145,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               onSelectionChange={(key) =>
                 key &&
                 key !== remote.servedBy &&
-                void call("/projects/remote", { servedBy: String(key) }, "Serving machine changed")
+                void changeEndpoint(
+                  () => control(connection, "remote enable", { id, servedBy: String(key) }),
+                  "Serving machine changed",
+                )
               }
             />
           </div>
@@ -154,7 +158,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             isSelected={!!project.factoryTools}
             onChange={(on) =>
               perform(
-                () => request(connection, "/projects/factory-tools", "PUT", { id: project.id, on }),
+                () => control(connection, "remote factory", { id, on }),
                 on ? "Grok can steer the factory" : "Factory tools removed",
               )
             }
@@ -200,7 +204,12 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="tertiary"
               isDisabled={!local}
-              onPress={() => void call("/projects/remote/secret", {}, "New secret created; update it in Grok")}
+              onPress={() =>
+                void changeEndpoint(
+                  () => control(connection, "remote secret", { id }),
+                  "New secret created; update it in Grok",
+                )
+              }
             >
               New secret
             </Button>
@@ -209,7 +218,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               variant="tertiary"
               isDisabled={!local}
               onPress={() =>
-                void call("/projects/remote/regenerate", {}, "New URL and secret created; update both in Grok")
+                void changeEndpoint(
+                  () => control(connection, "remote regenerate", { id }),
+                  "New URL and secret created; update both in Grok",
+                )
               }
             >
               New URL
@@ -218,12 +230,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="ghost"
               className="delete"
-              onPress={() =>
-                void perform(async () => {
-                  await request(connection, `/projects/remote?id=${idPath(project.id)}`, "DELETE");
-                  setShown(undefined);
-                }, "Endpoint turned off")
-              }
+              onPress={() => void perform(() => control(connection, "remote disable", { id }), "Endpoint turned off")}
             >
               Turn off
             </Button>

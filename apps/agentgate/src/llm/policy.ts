@@ -24,20 +24,23 @@ export function cool(s: Store, accountId: string, reason: Failure, retryAt: numb
   // A shorter cooldown cannot cut a longer one short, and the reason stays the longer one's: a rate limit followed by a
   // brief transient failure is still a rate limit.
   const kept = prev && prev.retryAt > retryAt ? prev : undefined;
-  m.set(
-    key,
-    cooldownSchema.parse({
-      accountId,
-      scope: model ? "model" : "account",
-      model,
-      reason: kept?.reason ?? reason,
-      retryAt: kept?.retryAt ?? retryAt,
-      observedAt: s.now(),
-    }),
-  );
+  const next = cooldownSchema.parse({
+    accountId,
+    scope: model ? "model" : "account",
+    model,
+    reason: kept?.reason ?? reason,
+    retryAt: kept?.retryAt ?? retryAt,
+    observedAt: s.now(),
+  });
+  m.set(key, next);
+  // The app shows the reason and retryAt, and works out the end from retryAt itself.
+  if (next.retryAt !== prev?.retryAt || next.reason !== prev.reason) s.bump("status");
 }
 export function resetCooldown(s: Store, accountId: string) {
-  for (const [key, c] of timers(s)) if (c.accountId === accountId) timers(s).delete(key);
+  const m = timers(s),
+    before = m.size;
+  for (const [key, c] of m) if (c.accountId === accountId) m.delete(key);
+  if (m.size !== before) s.bump("status");
 }
 
 export const retryAfterMs = (headers: Headers, now = Date.now()) =>

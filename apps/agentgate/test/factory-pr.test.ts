@@ -22,6 +22,14 @@ afterEach(async () => {
 
 const MINUTE = 60_000;
 
+/** How many of the gh calls read GitHub: `pr view`, and GraphQL queries that are not mutations. */
+const reads = (calls: { args: string[] }[]) =>
+  calls.filter(
+    ({ args }) =>
+      (args[0] === "pr" && args[1] === "view") ||
+      (args[1] === "graphql" && !args.some((a) => a.startsWith("query=mutation"))),
+  ).length;
+
 test("a PR whose checks pass is marked ready, with reviewers requested except its author, and one ready comment", async () => {
   // The PR loop on its own: without review rounds, passing checks lead straight to ready.
   const n = await prFactory(cleanup, (repo) => ({
@@ -37,9 +45,12 @@ test("a PR whose checks pass is marked ready, with reviewers requested except it
   expect(await waiting()).toMatchObject({ on: "checks", text: "Waits for the PR's checks" });
 
   pr.checks = "passing";
-  await n.pollPrs();
+  const before = n.github.calls.length;
   await n.pollPrs();
   expect(items.get(n.s, item.id)!.phase).toBe("ready");
+  // The follower's read, and the body read just before the summary is written: the author comes from the first.
+  expect(reads(n.github.calls.slice(before))).toBe(2);
+  await n.pollPrs();
   expect(await waiting()).toBeUndefined();
   expect(pr).toMatchObject({ isDraft: false, reviewers: ["octocat"] });
   expect(n.github.posted(1)).toEqual([
@@ -413,6 +424,7 @@ test("a fixed conversation gets a reply and is resolved, a declined one gets the
   const { n, run, pr, at } = await conversing();
   const [member, bot] = pr.conversations as [FakeConversation, FakeConversation];
   pr.headRefOid = "a".repeat(40);
+  const before = n.github.calls.length;
   expect(
     await n.prThreads(run, {
       commit: "a".repeat(12),
@@ -422,6 +434,8 @@ test("a fixed conversation gets a reply and is resolved, a declined one gets the
       ],
     }),
   ).toEqual({ accepted: 2 });
+  // One read checks the head and the conversations before accepting; one after the replies finds what to resolve.
+  expect(reads(n.github.calls.slice(before))).toBe(2);
   expect(replies(member)).toEqual([
     expect.stringMatching(/^\*\*\S+-1\*\*: Fixed in aaaaaaaaaaaa\.\n\n<!-- agentgate-factory:1 /),
   ]);
@@ -708,10 +722,16 @@ test("a comment claimed just before a restart is posted once by the next daemon,
 
   // A send whose answer never comes, then a restart: it may have reached GitHub, so it is never sent again.
   const realGh = host.gh;
-  host.gh = (args, stdin) => (args[1]?.endsWith("/1/comments") ? new Promise(() => {}) : realGh(args, stdin));
+  let sending!: () => void;
+  const sent = new Promise<void>((resolve) => (sending = resolve));
+  host.gh = (args, stdin) => {
+    if (!args[1]?.endsWith("/1/comments")) return realGh(args, stdin);
+    sending();
+    return new Promise(() => {});
+  };
   cleanup.push(() => (host.gh = realGh));
   writeBack(m.f, items.get(m.s, item.id)!, "closed", { text: "Out of scope." });
-  await Bun.sleep(10);
+  await sent;
   const later = await m.restart();
   host.gh = realGh;
   await loopTask(

@@ -1,10 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import type { Connection, DesktopLogin, DesktopStatus, FactoryBoard, Status } from "@agentgate/protocol";
+import { useEffect, useRef } from "react";
+import {
+  waitsForYou,
+  type DesktopLogin,
+  type DesktopStatus,
+  type FactoryBoard,
+  type Status,
+} from "@agentgate/protocol";
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { TrayIcon } from "@tauri-apps/api/tray";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { request } from "./api.ts";
 import { tightest } from "./views/ClaudeDesktop.tsx";
 
 const name = (l: { label?: string; email?: string; accountUuid: string }) =>
@@ -162,17 +167,13 @@ export function useDesktopNotifications(
 
 /**
  * The factory's two moments the person hears about (factory/notify.ts on the daemon): an item starts waiting for them,
- * and a PR is ready. The board is read again whenever the daemon's factory events change. Items already waiting when
- * the app first reads the board are not announced, so opening the app is not a burst of notifications. Returns how many
- * items wait for the person, for the sidebar's attention dot.
+ * and a PR is ready, from the board the app reads once. Items already waiting when the app first sees a daemon's board
+ * are not announced, so opening the app or switching to another daemon is not a burst of notifications. Returns how
+ * many items wait for the person, for the sidebar's attention dot.
  */
-export function useFactoryAttention(connection: Connection, on: boolean, changes: number) {
-  const [board, setBoard] = useState<FactoryBoard>();
-  const primed = useRef(false);
-  useEffect(() => {
-    if (!on) return setBoard(undefined);
-    void request<FactoryBoard>(connection, "/factory").then(setBoard, () => {});
-  }, [connection, on, changes]);
+export function useFactoryAttention(connectionUrl: string, board: FactoryBoard | undefined) {
+  // The daemon whose items waiting at its first board were taken as already announced.
+  const primed = useRef<string>(undefined);
   useEffect(() => {
     if (!board) return;
     const moments = board.items.flatMap((i) =>
@@ -188,8 +189,8 @@ export function useFactoryAttention(connection: Connection, on: boolean, changes
           ? [{ key: `factory-ready:${i.id}`, title: `${i.key}'s PR is ready`, body: i.title }]
           : [],
     );
-    if (!primed.current) {
-      primed.current = true;
+    if (primed.current !== connectionUrl) {
+      primed.current = connectionUrl;
       localStorage.setItem("desktopNotified", JSON.stringify([...sent(), ...moments.map((m) => m.key)].slice(-50)));
       return;
     }
@@ -198,5 +199,5 @@ export function useFactoryAttention(connection: Connection, on: boolean, changes
       for (const m of moments) await notify(m.key, m.title, m.body);
     })();
   }, [board]);
-  return board?.items.filter((i) => i.needsYou).length ?? 0;
+  return board?.items.filter(waitsForYou).length ?? 0;
 }

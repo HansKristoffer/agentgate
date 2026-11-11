@@ -103,6 +103,8 @@ beside it. [An example](#an-example) shows a whole folder.
 | `sources`                  | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
 | `stages.<stage>.note`      | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 
+An item keeps the `reviewRounds`, `nudges` and `stalledAfter` of the folder it started under, so changing them affects new items only. The other limits apply to every item as soon as the folder loads.
+
 Repository names are matched without regard to case, and a source names a repository listed under `repositories`.
 
 ### stages/\<stage\>.md
@@ -238,7 +240,7 @@ Summarize the change for users in one sentence.
 
 ## Sources
 
-Every source has an `id` (up to 40 lowercase letters, digits and dashes, unique in the file), a `type` and the `repo` its items are fixed in. `intake: hold` makes each new item wait for `agentgate factory approve <item>` before triage; `agentgate factory reject <item>` turns it away.
+Every source has an `id` (up to 40 lowercase letters, digits and dashes, unique in the file), a `type` and the `repo` its items are fixed in. `intake: hold` makes each new item wait for `agentgate factory approve <item>` before triage; `agentgate factory reject <item>` turns it away. Use it on a source anyone outside can feed, such as a webhook or a scout. To approve every new item from every source, items you add by hand included, put `start: manual` in `stages/triage.md` instead; it holds them the same way.
 
 The factory polls every source every 2 minutes, and backs off while one fails. An issue the factory has finished does not come back by itself. `agentgate factory retry api-42` takes it in again while the machine that runs the factory still has the item. Items are kept for 90 days on the machine that worked them, so after `move --now` the new machine cannot retry the old one's.
 
@@ -256,7 +258,7 @@ The factory polls every source every 2 minutes, and backs off while one fails. A
 
 Items are named after the repository and the issue, such as `api-42`, or `acme-api-42` when two of the folder's repositories share a name; the branch is `factory/api-42`, or `factory/api-42-2` when GitHub already has a branch of that name. The PR says `Fixes #<number>`, so merging it closes the issue. An issue that carries the labels of two sources is one item.
 
-When the factory takes an issue in, it comments "The factory took this." While its machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed.
+When the factory takes an issue in, it comments "The factory took this." While its machine's `gh` is offline or logged out, `agentgate factory show <item>` lists the comment as unreachable and the factory sends it again until it goes through, for up to a day; a comment GitHub refused is listed as failed. A comment GitHub's rate limit turns away waits, and is sent once the limit lifts.
 
 ### Linear
 
@@ -432,7 +434,7 @@ When an item waits for you, it stays in its stage, and `status`, `show`, the app
 
 The factory comments on the issue when an item needs an answer or stopped, not when it waits to start. You can answer on a GitHub issue too: a comment after the factory's newest one, from you or the repository's owner, members or collaborators, is read at the next intake pass (every 2 minutes, at most `limits.waitingForYou` items each pass). `/approve` and `/reject <reason>` act like the commands; any other text answers a question in your words, and does nothing on an item waiting to start. Each comment is used once, and the factory's next comment shows it was taken. Linear issues are answered with the CLI, the app or T3 Code.
 
-GitHub never notifies you of comments your own login writes, and the factory comments as your `gh` login. `agentgate factory notify <https-url>` (or **Notifications** in the app's Factory settings) gives it a URL to post to when an item starts waiting for you and when a PR is ready. Each POST is JSON whose top-level `text` is one line with the question or the PR and a link, so a Slack-compatible incoming webhook shows it as it is; `updates` carries the same with the item for a receiver of your own. A failed post is tried once more a few seconds later. The URL is kept as a secret on every machine, set only from a machine itself, and shown by its host only; `agentgate factory notify` shows it and `notify off` stops it. The app marks its Factory view while items wait for you and sends a system notification at the same two moments, and the thread that asks is marked unread in T3 Code.
+GitHub never notifies you of comments your own login writes, and the factory comments as your `gh` login. `agentgate factory notify <https-url>` (or **Notifications** in the app's Factory settings) gives it a URL to post to when an item starts waiting for you and when a PR is ready. Each POST is JSON whose top-level `text` is one line with the question or the PR and a link, so a Slack-compatible incoming webhook shows it as it is; `updates` carries the same with the item for a receiver of your own. A failed post is sent again every two minutes: three tries in all when the receiver answers with an error, and for up to a day when it cannot be reached. The URL is kept as a secret on every machine, set only from a machine itself, and shown by its host only; `agentgate factory notify` shows it and `notify off` stops it. The app marks its Factory view while items wait for you and sends a system notification at the same two moments, and the thread that asks is marked unread in T3 Code.
 
 A `closed` item can be retried too: it starts again at triage. `reject` on a spec card answers **Change** with your reason as the feedback, and the spec gets another round.
 

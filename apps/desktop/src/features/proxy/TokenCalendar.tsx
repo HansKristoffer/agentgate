@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { sumBy } from "hanzio";
 import type { Connection, TokenHour } from "@agentgate/protocol";
 import { request } from "../../api.ts";
 import { Panel } from "../../components/ui.tsx";
-import { useGeneration } from "./useGeneration.ts";
+import { useDaemon } from "../../useDaemon.ts";
 
 const WEEKS = 53,
   CELL = 10,
@@ -33,31 +33,14 @@ function lastYear() {
 
 /** Tokens per day over the last year, like a GitHub contribution graph. */
 export function TokenCalendar({ connection }: { connection: Connection }) {
-  const [hours, setHours] = useState<TokenHour[]>(),
-    [error, setError] = useState("");
-  const capture = useGeneration(connection);
+  const { data: hours, error } = useDaemon(
+    () => request<TokenHour[]>(connection, `/proxy/tokens/hours?since=${lastYear()[0]!.getTime()}`),
+    { topics: ["activity"], every: 60_000, key: "token-hours" },
+  );
   // The app's web view shows no native tooltips for SVG titles, so the hovered day gets its own.
   const [hover, setHover] = useState<{ day: number; x: number; y: number; align: "start" | "center" | "end" }>();
   const box = useRef<HTMLDivElement>(null);
   const days = useMemo(lastYear, [hours]); // each reload moves the grid on past midnight
-  useEffect(() => {
-    const current = capture();
-    const load = () =>
-      request<TokenHour[]>(connection, `/proxy/tokens/hours?since=${lastYear()[0]!.getTime()}`).then(
-        (r) => {
-          if (current()) {
-            setHours(r);
-            setError("");
-          }
-        },
-        (e) => {
-          if (current()) setError(String(e));
-        },
-      );
-    void load();
-    const timer = setInterval(load, 5 * 60_000);
-    return () => clearInterval(timer);
-  }, [connection]);
 
   const perDay = new Map<string, number>();
   for (const [hour, tokens] of hours ?? []) {

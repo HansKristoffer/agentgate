@@ -6,8 +6,8 @@ import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protoco
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { INFISICAL_SIGNIN_STARTED, openExternal, request, signInToInfisical } from "../api.ts";
-import { field, idPath, relative } from "./utils.ts";
+import { INFISICAL_SIGNIN_STARTED, control, openExternal, request, signInToInfisical } from "../api.ts";
+import { field, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
 /** `known`: the machines there were when the command was shown, so the one that joins can be told apart. */
@@ -25,6 +25,9 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [shown, setShown] = useState<Shown>();
   const [joinOpen, setJoinOpen] = useState(false);
   const [name, setName] = useState("");
+  const [relayUrl, setRelayUrl] = useState("");
+  const [relayKey, setRelayKey] = useState("");
+  const [keyOpen, setKeyOpen] = useState(false);
   const relay = data.relay;
   const pending = usePending();
   const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
@@ -38,11 +41,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const update = (node: string) =>
     void perform(
       async () => {
-        const result = await request<{ version?: string; restarting: boolean }>(
-          connection,
-          `/nodes/${idPath(node)}/update`,
-          "POST",
-        );
+        const result = await control(connection, "nodes update", { node });
         toast(
           !result.version
             ? `${node} already runs the latest release`
@@ -56,7 +55,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
     );
   const route = (node: string, on: boolean) =>
     void perform(async () => {
-      await request(connection, `/nodes/${idPath(node)}/primary`, "POST", { on });
+      await control(connection, "nodes route", { node, on });
       toast(
         on
           ? `Claude Code and Codex on ${node} now use Agentgate`
@@ -65,14 +64,29 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
     });
   const pair = (method: Method) =>
     void perform(async () => {
-      const result = await request<{ command: string }>(connection, "/nodes/pair", "POST", {
+      if (method === "relay" && relayKey.trim()) await control(connection, "relay key", { key: relayKey.trim() });
+      const result = await control(connection, "pair", {
         method,
-        ...(name.trim() ? { name: name.trim() } : {}),
+        ...(name.trim() && { name: name.trim() }),
+        ...(method === "relay" && relayUrl.trim() && { relayUrl: relayUrl.trim() }),
       });
       setChoosing(false);
       setName("");
+      setRelayKey("");
       setShown({ command: result.command, method, known: data.nodes.map((n) => n.id) });
+      for (const note of result.notes) toast(note);
     });
+  const leaveRelay = async (wipe: boolean) => {
+    if (
+      await confirmDialog(
+        wipe
+          ? "Stop using the relay on this machine and delete the group from the relay? Other machines in the group stop syncing through it."
+          : "Stop using the relay on this machine? Other machines keep their copies and can keep using the group.",
+        { destructive: true, okLabel: wipe ? "Leave and delete" : "Leave relay" },
+      )
+    )
+      void perform(() => control(connection, "relay leave", wipe ? { wipe } : {}), "Left the relay");
+  };
   const relayState =
     relay &&
     [
@@ -161,8 +175,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     label: n.healthDashboard ? "Turn off health dashboard" : "Turn on health dashboard",
                     onAction: () =>
                       void perform(
-                        () =>
-                          request(connection, `/nodes/${idPath(n.id)}/dashboard`, "POST", { on: !n.healthDashboard }),
+                        () => control(connection, "dashboard", { node: n.id, on: !n.healthDashboard }),
                         `Health dashboard ${n.healthDashboard ? "off" : "on"} for ${n.id}`,
                         `dashboard:${n.id}`,
                       ),
@@ -171,7 +184,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     label: n.alwaysOn ? "No longer always on" : "Mark as always on",
                     onAction: () =>
                       void perform(
-                        () => request(connection, `/nodes/${idPath(n.id)}`, "PATCH", { alwaysOn: !n.alwaysOn }),
+                        () => control(connection, "nodes always-on", { node: n.id, on: !n.alwaysOn }),
                         n.alwaysOn
                           ? `${n.id} is no longer always on`
                           : `${n.id} is always on: it takes care of token refreshes while your other machines are away`,
@@ -196,9 +209,10 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                         route(n.id, on);
                     },
                   },
-                  // A relay removal rotates the relay secret, which only that daemon's own machine can hand out.
+                  // Removing a machine can hand out a new relay secret and endpoint URLs, so only the daemon's own
+                  // machine does it.
                   n.id !== data.node &&
-                    !(viaRelay && !local) && {
+                    local && {
                       label: viaRelay ? "Remove" : "Unpair",
                       danger: true,
                       onAction: async () => {
@@ -217,16 +231,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                         )
                           void perform(
                             async () => {
-                              const result = await request<{
-                                rotated?: boolean;
-                                command?: string;
-                              }>(connection, `/nodes/${idPath(n.id)}`, "DELETE");
-                              if (result.rotated && result.command)
-                                setShown({
-                                  command: result.command,
-                                  method: "relay",
-                                  rotated: true,
-                                });
+                              const { rotated } = await control(connection, "unpair", { node: n.id });
+                              if (rotated) setShown({ command: rotated.command, method: "relay", rotated: true });
                             },
                             viaRelay ? undefined : "Machine unpaired",
                           );
@@ -249,7 +255,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                 size="sm"
                 variant="tertiary"
                 isPending={pending.has("Relay reconciled")}
-                onPress={() => void perform(() => request(connection, "/relay/reconcile", "POST"), "Relay reconciled")}
+                onPress={() => void perform(() => control(connection, "relay reconcile", {}), "Relay reconciled")}
               >
                 {pending.has("Relay reconciled") && <Spinner size="sm" color="current" />}
                 Reconcile now
@@ -281,26 +287,59 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                 </small>
               )}
             </div>
-            {relay.url && (
-              <Button
-                size="sm"
-                variant="danger-soft"
-                onPress={async () => {
-                  if (
-                    await confirmDialog(
-                      "Stop using the relay on this machine? Other machines keep their copies and can keep using the group.",
-                      { destructive: true, okLabel: "Leave relay" },
-                    )
-                  )
-                    void perform(() => request(connection, "/relay/leave", "POST", {}), "Left the relay");
-                }}
-              >
-                Leave
-              </Button>
-            )}
+            {/* The new secret, the service key and leaving are for the daemon's own machine (ops/nodes.ts). */}
+            <RowMenu
+              label="More for the relay"
+              items={[
+                relay.cleanupPending && {
+                  label: "Retry old group cleanup",
+                  onAction: () =>
+                    void perform(async () => {
+                      const r = await control(connection, "relay cleanup", {});
+                      toast(r.cleanupPending ? "Some old relay groups could not be deleted yet" : "Old groups deleted");
+                    }),
+                },
+                relay.cleanupPending && {
+                  label: "Stop retrying old group cleanup",
+                  onAction: () =>
+                    void perform(() => control(connection, "relay cleanup", { abandon: true }), "Cleanup stopped"),
+                },
+                local && { label: "Service key", onAction: () => setKeyOpen(true) },
+                local &&
+                  !!relay.url && {
+                    label: "Rotate relay secret",
+                    onAction: async () => {
+                      if (
+                        await confirmDialog(
+                          "Move to a new relay secret? Every other relay machine must join again with the new command.",
+                          { destructive: true, okLabel: "Rotate" },
+                        )
+                      )
+                        void perform(async () => {
+                          const r = await control(connection, "relay rotate", {});
+                          setShown({ command: r.command, method: "relay", rotated: true });
+                        });
+                    },
+                  },
+                local &&
+                  !!relay.url && {
+                    label: "Leave relay",
+                    danger: true,
+                    onAction: () => void leaveRelay(false),
+                  },
+                local &&
+                  !!relay.url && {
+                    label: "Leave and delete the group",
+                    danger: true,
+                    onAction: () => void leaveRelay(true),
+                  },
+              ]}
+            />
           </div>
         </Panel>
       )}
+      <HandoffFolders data={data} connection={connection} perform={perform} local={local} />
+      {keyOpen && <RelayKey close={() => setKeyOpen(false)} connection={connection} perform={perform} />}
       {choosing && (
         <Modal title="Pair another machine" close={() => setChoosing(false)}>
           <Field
@@ -311,6 +350,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             placeholder="mac-mini"
           />
           <p>How will the other machine connect?</p>
+          {!local && (
+            <p className="note">
+              A pairing code or relay invite lets whoever has it read every login, so it is only shown on the daemon's
+              own machine. Pair from there, or run agentgate pair there.
+            </p>
+          )}
           <div className="rows">
             <div className="item">
               <div className="machine-icon">
@@ -320,7 +365,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                 <strong>Same network (Tailscale)</strong>
                 <small>Both machines are on your tailnet. The code expires in 10 minutes.</small>
               </div>
-              <Button size="sm" onPress={() => pair("tailnet")}>
+              <Button size="sm" isDisabled={!local} onPress={() => pair("tailnet")}>
                 Use Tailscale
               </Button>
             </div>
@@ -330,17 +375,31 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               </div>
               <div className="grow">
                 <strong>Agentgate relay</strong>
-                <small>
-                  {local
-                    ? "Works on any network. End-to-end encrypted: the relay can't read your credentials."
-                    : "The relay invite is a master key, so it is only shown on the daemon's own machine. Run this there."}
-                </small>
+                <small>Works on any network. End-to-end encrypted: the relay can't read your credentials.</small>
               </div>
               <Button size="sm" isDisabled={!local} onPress={() => pair("relay")}>
                 Use the relay
               </Button>
             </div>
           </div>
+          {local && (
+            <>
+              <Field
+                label="Your own relay"
+                description="Leave empty for the Agentgate relay."
+                value={relayUrl}
+                onChange={setRelayUrl}
+                placeholder="https://agentgate-relay.example.workers.dev"
+              />
+              <Field
+                label="Relay service key"
+                description="Only for your own relay, when it asks for one."
+                type="password"
+                value={relayKey}
+                onChange={setRelayKey}
+              />
+            </>
+          )}
         </Modal>
       )}
       {shown && (
@@ -381,9 +440,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
-                await request(connection, "/nodes/join", "POST", {
-                  command: field(f, "command"),
-                });
+                await control(connection, "join", { command: field(f, "command") });
                 setJoinOpen(false);
               }, "Machine paired");
             }}
@@ -402,6 +459,99 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
         </Modal>
       )}
     </>
+  );
+}
+
+/** The service key a self-hosted relay asks for. Write-only: the daemon never sends a key back. */
+function RelayKey({ close, connection, perform }: Pick<ViewProps, "connection" | "perform"> & { close: () => void }) {
+  const save = (key: string | null) =>
+    void perform(
+      async () => {
+        await control(connection, "relay key", { key });
+        close();
+      },
+      key ? "Relay service key saved" : "Relay service key cleared",
+    );
+  return (
+    <Modal title="Relay service key" close={close}>
+      <p className="muted">Only for your own relay, when it asks for one. The Agentgate relay needs none.</p>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          save(field(new FormData(e.currentTarget), "key"));
+        }}
+      >
+        <Field label="Service key" name="key" type="password" isRequired />
+        <div className="row">
+          <Button type="submit" size="sm">
+            Save
+          </Button>
+          <Button size="sm" variant="tertiary" onPress={() => save(null)}>
+            Clear
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/** Where handoffs put new worktrees and clones on the connected machine (`agentgate t3 dirs`). */
+function HandoffFolders({ data, connection, perform }: ViewProps) {
+  const [dirs, setDirs] = useState<{ worktreesDir: string; cloneDir: string }>();
+  const [editing, setEditing] = useState(false);
+  // An empty change only answers the folders. A daemon too old for the operation shows no panel.
+  useEffect(() => {
+    control(connection, "t3 dirs", {}).then(setDirs, () => setDirs(undefined));
+  }, [connection]);
+  if (!dirs) return null;
+  return (
+    <Panel
+      title="Handoff folders"
+      detail={`Where a thread handed to ${data.node} gets its new worktree, and where repositories it has no checkout of are cloned.`}
+      action={
+        <Button size="sm" variant="tertiary" onPress={() => setEditing(true)}>
+          Change
+        </Button>
+      }
+    >
+      <div className="item">
+        <div className="grow">
+          <strong>Worktrees</strong>
+          <small>{dirs.worktreesDir}</small>
+        </div>
+      </div>
+      <div className="item">
+        <div className="grow">
+          <strong>Clones</strong>
+          <small>{dirs.cloneDir}</small>
+        </div>
+      </div>
+      {editing && (
+        <Modal title={`Handoff folders on ${data.node}`} close={() => setEditing(false)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const f = new FormData(e.currentTarget);
+              void perform(async () => {
+                setDirs(
+                  await control(connection, "t3 dirs", {
+                    worktrees: field(f, "worktrees"),
+                    clones: field(f, "clones"),
+                  }),
+                );
+                setEditing(false);
+              }, "Handoff folders saved");
+            }}
+          >
+            <Field label="Worktrees" name="worktrees" defaultValue={dirs.worktreesDir} isRequired />
+            <Field label="Clones" name="clones" defaultValue={dirs.cloneDir} isRequired />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
+        </Modal>
+      )}
+    </Panel>
   );
 }
 

@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { isVirtual, type FactoryBoard, type PublicProject, type ToolPreview } from "@agentgate/protocol";
-import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
-import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../components/ui.tsx";
+import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
+import { Button, Input, TextField, toast } from "@heroui/react";
+import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu, Segmented } from "../components/ui.tsx";
 import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
-import { factoryOp, openExternal, request } from "../api.ts";
+import { useApp } from "../AppContext.tsx";
+import { control, factoryOp, openExternal, request } from "../api.ts";
 import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
 import { InitDialog } from "./factory/Init.tsx";
@@ -26,9 +27,7 @@ export function Projects(props: ViewProps) {
   const shown = (repos ?? []).filter((r) => `${r.repo} ${r.path}`.toLowerCase().includes(needle));
   const scan = (folder: string) =>
     perform(async () => {
-      const result = await request<{ repos: { repo: string; path: string }[] }>(connection, "/projects/scan", "POST", {
-        dir: folder,
-      });
+      const result = await control(connection, "project scan", { dir: folder });
       setRepos(result.repos);
       setQuery("");
     });
@@ -37,15 +36,8 @@ export function Projects(props: ViewProps) {
   const [files, setFiles] = useState<string>();
   const [factoryRepo, setFactoryRepo] = useState<string>();
   /** The repositories the factory's folder names, while a factory is on and its folder loaded. */
-  const [factoryRepos, setFactoryRepos] = useState<string[]>();
+  const factoryRepos = useApp().board?.config?.repositories;
   const factoryOn = !!data.settings.factory;
-  useEffect(() => {
-    setFactoryRepos(undefined);
-    if (factoryOn)
-      void request<FactoryBoard>(connection, "/factory")
-        .then((board) => setFactoryRepos(board.config?.repositories))
-        .catch(() => {});
-  }, [connection, factoryOn]);
   const factoryItem = (repo: string) => {
     // One factory at a time: while one is on, a repository joins it instead.
     if (!factoryOn) return { label: "Start a factory", onAction: () => setFactoryRepo(repo) };
@@ -63,7 +55,6 @@ export function Projects(props: ViewProps) {
               actionProps: { children: "Open PR", onPress: () => void openExternal(pr) },
             });
           } else {
-            setFactoryRepos([...factoryRepos, repo]);
             toast(`The factory works in ${repo}`, { description: "It takes in issues labelled factory." });
           }
         }),
@@ -87,7 +78,7 @@ export function Projects(props: ViewProps) {
       const path = await open({ title: `Choose a gitignored file in a checkout of ${project}`, defaultPath: checkout });
       if (typeof path === "string")
         await perform(
-          () => request(connection, "/projects/files", "POST", { project, path }),
+          () => control(connection, "project files add", { project, paths: [path] }),
           "File saved for every machine",
         );
     })();
@@ -105,10 +96,7 @@ export function Projects(props: ViewProps) {
       label: on ? "Stop sharing repo skills between Claude and Codex" : "Share repo skills between Claude and Codex",
       onAction: () =>
         void perform(
-          async () => {
-            for (const c of mine)
-              await request(connection, "/checkouts/mirroring", "PUT", { path: c.path, enabled: !on });
-          },
+          () => control(connection, "project mirroring", { project: id, on: !on }),
           on ? "Repository skills no longer shared" : "Repository skills shared between Claude and Codex",
         ),
     };
@@ -188,9 +176,7 @@ export function Projects(props: ViewProps) {
                 {
                   label: "Preview tools",
                   onAction: () =>
-                    void perform(async () =>
-                      setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
-                    ),
+                    void perform(async () => setTools(await control(connection, "project tools", { id: p.id }))),
                 },
                 { label: "Env files", onAction: () => setFiles(p.id) },
                 factoryItem(p.id),
@@ -200,10 +186,7 @@ export function Projects(props: ViewProps) {
                   danger: true,
                   onAction: async () => {
                     if (await confirmDelete(p.id))
-                      void perform(
-                        () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
-                        "Project removed",
-                      );
+                      void perform(() => control(connection, "project rm", { id: p.id }), "Project removed");
                   },
                 },
               ]}
@@ -249,7 +232,7 @@ export function Projects(props: ViewProps) {
                         onAction: async () => {
                           if (await confirmDelete(p.id))
                             void perform(
-                              () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
+                              () => control(connection, "project rm", { id: p.id }),
                               "Virtual project removed",
                             );
                         },
@@ -277,24 +260,15 @@ export function Projects(props: ViewProps) {
           close={() => setEdit(undefined)}
         >
           {local && !edit.id && !edit.virtual && (
-            <Tabs
-              className="segmented"
-              selectedKey={find ? "find" : "type"}
-              onSelectionChange={(key) => setFind(key === "find")}
-            >
-              <Tabs.ListContainer>
-                <Tabs.List aria-label="How to choose the repository">
-                  <Tabs.Tab id="type">
-                    Repository
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                  <Tabs.Tab id="find">
-                    Find on this machine
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                </Tabs.List>
-              </Tabs.ListContainer>
-            </Tabs>
+            <Segmented
+              label="How to choose the repository"
+              value={find ? "find" : "type"}
+              onChange={(id) => setFind(id === "find")}
+              options={[
+                { id: "type", label: "Repository" },
+                { id: "find", label: "Find on this machine" },
+              ]}
+            />
           )}
           {find && !edit.id ? (
             <>
@@ -381,7 +355,7 @@ export function Projects(props: ViewProps) {
               picked={picked}
               save={(project) =>
                 void perform(async () => {
-                  await request(connection, "/projects", "PUT", project);
+                  await control(connection, "project set", project);
                   setEdit(undefined);
                 }, "Project saved")
               }
@@ -404,7 +378,7 @@ export function Projects(props: ViewProps) {
                 // Untrimmed: an env file's whitespace is its own.
                 const content = String(new FormData(e.currentTarget).get("content") ?? "");
                 void perform(async () => {
-                  await request(connection, "/projects/files/content", "PUT", {
+                  await control(connection, "project files set", {
                     project: files,
                     path: fileEdit.path,
                     content,
@@ -464,12 +438,7 @@ export function Projects(props: ViewProps) {
                         variant="ghost"
                         onPress={() =>
                           void perform(
-                            () =>
-                              request(
-                                connection,
-                                `/projects/files?id=${idPath(files)}&path=${encodeURIComponent(f.path)}`,
-                                "DELETE",
-                              ),
+                            () => control(connection, "project files rm", { project: files, paths: [f.path] }),
                             "Removed from every machine",
                           )
                         }

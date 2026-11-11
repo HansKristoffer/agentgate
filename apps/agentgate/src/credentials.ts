@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { encodeBase64Url, randomToken, sha256 } from "hanzio/crypto";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
-import { refreshHash, rotatedAway, type Credential, type Data, type Store } from "./store.ts";
+import { defineLocal } from "./local-state.ts";
+import { refreshHash, rotatedAway, rotations, type Credential, type Data, type Store, type Stored } from "./store.ts";
 import { awakeFor, lastSeen, listeningFor } from "./sync.ts";
 
 export interface Tokens {
@@ -27,20 +28,18 @@ const login = (c: Owned) =>
 const identity = (c: Owned) => `${login(c)}${c.holder}`;
 /** How long a failed refresh is not tried again while the token it failed for is still in use. */
 const REFRESH_BACKOFF = MIN;
-const failureSchema = z.object({ at: z.number(), tokenHash: z.string() });
+/** Per `<kind>:<id>`. */
+const failures = defineLocal(
+  "refreshError:",
+  z.object({ at: z.number(), tokenHash: z.string(), error: z.string().optional() }),
+  { topic: "status" },
+);
 /** This node's last failed refresh of a credential, while the credential still has the tokens it failed with. Once
  * newer tokens arrive (another machine refreshed, or a new login), the failure is no longer this credential's. */
 export function refreshFailure(s: Store, kind: OwnedKind, id: string) {
   const c = s.get(kind, id),
-    raw = s.local(`refreshError:${kind}:${id}`);
-  if (!c || !raw) return undefined;
-  let failure;
-  try {
-    failure = failureSchema.safeParse(JSON.parse(raw));
-  } catch {
-    return undefined;
-  }
-  return failure.success && failure.data.tokenHash === tokenHash(c) ? failure.data : undefined;
+    failure = failures.get(s, `${kind}:${id}`);
+  return c && failure?.tokenHash === tokenHash(c) ? failure : undefined;
 }
 /** Whether a pull heard from the other machines: syncAll answers with its errors. */
 const heard = (pull: () => Promise<unknown>) =>
@@ -58,6 +57,13 @@ export function canRefresh(s: Store, c: { holder: string; expiresAt?: number }, 
   return expiring && s.now() - lastSeen(s, c.holder) > 2 * MIN && listeningFor(s) >= 2 * MIN;
 }
 
+/** An always-on node takes the holder role from one that sleeps, while no refresh is near, so the login is refreshed by
+ * the machine that is around when it expires. A token without an expiry is never near one, as in `canRefresh`. */
+export function reclaimHolder(s: Store, kind: OwnedKind, id: string, c: Owned) {
+  if (!s.get("node", s.nodeId)?.alwaysOn || c.holder === s.nodeId || s.get("node", c.holder)?.alwaysOn) return;
+  if ((c.expiresAt ?? Infinity) - s.now() > 45 * MIN) s.put(kind, id, { ...c, holder: s.nodeId });
+}
+
 export function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
   const key = `${kind}:${id}`;
   const prev = s.get("refreshRequest", key);
@@ -70,16 +76,16 @@ export function refreshOwned<K extends OwnedKind>(
   s: Store,
   kind: K,
   id: string,
-  refresh: (c: Data<K>) => Promise<Data<K>>,
+  refresh: (c: Stored<Data<K>>) => Promise<Data<K>>,
   pull: () => Promise<unknown>,
   force = true,
-): Promise<Data<K>> {
+): Promise<Data<K> | Stored<Data<K>>> {
   let active = flights.get(s);
   if (!active) flights.set(s, (active = new Map()));
   const key = `${kind}:${id}`;
   const running = active.get(key);
-  if (running) return running as Promise<Data<K>>;
-  const task = (async (): Promise<Data<K>> => {
+  if (running) return running as Promise<Data<K> | Stored<Data<K>>>;
+  const task = (async (): Promise<Data<K> | Stored<Data<K>>> => {
     let c = s.get(kind, id);
     if (!c || c.needsLogin) throw new NeedsLogin(id);
     // A holder back from sleep may have lost the role meanwhile, and the taker rotated the refresh token this one holds.
@@ -99,7 +105,14 @@ export function refreshOwned<K extends OwnedKind>(
       await pull().catch(() => {});
       c = s.get(kind, id);
       if (!c || c.needsLogin) throw new NeedsLogin(id);
-      if (identity(c) !== before && (!c.expiresAt || c.expiresAt > s.now())) return c;
+      const valid = !c.expiresAt || c.expiresAt > s.now();
+      if (valid && identity(c) !== before) return c;
+      // A holder back from sleep lands here with the taker's copy, pulled above. Unless a refresh was forced (a 401, or
+      // a request for these tokens), a valid copy serves; the holder only needs asking once it nears expiry.
+      if (valid && !force) {
+        if ((c.expiresAt ?? Infinity) - s.now() < 10 * MIN) requestRefresh(s, kind, id, c);
+        return c;
+      }
       requestRefresh(s, kind, id, c);
       throw new Unavailable(`${id}: waiting for the credential holder to refresh`);
     }
@@ -146,13 +159,10 @@ export function refreshOwned<K extends OwnedKind>(
           // Remembered so a copy that still carries the old refresh token cannot overwrite these (Store.merge).
           const away = refreshHash(kind, original);
           if (away && away !== refreshHash(kind, saved))
-            s.setLocal(
-              `rotated:${key}`,
-              JSON.stringify([...rotatedAway(s, kind, id).filter((h) => h !== away), away].slice(-5)),
-            );
+            rotations.set(s, key, [...rotatedAway(s, kind, id).filter((h) => h !== away), away].slice(-5));
           const requested = s.get("refreshRequest", key);
           if (requested?.tokenHash === tokenHash(original)) s.del("refreshRequest", key);
-          s.setLocal(`refreshError:${key}`, undefined);
+          failures.set(s, key, undefined);
           s.setLocal(`refused:${key}`, undefined);
           s.log(
             kind === "credential" ? (s.get("account", id)?.provider ?? "oauth") : "mcp",
@@ -182,14 +192,11 @@ export function refreshOwned<K extends OwnedKind>(
         }
         const first = !refused || s.local(`refused:${key}`) !== tokenHash(original);
         if (refused) s.setLocal(`refused:${key}`, tokenHash(original));
-        s.setLocal(
-          `refreshError:${key}`,
-          JSON.stringify({
-            at: s.now(),
-            tokenHash: tokenHash(original),
-            error: "token refresh failed; retrying while the current token is valid",
-          }),
-        );
+        failures.set(s, key, {
+          at: s.now(),
+          tokenHash: tokenHash(original),
+          error: "token refresh failed; retrying while the current token is valid",
+        });
         if (first)
           s.log(
             kind === "credential" ? "oauth" : "mcp",
@@ -255,17 +262,10 @@ export class Credentials {
     );
   }
   async tick(signal?: AbortSignal) {
-    const self = this.s.get("node", this.s.nodeId);
     for (const c of this.s.list("credential")) {
       if (signal?.aborted) break;
       if (c.needsLogin) continue;
-      if (
-        self?.alwaysOn &&
-        c.holder !== this.s.nodeId &&
-        !this.s.get("node", c.holder)?.alwaysOn &&
-        c.expiresAt - this.s.now() > 45 * MIN
-      )
-        this.s.put("credential", c.accountId, { ...c, holder: this.s.nodeId });
+      reclaimHolder(this.s, "credential", c.accountId, c);
       await this.token(c.accountId).catch(() => {});
     }
   }
@@ -275,14 +275,6 @@ export async function pkce() {
   const verifier = randomToken(32);
   const challenge = encodeBase64Url(await sha256(verifier));
   return { verifier, challenge, state: randomToken(32) };
-}
-
-export function jwtClaims(jwt: string): Record<string, any> {
-  try {
-    return JSON.parse(Buffer.from(jwt.split(".")[1]!, "base64url").toString());
-  } catch {
-    return {};
-  }
 }
 
 /** POST a token request; maps OAuth errors that mean "this refresh token is dead" to InvalidGrant. */

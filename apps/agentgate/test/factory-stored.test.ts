@@ -267,3 +267,14 @@ test("folder export and import are refused over remote management", async () => 
   const relative = await postOp(ctx, "folder import", { dir: "out" });
   expect(relative.status).toBe(400);
 });
+
+test("an editor's save over a folder another machine changed since it opened is refused", async () => {
+  const { s, ctx } = node();
+  const put = (files: Record<string, string>, base?: string) => postOp(ctx, "folder put", { files, base });
+  await put({ "factory.yaml": YAML("acme") });
+  const opened = storedCommit(storedFiles(s)!);
+  await put({ "rulings.md": "- Greenfield.\n" });
+  expect((await put({ "factory.yaml": YAML("renamed") }, opened)).status).toBe(409);
+  expect(storedFiles(s)).toEqual({ "factory.yaml": YAML("acme"), "rulings.md": "- Greenfield.\n" });
+  expect((await put({ "factory.yaml": YAML("renamed") }, storedCommit(storedFiles(s)!))).status).toBe(200);
+});

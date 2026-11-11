@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Client,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
+  StreamableHTTPClientTransport,
+  UnauthorizedError,
+} from "@modelcontextprotocol/client";
 import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import { createPairingLink, parsePairing, t3State, T3Error } from "../handoff/t3.ts";
@@ -15,7 +22,7 @@ import { noWords, operation, type FactoryRuntime } from "./runtime.ts";
 /** Every input the factory sends to each T3 tool. A sign-in reads `tools/list` and refuses a T3 Code whose tools lack
  * one: an older T3 drops an input it does not know, such as `clientRequestId`, which makes a retried launch start a
  * second thread instead of finding the first. */
-export const REQUIRED_T3_INPUTS = {
+const REQUIRED_T3_INPUTS = {
   t3_thread_launch: [
     "projectId",
     "title",
@@ -60,10 +67,11 @@ export class T3McpError extends Error {
 }
 
 export interface T3McpClient {
-  /** Parses the tool's JSON result; throws T3McpError on a tool error or transport failure. With `session`, the call
+  /** The tool's result, unchecked: its structured content, else its text parsed as JSON, else the text. Callers parse it
+   * with a schema. Throws T3McpError on a tool error or transport failure. With `session`, the call
    * goes only under that MCP session: a sign-in that changed meanwhile, even one this call made after T3 refused the
    * token, fails it unsent, as an answered error. */
-  call<T = unknown>(tool: T3Tool, args: Record<string, unknown>, options?: { session?: string }): Promise<T>;
+  call(tool: T3Tool, args: Record<string, unknown>, options?: { session?: string }): Promise<unknown>;
   /** The MCP session the current token belongs to, or undefined while signed out. T3 dedupes `clientRequestId`
    * within one session only. */
   session(): string | undefined;
@@ -84,8 +92,9 @@ const REDIRECT = "http://127.0.0.1/agentgate-factory";
 const RENEW_AHEAD = 3 * 86_400_000;
 /** Each attempt makes a pairing link in T3, so a failed sign-in is not retried on its own sooner than this. */
 const RETRY_AFTER = 10 * 60_000;
-/** Launching a thread creates a worktree, which can take a while on a large repository. */
-const CALL_TIMEOUT = 5 * 60_000;
+/** How long T3 has to answer a tool call. Launching a thread creates a worktree, which can take a while on a large
+ * repository. Every other call answers quickly and runs inside an item's lock, which "Drop" in the app waits on. */
+export const deadlines = { launch: 5 * 60_000, call: 20_000 };
 const HTTP_TIMEOUT = 15_000;
 const UNREVOKED = `Signed out here, but T3 Code could not revoke the session; remove ${CLIENT_NAME} in T3 Code's Settings → Connections`;
 
@@ -127,6 +136,7 @@ function client(f: FactoryRuntime) {
 export function setup(f: FactoryRuntime) {
   const mcp = client(f);
   f.events.on("factory.off", () => mcp.signOut());
+  f.ctx.abort.signal.addEventListener("abort", () => mcp.disconnect(), { once: true });
   // Every node: `factory off` emits factory.off only where it ran, and other machines learn of it by sync.
   f.loops.push({ name: "t3-mcp", everyMs: 60_000, where: "every-node", whenOff: true, run: () => mcp.tick() });
   f.boardParts.push(async () => {
@@ -215,8 +225,12 @@ function create(f: FactoryRuntime) {
       const old = saved();
       s.setLocal(KEY, JSON.stringify(await authorize(s, t3Url())));
       error = failedAt = missing = undefined;
-      // The replaced session would linger in T3's Connections until it expires.
-      if (old) await revoke(s, old.token);
+      // The replaced session would linger in T3's Connections until it expires. Its connection goes first, so the
+      // SDK does not reopen its event stream with the revoked token.
+      if (old) {
+        disconnect();
+        await revoke(s, old.token);
+      }
       await check(false); // never throws: a missing tool or unreachable MCP shows in the status
     } catch (e) {
       failedAt = s.now();
@@ -256,32 +270,59 @@ function create(f: FactoryRuntime) {
     throw new T3McpError((error = `T3 Code on ${s.nodeId} refused the factory's MCP sign-in`));
   }
 
+  /** The one MCP connection, kept for the token it was opened with. T3 finds a launch's `clientRequestId` by the
+   * sign-in's session, which every request names in its bearer, not by the MCP transport session, so a launch may go
+   * out on the same connection as any other call. */
+  let open: { url: string; token: string; client: Promise<Client> } | undefined;
+
+  function connection(url: string, token: string) {
+    if (open && (open.url !== url || open.token !== token)) disconnect();
+    if (open) return open;
+    const mcp = new Client({ name: "agentgate-factory", version: VERSION });
+    const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${token}` } },
+      // A backstop for the headers only; each request has its own deadline.
+      fetch: (input, init) => fetchHeaders(input, init, deadlines.launch),
+    });
+    const entry = { url, token, client: mcp.connect(transport, { timeout: 10_000 }).then(() => mcp) };
+    mcp.onclose = () => {
+      if (open === entry) open = undefined;
+    };
+    return (open = entry);
+  }
+
+  /** Closes the connection; with `entry`, only while it is still the open one. */
+  function disconnect(entry = open) {
+    if (!entry || open !== entry) return;
+    open = undefined;
+    // Closing aborts its requests still in flight, such as one past its deadline.
+    void entry.client.then((mcp) => mcp.close()).catch(() => {});
+  }
+
   async function connected<T>(
     url: string,
     token: string,
     fn: (client: Client, token: string) => Promise<T>,
   ): Promise<T> {
-    let wasRefused = false;
-    const transport = new StreamableHTTPClientTransport(new URL(`${url}/mcp`), {
-      requestInit: { headers: { authorization: `Bearer ${token}` } },
-      fetch: async (input, init) => {
-        const res = await fetchHeaders(input, init, CALL_TIMEOUT);
-        if (res.status === 401) wasRefused = true;
-        return res;
-      },
-    });
-    const mcp = new Client({ name: "agentgate-factory", version: VERSION });
-    try {
-      await mcp.connect(transport, { timeout: 10_000 });
-      return await fn(mcp, token);
-    } catch (e) {
-      if (wasRefused) throw new Refused();
-      if (e instanceof T3McpError) throw e;
-      throw new T3McpError(
-        `T3 Code's MCP on ${s.nodeId} failed: ${scrub(e instanceof Error ? e.message : String(e), token)}`,
-      );
-    } finally {
-      await mcp.close().catch(() => {});
+    for (let attempt = 1; ; attempt++) {
+      const entry = connection(url, token);
+      let mcp: Client | undefined;
+      try {
+        mcp = await entry.client;
+        return await fn(mcp, token);
+      } catch (e) {
+        if (e instanceof T3McpError) throw e; // T3 answered over a working connection
+        // A call past its deadline leaves the connection to the calls still in flight on it, such as a launch.
+        const late = mcp && e instanceof SdkError && e.code === SdkErrorCode.RequestTimeout;
+        if (!late) disconnect(entry);
+        const status = e instanceof UnauthorizedError ? 401 : e instanceof SdkHttpError ? e.status : undefined;
+        if (status === 401) throw new Refused();
+        // T3 no longer knows the MCP session, as after a restart, and ran nothing: send once more on a new one.
+        if (status === 404 && attempt === 1) continue;
+        throw new T3McpError(
+          `T3 Code's MCP on ${s.nodeId} failed: ${scrub(e instanceof Error ? e.message : String(e), token)}`,
+        );
+      }
     }
   }
 
@@ -313,6 +354,7 @@ function create(f: FactoryRuntime) {
     await signing?.catch(() => {}); // a sign-in in flight would store its token after this
     const old = saved();
     s.setLocal(KEY, undefined);
+    disconnect();
     failedAt = missing = undefined;
     error = old && !(await revoke(s, old.token)) ? UNREVOKED : undefined;
   }
@@ -320,6 +362,7 @@ function create(f: FactoryRuntime) {
   return {
     signIn,
     signOut,
+    disconnect: () => disconnect(),
     session() {
       const token = valid();
       return token && sessionOf(token.token);
@@ -341,11 +384,7 @@ function create(f: FactoryRuntime) {
       const mcp = signing ? "signing-in" : failed ? "failed" : token ? "signed-in" : "off";
       return { mcp, ...(token && { expiresAt: token.expiresAt }), ...(error && { error }) } as const;
     },
-    async call<T = unknown>(
-      tool: T3Tool,
-      args: Record<string, unknown>,
-      options: { session?: string } = {},
-    ): Promise<T> {
+    async call(tool: T3Tool, args: Record<string, unknown>, options: { session?: string } = {}): Promise<unknown> {
       if (missing?.length) throw new T3McpError(error ?? `T3 Code's MCP lacks ${missing.join(", ")}`);
       return session(async (mcp, token) => {
         if (options.session && sessionOf(token) !== options.session) {
@@ -353,7 +392,8 @@ function create(f: FactoryRuntime) {
           changed.answered = true;
           throw changed;
         }
-        const result = await mcp.callTool({ name: tool, arguments: args }, { timeout: CALL_TIMEOUT });
+        const timeout = tool === "t3_thread_launch" ? deadlines.launch : deadlines.call;
+        const result = await mcp.callTool({ name: tool, arguments: args }, { timeout });
         const text = (result.content as { type: string; text?: string }[] | undefined)?.find(
           (c) => c.type === "text",
         )?.text;
@@ -362,12 +402,12 @@ function create(f: FactoryRuntime) {
           refused.answered = true;
           throw refused;
         }
-        if (result.structuredContent !== undefined) return result.structuredContent as T;
-        if (text === undefined) return undefined as T;
+        if (result.structuredContent !== undefined) return result.structuredContent;
+        if (text === undefined) return undefined;
         try {
-          return JSON.parse(text) as T;
+          return JSON.parse(text) as unknown;
         } catch {
-          return text as T;
+          return text;
         }
       });
     },

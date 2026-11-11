@@ -1,3 +1,4 @@
+import type { ModelTokens } from "@agentgate/protocol";
 import { afterAll, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -121,7 +122,7 @@ test("each machine's totals reach the others, and Cursor's account-wide history 
   // Both machines have held the Cursor login, so both read the same history.
   for (const s of [a, b]) s.db.run("insert into cursor_tokens values ('c1', ?, 'auto', 100, 0, 0, 0)", [hour]);
   const sync = (from: Store, to: Store) => {
-    for (const r of from.changes(0).records) to.merge(r);
+    for (const r of from.changePage(0).records) to.merge(r);
   };
 
   // A node on the previous version would stall on the new record kind.
@@ -152,4 +153,122 @@ test("each machine's totals reach the others, and Cursor's account-wide history 
     [hour, 101],
     [hour + HOUR, 10],
   ]);
+});
+
+const paired = (...names: string[]) =>
+  names.map((name) => {
+    const s = node(name);
+    for (const id of names) s.put("node", id, { id, protocol: 3 });
+    return s;
+  });
+const syncSince = (from: Store, to: Store, since: number) => {
+  for (const r of from.changePage(since).records) to.merge(r);
+  return from.seq();
+};
+
+test("another machine's newer totals replace its old ones, and a deleted day stops counting", () => {
+  const [a, b] = paired("a", "b") as [Store, Store];
+  const hour = Date.UTC(2026, 9, 1, 10);
+  b.db.run("insert into token_usage values (?, 'claude', 'opus', 10, 0, 0, 0)", [hour]);
+  publishTokens(b);
+  let seen = syncSince(b, a, 0);
+  expect(tokenHours(a)).toEqual([[hour, 10]]);
+
+  b.db.run("update token_usage set input = 25");
+  publishTokens(b);
+  seen = syncSince(b, a, seen);
+  expect(tokenHours(a)).toEqual([[hour, 25]]);
+
+  b.del("tokens", "b:2026-10-01");
+  syncSince(b, a, seen);
+  expect(tokenHours(a)).toEqual([]);
+});
+
+test("days older than 90 fold into one record per month, and every machine's totals stay the same", () => {
+  const [a, b] = paired("a", "b") as [Store, Store];
+  // 120 days up to today, 2026-10-01: June 4 to 30 is a whole month older than 90 days, July 1 and 2 are not yet.
+  for (let day = 0; day < 120; day++) {
+    const hour = a.now() - day * 86_400_000 - 2 * HOUR;
+    a.db.run("insert into token_usage values (?, 'claude', 'opus', 1, 2, 0, 0)", [hour]);
+    if (day % 2) a.db.run("insert into cursor_tokens values ('c1', ?, 'auto', 3, 0, 0, 0)", [hour]);
+  }
+  b.db.run("insert into token_usage values (?, 'codex', 'gpt-6', 5, 0, 0, 0)", [Date.UTC(2026, 5, 10)]);
+  b.now = () => Date.UTC(2026, 5, 10, 12); // published while it was recent, so it is a day record
+  publishTokens(b);
+  syncSince(b, a, 0);
+  const theirs = a.record("tokens", "b:2026-06-10");
+
+  publishTokens(a);
+  const days = (s: Store) => s.list("tokens").map((r) => r.id);
+  expect(days(a).filter((id) => id < "a:2026-07")).toEqual(["a:2026-06-30"]);
+  expect(days(a).filter((id) => id.startsWith("a:"))).toHaveLength(1 + 31 + 31 + 30 + 1);
+  expect(a.record("tokens", "b:2026-06-10")).toEqual(theirs);
+
+  // b reads a's month with the same schema as before folding, and counts each hour once.
+  let seen = syncSince(a, b, 0);
+  expect(b.get("tokens", "a:2026-06-30")?.rows).toHaveLength(27 + 14);
+  const totals: ModelTokens[] = [
+    { provider: "claude", model: "opus", input: 120, output: 240, cacheRead: 0, cacheWrite: 0 },
+    { provider: "cursor", model: "auto", input: 180, output: 0, cacheRead: 0, cacheWrite: 0 },
+    { provider: "codex", model: "gpt-6", input: 5, output: 0, cacheRead: 0, cacheWrite: 0 },
+  ];
+  expect(tokenUsage(b)).toEqual(totals);
+
+  // A backfill republishes every day, folded months included.
+  a.setLocal("tokens:published", undefined);
+  publishTokens(a);
+  syncSince(a, b, seen);
+  expect(days(a).filter((id) => id < "a:2026-07")).toEqual(["a:2026-06-30"]);
+  expect(tokenUsage(b)).toEqual(totals);
+});
+
+// About 7 ms on a developer machine; the budget leaves room for a slow CI runner, and reading the records' JSON took
+// over 100 ms.
+test("a year of every machine's history reads in under 25 ms", () => {
+  const a = node("a"),
+    start = Date.UTC(2025, 9, 1);
+  for (let i = 0; i < 800; i++) {
+    const machine = `m${i % 3}`,
+      day = start + Math.floor(i / 3) * 86_400_000,
+      id = `${machine}:${new Date(day).toISOString().slice(0, 10)}`;
+    const rows = Array.from({ length: 16 }, (_, h) => ({
+      hour: day + (h % 8) * HOUR,
+      provider: h < 8 ? ("claude" as const) : ("codex" as const),
+      model: h < 8 ? "opus" : "gpt-6",
+      input: 100,
+      output: 10,
+      cacheRead: 1000,
+      cacheWrite: 50,
+    }));
+    a.put("tokens", id, { id, node: machine, rows });
+  }
+  tokenUsage(a); // fills the table from the records, and leaves the hours uncached
+  const started = performance.now();
+  const hours = tokenHours(a);
+  const ms = performance.now() - started;
+  expect(hours).toHaveLength(267 * 8);
+  expect(ms).toBeLessThan(25);
+});
+
+test("token history is reused for a minute, unless another machine's totals arrive", () => {
+  const a = node("a"),
+    b = node("b");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 3 });
+  const hour = Date.UTC(2026, 9, 1, 10),
+    start = a.now();
+  a.db.run("insert into token_usage values (?, 'claude', 'opus', 1, 0, 0, 0)", [hour]);
+  expect(tokenHours(a)).toEqual([[hour, 1]]);
+  a.db.run("update token_usage set input = 5");
+  expect(tokenHours(a)).toEqual([[hour, 1]]);
+
+  b.db.run("insert into token_usage values (?, 'claude', 'opus', 10, 0, 0, 0)", [hour]);
+  publishTokens(b);
+  for (const r of b.changePage(0).records) a.merge(r);
+  expect(tokenHours(a)).toEqual([[hour, 15]]);
+
+  a.db.run("update token_usage set input = 7");
+  a.now = () => start + 59_000;
+  expect(tokenHours(a)).toEqual([[hour, 15]]);
+  a.now = () => start + 60_000;
+  expect(tokenHours(a)).toEqual([[hour, 17]]);
 });

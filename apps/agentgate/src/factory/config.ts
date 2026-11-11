@@ -21,14 +21,14 @@ import {
 import { getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
 import { PeerError } from "../handoff/jobs.ts";
-import type { Store } from "../store.ts";
+import { nodesBelow, type Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
 import { folderStore, type FolderStore } from "./folder-store.ts";
 import { branchProtected, defaultBranch, protectionAvailable } from "./gh.ts";
+import { Backoff } from "../runtime.ts";
 import {
-  Backoff,
   FACTORY_PROTOCOL,
   noWords,
   operation,
@@ -256,7 +256,21 @@ export function currentFolder(f: FactoryRuntime): LoadedFolder | undefined {
 /** The folder an item or run started under, or the current one once that commit's folder is gone. */
 export const folderFor = (f: FactoryRuntime, commit: string) => folderAt(f, commit) ?? currentFolder(f);
 
-export const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+const DEFAULT_LIMITS = factoryConfigSchema.shape.limits.parse(undefined);
+
+/**
+ * The folder's `limits`, by one rule. What paces one item's own work, its review rounds, its nudges and how long it may
+ * stall, follows the folder the item or run (`item`) started under, so a folder change never rewrites the rules of
+ * work already under way. Everything else follows the current folder: the factory-wide caps (`threads`,
+ * `waitForQuota`, `waitingForYou`), and the token budget, `itemTokens`, so raising it lets an item that went over go on
+ * with `retry`.
+ */
+export function limits(f: FactoryRuntime, item?: { configCommit: string }) {
+  const now = currentFolder(f)?.config.limits ?? DEFAULT_LIMITS;
+  if (!item) return now;
+  const { reviewRounds, nudges, stalledAfter } = folderFor(f, item.configCommit)?.config.limits ?? now;
+  return { ...now, reviewRounds, nudges, stalledAfter };
+}
 
 const MIN_SCOUT_EVERY = 3600_000;
 const knownTimezone = (zone: string) => {
@@ -573,10 +587,7 @@ const printed = (status: FactoryStatus & { warning?: string }) => ({
 
 /** The preflight's checks of the pointer: every paired machine can sync it, and the folder it names loads. */
 function folderChecks(f: FactoryRuntime): FactoryCheck[] {
-  const old = f.s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < FACTORY_PROTOCOL)
-    .map((n) => n.id);
+  const old = nodesBelow(f.s, FACTORY_PROTOCOL);
   const checks: FactoryCheck[] = [
     {
       id: "releases",

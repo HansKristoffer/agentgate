@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import { HEALTH_PATH, statusSchema } from "@agentgate/protocol";
 import { app, makeCtx } from "../src/daemon.ts";
-import { setHealthDashboard } from "../src/operations.ts";
+import { startLagProbe } from "../src/lag.ts";
+import { setHealthDashboard } from "../src/ops/nodes.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { Store } from "../src/store.ts";
 
@@ -81,18 +82,20 @@ test("the API turns another machine's dashboard on and off, shows it in status, 
   s.put("node", "b", { id: "b", protocol: NODE_PROTOCOL });
   const tailnet = { listener: "tailnet" as const, headers: { host: "mac.tail123.ts.net:7878" } };
 
-  expect((await call("/api/nodes/b/dashboard", { ...tailnet, method: "POST", body: { on: true } })).status).toBe(401);
-  expect((await call("/api/nodes/b/dashboard", { method: "POST", body: { on: true } })).status).toBe(200);
+  expect((await call("/api/ops/dashboard", { ...tailnet, method: "POST", body: { node: "b", on: true } })).status).toBe(
+    401,
+  );
+  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "b", on: true } })).status).toBe(200);
   expect(s.get("node", "b")!.healthDashboard).toBe(true);
-  expect((await call("/api/nodes/nobody/dashboard", { method: "POST", body: { on: true } })).status).toBe(404);
+  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "nobody", on: true } })).status).toBe(400);
 
   const status = statusSchema.parse(await (await call("/api/status")).json());
   expect(status.nodes.find((n) => n.id === "b")?.healthDashboard).toBe(true);
 
-  const off = await call("/api/nodes/b/dashboard", {
+  const off = await call("/api/ops/dashboard", {
     ...tailnet,
     method: "POST",
-    body: { on: false },
+    body: { node: "b", on: false },
     headers: { ...tailnet.headers, authorization: "Bearer admin-secret" },
   });
   expect(off.status).toBe(200);
@@ -122,12 +125,49 @@ test.skipIf(process.platform !== "linux")(
           services: Record<string, boolean>;
         }
       ).services;
+    let now = Date.now();
+    s.now = () => now;
 
+    await call(HEALTH_PATH, { headers: { accept: "text/html" } });
     await ctx.health.sample();
     expect(await services()).toMatchObject({ t3_code: true });
     t3.stop(true);
+    // Services are asked every 30 seconds, not on every sample.
+    await ctx.health.sample();
+    expect(await services()).toMatchObject({ t3_code: true });
+    now += 30_000;
     await ctx.health.sample();
     expect(await services()).toMatchObject({ t3_code: false });
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "the daemon samples only while someone watches: from the first request until a minute after the last",
+  async () => {
+    const { s, ctx, call } = machine();
+    let now = Date.now();
+    s.now = () => now;
+    setHealthDashboard(s, "mac", true);
+    ctx.health.reconcile();
+    const history = async () => {
+      const response = await call(`${HEALTH_PATH}?history=1`, { headers: { accept: "application/json" } });
+      return response.status === 503 ? "starting" : ((await response.json()) as { history: unknown[] }).history.length;
+    };
+
+    // On but unwatched: the timer's ticks take nothing.
+    await ctx.health.sample();
+    expect(await history()).toBe("starting");
+
+    await ctx.health.sample();
+    await ctx.health.sample();
+    expect(await history()).toBe(2);
+
+    // A minute without a request: the next tick stops sampling and drops what it had.
+    now += 60_000;
+    await ctx.health.sample();
+    expect(await history()).toBe("starting");
+    await ctx.health.sample();
+    expect(await history()).toBe(1);
   },
 );
 
@@ -140,6 +180,8 @@ test.skipIf(process.platform !== "linux")(
     const json = { headers: { accept: "application/json" } };
     expect((await call(`${HEALTH_PATH}?history=1`, json)).status).toBe(503); // no sample yet
 
+    const probe = startLagProbe();
+    cleanup.push(() => probe.stop());
     await ctx.health.sample();
     const data = (await (await call(`${HEALTH_PATH}?history=1`, json)).json()) as {
       status: string;
@@ -147,7 +189,12 @@ test.skipIf(process.platform !== "linux")(
       history: unknown[];
       services: Record<string, boolean>;
     };
-    expect(data).toMatchObject({ status: "ok", host: hostname() });
+    expect(data).toMatchObject({
+      status: "ok",
+      host: hostname(),
+      // The sample reads /proc asynchronously, so the probe may tick, with a millisecond of jitter, while it runs.
+      daemon_lag: { worstMs: expect.any(Number), p99Ms: expect.any(Number) },
+    });
     expect(data.history).toHaveLength(1);
     expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
 

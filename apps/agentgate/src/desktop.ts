@@ -1,11 +1,11 @@
 import type { DesktopLogin, DesktopMode, DesktopStatus } from "@agentgate/protocol";
 import { getErrorMessage, isRecord, mapValues, pick } from "hanzio";
 import { Database } from "bun:sqlite";
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
-import { claudeStatus, cursorMcpEnabled } from "./setup.ts";
+import { claudeStatus, cursorMcpEnabled, PRIMARY_CLAUDE_DIR } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL, type Store } from "./store.ts";
 
 /** Claude Desktop's undocumented storage, kept in one place (docs/internals/claude-desktop.md). Mutable so tests can use fixtures.
@@ -21,7 +21,44 @@ export const DESKTOP = {
   hosts: ["claude.ai", "claude.com", "anthropic.com"],
   keys: ["oauth:tokenCache", "oauth:tokenCacheV2", "lastKnownAccountUuid"],
   quitTimeout: 15_000,
+  /** Claude Code's config, which Desktop's Code tab shares. */
+  claude: PRIMARY_CLAUDE_DIR,
 };
+
+/** `read`'s last result while none of the files it depends on changed. The app asks for status on every refresh, and
+ * a stat is far cheaper than spawning plutil or parsing a ~/.claude.json that grows with every session. */
+function unlessChanged<T>(files: (arg: string) => string[], read: (arg: string) => T) {
+  let last: { stamp: string; value: T } | undefined;
+  return (arg: string) => {
+    const stamp = files(arg)
+      .map((f) => {
+        const st = statSync(f, { throwIfNoEntry: false });
+        return st ? `${f}:${st.mtimeMs}:${st.size}` : f;
+      })
+      .join("|");
+    if (last?.stamp !== stamp) last = { stamp, value: read(arg) };
+    return last.value;
+  };
+}
+
+const plist = (app: string) => join(app, "Contents/Info.plist");
+const appVersion = unlessChanged(
+  (app) => [plist(app)],
+  (app) => {
+    const r = Bun.spawnSync(["/usr/bin/plutil", "-extract", "CFBundleShortVersionString", "raw", plist(app)], {
+      timeout: 5_000,
+    });
+    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
+  },
+);
+// The files claudeStatus reads: ~/.claude.json sits beside ~/.claude, not in it (claudeJsonIn in setup.ts).
+const claudeCode = unlessChanged(
+  (dir) => [
+    join(dir, "settings.json"),
+    dir === PRIMARY_CLAUDE_DIR ? join(homedir(), ".claude.json") : join(dir, ".claude.json"),
+  ],
+  claudeStatus,
+);
 
 /** Process control, replaced in tests. */
 export const host = {
@@ -47,19 +84,12 @@ export const host = {
       stdio: ["ignore", "ignore", "ignore"],
     });
   },
-  version(): string | undefined {
-    const r = Bun.spawnSync([
-      "/usr/bin/plutil",
-      "-extract",
-      "CFBundleShortVersionString",
-      "raw",
-      join(DESKTOP.app, "Contents/Info.plist"),
-    ]);
-    return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
-  },
+  version: (): string | undefined => appVersion(DESKTOP.app),
 };
 
 type Row = Record<string, string | number | null | { b64: string }>;
+/** A cookie column as SQLite gives it, or as a saved login keeps it (blobs in base64). */
+type Cell = Row[string] | Uint8Array;
 interface Login {
   accountUuid: string;
   capturedAt: number;
@@ -79,7 +109,7 @@ const gatewayFile = () => join(DESKTOP.data3p, "claude_desktop_config.json");
 const libraryDir = () => join(DESKTOP.data3p, "configLibrary");
 const gatewayUrl = () => `${LOCAL_URL}/anthropic`;
 
-function readJson(file: string): Record<string, any> {
+function readJson(file: string): Record<string, unknown> {
   if (!existsSync(file)) return {};
   const value = JSON.parse(readFileSync(file, "utf8"));
   if (!isRecord(value)) throw new Error(`${file}: expected an object`);
@@ -104,21 +134,22 @@ function openCookies(readonly: boolean) {
   return db;
 }
 const schemaOf = (db: Database) =>
-  String((db.query("select value from meta where key = 'version'").get() as { value: unknown } | null)?.value ?? "");
+  String(db.query<{ value: unknown }, []>("select value from meta where key = 'version'").get()?.value ?? "");
 
 /** Chromium stores times as microseconds since 1601. */
 const chromeTime = (t: unknown) =>
   typeof t === "number" && t > 0 ? Math.floor(t / 1000) - 11_644_473_600_000 : undefined;
 
-/** The login Desktop has now, or undefined when it is signed out. Safe while Desktop runs. */
-export function readLogin(): Login | undefined {
+/** The login Desktop has now, or undefined when it is signed out. Safe while Desktop runs. Reads `cookies` when the
+ * caller has the store open already, and leaves closing it to them. */
+export function readLogin(cookies?: Database): Login | undefined {
   const config = readJson(configFile());
   const accountUuid = config.lastKnownAccountUuid;
   if (typeof accountUuid !== "string" || !accountUuid) return undefined;
-  const db = openCookies(true);
+  const db = cookies ?? openCookies(true);
   try {
     const { where, params } = hostFilter();
-    const raw = db.query(`select * from cookies where ${where}`).all(...params) as Record<string, unknown>[];
+    const raw = db.query<Record<string, unknown>, string[]>(`select * from cookies where ${where}`).all(...params);
     // No session cookie yet: Chromium flushes cookies to disk up to ~30 s after a sign-in.
     const session =
       raw.find((r) => r.name === "sessionKey") ?? raw.find((r) => String(r.name).startsWith("sessionKey"));
@@ -138,7 +169,7 @@ export function readLogin(): Login | undefined {
       config: pick(config, DESKTOP.keys),
     };
   } finally {
-    db.close();
+    if (!cookies) db.close();
   }
 }
 
@@ -159,6 +190,7 @@ function incompatible(login: Login, schema: string, version = host.version()): s
     return "Saved with a Claude Desktop that stores logins differently; connect this account again";
   if (login.desktopVersion && version && major(login.desktopVersion) !== major(version))
     return `Saved with Claude Desktop ${login.desktopVersion}; connect this account again`;
+  return undefined;
 }
 
 /** Desktop holds login data readLogin cannot use, e.g. a sign-in still being written to disk. Replacing it would lose it. */
@@ -193,8 +225,8 @@ function writeLogin(login: Login | undefined) {
       if (problem) throw new Error(problem);
     }
     const { where, params } = hostFilter();
-    const before = db.query(`select * from cookies where ${where}`).all(...params) as Record<string, unknown>[];
-    const replace = (rows: Record<string, unknown>[]) =>
+    const before = db.query<Record<string, Cell>, string[]>(`select * from cookies where ${where}`).all(...params);
+    const replace = (rows: Record<string, Cell>[]) =>
       db
         .transaction(() => {
           // Accounts carry different cookie sets, so delete them all before inserting (not an upsert by name).
@@ -205,12 +237,8 @@ function writeLogin(login: Login | undefined) {
               `insert into cookies (${cols.map((c) => `"${c.replace(/"/g, "")}"`).join(",")}) values (${cols.map(() => "?").join(",")})`,
             ).run(
               ...cols.map((c) => {
-                const v = row[c] as any;
-                return v instanceof Uint8Array
-                  ? v
-                  : v && typeof v === "object"
-                    ? Buffer.from(v.b64, "base64")
-                    : (v ?? null);
+                const v = row[c] ?? null;
+                return v && typeof v === "object" && !(v instanceof Uint8Array) ? Buffer.from(v.b64, "base64") : v;
               }),
             );
           }
@@ -373,6 +401,7 @@ function saveOutgoing(s: Store): Login | undefined {
     throw new Error(
       "Claude Desktop has a sign-in Agentgate can't read yet, so nothing was changed. If you just signed in, wait half a minute and try again.",
     );
+  return undefined;
 }
 
 /** A saved login that can go into this Desktop now, or an error saying why not. */
@@ -542,7 +571,9 @@ function writeGatewayMode(s: Store, on: boolean) {
     });
     // Keep any other configurations the user has; only add ours and select it.
     const meta = readJson(join(libraryDir(), "_meta.json"));
-    const entries = (Array.isArray(meta.entries) ? meta.entries : []).filter((e: any) => e?.id !== id);
+    const entries = (Array.isArray(meta.entries) ? (meta.entries as unknown[]) : []).filter(
+      (e) => !isRecord(e) || e.id !== id,
+    );
     writeJson(join(libraryDir(), "_meta.json"), {
       ...meta,
       appliedId: id,
@@ -575,14 +606,32 @@ export function mode(): DesktopMode {
 }
 
 export function status(s: Store): DesktopStatus {
-  const { routing, mcp } = claudeStatus();
+  const { routing, mcp } = claudeCode(DESKTOP.claude);
   const base = { routing, mcp, cursorMcp: cursorMcpEnabled(), logins: [] as DesktopLogin[], signedOut: false };
   if (!host.installed()) return { ...base, available: false, running: false, mode: "signed-in" };
+  let cookies: Database | undefined;
+  try {
+    cookies = openCookies(true);
+  } catch {}
+  try {
+    return installedStatus(s, cookies, base);
+  } finally {
+    cookies?.close();
+  }
+}
+
+/** status() for an installed Desktop. `cookies` is its cookie store, opened once for the whole call, or undefined when
+ * it would not open. */
+function installedStatus(
+  s: Store,
+  cookies: Database | undefined,
+  base: Omit<DesktopStatus, "available" | "running" | "mode">,
+): DesktopStatus {
   const now = Date.now();
   const version = host.version();
   let schema = "";
   try {
-    schema = currentSchema();
+    if (cookies) schema = schemaOf(cookies);
   } catch {}
   const who = (uuid: string) => {
     const a = poolAccount(s, uuid);
@@ -603,7 +652,7 @@ export function status(s: Store): DesktopStatus {
   let signedIn = false;
   try {
     const uuid = readJson(configFile()).lastKnownAccountUuid;
-    signedIn = !!readLogin();
+    signedIn = !!cookies && !!readLogin(cookies);
     if (signedIn && typeof uuid === "string")
       current = { ...who(uuid), saved: logins.some((l) => l.accountUuid === uuid) };
   } catch {}

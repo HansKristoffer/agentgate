@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { app, makeCtx } from "../src/daemon.ts";
 import { runs } from "../src/factory/db.ts";
 import { loopTask } from "../src/factory/runtime.ts";
-import { t3Mcp, T3McpError } from "../src/factory/t3-mcp.ts";
+import { deadlines, t3Mcp, T3McpError } from "../src/factory/t3-mcp.ts";
 import { connectT3, host as t3Host, t3State } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { tmp } from "./fixtures/git.ts";
@@ -82,7 +82,7 @@ test("signing in pairs with the four scopes, approves at full access with the pa
   expect(client.status()).toEqual({ mcp: "signed-in", expiresAt: s.now() + 30 * DAY });
 
   mcp.answer("t3_pending_request", () => ({ requestIds: ["r1"] }));
-  expect(await client.call<unknown>("t3_pending_request", { action: "list", threadId: "t1" })).toEqual({
+  expect(await client.call("t3_pending_request", { action: "list", threadId: "t1" })).toEqual({
     requestIds: ["r1"],
   });
   expect(mcp.calls).toEqual([{ tool: "t3_pending_request", args: { action: "list", threadId: "t1" } }]);
@@ -110,6 +110,67 @@ test("a token T3 refuses is replaced by exactly one new sign-in, and is never se
   expect(mcp.tokens).toHaveLength(3);
   expect(stored()).toBeNull();
   expect(mcp.calls).toHaveLength(1);
+});
+
+/** Counts MCP sessions opened on the fake's `/mcp`; `forget` answers the next request 404, as T3 does for an MCP
+ * session it no longer knows, such as after a restart. */
+function watchSessions(mcp: ReturnType<typeof fakeT3WithMcp>["mcp"]) {
+  const real = mcp.routes;
+  const seen = { initializes: 0, forget: false };
+  mcp.routes = (req) => {
+    if (new URL(req.url).pathname !== "/mcp" || req.method !== "POST") return real(req);
+    if (seen.forget) {
+      seen.forget = false;
+      return Promise.resolve(new Response("Session not found", { status: 404 }));
+    }
+    return (req.clone().json() as Promise<{ method?: string }>).then((body) => {
+      if (body.method === "initialize") seen.initializes++;
+      return real(req)!;
+    });
+  };
+  return seen;
+}
+
+test("calls share one MCP connection, and a new one opens when T3 forgets it, without losing the call", async () => {
+  const { mcp, client } = await fixture();
+  await client.signIn();
+  const seen = watchSessions(mcp);
+
+  const list = (threadId: string) => client.call("t3_pending_request", { action: "list", threadId });
+  for (const threadId of ["t1", "t2", "t3"]) await list(threadId);
+  expect(seen.initializes).toBe(0); // the sign-in's tools/list opened it
+
+  seen.forget = true;
+  expect(await list("t4")).toEqual({ ok: true });
+  expect(seen.initializes).toBe(1);
+  expect(mcp.calls.map((c) => c.args.threadId)).toEqual(["t1", "t2", "t3", "t4"]);
+  expect(mcp.tokens).toHaveLength(1);
+});
+
+test("a call T3 does not answer fails at its deadline, while a launch waits for its longer one", async () => {
+  const { mcp, client } = await fixture();
+  await client.signIn();
+  const real = { ...deadlines };
+  cleanup.push(() => Object.assign(deadlines, real));
+  Object.assign(deadlines, { call: 50, launch: 60_000 });
+  // T3 hangs on both calls until released.
+  let release = () => {};
+  const hung = new Promise<void>((resolve) => (release = resolve));
+  mcp.answer("t3_thread_interrupt", () => hung.then(() => ({ ok: true })));
+  mcp.answer("t3_thread_launch", () => hung.then(() => ({ threadId: "launched" })));
+
+  const launch = client.call("t3_thread_launch", {
+    projectId: "p1",
+    title: "t",
+    runtimeMode: "auto",
+    workspaceStrategy: {},
+    modelSelection: {},
+    message: "go",
+    clientRequestId: "r1",
+  });
+  await expect(client.call("t3_thread_interrupt", { threadId: "t1" })).rejects.toThrow(/timed out/i);
+  release();
+  expect(await launch).toEqual({ threadId: "launched" });
 });
 
 test("the loop replaces a token within 3 days of its end and revokes the old session", async () => {

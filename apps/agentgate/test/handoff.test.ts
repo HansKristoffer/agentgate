@@ -25,9 +25,22 @@ import {
   t3Client,
   t3State,
 } from "../src/handoff/t3.ts";
+import { allNodes, handoffJob } from "../src/handoff/threads.ts";
+import { sessionLines, sessionMessages } from "../src/handoff/history.ts";
+import { Handoffs } from "../src/handoff/jobs.ts";
+import { handoffRoutes } from "../src/handoff/routes.ts";
+import { CHANNEL_CHUNK } from "../src/channel.ts";
+import { startLagProbe } from "../src/lag.ts";
+import type { Peer } from "../src/sync.ts";
+import { Hono } from "hono";
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
 import { Store } from "../src/store.ts";
+import { nodeThreadsSchema } from "@agentgate/protocol";
+import { startNodes } from "./fixtures/nodes.ts";
 
 afterAll(removeTmp);
+const gzip = promisify(gzipCallback);
 
 const stops: (() => unknown)[] = [];
 afterEach(() => {
@@ -58,7 +71,7 @@ test("rewriteCwd changes only recorded cwd values and keeps every other byte", (
   );
 });
 
-test("a Claude session is found with its subagent transcripts and placed under another checkout", () => {
+test("a Claude session is found with its subagent transcripts and placed under another checkout", async () => {
   const home = tmp(),
     cwd = tmp(),
     sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
@@ -73,7 +86,7 @@ test("a Claude session is found with its subagent transcripts and placed under a
 
   const dest = tmp(),
     target = tmp();
-  claudeSessions.place(dest, sid, found.root, found.files, target, ["/a/wt"]);
+  await claudeSessions.place(dest, sid, found.root, found.files, target, ["/a/wt"]);
   const root = join(dest, "projects", claudeProjectKey(target));
   expect(readFileSync(join(root, `${sid}.jsonl`), "utf8")).toBe(`{"cwd":${JSON.stringify(target)}}\n`);
   expect(readFileSync(join(root, sid, "subagents", "agent-1.jsonl"), "utf8")).toBe(
@@ -86,9 +99,113 @@ test("a Claude session is found with its subagent transcripts and placed under a
   expect(safeRelative("/abs") || safeRelative("a//b") || safeRelative("a\\b")).toBe(false);
   const elsewhereTarget = tmp();
   symlinkSync(tmp(), join(dest, "projects", claudeProjectKey(elsewhereTarget)));
-  expect(() => claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).toThrow(
+  await expect(claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).rejects.toThrow(
     "not a directory",
   );
+});
+
+/** Node b with a handoff from a waiting for its files, and b's peer routes as a reaches them. `restart` stands for a
+ * daemon restart: the same store and folders, new routes. */
+function receiver(maxTotal?: number) {
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  stops.push(() => s.close());
+  const options = { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() };
+  const routes = (h: Handoffs) =>
+    new Hono<{ Variables: { peer: Peer } }>()
+      .use("*", async (c, next) => {
+        c.set("peer", { node: "a" } as Peer);
+        await next();
+      })
+      .route("/", handoffRoutes(h, maxTotal));
+  const h = new Handoffs(s, options);
+  let app = routes(h);
+  const { id } = h.create({
+    id: crypto.randomUUID(),
+    role: "destination",
+    thread: "",
+    target: "b",
+    step: "prepare",
+    state: {
+      source: "a",
+      prepare: {
+        remoteUrl: "https://github.com/test/repo.git",
+        projectTitle: "repo",
+        branch: null,
+        baseSha: null,
+        worktree: false,
+      },
+      warnings: [],
+      timings: [],
+    },
+  });
+  return {
+    files: join(h.dir(id), "files"),
+    /** Send `bytes` gzipped as the source does, and answer with the status. */
+    async put(path: string, offset: number, bytes: Uint8Array) {
+      const query = new URLSearchParams({ path, offset: String(offset) });
+      const body = await gzip(bytes);
+      return (await app.request(`/handoff/${id}/files?${query}`, { method: "PUT", body })).status;
+    },
+    restart() {
+      app = routes(new Handoffs(s, options));
+    },
+  };
+}
+
+test("a 50 MB transcript is received, placed and read for its history without stalling the daemon", async () => {
+  const sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
+  const { files, put } = receiver();
+  // Lines of uneven length, so reads end mid-line and mid-character.
+  const lines: string[] = [];
+  let size = 0;
+  while (size < 50 * 1024 * 1024) {
+    const i = lines.length;
+    const content = `${i} ø ${"x".repeat(i % 3000)}`;
+    lines.push(JSON.stringify({ type: i % 2 ? "assistant" : "user", cwd: "/a/wt", message: { content } }));
+    size += lines[i]!.length + 1;
+  }
+  const text = lines.join("\n") + "\n";
+  const transcript = new TextEncoder().encode(text);
+
+  const home = tmp(),
+    target = tmp();
+  const file = Bun.file(join(files, "session", `${sid}.jsonl`));
+  const statuses = new Set<number>();
+  const probe = startLagProbe(10);
+  let n, history;
+  try {
+    for (let offset = 0; offset < transcript.length; offset += CHANNEL_CHUNK)
+      statuses.add(await put(`session/${sid}.jsonl`, offset, transcript.subarray(offset, offset + CHANNEL_CHUNK)));
+    await claudeSessions.place(home, sid, join(files, "session"), [`${sid}.jsonl`], target, ["/a/wt"]);
+    n = await sessionLines(file);
+    history = await sessionMessages(file, n - 3, "2026-10-15T08:00:00.000Z");
+  } finally {
+    probe.stop();
+  }
+
+  expect(probe.read().worstMs).toBeLessThan(50);
+  expect([...statuses]).toEqual([200]);
+  expect(n).toBe(lines.length);
+  expect(history?.map((m) => m.text.split(" ")[0])).toEqual([n - 3, n - 2, n - 1].map(String));
+  const placed = await Bun.file(join(home, "projects", claudeProjectKey(target), `${sid}.jsonl`)).text();
+  // Compared as a boolean: a failure would otherwise print both 50 MB strings.
+  expect(placed === rewriteCwd(text, ["/a/wt"], target)).toBe(true);
+});
+
+test("a handoff past its size cap is refused, counting retried chunks once and the files already there after a restart", async () => {
+  const b = receiver(10);
+  const bytes = (n: number) => new Uint8Array(n).fill(120);
+
+  expect(await b.put("session/s.jsonl", 0, bytes(6))).toBe(200);
+  expect(await b.put("bundle", 0, bytes(4))).toBe(200);
+  // A retry restarts the file: its earlier bytes no longer count.
+  expect(await b.put("session/s.jsonl", 0, bytes(6))).toBe(200);
+  expect(await b.put("bundle", 4, bytes(1))).toBe(413);
+
+  b.restart();
+  expect(await b.put("bundle", 4, bytes(1))).toBe(413);
+  expect(await b.put("bundle", 0, bytes(4))).toBe(200);
 });
 
 test("code travels as a bundle: unpushed commits and uncommitted, untracked and deleted files arrive; the source stays untouched until it stashes", async () => {
@@ -189,6 +306,14 @@ test("ignored files the file store carries stay out of the snapshot", async () =
   writeFileSync(join(r.a, ".env"), "machine a\n");
   const head = sh(r.a, "rev-parse", "HEAD");
   expect(await snapshot(r.a, "h1", head, [".env"])).toEqual({ sha: head, uncommitted: false });
+});
+
+test("a token in the origin URL stays on the source; an SSH user travels", async () => {
+  const r = repos("a");
+  sh(r.a, "remote", "set-url", "origin", "https://user:tok@host/x.git");
+  expect((await describe(r.a)).remoteUrl).toBe("https://host/x.git");
+  sh(r.a, "remote", "set-url", "origin", "ssh://git@host/x.git");
+  expect((await describe(r.a)).remoteUrl).toBe("ssh://git@host/x.git");
 });
 
 test("a destination with its own changes or commits keeps its code", async () => {
@@ -336,6 +461,30 @@ test("the t3 command is the running T3 Code server's own binary when T3 Code nam
   });
   process.env.T3CODE_HOME = home;
   expect(t3Host.t3()).toBe(bin);
+});
+
+test("a machine whose thread view this one cannot read is listed with an error, and the others stay listed", async () => {
+  const [a, b] = await startNodes("a", "b");
+  stops.push(a!.stop, b!.stop);
+  const odd = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ t3: { connected: true }, threads: [{ id: 1 }], jobs: [] }),
+  });
+  stops.push(() => odd.stop(true));
+  a!.s.db.run("insert into peers values ('c', ?, 'tok', 0, ?)", [`http://127.0.0.1:${odd.port}`, a!.s.now()]);
+  a!.s.put("node", "c", { id: "c" });
+
+  const views = await allNodes(a!.ctx.handoffs);
+  // What the app parses the list with: one bad entry would fail all of it.
+  expect(nodeThreadsSchema.array().safeParse(views).success).toBe(true);
+  const byNode = new Map(views.map((v) => [v.node, v]));
+  expect(byNode.get("b")).toMatchObject({ online: true, threads: [] });
+  expect(byNode.get("b")!.error).toBeUndefined();
+  expect(byNode.get("c")).toMatchObject({ threads: [], error: expect.stringContaining("c answered /threads") });
+  // An answer read for its fields is checked too, and the error names the machine.
+  await expect(handoffJob(a!.ctx.handoffs, crypto.randomUUID(), "c")).rejects.toThrow(
+    /^c answered \/handoff\/[^ ]+\/job in a form a cannot read \(/,
+  );
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {

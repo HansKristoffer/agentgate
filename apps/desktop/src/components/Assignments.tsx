@@ -1,6 +1,8 @@
-import { isVirtual, type Project, type ServerSummary, type Status } from "@agentgate/protocol";
+import { useState, type ReactNode } from "react";
+import { Button } from "@heroui/react";
+import { isVirtual, type Project, type ProjectChange, type ServerSummary, type Status } from "@agentgate/protocol";
 import { getUniqueValues } from "hanzio";
-import { Check, Empty } from "./ui.tsx";
+import { Check, Empty, Modal } from "./ui.tsx";
 import { repoClashes } from "../skill-assignment.ts";
 
 function AssignmentChecks({
@@ -12,12 +14,23 @@ function AssignmentChecks({
   name: string;
   choices: { id: string; label?: string; detail?: string; selected: boolean }[];
 }) {
+  // What was chosen when the form opened, for AssignProjects. A row another machine adds later starts from it too.
+  const [opened] = useState(() => choices.filter((c) => c.selected).map((c) => c.id));
   return (
     <fieldset className="checklist">
       <legend>{title}</legend>
+      {opened.map((id) => (
+        <input type="hidden" key={id} name={`${name}-opened`} value={id} />
+      ))}
       <div className="rows">
         {choices.map((choice) => (
-          <Check className="item" key={choice.id} name={name} value={choice.id} defaultSelected={choice.selected}>
+          <Check
+            className="item"
+            key={choice.id}
+            name={name}
+            value={choice.id}
+            defaultSelected={opened.includes(choice.id)}
+          >
             <span className="grow">
               <strong>{choice.label ?? choice.id}</strong>
               {choice.detail && <small>{choice.detail}</small>}
@@ -27,6 +40,42 @@ function AssignmentChecks({
         {!choices.length && <Empty>Install a skill first.</Empty>}
       </div>
     </fieldset>
+  );
+}
+
+/** A "Use in" dialog around `ProjectChecks` or `ServerProjectChecks`. `save` gets the projects added and removed since
+ * it opened, so saving leaves alone a change another machine made meanwhile, and every project now chosen. */
+export function AssignProjects({
+  title,
+  note = "Repositories appear here once a session starts in them, or after you add or scan them in Projects.",
+  close,
+  save,
+  children,
+}: {
+  title: string;
+  note?: string;
+  close: () => void;
+  save: (change: ProjectChange, chosen: string[]) => void;
+  children: ReactNode;
+}) {
+  return (
+    <Modal title={title} close={close}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          const now = f.getAll("project") as string[],
+            opened = f.getAll("project-opened") as string[];
+          save({ add: now.filter((p) => !opened.includes(p)), remove: opened.filter((p) => !now.includes(p)) }, now);
+        }}
+      >
+        {children}
+        <p className="note">{note}</p>
+        <Button type="submit" size="sm">
+          Save
+        </Button>
+      </form>
+    </Modal>
   );
 }
 

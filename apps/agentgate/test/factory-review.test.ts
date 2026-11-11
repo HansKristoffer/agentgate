@@ -1,5 +1,5 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { items, newId, runs, type FactoryItem } from "../src/factory/db.ts";
+import { dataOf, items, newId, runs, type FactoryItem } from "../src/factory/db.ts";
 import { host } from "../src/logins.ts";
 import { prFactory, type FakePr } from "./fixtures/factory-pr.ts";
 import { idle } from "./fixtures/t3-mcp.ts";
@@ -16,6 +16,9 @@ const head = (c: string) => c.repeat(40);
 const finding = { file: "src/save.ts", line: 12, severity: "important", text: "The lock is never released." } as const;
 
 const SUMMARY = "<!-- agentgate-factory:summary -->";
+/** How many of the gh calls are `gh pr view`. */
+const prViews = (calls: { args: string[] }[]) =>
+  calls.filter(({ args }) => args[0] === "pr" && args[1] === "view").length;
 const risk = {
   door: "two-way",
   reach: "module",
@@ -210,8 +213,11 @@ test("a clean review moves the item to ready; findings in the last allowed round
       result: { kind: "spec", spec: "The first slice.", review: "Fine.", approved: true, later: [later] },
     },
   });
+  const before = n.github.calls.length;
   expect(await n.report(clean.review, n.reviewed(clean.pr, []))).toEqual({ accepted: true });
   expect(items.get(n.s, clean.item.id)!.phase).toBe("ready");
+  // Checking the reviewed commit reads the PR once, and going ready reuses that read for its author and body.
+  expect(prViews(n.github.calls.slice(before))).toBe(1);
   expect(clean.pr).toMatchObject({ isDraft: false, reviewers: ["octocat"] });
   expect(n.reviews).toEqual([]);
   expect(n.github.posted(1).at(-1)).toBe("The pull request is ready for review.");
@@ -321,11 +327,42 @@ test("a review taken while GitHub is down is finished by the review loop, and it
   expect(items.get(n.s, item.id)!.phase).toBe("review");
 
   n.outage.on = false;
+  const before = n.github.calls.length;
   await n.pollReviews();
+  expect(findingsSent(n, implement.threadId!)).toHaveLength(1);
+  // The follower's own read of the PR is the one the review is checked against.
+  expect(prViews(n.github.calls.slice(before))).toBe(0);
   await n.pollReviews();
   expect(findingsSent(n, implement.threadId!)).toHaveLength(1);
   expect(n.reviews).toEqual([]);
   expect(items.get(n.s, item.id)!.phase).toBe("review");
+});
+
+test("findings T3 Code refused to send are sent again by the next pass, once", async () => {
+  const n = await reviewFactory();
+  const { pr, run: implement, review } = await n.reviewing(1);
+  n.mcp.answer("t3_thread_send", () => {
+    throw new Error("Thread is busy");
+  });
+  await n.report(review, n.reviewed(pr, [finding]));
+  expect(findingsSent(n, implement.threadId!)).toHaveLength(1);
+
+  n.mcp.answer("t3_thread_send", () => ({ ok: true }));
+  await n.pollReviews();
+  await n.pollReviews();
+  expect(findingsSent(n, implement.threadId!)).toHaveLength(2);
+});
+
+test("findings whose send was cut off stay handled, so they are never sent twice", async () => {
+  const n = await reviewFactory();
+  const { pr, run: implement, review } = await n.reviewing(1);
+  n.mcp.answer("t3_thread_send", () => new Promise(() => {}));
+  const reported = n.report(review, n.reviewed(pr, [finding]));
+  await n.until(() => findingsSent(n, implement.threadId!).length === 1, "the findings to be sent");
+  // T3 Code goes away mid-call: nothing says whether the thread got them.
+  n.t3.stop();
+  await reported;
+  expect(dataOf(runs.get(n.s, review.id), "review")).toMatchObject({ round: 1, final: false });
 });
 
 test("a review taken while the PR follower runs reaches the implement thread once", async () => {

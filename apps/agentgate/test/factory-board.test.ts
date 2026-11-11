@@ -5,7 +5,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { mirrorOf, timing } from "../src/factory/mirror.ts";
 import { FACTORY_PAGE } from "../src/factory/page.ts";
-import { connectT3 } from "../src/handoff/t3.ts";
+import * as t3 from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
@@ -46,7 +46,7 @@ function fixture() {
 async function withT3(s: Store, routes?: (req: Request) => Response | undefined) {
   const fake = fakeT3({ claudeDir: tmp(), routes });
   cleanup.push(fake.stop);
-  await connectT3(s, { url: fake.url, token: fake.pairingToken() });
+  await t3.connectT3(s, { url: fake.url, token: fake.pairingToken() });
   return fake;
 }
 
@@ -163,11 +163,16 @@ test("a machine that does not run the factory opens no stream, even with open it
     phase: "implement",
     configCommit: "c0ffee",
   });
+  // A mirror that starts its stream asks for a T3 client at once, before anything is awaited.
+  const clients = spyOn(t3, "t3Client");
+  cleanup.push(() => clients.mockRestore());
   const mirror = mirrorOf(f);
-  await Bun.sleep(100);
+  expect(clients).not.toHaveBeenCalled();
   expect(mirror.status().stream).toBe("down");
 
   useFactory(s, "a");
+  mirrorOf(f);
+  expect(clients).toHaveBeenCalled();
   await until(() => mirrorOf(f).status().stream === "live", "the stream");
 });
 
@@ -182,6 +187,7 @@ test("while the stream is down the mirror polls T3's shell on the interval, and 
       polls.push(Date.now());
       return Response.json(waitingShell);
     }
+    return undefined;
   });
   polls.length = 0; // connecting read the shell once
   timing.pollMs = 40;
@@ -206,6 +212,79 @@ test("while the stream is down the mirror polls T3's shell on the interval, and 
       needsYou: true,
       updatedAt: Date.parse(UPDATED),
     },
+  ]);
+});
+
+test("the mirror lists a thread's direct subagents, not theirs", async () => {
+  timing.pollMs = 50;
+  const { s, f } = fixture();
+  const fake = await withT3(s);
+  const { id: projectId } = fake.addProject(tmp());
+  const parent = fake.addThread({ projectId, sessionId: "s1" });
+  const child = fake.addThread({ projectId, sessionId: "s2", subagent: true, parentThreadId: parent.id });
+  fake.addThread({ projectId, sessionId: "s3", subagent: true, parentThreadId: child.id });
+  useFactory(s, "a");
+  const mirror = mirrorOf(f);
+  await until(() => mirror.status().stream === "live", "the snapshot");
+  expect(mirror.children(parent.id).map((t) => t.id)).toEqual([child.id]);
+});
+
+test("the board is built once per factory change, and again after 2 s", async () => {
+  const { s, f } = fixture();
+  let now = 1_000_000;
+  s.now = () => now;
+  let builds = 0;
+  f.boardParts.push(async () => {
+    builds++;
+    return {};
+  });
+  const read = () => buildBoard(f, { includeWebhookUrls: false });
+
+  await Promise.all([read(), read()]);
+  await read();
+  expect(builds).toBe(1);
+
+  const item = items.insert(s, {
+    id: "it_1",
+    source: "bugs",
+    externalId: "1",
+    key: "gh-1",
+    repo: "acme/api",
+    title: "Crash",
+    snapshot: {},
+    phase: "implement",
+    configCommit: "c0ffee",
+  });
+  const board = await read();
+  expect(builds).toBe(2);
+  expect(board.items.map((i) => i.id)).toEqual([item.id]);
+
+  now += 2000;
+  await read();
+  expect(builds).toBe(3);
+});
+
+test("an item whose needs_you is corrupt reads as not waiting, and the board still lists it", async () => {
+  const { s, f } = fixture();
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  cleanup.push(() => errors.mockRestore());
+  const item = { source: "bugs", repo: "acme/api", title: "Crash", snapshot: {}, configCommit: "c0ffee" };
+  items.insert(s, { ...item, id: "it_1", externalId: "1", key: "gh-1", phase: "implement" });
+  items.insert(s, { ...item, id: "it_2", externalId: "2", key: "gh-2", phase: "implement" });
+  s.db.run("update factory_items set needs_you = '{not json' where id = 'it_1'");
+  s.db.run(`update factory_items set needs_you = '{"kind":"answer"}' where id = 'it_2'`);
+
+  expect(items.get(s, "it_1")!.needsYou).toBeUndefined();
+  expect(items.get(s, "it_2")!.needsYou).toBeUndefined();
+  items.get(s, "it_1");
+  expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
+    "factory: the needs_you of it_1 cannot be read, so it reads as unset",
+    "factory: the needs_you of it_2 cannot be read, so it reads as unset",
+  ]);
+  const board = await buildBoard(f, { includeWebhookUrls: false });
+  expect(board.items.map((i) => [i.id, i.needsYou])).toEqual([
+    ["it_1", undefined],
+    ["it_2", undefined],
   ]);
 });
 
@@ -398,6 +477,23 @@ test("on another machine, GET /api/factory and factory status show the factory m
   const { output } = (await res.json()) as { output: string[] };
   expect(output).toContain("Factory: acme/api on b, online");
   expect(output).toContain("  a (this machine): 0 threads");
+});
+
+test("a factory machine unheard from for over a minute is not asked for its board, which shows it offline", async () => {
+  const [a, b] = await startNodes("a", "b");
+  cleanup.push(a!.stop, b!.stop);
+  for (const n of [a!, b!]) useFactory(n.s, "b");
+  let asked = 0;
+  b!.ctx.factory.boardParts.push(async () => {
+    asked++;
+    return {};
+  });
+  a!.s.now = () => Date.now() + 61_000;
+
+  const board = (await (await caller(app(a!.ctx))("/api/factory")).json()) as FactoryBoard;
+  expect(board.factory).toMatchObject({ node: "b", online: false });
+  expect(board.checks.map((c) => c.id)).toContain("factory-machine");
+  expect(asked).toBe(0);
 });
 
 /** Just enough DOM for the board page's script: elements with text, classes and children. */

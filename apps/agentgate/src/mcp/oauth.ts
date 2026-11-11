@@ -8,10 +8,12 @@ import {
 } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
-import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
+import { InvalidGrant, NeedsLogin, canRefresh, reclaimHolder, refreshOwned, tokenHash } from "../credentials.ts";
+import { defineLocal } from "../local-state.ts";
 import { fetchHeaders, Unavailable } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
 import { syncAll } from "../relay.ts";
+import { recordHealth } from "./gateway.ts";
 import { resolve } from "./templates.ts";
 
 const SESSION_TTL = 10 * 60_000;
@@ -22,6 +24,11 @@ export const CALL_LIMIT = 30 * 60_000;
  * failed, and agents then run it again. */
 export const headerWait = (method: string | undefined, others: number) =>
   method === "POST" ? CALL_LIMIT : method === "DELETE" ? 2000 : others;
+/** A request to an MCP server with `headerWait`'s deadline, except the notification stream (GET): Bun.serve sends an
+ * SSE response's headers with its first event, which may come hours later, and the stream lives until its transport
+ * closes it. */
+export const mcpFetch = (url: string | URL, init: RequestInit = {}, others: number) =>
+  init.method === "GET" ? fetch(url, init) : fetchHeaders(url, init, headerWait(init.method, others));
 const sessionSchema = z.object({
   id: z.string(),
   loginId: z.string(),
@@ -33,12 +40,13 @@ const sessionSchema = z.object({
   verifier: z.string().optional(),
   discovery: z.custom<OAuthDiscoveryState>((v) => typeof v === "object" && v !== null).optional(),
 });
+/** Logins started here and not finished yet, per OAuth `state`. */
+const pendingLogins = defineLocal("oauth-state:", sessionSchema);
 /** Drop expired pending logins, and those of `replaced`: a newer login replaces the ones started here before it. */
 export function expireLogins(s: Store, replaced?: string) {
-  for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as {
-    key: string;
-    value: string;
-  }[]) {
+  for (const row of s.db
+    .query<{ key: string; value: string }, []>("select key, value from local where key like 'oauth-state:%'")
+    .all()) {
     const result = sessionSchema.safeParse(safeJsonParse(row.value).data);
     if (!result.success || result.data.expiresAt <= s.now() || result.data.id === replaced)
       s.setLocal(row.key, undefined);
@@ -92,17 +100,14 @@ export class InstanceAuth implements OAuthClientProvider {
     const c = this.credential();
     this.stateValue = state;
     // The new client and redirect stay with the pending login until it finishes; the stored login keeps working.
-    this.s.setLocal(
-      `oauth-state:${state}`,
-      JSON.stringify({
-        id: this.id,
-        loginId: c.loginId,
-        base: this.s.get("mcpCredential", this.id)?.loginId,
-        redirectUri: c.redirectUri,
-        client: c.client,
-        expiresAt: this.s.now() + SESSION_TTL,
-      }),
-    );
+    pendingLogins.set(this.s, state, {
+      id: this.id,
+      loginId: c.loginId!, // an interactive login starts from a snapshot with a new loginId (startLogin)
+      base: this.s.get("mcpCredential", this.id)?.loginId,
+      redirectUri: c.redirectUri,
+      client: c.client as OAuthClientInformationMixed | undefined,
+      expiresAt: this.s.now() + SESSION_TTL,
+    });
     return state;
   }
   clientInformation() {
@@ -123,7 +128,7 @@ export class InstanceAuth implements OAuthClientProvider {
       needsLogin: false,
     });
     // A recorded "needs login" (serverHealth in gateway.ts) was about the old tokens.
-    this.s.setLocal(`mcpHealth:${this.id}`, undefined);
+    recordHealth(this.s, this.id, undefined);
   }
   redirectToAuthorization(url: URL) {
     if (!this.interactive) this.noLogin();
@@ -131,9 +136,9 @@ export class InstanceAuth implements OAuthClientProvider {
   }
   saveCodeVerifier(verifier: string) {
     if (!this.stateValue) throw new Error("no pending login");
-    const key = `oauth-state:${this.stateValue}`;
-    const pending = sessionSchema.parse(JSON.parse(this.s.local(key)!));
-    this.s.setLocal(key, JSON.stringify({ ...pending, verifier, discovery: this.discovery }));
+    const pending = pendingLogins.get(this.s, this.stateValue);
+    if (!pending) throw new Error("login expired; start it again");
+    pendingLogins.set(this.s, this.stateValue, { ...pending, verifier, discovery: this.discovery });
   }
   codeVerifier() {
     if (!this.verifier) throw new Error("login expired; start it again");
@@ -199,7 +204,7 @@ export function authenticatedFetch(s: Store, id: string) {
     const send = (token?: string) => {
       const headers = new Headers(init.headers);
       if (token) headers.set("authorization", `Bearer ${token}`);
-      return fetchHeaders(url, { ...init, headers }, headerWait(init.method, 30000));
+      return mcpFetch(url, { ...init, headers }, 30000);
     };
     const res = await send(c?.tokens?.access_token);
     if (res.status !== 401 || !c?.tokens) return res;
@@ -232,10 +237,9 @@ export async function startLogin(s: Store, id: string, callbackUrl: string): Pro
 
 export async function finishLogin(s: Store, state: string, code: string, iss?: string): Promise<string> {
   const pending = s.transaction(() => {
-    const raw = s.local(`oauth-state:${state}`);
-    if (!raw) throw new Error("unknown or expired login; start it again");
-    s.setLocal(`oauth-state:${state}`, undefined);
-    const session = sessionSchema.parse(JSON.parse(raw));
+    const session = pendingLogins.get(s, state);
+    if (!session) throw new Error("unknown or expired login; start it again");
+    pendingLogins.set(s, state, undefined);
     if (
       session.expiresAt <= s.now() ||
       session.base !== s.get("mcpCredential", session.id)?.loginId ||
@@ -275,13 +279,7 @@ export async function tickMcp(s: Store, signal?: AbortSignal) {
   for (const c of s.list("mcpCredential")) {
     if (signal?.aborted) break;
     if (c.needsLogin || !c.tokens) continue;
-    if (
-      s.get("node", s.nodeId)?.alwaysOn &&
-      c.holder !== s.nodeId &&
-      !s.get("node", c.holder)?.alwaysOn &&
-      (c.expiresAt ?? 0) - s.now() > 45 * 60_000
-    )
-      s.put("mcpCredential", c.instanceId, { ...c, holder: s.nodeId });
+    reclaimHolder(s, "mcpCredential", c.instanceId, c);
     await refreshMcp(s, c.instanceId).catch(() => {});
   }
 }

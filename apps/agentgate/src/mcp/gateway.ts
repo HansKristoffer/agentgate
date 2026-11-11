@@ -1,24 +1,35 @@
 import {
   Client,
+  ProtocolError,
+  ReadBuffer,
+  SdkError,
+  SdkErrorCode,
+  SdkHttpError,
   StreamableHTTPClientTransport,
+  serializeMessage,
   type CallToolRequest,
   type CallToolResult,
   type Implementation,
+  type JSONRPCMessage,
   type RequestOptions,
   type Tool,
+  type Transport,
 } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { spawn, type ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { anySignal, getErrorMessage, isTruthy } from "hanzio";
+import { anySignal, exponentialBackoff, getErrorMessage, isTruthy } from "hanzio";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { REMOTE_LIMITS } from "@agentgate/protocol/remote";
+import { z } from "zod";
 import { NeedsLogin } from "../credentials.ts";
+import { defineLocal } from "../local-state.ts";
 import { infisicalMcpEnv } from "../logins.ts";
-import { fetchHeaders, sleep } from "../runtime.ts";
+import { killGroup, sleep, Unavailable } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
-import { CALL_LIMIT, authenticatedFetch, headerWait } from "./oauth.ts";
+import { CALL_LIMIT, authenticatedFetch, mcpFetch } from "./oauth.ts";
 import { skillsSource } from "./skills.ts";
 import { resolve } from "./templates.ts";
 
@@ -61,56 +72,207 @@ export function parseRemote(url: string): string | undefined {
   return parts && parts.length >= 2 ? parts.slice(-2).join("/") : undefined;
 }
 
-/** Pass the store to use the instance's OAuth login (refreshing it when needed). */
 /** Whether this node last reached the server, from Test or a gateway connection. Node-local: a local command or a
  * network path can work on one machine and not another. Holds no error text, so it can never carry a secret. */
-export function serverHealth(s: Store, id: string): { ok: boolean; needsLogin?: boolean; at: number } | undefined {
-  const raw = s.local(`mcpHealth:${id}`);
-  return raw ? JSON.parse(raw) : undefined;
+const health = defineLocal(
+  "mcpHealth:",
+  z.object({ ok: z.boolean(), needsLogin: z.boolean().optional(), at: z.number() }),
+);
+export const serverHealth = (s: Store, id: string) => health.get(s, id);
+/** Every check moves `at`; only a change of outcome is news for the app. */
+export function recordHealth(s: Store, id: string, outcome: { ok: boolean; needsLogin?: boolean } | undefined) {
+  const before = health.get(s, id);
+  health.set(s, id, outcome && { ...outcome, at: s.now() });
+  if (before?.ok !== outcome?.ok || before?.needsLogin !== outcome?.needsLogin) s.bump("status");
 }
 
-/** Connect to an instance; with a store, record the outcome as its health. */
+/**
+ * Why a connect failed. Only `auth` asks for a login, and only a typed signal sets it: the OAuth flow's `NeedsLogin`
+ * or a 401/403 from an HTTP transport. A server's own text, such as a stdio server printing "Unauthorized", never does.
+ */
+type ConnectFailure = "auth" | "unreachable" | "failed";
+
+/** A failed connect. Its message is capped, has no HTTP body, and is redacted (`secretValues`), so it may be logged
+ * and shown to a local agent. */
+class ConnectError extends Error {
+  constructor(
+    readonly kind: ConnectFailure,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+/** The error and its causes: the SDK wraps a failed version probe's error, which holds the signal. */
+function causes(e: unknown): unknown[] {
+  const chain = [e];
+  for (let c = e; c instanceof Error && c.cause !== undefined && chain.length < 5; c = c.cause) chain.push(c.cause);
+  return chain;
+}
+
+function failureKind(e: unknown): ConnectFailure {
+  if (e instanceof ConnectError) return e.kind;
+  for (const c of causes(e)) {
+    if (c instanceof NeedsLogin) return "auth";
+    if (c instanceof SdkHttpError) return c.status === 401 || c.status === 403 ? "auth" : "failed";
+    if (c instanceof Unavailable || (c instanceof SdkError && c.code === SdkErrorCode.RequestTimeout))
+      return "unreachable";
+  }
+  return "failed";
+}
+
+/** A connect error that a login would fix. */
+export const needsLogin = (e: unknown) => failureKind(e) === "auth";
+
+/** The instance resolved for connecting: templates filled in, and Infisical's login for its template. */
+function resolved(inst: McpInstance, s?: Store) {
+  const r = resolve(inst);
+  if (inst.template === "infisical" && s) r.env = { ...infisicalMcpEnv(s), ...r.env };
+  return r;
+}
+
+/** Values an error's text must not show: the daemon's env, and the server's env, headers, secrets, arguments, URL
+ * and OAuth tokens. */
+function secretValues(inst: McpInstance, s?: Store): string[] {
+  const r = resolved(inst, s);
+  const credential = s?.get("mcpCredential", inst.id);
+  const url = r.url ? URL.parse(r.url) : null;
+  return [
+    ...Object.values({ ...process.env, ...r.env, ...r.headers, ...inst.secrets }),
+    ...r.args,
+    ...(url ? [r.url, url.username, url.password, ...url.searchParams.values()] : []),
+    credential?.tokens?.access_token,
+    credential?.tokens?.refresh_token,
+    credential?.client?.client_secret,
+  ]
+    .filter((v): v is string => !!v && v.length >= 4)
+    .sort((a, b) => b.length - a.length);
+}
+
+const redact = (text: string, secrets: string[]) => secrets.reduce((t, v) => t.replaceAll(v, "[redacted]"), text);
+
+/** An error's text for a log line: an HTTP status instead of the response body, redacted and capped. */
+const errorText = (e: unknown, secrets: string[]) =>
+  redact(e instanceof SdkHttpError ? `HTTP ${e.status}` : getErrorMessage(e), secrets).slice(0, 300);
+
+/** Connect to an instance; with a store, record the outcome as its health and use the instance's OAuth login
+ * (refreshing it when needed). Fails with a `ConnectError`. */
 export async function connect(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
   try {
     const client = await open(inst, cwd, s);
-    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: true, at: s.now() }));
+    if (s) recordHealth(s, inst.id, { ok: true });
     return client;
   } catch (e) {
-    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: false, needsLogin: needsLogin(e), at: s.now() }));
+    if (s) recordHealth(s, inst.id, { ok: false, needsLogin: needsLogin(e) });
     throw e;
   }
 }
 
+/**
+ * The SDK's stdio transport, except that the server starts in its own process group: closing it also stops what the
+ * server started (npx runs node, uvx runs python), which would otherwise outlive the session and the daemon.
+ */
+export class StdioTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  readonly stderr = new PassThrough();
+  private child?: ChildProcess;
+  private buffer = new ReadBuffer();
+  constructor(
+    private command: string,
+    private args: string[],
+    private env: NodeJS.ProcessEnv,
+    private cwd?: string,
+  ) {}
+  get pid() {
+    return this.child?.pid;
+  }
+  start() {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(this.command, this.args, { env: this.env, cwd: this.cwd, detached: true });
+      this.child = child;
+      child.once("error", (e) => {
+        reject(e);
+        this.onerror?.(e);
+      });
+      child.once("spawn", resolve);
+      child.once("close", () => {
+        if (this.child === child) this.child = undefined;
+        this.onclose?.();
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        try {
+          this.buffer.append(chunk);
+          for (let m = this.buffer.readMessage(); m; m = this.buffer.readMessage()) this.onmessage?.(m);
+        } catch (e) {
+          this.onerror?.(e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+      child.stdin.on("error", (e) => this.onerror?.(e));
+      child.stdout.on("error", (e) => this.onerror?.(e));
+      child.stderr.pipe(this.stderr);
+    });
+  }
+  send(message: JSONRPCMessage) {
+    const stdin = this.child?.stdin;
+    if (!stdin) return Promise.reject(new SdkError(SdkErrorCode.NotConnected, "Not connected"));
+    return new Promise<void>((resolve) => {
+      if (stdin.write(serializeMessage(message))) resolve();
+      else stdin.once("drain", resolve);
+    });
+  }
+  /** Closes stdin, as the SDK does, then sends SIGTERM and then SIGKILL to the whole group, 2 s apart. */
+  async close() {
+    const child = this.child;
+    this.child = undefined;
+    this.buffer.clear();
+    if (!child?.pid) return;
+    const pid = child.pid;
+    const running = () => child.exitCode === null && child.signalCode === null;
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    const wait = () => Promise.race([exited, sleep(2000)]);
+    if (running()) {
+      child.stdin?.end();
+      await wait();
+    }
+    if (running()) {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        // the group is gone
+      }
+      await wait();
+    }
+    // Even after the server exited: what it started may still run.
+    killGroup({ pid, kill: (signal) => child.kill(signal) });
+  }
+}
+
 async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
-  const r = resolve(inst);
-  if (inst.template === "infisical" && s) r.env = { ...infisicalMcpEnv(s), ...r.env };
+  const r = resolved(inst, s);
   const client = new Client({ name: "agentgate", version: VERSION });
-  let transport: StdioClientTransport | StreamableHTTPClientTransport;
+  let transport: StdioTransport | StreamableHTTPClientTransport;
   let stderr = "";
   if (r.transport === "http") {
-    if (!r.url) throw new Error(`${inst.id}: no url`);
+    if (!r.url) throw new ConnectError("failed", `${inst.id}: no url`);
     transport = new StreamableHTTPClientTransport(new URL(r.url), {
       requestInit: { headers: r.headers },
-      fetch: s
-        ? authenticatedFetch(s, inst.id)
-        : (url, init) => fetchHeaders(url, init, headerWait(init?.method, 10000)),
+      fetch: s ? authenticatedFetch(s, inst.id) : (url, init) => mcpFetch(url, init, 10000),
     });
   } else {
-    if (!r.command) throw new Error(`${inst.id}: no command`);
+    if (!r.command) throw new ConnectError("failed", `${inst.id}: no command`);
     if (!Bun.which(r.command))
-      throw new Error(`${inst.id}: '${r.command}' is not installed (install Node for npx or uv for uvx)`);
-    transport = new StdioClientTransport({
-      command: r.command,
-      args: r.args,
-      env: { ...(process.env as Record<string, string>), ...r.env },
-      cwd,
-      stderr: "pipe",
-    });
+      throw new ConnectError(
+        "failed",
+        `${inst.id}: '${r.command}' is not installed (install Node for npx or uv for uvx)`,
+      );
+    transport = new StdioTransport(r.command, r.args ?? [], { ...process.env, ...r.env }, cwd);
   }
   try {
     const pending = client.connect(transport, { timeout: 10000 });
-    if (transport instanceof StdioClientTransport)
-      transport.stderr?.on("data", (chunk) => {
+    if (transport instanceof StdioTransport)
+      transport.stderr.on("data", (chunk) => {
         stderr = (stderr + String(chunk)).slice(-2048);
       });
     await pending;
@@ -129,10 +291,14 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
   } catch (e) {
     await transport.close().catch(() => {});
     await client.close().catch(() => {});
-    let error = `${e}${stderr ? `; stderr: ${stderr.trim()}` : ""}`;
-    for (const value of Object.values({ ...process.env, ...r.env, ...r.headers, ...inst.secrets }))
-      if (value && value.length >= 4) error = error.replaceAll(value, "[redacted]");
-    throw new Error(`${inst.id}: ${error}`);
+    let kind = failureKind(e);
+    // On an HTTP transport, a root cause that is neither the SDK's nor the server's error is fetch failing to reach it.
+    const root = causes(e).at(-1);
+    if (kind === "failed" && r.transport === "http" && !(root instanceof SdkError || root instanceof ProtocolError))
+      kind = "unreachable";
+    const secrets = secretValues(inst, s);
+    const tail = stderr.trim() && `; stderr: ${redact(stderr.trim(), secrets).slice(-500)}`;
+    throw new ConnectError(kind, `${inst.id}: ${errorText(e, secrets)}${tail}`);
   }
 }
 
@@ -291,6 +457,18 @@ export function capResult(result: CallToolResult, max: number): CallToolResult {
 const callTool = (client: Client, params: CallToolRequest["params"], options: RequestOptions) =>
   client.request({ method: "tools/call", params }, options) as Promise<CallToolResult>;
 
+/** A source's tools as the session sees them: past its allowlist and the session's scope, under their full names. */
+function offer(src: Source, tools: Tool[], allowed: ((alias: string, tool: string) => boolean) | undefined) {
+  const offered = src.instance?.tools && new Set(src.instance.tools);
+  return tools.flatMap(({ outputSchema: _, ...t }) => {
+    if (offered && !offered.has(t.name)) return [];
+    if (allowed && !allowed(src.alias, t.name)) return [];
+    const name = toolName(src.alias, t.name);
+    // No output schema: results pass through unchecked, so a client must not check them against one either.
+    return [{ name, tool: t.name, listed: { ...t, name } }];
+  });
+}
+
 /** One forwarded tool call, for the log. Never the arguments or the result. */
 export interface CallRecord {
   alias: string;
@@ -308,6 +486,7 @@ export function mergedServer(
   {
     onError = () => {},
     resolveSource,
+    callError,
     allow,
     activity,
     signal,
@@ -316,6 +495,8 @@ export function mergedServer(
     onError?: (alias: string, e: unknown) => void;
     /** Finds a call's source without listing every source again. */
     resolveSource?: (alias: string) => Promise<Source | undefined>;
+    /** What a failed call throws to the client instead of the source's error; the error passes through without it. */
+    callError?: (alias: string, e: unknown) => Error;
     /** Whether the session may list and call a source's tool now: asked once per listing and once per call, and
      * answers for every tool of that listing or call. */
     allow?: () => (alias: string, tool: string) => boolean;
@@ -356,24 +537,39 @@ export function mergedServer(
         }
       }),
     );
-    for (const { src, tools } of pages) {
-      const offered = src.instance?.tools && new Set(src.instance.tools);
-      // No output schema: results pass through unchecked, so a client must not check them against one either.
-      for (const { outputSchema: _, ...t } of tools) {
-        if (offered && !offered.has(t.name)) continue;
-        if (allowed && !allowed(src.alias, t.name)) continue;
-        const name = toolName(src.alias, t.name);
-        if (next.has(name)) throw new Error(`duplicate MCP tool name ${name}`);
-        next.set(name, { alias: src.alias, tool: t.name });
-        all.push({ ...t, name });
+    for (const { src, tools } of pages)
+      for (const t of offer(src, tools, allowed)) {
+        if (next.has(t.name)) throw new Error(`duplicate MCP tool name ${t.name}`);
+        next.set(t.name, { alias: src.alias, tool: t.tool });
+        all.push(t.listed);
       }
-    }
     routes = next;
     return all.sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  /**
+   * Routes a call by its name's alias prefix, listing only that source. A remote endpoint builds a server per request,
+   * so without this every call would connect and list every mapped server first. A hash-shortened name keeps its
+   * alias, so it resolves here too; only an alias holding `__` falls through to the full listing.
+   */
+  async function routeOne(name: string) {
+    const at = name.indexOf("__");
+    if (!resolveSource || at <= 0) return;
+    const alias = name.slice(0, at);
+    try {
+      const src = await resolveSource(alias);
+      if (!src) return;
+      const tools = await listAllTools(src.client, { fresh: !src.keepTools });
+      const found = offer(src, tools, allow?.()).find((t) => t.name === name);
+      if (found) routes.set(name, { alias, tool: found.tool });
+    } catch (e) {
+      throw callError ? callError(alias, e) : e;
+    }
+  }
+
   server.setRequestHandler("tools/list", async () => ({ tools: await list() }));
   server.setRequestHandler("tools/call", async (req, ctx) => {
+    if (!routes.has(req.params.name)) await routeOne(req.params.name);
     if (!routes.has(req.params.name)) await list();
     // A kept list can miss a tool a server added without saying so; ask again once before giving up.
     if (!routes.has(req.params.name)) await list({ fresh: true });
@@ -423,7 +619,7 @@ export function mergedServer(
       return capResult(result, max);
     } catch (e) {
       call.failed = true;
-      throw e;
+      throw callError ? callError(route.alias, e) : e;
     } finally {
       activity?.(-1);
       call.ms = Math.round(performance.now() - started);
@@ -444,20 +640,31 @@ function withCaller(meta: Record<string, unknown> | undefined, caller: Implement
   return { ...meta, [CALLER_META_KEY]: { name, version, ...(title && { title }) } };
 }
 
+/** One shared connection. A closed one leaves the map, and a changed config replaces it with a new entry. */
 interface Upstream {
-  client?: Client;
-  connecting?: Promise<Client>;
+  state:
+    | { kind: "connecting"; connecting: Promise<Client>; failures: number }
+    | { kind: "connected"; client: Client }
+    /** `failures` connects failed in a row; the next may be tried at `retryAt`. */
+    | { kind: "backoff"; failures: number; retryAt: number }
+    /** Replaced or idle; its client closes once its last call ends. */
+    | { kind: "retired"; client?: Client };
+  /** What the connection depends on (`connectionKey`). */
   config: string;
   lastUsed: number;
   calls: number;
-  retired?: boolean;
-  /** Connects that failed in a row, and when the next may be tried. A changed config starts a new entry. */
-  failures?: number;
-  retryAt?: number;
 }
 
+/** The fields a connection depends on: a new label, tool filter or result limit keeps the connection. */
+const connectionKey = (s: Store, inst: McpInstance) => {
+  const { template, transport, url, headers, command, args, env } = resolve(inst);
+  const loggedIn = !!s.get("mcpCredential", inst.id)?.tokens;
+  return JSON.stringify({ template, transport, url, headers, command, args, env, loggedIn });
+};
+
 /** A server that failed to connect is tried again after 30 s, doubling to 5 minutes, not on every listing. */
-const retryDelay = (failures: number) => Math.min(5 * 60_000, 30_000 * 2 ** (failures - 1));
+const retryDelay = (failures: number) =>
+  exponentialBackoff(failures, { baseMs: 30_000, maxMs: 5 * 60_000, jitter: false });
 
 /** A connect skipped because the server failed recently; already logged when it failed. */
 class Backoff extends Error {}
@@ -501,49 +708,60 @@ export class Gateway {
   /** One connection per shared instance, opened on first use and reopened when its config changes. */
   async shared(inst: McpInstance): Promise<Client> {
     if (this.closed) throw new Error("MCP gateway is closed");
-    const config = JSON.stringify({ ...inst, loggedIn: !!this.s.get("mcpCredential", inst.id)?.tokens });
+    const config = connectionKey(this.s, inst);
     let u = this.upstreams.get(inst.id);
     if (u && u.config !== config) {
-      u.retired = true;
-      this.retired.add(u);
-      if (!u.calls) {
-        await u.client?.close().catch(() => {});
-        this.retired.delete(u);
-      }
+      this.upstreams.delete(inst.id);
+      await this.retire(u);
       u = undefined;
     }
-    if (!u) this.upstreams.set(inst.id, (u = { config, lastUsed: this.s.now(), calls: 0 }));
-    u.lastUsed = this.s.now();
-    if (u.client) return u.client;
-    // A Test that reached the server since (app or CLI) ends the wait.
-    if (!u.connecting && u.retryAt && this.s.now() < u.retryAt && !serverHealth(this.s, inst.id)?.ok)
-      throw new Backoff(`${inst.id}: unavailable, next try in ${Math.ceil((u.retryAt - this.s.now()) / 1000)} s`);
-    const entry = u;
-    entry.connecting ??= connect(inst, undefined, this.s).then(
+    const now = this.s.now();
+    if (u) u.lastUsed = now;
+    if (u?.state.kind === "connected") return u.state.client;
+    if (u?.state.kind === "connecting") return u.state.connecting;
+    let failures = 0;
+    if (u?.state.kind === "backoff") {
+      // A Test that reached the server since (app or CLI) ends the wait.
+      if (now < u.state.retryAt && !serverHealth(this.s, inst.id)?.ok)
+        throw new Backoff(`${inst.id}: unavailable, next try in ${Math.ceil((u.state.retryAt - now) / 1000)} s`);
+      failures = u.state.failures;
+    }
+    const connecting = connect(inst, undefined, this.s).then(
       async (c) => {
-        if (this.closed || entry.retired || this.upstreams.get(inst.id) !== entry) {
+        if (this.closed || entry.state.kind !== "connecting" || this.upstreams.get(inst.id) !== entry) {
           await c.close();
           throw new Error("MCP configuration changed during connection");
         }
-        entry.client = c;
-        entry.connecting = undefined;
-        entry.failures = entry.retryAt = undefined;
+        entry.state = { kind: "connected", client: c };
         watchTools(c, () => this.toolsChanged(inst.id));
         // Listed while the session that asked for the connection is still starting, so its tools/list is ready.
         void listAllTools(c).catch(() => {});
         c.onclose = () => {
-          if (entry.client === c) entry.client = undefined;
+          if (entry.state.kind !== "connected" || entry.state.client !== c) return;
+          entry.state = { kind: "retired" };
+          if (this.upstreams.get(inst.id) === entry) this.upstreams.delete(inst.id);
         };
         return c;
       },
       (e) => {
-        entry.connecting = undefined;
-        entry.failures = (entry.failures ?? 0) + 1;
-        entry.retryAt = this.s.now() + retryDelay(entry.failures);
+        if (entry.state.kind === "connecting")
+          entry.state = { kind: "backoff", failures: failures + 1, retryAt: this.s.now() + retryDelay(failures + 1) };
         throw e;
       },
     );
-    return entry.connecting;
+    const state = { kind: "connecting" as const, connecting, failures };
+    const entry: Upstream = u ?? { config, lastUsed: now, calls: 0, state };
+    entry.state = state;
+    this.upstreams.set(inst.id, entry);
+    return connecting;
+  }
+
+  /** Takes an upstream out of use; its client closes now, or when its last call ends. */
+  private async retire(u: Upstream) {
+    const client = "client" in u.state ? u.state.client : undefined;
+    u.state = { kind: "retired", client };
+    if (u.calls) this.retired.add(u);
+    else await client?.close().catch(() => {});
   }
 
   private async source(project: string, alias: string): Promise<Source | undefined> {
@@ -571,7 +789,7 @@ export class Gateway {
         } finally {
           entry.calls--;
           entry.lastUsed = this.s.now();
-          if (entry.retired && !entry.calls) {
+          if (entry.state.kind === "retired" && !entry.calls) {
             await active.close().catch(() => {});
             this.retired.delete(entry);
           }
@@ -649,9 +867,11 @@ export class Gateway {
     const tools = this.toolsKey(project, thread);
     const usage = { lastUsed: this.s.now(), calls: 0 };
     const server = mergedServer(instructions, () => this.localSources(project, undefined, scope()), {
-      onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`),
-      resolveSource: async (alias) =>
-        alias === BUILTIN_ALIAS && this.builtin ? this.builtinTools() : this.source(project, alias),
+      onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, this.failure(project, alias, e)),
+      resolveSource: async (alias) => {
+        if (alias === BUILTIN_ALIAS && this.builtin) return this.builtinTools();
+        return inScope(scope(), alias) ? this.source(project, alias) : undefined;
+      },
       allow: () => {
         const now = scope();
         return (alias, tool) => inScope(now, alias, tool);
@@ -756,24 +976,31 @@ export class Gateway {
       );
       return [...out.filter(isTruthy), ...builtins];
     };
-    // A connect error carries the server's stderr and local details: logged here, never sent to the public client.
-    const resolveSource = (alias: string) =>
-      builtin(alias)
-        ? Promise.resolve(builtin(alias))
-        : this.source(project, alias).catch((e) => {
-            failed.add(alias);
-            if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `${project}: connect failed: ${e}`);
-            throw new Error(`${alias} is unavailable`);
-          });
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
     const instructions =
       (message as { method?: unknown })?.method === "initialize" ? mergeInstructions(await sources()) : "";
     const server = mergedServer(instructions, sources, {
       onError: (alias, e) => {
         failed.add(alias);
-        this.s.log("mcp", alias, "", 0, 0, `${project}: ${String(e).slice(0, 300)}`);
+        this.s.log("mcp", alias, "", 0, 0, this.failure(project, alias, e));
       },
-      resolveSource,
+      resolveSource: async (alias) => builtin(alias) ?? this.source(project, alias),
+      // The endpoint is public: a connect error carries the server's stderr and local details, and a server's own
+      // error text is the server's to share. Both are logged here; the client learns only which server failed.
+      callError: (alias, e) => {
+        const connecting = e instanceof ConnectError || e instanceof Backoff;
+        if (connecting) failed.add(alias);
+        if (!(e instanceof Backoff))
+          this.s.log(
+            "mcp",
+            alias,
+            "",
+            0,
+            0,
+            connecting ? `${project}: connect failed: ${e.message}` : this.failure(project, alias, e),
+          );
+        return new Error(`${alias} failed`);
+      },
       signal,
     });
     const transport = new WebStandardStreamableHTTPServerTransport({
@@ -811,6 +1038,12 @@ export class Gateway {
     }
   }
 
+  /** A source's error for the log: without an HTTP body, redacted with its server's values. */
+  private failure(project: string, alias: string, e: unknown) {
+    const inst = this.s.get("mcp", aliasesFor(this.s, project)[alias] ?? "");
+    return `${project}: ${errorText(e, inst ? secretValues(inst, this.s) : [])}`;
+  }
+
   /** What a session's tool list depends on: its project's mapping, the mapped servers' settings, which are signed
    * in, and its thread's scope. */
   private toolsKey(project: string, thread: string | undefined): string {
@@ -843,22 +1076,22 @@ export class Gateway {
     }
   }
 
-  /** Auto-discovered repos for the native app; written at most every 5 minutes per repo to keep sync quiet. */
+  /**
+   * A repo's first session creates its project, so the app can list it. Later sessions write nothing: every put raises
+   * the synced revision, which would let a busy machine outrank another machine's offline edit.
+   */
   private seen(project: string) {
     if (project === "*") return;
     project = canonicalProject(this.s, project);
-    const p = this.s.get("project", project);
-    if (p?.seenAt && this.s.now() - p.seenAt < 5 * 60_000 && p.seenOn === this.s.nodeId) return;
-    this.s.put("project", project, { ...(p ?? { id: project }), seenAt: this.s.now(), seenOn: this.s.nodeId });
+    if (!this.s.get("project", project)) this.s.put("project", project, { id: project });
   }
 
   async closeIdle() {
     const tasks: Promise<unknown>[] = [];
     for (const [id, u] of this.upstreams)
-      if (!u.calls && !u.connecting && this.s.now() - u.lastUsed > IDLE_CLOSE) {
-        u.retired = true;
+      if (!u.calls && u.state.kind !== "connecting" && this.s.now() - u.lastUsed > IDLE_CLOSE) {
         this.upstreams.delete(id);
-        if (u.client) tasks.push(u.client.close().catch(() => {}));
+        tasks.push(this.retire(u));
       }
     for (const [id, session] of this.sessions)
       if (!session.calls && this.s.now() - session.lastUsed > 30 * 60_000) {
@@ -872,9 +1105,10 @@ export class Gateway {
     clearInterval(this.timer);
     const tasks: Promise<unknown>[] = [];
     for (const u of new Set([...this.upstreams.values(), ...this.retired])) {
-      u.retired = true;
-      if (u.client) tasks.push(u.client.close());
-      if (u.connecting) tasks.push(u.connecting.catch(() => {}));
+      if (u.state.kind === "connecting") tasks.push(u.state.connecting.catch(() => {}));
+      const client = "client" in u.state ? u.state.client : undefined;
+      u.state = { kind: "retired" };
+      if (client) tasks.push(client.close());
     }
     for (const { server } of this.sessions.values()) tasks.push(server.close());
     if (this.builtinSource) tasks.push(this.builtinSource.then((src) => src.client.close()));
@@ -884,12 +1118,6 @@ export class Gateway {
     this.sessions.clear();
   }
 }
-
-/** A connect error that a login would fix. */
-export const needsLogin = (e: unknown) =>
-  e instanceof NeedsLogin ||
-  (e as { code?: number })?.code === 401 ||
-  /\b401\b|unauthori[sz]ed|invalid_token|needs a login|login requested/i.test(getErrorMessage(e));
 
 /** Git repos directly inside `dir` whose origin parses as owner/repo. */
 export function scanRepos(dir: string): { repo: string; path: string }[] {
@@ -906,7 +1134,7 @@ export function scanRepos(dir: string): { repo: string; path: string }[] {
       const cfg = readFileSync(join(git, "config"), "utf8");
       remote = cfg.match(/\[remote "origin"\][^[]*?\burl\s*=\s*(.+)/)?.[1];
     } else {
-      const r = Bun.spawnSync(["git", "remote", "get-url", "origin"], { cwd: path, stderr: "ignore" });
+      const r = Bun.spawnSync(["git", "remote", "get-url", "origin"], { cwd: path, stderr: "ignore", timeout: 5000 });
       if (r.exitCode === 0) remote = r.stdout.toString();
     }
     const repo = remote && parseRemote(remote);

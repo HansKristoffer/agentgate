@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
+import { projectChangeSchema } from "@agentgate/protocol";
 import { projectSkillChoices, repoClashes } from "../../desktop/src/skill-assignment.ts";
+import { changeServerProjects, createInstance } from "../src/ops/servers.ts";
+import { changeSkillProjects, writeSkillMd } from "../src/skills.ts";
+import { Store, type Project } from "../src/store.ts";
 
 test("derived availability preserves explicit assignments across global and checkout changes", () => {
   const data = {
@@ -41,4 +45,29 @@ test("every-session skills report repositories that carry a skill with the same 
     ["y", false],
     ["x", true],
   ]);
+});
+
+test("a Use in change touches only the projects it names; the whole-set body still replaces the set", () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "test");
+  createInstance(s, { name: "fs", target: "filesystem" });
+  writeSkillMd(s, "lint", "Lint.");
+  const cases = [
+    { id: "fs", change: changeServerProjects, uses: (p: Project) => Object.values(p.mcp).includes("fs") },
+    { id: "lint", change: changeSkillProjects, uses: (p: Project) => p.skills.includes("lint") },
+  ];
+  for (const { id, change, uses } of cases) {
+    const usedBy = () =>
+      s
+        .list("project")
+        .filter(uses)
+        .map((p) => p.id);
+    // The dialog opened on a/x; another machine added b/y before it saved.
+    change(s, id, projectChangeSchema.parse({ projects: ["a/x", "b/y"] }));
+    change(s, id, projectChangeSchema.parse({ add: ["c/z"], remove: ["a/x"] }));
+    expect(usedBy()).toEqual(["b/y", "c/z"]);
+    change(s, id, projectChangeSchema.parse({ projects: ["a/x"] }));
+    expect(usedBy()).toEqual(["a/x"]);
+  }
+  s.close();
 });

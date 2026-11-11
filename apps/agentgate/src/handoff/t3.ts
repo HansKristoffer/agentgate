@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { T3NodeState, T3PairingLink } from "@agentgate/protocol";
 import { z } from "zod";
+import { defineLocal } from "../local-state.ts";
 import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
 
@@ -469,6 +470,9 @@ function loopback(link: string): string {
   return `http://127.0.0.1:${u.port}`;
 }
 
+/** This node's T3 Code connection, and its project sync error (projects.ts), which the app shows with the threads. */
+export const t3Local = defineLocal("t3:", z.string(), { topic: "threads" });
+
 /** Exchange a single-use pairing token for a 30-day bearer token. `mintedBy` is the `t3` binary that made the token a
  * moment ago, when agentgate ran it itself: a refusal then points at the binary, as the token is neither used nor old. */
 export async function connectT3(s: Store, input: { url: string; token: string }, mintedBy?: string) {
@@ -511,10 +515,10 @@ export async function connectT3(s: Store, input: { url: string; token: string },
     () => undefined,
   );
   s.transaction(() => {
-    s.setLocal("t3:url", url);
-    s.setLocal("t3:token", token.access_token);
-    s.setLocal("t3:expiresAt", String(s.now() + token.expires_in * 1000));
-    s.setLocal("t3:label", label);
+    t3Local.set(s, "url", url);
+    t3Local.set(s, "token", token.access_token);
+    t3Local.set(s, "expiresAt", String(s.now() + token.expires_in * 1000));
+    t3Local.set(s, "label", label);
   });
 
   // Check the protocol now rather than at the first handoff.
@@ -524,19 +528,19 @@ export async function connectT3(s: Store, input: { url: string; token: string },
 
 export function disconnectT3(s: Store) {
   s.transaction(() => {
-    for (const key of ["url", "token", "expiresAt", "label"]) s.setLocal(`t3:${key}`, undefined);
+    for (const key of ["url", "token", "expiresAt", "label"]) t3Local.set(s, key, undefined);
   });
 }
 
 export function t3State(s: Store): T3NodeState {
-  const url = s.local("t3:url");
-  if (!url || !s.local("t3:token")) return { connected: false };
-  const expiresAt = Number(s.local("t3:expiresAt") ?? 0);
-  const projectSyncError = s.local("t3:projectSyncError");
+  const url = t3Local.get(s, "url");
+  if (!url || !t3Local.get(s, "token")) return { connected: false };
+  const expiresAt = Number(t3Local.get(s, "expiresAt") ?? 0);
+  const projectSyncError = t3Local.get(s, "projectSyncError");
   return {
     connected: s.now() < expiresAt,
     url,
-    label: s.local("t3:label"),
+    label: t3Local.get(s, "label"),
     expiresAt,
     repair: s.now() > expiresAt - REPAIR_AHEAD,
     ...(projectSyncError && { projectSyncError }),
@@ -548,7 +552,7 @@ export function t3Client(s: Store): T3 {
   const state = t3State(s);
   if (!state.url) throw new T3Error(`T3 Code is not connected on ${s.nodeId}; run agentgate t3 connect there`);
   if (!state.connected) throw new T3Error(`agentgate's T3 Code token on ${s.nodeId} expired; pair T3 Code again there`);
-  return new T3(state.url, s.local("t3:token")!, s.nodeId);
+  return new T3(state.url, t3Local.get(s, "token")!, s.nodeId);
 }
 
 function real(path: string) {

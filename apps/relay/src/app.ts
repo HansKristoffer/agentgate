@@ -8,6 +8,7 @@ export type EndpointOp = "mcp" | "hook" | "connect" | "update" | "delete";
 export type ChannelOp = "call" | "connect";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { readBounded } from "./body.ts";
 import { type GroupOp, type GroupRequest, type Reply } from "./group.ts";
 
 export interface RelayDeps {
@@ -40,27 +41,8 @@ const reject = (status: 400 | 413, error: string, code: string) =>
   });
 
 async function readJson(req: Request): Promise<unknown> {
-  const declared = Number(req.headers.get("content-length") ?? 0);
-  if (declared > RELAY_LIMITS.messageBytes) throw reject(413, "request too large", "size");
-  const reader = req.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  while (reader) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > RELAY_LIMITS.messageBytes) {
-      await reader.cancel();
-      throw reject(413, "request too large", "size");
-    }
-    chunks.push(value);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const c of chunks) {
-    bytes.set(c, offset);
-    offset += c.byteLength;
-  }
+  const bytes = await readBounded(req, RELAY_LIMITS.messageBytes);
+  if (!bytes) throw reject(413, "request too large", "size");
   try {
     return JSON.parse(new TextDecoder().decode(bytes));
   } catch {
@@ -78,22 +60,42 @@ export function relayApp(deps: RelayDeps) {
   app.notFound((c) => c.json({ error: "not found" }, 404));
   app.get("/", (c) => c.text("agentgate relay\n"));
 
-  const route = (op: GroupOp, hasBody: boolean) => async (c: Context) => {
-    // A deployment key is checked before anything that could create or read group state.
-    if (deps.relayKey && !safeEqual(await sha256Hex(c.req.header("x-relay-key") ?? ""), await sha256Hex(deps.relayKey)))
-      return c.json({ error: "relay key required", code: "relayKey" }, 401);
-    const groupId = c.req.param("group");
-    if (!relayGroupId.safeParse(groupId).success) return c.json({ error: "invalid group", code: "shape" }, 400);
-    const token = c.req.header("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
-    if (!token) return c.json({ error: "unauthorized" }, 401);
+  // Hashed once per app; the Worker keeps one app per isolate (index.ts).
+  const relayKeyHash = deps.relayKey ? sha256Hex(deps.relayKey) : undefined;
+
+  /**
+   * The checks every route makes before it touches a Durable Object: the deployment key (when `relayKey`), the group
+   * id and its bearer token (when `group`), then the per-address limit. A refusal comes back as the response.
+   */
+  const gate = async (c: Context, need: { relayKey: boolean; group: boolean }) => {
+    if (need.relayKey && relayKeyHash) {
+      const given = await sha256Hex(c.req.header("x-relay-key") ?? "");
+      if (!safeEqual(given, await relayKeyHash)) return c.json({ error: "relay key required", code: "relayKey" }, 401);
+    }
+    let groupId = "",
+      authHash = "";
+    if (need.group) {
+      groupId = c.req.param("group") ?? "";
+      if (!relayGroupId.safeParse(groupId).success) return c.json({ error: "invalid group", code: "shape" }, 400);
+      const token = c.req.header("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
+      if (!token) return c.json({ error: "unauthorized" }, 401);
+      authHash = await sha256Hex(token);
+    }
     const ipHash = await sha256Hex(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
     if (deps.ipLimit && !(await deps.ipLimit(ipHash)))
       return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
+    return { groupId, authHash, ipHash };
+  };
+
+  const route = (op: GroupOp, hasBody: boolean) => async (c: Context) => {
+    const passed = await gate(c, { relayKey: true, group: true });
+    if (passed instanceof Response) return passed;
+    const { groupId, authHash, ipHash } = passed;
     const body = hasBody ? await readJson(c.req.raw) : undefined;
-    const reply = await deps.group(groupId!).handle({
+    const reply = await deps.group(groupId).handle({
       op,
-      groupId: groupId!,
-      authHash: await sha256Hex(token),
+      groupId,
+      authHash,
       ipHash,
       body,
       query: Object.fromEntries(new URL(c.req.url).searchParams),
@@ -108,16 +110,9 @@ export function relayApp(deps: RelayDeps) {
   const endpoint = (op: EndpointOp) => async (c: Context) => {
     const key = c.req.param("key");
     if (!deps.endpoint || !remoteKey.safeParse(key).success) return c.json({ error: "not found" }, 404);
-    if (
-      op !== "mcp" &&
-      op !== "hook" &&
-      deps.relayKey &&
-      !safeEqual(await sha256Hex(c.req.header("x-relay-key") ?? ""), await sha256Hex(deps.relayKey))
-    )
-      return c.json({ error: "relay key required", code: "relayKey" }, 401);
-    const ipHash = await sha256Hex(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
-    if (deps.ipLimit && !(await deps.ipLimit(ipHash)))
-      return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
+    const passed = await gate(c, { relayKey: op !== "mcp" && op !== "hook", group: false });
+    if (passed instanceof Response) return passed;
+    const { ipHash } = passed;
     // Only the headers the endpoint reads, or for a webhook every header its sender might sign;
     // x-agentgate-* comes from here, never from the caller.
     const headers = new Headers();
@@ -163,21 +158,14 @@ export function relayApp(deps: RelayDeps) {
 
   // Node channel: group members call each other (thread handoff). Same token and deployment key as sync.
   const channel = (op: ChannelOp) => async (c: Context) => {
-    if (deps.relayKey && !safeEqual(await sha256Hex(c.req.header("x-relay-key") ?? ""), await sha256Hex(deps.relayKey)))
-      return c.json({ error: "relay key required", code: "relayKey" }, 401);
-    const groupId = c.req.param("group");
     if (!deps.channel) return c.json({ error: "not found" }, 404);
-    if (!relayGroupId.safeParse(groupId).success) return c.json({ error: "invalid group", code: "shape" }, 400);
-    const token = c.req.header("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
-    if (!token) return c.json({ error: "unauthorized" }, 401);
-    const ipHash = await sha256Hex(`agentgate-relay-ip/${c.req.header("cf-connecting-ip") ?? "unknown"}`);
-    if (deps.ipLimit && !(await deps.ipLimit(ipHash)))
-      return c.json({ error: "too many requests", code: "rate" }, 429, { "retry-after": "60" });
+    const passed = await gate(c, { relayKey: true, group: true });
+    if (passed instanceof Response) return passed;
     const headers = new Headers({
       "x-agentgate-op": op,
-      "x-agentgate-group": groupId!,
-      "x-agentgate-auth": await sha256Hex(token),
-      "x-agentgate-ip": ipHash,
+      "x-agentgate-group": passed.groupId,
+      "x-agentgate-auth": passed.authHash,
+      "x-agentgate-ip": passed.ipHash,
       "x-agentgate-node": c.req.param("node")!,
     });
     for (const name of ["content-length", "upgrade"]) {
@@ -186,7 +174,7 @@ export function relayApp(deps: RelayDeps) {
     }
     const raw = c.req.raw;
     return deps
-      .channel(groupId!)
+      .channel(passed.groupId)
       .fetch(new Request(raw.url, { method: raw.method, headers, body: raw.body, signal: raw.signal }));
   };
   app.post("/g/:group/n/:node/call", channel("call"));

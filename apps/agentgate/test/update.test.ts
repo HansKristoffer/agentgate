@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import {
   mkdirSync,
   mkdtempSync,
@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { outdatedNodes } from "@agentgate/protocol";
+import { host, isServiceProcess } from "../src/service.ts";
 import { Store } from "../src/store.ts";
 import {
   installLatest,
@@ -66,6 +67,43 @@ test("update replaces the binary with the latest release when its checksum match
   expect(readFileSync(target, "utf8")).toBe("new-binary");
   expect(statSync(target).mode & 0o111).not.toBe(0);
   expect(readdirSync(dir)).toEqual(["agentgate"]);
+});
+
+test("update releases the body of the release redirect it reads only the location from", async () => {
+  let cancelled = false;
+  const realFetch = globalThis.fetch;
+  const spy = spyOn(globalThis, "fetch").mockImplementation((async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ) => {
+    const response = await realFetch(input, init);
+    if (!String(input).endsWith("/releases/latest")) return response;
+    const body = new ReadableStream({ cancel: () => void (cancelled = true) });
+    return new Response(body, { status: response.status, headers: response.headers });
+  }) as typeof fetch);
+  try {
+    expect(await installLatest(join(dir, "unused"), "9.9.9", github.url.origin)).toBeUndefined();
+    expect(cancelled).toBe(true);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("only the service manager's own process counts as the service, so a daemon started by hand is not stopped", () => {
+  const output = host.output;
+  try {
+    // launchctl print and systemctl show, naming another process than this one.
+    for (const answer of [`\tpid = ${process.pid + 1}\n`, `MainPID=${process.pid + 1}\n`, "MainPID=0\n", ""]) {
+      host.output = () => answer;
+      expect(isServiceProcess()).toBe(false);
+    }
+    for (const answer of [`\tstate = running\n\tpid = ${process.pid}\n`, `MainPID=${process.pid}\n`]) {
+      host.output = () => answer;
+      expect(isServiceProcess()).toBe(true);
+    }
+  } finally {
+    host.output = output;
+  }
 });
 
 test("nodes behind the newest reported release are outdated, including ones too old to report one", () => {
@@ -176,6 +214,11 @@ test("an update shows while it installs and restarts, clears once the node runs 
     expect(nodeUpdate(s, "server")).toMatchObject({ state: "failed", error: "this copy belongs to npm" });
     now += 2 * 60 * 60_000;
     expect(nodeUpdate(s, "server")).toBeUndefined();
+
+    // Any other answer's text stays out of status.
+    answer = async () => Response.json({ error: "proxy for https://user:secret@example.test failed" }, { status: 502 });
+    await expect(updateTracked(s, "server")).rejects.toThrow();
+    expect(nodeUpdate(s, "server")).toMatchObject({ state: "failed", error: "server answered 502" });
     s.close();
   } finally {
     peer.stop(true);

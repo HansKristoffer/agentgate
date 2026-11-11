@@ -11,6 +11,7 @@ import {
   moveOn,
   namesFrozen,
   requireFolder,
+  resumeRun,
   retryTarget,
   sendToThread,
   stopAsking,
@@ -166,23 +167,15 @@ async function answer(f: FactoryRuntime, item: FactoryItem, action: "approve" | 
   const reply = approve
     ? `The maintainer answered: ${text ?? (wait.recommendation ? "go with your recommendation" : "it is resolved")}.`
     : `The maintainer rejected your recommendation${because}.`;
-  const reopened = runs.update(s, run.id, { state: "running", endedAt: undefined });
-  f.events.emit({
-    kind: "run.resumed",
-    run: run.id,
-    item: item.id,
-    text: `${item.key}'s ${run.kind} goes on with the maintainer's answer`,
-  });
-  try {
-    await sendToThread(
-      f,
-      reopened,
-      `${reply} Continue the ${run.kind} stage, then report again with \`factory_report\`.`,
-    );
-  } catch (e) {
-    runs.update(s, run.id, { state: "reported", endedAt: run.endedAt });
-    throw e;
-  }
+  // Sent first: a send that fails, or a restart before it answers, leaves the run reported and the question open.
+  await sendToThread(f, run, `${reply} Continue the ${run.kind} stage, then report again with \`factory_report\`.`);
+  if (resumeRun(f, run))
+    f.events.emit({
+      kind: "run.resumed",
+      run: run.id,
+      item: item.id,
+      text: `${item.key}'s ${run.kind} goes on with the maintainer's answer`,
+    });
   stopAsking(f, item.id);
   touched(f, item, action, `answered the ${run.kind} thread's ${wait.recommendation ? "question" : "blocker"}`);
   return `Sent the answer to ${item.key}'s ${run.kind} thread`;

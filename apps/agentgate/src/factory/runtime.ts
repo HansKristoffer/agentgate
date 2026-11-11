@@ -1,4 +1,4 @@
-import { exponentialBackoff, getErrorMessage } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -133,21 +133,38 @@ export interface IncomingItem {
 }
 /** How a write to a source ended, which decides what the outbox does next (outbox.ts). `failed`: the service refused
  * it, so nothing was written. `unreachable`: the request certainly never reached the service, so sending it again is
- * safe. `uncertain`: no answer said either way, so it may have been written. */
+ * safe. `limited`: the service's rate limit turned it away, so nothing was written and it is sent later. `uncertain`:
+ * no answer said either way, so it may have been written. */
 export interface PostResult {
-  status: "posted" | "failed" | "unreachable" | "uncertain";
+  status: "posted" | "failed" | "unreachable" | "limited" | "uncertain";
   error?: string;
 }
+const POST_STATUS = {
+  refused: "failed",
+  limited: "limited",
+  unreachable: "unreachable",
+  unknown: "uncertain",
+} as const;
+/** A failed write's result from what its boundary knows of the call: the service `refused` it, its rate limit
+ * `limited` it, it was `unreachable`, or `unknown` when no answer said whether it was applied. */
+export const postFailure = (outcome: keyof typeof POST_STATUS, error: string): PostResult => ({
+  status: POST_STATUS[outcome],
+  error,
+});
 export interface SourceAdapter {
   type: SourceType;
-  /** Every open, labelled item now; intake dedupes. */
-  poll?(source: FactorySource): Promise<IncomingItem[]>;
-  /** Read before every stage, and for each listed issue intake has no item for: whether the issue is still open, and
-   * the newest marker in the factory's own comments on it (anyone who can comment could otherwise forge one). An
-   * issue intake reads has no item yet, so no `configCommit`: the current folder's source is meant. */
+  /** Every open, labelled item now; intake dedupes. `capped` says why some were left out, for the source's board row. */
+  poll?(source: FactorySource): Promise<{ items: IncomingItem[]; capped?: string }>;
+  /** Whether the item's issue is still open, read before every stage. Without it, dispatch reads `check`, which also
+   * reads every comment. */
+  isOpen?(item: FactoryItem): Promise<boolean>;
+  /** Read for each listed issue intake has no item for, and by the outbox to settle an uncertain comment: whether the
+   * issue is still open, and the markers in the factory's own comments on it, oldest first (anyone who can comment
+   * could otherwise forge one). An issue intake reads has no item yet, so no `configCommit`: the current folder's
+   * source is meant. */
   check?(
     item: Pick<FactoryItem, "source" | "externalId" | "repo"> & { configCommit?: string },
-  ): Promise<{ open: boolean; marker?: MarkerPayload }>;
+  ): Promise<{ open: boolean; markers: MarkerPayload[] }>;
   /** body is already rendered by markers.ts. */
   post?(item: FactoryItem, body: string): Promise<PostResult>;
   /** The comments of people the source trusts after the factory's newest comment and after the comment `after`,
@@ -416,29 +433,6 @@ export class SayOnce {
   /** Forgets every key `keep` turns down, such as runs no longer measured. */
   keepOnly(keep: (key: string) => boolean) {
     for (const key of this.said.keys()) if (!keep(key)) this.said.delete(key);
-  }
-}
-
-/** Per key, when the next try may start after failures in a row: `baseMs`, doubling up to `maxMs`. */
-export class Backoff {
-  private tries = new Map<string, { failures: number; retryAt: number }>();
-  constructor(
-    private clock: { now(): number },
-    private options: { baseMs: number; maxMs: number },
-  ) {}
-  /** Whether the key may be tried now. */
-  due(key: string): boolean {
-    return (this.tries.get(key)?.retryAt ?? 0) <= this.clock.now();
-  }
-  /** One more failure in a row, or the `failures` a caller counts itself; returns when the next try may start. */
-  failed(key: string, failures = (this.tries.get(key)?.failures ?? 0) + 1): number {
-    const retryAt = this.clock.now() + exponentialBackoff(failures, { ...this.options, jitter: false });
-    this.tries.set(key, { failures, retryAt });
-    return retryAt;
-  }
-  /** Forgets the key's failures; true when it had any, so the caller can say it works again. */
-  ok(key: string): boolean {
-    return this.tries.delete(key);
   }
 }
 

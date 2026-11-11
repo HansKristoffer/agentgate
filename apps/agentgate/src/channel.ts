@@ -1,7 +1,17 @@
 import { CHANNEL_LIMITS, MiB, channelRelayFrame } from "@agentgate/protocol/relay";
 import { encodeBase64Url } from "hanzio/crypto";
 import { z } from "zod";
-import { deriveKeys, parseInvite, relayInvite, serviceKey, type Keys } from "./relay.ts";
+import {
+  deriveKeys,
+  onOwnPush,
+  parseInvite,
+  relayInvite,
+  relayNodes,
+  relaySync,
+  serviceKey,
+  type Keys,
+} from "./relay.ts";
+import { RelaySocket } from "./relay-socket.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import type { Store } from "./store.ts";
 
@@ -153,6 +163,20 @@ export async function relayCall(
   });
 }
 
+/** A call with no body asking a member to pull from the relay now rather than on its next turn, so a machine paired
+ * only through the relay hears of a change in about a second. A member from before it answers 404 and keeps pulling
+ * on its timer. */
+const POKE_PATH = "/sync/poke";
+/** Members the relay has not seen pull for this long are asleep or gone; poking them only costs relay calls. */
+const POKE_SEEN_WITHIN = 5 * 60_000;
+
+/** Pokes each member seen lately, without waiting for any answer. */
+function pokeMembers(s: Store) {
+  for (const { node, lastSeen } of relayNodes(s))
+    if (s.now() - lastSeen < POKE_SEEN_WITHIN)
+      relayCall(s, node, POKE_PATH, { method: "POST", timeout: 10_000 }).catch(() => {});
+}
+
 /** The relay's own refusal, as a message for the user. Its body is a known code at most, never shown raw. */
 function relayFailure(status: number, text: string, node: string) {
   let code: string | undefined;
@@ -177,22 +201,19 @@ function relayFailure(status: number, text: string, node: string) {
  * connected, so another machine can set that up), and answers each call with `handler` (the handoff peer routes),
  * as the authenticated sender. */
 export class NodeChannel {
-  private ws?: WebSocket;
-  private target?: string;
+  private socket?: RelaySocket;
   /** The target and service key the socket was opened with: either changing reopens it. */
   private opened?: string;
-  private retry?: ReturnType<typeof setTimeout>;
-  private ping?: ReturnType<typeof setInterval>;
-  private backoff = 1000;
-  private lastPong = 0;
-  private inflight = new Map<string, AbortController>();
   private closed = false;
+  private unsubscribe: () => void;
   connected = false;
 
   constructor(
     private s: Store,
     private handler: (from: string, req: Request) => Promise<Response>,
-  ) {}
+  ) {
+    this.unsubscribe = onOwnPush(s, () => pokeMembers(s));
+  }
 
   /** Open, reopen or close the socket to match the relay group and whether this node can take handoffs. */
   async reconcile() {
@@ -200,78 +221,50 @@ export class NodeChannel {
     const g = await group(this.s).catch(() => undefined);
     const target = g && `${g.url}/g/${g.keys.groupId}/n/${encodeURIComponent(this.s.nodeId)}/connect`;
     const opened = g && `${target}|${g.serviceKey ?? ""}`;
-    if (opened === this.opened) return;
+    // A reconcile that awaited the group while close() ran must not open a socket nothing will stop.
+    if (opened === this.opened || this.closed) return;
     this.stop();
-    this.target = target;
     this.opened = opened;
-    if (g) this.connect(g);
+    if (g && target) this.socket = this.connect(g, target);
   }
 
   private stop() {
-    clearTimeout(this.retry);
-    clearInterval(this.ping);
-    for (const a of this.inflight.values()) a.abort(new Error("channel closed"));
-    const ws = this.ws;
-    this.ws = undefined;
+    this.socket?.stop("channel closed");
+    this.socket = undefined;
     this.connected = false;
-    ws?.close();
   }
 
-  private later(g: Group) {
-    if (this.closed) return;
-    this.connected = false;
-    clearInterval(this.ping);
-    const delay = this.backoff * (0.5 + Math.random());
-    this.backoff = Math.min(this.backoff * 2, 60_000);
-    this.retry = setTimeout(() => this.connect(g), delay);
-    this.retry.unref?.();
-  }
-
-  private connect(g: Group) {
-    if (this.closed) return;
-    // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the group token.
-    const ws = new WebSocket(this.target!.replace(/^http/, "ws"), {
-      headers: { authorization: `Bearer ${g.keys.authToken}`, ...(g.serviceKey && { "x-relay-key": g.serviceKey }) },
-    } as unknown as string[]);
-    this.ws = ws;
-    ws.onopen = () => {
-      this.connected = true;
-      this.backoff = 1000;
-      this.lastPong = Date.now();
-      const pingMs = 30_000;
-      this.ping = setInterval(() => {
-        if (Date.now() - this.lastPong > pingMs * 2) return ws.close();
+  private connect(g: Group, target: string) {
+    const socket: RelaySocket = new RelaySocket({
+      // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the group token.
+      dial: () =>
+        new WebSocket(target.replace(/^http/, "ws"), {
+          headers: {
+            authorization: `Bearer ${g.keys.authToken}`,
+            ...(g.serviceKey && { "x-relay-key": g.serviceKey }),
+          },
+        } as unknown as string[]),
+      onOpen: () => {
+        this.connected = true;
+      },
+      onDown: () => {
+        this.connected = false;
+      },
+      onMessage: (data, ws) => {
+        let frame;
         try {
-          ws.send("ping");
+          frame = channelRelayFrame.parse(JSON.parse(data));
         } catch {
-          // Closing; onclose reconnects.
+          return; // not a frame this version understands
         }
-      }, pingMs);
-      this.ping.unref?.();
-    };
-    ws.onmessage = (e) => {
-      if (e.data === "pong") {
-        this.lastPong = Date.now();
-        return;
-      }
-      let frame;
-      try {
-        frame = channelRelayFrame.parse(JSON.parse(String(e.data)));
-      } catch {
-        return; // not a frame this version understands
-      }
-      if (frame.t === "cancel") return this.inflight.get(frame.id)?.abort(new Error("cancelled by the caller"));
-      void this.answer(g, ws, frame.id, frame.body);
-    };
-    ws.onclose = () => {
-      if (this.ws === ws) this.later(g);
-    };
-    ws.onerror = () => {
-      /* onclose follows */
-    };
+        if (frame.t === "cancel") return socket.inflight.get(frame.id)?.abort(new Error("cancelled by the caller"));
+        void this.answer(g, ws, socket.inflight, frame.id, frame.body);
+      },
+    });
+    return socket;
   }
 
-  private async answer(g: Group, ws: WebSocket, frameId: string, body: string) {
+  private async answer(g: Group, ws: WebSocket, inflight: Map<string, AbortController>, frameId: string, body: string) {
     const send = (box: string) => {
       try {
         ws.send(JSON.stringify({ t: "res", id: frameId, body: box }));
@@ -301,10 +294,14 @@ export class NodeChannel {
     }
     // Recorded only once authentic, so a hostile relay can't fill the store with ids.
     if (!this.fresh(env.id, now)) return refuse();
+    if (call.meta.method === "POST" && call.meta.path === POKE_PATH) {
+      void relaySync(this.s, { push: false }).catch(() => {});
+      return send(await seal(g.keys, sealedFor("res"), { status: 204 }, new Uint8Array()));
+    }
 
     const abort = new AbortController();
-    this.inflight.set(frameId, abort);
-    const reply = await this.handle(env.from, call, abort.signal).finally(() => this.inflight.delete(frameId));
+    inflight.set(frameId, abort);
+    const reply = await this.handle(env.from, call, abort.signal).finally(() => inflight.delete(frameId));
     if (abort.signal.aborted) return;
 
     const tooLarge = {
@@ -357,6 +354,7 @@ export class NodeChannel {
 
   close() {
     this.closed = true;
+    this.unsubscribe();
     this.stop();
   }
 }

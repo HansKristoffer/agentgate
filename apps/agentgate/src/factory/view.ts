@@ -7,13 +7,12 @@ import {
 } from "@agentgate/protocol";
 import { z } from "zod";
 import { findItem, itemRef } from "./actions.ts";
-import { folderFor } from "./config.ts";
+import { folderFor, limits } from "./config.ts";
 import {
   actionsOf,
   frozenHere,
   intakeState,
   isPaused,
-  limitsOf,
   namesFrozen,
   ownRun,
   quotaWait,
@@ -22,7 +21,7 @@ import {
   waitingOf,
   workingCount,
 } from "./controller.ts";
-import { items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
+import { items, runs, type BoardRun, type FactoryItem, type FactoryRun } from "./db.ts";
 import { needsYouLines } from "./needs-you.ts";
 import { operation, UsageError, type FactoryRuntime } from "./runtime.ts";
 
@@ -75,7 +74,7 @@ function itemView(f: FactoryRuntime, run: FactoryRun) {
 }
 
 /** The review rounds so far, and the findings the last one left open when the item went to `ready` with them. */
-function reviewState(item: FactoryItem, itemRuns: FactoryRun[]) {
+function reviewState(item: FactoryItem, itemRuns: BoardRun[]) {
   const counted = itemRuns.filter((r) => r.state === "reported" && r.checked?.kind === "review" && !r.checked.stale);
   const final = counted.at(-1);
   if (!final) return {};
@@ -90,22 +89,27 @@ function reviewState(item: FactoryItem, itemRuns: FactoryRun[]) {
 
 /** Whether an item's tokens are unknown: a run that started over 10 minutes ago named no provider session (its sessions
  * do not go through agentgate), or, while it works, has had no successful measurement in 10 minutes. */
-function tokensUnknown(f: FactoryRuntime, item: FactoryItem) {
+function tokensUnknown(f: FactoryRuntime, itemRuns: BoardRun[]) {
   const before = f.s.now() - 10 * 60_000;
-  const row = f.s.db
-    .query(
-      `select count(*) as n from factory_runs where item=? and started_at < ? and (
-         (measured_at is not null and sessions = 0)
-         or (state in ('running', 'waiting') and (measured_at is null or measured_at < ?)))`,
-    )
-    .get(item.id, before, before) as { n: number };
-  return row.n > 0;
+  return itemRuns.some((r) => {
+    if (r.startedAt === undefined || r.startedAt >= before) return false;
+    const noSession = r.measuredAt !== undefined && r.sessions === 0;
+    const working = r.state === "running" || r.state === "waiting";
+    return noSession || (working && (r.measuredAt ?? 0) < before);
+  });
+}
+
+/** These items as board rows, with one read of their runs. */
+function boardItems(f: FactoryRuntime, list: FactoryItem[]): BoardItem[] {
+  const byItem = runs.forBoard(
+    f.s,
+    list.map((i) => i.id),
+  );
+  return list.map((item) => boardItem(f, item, byItem.get(item.id) ?? []));
 }
 
 /** One of this machine's items as a board row. */
-function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
-  const { s } = f;
-  const itemRuns = runs.forItem(s, item.id);
+function boardItem(f: FactoryRuntime, item: FactoryItem, itemRuns: BoardRun[]): BoardItem {
   const run = itemRuns.at(-1);
   const waiting = waitingOf(f, item);
   return {
@@ -131,7 +135,7 @@ function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
     actions: actionsOf(f, item),
     ...(item.pr && { pr: { url: item.pr.url, commit: item.pr.head, ...reviewState(item, itemRuns) } }),
     tokens: item.tokens,
-    ...(tokensUnknown(f, item) && { tokensUnknown: true }),
+    ...(tokensUnknown(f, itemRuns) && { tokensUnknown: true }),
     inPhaseSince: item.phaseAt,
     updatedAt: item.updatedAt,
   };
@@ -139,24 +143,24 @@ function boardItem(f: FactoryRuntime, item: FactoryItem): BoardItem {
 
 /** This machine's frozen items as board rows, whose one action is `drop`. */
 export const frozenItems = (f: FactoryRuntime): BoardItem[] =>
-  frozenHere(f) ? items.list(f.s, { open: true }).map((item) => boardItem(f, item)) : [];
+  frozenHere(f) ? boardItems(f, items.list(f.s, { open: true })) : [];
 
 /** The items and capacity part of the board; implement.ts adds `capacity.mainRed`, intake.ts the sources. */
 function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
   const { s } = f;
-  const limits = limitsOf(f);
+  const limit = limits(f);
   const quota = quotaWait(f);
   // While another machine runs the factory, the items are on its board, and this machine's open ones are frozen.
   const elsewhere = frozenHere(f);
   const frozen = frozenItems(f);
   return {
-    items: elsewhere ? [] : items.list(s, { finishedSince: s.now() - 7 * DAY }).map((item) => boardItem(f, item)),
+    items: elsewhere ? [] : boardItems(f, items.list(s, { finishedSince: s.now() - 7 * DAY })),
     ...(frozen.length && { frozen }),
     capacity: {
-      threads: limits.threads,
+      threads: limit.threads,
       working: f.isFactoryNode() ? workingCount(f) : 0,
       waitingForYou: elsewhere ? 0 : waitingForYou(f),
-      waitingForYouLimit: limits.waitingForYou,
+      waitingForYouLimit: limit.waitingForYou,
       quota: quota ?? "ok",
       intake: intakeState(f),
       ...(isPaused(f) && { paused: true }),
@@ -168,10 +172,12 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
 function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
   const { s } = f;
   const events = s.db
-    .query("select seq, at, kind, text from factory_events where item=? order by seq desc limit 100")
-    .all(item.id) as { seq: number; at: number; kind: string; text: string }[];
+    .query<{ seq: number; at: number; kind: string; text: string }, [string]>(
+      "select seq, at, kind, text from factory_events where item=? order by seq desc limit 100",
+    )
+    .all(item.id);
   return factoryItemDetailSchema.parse({
-    item: boardItem(f, item),
+    item: boardItems(f, [item])[0],
     runs: runs.forItem(s, item.id).map((r) => ({
       id: r.id,
       kind: r.kind,

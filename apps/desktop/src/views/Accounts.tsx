@@ -2,10 +2,21 @@ import { useState } from "react";
 import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { typedSwitch } from "hanzio";
-import { Button, Tabs } from "@heroui/react";
+import { Button } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
-import { Badge, Choice, Empty, Field, Modal, Panel, HeaderActions, RowMenu, usePending } from "../components/ui.tsx";
+import {
+  Badge,
+  Choice,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+  RowMenu,
+  Segmented,
+  usePending,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import {
   DesktopAlerts,
@@ -16,11 +27,11 @@ import {
   nameOf,
   usable,
 } from "./ClaudeDesktop.tsx";
-import { request } from "../api.ts";
-import { accountProblem } from "../attention.ts";
+import { control, request } from "../api.ts";
+import { accountProblem, accountState } from "@agentgate/protocol/attention";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
-import { field, idPath, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
+import { field, providerIcon, providerName, providerOptions, toolName, confirmDelete, planName } from "./utils.ts";
 
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
@@ -70,26 +81,25 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
   // A login Desktop runs that Agentgate hasn't saved yet: it shows on its account's row, or as its own row.
   const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
-  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead.
-   * An expired copy of a login another machine holds is not missing: that machine refreshes it and sync brings it here. */
-  const problem = (a: AccountStatus) => {
-    const p = accountProblem(a);
-    return p === "Needs sign-in" ? undefined : p;
-  };
-  const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
+  /** An expired token is not a missing login: this machine refreshes it on the next request, or the machine holding it
+   * does and sync brings it here. */
+  const needsLogin = (a: AccountStatus) => accountState(a).kind === "needs-login";
+  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
+  const problem = (a: AccountStatus) => (needsLogin(a) ? undefined : accountProblem(a));
+  const pinnable = (a: AccountStatus) => a.account.enabled && !needsLogin(a);
   const pinTitle = (a: AccountStatus) =>
     a.account.pinned
       ? "Pinned. Click to go back to automatic."
       : !a.account.enabled
         ? "Enable this account to pin it"
-        : a.needsLogin
+        : needsLogin(a)
           ? "Sign in again to pin this account"
-          : `Pin: ${a.account.provider === "claude" ? "Claude Code" : "Codex"} prefers this account while it has room`;
+          : `Pin: ${toolName(a.account.provider)} prefers this account while it has room`;
   const setPin = async (a: AccountStatus, pinned: boolean) => {
     let saved = false;
     await perform(
       async () => {
-        await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned });
+        await control(connection, pinned ? "accounts pin" : "accounts unpin", { id: a.account.id });
         saved = true;
       },
       pinned ? `${a.account.label} pinned` : `${providerName(a.account.provider)} is back on automatic`,
@@ -224,7 +234,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       refreshing={pending.has(`quota:${a.account.id}`)}
                       onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined}
                     />
-                    {(a.needsLogin || (a.expired && !a.waitingFor)) && (
+                    {needsLogin(a) && (
                       <Button
                         size="sm"
                         variant="tertiary"
@@ -265,8 +275,8 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           label: a.account.enabled ? "Disable" : "Enable",
                           onAction: () =>
                             void perform(() =>
-                              request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", {
-                                enabled: !a.account.enabled,
+                              control(connection, a.account.enabled ? "accounts disable" : "accounts enable", {
+                                id: a.account.id,
                               }),
                             ),
                         },
@@ -282,7 +292,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           onAction: async () => {
                             if (await confirmDelete(a.account.label))
                               void perform(
-                                () => request(connection, `/accounts/${idPath(a.account.id)}`, "DELETE"),
+                                () => control(connection, "accounts rm", { id: a.account.id }),
                                 "Account deleted",
                               );
                           },
@@ -344,26 +354,12 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       ))}
       {add && (
         <Modal title="Add an account" close={() => setAdd(false)}>
-          <Tabs
-            className="segmented"
-            selectedKey={mode}
-            onSelectionChange={(key) => setMode(key as "login" | "import")}
-          >
-            <Tabs.ListContainer>
-              <Tabs.List aria-label="How to add the account">
-                <Tabs.Tab id="login">
-                  Sign in
-                  <Tabs.Indicator />
-                </Tabs.Tab>
-                {local && (
-                  <Tabs.Tab id="import">
-                    Import login
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                )}
-              </Tabs.List>
-            </Tabs.ListContainer>
-          </Tabs>
+          <Segmented
+            label="How to add the account"
+            value={mode}
+            onChange={setMode}
+            options={[{ id: "login", label: "Sign in" }, local && { id: "import", label: "Import login" }]}
+          />
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -372,7 +368,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               if (mode === "login") void start(provider, field(f, "label"));
               else
                 void perform(async () => {
-                  await request(connection, "/accounts/import", "POST", {
+                  await control(connection, "import", {
                     provider,
                     dir: folder,
                     label: field(f, "label") || undefined,
@@ -381,16 +377,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                 }, "Account imported");
             }}
           >
-            <Choice
-              label="Provider"
-              name="provider"
-              defaultValue="claude"
-              options={[
-                { id: "claude", label: "Claude" },
-                { id: "codex", label: "Codex" },
-                { id: "cursor", label: "Cursor" },
-              ]}
-            />
+            <Choice label="Provider" name="provider" defaultValue="claude" options={providerOptions} />
             <Field label="Label" name="label" placeholder="e.g. Personal or Work" />
             {mode === "import" && (
               <>

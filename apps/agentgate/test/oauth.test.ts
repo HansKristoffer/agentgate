@@ -2,7 +2,7 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { connect, needsLogin, serverHealth } from "../src/mcp/gateway.ts";
-import { finishLogin, startLogin } from "../src/mcp/oauth.ts";
+import { finishLogin, startLogin, tickMcp } from "../src/mcp/oauth.ts";
 import { newInstance, parseHeaders } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
 
@@ -245,7 +245,7 @@ test("MCP refresh uses holder coordination and concurrent callers rotate once", 
   );
   const remote = new Store(":memory:");
   remote.setLocal("node", "remote");
-  for (const r of holder.changes(0).records) remote.merge(r);
+  for (const r of holder.changePage(0).records) remote.merge(r);
   remote.db.run("insert into peers values ('holder', 'http://127.0.0.1:1', 'fake', 0, ?)", [remote.now()]);
   const { refreshMcp } = await import("../src/mcp/oauth.ts");
   const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;
@@ -278,6 +278,19 @@ test("an MCP token endpoint that is briefly down keeps the valid token instead o
   }
   expect(s.get("mcpCredential", "fake")!.needsLogin).toBeFalsy();
   expect(s.local("refreshError:mcpCredential:fake")).toBeDefined();
+  s.close();
+});
+
+test("an always-on node takes over an MCP login that has no expiry, without refreshing it", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "srv");
+  s.put("node", "srv", { id: "srv", alwaysOn: true });
+  s.put("node", "mac", { id: "mac" });
+  s.put("mcp", "fake", newInstance({ id: "fake", url: `http://127.0.0.1:${server.port}/mcp` }));
+  const tokens = { access_token: "at-never-expires", refresh_token: "rt-never-expires", token_type: "Bearer" };
+  s.put("mcpCredential", "fake", { instanceId: "fake", holder: "mac", tokens });
+  await tickMcp(s);
+  expect(s.get("mcpCredential", "fake")).toMatchObject({ holder: "srv", tokens });
   s.close();
 });
 

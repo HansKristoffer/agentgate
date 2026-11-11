@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto";
-import { clamp, timeoutSignal } from "hanzio";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { clamp, isRecord } from "hanzio";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { tokenRequest, type Tokens } from "../credentials.ts";
-import { saveAccount } from "../operations.ts";
-import { fetchHeaders, readBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
-import type { Provider, Window } from "./provider.ts";
-import { claudeMetadataSession } from "./sessions.ts";
+import { fetchJson } from "./http.ts";
+import { loginInTempDir, toTokens, upsertAccount, type Provider, type Window } from "./provider.ts";
+import { claudeSession } from "./sessions.ts";
 
 // Undocumented upstream details, kept in one place. Mutable so tests can point them at fakes.
 export const CLAUDE = {
@@ -22,17 +21,6 @@ export const CLAUDE = {
   oauthBeta: "oauth-2025-04-20",
   quotaPrefix: "anthropic-ratelimit-unified-",
 };
-
-export function toTokens(
-  t: { access_token: string; refresh_token?: string; expires_in?: number },
-  previousRefresh = "",
-): Tokens {
-  return {
-    accessToken: t.access_token,
-    refreshToken: t.refresh_token ?? previousRefresh,
-    expiresAt: Date.now() + (t.expires_in ?? 3600) * 1000,
-  };
-}
 
 /** Claude Code puts the account uuid in metadata.user_id, either as JSON or as `user_…_account_<uuid>_session_…`. */
 export function rewriteUserId(userId: string, uuid: string): string {
@@ -48,30 +36,20 @@ export const claude: Provider = {
   modelList: (path) => (/^\/v1\/models(?:\?|$)/.test(path) ? { collection: "data", id: "id" } : undefined),
   fetchQuota: (credential, signal) => fetchUsage(credential.accessToken, signal),
   discoverModels: async (credential, signal) => {
-    const result = await fetchHeaders(
+    const payload = await fetchJson(
       `${CLAUDE.api}/v1/models?limit=1000`,
+      credential.accessToken,
+      () => "Model discovery failed",
       {
-        headers: {
-          authorization: `Bearer ${credential.accessToken}`,
-          "anthropic-beta": CLAUDE.oauthBeta,
-          "anthropic-version": "2023-06-01",
-        },
+        headers: { "anthropic-beta": CLAUDE.oauthBeta, "anthropic-version": "2023-06-01" },
         signal,
       },
-      10000,
     );
-    if (!result.ok) {
-      await result.body?.cancel();
-      throw new Error("Model discovery failed");
-    }
-    const payload = JSON.parse(new TextDecoder().decode(await readBody(result.body, 256 * 1024, signal)));
-    if (!Array.isArray(payload.data)) throw new Error("Unrecognized model response");
-    return payload.data.flatMap((m: { id?: unknown }) => (typeof m.id === "string" ? [m.id] : []));
+    const models = isRecord(payload) ? payload.data : undefined;
+    if (!Array.isArray(models)) throw new Error("Unrecognized model response");
+    return models.flatMap((m) => (isRecord(m) && typeof m.id === "string" ? [m.id] : []));
   },
-  session: (_headers, body) => {
-    const id = claudeMetadataSession(body);
-    return id ? new Bun.CryptoHasher("sha256").update(id).digest("hex") : undefined;
-  },
+  session: claudeSession,
   classifyFailure: (status, _headers, body) =>
     status === 404 && /model/i.test(body) ? "model" : status >= 500 ? "transient" : "request",
   probe: {
@@ -79,21 +57,24 @@ export const claude: Provider = {
     body: (model) => ({ model, max_tokens: 1, messages: [{ role: "user", content: "Reply OK" }], stream: true }),
   },
 
-  prepare(path, headers, body, cred) {
+  prepare(path, headers, body, cred, json) {
     headers.set("authorization", `Bearer ${cred.accessToken}`);
     const betas = (headers.get("anthropic-beta") ?? "")
       .split(",")
       .map((b) => b.trim())
       .filter(Boolean);
     if (!betas.includes(CLAUDE.oauthBeta)) headers.set("anthropic-beta", [...betas, CLAUDE.oauthBeta].join(","));
-    if (body?.length && cred.accountUuid && headers.get("content-type")?.includes("json")) {
-      try {
-        const json = JSON.parse(new TextDecoder().decode(body));
-        if (typeof json?.metadata?.user_id === "string") {
-          json.metadata.user_id = rewriteUserId(json.metadata.user_id, cred.accountUuid);
-          body = new TextEncoder().encode(JSON.stringify(json));
-        }
-      } catch {}
+    // Long contexts are megabytes, so the body is encoded again only when the account uuid actually changes it.
+    const metadata = json?.metadata;
+    if (
+      cred.accountUuid &&
+      isRecord(metadata) &&
+      typeof metadata.user_id === "string" &&
+      headers.get("content-type")?.includes("json")
+    ) {
+      const userId = rewriteUserId(metadata.user_id, cred.accountUuid);
+      if (userId !== metadata.user_id)
+        body = new TextEncoder().encode(JSON.stringify({ ...json, metadata: { ...metadata, user_id: userId } }));
     }
     return { url: CLAUDE.api + path, headers, body };
   },
@@ -130,7 +111,7 @@ export const claude: Provider = {
       refresh_token: refreshToken,
       client_id: CLAUDE.clientId,
     });
-    return toTokens(t, refreshToken);
+    return toTokens(t.access_token, t.refresh_token ?? refreshToken, t.expires_in);
   },
 };
 
@@ -142,12 +123,12 @@ const USAGE_WINDOWS: Record<string, string> = {
   seven_day_sonnet: "7d:sonnet",
 };
 
-export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exhausted" } | undefined {
+export function parseUsage(body: unknown): { windows: Window[]; status: "ok" | "exhausted" } | undefined {
   const windows: Window[] = [];
   for (const [key, name] of Object.entries(USAGE_WINDOWS)) {
-    const w = body?.[key];
-    if (typeof w?.utilization !== "number") continue;
-    const reset = Date.parse(w.resets_at ?? "");
+    const w = isRecord(body) ? body[key] : undefined;
+    if (!isRecord(w) || typeof w.utilization !== "number") continue;
+    const reset = Date.parse(typeof w.resets_at === "string" ? w.resets_at : "");
     // A locked window counts as full, so the pool skips the account (for that window's models) until it resets.
     windows.push({
       name,
@@ -160,19 +141,12 @@ export function parseUsage(body: any): { windows: Window[]; status: "ok" | "exha
 }
 
 export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
-  const res = await fetchHeaders(
-    `${CLAUDE.api}/api/oauth/usage`,
-    {
-      headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta },
-      signal: timeoutSignal(10_000, signal),
-    },
-    10_000,
+  return parseUsage(
+    await fetchJson(`${CLAUDE.api}/api/oauth/usage`, accessToken, (status) => `usage request failed (${status})`, {
+      headers: { "anthropic-beta": CLAUDE.oauthBeta },
+      signal,
+    }),
   );
-  if (!res.ok) {
-    await res.body?.cancel();
-    throw new Error(`usage request failed (${res.status})`);
-  }
-  return parseUsage(JSON.parse(new TextDecoder().decode(await readBody(res.body, 256 * 1024, signal))));
 }
 
 /** `email` pre-selects that account on the login page (OAuth login_hint). */
@@ -203,47 +177,50 @@ export async function exchange(s: Store, pasted: string, verifier: string, label
     redirect_uri: CLAUDE.redirectUri,
     code_verifier: verifier,
   });
-  const id = save(s, toTokens(t), { uuid: t.account?.uuid, email: t.account?.email_address }, label);
+  const id = save(
+    s,
+    toTokens(t.access_token, t.refresh_token ?? "", t.expires_in),
+    { uuid: t.account?.uuid, email: t.account?.email_address },
+    label,
+  );
   await enrich(s, id);
   return id;
 }
 
-function save(s: Store, tokens: Tokens, who: { uuid?: string; email?: string; plan?: string }, label?: string) {
-  // Same Claude account logged in twice → same record, fresh tokens.
+type Who = { uuid?: string; email?: string; plan?: string };
+
+function save(s: Store, tokens: Tokens, who: Who, label?: string) {
   const id = `claude-${(who.uuid ?? crypto.randomUUID()).slice(0, 8)}`;
-  const prev = s.get("account", id);
-  return saveAccount(
+  return upsertAccount(
     s,
-    {
-      ...prev,
-      id,
-      provider: "claude",
-      enabled: prev?.enabled ?? true,
-      priority: prev?.priority ?? 0,
-      label: label ?? prev?.label ?? who.email ?? id,
-      email: who.email,
-      plan: who.plan ?? prev?.plan,
-    },
-    { accountId: id, ...tokens, accountUuid: who.uuid, holder: s.nodeId },
+    "claude",
+    id,
+    { label, email: who.email, plan: who.plan },
+    { ...tokens, accountUuid: who.uuid },
   );
 }
 
-async function profile(accessToken: string): Promise<{ uuid?: string; email?: string; plan?: string }> {
-  const res = await fetchHeaders(`${CLAUDE.api}/api/oauth/profile`, {
-    headers: { authorization: `Bearer ${accessToken}`, "anthropic-beta": CLAUDE.oauthBeta },
-    signal: AbortSignal.timeout(5000),
-  });
-  if (!res.ok) return {};
-  const p = (await res.json()) as any;
-  return { uuid: p.account?.uuid, email: p.account?.email, plan: p.organization?.organization_type };
+const text = (value: unknown) => (typeof value === "string" ? value : undefined);
+
+async function profile(accessToken: string): Promise<Who> {
+  const p = await fetchJson(
+    `${CLAUDE.api}/api/oauth/profile`,
+    accessToken,
+    (status) => `profile request failed (${status})`,
+    {
+      headers: { "anthropic-beta": CLAUDE.oauthBeta },
+      timeoutMs: 5000,
+    },
+  );
+  const account = isRecord(p) && isRecord(p.account) ? p.account : {},
+    organization = isRecord(p) && isRecord(p.organization) ? p.organization : {};
+  return { uuid: text(account.uuid), email: text(account.email), plan: text(organization.organization_type) };
 }
 
 async function enrich(s: Store, id: string) {
   const credential = s.get("credential", id);
   if (!credential) return;
-  const who = await profile(credential.accessToken).catch(
-    () => ({}) as { uuid?: string; email?: string; plan?: string },
-  );
+  const who = await profile(credential.accessToken).catch((): Who => ({}));
   s.transaction(() => {
     const current = s.get("credential", id),
       account = s.get("account", id);
@@ -294,7 +271,7 @@ export async function importFrom(s: Store, dir: string, label?: string, cleanupK
   if (!o?.refreshToken) throw new Error(`no Claude login found in ${dir}`);
   const tokens = { accessToken: o.accessToken, refreshToken: o.refreshToken, expiresAt: o.expiresAt };
   // Account info lives in .claude.json: inside the dir when CLAUDE_CONFIG_DIR is set, next to ~/.claude otherwise.
-  let who: { uuid?: string; email?: string; plan?: string } = {};
+  let who: Who = {};
   for (const f of [join(dir, ".claude.json"), join(dir, "..", ".claude.json")]) {
     if (!existsSync(f)) continue;
     const acc = (await Bun.file(f).json()).oauthAccount;
@@ -313,21 +290,8 @@ export async function importFrom(s: Store, dir: string, label?: string, cleanupK
 }
 
 /** `agentgate login claude`: the official login in a throwaway config dir, then import and delete it. */
-export async function login(s: Store, label?: string) {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-claude-"));
-  let imported = false;
-  try {
-    const p = Bun.spawn(["claude", "auth", "login"], {
-      env: { ...process.env, CLAUDE_CONFIG_DIR: dir },
-      stdio: ["inherit", "inherit", "inherit"],
-    });
-    if ((await p.exited) !== 0) throw new Error("claude login failed");
-    const id = await importFrom(s, dir, label, true);
-    imported = true;
-    return id;
-  } catch (e) {
-    throw new Error(`Login was not imported: ${e}. Temporary login retained at ${dir}; retry import from that folder.`);
-  } finally {
-    if (imported) rmSync(dir, { recursive: true, force: true });
-  }
+export function login(s: Store, label?: string) {
+  return loginInTempDir("claude", ["claude", "auth", "login"], "CLAUDE_CONFIG_DIR", (dir) =>
+    importFrom(s, dir, label, true),
+  );
 }

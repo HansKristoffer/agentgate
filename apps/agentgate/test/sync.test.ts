@@ -1,7 +1,19 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
+import { Changes } from "../src/changes.ts";
 import { type Rec, Store } from "../src/store.ts";
-import { listeningFor, pairCode, peerRoutes, peers, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
+import { removeTmp } from "./fixtures/git.ts";
+import { startNodes } from "./fixtures/nodes.ts";
+import {
+  listeningFor,
+  pairCode,
+  peerRoutes,
+  peers,
+  pullAll,
+  pullPeer,
+  startPulls,
+  SYNC_PROTOCOL,
+} from "../src/sync.ts";
 
 function node(name: string) {
   const s = new Store(":memory:");
@@ -11,6 +23,7 @@ function node(name: string) {
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterAll(() => servers.forEach((x) => x.stop(true)));
+afterAll(removeTmp);
 
 function listen(s: Store) {
   const app = new Hono().route(
@@ -39,10 +52,10 @@ test("tombstones propagate and remain after 30 days to prevent resurrection", ()
   const a = node("a");
   const b = node("b");
   a.put("mcp", "x", { id: "x", template: "custom-http", transport: "http", url: "http://x" });
-  const stale = a.changes(0).records.find((r) => r.kind === "mcp")!;
-  for (const r of a.changes(0).records) b.merge(r);
+  const stale = a.changePage(0).records.find((r) => r.kind === "mcp")!;
+  for (const r of a.changePage(0).records) b.merge(r);
   a.del("mcp", "x");
-  for (const r of a.changes(0).records) b.merge(r);
+  for (const r of a.changePage(0).records) b.merge(r);
   expect(b.get("mcp", "x")).toBeUndefined();
   expect(b.record("mcp", "x")!.deleted).toBe(1);
   b.now = () => Date.now() + 31 * 86400_000;
@@ -179,7 +192,7 @@ test("byte-bounded pages let initial pairing and offline catch-up exceed 16 MiB"
           { path: "assets/data", data: payload },
         ],
       });
-    expect(Buffer.byteLength(JSON.stringify(a.changes(0)))).toBeGreaterThan(16 * 1024 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(a.changePage(0, Infinity)))).toBeGreaterThan(16 * 1024 * 1024);
     const url = listen(a);
     a.db.run("insert into peers values ('large-b', 'http://unused', 'token', 0, null)");
     b.db.run("insert into peers values ('large-a', ?, 'token', 0, null)", [url]);
@@ -322,4 +335,144 @@ test("a joiner that lost the answer gets the same token for the same code; nobod
   expect((await join({ code: pairCode(a) })).status).toBe(409); // a new code still cannot pair b twice
   a.now = () => Date.now() + 11 * 60_000;
   expect((await join({})).status).toBe(403);
+});
+
+/** A peer whose change feed answers each request once the test calls `answer`; `requests` resolves the nth request. */
+function heldPeer() {
+  const held: (() => void)[] = [];
+  const arrived: ((n: number) => void)[] = [];
+  let count = 0;
+  const server = Bun.serve({
+    port: 0,
+    idleTimeout: 0,
+    fetch: () => {
+      count++;
+      arrived.splice(0).forEach((r) => r(count));
+      return new Promise<Response>((resolve) =>
+        held.push(() => resolve(Response.json({ protocol: SYNC_PROTOCOL, records: [], seq: 0 }))),
+      );
+    },
+  });
+  servers.push(server);
+  const requests = async (n: number) => {
+    while (count < n) await new Promise<number>((r) => arrived.push(r));
+  };
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    count: () => count,
+    requests,
+    answer: () => held.shift()?.(),
+  };
+}
+
+test("a peer whose pull hangs does not hold back another peer's next round", async () => {
+  const b = node("b");
+  const asleep = heldPeer();
+  const awake = heldPeer();
+  b.db.run("insert into peers values ('asleep', ?, 'tok', 0, null)", [asleep.url]);
+  b.db.run("insert into peers values ('awake', ?, 'tok', 0, null)", [awake.url]);
+  startPulls(b);
+  await awake.requests(1);
+  awake.answer();
+  await asleep.requests(1);
+  while (peers(b).find((p) => p.node === "awake")!.last_seen === null) await Bun.sleep(1);
+  startPulls(b);
+  await awake.requests(2);
+  expect(asleep.count()).toBe(1); // still pending, and not started twice
+});
+
+test("a poke during a pull brings exactly one more pull after it", async () => {
+  const b = node("b");
+  const a = heldPeer();
+  b.db.run("insert into peers values ('a', ?, 'tok', 0, null)", [a.url]);
+  const first = pullPeer(b, peers(b)[0]!);
+  await a.requests(1);
+  // Two pokes while the first pull reads: the change they announce may be past what it already read.
+  const poked = [pullPeer(b, peers(b)[0]!), pullPeer(b, peers(b)[0]!)];
+  a.answer();
+  await a.requests(2);
+  a.answer();
+  await Promise.all([first, ...poked]);
+  expect(a.count()).toBe(2);
+});
+
+test("a pull failure marks status changed once, until the peer recovers", async () => {
+  const a = node("a");
+  const b = node("b");
+  const bumps: string[] = [];
+  b.onChange = (topic) => bumps.push(topic);
+  const down = Bun.serve({ port: 0, fetch: () => new Response("", { status: 503 }) });
+  servers.push(down);
+  a.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
+  b.db.run("insert into peers values ('a', ?, 'tok', 0, null)", [`http://127.0.0.1:${down.port}`]);
+
+  expect(await pullAll(b)).toHaveLength(1);
+  expect(bumps).toEqual(["status"]);
+  await pullAll(b);
+  expect(bumps).toEqual(["status"]);
+
+  b.db.run("update peers set url = ? where node = 'a'", [listen(a)]);
+  expect(await pullAll(b)).toEqual([]);
+  expect(bumps).toEqual(["status", "status"]);
+});
+
+test("/peer/topics needs the peer token and holds the answer until this machine's own factory or threads change", async () => {
+  const s = node("a");
+  s.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
+  const changes = new Changes(s);
+  const routes = new Hono().route(
+    "/peer",
+    peerRoutes(s, () => {}, changes),
+  );
+  const topics = async (query = "", token = "tok") =>
+    routes.request(`/peer/topics${query}`, { headers: { authorization: `Bearer ${token}` } });
+
+  expect((await topics("", "wrong")).status).toBe(401);
+  const { token } = (await (await topics()).json()) as { token: string };
+  let answered = false;
+  const held = topics(`?after=${token}&wait=25`).then((res) => {
+    answered = true;
+    return res.json();
+  });
+  // A request without `after` answers at once; by then the held one, on the same path, is waiting.
+  await topics();
+  // Neither moves what peers follow: a status change, or a change this machine heard from another peer.
+  changes.bump("status");
+  changes.bumpFromPeer("factory");
+  await topics();
+  expect(answered).toBe(false);
+
+  changes.bump("factory");
+  expect(await held).toMatchObject({ versions: { factory: 1, threads: 0 } });
+  changes.close();
+});
+
+test("a factory change on a paired machine wakes this machine's app, and a machine with no app waiting polls no one", async () => {
+  const [a, b] = await startNodes("a", "b");
+  const polled: string[] = [];
+  let baselineTaken!: () => void;
+  const baseline = new Promise<void>((resolve) => (baselineTaken = resolve));
+  const realFetch = globalThis.fetch;
+  const spy = spyOn(globalThis, "fetch").mockImplementation(((input: string | URL | Request, init?: RequestInit) => {
+    const url = input instanceof Request ? input.url : String(input);
+    if (url.includes("/peer/topics")) polled.push(url);
+    // a asks with `after` once it holds b's first answer: a change from then on is one a must see.
+    if (url.includes("/peer/topics?after=")) baselineTaken();
+    return realFetch(input, init);
+  }) as typeof fetch);
+  try {
+    const app = new AbortController();
+    const before = a!.ctx.changes.snapshot();
+    const woke = a!.ctx.changes.wait(before.token, 60_000, app.signal);
+    await baseline;
+    b!.s.bump("factory");
+    await woke;
+    app.abort();
+    expect(a!.ctx.changes.snapshot().versions.factory).toBe(before.versions.factory + 1);
+    expect(polled.length).toBeGreaterThan(0);
+    expect(polled.every((url) => url.startsWith(`${b!.url}/peer/topics`))).toBe(true);
+  } finally {
+    spy.mockRestore();
+    await Promise.all([a!.stop(), b!.stop()]);
+  }
 });

@@ -41,7 +41,7 @@ import {
 } from "../src/skills.ts";
 import { readRepoSkills, type RepoFetch, type RepoFetcher } from "../src/skill-import.ts";
 import { MAX_SKILL, SkillConflict } from "@agentgate/protocol";
-import { parseData, parseRecord, importBackup, Store } from "../src/store.ts";
+import { parseData, importBackup, Store } from "../src/store.ts";
 
 const md = (name: string, text = "Do it.") => `---\nname: ${name}\ndescription: ${name} helps.\n---\n${text}\n`;
 const fetched = (id: string, text?: string): FetchedSkill => ({
@@ -311,7 +311,7 @@ test("all bundle ingestion paths reject malformed content before committing", ()
     const data = { id: "x", description: "x", files, updatedAt: 1 };
     expect(() => s.put("skill", "x", data)).toThrow();
     expect(() =>
-      parseRecord({
+      s.merge({
         kind: "skill",
         id: "x",
         rev: 1,
@@ -521,8 +521,15 @@ test("worktree registrations delayed beyond 600 ms converge through bounded retr
       metadata = join(repo, ".git", "worktrees", "slow");
     mkdirSync(tree);
     mkdirSync(metadata);
+    let passes = 0;
+    const sync = links.sync.bind(links);
+    links.sync = () => {
+      passes++;
+      sync();
+    };
     for (const event of events) event();
-    await Bun.sleep(800);
+    // The worktree's metadata lands only after the retries at 50 and 600 ms have passed.
+    expect(await until(() => passes >= 2)).toBe(true);
     writeFileSync(join(metadata, "gitdir"), join(tree, ".git"));
     expect(await until(() => link(join(tree, ".agents", "skills", "x")) === join(root, "x"), 3000)).toBe(true);
   } finally {
@@ -567,6 +574,63 @@ test("watch setup failures and emitted errors are recoverable and close allocate
     links.close();
   }
   expect(closes).toBe(3);
+});
+
+test("in the git dir only a worktrees change schedules a sync, not git status rewriting index", () => {
+  const { s, root, repo, links: initial } = setup();
+  initial.close();
+  const events = new Map<string, (event: string, name: string | null) => void>();
+  const factory = ((path: string, callback: (event: string, name: string | null) => void) => {
+    events.set(path, callback);
+    return watch(path, () => {});
+  }) as typeof watch;
+  const links = new SkillLinks(s, root, () => [], { watch: factory });
+  try {
+    writeSkillMd(s, "x", "instructions");
+    setSkillProjects(s, "x", ["owner/repo"]);
+    links.register(repo, "owner/repo");
+    const soon = spyOn(links, "soon");
+    const gitDir = events.get(join(repo, ".git"))!;
+    gitDir("change", "index");
+    gitDir("rename", "index.lock");
+    expect(soon).not.toHaveBeenCalled();
+    gitDir("rename", "worktrees");
+    expect(soon).toHaveBeenCalledTimes(1);
+  } finally {
+    links.close();
+  }
+});
+
+test("a pass that changes nothing writes no skill health or mirror ownership", () => {
+  const { s, repo, links } = setup();
+  writeSkillMd(s, "x", "instructions");
+  setSkillProjects(s, "x", ["owner/repo"]);
+  mkdirSync(join(repo, ".claude", "skills", "native"), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", "native", "SKILL.md"), md("native"));
+  links.register(repo, "owner/repo");
+  links.setMirroring(repo, true);
+  const writes = spyOn(s, "setLocal");
+  links.sync();
+  links.sync();
+  expect(writes.mock.calls.map(([key]) => key)).toEqual([]);
+});
+
+test("a sync that throws in the debounce timer is logged by name, and the daemon keeps running", async () => {
+  const { links } = setup();
+  const thrown = Promise.withResolvers<void>();
+  spyOn(links, "sync").mockImplementationOnce(() => {
+    thrown.resolve();
+    throw new Error("database is locked near TOKEN=secret");
+  });
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    links.soon();
+    await thrown.promise;
+    links.close();
+    expect(errors.mock.calls.map((c) => c.join(" "))).toEqual(["skills: sync failed: Error"]);
+  } finally {
+    errors.mockRestore();
+  }
 });
 
 test("a repository's skills are read from .claude/skills and .agents/skills, skipping mirrors and unreadable ones", () => {
@@ -621,7 +685,7 @@ test("a connected repository installs, links, updates and removes its skills, an
   writeSkillMd(s, "gamma", md("gamma"));
   next = { commit: "c1", skills: [fetched("alpha"), fetched("beta"), fetched("gamma")], skipped: [] };
   await connectSkillRepo(s, "owner/pack", ["*"], fetch);
-  expect(s.get("project", "*")!.skills.sort()).toEqual(["alpha", "beta"]);
+  expect(s.get("project", "*")!.skills.toSorted()).toEqual(["alpha", "beta"]);
   expect(s.get("skill", "alpha")!.source).toBe(url);
   expect(skillRepoSummaries(s)).toEqual([
     expect.objectContaining({
@@ -653,7 +717,7 @@ test("a connected repository installs, links, updates and removes its skills, an
   // A skill that went missing locally forces a full fetch even at the same commit.
   setSkillRepoProjects(s, url, ["owner/repo"]);
   expect(s.get("project", "*")!.skills).toEqual([]);
-  expect(s.get("project", "owner/repo")!.skills.sort()).toEqual(["alpha", "delta"]);
+  expect(s.get("project", "owner/repo")!.skills.toSorted()).toEqual(["alpha", "delta"]);
   s.del("skill", "delta");
   since = [];
   next = { commit: "c2", skills: [fetched("alpha", "Changed."), fetched("delta")], skipped: [] };
@@ -666,6 +730,27 @@ test("a connected repository installs, links, updates and removes its skills, an
   expect(skillSummaries(s).map((k) => k.id)).toEqual(["gamma"]);
   expect(s.get("project", "owner/repo")!.skills).toEqual([]);
   await expect(syncSkillRepo(s, url, fetch)).rejects.toThrow(/not connected/);
+});
+
+test("repository summaries read the project and skill records once however many repositories are connected", async () => {
+  const { s } = setup();
+  for (const name of ["one", "two", "three"])
+    await connectSkillRepo(s, `owner/${name}`, ["*"], async () => ({
+      commit: "c1",
+      skills: [fetched(name)],
+      skipped: [],
+    }));
+  skillRepoSummaries(s); // the first read after a write also loads the changed rows, once per kind
+  const query = spyOn(s.db, "query");
+  const summaries = skillRepoSummaries(s);
+  const recordReads = query.mock.calls.filter(([sql]) => sql.includes("from records")).length;
+  query.mockRestore();
+  expect(recordReads).toBe(2);
+  expect(summaries.map((r) => `${r.url} ${r.projects} ${r.skills}`)).toEqual([
+    "https://github.com/owner/one * one",
+    "https://github.com/owner/three * three",
+    "https://github.com/owner/two * two",
+  ]);
 });
 
 test("a repository's skills folder that links outside the repository is ignored", () => {

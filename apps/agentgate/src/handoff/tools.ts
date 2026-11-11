@@ -1,8 +1,8 @@
-import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Server, type CallToolResult, type ListToolsResult, type Tool } from "@modelcontextprotocol/server";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
-import { BUILTIN_ALIAS, type Source } from "../mcp/gateway.ts";
+import { BUILTIN_ALIAS } from "../mcp/gateway.ts";
+import { inProcessSource } from "../mcp/source.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
 import { T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
@@ -92,15 +92,4 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
  * Built-in gateway tools under the `agentgate` alias, so an agent can hand its own thread to another machine, and,
  * while the factory is on, the factory's tools.
  */
-export async function handoffSource(h: Handoffs, f?: FactoryRuntime): Promise<Source> {
-  const [a, b] = InMemoryTransport.createLinkedPair();
-  const srv = server(h, f),
-    client = new Client({ name: "agentgate", version: "1" });
-  await Promise.all([srv.connect(a), client.connect(b)]);
-  const close = client.close.bind(client);
-  client.close = async () => {
-    await close();
-    await srv.close();
-  };
-  return { alias: BUILTIN_ALIAS, client };
-}
+export const handoffSource = (h: Handoffs, f?: FactoryRuntime) => inProcessSource(BUILTIN_ALIAS, server(h, f));

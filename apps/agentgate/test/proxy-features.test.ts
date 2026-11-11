@@ -1,13 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { accountPatchSchema, aliasesSchema, settingsPatchSchema } from "@agentgate/protocol";
 import { patchSettings, revision } from "../src/configuration.ts";
 import { Credentials } from "../src/credentials.ts";
-import { deleteAccount, saveAccount } from "../src/operations.ts";
+import { saveAccount } from "../src/operations.ts";
+import { deleteAccount } from "../src/ops/accounts.ts";
 import { Store, exportBackup, importBackup } from "../src/store.ts";
-import { cool, cooldowns, resetCooldown, retryAfterMs } from "../src/llm/policy.ts";
+import { cool, cooldowns, resetCooldown } from "../src/llm/policy.ts";
 import { Quotas, exhausted, matchesWindow, recordUsage } from "../src/llm/quota.ts";
 import {
   beginRoute,
@@ -18,11 +19,11 @@ import {
   resolveModel,
   route,
 } from "../src/llm/routing.ts";
-import { Telemetry, metrics, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
+import { Telemetry, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
 import { accountStatus, proxy } from "../src/llm/pool.ts";
 import { ProxyOperations } from "../src/llm/operations.ts";
 import { parseQuota } from "../src/llm/codex.ts";
-import { capabilities, type Provider } from "../src/llm/provider.ts";
+import { capabilities, type Observation, type Provider } from "../src/llm/provider.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => {
@@ -176,7 +177,7 @@ test.each([true, false])("usage refresh accepts an early quota reset (manual: %s
 
 test("quota polls coalesce and a late poll preserves newer live-response usage", async () => {
   const { s, creds } = fixture();
-  const result = gate<any>(),
+  const result = gate<Observation | undefined>(),
     entered = gate<void>();
   let count = 0;
   const quotas = new Quotas(s, creds, {
@@ -203,7 +204,7 @@ test("quota polls coalesce and a late poll preserves newer live-response usage",
 test("quota work after deletion or relogin cannot resurrect usage or health", async () => {
   for (const change of ["delete", "relogin"] as const) {
     const { s, creds } = fixture();
-    const result = gate<any>(),
+    const result = gate<Observation | undefined>(),
       entered = gate<void>();
     const quotas = new Quotas(s, creds, {
       claude: {
@@ -389,35 +390,71 @@ test("advertised model lists preserve metadata, respect policy, and expose resol
     new Request("http://127.0.0.1/models"),
     url,
   );
-  expect(((await res.json()) as any).data.map((m: any) => m.id)).toEqual(["sonnet", "friendly"]);
+  expect(await res.json()).toMatchObject({ data: [{ id: "sonnet" }, { id: "friendly" }] });
 });
 
-test("telemetry byte retention includes attempts and never leaves orphan attempt rows", () => {
+test("telemetry byte retention includes attempts, runs an hour after the last trim, and leaves no orphan attempts", () => {
   const { s } = fixture();
   s.put("setting", "settings", { logRetentionBytes: 65536 });
+  let now = s.now();
+  s.now = () => now;
   const t = new Telemetry(s, "claude");
   for (let i = 0; i < 400; i++) t.attempt("a", "rate-limit retry");
   t.finish("failed", "rate");
+  expect(requestDetail(s, t.request.id)).toBeDefined();
+  now += 3600000;
+  new Telemetry(s, "claude").finish("success");
   expect(requestDetail(s, t.request.id)).toBeUndefined();
   expect(s.db.query("select count(*) as n from proxy_attempts").get()).toEqual({ n: 0 });
 });
 
-test("account retry zero overrides the global policy while inheritance retains bounded retries", async () => {
+test("finished requests bump activity at once, then at most once a second, and the last finish is never lost", () => {
+  const { s } = fixture();
+  jest.useFakeTimers();
+  cleanup.push(() => jest.useRealTimers());
+  let bumps = 0;
+  s.onChange = (topic) => void (topic === "activity" && bumps++);
+
+  for (let i = 0; i < 10; i++) new Telemetry(s, "claude").finish("success");
+  expect(bumps).toBe(1);
+  jest.advanceTimersByTime(1000);
+  expect(bumps).toBe(2);
+  jest.advanceTimersByTime(5000);
+  expect(bumps).toBe(2);
+  new Telemetry(s, "claude").finish("success");
+  expect(bumps).toBe(3);
+});
+
+test("telemetry trims on every 100th finish, keeping the newest requests and any still pending", () => {
+  const { s } = fixture();
+  s.put("setting", "settings", { logRetention: 100 });
+  const pending = new Telemetry(s, "claude"),
+    open = Array.from({ length: 120 }, () => new Telemetry(s, "claude"));
+  const ids = () => (s.db.query("select id from proxy_requests order by seq").values() as string[][]).flat();
+  for (const t of open.slice(0, 99)) t.finish("success");
+  expect(ids().length).toBe(121);
+  open[99]!.finish("success");
+  expect(ids()).toEqual([pending, ...open.slice(20)].map((t) => t.request.id));
+});
+
+test("a short Retry-After retries the same account while its retry policy allows, then moves on", async () => {
   const { s, creds } = fixture();
-  let count = 0;
-  const url = upstream(() => {
-    count++;
-    return count % 2 ? new Response("rate", { status: 429, headers: { "retry-after": "0" } }) : new Response("ok");
+  const seen: string[] = [];
+  const url = upstream((req) => {
+    seen.push(req.headers.get("authorization")!);
+    return seen.length % 2
+      ? new Response("rate", { status: 429, headers: { "retry-after": "1" } })
+      : new Response("ok");
   });
-  s.put("setting", "settings", { retryLimit: 1 });
+  s.put("setting", "settings", { strategy: "priority", retryLimit: 1 });
   s.put("account", "a", { ...s.get("account", "a")!, policy: { retryLimit: 0 } });
-  expect((await proxy(s, creds, adapter, client(), url)).status).toBe(429);
-  expect(count).toBe(1);
-  count = 0;
+  await (await proxy(s, creds, adapter, client(), url)).text();
+  expect(seen).toEqual(["access-a", "access-b"]);
+  seen.length = 0;
+  resetCooldown(s, "a");
   s.put("account", "a", { ...s.get("account", "a")!, policy: {} });
   await (await proxy(s, creds, adapter, client(), url)).text();
-  expect(count).toBe(2);
-  expect(metrics(s).fallback).toBe(0);
+  expect(seen).toEqual(["access-a", "access-a"]);
 });
 
 test("relogin clears local backoff, affinity and continuation ownership without deleting in-flight work", () => {
@@ -445,60 +482,14 @@ test("telemetry separates account fallback from same-account retries and redacts
   fallback.attempt("b", "automatic");
   fallback.headers(200);
   fallback.finish("success", undefined, "completed");
-  expect(metrics(s)).toMatchObject({ total: 2, succeeded: 2, fallback: 1 });
+  const accountsTried = (id: string) => new Set(requestDetail(s, id)!.attempts.map((a) => a.account)).size;
+  expect([accountsTried(retry.request.id), accountsTried(fallback.request.id)]).toEqual([1, 2]);
   const exported = JSON.stringify(requestDetail(s, retry.request.id));
   expect(exported).not.toContain("access-a");
   expect(exported).not.toContain("secret.invalid");
   expect(exported).toContain("[redacted]");
-  expect(s.changes(0).records.some((r) => (r.kind as string) === "proxy_requests")).toBe(false);
+  expect(s.changePage(0).records.some((r) => (r.kind as string) === "proxy_requests")).toBe(false);
   expect(JSON.stringify(exportBackup(s, false))).not.toContain(retry.request.id);
-});
-
-test("metrics exclude pending and expired requests and average only measured latency", () => {
-  const { s } = fixture();
-  const now = s.now();
-  s.now = () => now - 86400001;
-  const expired = new Telemetry(s, "claude");
-  expired.attempt("a", "automatic");
-  expired.attempt("b", "automatic");
-  expired.finish("success");
-  s.now = () => now;
-  const pending = new Telemetry(s, "claude");
-  pending.attempt("a", "automatic");
-  pending.attempt("b", "automatic");
-  const succeeded = new Telemetry(s, "claude");
-  succeeded.headers(200);
-  succeeded.request.headersMs = 40;
-  succeeded.request.firstByteMs = 15;
-  succeeded.finish("success");
-  const failed = new Telemetry(s, "claude");
-  failed.attempt("a", "automatic");
-  failed.attempt("b", "automatic");
-  failed.headers(502);
-  failed.request.headersMs = 61;
-  failed.finish("failed", "transient");
-  const cancelled = new Telemetry(s, "claude");
-  cancelled.finish("cancelled", "cancelled");
-  expect(metrics(s)).toMatchObject({
-    total: 3,
-    succeeded: 1,
-    failed: 1,
-    interrupted: 0,
-    cancelled: 1,
-    fallback: 1,
-    averageHeadersMs: 51,
-    averageFirstByteMs: 15,
-  });
-  expect(metrics(s, now + 1)).toMatchObject({
-    total: 0,
-    succeeded: 0,
-    failed: 0,
-    interrupted: 0,
-    cancelled: 0,
-    fallback: 0,
-  });
-  expect(metrics(s, now + 1).averageHeadersMs).toBeUndefined();
-  expect(metrics(s, now + 1).averageFirstByteMs).toBeUndefined();
 });
 
 test("request cursors remain stable during concurrent inserts and reset after retention", () => {
@@ -518,6 +509,8 @@ test("request cursors remain stable during concurrent inserts and reset after re
   expect(second.requests.some((r) => first.requests.some((x) => x.id === r.id))).toBe(false);
   expect(second.requests.some((r) => r.id === t.request.id)).toBe(false);
   s.put("setting", "settings", { logRetention: 100 });
+  const now = s.now() + 3600000;
+  s.now = () => now;
   const last = new Telemetry(s, "claude");
   last.finish("success");
   expect(requestDetail(s, ids[0]!)).toBeUndefined();
@@ -526,22 +519,30 @@ test("request cursors remain stable during concurrent inserts and reset after re
   expect(() => requests(s, { cursor: "abc" })).toThrow();
 });
 
-test("SSE observer handles split frames, ignores oversized events, and preserves failure terminal", () => {
+test("SSE observer handles split frames, takes continuation ids from response.created, and preserves failure terminal", () => {
   const ids: string[] = [],
     observer = streamObserver((id) => ids.push(id)),
     bytes = (v: string) => new TextEncoder().encode(v);
-  observer.chunk(bytes('data: {"type":"response.completed","response":{"id":"resp-a"}}\r\n'));
+  observer.chunk(bytes('data: {"type":"response.created","response":{"id":"resp-a"}}\r\n'));
   observer.chunk(bytes("\r\n"));
+  observer.chunk(bytes('data: {"type":"response.completed","response":{"id":"resp-a"}}\n\n'));
   expect(observer.terminal).toBe("completed");
   expect(ids).toEqual(["resp-a"]);
   observer.chunk(bytes('data: {"type":"error"}\n\n'));
   observer.chunk(bytes("event: message_stop\ndata: {}\n\n"));
   expect(observer.terminal).toBe("provider-error");
-  const oversized = streamObserver();
-  oversized.chunk(bytes(`data: ${JSON.stringify({ type: "error", message: "x".repeat(200000) })}\n\n`));
-  expect(oversized.terminal).toBeUndefined();
-  oversized.chunk(bytes('data: {"type":"message_stop"}\n\n'));
-  expect(oversized.terminal).toBe("completed");
+});
+
+test("a Codex end event larger than 64 KiB still decides how the stream ended", () => {
+  const end = (type: string) => {
+    const observer = streamObserver(),
+      output = "x".repeat(100 * 1024);
+    const event = `event: ${type}\ndata: {"type":"${type}","response":{"output":[{"text":"${output}"}],"usage":{"output_tokens":7}}}\n\n`;
+    observer.chunk(new TextEncoder().encode(event));
+    return { terminal: observer.terminal, output: observer.tokens.output };
+  };
+  expect(end("response.completed")).toEqual({ terminal: "completed", output: 7 });
+  expect(end("response.failed")).toEqual({ terminal: "provider-error", output: 7 });
 });
 
 test("token usage is read from Claude and Codex streams, including oversized completions", () => {
@@ -598,7 +599,7 @@ test("quota fallback is one request with two attempts; aliases reach the upstrea
   const { s, creds } = fixture();
   const seen: string[] = [];
   const url = upstream(async (req) => {
-    const model = ((await req.json()) as any).model;
+    const model = ((await req.json()) as { model: string }).model;
     seen.push(`${req.headers.get("authorization")}:${model}`);
     return req.headers.get("authorization") === "access-a"
       ? new Response("quota", { status: 429, headers: { "retry-after": "60" } })
@@ -608,29 +609,42 @@ test("quota fallback is one request with two attempts; aliases reach the upstrea
   const response = await proxy(s, creds, adapter, client("friendly"), url);
   await response.text();
   expect(seen).toEqual(["access-a:sonnet", "access-b:sonnet"]);
-  expect(metrics(s)).toMatchObject({ total: 1, succeeded: 1, fallback: 1 });
   const record = requests(s).requests[0]!;
   expect(record).toMatchObject({ requestedModel: "friendly", routedModel: "sonnet", attempts: 2, stream: "completed" });
   expect(requestDetail(s, record.id)?.attempts[0]?.failure).toBe("quota");
 });
 
-test("Retry-After beyond bootstrap budget never retries early and shared backoff blocks peers", async () => {
+test("a long Retry-After moves to the next account, and the client gets the 429 once every account is limited", async () => {
   const { s, creds } = fixture();
-  let count = 0;
-  const url = upstream(() => {
-    count++;
-    return new Response("rate", { status: 429, headers: { "retry-after": "86400" } });
+  let limited = new Set(["access-a"]);
+  const seen: string[] = [];
+  const url = upstream((req) => {
+    const token = req.headers.get("authorization")!;
+    seen.push(token);
+    return limited.has(token)
+      ? new Response("rate", { status: 429, headers: { "retry-after": "60" } })
+      : new Response("ok");
   });
-  s.put("setting", "settings", { bootstrapTimeoutMs: 1000 });
-  expect((await proxy(s, creds, adapter, client(), url)).status).toBe(429);
-  expect(count).toBe(1);
-  expect(cooldowns(s, "a")[0]!.retryAt - s.now()).toBeGreaterThan(86390000);
-  cool(s, "b", "rate", s.now() + 86400000);
+  s.put("setting", "settings", { strategy: "priority" });
+  expect(await (await proxy(s, creds, adapter, client(), url)).text()).toBe("ok");
+  expect(seen).toEqual(["access-a", "access-b"]);
+  expect(cooldowns(s, "a")[0]!.retryAt - s.now()).toBeGreaterThan(59000);
+
+  resetCooldown(s, "a");
+  seen.length = 0;
+  limited = new Set(["access-a", "access-b"]);
+  const rejected = await proxy(s, creds, adapter, client(), url);
+  expect(rejected.status).toBe(429);
+  expect(rejected.headers.get("retry-after")).toBe("60");
+  expect(await rejected.text()).toBe("rate");
+  expect(seen).toEqual(["access-a", "access-b"]);
+  expect(requests(s).requests[0]?.failure).toBe("rate");
+
+  // The shared backoff now keeps further requests off both accounts until it ends.
   const blocked = await proxy(s, creds, adapter, client(), url);
   expect(blocked.status).toBe(429);
   expect(await blocked.text()).toContain("rate limited");
-  expect(count).toBe(1);
-  expect(retryAfterMs(new Headers({ "retry-after": "86400" }))).toBe(86400000);
+  expect(seen).toHaveLength(2);
 });
 
 test("account attempt limits prevent unbounded quota failover", async () => {
@@ -662,7 +676,6 @@ test("uncertain network outcome never replays on another account", async () => {
   expect(response.status).toBe(502);
   expect(await response.text()).toContain("outcome uncertain");
   expect(count).toBe(1);
-  expect(metrics(s).fallback).toBe(0);
 });
 
 test("a request that is not streamed waits for its answer past the streaming header deadline", async () => {
@@ -721,7 +734,7 @@ test("stream provider error, idle timeout, and cancellation produce distinct fin
       outcome: mode === "error" ? "failed" : mode === "cancel" ? "cancelled" : "interrupted",
       stream: mode === "error" ? "provider-error" : mode === "cancel" ? "cancelled" : "idle-timeout",
     });
-    expect(metrics(s).fallback).toBe(0);
+    expect(requests(s).requests[0]?.attempts).toBe(1);
   }
 });
 
@@ -730,9 +743,12 @@ test("stateful continuations remain with their owner and fail explicitly when ow
   let count = 0;
   const url = upstream(() => {
     count++;
-    return new Response('data: {"type":"response.completed","response":{"id":"resp-a"}}\n\n', {
-      headers: { "content-type": "text/event-stream" },
-    });
+    return new Response(
+      'data: {"type":"response.created","response":{"id":"resp-a"}}\n\ndata: {"type":"response.completed"}\n\n',
+      {
+        headers: { "content-type": "text/event-stream" },
+      },
+    );
   });
   const stateful = {
     ...adapter,

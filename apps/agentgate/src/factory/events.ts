@@ -38,6 +38,7 @@ export class FactoryEvents {
       "insert into factory_events (at, item, run, kind, text) values (?, ?, ?, ?, ?)",
       [this.s.now(), ("item" in event && event.item) || null, ("run" in event && event.run) || null, kind, event.text],
     );
+    this.s.bump("factory");
     const failed = (e: unknown) => console.error(`factory: ${event.kind} listener failed: ${logError(e)}`);
     for (const listener of this.listeners.get(event.kind) ?? []) {
       try {
@@ -62,8 +63,10 @@ export class FactoryEvents {
 
   recent(limit: number) {
     const rows = this.s.db
-      .query("select seq, at, item, kind, text from factory_events order by seq desc limit ?")
-      .all(limit) as { seq: number; at: number; item: string | null; kind: string; text: string }[];
+      .query<{ seq: number; at: number; item: string | null; kind: string; text: string }, [number]>(
+        "select seq, at, item, kind, text from factory_events order by seq desc limit ?",
+      )
+      .all(limit);
     return rows.map(({ item, ...r }) => ({ ...r, ...(item !== null && { item }) }));
   }
 }

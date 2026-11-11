@@ -2,8 +2,8 @@ import { useState } from "react";
 import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import { slugify, type SkillPreview, type SkillPreviewResponse, type SkillSearchResult } from "@agentgate/protocol";
-import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
+import { slugify, type SkillPreview, type SkillSearchResult } from "@agentgate/protocol";
+import { Button, Input, TextField, toast } from "@heroui/react";
 import {
   Badge,
   Check,
@@ -13,12 +13,13 @@ import {
   Panel,
   HeaderActions,
   RowMenu,
+  Segmented,
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ProjectChecks } from "../components/Assignments.tsx";
+import { AssignProjects, ProjectChecks } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
+import { control, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 const TEMPLATE = `---
@@ -43,7 +44,7 @@ function Where({ ids }: { ids: string[] }) {
     </div>
   );
 }
-type Editor = { id?: string; skillMd: string; revision?: string | null };
+type Editor = { id?: string; skillMd: string; revision?: string };
 const repoName = (url: string) => url.replace("https://github.com/", "");
 /** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
 const sourceLabel = (source?: string) => {
@@ -74,7 +75,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
   const load = (source: string, skill?: string) =>
     perform(async () => {
-      const fetched = await request<SkillPreviewResponse>(connection, "/skills/fetch", "POST", { source, skill });
+      const fetched = await control(connection, "skills preview", { source, skill });
       setAdd(undefined);
       setPreview({ source, skill, ...fetched });
     });
@@ -90,10 +91,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
         void perform(async () => {
           if (!id) throw new Error("Use at least one letter or digit in the name");
           if (!draft.id && data.skills.some((k) => k.id === id)) throw new Error(`${id} already exists`);
-          await request(connection, `/skills/${idPath(id)}`, "PUT", {
-            skillMd,
-            revision: draft.revision ?? null,
-          });
+          if (draft.id) await control(connection, "skills edit", { id, skillMd, revision: draft.revision });
+          else await control(connection, "skills new", { id, skillMd });
           setEditor(undefined);
           setAdd(undefined);
           if (!draft.id) setAssign(id);
@@ -128,7 +127,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
     </form>
   );
   const resolveConflict = (path: string, use: "agentgate" | "keep") =>
-    request<{ backup?: string }>(connection, "/skills/conflicts", "POST", { path, use });
+    control(connection, "skills resolve", { path, use });
   const keepExisting = (path: string) =>
     void perform(() => resolveConflict(path, "keep"), "Kept. Agentgate leaves this skill alone on this machine.");
   const useAgentgates = async (path: string) => {
@@ -278,12 +277,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   onAction: () =>
                     void perform(
                       async () => {
-                        const { updated } = await request<{ updated: boolean }>(
-                          connection,
-                          `/skills/${idPath(skill.id)}/update`,
-                          "POST",
-                        );
-                        toast(updated ? `${skill.id} updated` : `${skill.id} is up to date`);
+                        const [result] = await control(connection, "skills update", { id: skill.id });
+                        toast(result?.outcome === "updated" ? `${skill.id} updated` : `${skill.id} is up to date`);
                       },
                       undefined,
                       `update:${skill.id}`,
@@ -294,7 +289,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   danger: true,
                   onAction: async () => {
                     if (await confirmDelete(skill.id))
-                      void perform(() => request(connection, `/skills/${idPath(skill.id)}`, "DELETE"), "Skill deleted");
+                      void perform(() => control(connection, "skills rm", { id: skill.id }), "Skill deleted");
                   },
                 },
               ]}
@@ -340,13 +335,12 @@ export function Skills({ data, connection, perform }: ViewProps) {
                     onAction: () =>
                       void perform(
                         async () => {
-                          const { updated } = await request<{ updated: boolean }>(
-                            connection,
-                            "/skill-repos/sync",
-                            "POST",
-                            { url: repo.url },
+                          const [result] = await control(connection, "skills repo sync", { url: repo.url });
+                          toast(
+                            result?.outcome === "updated"
+                              ? `${repoName(repo.url)} synced`
+                              : `${repoName(repo.url)} is up to date`,
                           );
-                          toast(updated ? `${repoName(repo.url)} synced` : `${repoName(repo.url)} is up to date`);
                         },
                         undefined,
                         `sync:${repo.url}`,
@@ -364,7 +358,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                         )
                       )
                         void perform(
-                          () => request(connection, "/skill-repos", "PUT", { url: repo.url, projects: [] }),
+                          () => control(connection, "skills repo rm", { url: repo.url }),
                           "Repository disconnected",
                         );
                     },
@@ -377,25 +371,17 @@ export function Skills({ data, connection, perform }: ViewProps) {
       )}
       {add && (
         <Modal title="Add skills" close={() => setAdd(undefined)}>
-          <Tabs className="segmented" selectedKey={add} onSelectionChange={(key) => setAdd(key as typeof add)}>
-            <Tabs.ListContainer>
-              <Tabs.List aria-label="Where the skills come from">
-                {(
-                  [
-                    ["browse", "skills.sh"],
-                    ["source", "Source"],
-                    ["repo", "Synced repo"],
-                    ["write", "Write"],
-                  ] as const
-                ).map(([id, label]) => (
-                  <Tabs.Tab key={id} id={id}>
-                    {label}
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                ))}
-              </Tabs.List>
-            </Tabs.ListContainer>
-          </Tabs>
+          <Segmented
+            label="Where the skills come from"
+            value={add}
+            onChange={setAdd}
+            options={[
+              { id: "browse", label: "skills.sh" },
+              { id: "source", label: "Source" },
+              { id: "repo", label: "Synced repo" },
+              { id: "write", label: "Write" },
+            ]}
+          />
           {typedSwitch(add, {
             browse: () => (
               <>
@@ -470,7 +456,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                   const projects = f.getAll("project") as string[];
                   void perform(async () => {
                     if (!projects.length) throw new Error("Choose every session or at least one project");
-                    await request(connection, "/skill-repos", "POST", { url: field(f, "url"), projects });
+                    await control(connection, "skills repo add", { url: field(f, "url"), projects });
                     setAdd(undefined);
                   }, "Repository connected");
                 }}
@@ -498,31 +484,24 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {repoAssign && (
-        <Modal title={`Where ${repoName(repoAssign)} is used`} close={() => setRepoAssign(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const projects = new FormData(e.currentTarget).getAll("project") as string[];
-              void perform(async () => {
-                if (!projects.length) throw new Error("Choose at least one project, or disconnect the repository");
-                await request(connection, "/skill-repos", "PUT", { url: repoAssign, projects });
-                setRepoAssign(undefined);
-              }, "Saved. New sessions pick it up.");
-            }}
-          >
-            <ProjectChecks
-              data={data}
-              skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
-              selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
-            />
-            <p className="note">
-              All of the repository's skills are linked to the projects you add and unlinked from the ones you remove.
-            </p>
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        </Modal>
+        <AssignProjects
+          title={`Where ${repoName(repoAssign)} is used`}
+          note="All of the repository's skills are linked to the projects you add and unlinked from the ones you remove."
+          close={() => setRepoAssign(undefined)}
+          save={(change, chosen) =>
+            void perform(async () => {
+              if (!chosen.length) throw new Error("Choose at least one project, or disconnect the repository");
+              await control(connection, "skills repo projects", { url: repoAssign, change });
+              setRepoAssign(undefined);
+            }, "Saved. New sessions pick it up.")
+          }
+        >
+          <ProjectChecks
+            data={data}
+            skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
+            selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
+          />
+        </AssignProjects>
       )}
       {preview && (
         <Modal title={preview.source} close={() => setPreview(undefined)}>
@@ -534,7 +513,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               void perform(
                 async () => {
                   if (!ids.length) throw new Error("Choose at least one skill");
-                  await request(connection, "/skills", "POST", {
+                  await control(connection, "skills add", {
                     token: preview.token,
                     ids,
                     projects: f.getAll("project") as string[],
@@ -592,30 +571,22 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {assign && (
-        <Modal title={`Where ${assign} is used`} close={() => setAssign(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const projects = new FormData(e.currentTarget).getAll("project") as string[];
-              void perform(async () => {
-                await request(connection, `/skills/${idPath(assign)}/projects`, "PUT", { projects });
-                setAssign(undefined);
-              }, "Saved. New sessions pick it up.");
-            }}
-          >
-            <ProjectChecks
-              data={data}
-              skills={[assign]}
-              selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
-            />
-            <p className="note">
-              Repositories appear here once a session starts in them, or after you add or scan them in Projects.
-            </p>
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        </Modal>
+        <AssignProjects
+          title={`Where ${assign} is used`}
+          close={() => setAssign(undefined)}
+          save={(change) =>
+            void perform(async () => {
+              await control(connection, "skills projects", { id: assign, change });
+              setAssign(undefined);
+            }, "Saved. New sessions pick it up.")
+          }
+        >
+          <ProjectChecks
+            data={data}
+            skills={[assign]}
+            selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
+          />
+        </AssignProjects>
       )}
       {editor && (
         <Modal title={`Edit ${editor.id}`} close={() => setEditor(undefined)}>

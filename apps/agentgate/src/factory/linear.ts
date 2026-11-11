@@ -1,9 +1,9 @@
-import { markerPayloadSchema, type FactorySource } from "@agentgate/protocol";
+import { markerPayloadSchema, type FactorySource, type MarkerPayload } from "@agentgate/protocol";
 import { z } from "zod";
 import { currentFolder, folderAt } from "./config.ts";
 import type { FactoryItem } from "./db.ts";
-import { MARKER_PREFIX, parseMarkers } from "./markers.ts";
-import type { FactoryRuntime, IncomingItem, PostResult } from "./runtime.ts";
+import { MARKER_PREFIX, ownMarkers, parseMarkers } from "./markers.ts";
+import { postFailure, type FactoryRuntime, type IncomingItem, type PostResult } from "./runtime.ts";
 import { resolveSecretRef } from "./secrets.ts";
 
 /**
@@ -23,20 +23,18 @@ const VISIBLE = "agentgate-factory:1 ";
 
 const CAPPED = "Only the first 1,000 open labelled issues are read; the rest wait until fewer are open";
 
-/** Sources whose last poll stopped at MAX_PAGES with issues left, which their board row says. */
-const cappedOf = (f: FactoryRuntime) => f.memory("capped linear sources", () => new Set<string>());
-
 type LinearSource = Extract<FactorySource, { type: "linear" }>;
 
 class LinearError extends Error {
   override name = "LinearError";
   /**
-   * What became of the call. `refused`: Linear answered no, so it applied nothing. `unreachable`: the request
-   * certainly never reached Linear. `unknown`: no answer said either way, so a mutation may have been applied.
+   * What became of the call. `refused`: Linear answered no, so it applied nothing. `limited`: Linear's rate limit
+   * turned it away, or this daemon holds calls back while that limit lasts, so nothing was applied. `unreachable`: the
+   * request certainly never reached Linear. `unknown`: no answer said either way, so a mutation may have been applied.
    */
   constructor(
     message: string,
-    readonly outcome: "refused" | "unreachable" | "unknown" = "refused",
+    readonly outcome: "refused" | "limited" | "unreachable" | "unknown" = "refused",
   ) {
     super(message);
   }
@@ -46,10 +44,33 @@ class LinearError extends Error {
  * them, because the request may have arrived first. */
 const NO_CONNECTION = ["ECONNREFUSED", "ENOTFOUND"];
 
+/** How long calls wait after a rate limit that does not say when it lifts. */
+const PAUSE = 60_000;
+/** Until when this daemon sends Linear nothing: one rate limit holds back every loop's calls, not only the one that
+ * met it. */
+const pauseOf = (f: FactoryRuntime) => f.memory("linear rate limit", () => ({ until: 0 }));
+
 const graphqlResponse = z.object({
   data: z.unknown().optional(),
-  errors: z.array(z.object({ message: z.string().optional() })).optional(),
+  errors: z
+    .array(
+      z.object({
+        message: z.string().optional(),
+        extensions: z.object({ code: z.string().optional() }).optional(),
+      }),
+    )
+    .optional(),
 });
+
+/** When a rate limit Linear answered lifts, or undefined when the answer is no rate limit: HTTP 429 or a `RATELIMITED`
+ * error code, with `retry-after` in seconds or `x-ratelimit-requests-reset` in epoch milliseconds. */
+function limitLifts(f: FactoryRuntime, status: number, headers: Headers, body?: z.infer<typeof graphqlResponse>) {
+  if (status !== 429 && !body?.errors?.some((e) => e.extensions?.code === "RATELIMITED")) return undefined;
+  const retry = headers.get("retry-after");
+  if (retry !== null && Number(retry) >= 0) return f.s.now() + Number(retry) * 1000;
+  const reset = Number(headers.get("x-ratelimit-requests-reset"));
+  return reset > 0 ? reset : f.s.now() + PAUSE;
+}
 
 /** Linear's own text, cut short, with the key taken out in case a message ever echoes it. */
 const scrub = (text: string, apiKey: string) => {
@@ -64,8 +85,12 @@ async function graphql<T>(
   query: string,
   variables: Record<string, unknown>,
 ): Promise<T> {
+  const pause = pauseOf(f);
+  if (f.s.now() < pause.until)
+    throw new LinearError(`Linear's rate limit holds calls until ${new Date(pause.until).toISOString()}`, "limited");
   const signal = AbortSignal.any([f.ctx.abort.signal, AbortSignal.timeout(TIMEOUT)]);
   let status = 0;
+  let headers = new Headers();
   let text: string;
   try {
     const res = await linearApi.fetch(ENDPOINT, {
@@ -75,6 +100,7 @@ async function graphql<T>(
       signal,
     });
     status = res.status;
+    headers = res.headers;
     text = await res.text();
   } catch (e) {
     // The error itself could name the request, so only its code is read.
@@ -93,9 +119,17 @@ async function graphql<T>(
   } catch {
     // Not GraphQL: reported by status below.
   }
+  const message = body?.errors?.find((e) => e.message)?.message;
+  const lifts = limitLifts(f, status, headers, body);
+  if (lifts !== undefined) {
+    pause.until = Math.max(pause.until, lifts);
+    throw new LinearError(
+      message ? `Linear: ${scrub(message, apiKey)}` : "Linear's rate limit turned the call away",
+      "limited",
+    );
+  }
   // A GraphQL error or a 4xx means Linear did not apply the call; a 5xx or a 2xx we cannot read might have.
   const ok = status >= 200 && status < 300;
-  const message = body?.errors?.find((e) => e.message)?.message;
   if (message) throw new LinearError(`Linear: ${scrub(message, apiKey)}`, status >= 500 ? "unknown" : "refused");
 
   const data = schema.safeParse(body?.data);
@@ -149,8 +183,6 @@ const ISSUES = `query FactoryIssues($team: String!, $label: String!, $after: Str
 }`;
 
 async function poll(f: FactoryRuntime, source: FactorySource) {
-  // Cleared first, so a failed poll shows its own error instead.
-  cappedOf(f).delete(source.id);
   if (source.type !== "linear") throw new LinearError(`The source ${source.id} is not a Linear source`);
   const apiKey = apiKeyOf(f, source);
   const found: IncomingItem[] = [];
@@ -175,8 +207,7 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
     if (!more) break;
     after = issues.pageInfo.endCursor!;
   }
-  if (more) cappedOf(f).add(source.id);
-  return found;
+  return { items: found, ...(more && { capped: CAPPED }) };
 }
 
 // `issue(id:)` takes the identifier (ENG-42) as well as the UUID; `commentCreate` is documented with the UUID.
@@ -203,17 +234,14 @@ const COMMENTS = `query FactoryComments($id: String!) {
   issue(id: $id) { state { type } comments(last: 100) { nodes { body createdAt user { id } } } }
 }`;
 
-/** The newest marker in the API key user's own comments: anyone who can comment could otherwise forge one. */
-function newestOf({ viewer, issue }: z.infer<typeof commentsSchema>) {
-  const newest = issue.comments.nodes
-    .filter((c) => c.user?.id === viewer.id)
-    .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt));
-  for (const comment of newest) {
-    const marker = markerOf(comment.body);
-    if (marker) return marker;
-  }
-  return undefined;
-}
+/** The markers in the API key user's own comments, oldest first. */
+const markersOf = ({ viewer, issue }: z.infer<typeof commentsSchema>) =>
+  ownMarkers(
+    issue.comments.nodes
+      .toSorted((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .map((c) => ({ body: c.body, own: c.user?.id === viewer.id })),
+    markerOf,
+  );
 
 /** markers.ts's hidden marker becomes a visible last line. A backtick in a value would end the code span early. */
 function visibleMarker(body: string) {
@@ -224,18 +252,18 @@ function visibleMarker(body: string) {
   return `${body.slice(0, at).trimEnd()}\n\n\`${VISIBLE}${json}\``;
 }
 
-/** The marker on a comment's last line. Only the last line counts: the factory always ends its comments with it, and
- * an agent's summary sits above it. */
-function markerOf(body: string) {
+/** The marker on a comment's last line, if any. Only the last line counts: the factory always ends its comments with
+ * it, and an agent's summary sits above it. */
+function markerOf(body: string): MarkerPayload[] {
   const last = body.trimEnd().split("\n").at(-1)?.trim() ?? "";
   const match = /^`agentgate-factory:1 (\{.*\})`$/.exec(last);
-  if (!match) return undefined;
+  if (!match) return [];
   try {
     const parsed = markerPayloadSchema.safeParse(JSON.parse(match[1]!));
-    return parsed.success ? parsed.data : undefined;
+    return parsed.success ? [parsed.data] : [];
   } catch {
     // Not JSON: a person's text that looks like a marker.
-    return undefined;
+    return [];
   }
 }
 
@@ -252,26 +280,19 @@ async function post(f: FactoryRuntime, item: FactoryItem, body: string): Promise
       : { status: "failed", error: "Linear did not create the comment" };
   } catch (e) {
     if (!(e instanceof LinearError)) throw e;
-    if (e.outcome === "refused") return { status: "failed", error: e.message };
-    // Anything else is safe to send again, unless the mutation may have arrived.
-    return { status: e.outcome === "unknown" && mutating ? "uncertain" : "unreachable", error: e.message };
+    // A call with no answer before the mutation wrote nothing, so it is safe to send again.
+    return postFailure(e.outcome === "unknown" && !mutating ? "unreachable" : e.outcome, e.message);
   }
 }
 
 export function setup(f: FactoryRuntime): void {
-  // Merged into intake's row for the source, which comes earlier.
-  f.boardParts.push(async () => ({
-    sources: (currentFolder(f)?.config.sources ?? []).flatMap((source) =>
-      cappedOf(f).has(source.id) ? [{ id: source.id, type: source.type, repo: source.repo, error: CAPPED }] : [],
-    ),
-  }));
   f.sources.set("linear", {
     type: "linear",
     poll: (source) => poll(f, source),
     async check(item) {
       const apiKey = apiKeyOf(f, sourceFor(f, item.source, item.configCommit));
       const answer = await graphql(f, apiKey, commentsSchema, COMMENTS, { id: item.externalId });
-      return { open: !CLOSED.includes(answer.issue.state.type), marker: newestOf(answer) };
+      return { open: !CLOSED.includes(answer.issue.state.type), markers: markersOf(answer) };
     },
     post: (item, body) => post(f, item, body),
   });

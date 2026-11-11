@@ -1,4 +1,12 @@
-import { API_VERSION, statusSchema, type Connection, type DesktopStatus, type FactoryOps } from "@agentgate/protocol";
+import {
+  API_VERSION,
+  factoryBoardSchema,
+  statusSchema,
+  type Connection,
+  type DesktopStatus,
+  type FactoryOps,
+} from "@agentgate/protocol";
+import type { ControlOps } from "@agentgate/protocol/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -12,6 +20,14 @@ export function request<T>(connection: Connection, path: string, method = "GET",
  * refusal rejects with its reason. */
 export const factoryOp = <N extends keyof FactoryOps>(connection: Connection, name: N, input: FactoryOps[N]["input"]) =>
   request<FactoryOps[N]["result"]>(connection, `/factory/op/${encodeURIComponent(name)}`, "POST", input);
+/** One control operation by its name, the CLI words, with the input and result `ControlOps` gives it. A refusal
+ * rejects with its reason. */
+export const control = <N extends keyof ControlOps>(
+  connection: Connection,
+  name: N,
+  input: ControlOps[N]["input"],
+): Promise<ControlOps[N]["result"]> =>
+  request<ControlOps[N]["result"]>(connection, `/ops/${encodeURIComponent(name)}`, "POST", input);
 export async function status(connection: Connection) {
   const data = await request<unknown>(connection, "/status");
   if (!data || typeof data !== "object" || !("apiVersion" in data) || data.apiVersion !== API_VERSION)
@@ -19,6 +35,12 @@ export async function status(connection: Connection) {
   const parsed = statusSchema.safeParse(data);
   if (!parsed.success)
     throw new Error("The daemon returned incompatible status data. Update Agentgate on both machines.");
+  return parsed.data;
+}
+export async function factoryBoard(connection: Connection) {
+  const parsed = factoryBoardSchema.safeParse(await request<unknown>(connection, "/factory"));
+  if (!parsed.success)
+    throw new Error("The daemon returned a factory board this app cannot read. Update Agentgate on both machines.");
   return parsed.data;
 }
 export const openExternal = (url: string) => openUrl(url);
@@ -29,7 +51,10 @@ export async function signInToInfisical(connection: Connection) {
   const r = await request<{ url?: string; opened: boolean }>(connection, "/logins/infisical/signin", "POST");
   if (r.url && !r.opened) await openExternal(r.url);
 }
-export const localAction = (action: string, connection: Connection) =>
+/** The commands `local_action` in src-tauri/src/lib.rs runs with this machine's own CLI. */
+export type LocalAction =
+  "install" | "start" | "stop" | "setup" | "primary-on" | "primary-off" | "mcp-on" | "mcp-off" | "admin-token";
+export const localAction = (action: LocalAction, connection: Connection) =>
   invoke<string>("local_action", { action, connection });
 export const localConnection = () => invoke<Connection>("local_connection");
 export const loadConnection = () => invoke<Connection>("load_connection");

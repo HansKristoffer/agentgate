@@ -22,6 +22,7 @@ import {
   Select,
   Switch,
   Table,
+  Tabs,
   TextArea,
   TextField,
 } from "@heroui/react";
@@ -223,7 +224,35 @@ export function Choice({
     </Select>
   );
 }
-/** A labelled switch, label first as in System Settings. */
+/** A segmented choice between a few views of one thing; falsy options are skipped. */
+export function Segmented<K extends string>({
+  label,
+  value,
+  onChange,
+  options,
+  className = "segmented",
+}: {
+  label: string;
+  value: K;
+  onChange: (id: K) => void;
+  options: readonly ({ id: K; label: ReactNode } | false | undefined)[];
+  className?: string;
+}) {
+  return (
+    <Tabs className={className} selectedKey={value} onSelectionChange={(key) => onChange(String(key) as K)}>
+      <Tabs.ListContainer>
+        <Tabs.List aria-label={label}>
+          {options.filter(isTruthy).map((o) => (
+            <Tabs.Tab key={o.id} id={o.id}>
+              {o.label}
+              <Tabs.Indicator />
+            </Tabs.Tab>
+          ))}
+        </Tabs.List>
+      </Tabs.ListContainer>
+    </Tabs>
+  );
+}
 /** A switch that moves when clicked. When `onChange` returns a promise (a `perform`), it shows the new value while the
  * change is saved, and whatever the daemon reports afterwards. */
 export function LiveSwitch({
@@ -248,6 +277,7 @@ export function LiveSwitch({
     />
   );
 }
+/** A labelled switch, label first as in System Settings. */
 export function Toggle({
   label,
   description,

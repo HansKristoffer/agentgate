@@ -2,15 +2,19 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
-import { proxy, recordUsage } from "../src/llm/pool.ts";
+import { accountStatus, proxy, recordUsage, unknownQuota } from "../src/llm/pool.ts";
+import { providers } from "../src/llm/providers.ts";
 import { route } from "../src/llm/routing.ts";
+import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
 // Fake Anthropic: behaviour per bearer token.
-type Mode = "ok" | "quota" | "rate-once";
+// "unmetered" answers without quota headers; "disk-full" makes every store write fail as the upstream answers.
+type Mode = "ok" | "quota" | "rate-once" | "unmetered" | "disk-full";
 let modes: Record<string, Mode> = {};
 let seen: string[] = [];
+let bodies: string[] = [];
 const soon = Math.floor(Date.now() / 1000) + 3600;
 const later = Math.floor(Date.now() / 1000) + 7200;
 
@@ -45,11 +49,17 @@ const upstream = Bun.serve({
         headers: { ...quota, "retry-after": "0" },
       });
     }
-    const body = (await req.json()) as any;
+    if (mode === "disk-full")
+      s.db.run = () => {
+        throw new Error("database or disk is full");
+      };
+    const raw = await req.text();
+    bodies.push(raw);
+    const body = JSON.parse(raw) as { metadata?: { user_id?: string } };
     return new Response(
-      `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta") })}\n\n`,
+      `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta"), usage: { input_tokens: 1 } })}\n\n`,
       {
-        headers: { ...quota, "content-type": "text/event-stream" },
+        headers: { ...(mode === "unmetered" ? {} : quota), "content-type": "text/event-stream" },
       },
     );
   },
@@ -68,6 +78,7 @@ afterEach(() => s?.close());
 beforeEach(() => {
   modes = {};
   seen = [];
+  bodies = [];
   s = new Store(":memory:");
   s.setLocal("node", "n1");
   for (const [id, prio] of [
@@ -91,7 +102,13 @@ beforeEach(() => {
   );
 });
 
-const send = () =>
+const send = (
+  body = JSON.stringify({
+    model: "claude-sonnet-4-5",
+    metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" },
+  }),
+  headers: Record<string, string> = {},
+) =>
   proxy(
     s,
     creds,
@@ -102,11 +119,9 @@ const send = () =>
         "content-type": "application/json",
         authorization: "Bearer agentgate",
         "anthropic-beta": "claude-code-20250219",
+        ...headers,
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5",
-        metadata: { user_id: "user_abc_account_00000000-0000_session_xyz" },
-      }),
+      body,
     }),
     "/v1/messages?beta=true",
   );
@@ -123,6 +138,31 @@ test("forwards with the account's token, oauth beta and account uuid; records qu
   expect(s.local("active:claude")).toBe("a");
 });
 
+test("a body whose user_id already names the account is forwarded byte for byte", async () => {
+  const body = '{ "model": "claude-sonnet-4-5",\n  "metadata": { "user_id": "user_abc_account_uuid-a_session_xyz" } }';
+  await (await send(body)).text();
+  expect(bodies).toEqual([body]);
+});
+
+test("a Claude session's affinity and usage both follow its X-Claude-Code-Session-Id", async () => {
+  s.put("setting", "settings", {
+    ...s.settings(),
+    strategy: "round-robin",
+    sessionAffinity: true,
+    factory: { store: "github", repo: "acme/factory", path: "", node: "n1" },
+  });
+  // Each request's metadata names a different session; only the header is the same.
+  for (const metadata of ["first", "second"])
+    await (
+      await send(
+        JSON.stringify({ model: "claude-sonnet-4-5", metadata: { user_id: JSON.stringify({ session_id: metadata }) } }),
+        { "x-claude-code-session-id": "header-session" },
+      )
+    ).text();
+  expect(seen).toEqual(["tok-a", "tok-a"]);
+  expect(sessionUsage(s, ["header-session"])).toMatchObject([{ session: "header-session", requests: 2 }]);
+});
+
 test("a quota 429 is retried on the next account; the client never sees it", async () => {
   await send();
   modes["tok-a"] = "quota";
@@ -131,9 +171,58 @@ test("a quota 429 is retried on the next account; the client never sees it", asy
   expect(seen).toEqual(["tok-a", "tok-a", "tok-b"]);
   expect(s.get("usage", "a")!.status).toBe("exhausted");
   expect(s.local("active:claude")).toBe("b");
+  // Only events reach the request log, not each successful request.
+  expect(s.db.query("select account, note from request_log").all()).toEqual([
+    { account: "a", note: "active subscription changed" },
+    { account: "a", note: "quota exhausted; switching" },
+    { account: "b", note: "active subscription changed" },
+  ]);
   // Sticky: the next turn stays on b even though a has higher priority.
   await send();
   expect(seen.at(-1)).toBe("tok-b");
+});
+
+test("a store that stops taking writes while the upstream answers still delivers the response", async () => {
+  const run = s.db.run;
+  modes["tok-a"] = "disk-full";
+  try {
+    const res = await send();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("event: message_start");
+  } finally {
+    s.db.run = run;
+  }
+});
+
+test("a request whose telemetry cannot be created is still proxied", async () => {
+  s.db.run("drop table proxy_requests");
+  const res = await send();
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain("event: message_start");
+});
+
+test("unknown quota is recorded when it starts, not on every response, and only for providers with quota headers", async () => {
+  modes["tok-a"] = "unmetered";
+  const start = Date.now();
+  s.now = () => start;
+  await (await send()).text();
+  s.now = () => start + 60_000;
+  await (await send()).text();
+  // Cursor reports no quota in its headers, so it never shows as unknown.
+  expect(unknownQuota(s, Object.values(providers))).toStrictEqual({ claude: String(start), codex: undefined });
+});
+
+test("the app hears of a switch of active account once, and not of later requests on it", async () => {
+  modes = { "tok-a": "unmetered", "tok-b": "unmetered" };
+  await (await send()).text();
+  s.put("account", "a", { ...s.get("account", "a")!, enabled: false });
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
+  await (await send()).text();
+  expect(s.local("active:claude")).toBe("b");
+  expect(bumps).toBe(1);
+  await (await send()).text();
+  expect(bumps).toBe(1);
 });
 
 test("a per-minute 429 retries the same account instead of switching", async () => {
@@ -151,7 +240,7 @@ test("whenExhausted fail returns 429 with retry-after of the earliest reset", as
   const retry = Number(res.headers.get("retry-after"));
   expect(retry).toBeGreaterThan(3500);
   expect(retry).toBeLessThanOrEqual(3600);
-  expect(((await res.json()) as any).error.type).toBe("rate_limit_error");
+  expect(await res.json()).toMatchObject({ error: { type: "rate_limit_error" } });
 });
 
 test("pinned account wins while it is a candidate", async () => {
@@ -439,12 +528,28 @@ test("an account whose login failed does not hide the other's quota 429 behind a
   expect(seen).toEqual(["tok-b"]);
 });
 
-test("a short cooldown after a longer one keeps the longer one's reason", () => {
+test("a short cooldown after a longer one keeps the longer one's reason, and only a start is news", () => {
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
   cool(s, "a", "rate", Date.now() + 60_000);
+  expect(bumps).toBe(1);
   cool(s, "a", "transient", Date.now() + 15_000);
+  expect(bumps).toBe(1);
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "rate" }]);
   cool(s, "a", "transient", Date.now() + 120_000);
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "transient" }]);
+});
+
+test("an expired login this node holds is refreshing, not a sign-in, and a day-long backoff benches the account", () => {
+  const state = (id: string) => accountStatus(s, s.get("account", id)!).state;
+  s.put("credential", "a", { ...s.get("credential", "a")!, expiresAt: Date.now() - 1000 });
+  expect(state("a")).toEqual({ kind: "refreshing" });
+  s.put("credential", "a", { ...s.get("credential", "a")!, holder: "server" });
+  expect(state("a")).toEqual({ kind: "waiting-for-holder", holder: "server" });
+
+  const tomorrow = Date.now() + 86_400_000;
+  cool(s, "b", "transient", tomorrow);
+  expect(state("b")).toEqual({ kind: "cooling", until: tomorrow, reason: "transient" });
 });
 
 test("requests a stopped daemon left pending are marked interrupted", () => {

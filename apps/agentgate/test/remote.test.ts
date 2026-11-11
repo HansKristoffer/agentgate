@@ -8,7 +8,8 @@ import { app, makeCtx } from "../src/daemon.ts";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
-import { enableRemote, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
+import { relaySocket } from "../src/relay-socket.ts";
+import { enableRemote, queueDelete, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
 import { exportBackup, Store } from "../src/store.ts";
@@ -158,7 +159,7 @@ test("aborting a remote request cancels the upstream tool call", async () => {
     {},
     abort.signal,
   );
-  await Bun.sleep(500);
+  while (!gateway.upstreams.get("slow")?.calls) await Bun.sleep(5);
   abort.abort();
   await expect(pending).rejects.toBeDefined();
   for (let i = 0; i < 50 && !existsSync(cancelled); i++) await Bun.sleep(100);
@@ -222,8 +223,10 @@ test("enabling waits for every node's version; status and backups never show end
   expect(JSON.parse(s.local("remote:delete")!)).toHaveLength(1);
 });
 
-/** A relay stand-in: records PUTs and hands the test the node's socket. */
+/** A relay stand-in: records PUTs and hands the test the node's socket. `failPuts` refuses that many PUTs, and `hang`
+ * leaves upgrades unanswered. */
 function fakeRelay() {
+  const control = { failPuts: 0, hang: false };
   const puts: { key: string; auth: string; body: { secretHash: string; enabled: boolean } }[] = [];
   const upgrades: { auth: string | null; node: string | null }[] = [];
   const deletes: string[] = [];
@@ -235,6 +238,10 @@ function fakeRelay() {
     async fetch(req, srv) {
       const url = new URL(req.url);
       if (req.method === "PUT") {
+        if (control.failPuts > 0) {
+          control.failPuts--;
+          return new Response("down", { status: 503 });
+        }
         puts.push({
           key: url.pathname.split("/")[2]!,
           auth: req.headers.get("authorization")!,
@@ -245,6 +252,7 @@ function fakeRelay() {
       if (req.method === "DELETE") deletes.push(url.pathname.split("/")[2]!);
       if (url.pathname.endsWith("/connect")) {
         upgrades.push({ auth: req.headers.get("authorization"), node: req.headers.get("x-agentgate-node") });
+        if (control.hang) return new Promise<Response>(() => {});
         if (srv.upgrade(req)) return undefined;
       }
       return new Response("no", { status: 404 });
@@ -269,7 +277,7 @@ function fakeRelay() {
     while (!socket) await Bun.sleep(10);
     return socket;
   };
-  return { url: `http://127.0.0.1:${server.port}`, puts, upgrades, deletes, next, connected };
+  return { control, url: `http://127.0.0.1:${server.port}`, puts, upgrades, deletes, next, connected };
 }
 
 test("the serving node pushes the secret hash, answers requests over its socket and re-pushes a new secret", async () => {
@@ -353,12 +361,27 @@ function serving() {
   return { s, relay, serve };
 }
 
+/** The delays of the timers set from now on: how a relay socket schedules its next attempt. */
+function timers() {
+  const real = globalThis.setTimeout;
+  const delays: number[] = [];
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    delays.push(ms ?? 0);
+    return real(fn, ms);
+  }) as typeof setTimeout;
+  cleanup.push(() => (globalThis.setTimeout = real));
+  return delays;
+}
+
 test("an endpoint the relay deleted is not pushed again until its record changes, also after a restart", async () => {
   const { s, relay, serve } = serving();
   const first = serve();
-  (await relay.connected()).close(4001, "endpoint deleted");
+  const socket = await relay.connected();
+  const delays = timers();
+  socket.close(4001, "endpoint deleted");
   await first.error("deleted");
-  await Bun.sleep(700); // past the first retry
+  // The first retry, after 0.5 s, finds the endpoint deleted and schedules the next one after 1 s.
+  while (!delays.includes(1000)) await Bun.sleep(5);
   expect({ puts: relay.puts.length, upgrades: relay.upgrades.length }).toEqual({ puts: 1, upgrades: 1 });
   first.endpoints.close();
 
@@ -373,12 +396,29 @@ test("an endpoint the relay deleted is not pushed again until its record changes
   expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(secret));
 });
 
+test("an endpoint connecting and dropping each mark status changed", async () => {
+  const { s, relay, serve } = serving();
+  const bumps: string[] = [];
+  s.onChange = (topic) => bumps.push(topic);
+  const { endpoints } = serve();
+  const connected = () => endpoints.summary(s.get("project", "@grok")!)?.connected;
+  const socket = await relay.connected();
+  while (!connected()) await Bun.sleep(5);
+  expect(bumps).toEqual(["status"]);
+  socket.close(1000, "relay restarting");
+  while (connected()) await Bun.sleep(5);
+  expect(bumps).toEqual(["status", "status"]);
+});
+
 test("a connection replaced by another one backs off instead of taking the endpoint straight back", async () => {
   const { relay, serve } = serving();
   const { error } = serve();
-  (await relay.connected()).close(4000, "replaced by a newer connection");
+  const socket = await relay.connected();
+  const delays = timers();
+  socket.close(4000, "replaced by a newer connection");
   await error("another connection");
-  await Bun.sleep(700); // a plain drop would have reconnected by now
+  // With Math.random at 0 a retry waits half its backoff: 0.5 s after a plain drop, 15 s here.
+  expect(delays).toEqual([15_000]);
   expect(relay.upgrades).toHaveLength(1);
 });
 
@@ -391,4 +431,107 @@ test("a machine that stops serving an endpoint no record names any more deletes 
   s.setLocal("remote:delete", undefined); // ...whose deletion queue lives on that machine
   endpoints.reconcile();
   while (!relay.deletes.includes(key)) await Bun.sleep(5);
+});
+
+test("a deletion the relay keeps failing is retried less and less often, at most hourly", async () => {
+  process.env.AGENTGATE_RELAY_ALLOW_HTTP = "1";
+  cleanup.push(() => {
+    delete process.env.AGENTGATE_RELAY_ALLOW_HTTP;
+  });
+  let deletes = 0;
+  const relay = Bun.serve({
+    port: 0,
+    fetch: () => {
+      deletes++;
+      return new Response("down", { status: 503 });
+    },
+  });
+  cleanup.push(() => relay.stop(true));
+  const s = store();
+  let T = Date.now();
+  s.now = () => T;
+  const gateway = new Gateway(s),
+    endpoints = new RemoteEndpoints(s, gateway);
+  cleanup.push(async () => {
+    endpoints.close();
+    await gateway.close();
+  });
+  queueDelete(s, { relay: `http://127.0.0.1:${relay.port}`, key: "gone", token: "t" });
+  const attempts = () => JSON.parse(s.local("remote:delete")!)[0].attempts ?? 0;
+  /** A reconcile pass `after` ms later. A due deletion is awaited until its failure is recorded. One not due sends
+   * nothing, which the count after the next due pass would show. */
+  const pass = async (after: number, due: boolean) => {
+    T += after;
+    const before = attempts();
+    endpoints.reconcile();
+    if (!due) return;
+    while (attempts() === before) await Bun.sleep(1);
+  };
+
+  await pass(0, true);
+  await pass(30_000, true);
+  await pass(30_000, false); // the wait doubled to 60 s
+  await pass(30_000, true);
+  await pass(60_000, false); // and to 120 s
+  await pass(60_000, true);
+  expect(deletes).toBe(4);
+  // Doubling would pass an hour by the ninth failure; every hourly pass still sends.
+  for (let i = 0; i < 8; i++) await pass(3_600_000, true);
+  expect(deletes).toBe(12);
+});
+
+test("a new secret the relay refused is pushed again on the next pass, and only until the relay has it", async () => {
+  const { s, relay, serve } = serving();
+  const { endpoints } = serve();
+  const project = () => s.get("project", "@grok")!;
+  while (!endpoints.summary(project())?.connected) await Bun.sleep(5);
+
+  relay.control.failPuts = 1;
+  const { secret } = rotateSecret(s, "@grok");
+  endpoints.reconcile();
+  while (!endpoints.summary(project())?.error?.includes("503")) await Bun.sleep(5);
+  expect(endpoints.summary(project())).toMatchObject({ connected: true, updating: true });
+
+  endpoints.reconcile();
+  while (relay.puts.length < 2) await Bun.sleep(5);
+  expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(secret));
+  // Pushes go out in order, so the acknowledged secret sent again would arrive before the next rotation's.
+  endpoints.reconcile();
+  const next = rotateSecret(s, "@grok");
+  endpoints.reconcile();
+  while (relay.puts.length < 3) await Bun.sleep(5);
+  expect(relay.puts[2]!.body.secretHash).toBe(await sha256Hex(next.secret));
+});
+
+test("a relay socket that never opens is closed at the deadline and connects again", async () => {
+  const openMs = relaySocket.openMs;
+  relaySocket.openMs = 50;
+  cleanup.push(() => (relaySocket.openMs = openMs));
+  const { relay, serve } = serving();
+  relay.control.hang = true;
+  const { error } = serve();
+  await error("could not connect to the relay");
+  while (relay.upgrades.length < 2) await Bun.sleep(5);
+});
+
+test("a failed request shows a fixed message in status, never the error's text", async () => {
+  const { relay, serve } = serving();
+  const { endpoints } = serve();
+  const project = await relay.connected();
+  endpoints.hooks = () => [
+    {
+      source: "github",
+      relay: relay.url,
+      key: "hook-key",
+      token: "hook-token",
+      secret: "hook-secret",
+      handle: () => Promise.reject(new Error("upstream said: Bearer fake-token-123")),
+    },
+  ];
+  endpoints.reconcile();
+  let hook = project;
+  while (hook === project) hook = await Bun.sleep(5).then(relay.connected);
+  hook.send(JSON.stringify({ t: "req", id: "1", headers: {}, body: "{}" }));
+  expect(JSON.parse((await relay.next()).body)).toEqual({ error: "agentgate failed to handle the request" });
+  expect(endpoints.hookState("github")).toEqual({ connected: true, error: "a request failed" });
 });

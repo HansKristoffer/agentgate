@@ -11,7 +11,7 @@ import {
 import type { ViewProps } from "../../types.ts";
 import { request } from "../../api.ts";
 import { Badge, Changes, Choice, Field, NumberInput, Panel, Toggle } from "../../components/ui.tsx";
-import { providerIcon, providerName } from "../../views/utils.ts";
+import { providerIcon, providerName, providerOptions } from "../../views/utils.ts";
 import { ModelAliases } from "./ModelAliases.tsx";
 import { useGeneration } from "./useGeneration.ts";
 
@@ -216,17 +216,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
       </Panel>
       <Panel title="Explain routing" detail={`Inspect the current policy on ${data.node} without sending inference.`}>
         <form onSubmit={explainRouting}>
-          <Choice
-            className="item"
-            label="Provider"
-            name="provider"
-            defaultValue="claude"
-            options={[
-              { id: "claude", label: "Claude" },
-              { id: "codex", label: "Codex" },
-              { id: "cursor", label: "Cursor" },
-            ]}
-          />
+          <Choice className="item" label="Provider" name="provider" defaultValue="claude" options={providerOptions} />
           <Field
             className="item"
             label="Model"

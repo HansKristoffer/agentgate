@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { host } from "../logins.ts";
-import type { PostResult } from "./runtime.ts";
+import { postFailure, type PostResult } from "./runtime.ts";
 
 /**
  * Every GitHub call the factory makes, through this machine's `gh` login (`host.gh`). Each call is classified once, in
@@ -14,13 +14,18 @@ const DAY = 86_400_000;
  * What one `gh` call came to:
  *
  * - `missing`: GitHub answered 404;
+ * - `limited`: GitHub's rate limit turned it away, or this process holds calls back while that limit lasts (`ask`), so
+ *   nothing was done and it can be sent again later;
  * - `refused`: GitHub answered another 4xx or a GraphQL error, so it did nothing;
  * - `unreachable`: the request certainly never reached GitHub, because `gh` is not installed or not logged in, or no
  *   connection opened (a dial, DNS or proxy error);
  * - `unknown`: anything else, a 5xx and a `gh` stopped at its deadline included. A write may have been applied.
+ *
+ * `head` is the status line and headers of a call made with `--include`, and empty for any other.
  */
 type GhResult =
-  { kind: "ok"; out: string } | { kind: "missing" | "refused" | "unreachable" | "unknown"; message: string };
+  | { kind: "ok"; out: string; head: string }
+  | { kind: "missing" | "limited" | "refused" | "unreachable" | "unknown"; message: string };
 
 /** An error response as `gh api` prints it to stdout: REST's `message` and `status`, or GraphQL's `errors`. */
 function errorBody(out: string) {
@@ -32,11 +37,12 @@ function errorBody(out: string) {
         errors: z.array(z.unknown()).optional(),
       })
       .parse(JSON.parse(out));
-    const first = z.object({ message: z.string() }).safeParse(body.errors?.[0]);
+    const first = z.object({ message: z.string().optional(), type: z.string().optional() }).safeParse(body.errors?.[0]);
     return {
       message: (body.message ?? (first.success ? first.data.message : undefined))?.slice(0, 200),
       status: Number(body.status) || undefined,
       errors: !!body.errors?.length,
+      type: first.success ? first.data.type : undefined,
     };
   } catch {
     // Not a GitHub API error response.
@@ -51,26 +57,63 @@ const printedStatus = (err: string) => {
   return m ? Number(m[1] ?? m[2]) : undefined;
 };
 
+/** `gh api --include` prints the status line and headers, a blank line, then the body. */
+function splitHead(out: string) {
+  if (!/^HTTP\/[\d.]+ \d{3}/.test(out)) return { head: "", body: out };
+  const split = out.search(/\r?\n\r?\n/);
+  return split < 0 ? { head: out, body: "" } : { head: out.slice(0, split), body: out.slice(split).trim() };
+}
+const header = (head: string, name: string) => new RegExp(`^${name}:(.*)$`, "im").exec(head)?.[1]?.trim();
+
 /** `gh` could not open a connection, as Go and `gh` word it: nothing was sent. */
 const NO_CONNECTION = /\bdial tcp\b|\bproxyconnect\b|\bno such host\b|^error connecting to /;
 /** `gh`'s exit code when it has no login to use. */
 const NOT_LOGGED_IN = 4;
 
-/** Runs `gh` and classifies the outcome from the HTTP status, the exit code and the error's shape, never from the
- * wording of GitHub's message. */
+/** How long calls wait after a rate limit that does not say when it lifts. */
+const PAUSE = 60_000;
+/** Until when this process sends GitHub nothing: one rate limit holds back every loop's calls, not only the one that
+ * met it. */
+let pausedUntil = 0;
+
+/**
+ * When a rate limit GitHub answered lifts, or undefined when the answer is no rate limit: a 429, a GraphQL
+ * `RATE_LIMITED` error, or a 403 whose headers say so, `retry-after` (seconds) for a secondary limit or
+ * `x-ratelimit-remaining: 0` with its `x-ratelimit-reset` (epoch seconds) for a spent primary one. Only calls made with
+ * `--include` have headers, so on any other a 403 is a refusal.
+ */
+function limitLifts(status: number | undefined, head: string, type: string | undefined) {
+  const retry = header(head, "retry-after");
+  const spent = header(head, "x-ratelimit-remaining") === "0";
+  if (status !== 429 && type !== "RATE_LIMITED" && !(status === 403 && (retry !== undefined || spent))) return;
+  if (retry !== undefined && Number(retry) >= 0) return Date.now() + Number(retry) * 1000;
+  const reset = Number(header(head, "x-ratelimit-reset"));
+  return spent && reset > 0 ? reset * 1000 : Date.now() + PAUSE;
+}
+
+/** Runs `gh` and classifies the outcome from the HTTP status, the headers, the exit code and the error's shape, never
+ * from the wording of GitHub's message. While a rate limit lasts, nothing runs. */
 async function ask(args: string[], stdin?: string): Promise<GhResult> {
+  if (Date.now() < pausedUntil)
+    return { kind: "limited", message: `GitHub's rate limit holds calls until ${new Date(pausedUntil).toISOString()}` };
   const r = await host.gh(args, stdin);
   if (!r) return { kind: "unreachable", message: "gh is not installed" };
+  const { head, body: out } = splitHead(r.out);
   // GraphQL refuses with `errors` in an answer that is otherwise a success. Any other successful stdout is the
   // answer itself, and a file read as raw text can hold anything.
   const graphql = args[0] === "api" && args[1] === "graphql";
-  const body = !r.ok || graphql ? errorBody(r.out) : { errors: false };
-  if (r.ok && !body.errors) return { kind: "ok", out: r.out };
+  const body = !r.ok || graphql ? errorBody(out) : { errors: false };
+  if (r.ok && !body.errors) return { kind: "ok", out, head };
 
   const err = r.err ?? "";
   const message =
     body.message ?? (err.replace(/^gh: /, "") || `gh gave no reason${r.exit === undefined ? "" : ` (exit ${r.exit})`}`);
   const status = printedStatus(err) ?? body.status;
+  const lifts = limitLifts(status, head, "type" in body ? body.type : undefined);
+  if (lifts !== undefined) {
+    pausedUntil = Math.max(pausedUntil, lifts);
+    return { kind: "limited", message };
+  }
   if (status === 404) return { kind: "missing", message };
   if (status && status >= 400 && status < 500) return { kind: "refused", message };
   if (status) return { kind: "unknown", message };
@@ -218,18 +261,16 @@ export async function ghAccount(): Promise<
 > {
   const r = await ask(["api", "user", "--include"]);
   if (r.kind !== "ok") return { error: r.message, signedOut: r.kind === "unreachable" };
-  const split = r.out.search(/\r?\n\r?\n/);
-  const head = split < 0 ? "" : r.out.slice(0, split);
   let user: unknown;
   try {
-    user = JSON.parse(split < 0 ? r.out : r.out.slice(split));
+    user = JSON.parse(r.out);
   } catch {
     // Not JSON: the shape check below says so.
   }
   const parsed = login.safeParse(user);
   if (!parsed.success)
     return { error: "gh answered in an unexpected shape when asked for its login", signedOut: false };
-  const scopes = /^x-oauth-scopes:(.*)$/im.exec(head)?.[1];
+  const scopes = header(r.head, "x-oauth-scopes");
   return {
     login: parsed.data.login,
     ...(scopes !== undefined && {
@@ -263,6 +304,16 @@ export async function issueStateAndComments(repo: string, number: number) {
   };
 }
 
+/** An issue's state alone, without its comments. A pull request's number can answer MERGED, which counts as closed. */
+export async function issueState(repo: string, number: number): Promise<"OPEN" | "CLOSED"> {
+  const view = await ghJson(
+    `read the state of ${repo}#${number}`,
+    z.object({ state: z.enum(["OPEN", "CLOSED", "MERGED"]) }),
+    ["issue", "view", String(number), "--repo", repo, "--json", "state"],
+  );
+  return view.state === "OPEN" ? "OPEN" : "CLOSED";
+}
+
 /** Every comment, oldest first: `gh` pages through them when `comments` is asked for. Zod drops the other fields. */
 export async function issueComments(
   repo: string,
@@ -280,18 +331,24 @@ export async function issueComments(
   return view.comments.map(({ author, ...rest }) => ({ ...rest, author: author?.login ?? "" }));
 }
 
-/** A write's outcome for the outbox: GitHub refused it, it never left this machine, or nothing says whether it was
- * applied. */
+/** A write's outcome for the outbox: GitHub refused it, its rate limit held it back, it never left this machine, or
+ * nothing says whether it was applied. */
 function written(what: string, r: GhResult): PostResult {
   if (r.kind === "ok") return { status: "posted" };
-  if (r.kind === "unreachable") return { status: "unreachable", error: `gh could not ${what}: ${r.message}` };
-  if (r.kind === "unknown")
-    return { status: "uncertain", error: `gh could not ${what}, though GitHub may have taken it: ${r.message}` };
-  return { status: "failed", error: `GitHub refused to ${what}: ${r.message}` };
+  // A 404 is GitHub refusing the write too.
+  const outcome = r.kind === "missing" ? "refused" : r.kind;
+  const said = {
+    limited: `gh could not ${what} yet`,
+    unreachable: `gh could not ${what}`,
+    unknown: `gh could not ${what}, though GitHub may have taken it`,
+    refused: `GitHub refused to ${what}`,
+  }[outcome];
+  return postFailure(outcome, `${said}: ${r.message}`);
 }
 
+// Writes are made with `--include`, so a secondary rate limit's 403 shows by its headers and is sent again later.
 const post = async (what: string, path: string, payload: unknown) =>
-  written(what, await ask(["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload)));
+  written(what, await ask(["api", path, "--method", "POST", "--input", "-", "--include"], JSON.stringify(payload)));
 
 // ---- proposing a change to a factory folder in a repository (folder-store.ts)
 
@@ -810,7 +867,7 @@ const RESOLVE = `mutation ($id: ID!) { resolveReviewThread(input: { threadId: $i
 export async function replyToConversation(id: string, body: string): Promise<PostResult> {
   return written(
     "reply in a review conversation",
-    await ask(["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`]),
+    await ask(["api", "graphql", "-f", `query=${REPLY}`, "-f", `id=${id}`, "-f", `body=${body}`, "--include"]),
   );
 }
 
@@ -830,16 +887,9 @@ export async function prReady(url: string): Promise<void> {
 }
 
 /** GitHub refuses a review request to the PR's own author, and in v1 that author is often the maintainer (D42). */
-export async function prAddReviewers(url: string, reviewers: string[]): Promise<void> {
+export async function prAddReviewers(url: string, author: string, reviewers: string[]): Promise<void> {
   const { repo, number } = prOf(url);
-  const { author } = await ghJson(`read the author of ${repo}#${number}`, z.object({ author: login }), [
-    "pr",
-    "view",
-    url,
-    "--json",
-    "author",
-  ]);
-  const others = reviewers.filter((r) => r.toLowerCase() !== author.login.toLowerCase());
+  const others = reviewers.filter((r) => r.toLowerCase() !== author.toLowerCase());
   if (!others.length) return;
   await gh(`request reviews on ${repo}#${number}`, ["pr", "edit", url, "--add-reviewer", others.join(",")]);
 }

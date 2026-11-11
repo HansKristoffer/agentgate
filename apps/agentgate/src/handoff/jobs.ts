@@ -1,36 +1,47 @@
 import { existsSync, rmSync } from "node:fs";
 import { createCache, startTimer } from "hanzio";
 import { join } from "node:path";
-import type { HandoffJob } from "@agentgate/protocol";
+import { z } from "zod";
+import type { HandoffJob, HandoffTiming } from "@agentgate/protocol";
 import { fetchHeaders, killGroup, readBody, serialTask } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import { peers } from "../sync.ts";
 import { relayInvite, via } from "../relay.ts";
 import { relayCall } from "../channel.ts";
-import { destinationView, manifestFile, runDestination, type DestState } from "./destination.ts";
-import { runSource, type SourceState } from "./source.ts";
+import { destinationSteps, destinationView, manifestFile, runDestination } from "./destination.ts";
+import { runSource, sourceSteps } from "./source.ts";
 import { syncT3Projects } from "./projects.ts";
 
 /** Handoff jobs: one row per job and role in the node-local `handoffs` table, resumed after a restart from the
  * step they reached. Steps are idempotent. The source drives; the destination answers peer requests. */
 
 type Role = "source" | "destination";
-export interface Timing {
-  step: string;
-  node: string;
-  ms: number;
-}
-export interface Job<S> {
-  id: string;
-  role: Role;
-  thread: string;
-  target: string;
-  step: string;
-  state: S;
-  error?: string;
-  createdAt: number;
-  updatedAt: number;
-}
+export type Timing = HandoffTiming;
+
+/** A job's state is parsed on load with its step's schema (`sourceSteps`, `destinationSteps`), so each step sees as
+ * required what the steps before it filled in. */
+type Steps = Record<string, z.ZodType>;
+type JobAt<R extends Role, M extends Steps, K extends keyof M> = K extends string
+  ? {
+      id: string;
+      role: R;
+      thread: string;
+      target: string;
+      step: K;
+      state: z.output<M[K]>;
+      error?: string;
+      createdAt: number;
+      updatedAt: number;
+    }
+  : never;
+export type SourceStep = keyof typeof sourceSteps;
+export type DestStep = keyof typeof destinationSteps;
+export type SourceJob<K extends SourceStep = SourceStep> = JobAt<"source", typeof sourceSteps, K>;
+export type DestJob<K extends DestStep = DestStep> = JobAt<"destination", typeof destinationSteps, K>;
+export type Job = SourceJob | DestJob;
+type JobOf<R extends Role> = R extends "source" ? SourceJob : DestJob;
+type StepOf<J extends Job> = J extends SourceJob ? SourceStep : DestStep;
+type NewJob = Job extends infer J ? (J extends Job ? Omit<J, "createdAt" | "updatedAt"> : never) : never;
 
 export interface HandoffOptions {
   /** Claude's default home (~/.claude): sessions of a T3 Claude provider without a home of its own live here. */
@@ -51,7 +62,8 @@ export interface HandoffOptions {
   retryPauseMs?: number;
 }
 
-const TERMINAL_STEPS = new Set(["done", "failed"]);
+/** Finished jobs stay this long, for the thread views and a look back at what happened. */
+const KEEP_FINISHED = 30 * 86_400_000;
 
 /** Node-local notes about a Claude session that outlive one handoff: the thread that held it when it left this node
  * (so a round trip brings that thread back), the stash of changes parked then (dropped when they come back), and how
@@ -79,13 +91,29 @@ export function transport(s: Store, node: string): "tailnet" | "relay" | undefin
   return relayInvite(s) && via(s, node).includes("relay") ? "relay" : undefined;
 }
 
-/** A daemon-to-daemon call to `node`'s `/peer` routes: over Tailscale with the peer token, or sealed through the relay. */
-export async function peerCall<T>(
+type PeerInit = { method?: string; json?: unknown; body?: Uint8Array; timeout?: number };
+
+/** A daemon-to-daemon call to `node`'s `/peer` routes: over Tailscale with the peer token, or sealed through the relay.
+ * The answer is parsed with `schema`, so a machine on another version that answers in another shape fails with a
+ * message naming it. */
+export async function peerCall<S extends z.ZodType>(
   s: Store,
   node: string,
   path: string,
-  init: { method?: string; json?: unknown; body?: Uint8Array; timeout?: number } = {},
-): Promise<T> {
+  schema: S,
+  init?: PeerInit,
+): Promise<z.output<S>>;
+/** @deprecated Unchecked answer, kept for factory/board.ts, factory/follow.ts and update.ts; pass a schema instead. */
+export async function peerCall<T>(s: Store, node: string, path: string, init?: PeerInit): Promise<T>;
+export async function peerCall(
+  s: Store,
+  node: string,
+  path: string,
+  schemaOrInit?: z.ZodType | PeerInit,
+  maybeInit: PeerInit = {},
+): Promise<unknown> {
+  const [schema, init] =
+    schemaOrInit instanceof z.ZodType ? [schemaOrInit, maybeInit] : [undefined, schemaOrInit ?? {}];
   const timeout = init.timeout ?? 30_000;
   const method = init.method ?? (init.json === undefined && !init.body ? "GET" : "POST");
   const type = init.json !== undefined ? "application/json" : init.body ? "application/gzip" : undefined;
@@ -120,22 +148,31 @@ export async function peerCall<T>(
     const message = typeof data.error === "string" ? data.error : `${node} answered ${res.status}`;
     throw new PeerError(res.status, message, data);
   }
-  return data as T;
+  if (!schema) return data;
+  const answer = schema.safeParse(data);
+  if (answer.success) return answer.data;
+  throw new Error(
+    `${node} answered ${path.split("?")[0]} in a form ${s.nodeId} cannot read (${firstIssue(answer.error)}); update agentgate on both machines`,
+  );
 }
 
-type Row = Omit<Job<unknown>, "state" | "error" | "createdAt" | "updatedAt"> & {
+const firstIssue = (error: z.ZodError) => {
+  const issue = error.issues[0];
+  const at = issue?.path.join(".");
+  return `${at ? `${at}: ` : ""}${issue?.message ?? "invalid"}`;
+};
+
+type Row = {
+  id: string;
+  role: Role;
+  thread: string;
+  target: string;
+  step: string;
   state: string;
   error: string | null;
   created_at: number;
   updated_at: number;
 };
-const fromRow = <S>({ state, error, created_at, updated_at, ...rest }: Row): Job<S> => ({
-  ...rest,
-  state: JSON.parse(state),
-  error: error ?? undefined,
-  createdAt: created_at,
-  updatedAt: updated_at,
-});
 
 export class Handoffs {
   private loops = new Map<string, () => Promise<void>>();
@@ -149,10 +186,11 @@ export class Handoffs {
   setupProcesses = new Set<{ pid: number; kill(signal?: number | NodeJS.Signals): void }>();
   /** Short-lived listing cache: T3's Claude provider instances. */
   cache = createCache({ now: () => this.s.now() });
-  closed = false;
-  private stopped = Promise.withResolvers<void>();
+  private stop = new AbortController();
+  /** Aborts on close and kills the git clones, fetches and bundles in flight; their steps run again on restart. */
+  readonly signal = this.stop.signal;
   /** Resolves on close, so a step waiting on setup lets shutdown go; the step resumes on restart. */
-  readonly closing = this.stopped.promise;
+  readonly closing = new Promise<void>((resolve) => this.signal.addEventListener("abort", () => resolve()));
   /** One T3 project sync at a time: the timer, record changes and the app's T3 Code page all ask for it. */
   syncProjects = serialTask(() => syncT3Projects(this));
 
@@ -163,6 +201,9 @@ export class Handoffs {
     readonly register: (checkouts: { path: string; project?: string }[]) => void = () => {},
   ) {}
 
+  get closed() {
+    return this.signal.aborted;
+  }
   get pollMs() {
     return this.options.pollMs ?? 1000;
   }
@@ -170,18 +211,67 @@ export class Handoffs {
     return join(this.options.tempDir, id);
   }
 
-  load<S = SourceState | DestState>(role: Role, id: string): Job<S> | undefined {
-    const row = this.s.db.query("select * from handoffs where role = ? and id = ?").get(role, id) as Row | null;
-    return row ? fromRow<S>(row) : undefined;
+  /** The row as its step's job. One this version cannot continue (a step it does not know, or a state that does not
+   * fit its step, as another version may write) fails here with the reason, instead of waiting for a step loop that
+   * cannot run it. Finished jobs always load: nothing runs them, and their schema falls back to an empty state. */
+  private read(row: Row): Job {
+    const steps = row.role === "source" ? sourceSteps : destinationSteps;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(row.state);
+    } catch {
+      // Parsed as missing, which no running step accepts.
+    }
+    const job = {
+      id: row.id,
+      role: row.role,
+      thread: row.thread,
+      target: row.target,
+      error: row.error ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    const schema = (steps as Steps)[row.step];
+    const parsed = schema?.safeParse(raw);
+    // The schema of `row.step` parsed the state: the pair is that step's job, which TypeScript cannot follow.
+    if (parsed?.success) return { ...job, step: row.step, state: parsed.data } as Job;
+
+    const why = parsed ? firstIssue(parsed.error) : "unknown step";
+    const error = `${row.step} on ${this.s.nodeId}: another version of agentgate wrote this handoff, and this one cannot continue it (${why})`;
+    const failed = this.s.db.run(
+      "update handoffs set step = 'failed', error = ?, updated_at = ? where role = ? and id = ? and step = ?",
+      [error, this.s.now(), row.role, row.id, row.step],
+    ).changes;
+    if (failed) {
+      this.s.bump("threads");
+      rmSync(this.dir(row.id), { recursive: true, force: true });
+    }
+    return {
+      ...job,
+      step: "failed",
+      error,
+      updatedAt: this.s.now(),
+      state: steps.failed.parse(raw),
+    } as Job;
   }
-  list<S = SourceState | DestState>(role?: Role): Job<S>[] {
+
+  load<R extends Role>(role: R, id: string): JobOf<R> | undefined {
+    const row = this.s.db
+      .query<Row, [string, string]>("select * from handoffs where role = ? and id = ?")
+      .get(role, id);
+    return row ? (this.read(row) as JobOf<R>) : undefined;
+  }
+  list<R extends Role = Role>(role?: R): JobOf<R>[] {
     const rows = this.s.db
-      .query("select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200")
-      .all(role ?? null) as Row[];
-    return rows.map((r) => fromRow<S>(r));
+      .query<Row, [string | null]>(
+        "select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200",
+      )
+      .all(role ?? null);
+    return rows.map((r) => this.read(r) as JobOf<R>);
   }
-  create<S>(job: Omit<Job<S>, "createdAt" | "updatedAt">) {
-    this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+  // Jobs are shown with the threads, so every write the user can see marks `threads` changed; `touch` does not.
+  create<R extends Role>(job: NewJob & { role: R }): JobOf<R> {
+    const { changes } = this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
       job.id,
       job.role,
       job.thread,
@@ -192,18 +282,20 @@ export class Handoffs {
       this.s.now(),
       this.s.now(),
     ]);
-    return this.load<S>(job.role, job.id)!;
+    if (changes) this.s.bump("threads");
+    return this.load(job.role, job.id)!;
   }
   /** The job's step loop is the only writer after creation; a job that failed (an abort) is never brought back.
    * Returns false when it had failed already. */
-  save<S>(job: Job<S>): boolean {
+  save(job: Job): boolean {
     job.updatedAt = this.s.now();
-    return (
+    const saved =
       this.s.db.run(
         "update handoffs set thread = ?, step = ?, state = ?, error = ?, updated_at = ? where role = ? and id = ? and step != 'failed'",
         [job.thread, job.step, JSON.stringify(job.state), job.error ?? null, job.updatedAt, job.role, job.id],
-      ).changes > 0
-    );
+      ).changes > 0;
+    if (saved) this.s.bump("threads");
+    return saved;
   }
 
   /** Run a job's step loop, one at a time per job; a call while it runs makes it look again afterwards. */
@@ -223,8 +315,10 @@ export class Handoffs {
 
   /** Resume unfinished jobs after a restart, and give up on prepares whose source never started. */
   tick() {
-    for (const job of this.list()) {
-      if (TERMINAL_STEPS.has(job.step) || this.starting.has(job.id)) continue;
+    // Only unfinished rows: a finished one can hold thousands of file entries, and nothing here reads them.
+    const rows = this.s.db.query<Row, []>("select * from handoffs where step not in ('done', 'failed')").all();
+    for (const job of rows.map((r) => this.read(r))) {
+      if (this.starting.has(job.id) || job.step === "failed") continue;
       const waiting =
         job.role === "destination" &&
         (job.step === "prepare" || job.step === "prepared") &&
@@ -237,28 +331,35 @@ export class Handoffs {
     }
   }
 
-  advance<S>(job: Job<S>, step: string) {
-    job.step = step;
+  trim() {
+    this.s.db.run("delete from handoffs where step in ('done', 'failed') and updated_at < ?", [
+      this.s.now() - KEEP_FINISHED,
+    ]);
+  }
+
+  /** Moves the job on. The state is checked against the new step's schema when the loop loads it next. */
+  advance<J extends Job>(job: J, step: StepOf<J>) {
+    Object.assign(job, { step });
     this.save(job);
   }
 
   /** Returns false when the job had failed already, so only one caller acts on its failure. */
-  fail<S>(job: Job<S>, error: string): boolean {
-    job.step = "failed";
-    job.error = error;
+  fail(job: Job, error: string): boolean {
+    Object.assign(job, { step: "failed", error });
     const failed = this.save(job);
     rmSync(this.dir(job.id), { recursive: true, force: true });
     return failed;
   }
 
   /** A warning for a job that already failed, which `save` no longer writes. */
-  warnFailed(job: Job<{ warnings: string[] }>, warning: string) {
+  warnFailed(job: Job, warning: string) {
     job.state.warnings.push(warning);
     this.s.db.run("update handoffs set state = ? where role = ? and id = ?", [
       JSON.stringify(job.state),
       job.role,
       job.id,
     ]);
+    this.s.bump("threads");
   }
 
   /** Mark activity without taking the step loop's place as the writer (a received chunk keeps a slow upload alive). */
@@ -268,16 +369,15 @@ export class Handoffs {
 
   /** Waits for step loops; setup scripts keep running on their own. */
   async close() {
-    this.closed = true;
-    this.stopped.resolve();
+    this.stop.abort();
     for (const child of this.setupProcesses) killGroup(child);
     await Promise.allSettled([...this.running]);
   }
 
   /** The job as the API and app show it. */
-  view(job: Job<SourceState | DestState>): HandoffJob {
-    if (job.role === "destination") return destinationView(this, job as Job<DestState>);
-    const st = job.state as SourceState;
+  view(job: Job): HandoffJob {
+    if (job.role === "destination") return destinationView(this, job);
+    const st = job.state;
     return {
       id: job.id,
       role: "source",

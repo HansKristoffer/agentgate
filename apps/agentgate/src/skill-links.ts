@@ -1,6 +1,6 @@
 import type { SkillHealth } from "@agentgate/protocol";
-import { getErrorMessage, safeJsonParse } from "hanzio";
-import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema } from "@agentgate/protocol";
+import { getErrorMessage } from "hanzio";
+import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema, statusSchema } from "@agentgate/protocol";
 import {
   cpSync,
   existsSync,
@@ -23,7 +23,10 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
-import { CONFIG_DIR, liveOnly, SKILL_ID, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from "./store.ts";
+import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
+import { UserError } from "./ops/registry.ts";
 
 export const SKILLS_DIR = join(CONFIG_DIR, "skills");
 const EXCLUDE_HEADER = "# agentgate skills (symlinks into ~/.config/agentgate/skills)";
@@ -108,6 +111,17 @@ export function globalSkillDirs(): [dir: string, on: boolean][] {
   ];
 }
 
+// What `/status` shows about skills on this node.
+const healthLocal = defineLocal("skillHealth", statusSchema.shape.skillHealth, { topic: "status" });
+const mirrorLocal = defineLocal("skillMirror:", z.string(), { topic: "status" });
+const checkoutsLocal = defineLocal("checkouts", z.record(z.string(), z.string()), { topic: "status" });
+/** Main checkout path → project, for every checkout this node registered (`SkillLinks.register`). */
+export const registeredCheckouts = (s: Store) => checkoutsLocal.get(s) ?? {};
+const conflictsLocal = defineLocal("skillConflicts", z.array(z.string()), { topic: "status" });
+const keptLocal = defineLocal("skillKept", z.array(z.string()), { topic: "status" });
+// Per worktree: the mirror links `mirror` made there, link path → target.
+const mirrorsLocal = defineLocal("skillMirrors:", z.record(z.string(), z.string()));
+
 /** Writes skill records to disk and keeps the symlinks that expose them to Claude Code and Codex in step.
  * Agents read skills when a session starts, so project links must exist before then: each known repo's
  * worktree list is watched, so a new worktree gets its links while git is still checking it out. */
@@ -130,22 +144,22 @@ export class SkillLinks {
   ) {}
 
   health(): SkillHealth {
-    return safeJsonParse<SkillHealth>(this.s.local("skillHealth") ?? '{"errors":[]}').data ?? { errors: [] };
+    return healthLocal.get(this.s) ?? { errors: [] };
   }
 
   mirroring(main: string): boolean {
-    return this.s.local(`skillMirror:${main}`) === "true";
+    return mirrorLocal.get(this.s, main) === "true";
   }
 
   setMirroring(main: string, on: boolean) {
     main = realpathSync(main);
     if (!this.checkouts()[main]) throw new Error("Register this checkout before changing repository mirroring");
-    this.s.setLocal(`skillMirror:${main}`, String(on));
+    mirrorLocal.set(this.s, main, String(on));
     this.sync();
   }
 
   checkouts(): Record<string, string> {
-    return safeJsonParse<Record<string, string>>(this.s.local("checkouts") ?? "{}").data ?? {};
+    return registeredCheckouts(this.s);
   }
 
   /** Skills the repository itself carries in a checkout: SKILL.md folders we did not link. */
@@ -164,12 +178,12 @@ export class SkillLinks {
   }
 
   conflicts(): string[] {
-    return safeJsonParse<string[]>(this.s.local("skillConflicts") ?? "[]").data ?? [];
+    return conflictsLocal.get(this.s) ?? [];
   }
 
   /** Clashes the user settled by keeping what was there: no link of ours there on this machine, and no report. */
   kept(): string[] {
-    return safeJsonParse<string[]>(this.s.local("skillKept") ?? "[]").data ?? [];
+    return keptLocal.get(this.s) ?? [];
   }
 
   /**
@@ -180,9 +194,9 @@ export class SkillLinks {
   resolveConflict(path: string, use: "agentgate" | "keep"): string | undefined {
     const kept = this.kept();
     if (!this.root || (!this.conflicts().includes(path) && !kept.includes(path)))
-      throw new Error(`${path} is not a skill that clashes with Agentgate's`);
+      throw new UserError(`${path} is not a skill that clashes with Agentgate's`);
     if (use === "keep") {
-      this.s.setLocal("skillKept", JSON.stringify([...new Set([...kept, path])]));
+      keptLocal.set(this.s, undefined, [...new Set([...kept, path])]);
       this.sync();
       return;
     }
@@ -194,7 +208,7 @@ export class SkillLinks {
       timeout: 10_000,
     });
     if (tracked.exitCode === 0)
-      throw new Error(`${path} is part of its repository. Rename or remove it there, or keep it.`);
+      throw new UserError(`${path} is part of its repository. Rename or remove it there, or keep it.`);
     const backups = join(dirname(this.root), "skill-backups");
     mkdirSync(backups, { recursive: true });
     const backup = join(mkdtempSync(join(backups, `${basename(path)}-`)), basename(path));
@@ -205,7 +219,11 @@ export class SkillLinks {
       cpSync(path, backup, { recursive: true, verbatimSymlinks: true });
       rmSync(path, { recursive: true, force: true });
     }
-    this.s.setLocal("skillKept", JSON.stringify(kept.filter((p) => p !== path)));
+    keptLocal.set(
+      this.s,
+      undefined,
+      kept.filter((p) => p !== path),
+    );
     this.sync();
     return backup;
   }
@@ -213,7 +231,7 @@ export class SkillLinks {
   /** Remember the main checkout of the repo containing `path`. Returns it, or undefined for non-repos. */
   register(path: string, project?: string, sync = true): string | undefined {
     const git = (...args: string[]) => {
-      const r = Bun.spawnSync(["git", ...args], { cwd: path, stderr: "ignore" });
+      const r = Bun.spawnSync(["git", ...args], { cwd: path, stderr: "ignore", timeout: 5000 });
       return r.exitCode === 0 ? r.stdout.toString().trim() : undefined;
     };
     if (!existsSync(path)) return;
@@ -227,7 +245,7 @@ export class SkillLinks {
       all = this.checkouts();
     if (all[main] !== project) {
       all[main] = project;
-      this.s.setLocal("checkouts", JSON.stringify(all));
+      checkoutsLocal.set(this.s, undefined, all);
     }
     if (sync) this.sync();
     return main;
@@ -238,7 +256,10 @@ export class SkillLinks {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [50, 600, 2000, 5000, 10000].map((ms) => {
-      const t = setTimeout(() => this.sync(), ms);
+      const t = setTimeout(
+        timerSync(this.s, "skills", () => this.sync()),
+        ms,
+      );
       t.unref?.();
       return t;
     });
@@ -253,14 +274,14 @@ export class SkillLinks {
       this.write(this.root!);
       this.link(this.root!);
     });
-    this.s.setLocal(
-      "skillHealth",
-      JSON.stringify({
-        attemptedAt,
-        succeededAt: this.errors.length ? previous.succeededAt : attemptedAt,
-        errors: this.errors,
-      }),
-    );
+    // Written only when the errors change, not on every pass: attemptedAt is when the current errors were first seen,
+    // succeededAt when the last clean run of passes began.
+    if (previous.attemptedAt !== undefined && JSON.stringify(previous.errors) === JSON.stringify(this.errors)) return;
+    healthLocal.set(this.s, undefined, {
+      attemptedAt,
+      succeededAt: this.errors.length ? previous.succeededAt : attemptedAt,
+      errors: this.errors,
+    });
   }
 
   private attempt(path: string, action: () => void) {
@@ -283,8 +304,10 @@ export class SkillLinks {
 
   private records() {
     return this.s.db
-      .query("select id, rev, node, updated_at from records where kind = 'skill' and deleted = 0")
-      .all() as { id: string; rev: number; node: string; updated_at: number }[];
+      .query<Pick<Rec, "id" | "rev" | "node" | "updated_at">, []>(
+        "select id, rev, node, updated_at from records where kind = 'skill' and deleted = 0",
+      )
+      .all();
   }
 
   /** Store → `<root>/<id>/`, swapped in whole, skipped when the folder's marker matches the record revision. */
@@ -453,20 +476,17 @@ export class SkillLinks {
         watcher.close();
         this.watchers.delete(path);
       }
-    if (Object.keys(live).length !== Object.keys(checkouts).length) this.s.setLocal("checkouts", JSON.stringify(live));
-    const text = conflicts.length ? JSON.stringify(conflicts) : undefined;
-    if (text !== this.s.local("skillConflicts")) this.s.setLocal("skillConflicts", text);
+    if (Object.keys(live).length !== Object.keys(checkouts).length) checkoutsLocal.set(this.s, undefined, live);
+    conflictsLocal.set(this.s, undefined, conflicts.length ? conflicts : undefined);
     // A kept entry that is gone, or no longer clashes, is forgotten, so ours is linked there again once the place is free.
-    const keptText = kept.still.length ? JSON.stringify(kept.still) : undefined;
-    if (keptText !== this.s.local("skillKept")) this.s.setLocal("skillKept", keptText);
+    keptLocal.set(this.s, undefined, kept.still.length ? kept.still : undefined);
   }
 
   /** A skill the repo carries for one agent only, linked for the other with a relative link, so it holds in every worktree.
    * Returns the names it links. An owned, untracked mirror is removed once its source is gone. */
   private mirror(root: string, tree: string): string[] {
     const names: string[] = [];
-    const key = `skillMirrors:${tree}`;
-    const owned = safeJsonParse<Record<string, string>>(this.s.local(key) ?? "{}").data ?? {};
+    const owned = mirrorsLocal.get(this.s, tree) ?? {};
     const pairs = [
       [".claude", ".agents"],
       [".agents", ".claude"],
@@ -502,15 +522,19 @@ export class SkillLinks {
           readlinkSync(path) === owned[path] &&
           !existsSync(path)
         ) {
-          const tracked =
-            Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", path], { cwd: tree, stderr: "ignore" })
-              .exitCode === 0;
-          if (!tracked) unlinkSync(path);
+          const tracked = Bun.spawnSync(["git", "ls-files", "--error-unmatch", "--", path], {
+            cwd: tree,
+            stderr: "ignore",
+            timeout: 5000,
+          }).exitCode;
+          // Timed out: the repository may track the link, so the next pass asks again.
+          if (tracked === null) continue;
+          if (tracked !== 0) unlinkSync(path);
           delete owned[path];
         }
       }
     }
-    this.s.setLocal(key, JSON.stringify(owned));
+    mirrorsLocal.set(this.s, tree, Object.keys(owned).length ? owned : undefined);
     return names;
   }
 
@@ -567,14 +591,18 @@ export class SkillLinks {
         if (current?.inode === inode) return;
         current?.watcher.close();
         this.watchers.delete(path);
-        const watcher = (this.io.watch ?? watch)(path, () => this.soon());
+        // In the git dir only `worktrees` matters: `git status` alone rewrites `index` there. No name: assume it might.
+        const watcher = (this.io.watch ?? watch)(path, (_, name) => {
+          const worktreesMayHaveChanged = path !== common || !name || String(name).startsWith("worktrees");
+          if (worktreesMayHaveChanged) this.soon();
+        });
         watcher.on("error", (error) => {
           watcher.close();
           this.watchers.delete(path);
           if (this.closed) return;
           const health = this.health();
           health.errors.push({ path, message: `Cannot watch worktrees: ${error.message}` });
-          this.s.setLocal("skillHealth", JSON.stringify(health));
+          healthLocal.set(this.s, undefined, health);
           this.soon();
         });
         this.watchers.set(path, { watcher, inode });

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import type { FactoryBoard } from "@agentgate/protocol";
 import { boardText } from "../src/factory/board.ts";
 import { threadScope, workingCount } from "../src/factory/controller.ts";
@@ -197,6 +197,53 @@ test("a disabled scout never runs on its schedule, but runs on request", async (
     enabled: false,
     lastRun: expect.objectContaining({ state: "queued", filed: 0 }),
   });
+});
+
+test("the schedule and the board read a scout's newest run, not its whole history", async () => {
+  const n = await scoutFactory();
+  const now = n.s.now();
+  const scoutRun = (id: string, queuedAt: number, filed: string[]) =>
+    runs.insert(n.s, {
+      id,
+      kind: "scout",
+      attempt: 1,
+      state: "reported",
+      nudges: 0,
+      configCommit: n.commit,
+      source: "perf",
+      checked: { kind: "scout", source: "perf", filed },
+      queuedAt,
+    });
+  scoutRun("run_newest", now - HOUR, ["perf-a"]);
+  for (let i = 0; i < 500; i++) scoutRun(`run_old${i}`, now - 80 * DAY + i * MINUTE, []);
+
+  // Every row any query returns during one pass of the schedule.
+  let rows = 0;
+  // A prepared statement is not the cached one `query` hands out, so wrapping it changes nothing after the pass.
+  // bun:sqlite types `query` as generic over its rows, which a wrapper cannot be.
+  const counting = spyOn(n.s.db, "query").mockImplementation(((sql: string) => {
+    const statement = n.s.db.prepare(sql);
+    const { all, get } = statement;
+    return Object.assign(statement, {
+      all: (...args: never[]) => {
+        const result = all.apply(statement, args);
+        rows += result.length;
+        return result;
+      },
+      get: (...args: never[]) => {
+        const result = get.apply(statement, args);
+        if (result) rows++;
+        return result;
+      },
+    });
+  }) as typeof n.s.db.query);
+  await n.scoutLoop();
+  counting.mockRestore();
+  expect(rows).toBeLessThan(50);
+  expect(n.scoutRuns()).toHaveLength(501); // not due: the newest ran an hour ago
+
+  const perf = (await n.board()).sources.find((s) => s.id === "perf")!.scout!;
+  expect(perf).toMatchObject({ lastRun: { id: "run_newest", filed: 1 }, nextAt: now + 5 * HOUR });
 });
 
 test("an at slot that waits on paused intake is noted once", async () => {

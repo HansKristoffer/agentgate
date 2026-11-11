@@ -173,7 +173,7 @@ last line in a code span. Intake posts the first marker, the `taken` comment, in
 - Keys are `<repository name>-<number>`, or `<owner>-<name>-<number>` when two of the folder's repositories share a
   name, made unique with a suffix. Intake dedupes on the issue (`external_id`) across sources, so two labels on one
   issue make one item.
-- Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation) goes through
+- Every write whose outcome can be uncertain (a comment for a moment, a reply in a review conversation, a notification) goes through
   one outbox ([`outbox.ts`](../../apps/agentgate/src/factory/outbox.ts)): claimed with its body in
   `factory_writebacks` in the step that decides it, so it is posted at most once. What happens to a
   claim next depends on whether the request can have arrived, which the `gh` boundary
@@ -182,7 +182,10 @@ last line in a code span. Intake posts the first marker, the `taken` comment, in
   reached the service (`gh` is not installed or logged out, no connection opened) is `unreachable`: the loop sends it
   again every pass until it goes through, and fails it once its claim is a day old. One the service refused with a
   4xx, which wrote nothing, is tried up to three times. Anything else, a 5xx and a send that a restart or `gh`'s
-  deadline cut off included, is `uncertain` and never sent again, because a second send could post it twice. A claim
+  deadline cut off included, is `uncertain` and never sent blind, because a second send could post it twice. A
+  comment's marker names its moment and `ref`, so a pass later the outbox reads the issue's comments back with the
+  source's `check`: one that landed is `posted`, and one that did not is sent again. A reply or an issue stays
+  uncertain. A notification is safe to repeat, so a failed one is sent again like a refusal. A claim
   a restart left unsent is sent by the next daemon. That table, not the event log, holds the claim, because the event
   log is trimmed while items stay open. Writes that are safe to repeat, such as resolving a conversation or the ready
   summary in the PR body, need no claim; the summary is written before the item moves to `ready`.

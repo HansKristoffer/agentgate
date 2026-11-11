@@ -1,6 +1,6 @@
-import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
+import { isVirtual, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
-import { getErrorMessage } from "hanzio";
+import { exponentialBackoff } from "hanzio";
 import {
   REMOTE_LIMITS,
   relayFrame,
@@ -8,11 +8,13 @@ import {
   type remoteRequestFrame,
   type RemoteResponseFrame,
 } from "@agentgate/protocol/remote";
-import type { z } from "zod";
+import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 import type { Gateway } from "./mcp/gateway.ts";
+import { RelaySocket } from "./relay-socket.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
-import type { Store } from "./store.ts";
+import { nodesBelow, requireNodeProtocol, sent, type Data, type Project, type Store } from "./store.ts";
 
 /**
  * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
@@ -46,25 +48,16 @@ function virtualProject(s: Store, id: string): Project {
   return p;
 }
 
-/** Every node record must come from a daemon that keeps `remote` intact; older ones drop it when they edit a project. */
-function versionGate(s: Store) {
-  const old = s
-    .list("node")
-    .filter((n) => (n.protocol ?? 0) < REMOTE_PROTOCOL)
-    .map((n) => n.id);
-  if (old.length)
-    throw new Error(`Update agentgate on ${old.join(", ")} first: older versions can't keep remote endpoints in sync`);
-}
-
 /** An always-on node is the natural host; otherwise this one. */
 function defaultServer(s: Store): string {
-  return s.list("node").find((n) => n.alwaysOn && (n.protocol ?? 0) >= REMOTE_PROTOCOL)?.id ?? s.nodeId;
+  const old = nodesBelow(s, REMOTE_PROTOCOL);
+  return s.list("node").find((n) => n.alwaysOn && !old.includes(n.id))?.id ?? s.nodeId;
 }
 
 export function enableRemote(s: Store, id: string, servedBy?: string): { url: string; secret: string } {
   return s.transaction(() => {
     const p = virtualProject(s, id);
-    versionGate(s);
+    requireNodeProtocol(s, REMOTE_PROTOCOL, "can't keep remote endpoints in sync");
     if (servedBy && !s.get("node", servedBy)) throw new Error(`no machine ${servedBy}`);
     const remote: Remote = p.remote
       ? { ...p.remote, enabled: true, servedBy: servedBy ?? p.remote.servedBy }
@@ -129,11 +122,25 @@ export function deleteProject(s: Store, id: string) {
   });
 }
 
+const deletes = defineLocal(
+  "remote:delete",
+  z.array(
+    z.object({
+      relay: z.string(),
+      key: z.string(),
+      token: z.string(),
+      // Absent on entries queued before retries backed off, and on new ones: those go out on the next pass.
+      attempts: z.number().optional(),
+      nextAt: z.number().optional(),
+    }),
+  ),
+);
+
 /** Deletes a relay endpoint best-effort: the endpoint manager retries until the relay confirms. */
 export function queueDelete(s: Store, r: { relay: string; key: string; token: string }) {
-  const queue = JSON.parse(s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
+  const queue = deletes.get(s) ?? [];
   queue.push({ relay: r.relay, key: r.key, token: r.token });
-  s.setLocal("remote:delete", JSON.stringify(queue.slice(-100)));
+  deletes.set(s, undefined, queue.slice(-100));
 }
 
 // ---------------------------------------------------------------- serving
@@ -156,21 +163,27 @@ interface Conn {
   id: string;
   remote: Remote;
   hook?: HookEndpoint;
-  ws?: WebSocket;
+  socket?: RelaySocket;
   connected: boolean;
-  closed: boolean;
   error?: string;
   failed: string[];
   lastCall?: number;
-  backoff: number;
-  openedAt?: number;
-  retry?: ReturnType<typeof setTimeout>;
-  ping?: ReturnType<typeof setInterval>;
-  lastPong: number;
-  inflight: Map<string, AbortController>;
+  /** Secret pushes in order, so an older one can never land after a newer one. */
+  pushing?: Promise<void>;
 }
 
-const describe = (e: unknown) => getErrorMessage(e).slice(0, 200);
+/** A refusal from the relay, worded here: the only error text status shows as it is. */
+class EndpointError extends Error {}
+
+/** Status text for a failed push or request. Any other error's text can carry a URL, a header or an upstream server's
+ * answer, so it is named by kind only. */
+function describe(e: unknown, failed: string) {
+  if (e instanceof EndpointError) return e.message;
+  if (e instanceof Error && e.name === "TimeoutError") return `${failed}: timed out`;
+  return failed;
+}
+const PUSH_FAILED = "could not reach the relay";
+const REQUEST_FAILED = "a request failed";
 
 /** Keeps one socket per endpoint this node serves and pushes the secret hash the relay checks. */
 export class RemoteEndpoints {
@@ -211,17 +224,22 @@ export class RemoteEndpoints {
         if (!c.hook && !used(c.remote.key)) queueDelete(this.s, c.remote);
       } else if (next.secret !== c.remote.secret && !c.connected)
         this.stop(id); // restarted below, e.g. after a deletion
-      else if (next.secret !== c.remote.secret) {
+      else if (c.connected) {
+        // Until the relay acknowledges a new secret it still accepts the old one, so a failed push is retried on every
+        // pass; `put` sends nothing once the relay has it.
         c.remote = next;
-        void this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
-          c.error = describe(e);
-        });
+        c.pushing = (c.pushing ?? Promise.resolve()).then(() =>
+          this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
+            this.report(c, c.connected, describe(e, PUSH_FAILED));
+          }),
+        );
       }
     }
     for (const [id, next] of wanted) if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
-    for (const row of this.s.db.query("select key from local where key like 'remote:deleted:%'").all() as {
-      key: string;
-    }[])
+    // A key range rather than LIKE, which ignores case and so cannot use the primary key. ';' sorts right after ':'.
+    for (const row of this.s.db
+      .query<{ key: string }, []>("select key from local where key >= 'remote:deleted:' and key < 'remote:deleted;'")
+      .all())
       if (!used(row.key.slice("remote:deleted:".length))) this.s.setLocal(row.key, undefined);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
     for (const p of projects)
@@ -261,7 +279,7 @@ export class RemoteEndpoints {
     // The relay deleted this endpoint (another machine made a new URL or deleted the project): pushing it again would
     // recreate it with the old token, so wait for the record to change.
     if (this.s.local(`remote:deleted:${r.key}`) === r.secret.slice(0, 8))
-      throw new Error("the relay deleted this endpoint; create a new URL");
+      throw new EndpointError("the relay deleted this endpoint; create a new URL");
     const marker = this.pushedValue(r, r.enabled);
     if (this.s.local(`remote:pushed:${r.key}`) === marker) return;
     const key = serviceKeyFor(this.s, r.relay);
@@ -283,9 +301,10 @@ export class RemoteEndpoints {
       10_000,
     );
     await res.body?.cancel();
-    if (res.status === 401) throw new Error("the relay refused this endpoint's token; create a new URL");
-    if (res.status === 409) throw new Error("the relay holds another kind of endpoint at this URL; create a new URL");
-    if (!res.ok) throw new Error(`the relay answered ${res.status}`);
+    if (res.status === 401) throw new EndpointError("the relay refused this endpoint's token; create a new URL");
+    if (res.status === 409)
+      throw new EndpointError("the relay holds another kind of endpoint at this URL; create a new URL");
+    if (!res.ok) throw new EndpointError(`the relay answered ${res.status}`);
     this.s.setLocal(`remote:pushed:${r.key}`, marker);
   }
 
@@ -295,116 +314,77 @@ export class RemoteEndpoints {
       remote,
       ...(hook && { hook }),
       connected: false,
-      closed: false,
       failed: [],
-      backoff: 1000,
-      lastPong: 0,
-      inflight: new Map(),
     };
     this.conns.set(id, c);
-    void this.connect(c);
+    c.socket = this.connect(c);
   }
 
   private stop(id: string) {
     const c = this.conns.get(id);
     if (!c) return;
-    c.closed = true;
     this.conns.delete(id);
-    clearTimeout(c.retry);
-    clearInterval(c.ping);
-    for (const a of c.inflight.values()) a.abort(new Error("endpoint stopped"));
-    c.ws?.close();
+    c.socket?.stop("endpoint stopped");
   }
 
-  private later(c: Conn, error?: string) {
-    if (c.closed || this.closed) return;
-    if (error) c.error = error;
-    c.connected = false;
-    clearInterval(c.ping);
-    const delay = c.backoff * (0.5 + Math.random());
-    c.backoff = Math.min(c.backoff * 2, 60_000);
-    c.retry = setTimeout(() => void this.connect(c), delay);
-    c.retry.unref?.();
+  /** Status shows each endpoint's connection and error: mark it changed when either moves, not on every retry. */
+  private report(c: Conn, connected: boolean, error: string | undefined) {
+    if (c.connected === connected && c.error === error) return;
+    c.connected = connected;
+    c.error = error;
+    this.s.bump("status");
   }
 
-  private async connect(c: Conn) {
-    if (c.closed || this.closed) return;
-    try {
-      await this.put(c.remote, c.hook ? "hook" : "mcp");
-    } catch (e) {
-      return this.later(c, describe(e));
-    }
-    if (c.closed || this.closed) return;
-    const key = serviceKeyFor(this.s, c.remote.relay);
-    // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
-    const ws = new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
-      headers: {
-        authorization: `Bearer ${c.remote.token}`,
-        "x-agentgate-node": this.s.nodeId,
-        ...(key && { "x-relay-key": key }),
+  /** A stopped endpoint's socket reports nothing, as the store may be closing with the daemon. */
+  private connect(c: Conn) {
+    const socket: RelaySocket = new RelaySocket({
+      dial: async () => {
+        await this.put(c.remote, c.hook ? "hook" : "mcp");
+        const key = serviceKeyFor(this.s, c.remote.relay);
+        // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
+        return new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
+          headers: {
+            authorization: `Bearer ${c.remote.token}`,
+            "x-agentgate-node": this.s.nodeId,
+            ...(key && { "x-relay-key": key }),
+          },
+        } as unknown as string[]);
       },
-    } as unknown as string[]);
-    c.ws = ws;
-    ws.onopen = () => {
-      c.connected = true;
-      c.error = undefined;
-      c.openedAt = Date.now();
-      c.lastPong = Date.now();
-      const pingMs = 30_000;
-      c.ping = setInterval(() => {
-        if (Date.now() - c.lastPong > pingMs * 2) return ws.close();
+      onOpen: () => this.report(c, true, undefined),
+      onMessage: (data, ws) => {
+        let frame;
         try {
-          ws.send("ping");
+          frame = relayFrame.parse(JSON.parse(data));
         } catch {
-          /* closing */
+          return;
         }
-      }, pingMs);
-      c.ping.unref?.();
-    };
-    ws.onmessage = (e) => {
-      if (e.data === "pong") {
-        c.lastPong = Date.now();
-        return;
-      }
-      let frame;
-      try {
-        frame = relayFrame.parse(JSON.parse(String(e.data)));
-      } catch {
-        return;
-      }
-      if (frame.t === "cancel") return c.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
-      void this.answer(c, ws, frame);
-    };
-    ws.onclose = (e) => {
-      // A stopped endpoint's socket: stop() already aborted its calls, and nothing is retried or recorded, as the store
-      // may be closing with the daemon.
-      if (c.ws !== ws || c.closed) return;
-      for (const a of c.inflight.values()) a.abort(new Error("relay connection closed"));
-      const upFor = c.openedAt ? Date.now() - c.openedAt : 0;
-      c.openedAt = undefined;
-      // Close codes from apps/relay/src/remote.ts.
-      if (e.code === 4001) {
-        this.s.setLocal(`remote:deleted:${c.remote.key}`, c.remote.secret.slice(0, 8));
-        return this.later(c, "the relay deleted this endpoint; create a new URL");
-      }
-      if (e.code === 4000) {
-        // Another connection took the endpoint, e.g. a second machine serving it: reconnecting at once would only
-        // take it back and start a duel.
-        c.backoff = Math.max(c.backoff, 30_000);
-        return this.later(c, "another connection took over this endpoint");
-      }
-      // A socket that stayed up reconnects quickly; one that keeps dropping right after opening backs off.
-      if (upFor > 60_000) c.backoff = 1000;
-      // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
-      if (!c.connected) this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
-      this.later(c, c.connected ? undefined : "could not connect to the relay");
-    };
-    ws.onerror = () => {
-      /* onclose follows */
-    };
+        if (frame.t === "cancel") return socket.inflight.get(frame.id)?.abort(new Error("cancelled by the client"));
+        void this.answer(c, ws, socket.inflight, frame);
+      },
+      onDown: (down) => {
+        if ("error" in down) return void this.report(c, false, describe(down.error, PUSH_FAILED));
+        // Close codes from apps/relay/src/remote.ts.
+        if (down.code === 4001) {
+          this.s.setLocal(`remote:deleted:${c.remote.key}`, c.remote.secret.slice(0, 8));
+          return void this.report(c, false, "the relay deleted this endpoint; create a new URL");
+        }
+        if (down.code === 4000) {
+          // Another connection took the endpoint, e.g. a second machine serving it: reconnecting at once would only
+          // take it back and start a duel.
+          this.report(c, false, "another connection took over this endpoint");
+          return 30_000;
+        }
+        if (down.upFor !== undefined) return void this.report(c, false, c.error);
+        // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
+        this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
+        this.report(c, false, "could not connect to the relay");
+        return undefined;
+      },
+    });
+    return socket;
   }
 
-  private async answer(c: Conn, ws: WebSocket, frame: RequestFrame) {
+  private async answer(c: Conn, ws: WebSocket, inflight: Map<string, AbortController>, frame: RequestFrame) {
     const { id } = frame;
     const send = (frame: RemoteResponseFrame) => {
       try {
@@ -413,10 +393,10 @@ export class RemoteEndpoints {
         /* socket closed; the relay already failed it */
       }
     };
-    if (c.inflight.size >= REMOTE_LIMITS.inFlight)
+    if (inflight.size >= REMOTE_LIMITS.inFlight)
       return send({ t: "res", id, status: 503, headers: {}, body: "", retry: true });
     const abort = new AbortController();
-    c.inflight.set(id, abort);
+    inflight.set(id, abort);
     const started = Date.now();
     // Webhook senders read plain JSON errors; MCP clients read JSON-RPC ones.
     const failure = (status: number, code: number, message: string): RemoteResponseFrame => ({
@@ -458,9 +438,9 @@ export class RemoteEndpoints {
     } catch (e) {
       if (abort.signal.aborted) return; // the relay already answered the client
       send(failure(500, -32603, "agentgate failed to handle the request"));
-      c.error = describe(e);
+      this.report(c, c.connected, describe(e, REQUEST_FAILED));
     } finally {
-      c.inflight.delete(id);
+      inflight.delete(id);
       c.lastCall = Date.now();
       this.s.log("remote", c.id, label.slice(0, 200), status, Date.now() - started);
     }
@@ -468,7 +448,7 @@ export class RemoteEndpoints {
 
   /** One pass at a time: a slow relay would otherwise pile up a pass per reconcile. */
   private drainDeletes = serialTask(async () => {
-    const queue = JSON.parse(this.s.local("remote:delete") ?? "[]") as { relay: string; key: string; token: string }[];
+    const queue = (deletes.get(this.s) ?? []).filter((d) => (d.nextAt ?? 0) <= this.s.now());
     if (!queue.length) return;
     const left: typeof queue = [];
     for (const d of queue) {
@@ -485,10 +465,21 @@ export class RemoteEndpoints {
         left.push(d);
       }
     }
-    // Re-read: regenerate may have queued more meanwhile.
-    const now = JSON.parse(this.s.local("remote:delete") ?? "[]") as typeof queue;
+    // Re-read: regenerate may have queued more meanwhile. A relay that keeps failing is asked less often, up to hourly.
+    const now = deletes.get(this.s) ?? [];
     const done = new Set(queue.filter((d) => !left.includes(d)).map((d) => d.key));
-    this.s.setLocal("remote:delete", JSON.stringify(now.filter((d) => !done.has(d.key))));
+    const failed = new Map(
+      left.map((d) => {
+        const attempts = (d.attempts ?? 0) + 1;
+        const wait = exponentialBackoff(attempts, { baseMs: 30_000, maxMs: 3_600_000, jitter: false });
+        return [d.key, { ...d, attempts, nextAt: this.s.now() + wait }];
+      }),
+    );
+    deletes.set(
+      this.s,
+      undefined,
+      now.filter((d) => !done.has(d.key)).map((d) => failed.get(d.key) ?? d),
+    );
   });
 
   close() {
@@ -500,9 +491,11 @@ export class RemoteEndpoints {
 /** The last request an endpoint answered, from what `answer` logs: `id` is the project, or `~hook:<source>`. */
 export function lastRequest(s: Store, id: string): { at: number; status: number } | undefined {
   return (
-    (s.db
-      .query("select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1")
-      .get(id) as { at: number; status: number } | null) ?? undefined
+    s.db
+      .query<{ at: number; status: number }, [string]>(
+        "select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1",
+      )
+      .get(id) ?? undefined
   );
 }
 
@@ -523,7 +516,7 @@ function hookRequest(frame: RequestFrame, signal: AbortSignal) {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, files, factoryWebhook, ...rest } = p;
+  const { remote, files, factoryWebhook, ...rest } = sent<Data<"project">>(p);
   const summary = endpoints.summary(p);
   const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
   return {

@@ -1,9 +1,11 @@
 import { Hono } from "hono";
-import { trimTrailingSlash } from "hanzio";
+import { recordFromKeys, trimTrailingSlash } from "hanzio";
 import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
+import { PEER_TOPICS, type Changes, type PeerTopic } from "./changes.ts";
+import { defineLocal } from "./local-state.ts";
 import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
-import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
+import { parseEnvelope, PORT, type Rec, type Store } from "./store.ts";
 
 export const PULL_INTERVAL = 15_000;
 // 4: byte-bounded pages with explicit continuation, plus validated skill bundles.
@@ -40,7 +42,14 @@ const batchSchema = z.object({
     .refine((seen) => Object.keys(seen).length <= 1000)
     .default({}),
 });
-const pulls = new WeakMap<Store, Map<string, Promise<number>>>();
+// Shown per peer in `/status`; a pull that fails the same way again changes nothing.
+const syncError = defineLocal("syncError:", z.string(), { topic: "status" });
+const pairUsed = defineLocal("pair:used", z.object({ code: z.string(), node: z.string(), expires: z.number() }));
+interface PeerPull {
+  work: Promise<number>;
+  again: boolean;
+}
+const pulls = new WeakMap<Store, Map<string, PeerPull>>();
 const CODE_TTL = 10 * 60_000;
 const WORDS =
   "amber anchor apple arrow basil beacon birch bison cable canyon cedar cobalt comet coral delta dune ember falcon fern fjord flint gecko glacier harbor hazel heron indigo ivory jasper juniper kelp lagoon lantern lemon lilac lotus maple meadow mesa nectar nimbus oak onyx orbit otter pebble pine plume quartz raven reef saffron sequoia sierra slate sparrow spruce tango thistle tundra velvet walnut willow zephyr".split(
@@ -55,7 +64,7 @@ export interface Peer {
   last_seen: number | null;
 }
 
-export const peers = (s: Store) => s.db.query("select * from peers").all() as Peer[];
+export const peers = (s: Store) => s.db.query<Peer, []>("select * from peers").all();
 
 const randomToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 
@@ -130,14 +139,36 @@ export function lastSeen(s: Store, node: string): number {
   return Math.max(direct, Number(s.local(`seen:${node}`) ?? 0));
 }
 
-export async function pullPeer(s: Store, p: Peer): Promise<number> {
+/** Pulls from `p` now. A call while that peer's pull runs asks for one more after it, since the poke that caused it may
+ * announce a change the running pull read past; the promise settles once that one is done too. */
+export function pullPeer(s: Store, p: Peer): Promise<number> {
   let pending = pulls.get(s);
   if (!pending) pulls.set(s, (pending = new Map()));
-  const existing = pending.get(p.node);
-  if (existing) return existing;
-  const work = doPull(s, p).finally(() => pending!.delete(p.node));
-  pending.set(p.node, work);
-  return work;
+  const current = pending.get(p.node);
+  if (current) {
+    current.again = true;
+    return current.work;
+  }
+  const entry: PeerPull = { again: false, work: Promise.resolve(0) };
+  entry.work = (async () => {
+    let total = 0;
+    let peer: Peer | undefined = p;
+    try {
+      do {
+        entry.again = false;
+        total += await doPull(s, peer);
+        // The row as it is now: the peer may have been re-paired or removed meanwhile.
+        peer = entry.again ? peers(s).find((x) => x.node === p.node) : undefined;
+      } while (peer);
+    } finally {
+      // In the same step as the last check of `again`: a promise's .finally() runs later, and a call in between
+      // would set `again` on a pull that has already stopped.
+      pending.delete(p.node);
+    }
+    return total;
+  })();
+  pending.set(p.node, entry);
+  return entry.work;
 }
 
 async function doPull(s: Store, requested: Peer): Promise<number> {
@@ -158,7 +189,8 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
     const body = batchSchema.parse(
       JSON.parse(new TextDecoder().decode(await readBody(res.body, 16 * 1024 * 1024, signal))),
     );
-    const records: Rec[] = body.records.map(parseRecord);
+    // Only the envelope here: `merge` parses a record's data once it knows the record wins.
+    const records: Rec[] = body.records.map(parseEnvelope);
     if (
       records.some(
         (r, index) => r.seq === undefined || r.seq > body.seq || r.seq <= (index ? records[index - 1]!.seq! : p.cursor),
@@ -181,7 +213,7 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
       // Heartbeats heard second-hand, so a node that is paired only through a middle node is not seen as offline.
       for (const [node, at] of Object.entries(body.seen ?? {}))
         if (node !== s.nodeId && at > lastSeen(s, node)) s.setLocal(`seen:${node}`, String(Math.min(at, s.now())));
-      s.setLocal(`syncError:${p.node}`, undefined);
+      syncError.set(s, p.node, undefined);
       noteSyncRound(s);
       return taken;
     });
@@ -191,19 +223,26 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
 }
 
 export async function drainPulls(s: Store) {
-  await Promise.allSettled(pulls.get(s)?.values() ?? []);
+  await Promise.allSettled([...(pulls.get(s)?.values() ?? [])].map((p) => p.work));
 }
 
+const pullRecordingErrors = (s: Store, p: Peer) =>
+  pullPeer(s, p).catch((e) => {
+    syncError.set(s, p.node, String(e));
+    throw e;
+  });
+
+/** Every peer's pull, awaited; errors per peer. */
 export async function pullAll(s: Store) {
-  const results = await Promise.allSettled(
-    peers(s).map((p) =>
-      pullPeer(s, p).catch((e) => {
-        s.setLocal(`syncError:${p.node}`, String(e));
-        throw e;
-      }),
-    ),
-  );
+  const results = await Promise.allSettled(peers(s).map((p) => pullRecordingErrors(s, p)));
   return results.filter((r) => r.status === "rejected").map((r) => String((r as PromiseRejectedResult).reason));
+}
+
+/** The daemon's scheduled round: starts a pull from each peer that has none running, and waits for none of them, so a
+ * peer whose connection hangs holds back neither the others nor their next round. */
+export function startPulls(s: Store) {
+  const running = pulls.get(s);
+  for (const p of peers(s)) if (!running?.has(p.node)) void pullRecordingErrors(s, p).catch(() => {});
 }
 
 export function poke(s: Store) {
@@ -215,8 +254,78 @@ export function poke(s: Store) {
     }).catch(() => {});
 }
 
-/** Routes served on the tailnet listener. */
-export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer(s, p).catch(() => {})) {
+const TOPICS_WAIT = 25_000;
+const topicsAnswer = z.object({
+  token: z.string().max(200),
+  versions: z.object(recordFromKeys(PEER_TOPICS, () => z.number())),
+});
+
+/** While an app waits on this daemon's `/api/changes`, one long-poll to each peer seen in the last minute turns a
+ * change to that peer's factory or threads into a local one, so the app shows it within a second. With no app open
+ * nothing runs; after the last app leaves, each poll ends with its peer's next answer. Relay-only machines have no
+ * such feed; the app's slower board poll covers them. */
+export function followPeers(
+  s: Store,
+  changes: Changes,
+  signal: AbortSignal,
+  onMove: (node: string, topic: PeerTopic) => void,
+) {
+  const running = new Set<string>();
+  const retryAt = new Map<string, number>();
+  // Each peer's last answer, kept between runs, so a change made while no app waited still shows when one returns.
+  const known = new Map<string, z.infer<typeof topicsAnswer>>();
+
+  const follow = async (node: string) => {
+    try {
+      while (changes.appWaiting && !signal.aborted) {
+        // The row as it is now: the peer may have been re-paired or removed meanwhile.
+        const p = peers(s).find((x) => x.node === node);
+        if (!p) return;
+        const last = known.get(node);
+        const query = last ? `?after=${encodeURIComponent(last.token)}&wait=${TOPICS_WAIT / 1000}` : "";
+        const deadline = AbortSignal.any([AbortSignal.timeout(TOPICS_WAIT + 10_000), signal]);
+        const res = await fetchHeaders(
+          `${p.url}/peer/topics${query}`,
+          { headers: { authorization: `Bearer ${p.token}` }, signal: deadline },
+          TOPICS_WAIT + 10_000,
+        );
+        if (res.status === 404) {
+          // A release without the feed: ask again later, in case it updated.
+          await res.body?.cancel();
+          retryAt.set(node, s.now() + 10 * 60_000);
+          return;
+        }
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new Error(`topics ${node}: ${res.status}`);
+        }
+        const body = await readBody(res.body, 64 * 1024, deadline);
+        const next = topicsAnswer.parse(JSON.parse(new TextDecoder().decode(body)));
+        if (last)
+          for (const topic of PEER_TOPICS) if (next.versions[topic] !== last.versions[topic]) onMove(node, topic);
+        known.set(node, next);
+      }
+    } catch {
+      if (!signal.aborted) retryAt.set(node, s.now() + PULL_INTERVAL);
+    }
+  };
+
+  changes.onAppWaiting = () => {
+    for (const p of peers(s)) {
+      if (running.has(p.node) || s.now() < (retryAt.get(p.node) ?? 0)) continue;
+      if (s.now() - lastSeen(s, p.node) > ROUND_GAP) continue;
+      running.add(p.node);
+      void follow(p.node).finally(() => running.delete(p.node));
+    }
+  };
+}
+
+/** Routes served on the tailnet listener. `changes` serves `/topics`, which daemons follow with followPeers. */
+export function peerRoutes(
+  s: Store,
+  onPoke: (p: Peer) => void = (p) => pullPeer(s, p).catch(() => {}),
+  changes?: Changes,
+) {
   const app = new Hono<{ Variables: { peer: Peer } }>();
 
   app.post("/join", async (c) => {
@@ -232,7 +341,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const { code, node, url } = parsed.data;
     // A joiner whose answer was lost retries with the same code. Until the code would have expired, the node that used
     // it, from the same URL, gets its token again; anyone else is refused as before.
-    const used = JSON.parse(s.local("pair:used") ?? "null") as { code: string; node: string; expires: number } | null;
+    const used = pairUsed.get(s);
     if (used && safeEqual(used.code, code) && s.now() <= used.expires) {
       const peer = peers(s).find((p) => p.node === node && p.url === url);
       if (used.node !== node || !peer) return c.json({ error: "bad or expired code" }, 403);
@@ -247,7 +356,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const token = randomToken();
     s.transaction(() => {
       s.setLocal("pair:code", undefined);
-      s.setLocal("pair:used", JSON.stringify({ code, node, expires: Number(s.local("pair:expires") ?? 0) }));
+      pairUsed.set(s, undefined, { code, node, expires: Number(s.local("pair:expires") ?? 0) });
       s.db.run("insert or replace into peers values (?, ?, ?, 0, ?)", [node, url, token, s.now()]);
     });
     return c.json({ node: s.nodeId, token, protocol: SYNC_PROTOCOL });
@@ -258,7 +367,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const peer = token ? peers(s).find((p) => safeEqual(p.token, token)) : undefined;
     if (!token || !peer) return c.json({ error: "unauthorized" }, 401);
     c.set("peer", peer);
-    await next();
+    return next();
   });
 
   app.get("/changes", (c) => {
@@ -270,17 +379,20 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     if (!cursor.success) return c.json({ error: "invalid cursor" }, 400);
     const seen: Record<string, number> = { [s.nodeId]: s.now() };
     for (const p of peers(s)) if (p.last_seen) seen[p.node] = p.last_seen;
-    for (const row of s.db.query("select key, value from local where key like 'seen:%'").all() as {
-      key: string;
-      value: string;
-    }[])
-      seen[row.key.slice(5)] = Math.min(Number(row.value), s.now());
+    for (const [key, value] of s.localPrefixed("seen:")) seen[key.slice(5)] = Math.min(Number(value), s.now());
     return c.json({
       protocol: SYNC_PROTOCOL,
       ...s.changePage(cursor.data),
       seen: Object.fromEntries(Object.entries(seen).slice(0, 1000)),
     });
   });
+
+  if (changes)
+    app.get("/topics", async (c) => {
+      const wait = Math.min(TOPICS_WAIT, Math.max(0, Number(c.req.query("wait") ?? 0) * 1000 || 0));
+      await changes.waitPeer(c.req.query("after"), wait, c.req.raw.signal);
+      return c.json(changes.peerSnapshot());
+    });
 
   app.post("/poke", (c) => {
     onPoke(c.get("peer"));
@@ -293,7 +405,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
 export function unpair(s: Store, node: string) {
   s.db.run("delete from peers where node = ?", [node]);
   s.setLocal(`seen:${node}`, undefined);
-  s.setLocal(`syncError:${node}`, undefined);
+  syncError.set(s, node, undefined);
 }
 
 /** The tailnet address this node listens on, from the Tailscale CLI. */

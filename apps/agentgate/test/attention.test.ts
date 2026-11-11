@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
-import { accountStatusSchema } from "@agentgate/protocol";
-import { problems } from "../../desktop/src/attention.ts";
+import { accountStatusSchema, type AccountStatus } from "@agentgate/protocol";
+import { problems } from "@agentgate/protocol/attention";
+import { attentionLines } from "../src/cli/system.ts";
 
 const account = (id: string, state: object) =>
   accountStatusSchema.parse({
@@ -81,4 +82,38 @@ test("needs attention lists what the user must fix and leaves out what clears on
     detail: "me@example.com: the Infisical session expired on 2026-10-27",
     signIn: true,
   });
+});
+
+test("the daemon's state decides, so a login this machine refreshes asks for no sign-in", () => {
+  const found = (accounts: AccountStatus[]) =>
+    problems({
+      accounts,
+      servers: [],
+      skillHealth: { errors: [] },
+      skillConflicts: [],
+      skillRepos: [],
+      fileErrors: {},
+      nodes: [],
+      logins: [],
+    }).map((p) => p.title);
+  expect(found([account("expired-here", { expired: true, state: { kind: "refreshing" } })])).toEqual([]);
+  // A kind from a newer daemon reads as absent, so the flags decide as they did before `state`.
+  expect(found([account("newer", { expired: true, state: { kind: "hibernating" } })])).toEqual([
+    "Sign in to newer again",
+  ]);
+});
+
+test("agentgate status prints each problem on one line, and nothing when all is well", () => {
+  const status = {
+    accounts: [account("work", { refreshError: "invalid_grant" })],
+    servers: [],
+    skillHealth: { errors: [] },
+    skillConflicts: [],
+    skillRepos: [],
+    fileErrors: {},
+    nodes: [node("laptop", true, { version: "1.2.0" })],
+    logins: [],
+  };
+  expect(attentionLines(status)).toEqual(["", "needs attention", "  work couldn't refresh its login: invalid_grant"]);
+  expect(attentionLines({ ...status, accounts: [account("work", {})] })).toEqual([]);
 });

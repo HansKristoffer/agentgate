@@ -13,18 +13,20 @@ import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor, inScope } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
-import { pollDesktopLogin } from "./desktop.ts";
+import { pollDesktopLogin, status as desktopStatus } from "./desktop.ts";
+import { Changes } from "./changes.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, nodesBelow, PORT, sqliteDetail, type Kind, type Store } from "./store.ts";
 import {
   PULL_INTERVAL,
   drainPulls,
+  followPeers,
   noteSyncRound,
   noteSyncTurn,
   peerRoutes,
   peers,
   poke,
-  pullAll,
+  startPulls,
   tailscale,
 } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
@@ -43,6 +45,7 @@ import { keepMcp, PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
+import { forgetView } from "./handoff/threads.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import { createFactoryRuntime } from "./factory/features.ts";
@@ -50,6 +53,8 @@ import { loopTask, type FactoryRuntime } from "./factory/runtime.ts";
 import { threadScope } from "./factory/controller.ts";
 import { factoryToolsSource } from "./factory/remote-tools.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
+import { startLagProbe } from "./lag.ts";
+import { handoffDirs } from "./ops/nodes.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -73,6 +78,8 @@ export interface Ctx {
   health: HealthDashboard;
   /** The software factory's features and what they registered (factory/runtime.ts). */
   factory: FactoryRuntime;
+  /** What changed, for `/api/changes` and the daemon's reactions to record writes. */
+  changes: Changes;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -81,10 +88,10 @@ export function handoffOptions(s: Store): HandoffOptions {
   return {
     claudeDir: PRIMARY_CLAUDE_DIR,
     get worktreesDir() {
-      return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees");
+      return handoffDirs.get(s, "worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees");
     },
     get cloneDir() {
-      return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub");
+      return handoffDirs.get(s, "cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub");
     },
     tempDir: join(CONFIG_DIR, "handoffs"),
     t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),
@@ -116,6 +123,7 @@ export function makeCtx(
   ensureFactoryTables(s);
   const base: Omit<Ctx, "factory" | "channel"> = {
     s,
+    changes: new Changes(s),
     creds,
     quotas,
     proxyOperations: new ProxyOperations(s, creds, quotas, providers),
@@ -134,6 +142,10 @@ export function makeCtx(
   ctx.factory = createFactoryRuntime(ctx);
   // After the features, whose peer routes the relay serves too.
   ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
+  followPeers(s, ctx.changes, ctx.abort.signal, (node, topic) => {
+    if (topic === "threads") forgetView(handoffs, node);
+    ctx.changes.bumpFromPeer(topic);
+  });
   gateway.builtin = () => handoffSource(handoffs, ctx.factory);
   gateway.factoryTools = (project) => factoryToolsSource(ctx.factory, project);
   gateway.scope = (thread) => threadScope(ctx.factory, thread);
@@ -180,7 +192,7 @@ export function app(ctx: Ctx) {
     const host = c.req.header("host")?.replace(/:\d+$/, "");
     if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost")
       return c.text("forbidden host", 403);
-    await next();
+    return next();
   });
 
   // Register before every API handler, including the MCP shim's checkout write.
@@ -192,7 +204,7 @@ export function app(ctx: Ctx) {
       if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`))
         return c.json({ error: "unauthorized" }, 401);
     }
-    await next();
+    return next();
   });
 
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.
@@ -230,7 +242,10 @@ export function app(ctx: Ctx) {
   });
 
   // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer));
+  app.route(
+    "/peer",
+    peerRoutes(s, undefined, ctx.changes).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer),
+  );
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
@@ -248,6 +263,9 @@ function pathAfter(url: string, prefix: string) {
   return u.pathname.slice(prefix.length) + u.search;
 }
 
+/** How long a stop waits for handoff steps. Refreshes and pending requests are still drained in full after it. */
+const HANDOFF_STOP = 15_000;
+
 /** `agentgate serve`: both listeners and the background timers. */
 export async function serve(
   s: Store,
@@ -255,9 +273,28 @@ export async function serve(
 ) {
   const ctx = makeCtx(s);
   const a = app(ctx);
+  const lagProbe = startLagProbe();
   let stopped = false;
   const timers: ReturnType<typeof setInterval>[] = [];
   const jobs = new Set<Promise<unknown>>();
+  // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
+  const logins = DEV ? async () => {} : serialTask(() => syncLogins(s));
+  // Subscribed before the startup `node` write below, so peers hear about that write too.
+  ctx.changes.onRecords((kinds) => {
+    if (stopped) return;
+    const any = (...of: Kind[]) => of.some((k) => kinds.has(k));
+    poke(s);
+    void relaySync(s, { pull: false });
+    if (any("mcp", "mcpCredential", "project")) ctx.gateway.toolsChanged();
+    if (any("skill", "project")) ctx.skills.soon();
+    if (any("project")) ctx.remote.reconcile();
+    // A store arrived from another machine, or the last old node updated so stores may sync.
+    if (any("project", "node")) ctx.files.soon();
+    if (any("node")) ctx.health.reconcile();
+    // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
+    if (any("project", "setting")) void ctx.handoffs.syncProjects().catch(() => {});
+    if (any("login")) void logins().catch(() => {});
+  });
   const listen = (hostname: string, listener: Listener, port: number) =>
     Bun.serve({
       hostname,
@@ -272,13 +309,13 @@ export async function serve(
   // Once the port is ours no other daemon serves this store, and this one has served nothing yet: anything still
   // pending belonged to a daemon that is gone.
   interruptPending(s);
-  // Tell other nodes this daemon keeps virtual projects' endpoints intact (see remote.ts versionGate), and which
-  // release it runs, so the app can offer to update the nodes left behind.
+  // Tell other nodes which sync features this daemon keeps (see `nodesBelow` in store.ts), and which release it runs,
+  // so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);
-  if (me && ((me.protocol ?? 0) < NODE_PROTOCOL || me.version !== packageInfo.version))
+  if (me && (nodesBelow(s, NODE_PROTOCOL).includes(me.id) || me.version !== packageInfo.version))
     s.put("node", s.nodeId, {
       ...me,
-      protocol: Math.max(me.protocol ?? 0, NODE_PROTOCOL),
+      protocol: Math.max(me.protocol ?? NODE_PROTOCOL, NODE_PROTOCOL),
       version: packageInfo.version,
     });
   let tailnet: ReturnType<typeof listen> | undefined;
@@ -320,26 +357,6 @@ export async function serve(
     const self = s.get("node", s.nodeId);
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
   }, 30000);
-  // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
-  const logins = DEV ? async () => {} : serialTask(() => syncLogins(s));
-  let lastSeq = s.seq();
-  schedule(async () => {
-    const snapshot = s.changes(lastSeq);
-    if (snapshot.seq === lastSeq) return;
-    lastSeq = snapshot.seq;
-    poke(s);
-    void relaySync(s, { pull: false });
-    if (snapshot.records.some((r) => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
-    if (snapshot.records.some((r) => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
-    if (snapshot.records.some((r) => r.kind === "project")) ctx.remote.reconcile();
-    // A store arrived from another machine, or the last old node updated so stores may sync.
-    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "node")) ctx.files.soon();
-    if (snapshot.records.some((r) => r.kind === "node")) ctx.health.reconcile();
-    // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
-    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "setting"))
-      void ctx.handoffs.syncProjects().catch(() => {});
-    if (snapshot.records.some((r) => r.kind === "login")) void logins().catch(() => {});
-  }, 1000);
   schedule(logins, 10 * 60_000);
   schedule(async () => {
     ctx.remote.reconcile();
@@ -355,12 +372,14 @@ export async function serve(
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
   schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
-  schedule(() => {
+  // Tailscale and the relay run apart, and each peer's pull on its own, so a sleeping machine whose connection hangs
+  // delays nobody else.
+  schedule(async () => {
     noteSyncTurn(s);
-    return Promise.all([pullAll(s), relaySync(s)]).finally(() => {
-      if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s);
-    });
+    startPulls(s);
+    if (!peers(s).length && !s.local("relay:invite")) noteSyncRound(s);
   }, PULL_INTERVAL);
+  schedule(() => relaySync(s), PULL_INTERVAL);
   schedule(async () => {
     await ctx.creds.tick(ctx.abort.signal);
     await tickMcp(s, ctx.abort.signal);
@@ -374,8 +393,14 @@ export async function serve(
     await backfill;
     publishTokens(s);
   }, 15 * 60_000);
+  let desktopSeen: string | undefined;
   schedule(async () => {
-    if (process.platform === "darwin") await pollDesktopLogin(s);
+    if (process.platform !== "darwin") return;
+    await pollDesktopLogin(s);
+    // Desktop changes behind the daemon (the user signs in, or quits it): tell the app when what it shows moved.
+    const seen = JSON.stringify(desktopStatus(s));
+    if (desktopSeen !== undefined && seen !== desktopSeen) ctx.changes.bump("desktop");
+    desktopSeen = seen;
   }, 2000);
   schedule(async () => {
     s.trimLog();
@@ -384,6 +409,7 @@ export async function serve(
   }, 3600000);
   // On its own, so a failed trim never skips the login expiry or log rotation above.
   schedule(async () => trimFactory(s), 3600000);
+  schedule(async () => ctx.handoffs.trim(), 3600000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);
@@ -397,8 +423,10 @@ export async function serve(
     stop: () =>
       (stopping ??= (async () => {
         stopped = true;
+        ctx.changes.close();
         ctx.abort.abort();
         timers.forEach(clearInterval);
+        lagProbe.stop();
         ctx.skills.close();
         ctx.files.close();
         ctx.imports.close();
@@ -409,7 +437,13 @@ export async function serve(
         ctx.channel.close();
         ctx.health.stop();
         await ctx.gateway.close();
-        await ctx.handoffs.close();
+        // The listeners are closed already: a handoff step that outlasts its killed git resumes on the next start.
+        let capped: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          ctx.handoffs.close(),
+          new Promise((resolve) => (capped = setTimeout(resolve, HANDOFF_STOP))),
+        ]);
+        clearTimeout(capped);
         await stopRelay(s);
         await Promise.allSettled([...jobs, ...ctx.pending]);
         await ctx.imports.drain();

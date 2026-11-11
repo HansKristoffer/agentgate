@@ -1,6 +1,6 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
-import { ask, closeItem, enqueueRun, moveOn } from "./controller.ts";
+import { ask, enqueueRun, moveOn } from "./controller.ts";
 import { runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import type { FactoryRuntime, StageLaunch } from "./runtime.ts";
 import { pendingRequests, t3Mcp } from "./t3-mcp.ts";
@@ -92,7 +92,7 @@ const spec = (f: FactoryRuntime) => ({
 
   async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     const { result } = report;
-    if (result?.kind !== "spec") return closeItem(f, item, "There is nothing to do.", report);
+    if (result?.kind !== "spec") throw new Error("a spec report without its result");
     if (result.approved) {
       moveOn(f, item, "implement", { moment: "spec-approved", comment: { report, text: result.spec } });
       return;

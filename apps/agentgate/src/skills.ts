@@ -1,12 +1,18 @@
 import {
   SkillConflict,
+  decodedSize,
   projectIdSchema,
   skillSchema,
+  type ProjectChange,
+  type SkillPreviewResponse,
   type SkillRepoSummary,
   type SkillSummary,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage, getUniqueValues, safeJsonParse } from "hanzio";
-import type { z } from "zod";
+import { getErrorMessage, getUniqueValues, sumBy } from "hanzio";
+import { z } from "zod";
+import { Backoff } from "./runtime.ts";
+import { defineLocal } from "./local-state.ts";
+import { UserError } from "./ops/registry.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
 import {
   description,
@@ -18,7 +24,7 @@ import {
   type RepoFetcher,
   type SkillFetcher,
 } from "./skill-import.ts";
-import type { Skill, Store } from "./store.ts";
+import type { Skill, Store, Stored } from "./store.ts";
 
 export { SkillLinks } from "./skill-links.ts";
 export { description, readSkill, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
@@ -27,6 +33,46 @@ export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
   return record && !record.deleted ? JSON.stringify([record.rev, record.node, record.updated_at]) : null;
 };
+/** A skill's SKILL.md text and its files, for the editor and `skills show`. */
+export function skillDetail(s: Store, id: string) {
+  const skill = s.get("skill", id);
+  if (!skill) return undefined;
+  const md = skill.files.find((f) => f.path === "SKILL.md");
+  return {
+    id: skill.id,
+    source: skill.source,
+    revision: skillRevision(s, id),
+    skillMd: md ? Buffer.from(md.data, "base64").toString() : "",
+    files: skill.files.map((f) => ({ path: f.path, size: decodedSize(f.data) })),
+  };
+}
+
+/** What a fetched source would install, with each skill's audit and whether it clashes with one already here. */
+export function skillPreview(
+  s: Store,
+  artifact: { token: string; source: string; skills: FetchedSkill[] },
+): SkillPreviewResponse {
+  return {
+    token: artifact.token,
+    skills: artifact.skills.map((k) => {
+      const existing = s.get("skill", k.id);
+      return {
+        id: k.id,
+        description: k.description,
+        files: k.files.length,
+        size: sumBy(k.files, (file) => decodedSize(file.data)),
+        hash: k.hash,
+        security: k.security,
+        installed: !!existing,
+        conflict:
+          existing && existing.source !== artifact.source
+            ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}`
+            : undefined,
+      };
+    }),
+  };
+}
+
 /** Skills the software factory installs from its folder (factory/skills.ts); only a folder load changes them. */
 const isFactorySource = (source: string) => source.startsWith("factory:");
 const contentHash = (files: Skill["files"]) =>
@@ -35,7 +81,14 @@ const contentHash = (files: Skill["files"]) =>
 /** JSON metadata only; legacy bundles are measured without decoding all contents. */
 export function skillSummaries(s: Store): SkillSummary[] {
   return s.db
-    .query(
+    .query<
+      Omit<SkillSummary, "source" | "hash" | "contentHash"> & {
+        source: string | null;
+        hash: string | null;
+        contentHash: string | null;
+      },
+      []
+    >(
       `select r.id, json_extract(r.data, '$.description') as description,
     json_extract(r.data, '$.source') as source, json_extract(r.data, '$.hash') as hash,
     json_extract(r.data, '$.contentHash') as contentHash, json_extract(r.data, '$.updatedAt') as updatedAt,
@@ -45,18 +98,15 @@ export function skillSummaries(s: Store): SkillSummary[] {
     from records r where kind = 'skill' and deleted = 0 order by id`,
     )
     .all()
-    .map((row) => {
-      const r = row as SkillSummary;
-      return {
-        ...r,
-        source: r.source ?? undefined,
-        hash: r.hash ?? undefined,
-        contentHash: r.contentHash ?? undefined,
-      };
-    });
+    .map((r) => ({
+      ...r,
+      source: r.source ?? undefined,
+      hash: r.hash ?? undefined,
+      contentHash: r.contentHash ?? undefined,
+    }));
 }
 
-function putSkill(s: Store, input: Omit<z.input<typeof skillSchema>, "updatedAt">) {
+function putSkill(s: Store, input: Stored<Omit<z.input<typeof skillSchema>, "updatedAt">>) {
   const skill = skillSchema.parse({ ...input, updatedAt: s.now() });
   skill.contentHash = contentHash(skill.files);
   const prev = s.get("skill", skill.id);
@@ -92,9 +142,9 @@ export function installSkills(
 ): string[] {
   fetched = validateFetched(fetched);
   const selected = new Set(ids ?? fetched.map((f) => f.id));
-  if (!selected.size) throw new Error("Choose at least one skill");
+  if (!selected.size) throw new UserError("Choose at least one skill");
   const missing = [...selected].filter((id) => !fetched.some((f) => f.id === id));
-  if (missing.length) throw new Error(`not in ${source}: ${missing.join(", ")}`);
+  if (missing.length) throw new UserError(`not in ${source}: ${missing.join(", ")}`);
   return s.transaction(() => {
     const targets = projectsFor(s, projects);
     return fetched
@@ -127,7 +177,7 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
     // It follows its source, which would overwrite any edit on the next update.
     if (prev?.source)
       throw new SkillConflict(`${id} comes from ${prev.source} and updates from it, so it can't be edited`);
-    if (!text.trim()) throw new Error("SKILL.md is empty");
+    if (!text.trim()) throw new UserError("SKILL.md is empty");
     description(text, id);
     const files = [
       ...(prev?.files.filter((f) => f.path !== "SKILL.md") ?? []),
@@ -154,10 +204,28 @@ export function deleteSkill(s: Store, id: string) {
 
 export function setSkillProjects(s: Store, id: string, projects: string[]) {
   s.transaction(() => {
-    if (!s.get("skill", id)) throw new Error(`no skill ${id}`);
+    if (!s.get("skill", id)) throw new UserError(`no skill ${id}`);
     const targets = projectsFor(s, projects);
     for (const p of s.list("project")) if (!targets.includes(p.id)) assign(s, p.id, id, false);
     for (const p of targets) assign(s, p, id, true);
+  });
+}
+
+/** The projects `change` leaves: its whole set, or `current` with only its additions and removals applied, so a form
+ * opened before another machine's change does not undo it. */
+function changed(s: Store, current: string[], change: ProjectChange) {
+  if ("projects" in change) return change.projects;
+  const remove = new Set(change.remove.map((p) => canonicalProject(s, p)));
+  return [...current.filter((p) => !remove.has(p)), ...change.add];
+}
+
+export function changeSkillProjects(s: Store, id: string, change: ProjectChange) {
+  s.transaction(() => {
+    const current = s
+      .list("project")
+      .filter((p) => p.skills.includes(id))
+      .map((p) => p.id);
+    setSkillProjects(s, id, changed(s, current, change));
   });
 }
 
@@ -174,13 +242,15 @@ export function updateSkill(
   if (hit) return hit;
   const work = (async () => {
     const { skill, revision } = s.transaction(() => ({ skill: s.get("skill", id), revision: skillRevision(s, id) }));
-    if (!skill) throw new Error(`no skill ${id}`);
-    if (!skill.source) throw new Error(`${id} was written by hand; edit it instead`);
+    if (!skill) throw new UserError(`no skill ${id}`);
+    if (!skill.source) throw new UserError(`${id} was written by hand; edit it instead`);
     if (isFactorySource(skill.source))
-      throw new Error(`${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`);
+      throw new UserError(
+        `${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`,
+      );
     if (repoProjects(s, skill.source).length) return syncSkillRepo(s, skill.source, fetchRepo, signal);
     const fresh = validateFetched(await fetch(skill.source, skill.selector ?? "*", signal)).find((f) => f.id === id);
-    if (!fresh) throw new Error(`${skill.source} no longer has ${id}`);
+    if (!fresh) throw new UserError(`${skill.source} no longer has ${id}`);
     signal?.throwIfAborted();
     return s.transaction(() => {
       if (skillRevision(s, id) !== revision) throw new SkillConflict();
@@ -202,26 +272,26 @@ export function updateSkill(
 /** Background syncs of failing skill sources wait longer after each failure, and log a failure once until it changes or
  * clears, so a missing repository or a slow network does not fill the log. In memory: a restart logs it once more. */
 export class SkillBackoff {
-  private failing = new Map<string, { error: string; failures: number; retryAt: number }>();
-  constructor(private s: Store) {}
+  // 10 minutes, doubling up to 6 hours.
+  private tries: Backoff;
+  private errors = new Map<string, string>();
+  constructor(s: Store) {
+    this.tries = new Backoff(s, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000 });
+  }
   due(key: string) {
-    return (this.failing.get(key)?.retryAt ?? 0) <= this.s.now();
+    return this.tries.due(key);
   }
   /** `error` undefined records a success. */
   record(key: string, error?: string) {
-    const prev = this.failing.get(key);
+    const prev = this.errors.get(key);
     if (error === undefined) {
-      if (this.failing.delete(key)) console.log(`skills: ${key}: works again`);
+      this.errors.delete(key);
+      if (this.tries.ok(key)) console.log(`skills: ${key}: works again`);
       return;
     }
-    const failures = (prev?.failures ?? 0) + 1;
-    // 10 minutes, doubling up to 6 hours.
-    this.failing.set(key, {
-      error,
-      failures,
-      retryAt: this.s.now() + exponentialBackoff(failures, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000, jitter: false }),
-    });
-    if (prev?.error !== error) console.error(`skills: ${key}: ${error}`);
+    this.tries.failed(key);
+    this.errors.set(key, error);
+    if (prev !== error) console.error(`skills: ${key}: ${error}`);
   }
 }
 
@@ -259,20 +329,36 @@ const repoSkills = (s: Store, url: string) =>
   skillSummaries(s)
     .filter((k) => k.source === url)
     .map((k) => k.id);
-interface RepoState {
-  commit?: string;
-  syncedAt?: number;
-  error?: string;
-  skills?: string[];
-  skipped?: string[];
-}
-const repoState = (s: Store, url: string) => safeJsonParse<RepoState>(s.local(`skillRepo:${url}`) ?? "{}").data ?? {};
+// Each connected repository's last sync, shown in `/status`.
+const repoStates = defineLocal(
+  "skillRepo:",
+  z.object({
+    commit: z.string().optional(),
+    syncedAt: z.number().optional(),
+    error: z.string().optional(),
+    skills: z.array(z.string()).optional(),
+    skipped: z.array(z.string()).optional(),
+  }),
+  { topic: "status" },
+);
+const repoState = (s: Store, url: string) => repoStates.get(s, url) ?? {};
 
 export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
-  const urls = getUniqueValues(s.list("project").flatMap((p) => p.skillRepos)).sort();
+  const projects = s.list("project");
+  const urls = getUniqueValues(projects.flatMap((p) => p.skillRepos)).sort();
+  if (!urls.length) return [];
+  const skills = skillSummaries(s);
   return urls.map((url) => {
     const { commit, syncedAt, error, skipped = [] } = repoState(s, url);
-    return { url, projects: repoProjects(s, url), skills: repoSkills(s, url), commit, syncedAt, error, skipped };
+    return {
+      url,
+      projects: projects.filter((p) => p.skillRepos.includes(url)).map((p) => p.id),
+      skills: skills.filter((k) => k.source === url).map((k) => k.id),
+      commit,
+      syncedAt,
+      error,
+      skipped,
+    };
   });
 }
 
@@ -282,7 +368,7 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
   s.transaction(() => {
     const targets = projectsFor(s, projects),
       ids = repoSkills(s, url);
-    if (!targets.length && !repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    if (!targets.length && !repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
     for (const p of s.list("project"))
       if (p.skillRepos.includes(url) && !targets.includes(p.id)) {
         s.put("project", p.id, { ...p, skillRepos: p.skillRepos.filter((r) => r !== url) });
@@ -295,8 +381,22 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
     }
     if (!targets.length) {
       for (const id of ids) removeSkill(s, id);
-      s.setLocal(`skillRepo:${url}`, undefined);
+      repoStates.set(s, url, undefined);
     }
+  });
+}
+
+/** Moves a connected repository's skills to other projects. Never disconnects it, which deletes its skills on every
+ * machine and is asked for on its own (`skills repo rm`). */
+export function changeSkillRepoProjects(s: Store, input: string, change: ProjectChange) {
+  const url = repoUrl(input);
+  return s.transaction(() => {
+    const current = repoProjects(s, url);
+    if (!current.length) throw new UserError(`${url} is not connected`);
+    const projects = changed(s, current, change);
+    if (!projects.length) throw new UserError("Choose at least one project, or disconnect the repository");
+    setSkillRepoProjects(s, url, projects);
+    return repoProjects(s, url);
   });
 }
 
@@ -309,7 +409,7 @@ export async function connectSkillRepo(
   signal?: AbortSignal,
 ) {
   const url = repoUrl(input);
-  if (!projects.length) throw new Error("Choose every session or at least one project");
+  if (!projects.length) throw new UserError("Choose every session or at least one project");
   const fetched = (await fetch(url, undefined, signal))!;
   signal?.throwIfAborted();
   s.transaction(() => {
@@ -338,10 +438,7 @@ function applyRepo(s: Store, url: string, fetched: { commit: string; skills: Fet
       applied.push(f.id);
     }
     for (const id of repoSkills(s, url)) if (!applied.includes(id)) removeSkill(s, id);
-    s.setLocal(
-      `skillRepo:${url}`,
-      JSON.stringify({ commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped } satisfies RepoState),
-    );
+    repoStates.set(s, url, { commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped });
     return s.seq() !== before;
   });
 }
@@ -360,7 +457,7 @@ export function syncSkillRepo(
   const hit = flights.get(url);
   if (hit) return hit;
   const work = (async () => {
-    if (!repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    if (!repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
     const state = repoState(s, url),
       present = repoSkills(s, url);
     const since = state.skills?.every((id) => present.includes(id)) ? state.commit : undefined;
@@ -368,12 +465,10 @@ export function syncSkillRepo(
       const fetched = await fetch(url, since, signal);
       signal?.throwIfAborted();
       if (fetched) return applyRepo(s, url, fetched);
-      if (repoProjects(s, url).length)
-        s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, syncedAt: s.now(), error: undefined }));
+      if (repoProjects(s, url).length) repoStates.set(s, url, { ...state, syncedAt: s.now(), error: undefined });
       return false;
     } catch (error) {
-      if (repoProjects(s, url).length)
-        s.setLocal(`skillRepo:${url}`, JSON.stringify({ ...state, error: getErrorMessage(error) }));
+      if (repoProjects(s, url).length) repoStates.set(s, url, { ...state, error: getErrorMessage(error) });
       throw error;
     }
   })().finally(() => flights!.delete(url));
