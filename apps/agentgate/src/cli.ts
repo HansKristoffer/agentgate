@@ -15,8 +15,6 @@ import * as t3 from "./cli/t3.ts";
 import { controlOps, terminalOpFor } from "./ops/index.ts";
 import { store } from "./store.ts";
 
-export { attentionLines } from "./cli/system.ts";
-
 const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and per-repo MCP servers, shared over Tailscale or a relay
 
   init [--always-on] [--name srv]             create the store, name this node

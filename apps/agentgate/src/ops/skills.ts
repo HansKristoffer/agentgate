@@ -1,9 +1,8 @@
 import { projectChangeSchema, projectIdSchema, skillIdSchema, type SkillPreviewResponse } from "@agentgate/protocol";
-import { getErrorMessage, truncate } from "hanzio";
+import { truncate } from "hanzio";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { parseArgs } from "node:util";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
 import { SkillImports } from "../skill-import.ts";
@@ -25,7 +24,7 @@ import {
   writeSkillMd,
 } from "../skills.ts";
 import type { Store } from "../store.ts";
-import { controlOp, shownError, UserError } from "./registry.ts";
+import { controlOp, parseWords, shownError, UserError } from "./registry.ts";
 
 /** The skills family's control operations. None is loopback-only: the app manages a paired server's skills too. */
 
@@ -39,14 +38,6 @@ const absolute = (path: string, cwd = process.cwd()) => resolve(cwd, path.replac
 export const sourceFrom = (source: string, cwd?: string) =>
   /^(\.{1,2}(\/|$)|~(\/|$)|\/)/.test(source) ? absolute(source, cwd) : source;
 
-/** The words after an operation's name, read by `parseArgs`; words it cannot read print the usage. */
-const read = <T>(parse: () => T) => {
-  try {
-    return parse();
-  } catch (error) {
-    throw new UserError(getErrorMessage(error));
-  }
-};
 const readFile = (file: string | undefined, cwd: string | undefined) => {
   if (!file) throw new UserError("--file SKILL.md is required");
   try {
@@ -102,9 +93,7 @@ controlOp({
   terminal: {
     usage: "skills preview <owner/repo|url|folder> [--skill <name>]",
     parse(args, _stdin, cwd) {
-      const { values, positionals } = read(() =>
-        parseArgs({ args, options: { skill: { type: "string" } }, allowPositionals: true, strict: true }),
-      );
+      const { values, positionals } = parseWords(args, { skill: { type: "string" } });
       const [source, ...extra] = positionals;
       if (!source || extra.length) throw new UserError();
       return { input: { source: sourceFrom(source, cwd), skill: values.skill } };
@@ -133,9 +122,7 @@ controlOp({
 
 const written = (id: string) => [`saved ${id}; link it with: agentgate skills projects ${id} <owner/repo|*>`];
 const writeWords = (args: string[], cwd: string | undefined) => {
-  const { values, positionals } = read(() =>
-    parseArgs({ args, options: { file: { type: "string" } }, allowPositionals: true, strict: true }),
-  );
+  const { values, positionals } = parseWords(args, { file: { type: "string" } });
   const [id, ...extra] = positionals;
   if (!id || extra.length) throw new UserError();
   return { id, skillMd: readFile(values.file, cwd) };
@@ -268,14 +255,7 @@ controlOp({
   terminal: {
     usage: "skills repo add <github-url> --project <owner/repo|*> ...",
     parse(args) {
-      const { values, positionals } = read(() =>
-        parseArgs({
-          args,
-          options: { project: { type: "string", multiple: true } },
-          allowPositionals: true,
-          strict: true,
-        }),
-      );
+      const { values, positionals } = parseWords(args, { project: { type: "string", multiple: true } });
       const [url, ...extra] = positionals;
       if (!url || extra.length) throw new UserError();
       if (!values.project?.length)

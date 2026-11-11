@@ -24,26 +24,21 @@ import { aliasesFor, canonicalProject, parseRemote, toolName } from "../mcp/gate
 import { saveProject, setFactoryWebhook } from "../operations.ts";
 import { deleteProject, disableRemote, enableRemote, regenerate, rotateSecret } from "../remote.ts";
 import { requireNodeProtocol, type Store } from "../store.ts";
-import { controlOp, UserError } from "./registry.ts";
+import { asUserError, controlOp, onOff, UserError } from "./registry.ts";
 import { toolList } from "./servers.ts";
 
 /** The projects family's control operations: projects, their env files and virtual projects' endpoints. */
 
-/** The project, file and endpoint helpers throw a plain Error whose message is meant for the caller, as the routes
- * these operations replace showed it. A system error (it has a `code`) or any other class is not shown. */
-async function shown<T>(fn: () => T | Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    if (
-      e instanceof ConfigurationConflict ||
-      e instanceof StoreBusy ||
-      (e instanceof Error && e.constructor === Error && !("code" in e))
-    )
-      throw new UserError(e.message);
-    throw e;
-  }
-}
+/** The project, file and endpoint helpers throw a plain Error whose message is meant for the caller. A system error
+ * (it has a `code`) or any other class is not shown. */
+const shown = <T>(fn: () => T) =>
+  asUserError(fn, (e) =>
+    e instanceof ConfigurationConflict ||
+    e instanceof StoreBusy ||
+    (e instanceof Error && e.constructor === Error && !("code" in e))
+      ? e.message
+      : undefined,
+  );
 
 /** A git command's output, or undefined when it fails or runs past its deadline. */
 async function git(cwd: string, ...args: string[]) {
@@ -66,10 +61,6 @@ const filePath = z.string().min(1).max(4096);
 const filesTarget = <T extends z.ZodRawShape>(shape: T) =>
   z.union([z.object({ project: projectIdSchema, ...shape }).strict(), z.object({ cwd: filePath, ...shape }).strict()]);
 const paths = z.array(filePath).min(1).max(100);
-const onOff = (word: string | undefined) => {
-  if (word !== "on" && word !== "off") throw new UserError();
-  return word === "on";
-};
 /** The words' one value for `--<name> <value>`, and the words without it. */
 function option(args: string[], name: string) {
   const at = args.indexOf(`--${name}`);

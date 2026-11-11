@@ -27,8 +27,8 @@ import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
 import { folderStore, type FolderStore } from "./folder-store.ts";
 import { branchProtected, defaultBranch, protectionAvailable } from "./gh.ts";
+import { Backoff } from "../runtime.ts";
 import {
-  Backoff,
   FACTORY_PROTOCOL,
   noWords,
   operation,

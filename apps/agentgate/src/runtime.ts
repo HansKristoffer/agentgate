@@ -1,5 +1,5 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { anySignal } from "hanzio";
+import { anySignal, exponentialBackoff } from "hanzio";
 
 export const MAX_BODY = 16 * 1024 * 1024;
 // Model requests resend the whole conversation, screenshots included, so they get far more room than control traffic.
@@ -178,4 +178,27 @@ export function serialTask(task: () => Promise<unknown>): () => Promise<void> {
     })();
     return running;
   };
+}
+
+/** Per key, when the next try may start after failures in a row: `baseMs`, doubling up to `maxMs`. */
+export class Backoff {
+  private tries = new Map<string, { failures: number; retryAt: number }>();
+  constructor(
+    private clock: { now(): number },
+    private options: { baseMs: number; maxMs: number },
+  ) {}
+  /** Whether the key may be tried now. */
+  due(key: string): boolean {
+    return (this.tries.get(key)?.retryAt ?? 0) <= this.clock.now();
+  }
+  /** One more failure in a row, or the `failures` a caller counts itself; returns when the next try may start. */
+  failed(key: string, failures = (this.tries.get(key)?.failures ?? 0) + 1): number {
+    const retryAt = this.clock.now() + exponentialBackoff(failures, { ...this.options, jitter: false });
+    this.tries.set(key, { failures, retryAt });
+    return retryAt;
+  }
+  /** Forgets the key's failures; true when it had any, so the caller can say it works again. */
+  ok(key: string): boolean {
+    return this.tries.delete(key);
+  }
 }

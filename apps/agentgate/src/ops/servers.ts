@@ -1,14 +1,13 @@
 import { isVirtual, projectChangeSchema, projectIdSchema, slugify, type ProjectChange } from "@agentgate/protocol";
 import type { ControlOps } from "@agentgate/protocol/control";
 import { getUniqueValues } from "hanzio";
-import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
 import { canonicalProject, listAllTools, needsLogin, serverTools } from "../mcp/gateway.ts";
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "../mcp/templates.ts";
 import { saveProject } from "../operations.ts";
 import { sent, type Data, type McpInstance, type Project, type Store, type Stored } from "../store.ts";
-import { controlOp, UserError } from "./registry.ts";
+import { asUserError, controlOp, parseWords, plainMessage, UserError } from "./registry.ts";
 
 /** The MCP servers family's control operations. None is loopback-only: a remote node's servers are managed from the
  * app as its own are. */
@@ -21,32 +20,6 @@ function server(s: Store, name: string) {
   const inst = s.get("mcp", name);
   if (!inst) throw new UserError(`No MCP server ${name}`);
   return inst;
-}
-
-/** The record changes below throw a plain `Error` for input they refuse, with a message written for the user. `invalid` replaces
- * the text of a TypeError from `URL` or `Headers`, which can quote a URL with its credentials. */
-function refused<T>(fn: () => T, invalid?: string): T {
-  try {
-    return fn();
-  } catch (e) {
-    if (e instanceof Error && e.constructor === Error) throw new UserError(e.message);
-    if (invalid && e instanceof TypeError) throw new UserError(invalid);
-    throw e;
-  }
-}
-
-/** The words after the operation's name, with only the given options. A word it cannot read prints the usage. */
-function words<O extends ParseArgsOptionsConfig>(args: string[], options: O) {
-  try {
-    return parseArgs<{ args: string[]; options: O; allowPositionals: true; strict: true }>({
-      args,
-      options,
-      allowPositionals: true,
-      strict: true,
-    });
-  } catch (e) {
-    throw new UserError(e instanceof Error ? e.message : "");
-  }
 }
 
 /** Parse quoted arguments without invoking a shell or expanding variables. */
@@ -252,7 +225,11 @@ controlOp({
   needs: "store",
   async run(input, { s }) {
     if (!input.target && !input.command) throw new UserError("Give a URL, a preset or a command");
-    const inst = refused(() => createInstance(s, input), "Check the server's URL and headers");
+    const inst = asUserError(
+      () => createInstance(s, input),
+      // A TypeError from `URL` or `Headers` can quote a URL with its credentials.
+      (e) => plainMessage(e) ?? (e instanceof TypeError ? "Check the server's URL and headers" : undefined),
+    );
     // Connecting a hosted server right away shows it as available, or says it needs a login.
     const login = inst.url ? await serverTools(s, inst).then(() => false, needsLogin) : false;
     return { id: inst.id, needsLogin: login };
@@ -260,7 +237,7 @@ controlOp({
   terminal: {
     usage: 'mcp add <name> <url|preset> [--header "Name: value" ...] | --command "npx …" [--per-session]',
     parse(args) {
-      const { values, positionals } = words(args, {
+      const { values, positionals } = parseWords(args, {
         header: { type: "string", multiple: true },
         command: { type: "string" },
         "per-session": { type: "boolean" },
@@ -300,7 +277,7 @@ controlOp({
   terminal: {
     usage: "mcp rm <name>",
     parse(args) {
-      const [name, ...extra] = words(args, {}).positionals;
+      const [name, ...extra] = parseWords(args, {}).positionals;
       if (!name || extra.length) throw new UserError();
       return { input: { id: name } };
     },
@@ -315,13 +292,13 @@ controlOp({
   needs: "store",
   run(input, { s }) {
     server(s, input.id);
-    refused(() => labelInstance(s, input.id, input.label));
+    asUserError(() => labelInstance(s, input.id, input.label));
     return { id: input.id };
   },
   terminal: {
     usage: "mcp label <name> <label>",
     parse(args) {
-      const [name, label, ...extra] = words(args, {}).positionals;
+      const [name, label, ...extra] = parseWords(args, {}).positionals;
       if (!name || !label || extra.length) throw new UserError();
       return { input: { id: name, label } };
     },
@@ -336,13 +313,13 @@ controlOp({
   needs: "store",
   run(input, { s }) {
     server(s, input.id);
-    refused(() => renameInstance(s, input.id, input.to));
+    asUserError(() => renameInstance(s, input.id, input.to));
     return { id: input.to };
   },
   terminal: {
     usage: "mcp rename <name> <new-name>",
     parse(args) {
-      const [name, to, ...extra] = words(args, {}).positionals;
+      const [name, to, ...extra] = parseWords(args, {}).positionals;
       if (!name || !to || extra.length) throw new UserError();
       return { input: { id: name, to } };
     },
@@ -360,13 +337,13 @@ controlOp({
   needs: "store",
   run({ id: name, ...change }, { s }) {
     server(s, name);
-    refused(() => changeServerProjects(s, name, change));
+    asUserError(() => changeServerProjects(s, name, change));
     return { projects: s.list("project").flatMap((p) => (Object.values(p.mcp).includes(name) ? [p.id] : [])) };
   },
   terminal: {
     usage: "mcp projects <name> [<owner/repo|*> ...]",
     parse(args) {
-      const [name, ...projects] = words(args, {}).positionals;
+      const [name, ...projects] = parseWords(args, {}).positionals;
       if (!name) throw new UserError();
       return { input: { id: name, projects } };
     },
@@ -389,7 +366,7 @@ controlOp({
   terminal: {
     usage: "mcp tools <name> [<tool> ...]",
     parse(args) {
-      const [name, ...tools] = words(args, {}).positionals;
+      const [name, ...tools] = parseWords(args, {}).positionals;
       if (!name) throw new UserError();
       return { input: { id: name, tools: tools.length ? tools : undefined } };
     },
@@ -410,7 +387,7 @@ controlOp({
   terminal: {
     usage: "mcp instructions <name> [<text>] [--hide]",
     parse(args) {
-      const { values, positionals } = words(args, { hide: { type: "boolean" } });
+      const { values, positionals } = parseWords(args, { hide: { type: "boolean" } });
       const [name, text, ...extra] = positionals;
       if (!name || extra.length || (values.hide && text !== undefined)) throw new UserError();
       return { input: { id: name, instructions: values.hide ? "" : text } };
@@ -437,7 +414,7 @@ controlOp({
   terminal: {
     usage: "mcp limit <name> <chars|off|default> [--tool <tool>]",
     parse(args) {
-      const { values, positionals } = words(args, { tool: { type: "string" } });
+      const { values, positionals } = parseWords(args, { tool: { type: "string" } });
       const [name, value, ...extra] = positionals;
       if (!name || !value || extra.length) throw new UserError();
       const chars = value === "default" ? undefined : value === "off" ? 0 : Number(value);
@@ -464,7 +441,7 @@ controlOp({
   terminal: {
     usage: "mcp defaults <name> <tool> [<json>]",
     parse(args) {
-      const [name, tool, json, ...extra] = words(args, {}).positionals;
+      const [name, tool, json, ...extra] = parseWords(args, {}).positionals;
       if (!name || !tool || extra.length) throw new UserError();
       if (json === undefined) return { input: { id: name, tool } };
       let defaults: unknown;
@@ -503,7 +480,7 @@ controlOp({
   terminal: {
     usage: "mcp test <name>",
     parse(args) {
-      const [name, ...extra] = words(args, {}).positionals;
+      const [name, ...extra] = parseWords(args, {}).positionals;
       if (!name || extra.length) throw new UserError();
       return { input: { id: name } };
     },

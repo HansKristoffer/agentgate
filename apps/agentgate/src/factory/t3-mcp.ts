@@ -22,7 +22,7 @@ import { noWords, operation, type FactoryRuntime } from "./runtime.ts";
 /** Every input the factory sends to each T3 tool. A sign-in reads `tools/list` and refuses a T3 Code whose tools lack
  * one: an older T3 drops an input it does not know, such as `clientRequestId`, which makes a retried launch start a
  * second thread instead of finding the first. */
-export const REQUIRED_T3_INPUTS = {
+const REQUIRED_T3_INPUTS = {
   t3_thread_launch: [
     "projectId",
     "title",

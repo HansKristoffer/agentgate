@@ -1,6 +1,5 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { HEALTH_PATH } from "@agentgate/protocol";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
@@ -27,7 +26,7 @@ import { regenerateAfterUnpair } from "../remote.ts";
 import { requireNodeProtocol, type Store } from "../store.ts";
 import { join, pairCode, peers, tailscale, unpair } from "../sync.ts";
 import { nodeUpdate, routeNode, updateTracked } from "../update.ts";
-import { controlOp, UserError } from "./registry.ts";
+import { asUserError, controlOp, onOff, parseWords, UserError } from "./registry.ts";
 
 /** The machines family's control operations: pairing, the relay, and what one machine changes on another. */
 
@@ -38,25 +37,8 @@ const throwUser = (message: string): never => {
 };
 
 /** The relay words its errors as sanitized summaries (relay.ts), safe for the caller. */
-async function relayed<T>(fn: () => T | Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    if (e instanceof RelayError || e instanceof RelayBusy) throw new UserError(e.message);
-    throw e;
-  }
-}
-
-/** The words after an operation's name, read strictly: an unknown or malformed flag prints the usage. */
-function flags<const O extends ParseArgsOptionsConfig>(args: string[], options: O) {
-  try {
-    return parseArgs({ args, options, allowPositionals: true, strict: true });
-  } catch (e) {
-    throw new UserError(getErrorMessage(e));
-  }
-}
-
-const onOff = (word: string | undefined) => (word === "on" ? true : word === "off" ? false : throwUser(""));
+const relayed = <T>(fn: () => T) =>
+  asUserError(fn, (e) => (e instanceof RelayError || e instanceof RelayBusy ? e.message : undefined));
 
 const counts = (s: Store) => ({
   accounts: s.list("account").length,
@@ -129,7 +111,7 @@ controlOp({
   terminal: {
     usage: "pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]",
     parse(args) {
-      const { values, positionals } = flags(args, {
+      const { values, positionals } = parseWords(args, {
         name: { type: "string" },
         tailnet: { type: "boolean" },
         relay: { type: "boolean" },
@@ -291,7 +273,7 @@ controlOp({
   terminal: {
     usage: "dashboard [on|off] [--node <node>]",
     parse(args) {
-      const { values, positionals } = flags(args, { node: { type: "string" } });
+      const { values, positionals } = parseWords(args, { node: { type: "string" } });
       const [state, ...extra] = positionals;
       if (extra.length) throw new UserError();
       return {
@@ -393,7 +375,7 @@ controlOp({
   terminal: {
     usage: "relay leave [--wipe]",
     parse(args) {
-      const { values, positionals } = flags(args, { wipe: { type: "boolean" } });
+      const { values, positionals } = parseWords(args, { wipe: { type: "boolean" } });
       if (positionals.length) throw new UserError();
       return { input: { ...(values.wipe && { wipe: true }) } };
     },
@@ -412,7 +394,7 @@ controlOp({
   terminal: {
     usage: "relay cleanup [--abandon]",
     parse(args) {
-      const { values, positionals } = flags(args, { abandon: { type: "boolean" } });
+      const { values, positionals } = parseWords(args, { abandon: { type: "boolean" } });
       if (positionals.length) throw new UserError();
       return { input: { ...(values.abandon && { abandon: true }) } };
     },
@@ -434,7 +416,7 @@ controlOp({
   terminal: {
     usage: "relay key <value> | relay key --clear",
     parse(args) {
-      const { values, positionals } = flags(args, { clear: { type: "boolean" } });
+      const { values, positionals } = parseWords(args, { clear: { type: "boolean" } });
       const [key, ...extra] = positionals;
       if (extra.length || !!values.clear === !!key) throw new UserError();
       return { input: { key: key ?? null } };
@@ -471,7 +453,7 @@ controlOp({
   terminal: {
     usage: "t3 dirs [--worktrees <dir>] [--clones <dir>]",
     parse(args, _stdin, cwd) {
-      const { values, positionals } = flags(args, { worktrees: { type: "string" }, clones: { type: "string" } });
+      const { values, positionals } = parseWords(args, { worktrees: { type: "string" }, clones: { type: "string" } });
       if (positionals.length) throw new UserError();
       const given = (dir: string | undefined) => (dir && !/^~(\/|$)/.test(dir) ? resolve(cwd ?? "/", dir) : dir);
       const worktrees = given(values.worktrees),
