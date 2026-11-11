@@ -1,10 +1,36 @@
 import type { Status } from "@agentgate/protocol";
+import type { ControlOps } from "@agentgate/protocol/control";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { LOCAL_URL, store } from "../store.ts";
+import { controlOps, shownError } from "../ops/index.ts";
+import { previewLines, sourceFrom } from "../ops/skills.ts";
+import { LOCAL_URL, store, type Store } from "../store.ts";
 import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
 
-/** `skills <sub>`. */
+/**
+ * Control operations called one after another through the running daemon, or all in this process when none answers
+ * (like cli/ops.ts), so a preview and the install that follows it happen in the same place.
+ */
+function controls(s: Store) {
+  let here = false;
+  return async <N extends keyof ControlOps>(name: N, input: ControlOps[N]["input"]) => {
+    if (!here)
+      try {
+        return await management<ControlOps[N]["result"]>(`/ops/${encodeURIComponent(name)}`, "POST", input);
+      } catch (e) {
+        if ((e as { code?: unknown } | null)?.code !== "ECONNREFUSED") throw e;
+        here = true;
+      }
+    const op = controlOps.get(name)!;
+    try {
+      return (await op.run(op.input.parse(input), { s })) as ControlOps[N]["result"];
+    } catch (e) {
+      return die(shownError(e) || `The operation failed (${e instanceof Error ? e.name : "error"})`);
+    }
+  };
+}
+
+/** `skills <sub>` for what is not a control operation (ops/skills.ts): reads, `add`, and preparing a checkout. */
 export const run: Run = async (_cmd, [sub, ...rest], opts) => {
   const s = initialized(store());
   const str = stringOption(opts);
@@ -39,15 +65,6 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
     if (!st.skillConflicts.length && !st.skillKept.length) console.log("No skill conflicts.");
     return;
   }
-  if (sub === "resolve") {
-    const usage = "skills resolve <path> agentgate|keep";
-    const use = rest[1] === "agentgate" || rest[1] === "keep" ? rest[1] : die(usage);
-    const path = resolve((rest[0] ?? die(usage)).replace(/^~(?=\/|$)/, homedir()));
-    const { backup } = await management<{ backup?: string }>("/skills/conflicts", "POST", { path, use });
-    return console.log(
-      backup ? `Linked Agentgate's copy; the old one is in ${backup}` : `Kept ${path}; Agentgate leaves it alone`,
-    );
-  }
   if (sub === "find") {
     for (const r of await sk.searchSkills(rest.join(" ") || die("skills find <query>")))
       console.log(`${`${r.source}@${r.skill}`.padEnd(60)} ${r.installs} installs`);
@@ -65,93 +82,40 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
     }
     return;
   }
+  // The same preview and audit the app shows, then the install once you agree.
   if (sub === "add") {
-    let source = rest[0] ?? die("skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*>]");
-    // A folder is read by the daemon's CLI process too, so make it absolute here.
-    if (/^(\.{1,2}(\/|$)|~\/|\/)/.test(source)) source = resolve(source.replace(/^~(?=\/)/, homedir()));
+    const source = sourceFrom(
+      rest[0] ?? die("skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...] [--yes]"),
+    );
     const projects = (opts.project as string[] | undefined) ?? [];
-    const ids = sk.installSkills(s, source, await sk.fetchSkills(source, str("skill")), undefined, projects);
-    console.log(`installed ${ids.join(", ")}`);
+    const control = controls(s);
+    const preview = await control("skills preview", { source, skill: str("skill") });
+    for (const line of previewLines(preview)) console.log(line);
+    const ids = preview.skills.filter((k) => !k.conflict).map((k) => k.id);
+    if (!ids.length) die("Nothing to install: each of these clashes with a skill you already have");
+    if (!opts.yes) {
+      // An agent or a script cannot answer, and its stdin may stay open and silent.
+      if (!process.stdin.isTTY) die("Nothing installed. Run it again with --yes to install these.");
+      if (!/^y(es)?$/i.test(prompt(`Install ${ids.join(", ")}? [y/N]`)?.trim() ?? "")) die("Nothing installed.");
+    }
+    const { installed } = await control("skills add", { token: preview.token, ids, projects });
+    console.log(`installed ${installed.join(", ")}`);
     if (!projects.length) console.log("Link it with: agentgate skills projects <name> <owner/repo|*>");
     return;
   }
-  if (sub === "repo") {
-    const [action, url] = rest;
-    if (action === "ls" || !action) {
-      for (const r of sk.skillRepoSummaries(s))
-        console.log(
-          `${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`,
-        );
-      return;
-    }
-    if (action === "add") {
-      const connected = await sk.connectSkillRepo(
-        s,
-        url ?? die("skills repo add <github-url> --project <owner/repo|*>"),
-        (opts.project as string[] | undefined) ??
-          die("Choose where its skills go: --project '*' for every session, or --project owner/repo"),
-      );
-      const r = sk.skillRepoSummaries(s).find((r) => r.url === connected)!;
-      console.log(
-        `connected ${connected}: ${r.skills.join(", ") || "no skills installed"}${r.skipped.length ? `\nskipped: ${r.skipped.join("\nskipped: ")}` : ""}`,
-      );
-      return;
-    }
-    if (action === "sync") {
-      for (const r of sk.skillRepoSummaries(s).filter((r) => !url || r.url === sk.repoUrl(url)))
-        console.log(
-          `${r.url}: ${await sk.syncSkillRepo(s, r.url).then(
-            (changed) => (changed ? "updated" : "up to date"),
-            (e) => `failed: ${e.message}`,
-          )}`,
-        );
-      return;
-    }
-    if (action === "projects") {
-      sk.setSkillRepoProjects(s, url ?? die("skills repo projects <url> <owner/repo|*> ..."), rest.slice(2));
-      return console.log("ok");
-    }
-    if (action === "rm") {
-      sk.setSkillRepoProjects(s, url ?? die("skills repo rm <url>"), []);
-      return console.log("disconnected; its skills were removed");
-    }
-    return showHelp();
-  }
-  if (sub === "update" && !rest[0]) {
-    for (const { id, outcome } of await sk.updateSkills(s)) console.log(`${id}: ${outcome}`);
+  if (sub === "repo" && (!rest[0] || rest[0] === "ls")) {
     for (const r of sk.skillRepoSummaries(s))
       console.log(
-        `${r.url}: ${await sk.syncSkillRepo(s, r.url).then(
-          (changed) => (changed ? "updated" : "up to date"),
-          (e) => `failed: ${e.message}`,
-        )}`,
+        `${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`,
       );
     return;
   }
-  const id = rest[0] ?? die(`skills ${sub} <name>`);
-  if (sub === "new" || sub === "edit") {
-    if (sub === "new" && s.get("skill", id)) die(`${id} already exists; use skills edit`);
-    const revision = sk.skillRevision(s, id);
-    if (sub === "edit" && revision === null) die(`no skill ${id}; use skills new`);
-    sk.writeSkillMd(s, id, await Bun.file(str("file") ?? die("--file SKILL.md is required")).text(), revision);
-    return console.log(`saved ${id}; link it with: agentgate skills projects ${id} <owner/repo|*>`);
-  }
   if (sub === "show") {
-    const k = s.get("skill", id) ?? die(`no skill ${id}`);
+    const id = rest[0] ?? die("skills show <name>");
+    const k = sk.skillDetail(s, id) ?? die(`no skill ${id}`);
     console.log(`${k.id}  ${k.source ?? "(hand-written)"}\n${k.files.map((f) => `  ${f.path}`).join("\n")}\n`);
-    const md = k.files.find((f) => f.path === "SKILL.md");
-    if (md) console.log(Buffer.from(md.data, "base64").toString());
+    if (k.skillMd) console.log(k.skillMd);
     return;
-  }
-  if (sub === "update") return console.log((await sk.updateSkill(s, id)) ? "updated" : "up to date");
-  if (sub === "projects") {
-    sk.setSkillProjects(s, id, rest.slice(1));
-    return console.log("ok");
-  }
-  if (sub === "rm") {
-    s.get("skill", id) ?? die(`no skill ${id}`);
-    sk.deleteSkill(s, id);
-    return console.log("ok");
   }
   return showHelp();
 };
