@@ -359,7 +359,7 @@ async function call(
   path: string,
   body: unknown,
   signal: AbortSignal,
-): Promise<{ status: number; json: any }> {
+): Promise<{ status: number; json: unknown }> {
   const headers: Record<string, string> = { authorization: `Bearer ${c.keys.authToken}` };
   if (c.serviceKey) headers["x-relay-key"] = c.serviceKey;
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -386,7 +386,7 @@ async function call(
     await res.body?.cancel();
     throw new RelayError("The relay answered with a redirect; refusing to follow it", res.status);
   }
-  let json: any;
+  let json: unknown;
   try {
     json = JSON.parse(new TextDecoder().decode(await readBody(res.body, RELAY_LIMITS.messageBytes + 64 * 1024, both)));
   } catch (e) {

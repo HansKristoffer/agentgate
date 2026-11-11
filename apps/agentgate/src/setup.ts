@@ -2,6 +2,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSyn
 import { getErrorMessage } from "hanzio";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { atomicWrite } from "./files.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL, PORT, type Store } from "./store.ts";
 
@@ -108,11 +109,21 @@ export function codexConfig(existing = "", command = selfCommand(), env = agentE
   Bun.TOML.parse(text);
   return text;
 }
+const object = z.record(z.string(), z.unknown());
+/** The keys of a Claude Code or Cursor JSON config that agentgate edits; every other key is written back as it was. */
+const configFile = z.looseObject({ mcpServers: object.optional(), env: object.optional() });
+const readJsonFile = (file: string): unknown => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {});
 const json = (file: string) => {
-  const value = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    throw new Error(`${file}: expected a configuration object`);
-  return value;
+  const parsed = configFile.safeParse(readJsonFile(file));
+  if (parsed.success) return parsed.data;
+  const field = parsed.error.issues[0]?.path.join(".");
+  throw new Error(field ? `${file}: ${field} must be an object` : `${file}: expected a configuration object`);
+};
+/** What `setup --primary` replaced, so `off` can put it back. */
+const undoFile = (file: string) => {
+  const parsed = z.object({ hadValue: z.boolean(), value: z.string().optional() }).safeParse(readJsonFile(file));
+  if (!parsed.success) throw new Error(`${file}: not an undo file agentgate wrote`);
+  return parsed.data;
 };
 const backup = (file: string) => {
   if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`);
@@ -211,7 +222,8 @@ export async function routeByDefault(s: Store, on = true, dirs = OWN): Promise<s
 /** When `keepMcp` last put the Claude Code entry back, for `status`: `claude mcp remove agentgate` looks the same. */
 export const MCP_RESTORED = "setup:mcpRestoredAt";
 
-type McpEntry = { command?: unknown; args?: unknown; env?: Record<string, unknown> } | undefined;
+const mcpEntry = z.looseObject({ command: z.unknown(), args: z.unknown(), env: object.optional() });
+type McpEntry = z.infer<typeof mcpEntry> | undefined;
 
 /** Keep this install's MCP entries working, from the daemon's routing tick. Claude Code can write ~/.claude.json back
  * from a stale copy and drop agentgate's server: put it back while the user wants it (they turned it on, or, on stores
@@ -229,7 +241,7 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
   const claudeJson = claudeJsonIn(dirs.claude);
   // A missing file is Claude Code mid-rewrite or not set up at all; writing one from scratch would lose its state.
   if (existsSync(claudeJson)) {
-    const entry: McpEntry = json(claudeJson).mcpServers?.agentgate,
+    const entry = mcpEntry.safeParse(json(claudeJson).mcpServers?.agentgate).data,
       choice = s.local("setup:mcp");
     if (entry ? stale(entry) : choice ? choice === "on" : claudeStatus(dirs.claude).routing) {
       await mcp(true, dirs.claude);
@@ -247,7 +259,7 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
       changed.push(`Updated agentgate's MCP server in ${codexFile}`);
     }
   }
-  if (stale(mcpFile(dirs.cursor).servers.agentgate as McpEntry)) {
+  if (stale(mcpEntry.safeParse(mcpFile(dirs.cursor).servers.agentgate).data)) {
     await cursorMcp(true, dirs.cursor);
     changed.push(`Updated agentgate's MCP server in ${dirs.cursor}`);
   }
@@ -288,11 +300,8 @@ const claudeJsonIn = (dir: string) =>
 
 function mcpFile(file: string): { root: Record<string, unknown>; servers: Record<string, unknown> } {
   if (!existsSync(file)) return { root: {}, servers: {} };
-  const root = json(file) as Record<string, unknown>;
-  if (root.mcpServers === undefined) return { root, servers: {} };
-  if (!root.mcpServers || typeof root.mcpServers !== "object" || Array.isArray(root.mcpServers))
-    throw new Error(`${file}: mcpServers must be an object`);
-  return { root, servers: { ...(root.mcpServers as Record<string, unknown>) } };
+  const root = json(file);
+  return { root, servers: { ...root.mcpServers } };
 }
 
 /** The stdio server Cursor stores in `mcp.json`: command, args, and env, with no Claude-only `type`. */
@@ -402,7 +411,7 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
     if (!existsSync(undo) && env.ANTHROPIC_BASE_URL !== url) return `No agentgate setup change to undo in ${file}.`;
     const original = existsSync(`${file}.before-agentgate`) ? (json(`${file}.before-agentgate`).env ?? {}) : {};
     const previous = existsSync(undo)
-      ? json(undo)
+      ? undoFile(undo)
       : { hadValue: Object.hasOwn(original, "ANTHROPIC_BASE_URL"), value: original.ANTHROPIC_BASE_URL };
     if (env.ANTHROPIC_BASE_URL === url) {
       if (previous.hadValue) env.ANTHROPIC_BASE_URL = previous.value;
@@ -445,10 +454,13 @@ export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promis
     if (existsSync(undo)) unlinkSync(undo);
     return `No agentgate setup change to undo in ${file}.`;
   }
-  const previous = existsSync(undo) ? json(undo) : { hadValue: false };
+  const previous = existsSync(undo) ? undoFile(undo) : { hadValue: false, value: undefined };
   const kept = withoutAgentgate(existing);
   if (existsSync(auth) && readFileSync(auth, "utf8") === PLACEHOLDER_AUTH) unlinkSync(auth);
-  atomicWrite(file, `${previous.hadValue ? `model_provider = ${quote(previous.value)}\n` : ""}${kept}\n`);
+  atomicWrite(
+    file,
+    `${previous.hadValue && previous.value !== undefined ? `model_provider = ${quote(previous.value)}\n` : ""}${kept}\n`,
+  );
   if (existsSync(undo)) unlinkSync(undo);
   return `Restored the previous Codex provider in ${file}; other settings are preserved.`;
 }
