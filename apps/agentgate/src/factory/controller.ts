@@ -43,8 +43,8 @@ import { defaultBranch as readDefaultBranch } from "./gh.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { adapterOf, questionRef, writeBack } from "./outbox.ts";
+import { Backoff } from "../runtime.ts";
 import {
-  Backoff,
   later,
   logError,
   noWords,

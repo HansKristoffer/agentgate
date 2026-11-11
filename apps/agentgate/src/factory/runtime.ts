@@ -1,4 +1,4 @@
-import { exponentialBackoff, getErrorMessage } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -433,29 +433,6 @@ export class SayOnce {
   /** Forgets every key `keep` turns down, such as runs no longer measured. */
   keepOnly(keep: (key: string) => boolean) {
     for (const key of this.said.keys()) if (!keep(key)) this.said.delete(key);
-  }
-}
-
-/** Per key, when the next try may start after failures in a row: `baseMs`, doubling up to `maxMs`. */
-export class Backoff {
-  private tries = new Map<string, { failures: number; retryAt: number }>();
-  constructor(
-    private clock: { now(): number },
-    private options: { baseMs: number; maxMs: number },
-  ) {}
-  /** Whether the key may be tried now. */
-  due(key: string): boolean {
-    return (this.tries.get(key)?.retryAt ?? 0) <= this.clock.now();
-  }
-  /** One more failure in a row, or the `failures` a caller counts itself; returns when the next try may start. */
-  failed(key: string, failures = (this.tries.get(key)?.failures ?? 0) + 1): number {
-    const retryAt = this.clock.now() + exponentialBackoff(failures, { ...this.options, jitter: false });
-    this.tries.set(key, { failures, retryAt });
-    return retryAt;
-  }
-  /** Forgets the key's failures; true when it had any, so the caller can say it works again. */
-  ok(key: string): boolean {
-    return this.tries.delete(key);
   }
 }
 

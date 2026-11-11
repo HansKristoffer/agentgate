@@ -4,7 +4,8 @@ import { currentFolder, durationMs, limits } from "./config.ts";
 import { addItem, holdsNewItems, intakeState } from "./controller.ts";
 import { isOpenPhase, items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
-import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
+import { Backoff } from "../runtime.ts";
+import { shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
 
 /**
  * Intake: what the sources list becomes items. The intake loop polls each source, backing off one that fails, and reads

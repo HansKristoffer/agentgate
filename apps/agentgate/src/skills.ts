@@ -8,8 +8,9 @@ import {
   type SkillRepoSummary,
   type SkillSummary,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage, getUniqueValues, sumBy } from "hanzio";
+import { getErrorMessage, getUniqueValues, sumBy } from "hanzio";
 import { z } from "zod";
+import { Backoff } from "./runtime.ts";
 import { defineLocal } from "./local-state.ts";
 import { UserError } from "./ops/registry.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
@@ -271,26 +272,26 @@ export function updateSkill(
 /** Background syncs of failing skill sources wait longer after each failure, and log a failure once until it changes or
  * clears, so a missing repository or a slow network does not fill the log. In memory: a restart logs it once more. */
 export class SkillBackoff {
-  private failing = new Map<string, { error: string; failures: number; retryAt: number }>();
-  constructor(private s: Store) {}
+  // 10 minutes, doubling up to 6 hours.
+  private tries: Backoff;
+  private errors = new Map<string, string>();
+  constructor(s: Store) {
+    this.tries = new Backoff(s, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000 });
+  }
   due(key: string) {
-    return (this.failing.get(key)?.retryAt ?? 0) <= this.s.now();
+    return this.tries.due(key);
   }
   /** `error` undefined records a success. */
   record(key: string, error?: string) {
-    const prev = this.failing.get(key);
+    const prev = this.errors.get(key);
     if (error === undefined) {
-      if (this.failing.delete(key)) console.log(`skills: ${key}: works again`);
+      this.errors.delete(key);
+      if (this.tries.ok(key)) console.log(`skills: ${key}: works again`);
       return;
     }
-    const failures = (prev?.failures ?? 0) + 1;
-    // 10 minutes, doubling up to 6 hours.
-    this.failing.set(key, {
-      error,
-      failures,
-      retryAt: this.s.now() + exponentialBackoff(failures, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000, jitter: false }),
-    });
-    if (prev?.error !== error) console.error(`skills: ${key}: ${error}`);
+    this.tries.failed(key);
+    this.errors.set(key, error);
+    if (prev !== error) console.error(`skills: ${key}: ${error}`);
   }
 }
 
