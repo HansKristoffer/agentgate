@@ -18,7 +18,7 @@ import {
   resolveModel,
   route,
 } from "../src/llm/routing.ts";
-import { Telemetry, metrics, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
+import { Telemetry, requestDetail, requests, streamObserver, tokenUsage } from "../src/llm/telemetry.ts";
 import { accountStatus, proxy } from "../src/llm/pool.ts";
 import { ProxyOperations } from "../src/llm/operations.ts";
 import { parseQuota } from "../src/llm/codex.ts";
@@ -481,60 +481,14 @@ test("telemetry separates account fallback from same-account retries and redacts
   fallback.attempt("b", "automatic");
   fallback.headers(200);
   fallback.finish("success", undefined, "completed");
-  expect(metrics(s)).toMatchObject({ total: 2, succeeded: 2, fallback: 1 });
+  const accountsTried = (id: string) => new Set(requestDetail(s, id)!.attempts.map((a) => a.account)).size;
+  expect([accountsTried(retry.request.id), accountsTried(fallback.request.id)]).toEqual([1, 2]);
   const exported = JSON.stringify(requestDetail(s, retry.request.id));
   expect(exported).not.toContain("access-a");
   expect(exported).not.toContain("secret.invalid");
   expect(exported).toContain("[redacted]");
   expect(s.changes(0).records.some((r) => (r.kind as string) === "proxy_requests")).toBe(false);
   expect(JSON.stringify(exportBackup(s, false))).not.toContain(retry.request.id);
-});
-
-test("metrics exclude pending and expired requests and average only measured latency", () => {
-  const { s } = fixture();
-  const now = s.now();
-  s.now = () => now - 86400001;
-  const expired = new Telemetry(s, "claude");
-  expired.attempt("a", "automatic");
-  expired.attempt("b", "automatic");
-  expired.finish("success");
-  s.now = () => now;
-  const pending = new Telemetry(s, "claude");
-  pending.attempt("a", "automatic");
-  pending.attempt("b", "automatic");
-  const succeeded = new Telemetry(s, "claude");
-  succeeded.headers(200);
-  succeeded.request.headersMs = 40;
-  succeeded.request.firstByteMs = 15;
-  succeeded.finish("success");
-  const failed = new Telemetry(s, "claude");
-  failed.attempt("a", "automatic");
-  failed.attempt("b", "automatic");
-  failed.headers(502);
-  failed.request.headersMs = 61;
-  failed.finish("failed", "transient");
-  const cancelled = new Telemetry(s, "claude");
-  cancelled.finish("cancelled", "cancelled");
-  expect(metrics(s)).toMatchObject({
-    total: 3,
-    succeeded: 1,
-    failed: 1,
-    interrupted: 0,
-    cancelled: 1,
-    fallback: 1,
-    averageHeadersMs: 51,
-    averageFirstByteMs: 15,
-  });
-  expect(metrics(s, now + 1)).toMatchObject({
-    total: 0,
-    succeeded: 0,
-    failed: 0,
-    interrupted: 0,
-    cancelled: 0,
-    fallback: 0,
-  });
-  expect(metrics(s, now + 1).averageHeadersMs).toBeUndefined();
-  expect(metrics(s, now + 1).averageFirstByteMs).toBeUndefined();
 });
 
 test("request cursors remain stable during concurrent inserts and reset after retention", () => {
@@ -654,7 +608,6 @@ test("quota fallback is one request with two attempts; aliases reach the upstrea
   const response = await proxy(s, creds, adapter, client("friendly"), url);
   await response.text();
   expect(seen).toEqual(["access-a:sonnet", "access-b:sonnet"]);
-  expect(metrics(s)).toMatchObject({ total: 1, succeeded: 1, fallback: 1 });
   const record = requests(s).requests[0]!;
   expect(record).toMatchObject({ requestedModel: "friendly", routedModel: "sonnet", attempts: 2, stream: "completed" });
   expect(requestDetail(s, record.id)?.attempts[0]?.failure).toBe("quota");
@@ -722,7 +675,6 @@ test("uncertain network outcome never replays on another account", async () => {
   expect(response.status).toBe(502);
   expect(await response.text()).toContain("outcome uncertain");
   expect(count).toBe(1);
-  expect(metrics(s).fallback).toBe(0);
 });
 
 test("a request that is not streamed waits for its answer past the streaming header deadline", async () => {
@@ -781,7 +733,7 @@ test("stream provider error, idle timeout, and cancellation produce distinct fin
       outcome: mode === "error" ? "failed" : mode === "cancel" ? "cancelled" : "interrupted",
       stream: mode === "error" ? "provider-error" : mode === "cancel" ? "cancelled" : "idle-timeout",
     });
-    expect(metrics(s).fallback).toBe(0);
+    expect(requests(s).requests[0]?.attempts).toBe(1);
   }
 });
 

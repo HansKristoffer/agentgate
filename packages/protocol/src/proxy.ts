@@ -172,17 +172,6 @@ export interface RequestDetail {
   request: ProxyRequest;
   attempts: ProxyAttempt[];
 }
-export interface ProxyMetrics {
-  since: number;
-  total: number;
-  succeeded: number;
-  failed: number;
-  interrupted: number;
-  cancelled: number;
-  fallback: number;
-  averageHeadersMs?: number;
-  averageFirstByteMs?: number;
-}
 /** Tokens one model used, summed over every account and machine. */
 export interface ModelTokens {
   provider: Provider;
