@@ -16,7 +16,7 @@ import {
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ProjectChecks } from "../components/Assignments.tsx";
+import { ProjectChecks, projectChange } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -596,9 +596,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const projects = new FormData(e.currentTarget).getAll("project") as string[];
+              const change = projectChange(e.currentTarget);
               void perform(async () => {
-                await request(connection, `/skills/${idPath(assign)}/projects`, "PUT", { projects });
+                await request(connection, `/skills/${idPath(assign)}/projects`, "PUT", change);
                 setAssign(undefined);
               }, "Saved. New sessions pick it up.");
             }}

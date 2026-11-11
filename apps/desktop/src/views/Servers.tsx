@@ -15,7 +15,7 @@ import {
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ServerProjectChecks } from "../components/Assignments.tsx";
+import { ServerProjectChecks, projectChange } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
 import { openExternal, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -281,9 +281,9 @@ export function Servers({ data, connection, perform }: ViewProps) {
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              const projects = new FormData(e.currentTarget).getAll("project") as string[];
+              const change = projectChange(e.currentTarget);
               void perform(async () => {
-                await request(connection, `/servers/${idPath(assigning.id)}/projects`, "PUT", { projects });
+                await request(connection, `/servers/${idPath(assigning.id)}/projects`, "PUT", change);
                 setAssign(undefined);
               }, "Saved. Running sessions pick up the change.");
             }}

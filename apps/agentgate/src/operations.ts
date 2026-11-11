@@ -1,7 +1,9 @@
 import { fromPreset, newInstance, parseHeaders, preset, validId } from "./mcp/templates.ts";
 import { getUniqueValues } from "hanzio";
 import type { Account, Credential, McpInstance, Project, Store } from "./store.ts";
-import { isVirtual, projectIdSchema, slugify } from "@agentgate/protocol";
+import { isVirtual, projectIdSchema, slugify, type ProjectChange } from "@agentgate/protocol";
+import { checkRevision } from "./configuration.ts";
+import { setSkillProjects } from "./skills.ts";
 import { BUILTIN_ALIAS, FACTORY_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
@@ -167,6 +169,24 @@ export function setServerProjects(s: Store, id: string, projects: string[]) {
     }
   });
 }
+/** The projects `change` leaves: its whole set, or `current` with only its additions and removals applied. */
+function changedProjects(s: Store, current: Project[], change: ProjectChange) {
+  if ("projects" in change) return change.projects;
+  const remove = new Set(change.remove.map((p) => canonicalProject(s, p)));
+  return [...current.map((p) => p.id).filter((p) => !remove.has(p)), ...change.add];
+}
+export function changeServerProjects(s: Store, id: string, change: ProjectChange) {
+  s.transaction(() => {
+    const current = s.list("project").filter((p) => Object.values(p.mcp).includes(id));
+    setServerProjects(s, id, changedProjects(s, current, change));
+  });
+}
+export function changeSkillProjects(s: Store, id: string, change: ProjectChange) {
+  s.transaction(() => {
+    const current = s.list("project").filter((p) => p.skills.includes(id));
+    setSkillProjects(s, id, changedProjects(s, current, change));
+  });
+}
 export function renameInstance(s: Store, from: string, to: string) {
   s.transaction(() => {
     const inst = s.get("mcp", from);
@@ -192,8 +212,10 @@ export function renameInstance(s: Store, from: string, to: string) {
     s.del("refreshRequest", `mcpCredential:${from}`);
   });
 }
-export function saveProject(s: Store, id: string, patch: Partial<Project>) {
+/** `expected` is the revision the caller's form started from (configuration.ts); the CLI leaves it out. */
+export function saveProject(s: Store, id: string, patch: Partial<Project>, expected?: string) {
   id = canonicalProject(s, projectIdSchema.parse(id));
+  if (expected !== undefined) checkRevision(s, "project", id, expected);
   const virtual = isVirtual(id);
   const prev = s.get("project", id) ?? { id, mcp: {}, skills: [], inheritDefaults: !virtual };
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {

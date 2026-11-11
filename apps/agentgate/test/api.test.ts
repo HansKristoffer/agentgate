@@ -504,6 +504,29 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect(statusSchema.safeParse(missing).success).toBe(false);
 });
 
+test("a project form opened before another machine's change cannot save over it", async () => {
+  const { call, s } = fixture();
+  writeSkillMd(s, "x", "instructions");
+  s.put("project", "owner/repo", { id: "owner/repo" });
+  const opened = ((await (await call("/api/status")).json()) as Status).projects[0]!.revision;
+  s.put("project", "owner/repo", { id: "owner/repo", skills: ["x"] });
+  const form = { id: "owner/repo", mcp: {}, skills: [], inheritDefaults: true };
+  expect((await call("/api/projects", "PUT", { ...form, revision: opened })).status).toBe(409);
+  expect(s.get("project", "owner/repo")!.skills).toEqual(["x"]);
+  // The CLI and older apps send none.
+  expect((await call("/api/projects", "PUT", form)).status).toBe(200);
+  expect(s.get("project", "owner/repo")!.skills).toEqual([]);
+});
+
+test("a one-key settings patch needs no revision; a patch of several still does", async () => {
+  const { call, s } = fixture();
+  s.put("setting", "settings", { ...s.settings(), threshold: 50 });
+  expect((await call("/api/settings", "PATCH", { patch: { t3ProjectSync: true } })).status).toBe(200);
+  expect(s.settings()).toMatchObject({ threshold: 50, t3ProjectSync: true });
+  expect((await call("/api/settings", "PATCH", { patch: { t3ProjectSync: false, threshold: 60 } })).status).toBe(409);
+  expect(s.settings()).toMatchObject({ threshold: 50, t3ProjectSync: true });
+});
+
 test("status sends empty activity and peers, which an app on this API version still requires", async () => {
   const { s, call } = fixture();
   s.log("claude", "a", "m", 200, 5);
