@@ -11,6 +11,8 @@ import {
 } from "@agentgate/protocol/relay";
 import { bytesToHex, encodeBase64Url, randomToken } from "hanzio/crypto";
 import { exponentialBackoff, isTruthy, trimTrailingSlash } from "hanzio";
+import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, type Rec, type Store } from "./store.ts";
 import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
@@ -190,8 +192,14 @@ type Field =
 const k = (t: Target, f: Field) => (t === "active" ? `relay:${f}` : `relay:rot:${f}`);
 const get = (s: Store, t: Target, f: Field) => s.local(k(t, f));
 const num = (s: Store, t: Target, f: Field) => Number(get(s, t, f) ?? 0);
-const put = (s: Store, t: Target, f: Field, v: string | number | undefined) =>
-  s.setLocal(k(t, f), v === undefined ? undefined : String(v));
+// The active group's fields `relayStatus` shows; cursors and counters move every turn and mark nothing.
+const STATUS_FIELDS = new Set<Field>(["invite", "phase", "pushError", "pullError", "skipped", "oversize"]);
+function put(s: Store, t: Target, f: Field, v: string | number | undefined) {
+  const text = v === undefined ? undefined : String(v);
+  if (get(s, t, f) === text) return;
+  s.setLocal(k(t, f), text);
+  if (t === "active" && STATUS_FIELDS.has(f)) s.bump("status");
+}
 const FIELDS: Field[] = [
   "invite",
   "generation",
@@ -205,15 +213,22 @@ const FIELDS: Field[] = [
   "oversize",
 ];
 
-interface Cleanup {
-  invite: string;
-  serviceKey?: string;
-  attempts: number;
-  nextAt: number;
-}
-const cleanups = (s: Store): Cleanup[] => JSON.parse(s.local("relay:cleanup") ?? "[]");
+const cleanupList = defineLocal(
+  "relay:cleanup",
+  z.array(
+    z.object({ invite: z.string(), serviceKey: z.string().optional(), attempts: z.number(), nextAt: z.number() }),
+  ),
+  { topic: "status" },
+);
+type Cleanup = NonNullable<ReturnType<typeof cleanupList.get>>[number];
+const cleanups = (s: Store): Cleanup[] => cleanupList.get(s) ?? [];
 const setCleanups = (s: Store, list: Cleanup[]) =>
-  s.setLocal("relay:cleanup", list.length ? JSON.stringify(list.slice(-20)) : undefined);
+  cleanupList.set(s, undefined, list.length ? list.slice(-20) : undefined);
+/** A pending rotation: the replacement group's invite, kept until the switch or the abandon. */
+const rotation = defineLocal("relay:rotation", z.object({ invite: z.string(), startedAt: z.number() }), {
+  topic: "status",
+});
+const rotatedAt = defineLocal("relay:rotatedAt", z.string(), { topic: "status" });
 export const serviceKey = (s: Store) => process.env.AGENTGATE_RELAY_KEY || s.local("relay:serviceKey") || undefined;
 
 function tables(s: Store) {
@@ -500,7 +515,7 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
  */
 async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
   // A pending rotation means the old secret is being retired: nothing new goes to the old group.
-  if (t === "active" && s.local("relay:rotation")) return;
+  if (t === "active" && rotation.get(s)) return;
   const grp = c.keys.groupId;
   // Stop at what exists now, so constant local writes cannot keep this loop from reaching the pull.
   const target = s.seq();
@@ -642,7 +657,7 @@ const message = (e: unknown) => (e instanceof RelayError || e instanceof RelayBu
 
 /** Why uploads to the active group wait: a pending rotation sends nothing new to the old secret's group. */
 function rotationBlocks(s: Store, t: Target) {
-  if (t !== "active" || !s.local("relay:rotation")) return undefined;
+  if (t !== "active" || !rotation.get(s)) return undefined;
   return `Uploads wait for the new relay group: ${get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "it is not ready yet"}`;
 }
 
@@ -739,9 +754,9 @@ async function runCleanups(s: Store, signal: AbortSignal, force = false) {
 
 /** Seed the replacement group, then switch to it in one transaction. Resumable after a crash. True once switched. */
 async function rotationStep(s: Store, signal: AbortSignal, force = false): Promise<boolean> {
-  const rotation = s.local("relay:rotation");
-  if (!rotation) return false;
-  const newInvite = (JSON.parse(rotation) as { invite: string }).invite;
+  const pending = rotation.get(s);
+  if (!pending) return false;
+  const newInvite = pending.invite;
   if (get(s, "rot", "invite") !== newInvite) put(s, "rot", "invite", newInvite);
   await syncTarget(s, "rot", signal, { push: false, pull: false, force });
   if (get(s, "rot", "phase") !== "done")
@@ -756,7 +771,7 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false): Promi
       put(s, "active", f, get(s, "rot", f));
       put(s, "rot", f, undefined);
     }
-    s.setLocal("relay:rotation", undefined);
+    rotation.set(s, undefined, undefined);
     if (old)
       setCleanups(s, [
         ...cleanups(s).filter((j) => j.invite !== old),
@@ -772,11 +787,11 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false): Promi
 /** A rotation that failed before the switch is undone, so nothing changed and a retry starts over. The new group may
  * exist on the relay already, so it is queued for deletion. */
 async function abandonRotation(s: Store) {
-  const invite = get(s, "rot", "invite") ?? (JSON.parse(s.local("relay:rotation")!) as { invite: string }).invite;
+  const invite = get(s, "rot", "invite") ?? rotation.get(s)!.invite;
   const grp = (await conn(s, invite)).keys.groupId;
   s.transaction(() => {
     for (const f of FIELDS) put(s, "rot", f, undefined);
-    s.setLocal("relay:rotation", undefined);
+    rotation.set(s, undefined, undefined);
     dropGroup(s, grp);
     setCleanups(s, [
       ...cleanups(s).filter((j) => j.invite !== invite),
@@ -811,14 +826,14 @@ export function relaySync(s: Store, want: { push?: boolean; pull?: boolean; forc
       // dark wakes while it slept, say nothing about the network now, and would otherwise hold sync off for minutes.
       if (s.now() - r.lastTurn > 60_000) r.backoff.clear();
       r.lastTurn = s.now();
-      if (!s.local("relay:invite") && !s.local("relay:cleanup") && !s.local("relay:rotation")) continue;
+      if (!s.local("relay:invite") && !cleanupList.get(s) && !rotation.get(s)) continue;
       await withRelay(
         s,
         async (signal) => {
           try {
             // Only a rotation interrupted by a crash or shutdown is still pending here; nobody has seen its invite.
             if (await rotationStep(s, signal, run.force)) {
-              s.setLocal("relay:rotatedAt", String(s.now()));
+              rotatedAt.set(s, undefined, String(s.now()));
               console.error(
                 "relay: finished an interrupted rotation; run `agentgate pair --relay` here for the command the other relay machines need to join again",
               );
@@ -855,7 +870,7 @@ export function createRelay(s: Store, url?: string): Promise<string> {
   return withRelay(s, async (signal) => {
     const existing = get(s, "active", "invite");
     if (existing) {
-      s.setLocal("relay:rotatedAt", undefined); // the new join command is being shown
+      rotatedAt.set(s, undefined, undefined); // the new join command is being shown
       return existing;
     }
     const invite = makeInvite(url ?? relayUrlDefault());
@@ -940,14 +955,14 @@ export function reconcileRelay(s: Store): Promise<void> {
 export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending: boolean }> {
   return withRelay(s, async (signal) => {
     const active = get(s, "active", "invite");
-    if (!s.local("relay:rotation")) {
+    if (!rotation.get(s)) {
       if (!active) throw new RelayError("This machine does not use a relay");
       const invite = makeInvite(parseInvite(active).url);
       s.transaction(() => {
         for (const f of FIELDS) put(s, "rot", f, undefined);
         put(s, "rot", "invite", invite);
         put(s, "rot", "phase", "read");
-        s.setLocal("relay:rotation", JSON.stringify({ invite, startedAt: s.now() }));
+        rotation.set(s, undefined, { invite, startedAt: s.now() });
       });
     }
     try {
@@ -956,7 +971,7 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
       if (!signal.aborted) await abandonRotation(s);
       throw e;
     }
-    s.setLocal("relay:rotatedAt", undefined);
+    rotatedAt.set(s, undefined, undefined);
     await runCleanups(s, signal, true);
     return { command: `agentgate join ${get(s, "active", "invite")}`, cleanupPending: cleanups(s).length > 0 };
   });
@@ -978,8 +993,8 @@ export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: bo
           ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 })),
         ]);
       for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);
-      s.setLocal("relay:rotation", undefined);
-      s.setLocal("relay:rotatedAt", undefined);
+      rotation.set(s, undefined, undefined);
+      rotatedAt.set(s, undefined, undefined);
       for (const g of groups) dropGroup(s, g.grp);
       clearSeen(s);
     });
@@ -1012,12 +1027,12 @@ export const serviceKeyFor = (s: Store, url: string) =>
   trimTrailingSlash(url) !== DEFAULT_RELAY_URL || trimTrailingSlash(relayUrl(s)) === DEFAULT_RELAY_URL
     ? serviceKey(s)
     : undefined;
-export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!s.local("relay:rotation");
+export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!rotation.get(s);
 
 /** Sanitized status: never the invite, the service key or a raw relay response. */
 export function relayStatus(s: Store) {
   const invite = get(s, "active", "invite");
-  if (!invite && !s.local("relay:cleanup")) return undefined;
+  if (!invite && !cleanupList.get(s)) return undefined;
   let url = "";
   try {
     url = invite ? parseInvite(invite).url : "";
@@ -1031,8 +1046,8 @@ export function relayStatus(s: Store) {
     cursor: num(s, "active", "cursor"),
     pushed: num(s, "active", "pushed"),
     reconciling: !!invite && get(s, "active", "phase") !== "done",
-    rotating: !!s.local("relay:rotation"),
-    rotatedAt: Number(s.local("relay:rotatedAt")) || undefined,
+    rotating: !!rotation.get(s),
+    rotatedAt: Number(rotatedAt.get(s)) || undefined,
     cleanupPending: cleanups(s).length > 0,
     pushError:
       get(s, "active", "pushError") ??

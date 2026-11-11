@@ -219,6 +219,32 @@ test("records, credentials and tombstones converge; the relay stores only cipher
   expect(Number(a.local("seen:b"))).toBeGreaterThan(0);
 });
 
+test("relay failures, recovery and reconciling mark status changed; a quiet or repeated turn does not", async () => {
+  const r = relay();
+  const a = node("a");
+  await createRelay(a, r.url);
+  const bumps: string[] = [];
+  a.onChange = (topic) => bumps.push(topic);
+  await sync(a);
+  expect(bumps).toEqual([]);
+
+  r.ctl.mode = "down";
+  await sync(a).catch(() => {});
+  expect(relayStatus(a)!.pullError).toContain("503");
+  expect(bumps).toEqual(["status"]);
+  await sync(a).catch(() => {});
+  expect(bumps).toEqual(["status"]);
+
+  r.ctl.mode = "ok";
+  await sync(a);
+  expect(relayStatus(a)!.pullError).toBeUndefined();
+  expect(bumps).toEqual(["status", "status"]);
+
+  // A reconciliation moves the phase through "read" and "upload" back to "done".
+  await reconcileRelay(a);
+  expect(bumps).toEqual(Array(5).fill("status"));
+});
+
 test("relay policy payloads are versioned and incompatible encrypted records never merge", async () => {
   const r = relay(),
     a = node("a"),

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { trimTrailingSlash } from "hanzio";
 import { safeEqual } from "hanzio/crypto";
 import { z } from "zod";
+import { defineLocal } from "./local-state.ts";
 import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
 import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
 
@@ -40,6 +41,9 @@ const batchSchema = z.object({
     .refine((seen) => Object.keys(seen).length <= 1000)
     .default({}),
 });
+// Shown per peer in `/status`; a pull that fails the same way again changes nothing.
+const syncError = defineLocal("syncError:", z.string(), { topic: "status" });
+const pairUsed = defineLocal("pair:used", z.object({ code: z.string(), node: z.string(), expires: z.number() }));
 const pulls = new WeakMap<Store, Map<string, Promise<number>>>();
 const CODE_TTL = 10 * 60_000;
 const WORDS =
@@ -181,7 +185,7 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
       // Heartbeats heard second-hand, so a node that is paired only through a middle node is not seen as offline.
       for (const [node, at] of Object.entries(body.seen ?? {}))
         if (node !== s.nodeId && at > lastSeen(s, node)) s.setLocal(`seen:${node}`, String(Math.min(at, s.now())));
-      s.setLocal(`syncError:${p.node}`, undefined);
+      syncError.set(s, p.node, undefined);
       noteSyncRound(s);
       return taken;
     });
@@ -198,7 +202,7 @@ export async function pullAll(s: Store) {
   const results = await Promise.allSettled(
     peers(s).map((p) =>
       pullPeer(s, p).catch((e) => {
-        s.setLocal(`syncError:${p.node}`, String(e));
+        syncError.set(s, p.node, String(e));
         throw e;
       }),
     ),
@@ -232,7 +236,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const { code, node, url } = parsed.data;
     // A joiner whose answer was lost retries with the same code. Until the code would have expired, the node that used
     // it, from the same URL, gets its token again; anyone else is refused as before.
-    const used = JSON.parse(s.local("pair:used") ?? "null") as { code: string; node: string; expires: number } | null;
+    const used = pairUsed.get(s);
     if (used && safeEqual(used.code, code) && s.now() <= used.expires) {
       const peer = peers(s).find((p) => p.node === node && p.url === url);
       if (used.node !== node || !peer) return c.json({ error: "bad or expired code" }, 403);
@@ -247,7 +251,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
     const token = randomToken();
     s.transaction(() => {
       s.setLocal("pair:code", undefined);
-      s.setLocal("pair:used", JSON.stringify({ code, node, expires: Number(s.local("pair:expires") ?? 0) }));
+      pairUsed.set(s, undefined, { code, node, expires: Number(s.local("pair:expires") ?? 0) });
       s.db.run("insert or replace into peers values (?, ?, ?, 0, ?)", [node, url, token, s.now()]);
     });
     return c.json({ node: s.nodeId, token, protocol: SYNC_PROTOCOL });
@@ -293,7 +297,7 @@ export function peerRoutes(s: Store, onPoke: (p: Peer) => void = (p) => pullPeer
 export function unpair(s: Store, node: string) {
   s.db.run("delete from peers where node = ?", [node]);
   s.setLocal(`seen:${node}`, undefined);
-  s.setLocal(`syncError:${node}`, undefined);
+  syncError.set(s, node, undefined);
 }
 
 /** The tailnet address this node listens on, from the Tailscale CLI. */
