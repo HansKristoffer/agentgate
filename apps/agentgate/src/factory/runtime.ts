@@ -155,10 +155,13 @@ export interface SourceAdapter {
   type: SourceType;
   /** Every open, labelled item now; intake dedupes. `capped` says why some were left out, for the source's board row. */
   poll?(source: FactorySource): Promise<{ items: IncomingItem[]; capped?: string }>;
-  /** Read before every stage, for each listed issue intake has no item for, and by the outbox to settle an uncertain
-   * comment: whether the issue is still open, and the markers in the factory's own comments on it, oldest first (anyone
-   * who can comment could otherwise forge one). An issue intake reads has no item yet, so no `configCommit`: the
-   * current folder's source is meant. */
+  /** Whether the item's issue is still open, read before every stage. Without it, dispatch reads `check`, which also
+   * reads every comment. */
+  isOpen?(item: FactoryItem): Promise<boolean>;
+  /** Read for each listed issue intake has no item for, and by the outbox to settle an uncertain comment: whether the
+   * issue is still open, and the markers in the factory's own comments on it, oldest first (anyone who can comment
+   * could otherwise forge one). An issue intake reads has no item yet, so no `configCommit`: the current folder's
+   * source is meant. */
   check?(
     item: Pick<FactoryItem, "source" | "externalId" | "repo"> & { configCommit?: string },
   ): Promise<{ open: boolean; markers: MarkerPayload[] }>;

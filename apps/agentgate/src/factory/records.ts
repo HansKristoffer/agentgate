@@ -2,7 +2,7 @@ import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import { projection, t3Client } from "../handoff/t3.ts";
 import { sessionUsage } from "../llm/sessions.ts";
-import { currentFolder, DEFAULT_LIMITS } from "./config.ts";
+import { limits } from "./config.ts";
 import { ask, interruptItem } from "./controller.ts";
 import { isOpenPhase, items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { isRevertOf, prState, prView, revertsSince } from "./gh.ts";
@@ -84,7 +84,7 @@ function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number, sessions
  * from the current folder, so raising it applies to items started before. */
 async function enforceBudget(f: FactoryRuntime, id: string) {
   const item = items.get(f.s, id);
-  const budget = (currentFolder(f)?.config.limits ?? DEFAULT_LIMITS).itemTokens;
+  const budget = limits(f).itemTokens;
   if (!item || item.tokens <= budget || !isOpenPhase(item.phase) || item.needsYou?.cause === "budget") return;
   // Set before the first await, so a report that arrives meanwhile finds the item waiting.
   ask(f, item, {
@@ -150,7 +150,7 @@ async function currentTokens(f: FactoryRuntime, run: FactoryRun) {
 async function measureOpen(f: FactoryRuntime) {
   const m = measuringOf(f);
   const measured = new Set<string>();
-  const budget = (currentFolder(f)?.config.limits ?? DEFAULT_LIMITS).itemTokens;
+  const budget = limits(f).itemTokens;
   for (const run of runs.toMeasure(f.s)) {
     measured.add(run.id);
     try {

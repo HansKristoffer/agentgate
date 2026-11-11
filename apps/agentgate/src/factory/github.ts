@@ -7,6 +7,7 @@ import {
   ghAccount,
   ISSUE_LIMIT,
   issueComments,
+  issueState,
   issueStateAndComments,
   labelExists,
   openLabelledIssues,
@@ -56,6 +57,10 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
       })),
       ...(more && { capped: CAPPED }),
     };
+  },
+  async isOpen(item) {
+    const { repo, number } = issueOf(item);
+    return (await issueState(repo, number)) === "OPEN";
   },
   async check(item) {
     const { repo, number } = issueOf(item);

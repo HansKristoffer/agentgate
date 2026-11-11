@@ -550,6 +550,20 @@ export const runs = {
     if (!run) throw new Error(`no factory run ${id}`);
     return run;
   },
+  /** Applies the patch only while the run is in one of `states`, in one statement: the run as it is now, or undefined
+   * when it had left them. The controller's `setRunState` is its one caller. */
+  updateIn: (
+    s: Store,
+    id: string,
+    states: readonly RunState[],
+    patch: Partial<Omit<FactoryRun, "id" | "tokens" | "sessions" | "measuredAt">>,
+  ) => {
+    const { names, values } = columnsOf(patch, runColumns, runJson);
+    const sql = `${updateSql("factory_runs", names)} and state in (${states.map(() => "?").join(",") || "null"})`;
+    if (!s.db.run(sql, [...values, id, ...states]).changes) return undefined;
+    s.bump("factory");
+    return runs.get(s, id);
+  },
   /** Records a measurement. Tokens and sessions only grow: a subagent thread T3 dropped, or a machine that cannot be
    * reached, does not lower them. */
   measured: (s: Store, id: string, tokens: number, sessions: number) => {

@@ -92,6 +92,7 @@ function fakeGitHub(repo: string) {
         });
       }
       if (args[0] === "api" && args[1] === "user") return ok({ login: FACTORY_LOGIN });
+      if (args[0] === "repo" && args[1] === "view") return ok({ defaultBranchRef: { name: "main" } });
       const comment = args[1]?.match(/^repos\/.+\/issues\/(\d+)\/comments$/);
       if (args[0] === "api" && comment) {
         const { body } = JSON.parse(stdin!);
@@ -535,13 +536,10 @@ test("the issue is re-checked before every stage, and one closed on GitHub close
     validate: async () => undefined,
     accept: async () => {},
   });
-  // Intake reads each new issue too, for its marker; only the reads after it count here.
-  let fromIntake = 0;
-  const stateChecks = () =>
-    n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state,comments").slice(fromIntake);
+  // Intake reads each new issue with its comments, for its marker; dispatch reads its state alone.
+  const stateChecks = () => n.github.calls.filter((c) => c.args[1] === "view" && flag(c.args, "--json") === "state");
 
   await n.intake();
-  fromIntake = stateChecks().length;
   n.github.issues.get(2)!.state = "CLOSED";
   await n.dispatch();
   expect(stateChecks().map((c) => c.args[2])).toEqual(["1", "2"]);

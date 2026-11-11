@@ -1,7 +1,7 @@
 import type { MarkerPayload, NeedsYou } from "@agentgate/protocol";
 import { act } from "./actions.ts";
-import { currentFolder, durationMs } from "./config.ts";
-import { addItem, intakeState, limitsOf } from "./controller.ts";
+import { currentFolder, durationMs, limits } from "./config.ts";
+import { addItem, holdsNewItems, intakeState } from "./controller.ts";
 import { items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
 import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
@@ -55,7 +55,7 @@ export function admission(
 ): "duplicate" | "full" | { hold: boolean } {
   const since = f.s.now() - durationMs(input.dedupeWindow);
   if (input.dedupe && items.hasDedupe(f.s, input.source, input.dedupe, since)) return "duplicate";
-  const hold = input.intake !== "auto" || intakeState(f) !== "on";
+  const hold = holdsNewItems(f, input.intake) || intakeState(f) !== "on";
   if (hold && items.heldCount(f.s, input.source) >= HELD_LIMIT) return "full";
   return { hold };
 }
@@ -149,7 +149,7 @@ async function readAnswers(f: FactoryRuntime) {
   const waiting = items
     .list(f.s, { open: true })
     .filter((i) => i.needsYou?.kind === "start" || (i.needsYou?.kind === "answer" && askedOnIssue(f, i, i.needsYou)))
-    .slice(0, limitsOf(f).waitingForYou);
+    .slice(0, limits(f).waitingForYou);
   for (const item of waiting) {
     const replies = adapterOf(f, item)?.replies;
     if (!replies) continue;

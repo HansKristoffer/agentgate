@@ -14,6 +14,7 @@ import {
   type Outcome,
   type RunKind,
   type RunState,
+  runStates,
   type StageName,
 } from "@agentgate/protocol";
 import { z } from "zod";
@@ -23,7 +24,7 @@ import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
-import { currentFolder, DEFAULT_LIMITS, durationMs, folderFor, type LoadedFolder } from "./config.ts";
+import { currentFolder, durationMs, folderFor, limits, type LoadedFolder } from "./config.ts";
 import {
   ACTIVE,
   isOpenPhase,
@@ -37,6 +38,7 @@ import {
   type RunData,
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
+import { defaultBranch as readDefaultBranch } from "./gh.ts";
 import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
 import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { adapterOf, questionRef, writeBack } from "./outbox.ts";
@@ -85,7 +87,12 @@ interface Memory {
   quota?: { waitingUntil?: number };
   /** Why each item that needs nobody waits (`waitFor`), by item; `run` is the queued run a dispatch wait is about. */
   waits: Map<string, ItemWaiting & { run?: string }>;
-  projects: Map<string, { projectId: string; root: string; branch?: string }>;
+  /** Each repository's T3 project, by lowercased name, and the ones being found or cloned now, so two launches in one
+   * repository clone it once. */
+  projects: Map<string, Project>;
+  resolving: Map<string, Promise<Project>>;
+  /** Each repository's default branch as GitHub last named it, and when. */
+  branches: Map<string, { name: string; at: number }>;
   /** When each queued run last read its item's issue as open, so a run that waits (red CI) reads it every 2 minutes,
    * not every pass; every new run reads it before it starts. */
   openAt: Map<string, number>;
@@ -97,14 +104,14 @@ const memory = (f: FactoryRuntime) =>
     stopping: new Set(),
     launches: new Backoff(f.s, { baseMs: 30_000, maxMs: 15 * 60_000 }),
     projects: new Map(),
+    resolving: new Map(),
+    branches: new Map(),
     openAt: new Map(),
     waits: new Map(),
   }));
 
 /** How long dispatch waits for quota now, for the board; undefined while it waits for none. */
 export const quotaWait = (f: FactoryRuntime) => memory(f).quota;
-
-export const limitsOf = (f: FactoryRuntime) => currentFolder(f)?.config.limits ?? DEFAULT_LIMITS;
 
 /** `agentgate factory pause`: on the factory machine, no intake, no launches and no nudges until `resume`. */
 export const isPaused = (f: FactoryRuntime) => f.s.local(PAUSED) === "1";
@@ -244,8 +251,13 @@ function freeKey(f: FactoryRuntime, key: string) {
   return candidate;
 }
 
-/** One item per issue, whichever source took it in. A new item is held, or enters triage with a queued triage run, and
- * its issue hears that the factory took it. */
+/** Whether a new item waits for approval before triage. A source's `intake: hold` holds that source's items, and
+ * `start: manual` in stages/triage.md holds every new item, as if each source said `intake: hold`. */
+export const holdsNewItems = (f: FactoryRuntime, intake: "auto" | "hold" = "auto") =>
+  intake === "hold" || currentFolder(f)?.stages.triage?.file.start === "manual";
+
+/** One item per issue, whichever source took it in. A new item is held (`hold`, or `holdsNewItems`), or enters triage
+ * with a queued triage run, and its issue hears that the factory took it. */
 export function addItem(
   f: FactoryRuntime,
   input: { source: string; repo: string; incoming: IncomingItem; hold?: boolean },
@@ -256,7 +268,7 @@ export function addItem(
   if (existing) return existing;
   const folder = currentFolder(f);
   if (!folder) throw new Error("The factory's folder has not loaded yet; see agentgate factory status");
-  const held = !!input.hold || folder.stages.triage?.file.start === "manual";
+  const held = !!input.hold || holdsNewItems(f);
   const key = freeKey(f, incoming.key);
   const item = items.insert(s, {
     id: newId("it"),
@@ -281,10 +293,26 @@ export function addItem(
   return held ? ask(f, item, { cause: "held", question: "Start triage?" }) : item;
 }
 
+/** The phases an item may move to from each. Any open item can close; a PR phase ships once its PR merges, also while
+ * an implement run takes the PR over; a closed item is taken in again at triage. Staying in a phase is no move. */
+const PHASE_TRANSITIONS: Record<ItemPhase, readonly ItemPhase[]> = {
+  held: ["triage", "closed"],
+  triage: ["spec", "implement", "closed"],
+  spec: ["implement", "closed"],
+  implement: ["pr", "shipped", "closed"],
+  pr: ["review", "ready", "implement", "shipped", "closed"],
+  review: ["ready", "implement", "shipped", "closed"],
+  ready: ["implement", "shipped", "closed"],
+  shipped: [],
+  closed: ["triage"],
+};
+
 /** `clearWait` also ends what the item waits for the person to do. */
 export function moveItem(f: FactoryRuntime, item: string, to: ItemPhase, clearWait = false): FactoryItem {
   const before = items.get(f.s, item);
   if (!before) throw new Error(`no factory item ${item}`);
+  if (before.phase !== to && !PHASE_TRANSITIONS[before.phase].includes(to))
+    throw new Error(`${before.key} cannot move from ${before.phase} to ${to}`);
   const after = items.update(f.s, item, {
     phase: to,
     ...(before.phase !== to && { phaseAt: f.s.now() }),
@@ -383,10 +411,48 @@ const runName = (f: FactoryRuntime, run: FactoryRun) => {
   return item ? `${item.key}'s ${run.kind}` : `${run.kind} run ${run.id}`;
 };
 
-/** Ends a run; records.ts reads its tokens when it hears `run.ended`. The event names `patch.error`, when given, as why
- * the run ended. */
-export function endRun(f: FactoryRuntime, run: FactoryRun, state: RunState, patch: Partial<FactoryRun> = {}) {
-  const ended = runs.update(f.s, run.id, { ...patch, state, endedAt: f.s.now() });
+/** The moves a run's state may make. A launch takes a run from queued through starting to running, and one a restart
+ * cut off is sent again from starting; its thread waits on a person and goes on; the run ends reported, silent, failed
+ * or cancelled; and a reported run whose question the maintainer answered runs again. */
+const RUN_TRANSITIONS: Record<RunState, readonly RunState[]> = {
+  queued: ["starting", "failed", "cancelled"],
+  starting: ["starting", "queued", "running", "failed", "cancelled"],
+  running: ["waiting", "reported", "silent", "failed", "cancelled"],
+  waiting: ["running", "reported", "failed", "cancelled"],
+  reported: ["running"],
+  silent: [],
+  failed: [],
+  cancelled: [],
+};
+
+/**
+ * The one way a run's state changes: to `to` with `patch`, only while the run is in one of `from`, in one write. A
+ * caller that lost a race, because a report, a drop or a launch moved the run first, gets undefined and changes
+ * nothing. A move the table does not allow is a bug, and throws.
+ */
+export function setRunState(
+  f: FactoryRuntime,
+  id: string,
+  from: readonly RunState[],
+  to: RunState,
+  patch: Parameters<typeof runs.updateIn>[3] = {},
+) {
+  const wrong = from.find((state) => !RUN_TRANSITIONS[state].includes(to));
+  if (wrong) throw new Error(`a factory run cannot move from ${wrong} to ${to}`);
+  return runs.updateIn(f.s, id, from, { ...patch, state: to });
+}
+
+/** Ends a run that has not ended; records.ts reads its tokens when it hears `run.ended`. The event names
+ * `patch.error`, when given, as why the run ended. Undefined, and nothing changes, when the run ended already. */
+export function endRun(
+  f: FactoryRuntime,
+  run: FactoryRun,
+  state: RunState,
+  patch: Parameters<typeof runs.updateIn>[3] = {},
+) {
+  const from = runStates.filter((s) => RUN_TRANSITIONS[s].includes(state));
+  const ended = setRunState(f, run.id, from, state, { ...patch, endedAt: f.s.now() });
+  if (!ended) return undefined;
   memory(f).seen.delete(run.id);
   memory(f).openAt.delete(run.id);
   f.events.emit({
@@ -437,39 +503,54 @@ export const closeItem = (f: FactoryRuntime, item: FactoryItem, reason: string, 
 
 // ---- T3
 
+type Project = { projectId: string; root: string };
+
 /** This machine's T3 project for the repository, cloned and registered when it has none. */
-async function project(f: FactoryRuntime, repo: string): Promise<{ projectId: string; root: string; branch?: string }> {
+async function project(f: FactoryRuntime, repo: string): Promise<Project> {
   const m = memory(f);
-  const known = m.projects.get(repo.toLowerCase());
+  const key = repo.toLowerCase();
+  const known = m.projects.get(key);
   if (known && existsSync(known.root)) return known;
+  const pending = m.resolving.get(key);
+  if (pending) return pending;
   const url = `https://github.com/${repo}.git`;
-  const found = await findProject(f.ctx.handoffs, url);
-  const resolved = found
-    ? { projectId: found.id, root: found.workspaceRoot }
-    : await cloneProject(f.ctx.handoffs, url).then((c) => ({ projectId: c.projectId, root: c.main }));
-  m.projects.set(repo.toLowerCase(), resolved);
-  return resolved;
+  const resolving = findProject(f.ctx.handoffs, url)
+    .then(async (found) =>
+      found
+        ? { projectId: found.id, root: found.workspaceRoot }
+        : await cloneProject(f.ctx.handoffs, url).then((c) => ({ projectId: c.projectId, root: c.main })),
+    )
+    .then((resolved) => {
+      m.projects.set(key, resolved);
+      return resolved;
+    })
+    .finally(() => m.resolving.delete(key));
+  m.resolving.set(key, resolving);
+  return resolving;
 }
 
-/** The repository's default branch, read from its T3 project's checkout. */
+const BRANCH_TTL = 3600_000;
+
+/** The repository's default branch, as GitHub names it, read again after an hour: the one source the factory's work
+ * and its folder both use (`gh.ts`). */
 export async function defaultBranch(f: FactoryRuntime, repo: string) {
-  const p = await project(f, repo);
-  if (p.branch) return p.branch;
-  const local = await git(p.root, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
-  let branch = local.ok ? local.out.replace(/^origin\//, "") : undefined;
-  if (!branch) {
-    const remote = await git(p.root, ["ls-remote", "--symref", "origin", "HEAD"]);
-    branch = remote.out.match(/^ref: refs\/heads\/(\S+)\s+HEAD/m)?.[1];
-  }
-  if (!branch) throw new Error(`git cannot read the default branch of ${repo} in ${p.root}`);
-  p.branch = branch;
-  return branch;
+  const { branches } = memory(f);
+  const key = repo.toLowerCase();
+  const known = branches.get(key);
+  if (known && f.s.now() - known.at < BRANCH_TTL) return known.name;
+  const name = await readDefaultBranch(repo);
+  branches.set(key, { name, at: f.s.now() });
+  return name;
 }
+
+/** How long asking origin for its branches may take: GitHub answers in a second, and a launch waits on it. */
+const LS_REMOTE_MS = 30_000;
 
 /** The branches origin has under `prefix`, asked of origin itself: the checkout's own copy of them can be stale. */
 export async function originBranches(f: FactoryRuntime, repo: string, prefix: string): Promise<string[]> {
   const { root } = await project(f, repo);
-  const listed = await git(root, ["ls-remote", "--heads", "origin", `refs/heads/${prefix}*`]);
+  const signal = AbortSignal.any([f.ctx.abort.signal, AbortSignal.timeout(LS_REMOTE_MS)]);
+  const listed = await git(root, ["ls-remote", "--heads", "origin", `refs/heads/${prefix}*`], {}, { signal });
   if (!listed.ok) throw new Error(`git cannot list the branches of ${repo} in ${root}`);
   return listed.out.split("\n").flatMap((line) => line.match(/\trefs\/heads\/(.+)$/)?.[1] ?? []);
 }
@@ -500,8 +581,9 @@ export async function sendToThread(f: FactoryRuntime, run: FactoryRun, text: str
 /** A reported run goes on once its thread got the message that resumes it. T3 can show the new turn before the send
  * answers, while the run was not running yet, so a thread at work now counts as seen. */
 export function resumeRun(f: FactoryRuntime, run: FactoryRun) {
-  runs.update(f.s, run.id, { state: "running", endedAt: undefined });
+  if (!setRunState(f, run.id, ["reported"], "running", { endedAt: undefined })) return false;
   if (working(f, run.threadId ? mirrorOf(f).thread(run.threadId) : undefined)) memory(f).seen.add(run.id);
+  return true;
 }
 
 /** Interrupts the item's running threads, settles every thread it used, and cancels its runs that have not ended. */
@@ -533,16 +615,14 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
 const launchAnswer = z.object({ threadId: z.string().min(1), link: z.string().optional() });
 
 /** A run cancelled while its launch was in flight ended without a thread to stop. Its new thread is interrupted and
- * settled, so it spends nothing; true when the run ended. */
+ * settled, so it spends nothing. */
 async function endedWhileStarting(f: FactoryRuntime, id: string) {
   const run = runs.get(f.s, id)!;
-  if (run.state === "starting") return false;
   // Settled once the mirror shows the turn stopped (`settleFinished`).
   memory(f).stopping.add(run.threadId!);
   await actOnThread(f, run, { action: "interrupt", text: `The factory ${run.state} this run as it started.` }).catch(
     threadFailed(f, run, "Interrupting"),
   );
-  return true;
 }
 
 /** True when the run's thread started. */
@@ -553,9 +633,7 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   // T3 finds the thread of a retried launch by `clientRequestId` within one MCP session only, so the session is noted
   // first: a launch whose answer was lost is sent again only under it. A drop meanwhile ended the run: nothing starts.
   const launchSession = await mcp.sessionId();
-  const current = runs.get(s, run.id);
-  if (current?.state !== "queued" && current?.state !== "starting") return false;
-  runs.update(s, run.id, { state: "starting", launchSession });
+  if (!setRunState(f, run.id, ["queued", "starting"], "starting", { launchSession })) return false;
   const answer = launchAnswer.safeParse(
     await mcp.call(
       "t3_thread_launch",
@@ -579,8 +657,10 @@ async function start(f: FactoryRuntime, run: FactoryRun, item: FactoryItem | und
   if (!answer.success) throw new Error("T3 Code's t3_thread_launch answered without a thread id");
   const { threadId, link } = answer.data;
   runs.update(s, run.id, { threadId, ...(link && { threadLink: link }), node: s.nodeId });
-  if (await endedWhileStarting(f, run.id)) return false;
-  runs.update(s, run.id, { state: "running", startedAt: s.now(), error: undefined });
+  if (!setRunState(f, run.id, ["starting"], "running", { startedAt: s.now(), error: undefined })) {
+    await endedWhileStarting(f, run.id);
+    return false;
+  }
   if (run.item) stopWaiting(f, run.item);
   // T3 may show the turn running before the launch answers, when the run did not know its thread yet. A launch sent
   // again after a restart can find its turn already over, which the watcher saw before the run knew its thread.
@@ -619,8 +699,8 @@ function working(f: FactoryRuntime, t: MirrorThread | undefined, visited = new S
   visited.add(t.id);
   if (isWorkingStatus(t.status)) return true;
   return mirrorOf(f)
-    .threads()
-    .some((child) => child.parentThreadId === t.id && working(f, child, visited));
+    .children(t.id)
+    .some((child) => working(f, child, visited));
 }
 
 /** Working runs: stage runs, and scout runs. A starting run counts; a thread that waits for a person, or sits idle
@@ -695,25 +775,32 @@ async function dispatch(f: FactoryRuntime) {
   detachHandedOff(f);
   if (isPaused(f)) return;
   const m = memory(f);
-  const limits = limitsOf(f);
+  const { threads } = limits(f);
   const counts = workingCounts(f);
   let quota: Memory["quota"];
   // A run left `starting` was cut off by a restart; launching it again finds the same thread.
-  for (const queued of runs.list(s, { states: ["queued", "starting"] }).toSorted(byPriority)) {
-    if (!f.runKinds.has(queued.kind)) continue;
-    if (!m.launches.due(queued.id)) continue;
-    const stage = isStage(queued.kind);
-    if (counts.stage + counts.scout >= limits.threads) {
-      if (queued.item)
-        waitFor(f, queued.item, "thread", `Waits for a free thread; all ${limits.threads} are working`, queued);
-      continue;
+  const queue = runs
+    .list(s, { states: ["queued", "starting"] })
+    .filter((run) => f.runKinds.has(run.kind) && m.launches.due(run.id))
+    .toSorted(byPriority);
+  // One launcher per free slot, so launches run at once. Each takes the next run in order and keeps its slot only when
+  // the run started: a run that waits, for quota or the default branch's CI, leaves the slot to the run after it.
+  const launcher = async () => {
+    for (let run = queue.shift(); run; run = queue.shift()) {
+      const kind = isStage(run.kind) ? "stage" : "scout";
+      // Scout runs leave a slot for the items' work.
+      if (kind === "scout" && counts.scout >= Math.max(1, threads - 1)) continue;
+      counts[kind]++;
+      const outcome = await launchRun(f, run);
+      if (outcome.quota) quota = outcome.quota;
+      if (outcome.started) return;
+      counts[kind]--;
     }
-    // Scout runs leave a slot for the items' work.
-    if (!stage && counts.scout >= Math.max(1, limits.threads - 1)) continue;
-    const outcome = await launchRun(f, queued);
-    if (outcome.quota) quota = outcome.quota;
-    if (outcome.started) counts[stage ? "stage" : "scout"]++;
-  }
+  };
+  const free = threads - counts.stage - counts.scout;
+  await Promise.all(Array.from({ length: Math.max(0, free) }, launcher));
+  for (const run of queue)
+    if (run.item) waitFor(f, run.item, "thread", `Waits for a free thread; all ${threads} are working`, run);
   m.quota = quota;
 }
 
@@ -752,7 +839,7 @@ async function prepareLaunch(
       const credential = s.get("credential", a.id);
       return a.provider === provider && a.enabled && credential && !credential.needsLogin;
     });
-  if (limitsOf(f).waitForQuota && pooled && !candidates(s, provider).length) {
+  if (limits(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
     if (run.item)
       waitFor(
@@ -766,7 +853,9 @@ async function prepareLaunch(
   }
   const openAt = memory(f).openAt;
   if (item && s.now() - (openAt.get(run.id) ?? 0) >= 2 * 60_000) {
-    if (await issueOpen(f, item)) openAt.set(run.id, s.now());
+    const open = await issueOpen(f, item).catch((e: unknown) => unread(f, run, "its issue", e));
+    if (open === undefined) return {};
+    if (open) openAt.set(run.id, s.now());
     else if (!item.pr) {
       // The source closed it, so the item closes without a comment: the issue already says so. Once the item has a
       // PR, the PR decides instead: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
@@ -795,6 +884,15 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
   const { s } = f;
   const m = memory(f);
   try {
+    const repo = queued.item ? items.get(s, queued.item)?.repo : undefined;
+    // What a launch needs of its repository, its T3 project (the first item of a repository clones it) and its default
+    // branch, is found before the item's step, so neither holds a report or loop of the item back. A run without an
+    // item has no step to hold.
+    if (repo) {
+      await project(f, repo);
+      const branch = await defaultBranch(f, repo).catch((e: unknown) => unread(f, queued, "its default branch", e));
+      if (branch === undefined) return {};
+    }
     const ready = await (queued.item
       ? withItem(f, queued.item, () => prepareLaunch(f, queued.id))
       : prepareLaunch(f, queued.id));
@@ -820,11 +918,9 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       // After a send whose answer was lost, the thread may exist: only that session can find it again.
       const answered = e instanceof T3McpError && e.answered && !queued.launchSession;
       const error = `starting it failed: ${shortError(e)}`;
-      runs.update(s, run.id, {
-        ...(current.state === "starting" && { state: "queued" as const }),
-        ...(answered && { launchSession: undefined }),
-        error,
-      });
+      const patch = { ...(answered && { launchSession: undefined }), error };
+      if (current.state === "starting") setRunState(f, run.id, ["starting"], "queued", patch);
+      else runs.update(s, run.id, patch);
       if (current.item) waitFor(f, current.item, "launch", `Waits to try again at ${time(retryAt)}: ${error}`, current);
       else if (current.error !== error)
         f.events.emit({ kind: "note", run: run.id, text: `${runName(f, run)}: ${error}` });
@@ -835,8 +931,18 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
 
 /** Whether the item's issue is still open at its source. An item without an issue always is. */
 async function issueOpen(f: FactoryRuntime, item: FactoryItem) {
-  const check = adapterOf(f, item)?.check;
-  return !check || (await check(item)).open;
+  const adapter = adapterOf(f, item);
+  if (adapter?.isOpen) return adapter.isOpen(item);
+  return !adapter?.check || (await adapter.check(item)).open;
+}
+
+/** GitHub or Linear could not be read before a launch, as in an outage: the run waits and reads it again later, which
+ * is no failed launch, so an outage never leaves an item stuck. */
+function unread(f: FactoryRuntime, run: FactoryRun, what: string, e: unknown) {
+  const retryAt = memory(f).launches.failed(run.id);
+  if (run.item)
+    waitFor(f, run.item, "launch", `Waits to read ${what} again at ${time(retryAt)}: ${shortError(e)}`, run);
+  return undefined;
 }
 
 // ---- watching threads
@@ -911,7 +1017,7 @@ export function threadScope(f: FactoryRuntime, thread: string | undefined): Sess
 async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: MirrorThread | undefined) {
   // A subagent's change can end its parent's turn: the run belongs to the parent.
   const thread = rootOf(f, changed);
-  const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
+  const run = runs.byThreads(f.s, [thread.id]).findLast((r) => r.state === "running" || r.state === "waiting");
   if (!run) return settleFinished(f, thread);
   // Seen working now, not when the item's step runs: a short turn can end while the item is busy, such as with the
   // reminder that started it, and by then the mirror shows only its end, which would not count as one.
@@ -931,15 +1037,14 @@ async function threadChanged(f: FactoryRuntime, id: string, endedUnseen: boolean
   if (handoff) return detach(f, run.id, handoff.target);
   const m = memory(f);
   if (thread.needsYou) {
-    if (run.state === "running") runs.update(s, run.id, { state: "waiting" });
+    setRunState(f, run.id, ["running"], "waiting");
     // Once per T3 request: one answered, or already asked, is not asked again when T3 shows it again.
     const request = thread.request ?? "";
     if (run.item && run.answered !== request && items.get(s, run.item)?.needsYou?.request !== request)
       later(f, run.item, `Reading what ${run.id}'s thread asks`, () => askThreadQuestion(f, run.id, request));
     return;
   }
-  if (run.state === "waiting") {
-    runs.update(s, run.id, { state: "running" });
+  if (setRunState(f, run.id, ["waiting"], "running")) {
     const item = run.item ? items.get(s, run.item) : undefined;
     if (asksInT3(item, run)) answeredInT3(f, item!, run);
   }
@@ -1127,6 +1232,7 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
   "not-a-bug": () => "Triage found nothing here for the factory to fix.",
   duplicate: (r) => `This duplicates ${r.duplicateOf}.`,
   "already-fixed": () => "The default branch already fixes this.",
+  "nothing-to-do": () => "There is nothing to do.",
 };
 
 /** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
@@ -1156,8 +1262,8 @@ async function acceptReport(f: FactoryRuntime, report: FactoryReport, caller: Ca
 async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Caller): Promise<{ accepted: true }> {
   const { s } = f;
   const run = ownRun(f, report.run, caller);
-  const takes = (r: FactoryRun | undefined) => r?.state === "running" || r?.state === "waiting";
-  if (!takes(run)) throw new ReportError(`Run ${run.id} is ${run.state} and takes no report`);
+  if (run.state !== "running" && run.state !== "waiting")
+    throw new ReportError(`Run ${run.id} is ${run.state} and takes no report`);
   const required = REQUIRED[report.outcome];
   if (required && report[required.key] === undefined)
     throw new ReportError(`The outcome ${report.outcome} needs ${required.name}`);
@@ -1172,13 +1278,14 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   if (done && report.outcome === "done" && !result) throw new ReportError(`The outcome done needs result: ${done}`);
   const problem = await definition.validate?.(report, run, item);
   if (problem) throw new ReportError(problem);
-  if (!takes(runs.get(s, run.id))) throw new ReportError(`Run ${run.id} already ended`);
-
+  // The checks above wait on GitHub, while a drop or a handoff can end the run.
   const reported = endRun(f, run, "reported", { report });
+  if (!reported) throw new ReportError(`Run ${run.id} already ended`);
   // The thread could only go on to report once the person answered it.
   if (asksInT3(item, run)) answeredInT3(f, item!, run);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
-  const closing = CLOSING[report.outcome];
+  // A run without an item, a scout's, has nothing to close: its own accept takes nothing-to-do.
+  const closing = item && CLOSING[report.outcome];
   if (item && closing) await closeItem(f, item, closing(report), report);
   else if (item && asks)
     ask(f, items.get(s, item.id)!, {
@@ -1227,12 +1334,12 @@ export const waitingForYou = (f: FactoryRuntime) => items.list(f.s, { open: true
 /** Off, too, while the factory waits to move (`factory move`): its machine takes nothing new and finishes what is open. */
 export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake"] {
   if (!f.isFactoryNode() || f.pointer()?.moveTo || !currentFolder(f) || isPaused(f)) return "off";
-  return waitingForYou(f) >= limitsOf(f).waitingForYou ? "paused-for-you" : "on";
+  return waitingForYou(f) >= limits(f).waitingForYou ? "paused-for-you" : "on";
 }
 // ---- items and runs nobody moves
 
-const stalledWindow = (f: FactoryRuntime, configCommit: string) =>
-  4 * durationMs((folderFor(f, configCommit)?.config.limits ?? DEFAULT_LIMITS).stalledAfter);
+const stalledWindow = (f: FactoryRuntime, started: { configCommit: string }) =>
+  4 * durationMs(limits(f, started).stalledAfter);
 
 /**
  * Progress, not states. An open item that does not wait for the maintainer (`ready` does) must have an active run (a
@@ -1268,7 +1375,7 @@ function findStuck(f: FactoryRuntime) {
   for (const run of runs.list(s, { states: ["running", "waiting"] })) {
     if (!run.threadId) continue;
     const thread = mirror.thread(run.threadId);
-    const window = stalledWindow(f, run.configCommit);
+    const window = stalledWindow(f, run);
     if (!thread) {
       // The window also covers a thread just launched, which the mirror may not have heard of yet.
       if (loaded && s.now() - (run.startedAt ?? run.queuedAt) >= window)
@@ -1303,7 +1410,7 @@ function stalledFor(f: FactoryRuntime, id: string) {
     ...itemRuns.map((r) => Math.max(r.queuedAt, r.startedAt ?? 0, r.endedAt ?? 0)),
   );
   const ms = s.now() - last;
-  return ms < stalledWindow(f, item.configCommit) ? undefined : { item, ms };
+  return ms < stalledWindow(f, item) ? undefined : { item, ms };
 }
 
 // ---- what a person can do to an item (actions.ts takes the actions)
@@ -1431,7 +1538,8 @@ const triage = (f: FactoryRuntime) => ({
     return { brief: renderBrief(f, { kind: "triage", run, item, builtIn: TRIAGE_BRIEF }) };
   },
   async accept(report: FactoryReport, _run: FactoryRun, item: FactoryItem) {
-    if (report.result?.kind !== "triage") return closeItem(f, item, "There is nothing to do.", report);
+    // Accept hears only the outcome done, whose result `takeReport` checked is the run's kind.
+    if (report.result?.kind !== "triage") throw new Error("a triage report without its result");
     moveOn(f, item, report.result.route, { moment: "triaged", comment: { report } });
   },
 });

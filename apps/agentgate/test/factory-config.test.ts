@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { cpSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeCtx } from "../src/daemon.ts";
-import { currentFolder, folderAt, loadFolder } from "../src/factory/config.ts";
+import { currentFolder, folderAt, limits, loadFolder } from "../src/factory/config.ts";
 import { items } from "../src/factory/db.ts";
 import { fetcher, type FolderFetcher } from "../src/factory/folder.ts";
 import { loopTask, runTerminal, type FactoryRuntime } from "../src/factory/runtime.ts";
@@ -232,6 +232,39 @@ test("use loads the folder from git; a broken commit keeps the last good one; fo
   items.update(s, "it_1", { phase: "shipped" });
   await fetchLoop(f)();
   expect(readdirSync(fetcher.root)).toEqual([fixed]);
+});
+
+test("after a folder change, an item keeps the review rounds, nudges and stall window it started under, and takes the new caps and budget", async () => {
+  const { s, f } = node();
+  const git = folderRepo();
+  const started = git.push("factory");
+  await command(f, "use", `${git.repo}:factory`);
+  items.insert(s, {
+    id: "it_1",
+    source: "bugs",
+    externalId: "1",
+    key: "gh-1",
+    repo: "acme/api",
+    title: "Crash",
+    snapshot: {},
+    phase: "review",
+    configCommit: started,
+  });
+  const yaml = join(git.work, "factory", "factory.yaml");
+  writeFileSync(
+    yaml,
+    readFileSync(yaml, "utf8").replace(
+      "  threads: 2\n  stalledAfter: 30m\n",
+      "  threads: 5\n  stalledAfter: 2h\n  reviewRounds: 1\n  nudges: 0\n  waitingForYou: 9\n  itemTokens: 99\n",
+    ),
+  );
+  git.push("new limits");
+  await fetchLoop(f)();
+
+  const item = items.get(s, "it_1")!;
+  expect(limits(f, item)).toMatchObject({ reviewRounds: 3, nudges: 3, stalledAfter: "30m" });
+  for (const caps of [limits(f), limits(f, item)])
+    expect(caps).toMatchObject({ threads: 5, waitingForYou: 9, itemTokens: 99 });
 });
 
 test("a commit that leaves the folder as it was keeps the loaded folder, its commit and its directory", async () => {
