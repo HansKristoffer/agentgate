@@ -8,7 +8,6 @@ export type ViewProps = {
   local: boolean;
   /** Claude Desktop on this Mac; undefined for remote connections. */
   desktop?: DesktopStatus;
-  /** Goes up when the daemon's records or factory events change (useChanges.ts): views that read more than the status
-   * read again. */
+  /** Goes up on any change the daemon reports (useChanges.ts), for views that do not read through `useDaemon` yet. */
   changes?: number;
 };

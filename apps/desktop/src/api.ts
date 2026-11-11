@@ -1,4 +1,11 @@
-import { API_VERSION, statusSchema, type Connection, type DesktopStatus, type FactoryOps } from "@agentgate/protocol";
+import {
+  API_VERSION,
+  factoryBoardSchema,
+  statusSchema,
+  type Connection,
+  type DesktopStatus,
+  type FactoryOps,
+} from "@agentgate/protocol";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -19,6 +26,12 @@ export async function status(connection: Connection) {
   const parsed = statusSchema.safeParse(data);
   if (!parsed.success)
     throw new Error("The daemon returned incompatible status data. Update Agentgate on both machines.");
+  return parsed.data;
+}
+export async function factoryBoard(connection: Connection) {
+  const parsed = factoryBoardSchema.safeParse(await request<unknown>(connection, "/factory"));
+  if (!parsed.success)
+    throw new Error("The daemon returned a factory board this app cannot read. Update Agentgate on both machines.");
   return parsed.data;
 }
 export const openExternal = (url: string) => openUrl(url);
