@@ -54,6 +54,7 @@ import { threadScope } from "./factory/controller.ts";
 import { factoryToolsSource } from "./factory/remote-tools.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import { startLagProbe } from "./lag.ts";
+import { handoffDirs } from "./ops/nodes.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -87,10 +88,10 @@ export function handoffOptions(s: Store): HandoffOptions {
   return {
     claudeDir: PRIMARY_CLAUDE_DIR,
     get worktreesDir() {
-      return s.local("handoff:worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees");
+      return handoffDirs.get(s, "worktreesDir") ?? join(home, DEV ? "worktrees" : ".t3/worktrees");
     },
     get cloneDir() {
-      return s.local("handoff:cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub");
+      return handoffDirs.get(s, "cloneDir") ?? join(home, DEV ? "clones" : "Documents/GitHub");
     },
     tempDir: join(CONFIG_DIR, "handoffs"),
     t3StateDir: DEV ? undefined : join(process.env.T3CODE_HOME || join(homedir(), ".t3"), "userdata"),

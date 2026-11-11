@@ -82,18 +82,20 @@ test("the API turns another machine's dashboard on and off, shows it in status, 
   s.put("node", "b", { id: "b", protocol: NODE_PROTOCOL });
   const tailnet = { listener: "tailnet" as const, headers: { host: "mac.tail123.ts.net:7878" } };
 
-  expect((await call("/api/nodes/b/dashboard", { ...tailnet, method: "POST", body: { on: true } })).status).toBe(401);
-  expect((await call("/api/nodes/b/dashboard", { method: "POST", body: { on: true } })).status).toBe(200);
+  expect((await call("/api/ops/dashboard", { ...tailnet, method: "POST", body: { node: "b", on: true } })).status).toBe(
+    401,
+  );
+  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "b", on: true } })).status).toBe(200);
   expect(s.get("node", "b")!.healthDashboard).toBe(true);
-  expect((await call("/api/nodes/nobody/dashboard", { method: "POST", body: { on: true } })).status).toBe(404);
+  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "nobody", on: true } })).status).toBe(400);
 
   const status = statusSchema.parse(await (await call("/api/status")).json());
   expect(status.nodes.find((n) => n.id === "b")?.healthDashboard).toBe(true);
 
-  const off = await call("/api/nodes/b/dashboard", {
+  const off = await call("/api/ops/dashboard", {
     ...tailnet,
     method: "POST",
-    body: { on: false },
+    body: { node: "b", on: false },
     headers: { ...tailnet.headers, authorization: "Bearer admin-secret" },
   });
   expect(off.status).toBe(200);

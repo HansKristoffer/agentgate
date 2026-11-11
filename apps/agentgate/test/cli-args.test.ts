@@ -66,8 +66,7 @@ describe("parseFor", () => {
     const argv = words(line);
     // A registered operation parses its own words, as main() does.
     const op = terminalOpFor(argv);
-    const read = () =>
-      op ? op.terminal.parse(argv.slice(op.name.split(" ").length), undefined, undefined) : parseFor(argv);
+    const read = () => (op ? op.terminal.parse(argv.slice(op.name.split(" ").length), undefined, "/") : parseFor(argv));
     expect(read).not.toThrow();
   });
 });

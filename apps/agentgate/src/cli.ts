@@ -55,14 +55,11 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   remote factory @name on|off                 let the endpoint see and steer the software factory: the board, items,
                                              adding tasks, approve/reject/retry/drop, pause and resume
   remote webhook @name <https-url>|off        post the factory's updates (items added, moved, waiting for you) there
-  pair [--name <name>] [--tailnet | --relay [--relay-url <url>]]   print the command that sets up another machine (named <name>)
-  join <url> <code> | join agr1.… [--force]   connect to a paired machine (Tailscale) or a relay group
-  nodes | unpair <node>
-  dashboard [on|off] [--node <node>]          machine health dashboard at <address>/health (Linux): state, or turn it on or off
-  relay status | reconcile | rotate | leave [--wipe] | cleanup [--abandon] | key <value>|--clear
+  nodes                                       paired machines, how each connects, and pending updates
+  relay [status]                              relay sync state and errors
   t3 connect [<pairing link> | --url <url> --token <token>] [--node <node>]   connect a machine's agentgate to its T3 Code; with no link, its T3 Code creates one
   t3 pair [--tailscale] [--node <node>]   create a pairing link to connect a T3 Code client to a machine's T3 Code
-  t3 [status] | disconnect [--node <node>] | dirs [--worktrees <dir>] [--clones <dir>]
+  t3 [status] | disconnect [--node <node>]
   t3 sync [on|off]                            add the GitHub projects one machine's T3 Code has to every other machine's
   t3 history [on|off]                         show a returning thread's messages from other machines in T3 Code (writes T3's database)
   threads [--node <node>]                     active T3 Code threads on every machine
@@ -88,7 +85,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   export [--no-secrets] > backup.json | import-backup backup.json
   admin-token                                 print the token for native app control over the tailnet
 ${[...controlOps.values()]
-  .flatMap((op) => (op.terminal ? [`  ${op.terminal.usage.padEnd(44)}${op.summary}`] : []))
+  .flatMap((op) => (op.terminal ? [`  ${op.terminal.usage.padEnd(43)} ${op.summary}`] : []))
   .join("\n")}`;
 
 const OPTIONS = {
@@ -115,14 +112,7 @@ const OPTIONS = {
   project: { type: "string", multiple: true },
   file: { type: "string" },
   "if-sha": { type: "string" },
-  tailnet: { type: "boolean" },
   tailscale: { type: "boolean" },
-  relay: { type: "boolean" },
-  "relay-url": { type: "string" },
-  force: { type: "boolean" },
-  wipe: { type: "boolean" },
-  abandon: { type: "boolean" },
-  clear: { type: "boolean" },
   "client-id": { type: "string" },
   site: { type: "string" },
   to: { type: "string" },
@@ -130,8 +120,6 @@ const OPTIONS = {
   token: { type: "string" },
   "no-wait": { type: "boolean" },
   "no-routing": { type: "boolean" },
-  worktrees: { type: "string" },
-  clones: { type: "string" },
   help: { type: "boolean", short: "h" },
 } satisfies ParseArgsOptionsConfig;
 
@@ -146,12 +134,8 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
   skills: ["skill", "project", "file"],
   project: ["if-sha"],
   remote: ["node"],
-  pair: ["name", "tailnet", "relay", "relay-url"],
-  join: ["force"],
-  dashboard: ["node"],
-  relay: ["wipe", "abandon", "clear"],
   logins: ["client-id", "site"],
-  t3: ["node", "url", "token", "tailscale", "worktrees", "clones"],
+  t3: ["node", "url", "token", "tailscale"],
   threads: ["node"],
   handoff: ["to", "no-wait"],
   handoffs: ["node"],
@@ -204,11 +188,7 @@ const FAMILIES: Record<string, Run> = {
   skills: skills.run,
   project: projects.run,
   remote: projects.run,
-  pair: nodes.run,
-  join: nodes.run,
   nodes: nodes.run,
-  dashboard: nodes.run,
-  unpair: nodes.run,
   relay: nodes.run,
   desktop: desktop.run,
   t3: t3.run,

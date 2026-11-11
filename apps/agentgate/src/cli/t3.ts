@@ -1,6 +1,4 @@
 import type { HandoffCancel, HandoffJob, NodeThreads, T3NodeState, T3PairingLink } from "@agentgate/protocol";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { patchSettings } from "../configuration.ts";
 import { store } from "../store.ts";
 import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
@@ -43,16 +41,6 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         if (node) await management(`/t3${query}`, "DELETE");
         else t3.disconnectT3(s);
         return console.log("disconnected");
-      }
-      if (sub === "dirs") {
-        for (const [key, value] of [
-          ["worktreesDir", str("worktrees")],
-          ["cloneDir", str("clones")],
-        ] as const)
-          if (value) s.setLocal(`handoff:${key}`, resolve(value.replace(/^~(?=\/|$)/, homedir())));
-        const { handoffOptions } = await import("../daemon.ts");
-        const o = handoffOptions(s);
-        return console.log(`worktrees  ${o.worktreesDir}\nclones     ${o.cloneDir}`);
       }
       if (sub === "sync") {
         if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3ProjectSync: rest[0] === "on" });
