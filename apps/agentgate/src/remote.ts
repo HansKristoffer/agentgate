@@ -9,6 +9,7 @@ import {
   type RemoteResponseFrame,
 } from "@agentgate/protocol/remote";
 import type { z } from "zod";
+import { closeUnopened } from "./channel.ts";
 import type { Gateway } from "./mcp/gateway.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
@@ -168,6 +169,8 @@ interface Conn {
   ping?: ReturnType<typeof setInterval>;
   lastPong: number;
   inflight: Map<string, AbortController>;
+  /** Secret pushes in order, so an older one can never land after a newer one. */
+  pushing?: Promise<void>;
 }
 
 const describe = (e: unknown) => getErrorMessage(e).slice(0, 200);
@@ -211,11 +214,15 @@ export class RemoteEndpoints {
         if (!c.hook && !used(c.remote.key)) queueDelete(this.s, c.remote);
       } else if (next.secret !== c.remote.secret && !c.connected)
         this.stop(id); // restarted below, e.g. after a deletion
-      else if (next.secret !== c.remote.secret) {
+      else if (c.connected) {
+        // Until the relay acknowledges a new secret it still accepts the old one, so a failed push is retried on every
+        // pass; `put` sends nothing once the relay has it.
         c.remote = next;
-        void this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
-          c.error = describe(e);
-        });
+        c.pushing = (c.pushing ?? Promise.resolve()).then(() =>
+          this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
+            c.error = describe(e);
+          }),
+        );
       }
     }
     for (const [id, next] of wanted) if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
@@ -345,6 +352,7 @@ export class RemoteEndpoints {
       },
     } as unknown as string[]);
     c.ws = ws;
+    closeUnopened(ws);
     ws.onopen = () => {
       c.connected = true;
       c.error = undefined;

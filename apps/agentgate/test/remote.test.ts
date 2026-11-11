@@ -8,6 +8,7 @@ import { app, makeCtx } from "../src/daemon.ts";
 import { Gateway } from "../src/mcp/gateway.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { saveProject } from "../src/operations.ts";
+import { relaySocket } from "../src/channel.ts";
 import { enableRemote, regenerateAfterUnpair, RemoteEndpoints, rotateSecret } from "../src/remote.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { DEFAULT_RELAY_URL, makeInvite, serviceKeyFor, setServiceKey } from "../src/relay.ts";
@@ -222,8 +223,10 @@ test("enabling waits for every node's version; status and backups never show end
   expect(JSON.parse(s.local("remote:delete")!)).toHaveLength(1);
 });
 
-/** A relay stand-in: records PUTs and hands the test the node's socket. */
+/** A relay stand-in: records PUTs and hands the test the node's socket. `failPuts` refuses that many PUTs, and `hang`
+ * leaves upgrades unanswered. */
 function fakeRelay() {
+  const control = { failPuts: 0, hang: false };
   const puts: { key: string; auth: string; body: { secretHash: string; enabled: boolean } }[] = [];
   const upgrades: { auth: string | null; node: string | null }[] = [];
   const deletes: string[] = [];
@@ -235,6 +238,10 @@ function fakeRelay() {
     async fetch(req, srv) {
       const url = new URL(req.url);
       if (req.method === "PUT") {
+        if (control.failPuts > 0) {
+          control.failPuts--;
+          return new Response("down", { status: 503 });
+        }
         puts.push({
           key: url.pathname.split("/")[2]!,
           auth: req.headers.get("authorization")!,
@@ -245,6 +252,7 @@ function fakeRelay() {
       if (req.method === "DELETE") deletes.push(url.pathname.split("/")[2]!);
       if (url.pathname.endsWith("/connect")) {
         upgrades.push({ auth: req.headers.get("authorization"), node: req.headers.get("x-agentgate-node") });
+        if (control.hang) return new Promise<Response>(() => {});
         if (srv.upgrade(req)) return undefined;
       }
       return new Response("no", { status: 404 });
@@ -269,7 +277,7 @@ function fakeRelay() {
     while (!socket) await Bun.sleep(10);
     return socket;
   };
-  return { url: `http://127.0.0.1:${server.port}`, puts, upgrades, deletes, next, connected };
+  return { control, url: `http://127.0.0.1:${server.port}`, puts, upgrades, deletes, next, connected };
 }
 
 test("the serving node pushes the secret hash, answers requests over its socket and re-pushes a new secret", async () => {
@@ -391,4 +399,38 @@ test("a machine that stops serving an endpoint no record names any more deletes 
   s.setLocal("remote:delete", undefined); // ...whose deletion queue lives on that machine
   endpoints.reconcile();
   while (!relay.deletes.includes(key)) await Bun.sleep(5);
+});
+
+test("a new secret the relay refused is pushed again on the next pass, and only until the relay has it", async () => {
+  const { s, relay, serve } = serving();
+  const { endpoints } = serve();
+  const project = () => s.get("project", "@grok")!;
+  while (!endpoints.summary(project())?.connected) await Bun.sleep(5);
+
+  relay.control.failPuts = 1;
+  const { secret } = rotateSecret(s, "@grok");
+  endpoints.reconcile();
+  while (!endpoints.summary(project())?.error?.includes("503")) await Bun.sleep(5);
+  expect(endpoints.summary(project())).toMatchObject({ connected: true, updating: true });
+
+  endpoints.reconcile();
+  while (relay.puts.length < 2) await Bun.sleep(5);
+  expect(relay.puts[1]!.body.secretHash).toBe(await sha256Hex(secret));
+  // Pushes go out in order, so the acknowledged secret sent again would arrive before the next rotation's.
+  endpoints.reconcile();
+  const next = rotateSecret(s, "@grok");
+  endpoints.reconcile();
+  while (relay.puts.length < 3) await Bun.sleep(5);
+  expect(relay.puts[2]!.body.secretHash).toBe(await sha256Hex(next.secret));
+});
+
+test("a relay socket that never opens is closed at the deadline and connects again", async () => {
+  const openMs = relaySocket.openMs;
+  relaySocket.openMs = 50;
+  cleanup.push(() => (relaySocket.openMs = openMs));
+  const { relay, serve } = serving();
+  relay.control.hang = true;
+  const { error } = serve();
+  await error("could not connect to the relay");
+  while (relay.upgrades.length < 2) await Bun.sleep(5);
 });
