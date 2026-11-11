@@ -378,6 +378,7 @@ export class RemoteEndpoints {
         // A refused upgrade looks like a close; the next attempt re-pushes the endpoint in case the relay lost it.
         this.s.setLocal(`remote:pushed:${c.remote.key}`, undefined);
         this.report(c, false, "could not connect to the relay");
+        return undefined;
       },
     });
     return socket;

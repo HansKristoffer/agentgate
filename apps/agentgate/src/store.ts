@@ -300,11 +300,6 @@ export function parseEnvelope(input: unknown): Rec {
 /** The record's data as it is stored: validated and re-serialized, or `{}` for a tombstone. */
 const storedData = (r: Rec) => (r.deleted ? "{}" : JSON.stringify(parseData(r.kind, r.id, JSON.parse(r.data))));
 
-export function parseRecord(input: unknown): Rec {
-  const r = parseEnvelope(input);
-  return { ...r, data: storedData(r) };
-}
-
 export class Store {
   db: Database;
   closed = false;

@@ -70,6 +70,7 @@ function bestEffort<T>(kind: string, write: () => T): T | undefined {
     bookkeepingFailed.add(kind);
     const code = isRecord(e) && typeof e.code === "string" ? ` ${e.code}` : "";
     console.error(`proxy: ${kind} not recorded: ${e instanceof Error ? e.name : "error"}${code}`);
+    return undefined;
   }
 }
 /** Telemetry over a store that reads as closed records nothing: the stand-in when the real one cannot write. */

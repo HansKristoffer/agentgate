@@ -190,6 +190,7 @@ function incompatible(login: Login, schema: string, version = host.version()): s
     return "Saved with a Claude Desktop that stores logins differently; connect this account again";
   if (login.desktopVersion && version && major(login.desktopVersion) !== major(version))
     return `Saved with Claude Desktop ${login.desktopVersion}; connect this account again`;
+  return undefined;
 }
 
 /** Desktop holds login data readLogin cannot use, e.g. a sign-in still being written to disk. Replacing it would lose it. */
@@ -400,6 +401,7 @@ function saveOutgoing(s: Store): Login | undefined {
     throw new Error(
       "Claude Desktop has a sign-in Agentgate can't read yet, so nothing was changed. If you just signed in, wait half a minute and try again.",
     );
+  return undefined;
 }
 
 /** A saved login that can go into this Desktop now, or an error saying why not. */

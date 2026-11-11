@@ -1,9 +1,23 @@
 # Architecture
 
 Each machine runs one daemon that owns a SQLite store, the provider proxies, the MCP gateway and peer
-sync. The CLI and the Tauri app are clients of its control API (`apps/agentgate/src/api.ts`); the CLI
-also opens the same store directly, so anything that must be exclusive across processes takes a lease.
-Terms are defined in the [glossary](glossary.md).
+sync. The CLI and the Tauri app are clients of its control API (`apps/agentgate/src/api/`). Each control operation is
+registered once ([`ops/registry.ts`](../../apps/agentgate/src/ops/registry.ts)), and its CLI words, the app's typed
+call and the CLI's call through the daemon all come from that entry. The CLI sends a registered operation through the
+running daemon, so the daemon's memory and the app see the change at once. With no daemon running, an operation that
+needs only the store runs in the CLI's own process. Other CLI commands open the store directly, so anything that must
+be exclusive across processes takes a lease. Terms are defined in the [glossary](glossary.md).
+
+## Change feed
+
+The app waits on `/api/changes`, which answers when one of five topics changes: `status`, `desktop`, `factory`,
+`threads` and `activity` ([changes.ts](../../apps/agentgate/src/changes.ts)). State the app shows must mark its topic
+changed, or the app never sees it. A record write does this through `topicsOf` (`store.ts`), a node-local key does it
+when its `defineLocal` family has a `topic` ([local-state.ts](../../apps/agentgate/src/local-state.ts)), and anything
+else calls `Store.bump`. The CLI writes from its own process, so the daemon learns of those writes from
+`PRAGMA data_version` and bumps the written records' topics plus `status` and `factory`. Node-local state the CLI writes
+under any other topic stays unseen until something else bumps it. Paired machines follow each other's `factory` and
+`threads` topics over `/peer/topics` while an app waits.
 
 ## MCP gateway
 
@@ -47,7 +61,7 @@ Records sync, including secrets, to every paired node. The `local` table and the
 when it describes this machine or this daemon's runtime: the node name, admin token, peer tokens,
 registered checkouts, Claude Desktop logins, cooldowns, session affinity, Codex continuation owners,
 model snapshots and telemetry. Account policies and quota observations are replicated, and so are token
-totals: each node publishes its own as `tokens` records ([`token-history.ts`](../../apps/agentgate/src/llm/token-history.ts)).
+totals: each node publishes its own as `tokens` records, one per day, and folds its days older than 90 into one record per month ([`token-history.ts`](../../apps/agentgate/src/llm/token-history.ts)).
 
 ## Versions and old nodes
 
