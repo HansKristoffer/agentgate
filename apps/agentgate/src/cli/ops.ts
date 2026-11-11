@@ -1,3 +1,4 @@
+import { ConfigurationConflict, SkillConflict } from "@agentgate/protocol";
 import { runTerminal, shownError, type TerminalOp, type TerminalResult } from "../ops/index.ts";
 import { store } from "../store.ts";
 import { die, initialized, management } from "./common.ts";
@@ -32,6 +33,8 @@ async function here(op: TerminalOp, words: string[], stdin: string | undefined, 
   try {
     return await runTerminal(op, words, stdin, cwd, { s });
   } catch (e) {
-    return die(shownError(e) || `The operation failed (${e instanceof Error ? e.name : "error"})`);
+    // The same text the daemon's routes would answer (daemon.ts onError): refused input, and a conflict's message.
+    const conflict = e instanceof SkillConflict || e instanceof ConfigurationConflict ? e.message : undefined;
+    return die(conflict ?? (shownError(e) || `The operation failed (${e instanceof Error ? e.name : "error"})`));
   }
 }

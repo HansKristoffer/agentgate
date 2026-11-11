@@ -1,10 +1,4 @@
-import {
-  projectChangeSchema,
-  projectIdSchema,
-  SkillConflict,
-  skillIdSchema,
-  type SkillPreviewResponse,
-} from "@agentgate/protocol";
+import { projectChangeSchema, projectIdSchema, skillIdSchema, type SkillPreviewResponse } from "@agentgate/protocol";
 import { getErrorMessage, truncate } from "hanzio";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -62,17 +56,6 @@ const readFile = (file: string | undefined, cwd: string | undefined) => {
   }
 };
 
-/** The CLI's own process prints only a UserError's text (cli/ops.ts), while the daemon answers a conflict's text with a
- * 409; the CLI shows it either way. */
-async function conflictsShown<T>(daemon: Ctx | undefined, run: () => T | Promise<T>) {
-  try {
-    return await run();
-  } catch (error) {
-    if (!daemon && error instanceof SkillConflict) throw new UserError(error.message);
-    throw error;
-  }
-}
-
 // The CLI's own process previews and installs in one run when no daemon answers, so it keeps its previews here.
 let ownImports: SkillImports | undefined;
 const importsOf = (daemon: Ctx | undefined) => daemon?.imports ?? (ownImports ??= new SkillImports());
@@ -114,10 +97,8 @@ controlOp({
   summary: "fetch a source and show what it would install, with the skills.sh security audit",
   input: z.object({ source: sourceSchema, skill: z.string().min(1).max(256).optional() }).strict(),
   needs: "store",
-  run: ({ source, skill }, { s, daemon }) =>
-    conflictsShown(daemon, async () =>
-      skillPreview(s, await importsOf(daemon).preview(source, skill, daemon?.abort.signal)),
-    ),
+  run: async ({ source, skill }, { s, daemon }) =>
+    skillPreview(s, await importsOf(daemon).preview(source, skill, daemon?.abort.signal)),
   terminal: {
     usage: "skills preview <owner/repo|url|folder> [--skill <name>]",
     parse(args, _stdin, cwd) {
@@ -144,11 +125,10 @@ controlOp({
     })
     .strict(),
   needs: "store",
-  run: ({ token, ids, projects }, { s, daemon }) =>
-    conflictsShown(daemon, () => {
-      const artifact = importsOf(daemon).get(token);
-      return { installed: installSkills(s, artifact.source, artifact.skills, ids, projects) };
-    }),
+  run({ token, ids, projects }, { s, daemon }) {
+    const artifact = importsOf(daemon).get(token);
+    return { installed: installSkills(s, artifact.source, artifact.skills, ids, projects) };
+  },
 });
 
 const written = (id: string) => [`saved ${id}; link it with: agentgate skills projects ${id} <owner/repo|*>`];
@@ -166,12 +146,11 @@ controlOp({
   summary: "write a skill by hand",
   input: z.object({ id: skillIdSchema, skillMd: skillMdSchema }).strict(),
   needs: "store",
-  run: ({ id, skillMd }, { s, daemon }) =>
-    conflictsShown(daemon, () => {
-      if (s.get("skill", id)) throw new UserError(`${id} already exists; use skills edit`);
-      writeSkillMd(s, id, skillMd, null);
-      return null;
-    }),
+  run({ id, skillMd }, { s }) {
+    if (s.get("skill", id)) throw new UserError(`${id} already exists; use skills edit`);
+    writeSkillMd(s, id, skillMd, null);
+    return null;
+  },
   terminal: {
     usage: "skills new <name> --file SKILL.md",
     parse: (args, _stdin, cwd) => ({ input: writeWords(args, cwd) }),
@@ -184,15 +163,13 @@ controlOp({
   summary: "replace a hand-written skill's SKILL.md",
   input: z.object({ id: skillIdSchema, skillMd: skillMdSchema, revision: z.string().max(1024).optional() }).strict(),
   needs: "store",
-  run: ({ id, skillMd, revision }, { s, daemon }) =>
-    conflictsShown(daemon, () =>
-      s.transaction(() => {
-        const current = skillRevision(s, id);
-        if (current === null) throw new UserError(`No skill ${id}; use skills new`);
-        writeSkillMd(s, id, skillMd, revision ?? current);
-        return null;
-      }),
-    ),
+  run: ({ id, skillMd, revision }, { s }) =>
+    s.transaction(() => {
+      const current = skillRevision(s, id);
+      if (current === null) throw new UserError(`No skill ${id}; use skills new`);
+      writeSkillMd(s, id, skillMd, revision ?? current);
+      return null;
+    }),
   terminal: {
     usage: "skills edit <name> --file SKILL.md",
     parse: (args, _stdin, cwd) => ({ input: writeWords(args, cwd) }),
@@ -205,12 +182,11 @@ controlOp({
   summary: "delete a skill from every machine",
   input: z.object({ id: z.string().min(1).max(256) }).strict(),
   needs: "store",
-  run: ({ id }, { s, daemon }) =>
-    conflictsShown(daemon, () => {
-      if (!s.get("skill", id)) throw new UserError(`No skill ${id}`);
-      deleteSkill(s, id);
-      return null;
-    }),
+  run({ id }, { s }) {
+    if (!s.get("skill", id)) throw new UserError(`No skill ${id}`);
+    deleteSkill(s, id);
+    return null;
+  },
   terminal: {
     usage: "skills rm <name>",
     parse(args) {
@@ -255,21 +231,20 @@ controlOp({
   summary: "fetch a skill's source again; with no name, every skill and connected repository",
   input: z.object({ id: z.string().min(1).max(256).optional() }).strict(),
   needs: "store",
-  run: ({ id }, { s, daemon }) =>
-    conflictsShown(daemon, async () => {
-      const fetch = daemon?.imports.fetchFresh ?? fetchSkills;
-      const signal = daemon?.abort.signal;
-      if (id) return [{ name: id, outcome: outcome(await updateSkill(s, id, fetch, signal)) }];
-      const skills = (await updateSkills(s, fetch, signal)).map((r) => ({ name: r.id, outcome: r.outcome }));
-      return [
-        ...skills,
-        ...(await syncRepos(
-          s,
-          skillRepoSummaries(s).map((r) => r.url),
-          signal,
-        )),
-      ];
-    }),
+  async run({ id }, { s, daemon }) {
+    const fetch = daemon?.imports.fetchFresh ?? fetchSkills;
+    const signal = daemon?.abort.signal;
+    if (id) return [{ name: id, outcome: outcome(await updateSkill(s, id, fetch, signal)) }];
+    const skills = (await updateSkills(s, fetch, signal)).map((r) => ({ name: r.id, outcome: r.outcome }));
+    return [
+      ...skills,
+      ...(await syncRepos(
+        s,
+        skillRepoSummaries(s).map((r) => r.url),
+        signal,
+      )),
+    ];
+  },
   terminal: {
     usage: "skills update [<name>]",
     parse(args) {

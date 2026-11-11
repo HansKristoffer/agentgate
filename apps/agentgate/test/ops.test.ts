@@ -58,7 +58,20 @@ async function cli(home: string, port: number, ...words: string[]) {
     stderr: "pipe",
   });
   cleanup.push(() => child.kill());
-  return { code: await child.exited, out: await new Response(child.stdout).text() };
+  const [code, out, err] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+  ]);
+  return { code, out, err };
+}
+
+/** A port nothing listens on, so the CLI runs operations in its own process. */
+function noDaemonPort() {
+  const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+  const port = closed.port!;
+  closed.stop(true);
+  return port;
 }
 
 test("the CLI changes a machine through the running daemon", async () => {
@@ -80,17 +93,34 @@ test("the CLI changes a machine through the running daemon", async () => {
 test("with no daemon, the CLI runs a store operation in its own process", async () => {
   const home = tmp();
   machines(new Store(join(home, "agentgate.db"))).close();
-  const closed = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
-  const port = closed.port!;
-  closed.stop(true);
 
-  const { code, out } = await cli(home, port, "nodes", "always-on", "b", "off");
+  const { code, out } = await cli(home, noDaemonPort(), "nodes", "always-on", "b", "off");
 
   expect(code).toBe(0);
   expect(out).toBe("b is no longer always on\n");
   const s = new Store(join(home, "agentgate.db"));
   expect(s.get("node", "b")?.alwaysOn).toBe(false);
   s.close();
+});
+
+test("with no daemon, the CLI prints a conflict's reason as the daemon would answer it", async () => {
+  const home = tmp();
+  const s = machines(new Store(join(home, "agentgate.db")));
+  const skillMd = Buffer.from("---\nname: lint\ndescription: Lints.\n---\n").toString("base64");
+  s.put("skill", "lint", {
+    id: "lint",
+    source: "acme/skills",
+    updatedAt: 1,
+    files: [{ path: "SKILL.md", data: skillMd }],
+  });
+  s.close();
+  const file = join(home, "SKILL.md");
+  await Bun.write(file, "---\nname: lint\ndescription: Edited.\n---\n");
+
+  const { code, err } = await cli(home, noDaemonPort(), "skills", "edit", "lint", "--file", file);
+
+  expect(code).toBe(1);
+  expect(err).toBe("lint comes from acme/skills and updates from it, so it can't be edited\n");
 });
 
 test("the app calls an operation by name from a remote connection, and a refusal is a 400 with its reason", async () => {
