@@ -27,17 +27,17 @@ const onVisibility = (change: () => void) => {
 };
 const isVisible = () => document.visibilityState !== "hidden";
 
-type Answer<T> = { data?: T; error: string; at?: number; connection?: Connection };
-const none: Answer<never> = { error: "" };
+type Answer<T> = { data?: T; error: string; failures: number; at?: number; connection?: Connection };
+const none: Answer<never> = { error: "", failures: 0 };
 
 /** One read. One request in flight; a reload asked meanwhile runs once after it. Answers for older deps or an
- * unmounted view are dropped. Data is kept on error. Reloads when a named topic changes, when the window regains
+ * unmounted view are dropped. Data is kept on error, and `failures` counts the errors since the last answer. Reloads when a named topic changes, when the window regains
  * focus, and on a slow safety interval. With `key`, the last answer is kept for the connection and shown at once
  * when the view mounts again. Stops while the window is hidden, unless `hidden` gives an interval for that. */
 export function useDaemon<T>(
   read: (() => Promise<T>) | false,
   opts: { topics: Topic[]; deps?: unknown[]; every?: number; key?: string; hidden?: number },
-): { data?: T; error: string; stale: boolean; reload(): Promise<void> } {
+): { data?: T; error: string; failures: number; at?: number; stale: boolean; reload(): Promise<void> } {
   const { topics, deps = [], every = SAFETY, key, hidden } = opts;
   const { connection, versions, cache } = useFeed();
   const period = useSyncExternalStore(onVisibility, isVisible) ? every : hidden;
@@ -78,13 +78,17 @@ export function useDaemon<T>(
         (next) => {
           if (g !== generation.current) return;
           setState((prev) => {
-            const answer = { data: reuse(ours(prev).data, next), error: "", at: Date.now(), connection };
+            const answer = { data: reuse(ours(prev).data, next), error: "", failures: 0, at: Date.now(), connection };
             if (key) cache.set(key, answer);
             return answer;
           });
         },
         (e) => {
-          if (g === generation.current) setState((prev) => ({ ...ours(prev), connection, error: messageOf(e) }));
+          if (g !== generation.current) return;
+          setState((prev) => {
+            const own = ours(prev);
+            return { ...own, connection, error: messageOf(e), failures: own.failures + 1 };
+          });
         },
       )
       .finally(() => {
@@ -107,7 +111,7 @@ export function useDaemon<T>(
     };
   }, [enabled, period, reload]);
 
-  if (!enabled) return { error: "", stale: false, reload };
+  if (!enabled) return { error: "", failures: 0, stale: false, reload };
   const stale = own.at !== undefined && Date.now() - own.at > 2 * (period ?? every);
-  return { data: own.data, error: own.error, stale, reload };
+  return { data: own.data, error: own.error, failures: own.failures, at: own.at, stale, reload };
 }

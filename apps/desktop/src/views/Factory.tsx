@@ -10,9 +10,9 @@ import {
   type ItemPhase,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
-import { factoryBoard, factoryOp, openExternal } from "../api.ts";
+import { factoryOp, openExternal } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
-import { useDaemon } from "../useDaemon.ts";
+import { useApp } from "../AppContext.tsx";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
 import { FactoryOff } from "./factory/Init.tsx";
@@ -602,13 +602,8 @@ export function Factory(props: ViewProps) {
   // This daemon's feed does not carry the changes of a factory on another machine, so that board is asked more often.
   const factory = data.settings.factory;
   const every = factory && factory.node !== data.node ? 10_000 : undefined;
-  // Its own read rather than the app's shared board, which is not read while the factory is off: this page shows the
-  // way to turn it on from the same board. A reload waits for a read under way and reads once more after an action.
-  const {
-    data: board,
-    error,
-    reload: refresh,
-  } = useDaemon(() => factoryBoard(connection), { topics: ["factory"], every, key: "factory" });
+  // The app's shared read. A reload waits for a read under way and reads once more after an action.
+  const { board, boardError: error, reloadBoard: refresh } = useApp();
 
   /** An action, then the board as it is after it. */
   const run = (task: () => Promise<unknown>, message?: string, key?: string) =>
