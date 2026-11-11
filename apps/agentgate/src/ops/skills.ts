@@ -361,8 +361,6 @@ controlOp({
   needs: "daemon",
   run({ path, use }, { daemon }) {
     if (!daemon) throw new UserError("agentgate is not running");
-    if (!daemon.skills.conflicts().includes(path) && !daemon.skills.kept().includes(path))
-      throw new UserError(`${path} is not a skill that clashes with Agentgate's`);
     return { backup: daemon.skills.resolveConflict(path, use) };
   },
   terminal: {

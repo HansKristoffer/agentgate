@@ -26,6 +26,7 @@ import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primarySt
 import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from "./store.ts";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
+import { UserError } from "./ops/registry.ts";
 
 export const SKILLS_DIR = join(CONFIG_DIR, "skills");
 const EXCLUDE_HEADER = "# agentgate skills (symlinks into ~/.config/agentgate/skills)";
@@ -193,7 +194,7 @@ export class SkillLinks {
   resolveConflict(path: string, use: "agentgate" | "keep"): string | undefined {
     const kept = this.kept();
     if (!this.root || (!this.conflicts().includes(path) && !kept.includes(path)))
-      throw new Error(`${path} is not a skill that clashes with Agentgate's`);
+      throw new UserError(`${path} is not a skill that clashes with Agentgate's`);
     if (use === "keep") {
       keptLocal.set(this.s, undefined, [...new Set([...kept, path])]);
       this.sync();
@@ -207,7 +208,7 @@ export class SkillLinks {
       timeout: 10_000,
     });
     if (tracked.exitCode === 0)
-      throw new Error(`${path} is part of its repository. Rename or remove it there, or keep it.`);
+      throw new UserError(`${path} is part of its repository. Rename or remove it there, or keep it.`);
     const backups = join(dirname(this.root), "skill-backups");
     mkdirSync(backups, { recursive: true });
     const backup = join(mkdtempSync(join(backups, `${basename(path)}-`)), basename(path));
