@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -36,7 +36,12 @@ const original = { ...DESKTOP },
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "agentgate-desktop-"));
-  Object.assign(DESKTOP, { data: join(dir, "Claude"), data3p: join(dir, "Claude-3p"), backups: join(dir, "backups") });
+  Object.assign(DESKTOP, {
+    data: join(dir, "Claude"),
+    data3p: join(dir, "Claude-3p"),
+    backups: join(dir, "backups"),
+    claude: join(dir, "claude"),
+  });
   mkdirSync(DESKTOP.data);
   mkdirSync(DESKTOP.data3p);
   new Database(join(DESKTOP.data, "Cookies")).exec(SCHEMA);
@@ -459,4 +464,22 @@ test("a failed gateway change keeps the user's own gateway selected", async () =
   await use(s, "aaaa"); // turns gateway mode off; the restore ran first
   expect(JSON.parse(readFileSync(join(lib, "_meta.json"), "utf8")).appliedId).toBe("theirs");
   expect(s.local("desktop:gatewayBefore")).toBeUndefined();
+});
+
+test("status reads Claude Code's config again only once the file changes", () => {
+  mkdirSync(DESKTOP.claude);
+  const file = join(DESKTOP.claude, ".claude.json");
+  const then = new Date(2026, 0, 1);
+  // Same length, so only the modification time tells the two versions apart.
+  const write = (server: string) => {
+    writeFileSync(file, JSON.stringify({ mcpServers: { [server]: {} } }));
+    utimesSync(file, then, then);
+  };
+  write("other-mcp");
+  expect(status(s).mcp).toBe(false);
+  write("agentgate");
+  expect(status(s).mcp).toBe(false);
+  const later = new Date(then.getTime() + 1000);
+  utimesSync(file, later, later);
+  expect(status(s).mcp).toBe(true);
 });
