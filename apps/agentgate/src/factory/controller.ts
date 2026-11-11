@@ -640,8 +640,8 @@ function working(f: FactoryRuntime, t: MirrorThread | undefined, visited = new S
   visited.add(t.id);
   if (isWorkingStatus(t.status)) return true;
   return mirrorOf(f)
-    .threads()
-    .some((child) => child.parentThreadId === t.id && working(f, child, visited));
+    .children(t.id)
+    .some((child) => working(f, child, visited));
 }
 
 /** Working runs: stage runs, and scout runs. A starting run counts; a thread that waits for a person, or sits idle
@@ -720,20 +720,28 @@ async function dispatch(f: FactoryRuntime) {
   const counts = workingCounts(f);
   let quota: Memory["quota"];
   // A run left `starting` was cut off by a restart; launching it again finds the same thread.
-  for (const queued of runs.list(s, { states: ["queued", "starting"] }).toSorted(byPriority)) {
-    if (!f.runKinds.has(queued.kind)) continue;
-    if (!m.launches.due(queued.id)) continue;
-    const stage = isStage(queued.kind);
-    if (counts.stage + counts.scout >= threads) {
-      if (queued.item) waitFor(f, queued.item, "thread", `Waits for a free thread; all ${threads} are working`, queued);
-      continue;
+  const queue = runs
+    .list(s, { states: ["queued", "starting"] })
+    .filter((run) => f.runKinds.has(run.kind) && m.launches.due(run.id))
+    .toSorted(byPriority);
+  // One launcher per free slot, so launches run at once. Each takes the next run in order and keeps its slot only when
+  // the run started: a run that waits, for quota or the default branch's CI, leaves the slot to the run after it.
+  const launcher = async () => {
+    for (let run = queue.shift(); run; run = queue.shift()) {
+      const kind = isStage(run.kind) ? "stage" : "scout";
+      // Scout runs leave a slot for the items' work.
+      if (kind === "scout" && counts.scout >= Math.max(1, threads - 1)) continue;
+      counts[kind]++;
+      const outcome = await launchRun(f, run);
+      if (outcome.quota) quota = outcome.quota;
+      if (outcome.started) return;
+      counts[kind]--;
     }
-    // Scout runs leave a slot for the items' work.
-    if (!stage && counts.scout >= Math.max(1, threads - 1)) continue;
-    const outcome = await launchRun(f, queued);
-    if (outcome.quota) quota = outcome.quota;
-    if (outcome.started) counts[stage ? "stage" : "scout"]++;
-  }
+  };
+  const free = threads - counts.stage - counts.scout;
+  await Promise.all(Array.from({ length: Math.max(0, free) }, launcher));
+  for (const run of queue)
+    if (run.item) waitFor(f, run.item, "thread", `Waits for a free thread; all ${threads} are working`, run);
   m.quota = quota;
 }
 
@@ -786,7 +794,9 @@ async function prepareLaunch(
   }
   const openAt = memory(f).openAt;
   if (item && s.now() - (openAt.get(run.id) ?? 0) >= 2 * 60_000) {
-    if (await issueOpen(f, item)) openAt.set(run.id, s.now());
+    const open = await issueOpen(f, item).catch((e: unknown) => unread(f, run, "its issue", e));
+    if (open === undefined) return {};
+    if (open) openAt.set(run.id, s.now());
     else if (!item.pr) {
       // The source closed it, so the item closes without a comment: the issue already says so. Once the item has a
       // PR, the PR decides instead: "Fixes #N" closes the issue as the PR merges, and the merge ships it.
@@ -815,6 +825,15 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
   const { s } = f;
   const m = memory(f);
   try {
+    const repo = queued.item ? items.get(s, queued.item)?.repo : undefined;
+    // What a launch needs of its repository, its T3 project (the first item of a repository clones it) and its default
+    // branch, is found before the item's step, so neither holds a report or loop of the item back. A run without an
+    // item has no step to hold.
+    if (repo) {
+      await project(f, repo);
+      const branch = await defaultBranch(f, repo).catch((e: unknown) => unread(f, queued, "its default branch", e));
+      if (branch === undefined) return {};
+    }
     const ready = await (queued.item
       ? withItem(f, queued.item, () => prepareLaunch(f, queued.id))
       : prepareLaunch(f, queued.id));
@@ -855,8 +874,18 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
 
 /** Whether the item's issue is still open at its source. An item without an issue always is. */
 async function issueOpen(f: FactoryRuntime, item: FactoryItem) {
-  const check = adapterOf(f, item)?.check;
-  return !check || (await check(item)).open;
+  const adapter = adapterOf(f, item);
+  if (adapter?.isOpen) return adapter.isOpen(item);
+  return !adapter?.check || (await adapter.check(item)).open;
+}
+
+/** GitHub or Linear could not be read before a launch, as in an outage: the run waits and reads it again later, which
+ * is no failed launch, so an outage never leaves an item stuck. */
+function unread(f: FactoryRuntime, run: FactoryRun, what: string, e: unknown) {
+  const retryAt = memory(f).launches.failed(run.id);
+  if (run.item)
+    waitFor(f, run.item, "launch", `Waits to read ${what} again at ${time(retryAt)}: ${shortError(e)}`, run);
+  return undefined;
 }
 
 // ---- watching threads
@@ -931,7 +960,7 @@ export function threadScope(f: FactoryRuntime, thread: string | undefined): Sess
 async function onThread(f: FactoryRuntime, changed: MirrorThread, previous: MirrorThread | undefined) {
   // A subagent's change can end its parent's turn: the run belongs to the parent.
   const thread = rootOf(f, changed);
-  const run = runs.list(f.s, { states: ["running", "waiting"] }).find((r) => r.threadId === thread.id);
+  const run = runs.byThreads(f.s, [thread.id]).findLast((r) => r.state === "running" || r.state === "waiting");
   if (!run) return settleFinished(f, thread);
   // Seen working now, not when the item's step runs: a short turn can end while the item is busy, such as with the
   // reminder that started it, and by then the mirror shows only its end, which would not count as one.

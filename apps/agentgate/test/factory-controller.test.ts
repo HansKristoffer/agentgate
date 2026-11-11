@@ -552,6 +552,53 @@ test("an item whose launch keeps failing waits as stuck once its phase is four s
   ]);
 });
 
+test("two items ready on two free threads launch at once: the second launch does not wait for the first", async () => {
+  const n = await factoryNode(cleanup, { config: { limits: { threads: 2 } } });
+  const held: (() => void)[] = [];
+  n.mcp.answer(
+    "t3_thread_launch",
+    (args) =>
+      new Promise((resolve) => held.push(() => resolve({ threadId: `thread-${String(args.clientRequestId)}` }))),
+  );
+  await n.command("add", n.repo, "one");
+  await n.command("add", n.repo, "two");
+  const dispatched = n.dispatch();
+  await n.until(() => held.length === 2, "both launches to be sent");
+  for (const release of held) release();
+  await dispatched;
+  expect(triageRuns(n).map((r) => r.state)).toEqual(["running", "running"]);
+});
+
+test("while GitHub cannot be read, an item whose issue dispatch must check waits, and is neither a failed launch nor stuck", async () => {
+  const n = await factoryNode(cleanup, {
+    config: (repo) => ({ limits: { stalledAfter: "15m" }, sources: [github(repo)] }),
+  });
+  fakeSource(n, { bugs: [issue(n.repo, 1)] });
+  await n.intake();
+  const adapter = n.f.sources.get("github")!;
+  const check = adapter.check!;
+  adapter.check = async () => {
+    throw new Error("gh could not read test/repo#1: HTTP 502");
+  };
+  const [item] = items.list(n.s);
+  for (let i = 0; i < 5; i++) {
+    await n.dispatch();
+    await loopTaskOf(n, "factory-stuck");
+    n.advance(15 * 60_000);
+  }
+  expect(launches(n)).toEqual([]);
+  expect(triageRuns(n)[0]).toMatchObject({ state: "queued", failedLaunches: undefined, error: undefined });
+  expect(items.get(n.s, item!.id)!.needsYou).toBeUndefined();
+  expect((await buildBoard(n.f, { includeWebhookUrls: false })).items[0]!.waiting).toMatchObject({
+    on: "launch",
+    text: expect.stringContaining("Waits to read its issue again at"),
+  });
+
+  adapter.check = check;
+  await n.dispatch();
+  expect(triageRuns(n)[0]!.state).toBe("running");
+});
+
 test("pause stops intake and new threads and the board says so, and resume starts both again", async () => {
   const n = await factoryNode(cleanup, { config: (repo) => ({ sources: [github(repo)] }) });
   const { polled } = fakeSource(n, { bugs: [issue(n.repo, 1)] });
