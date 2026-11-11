@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Boxes, Sparkles } from "lucide-react";
 import { isVirtual, type Project, type Status } from "@agentgate/protocol";
 import type { ControlOps } from "@agentgate/protocol/control";
-import { Button, Input, Tabs, TextField } from "@heroui/react";
-import { Check, Empty, Field, Toggle } from "./ui.tsx";
+import { Button, Input, TextField } from "@heroui/react";
+import { Check, Empty, Field, Segmented, Toggle } from "./ui.tsx";
 import { aliasOf } from "./Assignments.tsx";
 import { projectSkillChoices } from "../skill-assignment.ts";
 
@@ -150,29 +150,34 @@ export function ProjectForm({
           />
         </div>
       )}
-      <Tabs
-        className="segmented"
-        selectedKey={tab}
-        onSelectionChange={(key) => {
-          setTab(key as typeof tab);
+      <Segmented
+        label="Tools"
+        value={tab}
+        onChange={(id) => {
+          setTab(id);
           setQuery("");
         }}
-      >
-        <Tabs.ListContainer>
-          <Tabs.List aria-label="Tools">
-            <Tabs.Tab id="servers">
-              <Boxes size={14} />
-              MCP servers{servers.size ? ` · ${servers.size}` : ""}
-              <Tabs.Indicator />
-            </Tabs.Tab>
-            <Tabs.Tab id="skills">
-              <Sparkles size={14} />
-              Skills{skills.size ? ` · ${skills.size}` : ""}
-              <Tabs.Indicator />
-            </Tabs.Tab>
-          </Tabs.List>
-        </Tabs.ListContainer>
-      </Tabs>
+        options={[
+          {
+            id: "servers",
+            label: (
+              <>
+                <Boxes size={14} />
+                MCP servers{servers.size ? ` · ${servers.size}` : ""}
+              </>
+            ),
+          },
+          {
+            id: "skills",
+            label: (
+              <>
+                <Sparkles size={14} />
+                Skills{skills.size ? ` · ${skills.size}` : ""}
+              </>
+            ),
+          },
+        ]}
+      />
       {rows.length > 6 && (
         <TextField aria-label="Search" value={query} onChange={setQuery} className="field">
           <Input type="search" placeholder={`Search ${rows.length} ${tab === "servers" ? "servers" : "skills"}`} />

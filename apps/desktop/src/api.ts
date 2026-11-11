@@ -51,7 +51,10 @@ export async function signInToInfisical(connection: Connection) {
   const r = await request<{ url?: string; opened: boolean }>(connection, "/logins/infisical/signin", "POST");
   if (r.url && !r.opened) await openExternal(r.url);
 }
-export const localAction = (action: string, connection: Connection) =>
+/** The commands `local_action` in src-tauri/src/lib.rs runs with this machine's own CLI. */
+export type LocalAction =
+  "install" | "start" | "stop" | "setup" | "primary-on" | "primary-off" | "mcp-on" | "mcp-off" | "admin-token";
+export const localAction = (action: LocalAction, connection: Connection) =>
   invoke<string>("local_action", { action, connection });
 export const localConnection = () => invoke<Connection>("local_connection");
 export const loadConnection = () => invoke<Connection>("load_connection");

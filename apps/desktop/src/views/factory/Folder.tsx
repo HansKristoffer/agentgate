@@ -6,7 +6,7 @@ import { factoryOp } from "../../api.ts";
 import { Empty, Field, Modal, Panel } from "../../components/ui.tsx";
 import { useDaemon } from "../../useDaemon.ts";
 import { field } from "../utils.ts";
-import { ReadFailed, type Run } from "./Settings.tsx";
+import { ReadFailed, type Run } from "./parts.tsx";
 
 /** `agentgate factory folder`: the files of the folder agentgate stores, edited one at a time. The daemon refuses a
  * save that leaves a folder that does not load, and says which file and field. */

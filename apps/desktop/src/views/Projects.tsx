@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
-import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
-import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../components/ui.tsx";
+import { Button, Input, TextField, toast } from "@heroui/react";
+import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu, Segmented } from "../components/ui.tsx";
 import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
 import { useApp } from "../AppContext.tsx";
@@ -260,24 +260,15 @@ export function Projects(props: ViewProps) {
           close={() => setEdit(undefined)}
         >
           {local && !edit.id && !edit.virtual && (
-            <Tabs
-              className="segmented"
-              selectedKey={find ? "find" : "type"}
-              onSelectionChange={(key) => setFind(key === "find")}
-            >
-              <Tabs.ListContainer>
-                <Tabs.List aria-label="How to choose the repository">
-                  <Tabs.Tab id="type">
-                    Repository
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                  <Tabs.Tab id="find">
-                    Find on this machine
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                </Tabs.List>
-              </Tabs.ListContainer>
-            </Tabs>
+            <Segmented
+              label="How to choose the repository"
+              value={find ? "find" : "type"}
+              onChange={(id) => setFind(id === "find")}
+              options={[
+                { id: "type", label: "Repository" },
+                { id: "find", label: "Find on this machine" },
+              ]}
+            />
           )}
           {find && !edit.id ? (
             <>

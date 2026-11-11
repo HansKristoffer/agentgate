@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { Button } from "@heroui/react";
 import { isVirtual, type Project, type ProjectChange, type ServerSummary, type Status } from "@agentgate/protocol";
 import { getUniqueValues } from "hanzio";
-import { Check, Empty } from "./ui.tsx";
+import { Check, Empty, Modal } from "./ui.tsx";
 import { repoClashes } from "../skill-assignment.ts";
 
 function AssignmentChecks({
@@ -13,7 +14,7 @@ function AssignmentChecks({
   name: string;
   choices: { id: string; label?: string; detail?: string; selected: boolean }[];
 }) {
-  // What was chosen when the form opened, for projectChange. A row another machine adds later starts from it too.
+  // What was chosen when the form opened, for AssignProjects. A row another machine adds later starts from it too.
   const [opened] = useState(() => choices.filter((c) => c.selected).map((c) => c.id));
   return (
     <fieldset className="checklist">
@@ -42,13 +43,40 @@ function AssignmentChecks({
   );
 }
 
-/** The projects a "Use in" form added and removed since it opened, so saving it leaves alone a change another machine
- * made meanwhile. */
-export function projectChange(form: HTMLFormElement): ProjectChange {
-  const f = new FormData(form);
-  const now = f.getAll("project") as string[],
-    opened = f.getAll("project-opened") as string[];
-  return { add: now.filter((p) => !opened.includes(p)), remove: opened.filter((p) => !now.includes(p)) };
+/** A "Use in" dialog around `ProjectChecks` or `ServerProjectChecks`. `save` gets the projects added and removed since
+ * it opened, so saving leaves alone a change another machine made meanwhile, and every project now chosen. */
+export function AssignProjects({
+  title,
+  note = "Repositories appear here once a session starts in them, or after you add or scan them in Projects.",
+  close,
+  save,
+  children,
+}: {
+  title: string;
+  note?: string;
+  close: () => void;
+  save: (change: ProjectChange, chosen: string[]) => void;
+  children: ReactNode;
+}) {
+  return (
+    <Modal title={title} close={close}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          const now = f.getAll("project") as string[],
+            opened = f.getAll("project-opened") as string[];
+          save({ add: now.filter((p) => !opened.includes(p)), remove: opened.filter((p) => !now.includes(p)) }, now);
+        }}
+      >
+        {children}
+        <p className="note">{note}</p>
+        <Button type="submit" size="sm">
+          Save
+        </Button>
+      </form>
+    </Modal>
+  );
 }
 
 /** `skills` are the skills being assigned; the every-session choice warns when a local repository has its own by that name. */

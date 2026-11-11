@@ -17,7 +17,7 @@ import {
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ServerProjectChecks, projectChange } from "../components/Assignments.tsx";
+import { AssignProjects, ServerProjectChecks } from "../components/Assignments.tsx";
 import type { Perform, ViewProps } from "../types.ts";
 import { control, openExternal, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -260,26 +260,18 @@ export function Servers({ data, connection, perform }: ViewProps) {
         <ToolSettings preview={tools} connection={connection} perform={perform} close={() => setTools(undefined)} />
       )}
       {assigning && (
-        <Modal title={`Where ${assigning.label ?? assigning.id} is used`} close={() => setAssign(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const change = projectChange(e.currentTarget);
-              void perform(async () => {
-                await control(connection, "mcp projects", { id: assigning.id, ...change });
-                setAssign(undefined);
-              }, "Saved. Running sessions pick up the change.");
-            }}
-          >
-            <ServerProjectChecks data={data} server={assigning} />
-            <p className="note">
-              Repositories appear here once a session starts in them, or after you add or scan them in Projects.
-            </p>
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        </Modal>
+        <AssignProjects
+          title={`Where ${assigning.label ?? assigning.id} is used`}
+          close={() => setAssign(undefined)}
+          save={(change) =>
+            void perform(async () => {
+              await control(connection, "mcp projects", { id: assigning.id, ...change });
+              setAssign(undefined);
+            }, "Saved. Running sessions pick up the change.")
+          }
+        >
+          <ServerProjectChecks data={data} server={assigning} />
+        </AssignProjects>
       )}
       {rename && (
         <Modal title="Rename server" close={() => setRename(undefined)}>

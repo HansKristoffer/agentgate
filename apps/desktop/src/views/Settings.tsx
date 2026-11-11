@@ -5,7 +5,7 @@ import { Button } from "@heroui/react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Modal, Panel, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { backupFile, localAction, restoreFile } from "../api.ts";
+import { backupFile, localAction, restoreFile, type LocalAction } from "../api.ts";
 import { DaemonCapabilities, PoolSettings } from "../features/proxy/PoolSettings.tsx";
 
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
@@ -13,7 +13,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
   const [secrets, setSecrets] = useState(false);
   // cursorMcp is absent when the machine has no Cursor (setup skips it), so only Claude Code counts then.
   const mcpOn = !!desktop?.mcp && desktop.cursorMcp !== false;
-  const action = (name: string) =>
+  const action = (name: LocalAction) =>
     perform(async () => setOutput(await localAction(name, connection)), "Command completed");
   return (
     <>

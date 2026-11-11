@@ -2,10 +2,21 @@ import { useState } from "react";
 import { CircleHelp, ExternalLink, Pin, Plus } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { typedSwitch } from "hanzio";
-import { Button, Tabs } from "@heroui/react";
+import { Button } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
 import { useAccountLogin } from "../components/Login.tsx";
-import { Badge, Choice, Empty, Field, Modal, Panel, HeaderActions, RowMenu, usePending } from "../components/ui.tsx";
+import {
+  Badge,
+  Choice,
+  Empty,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+  RowMenu,
+  Segmented,
+  usePending,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import {
   DesktopAlerts,
@@ -20,7 +31,7 @@ import { control, request } from "../api.ts";
 import { accountProblem, accountState } from "@agentgate/protocol/attention";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
-import { field, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
+import { field, providerIcon, providerName, providerOptions, toolName, confirmDelete, planName } from "./utils.ts";
 
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
@@ -83,7 +94,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
         ? "Enable this account to pin it"
         : needsLogin(a)
           ? "Sign in again to pin this account"
-          : `Pin: ${a.account.provider === "claude" ? "Claude Code" : "Codex"} prefers this account while it has room`;
+          : `Pin: ${toolName(a.account.provider)} prefers this account while it has room`;
   const setPin = async (a: AccountStatus, pinned: boolean) => {
     let saved = false;
     await perform(
@@ -343,26 +354,12 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       ))}
       {add && (
         <Modal title="Add an account" close={() => setAdd(false)}>
-          <Tabs
-            className="segmented"
-            selectedKey={mode}
-            onSelectionChange={(key) => setMode(key as "login" | "import")}
-          >
-            <Tabs.ListContainer>
-              <Tabs.List aria-label="How to add the account">
-                <Tabs.Tab id="login">
-                  Sign in
-                  <Tabs.Indicator />
-                </Tabs.Tab>
-                {local && (
-                  <Tabs.Tab id="import">
-                    Import login
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                )}
-              </Tabs.List>
-            </Tabs.ListContainer>
-          </Tabs>
+          <Segmented
+            label="How to add the account"
+            value={mode}
+            onChange={setMode}
+            options={[{ id: "login", label: "Sign in" }, local && { id: "import", label: "Import login" }]}
+          />
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -380,16 +377,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                 }, "Account imported");
             }}
           >
-            <Choice
-              label="Provider"
-              name="provider"
-              defaultValue="claude"
-              options={[
-                { id: "claude", label: "Claude" },
-                { id: "codex", label: "Codex" },
-                { id: "cursor", label: "Cursor" },
-              ]}
-            />
+            <Choice label="Provider" name="provider" defaultValue="claude" options={providerOptions} />
             <Field label="Label" name="label" placeholder="e.g. Personal or Work" />
             {mode === "import" && (
               <>

@@ -6,6 +6,7 @@ import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { Badge, Choice, Empty, Field, Modal, Panel } from "../components/ui.tsx";
 import { useDaemon } from "../useDaemon.ts";
+import { providerOptions } from "./utils.ts";
 
 export function ActivityView({ data, connection, perform }: ViewProps) {
   const [query, setQuery] = useState(""),
@@ -120,12 +121,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
       >
         <div className="item stack" key={cleared}>
           <div className="activity-filters">
-            {choice("provider", "Provider", [
-              { id: "", label: "All providers" },
-              { id: "claude", label: "Claude" },
-              { id: "codex", label: "Codex" },
-              { id: "cursor", label: "Cursor" },
-            ])}
+            {choice("provider", "Provider", [{ id: "", label: "All providers" }, ...providerOptions])}
             {choice(
               "outcome",
               "Outcome",

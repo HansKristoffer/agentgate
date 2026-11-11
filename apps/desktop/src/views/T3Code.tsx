@@ -16,7 +16,7 @@ import {
 import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle, ActionButton } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
-import { OpenInT3 } from "./Factory.tsx";
+import { OpenInT3 } from "./factory/parts.tsx";
 import { ago, elapsed, field, since } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
 

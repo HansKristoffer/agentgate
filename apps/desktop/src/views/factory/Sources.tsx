@@ -1,14 +1,13 @@
 import { useState } from "react";
-import { Button, Tabs, toast } from "@heroui/react";
+import { Button, toast } from "@heroui/react";
 import { Plus } from "lucide-react";
 import { weekdays, type FactoryBoard, type FactorySourceAddInput, type Weekday } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { factoryOp, openExternal } from "../../api.ts";
-import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
+import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel, Segmented } from "../../components/ui.tsx";
 import { ago, field, relative } from "../utils.ts";
-import { OpenInT3 } from "../Factory.tsx";
+import { OpenInT3, type Run } from "./parts.tsx";
 
-type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 type Kind = "webhook" | "scout";
 
 const DAY_LABELS: Record<Weekday, string> = {
@@ -144,24 +143,15 @@ function SourceDialog({
             />
             <div className="row">
               <strong className="grow">Schedule</strong>
-              <Tabs
-                className="segmented"
-                selectedKey={when}
-                onSelectionChange={(key) => setWhen(key as "every" | "at")}
-              >
-                <Tabs.ListContainer>
-                  <Tabs.List aria-label="Schedule">
-                    <Tabs.Tab id="every">
-                      Every interval
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                    <Tabs.Tab id="at">
-                      At a time
-                      <Tabs.Indicator />
-                    </Tabs.Tab>
-                  </Tabs.List>
-                </Tabs.ListContainer>
-              </Tabs>
+              <Segmented
+                label="Schedule"
+                value={when}
+                onChange={setWhen}
+                options={[
+                  { id: "every", label: "Every interval" },
+                  { id: "at", label: "At a time" },
+                ]}
+              />
             </div>
             {when === "every" ? (
               <Field

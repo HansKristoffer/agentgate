@@ -1,6 +1,7 @@
 import { Button } from "@heroui/react";
 import type { Provider, Settings } from "@agentgate/protocol";
 import { Choice, Field } from "../../components/ui.tsx";
+import { providerOptions } from "../../views/utils.ts";
 
 export function ModelAliases({
   aliases,
@@ -26,11 +27,7 @@ export function ModelAliases({
             onChange={(v) =>
               change(aliases.map((row, i) => (i === index ? { ...row, provider: String(v) as Provider } : row)))
             }
-            options={[
-              { id: "claude", label: "Claude" },
-              { id: "codex", label: "Codex" },
-              { id: "cursor", label: "Cursor" },
-            ]}
+            options={providerOptions}
           />
           <Field
             label="Client model name"

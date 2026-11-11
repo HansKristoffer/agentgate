@@ -8,20 +8,7 @@ import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "
 import { useDaemon } from "../../useDaemon.ts";
 import { field } from "../utils.ts";
 import { StoredFolder } from "./Folder.tsx";
-
-export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
-
-/** What a panel shows when its read failed, in place of "Loading…" that would never end. */
-export function ReadFailed({ error, retry }: { error: string; retry: () => unknown }) {
-  return (
-    <>
-      <p className="danger">{error}</p>
-      <Button size="sm" variant="tertiary" onPress={retry}>
-        Try again
-      </Button>
-    </>
-  );
-}
+import { ReadFailed, type Run } from "./parts.tsx";
 
 /** The secrets factory.yaml names, set and delete. Loopback only, like the operations: values never cross the network
  * from the app. */
