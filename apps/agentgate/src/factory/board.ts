@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
 import { localView, peerView, type ViewThread } from "../handoff/threads.ts";
+import { lastSeen } from "../sync.ts";
 import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { needsYouLines } from "./needs-you.ts";
@@ -22,6 +23,8 @@ import { frozenItems } from "./view.ts";
 const PEER_EVERY = 10_000;
 /** How long the token-less page's board is reused: every open page asks for it. */
 const PAGE_EVERY = 5000;
+/** A factory machine heard from within this long is asked for its board; sync hears from it every 15 s. */
+const SEEN_WITHIN = 60_000;
 
 export function setup(f: FactoryRuntime) {
   f.page = (req, listener) => respond(f, req, listener);
@@ -75,23 +78,26 @@ export function setup(f: FactoryRuntime) {
 export async function boardView(f: FactoryRuntime, opts: BoardOptions): Promise<FactoryBoard> {
   const pointer = f.pointer();
   if (!pointer || f.isFactoryNode()) return buildBoard(f, opts);
-  try {
-    // A paired machine's own board, passed through: parsing it here again would show a newer factory machine, whose
-    // board has a field or value this one does not know, as offline.
-    const path = `/factory/board${opts.allThreads ? "?all=1" : ""}`;
-    const board = await peerCall<FactoryBoard>(f.s, pointer.node, path, { timeout: 8000 });
+  // A paired machine's own board, passed through: parsing it here again would show a newer factory machine, whose
+  // board has a field or value this one does not know, as offline. A machine unseen for a minute is not asked, or
+  // every board read would wait out the timeout.
+  const path = `/factory/board${opts.allThreads ? "?all=1" : ""}`;
+  const remote =
+    f.s.now() - lastSeen(f.s, pointer.node) <= SEEN_WITHIN
+      ? await peerCall<FactoryBoard>(f.s, pointer.node, path, { timeout: 8000 }).catch(() => undefined)
+      : undefined;
+  if (remote) {
     const frozen = frozenItems(f);
-    return strip({ ...board, node: f.s.nodeId, frozen: frozen.length ? frozen : undefined }, opts);
-  } catch {
-    // The factory machine is unreachable or runs an older agentgate: show this machine's board, the factory offline,
-    // with a failing check, since without that machine's items it looks empty and healthy.
-    const board = await buildBoard(f, opts);
-    return {
-      ...board,
-      checks: [unreachableCheck(f, pointer.node), ...board.checks],
-      factory: board.factory && { ...board.factory, online: false },
-    };
+    return strip({ ...remote, node: f.s.nodeId, frozen: frozen.length ? frozen : undefined }, opts);
   }
+  // Unseen, unreachable or an older agentgate: this machine's board, the factory offline, with a failing check, since
+  // without that machine's items it looks empty and healthy.
+  const board = await buildBoard(f, opts);
+  return {
+    ...board,
+    checks: [unreachableCheck(f, pointer.node), ...board.checks],
+    factory: board.factory && { ...board.factory, online: false },
+  };
 }
 
 /** `allThreads` lists every open thread under Machines, not only the factory's: `factory status --all`. */

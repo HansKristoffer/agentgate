@@ -25,7 +25,10 @@ import {
   t3Client,
   t3State,
 } from "../src/handoff/t3.ts";
+import { allNodes } from "../src/handoff/threads.ts";
 import { Store } from "../src/store.ts";
+import { nodeThreadsSchema } from "@agentgate/protocol";
+import { startNodes } from "./fixtures/nodes.ts";
 
 afterAll(removeTmp);
 
@@ -336,6 +339,26 @@ test("the t3 command is the running T3 Code server's own binary when T3 Code nam
   });
   process.env.T3CODE_HOME = home;
   expect(t3Host.t3()).toBe(bin);
+});
+
+test("a machine whose thread view this one cannot read is listed with an error, and the others stay listed", async () => {
+  const [a, b] = await startNodes("a", "b");
+  stops.push(a!.stop, b!.stop);
+  const odd = Bun.serve({
+    port: 0,
+    fetch: () => Response.json({ t3: { connected: true }, threads: [{ id: 1 }], jobs: [] }),
+  });
+  stops.push(() => odd.stop(true));
+  a!.s.db.run("insert into peers values ('c', ?, 'tok', 0, ?)", [`http://127.0.0.1:${odd.port}`, a!.s.now()]);
+  a!.s.put("node", "c", { id: "c" });
+
+  const views = await allNodes(a!.ctx.handoffs);
+  // What the app parses the list with: one bad entry would fail all of it.
+  expect(nodeThreadsSchema.array().safeParse(views).success).toBe(true);
+  const byNode = new Map(views.map((v) => [v.node, v]));
+  expect(byNode.get("b")).toMatchObject({ online: true, threads: [] });
+  expect(byNode.get("b")!.error).toBeUndefined();
+  expect(byNode.get("c")).toMatchObject({ threads: [], error: expect.stringContaining("cannot read") });
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {

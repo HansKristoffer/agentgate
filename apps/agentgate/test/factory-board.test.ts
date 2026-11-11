@@ -400,6 +400,23 @@ test("on another machine, GET /api/factory and factory status show the factory m
   expect(output).toContain("  a (this machine): 0 threads");
 });
 
+test("a factory machine unheard from for over a minute is not asked for its board, which shows it offline", async () => {
+  const [a, b] = await startNodes("a", "b");
+  cleanup.push(a!.stop, b!.stop);
+  for (const n of [a!, b!]) useFactory(n.s, "b");
+  let asked = 0;
+  b!.ctx.factory.boardParts.push(async () => {
+    asked++;
+    return {};
+  });
+  a!.s.now = () => Date.now() + 61_000;
+
+  const board = (await (await caller(app(a!.ctx))("/api/factory")).json()) as FactoryBoard;
+  expect(board.factory).toMatchObject({ node: "b", online: false });
+  expect(board.checks.map((c) => c.id)).toContain("factory-machine");
+  expect(asked).toBe(0);
+});
+
 /** Just enough DOM for the board page's script: elements with text, classes and children. */
 class FakeElement {
   className = "";

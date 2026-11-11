@@ -171,8 +171,8 @@ function Main({
   // Read while the factory is off too: the Factory page shows the way to turn it on from the same board.
   const boardRead = useDaemon(ready && (() => factoryBoard(connection)), {
     topics: ["factory"],
-    // This daemon's feed does not carry the changes of a factory on another machine, so that board is asked more often.
-    every: factory && factory.node !== data.node ? 10_000 : undefined,
+    // The daemon's feed carries a factory on another machine only over Tailscale; over a relay this poll is all there is.
+    every: factory && factory.node !== data.node ? 30_000 : undefined,
     hidden: 60_000,
   });
   const board = boardRead.data;

@@ -20,6 +20,7 @@ import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Kind, type Store } from "./st
 import {
   PULL_INTERVAL,
   drainPulls,
+  followPeers,
   noteSyncRound,
   noteSyncTurn,
   peerRoutes,
@@ -44,6 +45,7 @@ import { keepMcp, PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
 import { handoffSource } from "./handoff/tools.ts";
+import { forgetView } from "./handoff/threads.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
 import { createFactoryRuntime } from "./factory/features.ts";
@@ -139,6 +141,10 @@ export function makeCtx(
   ctx.factory = createFactoryRuntime(ctx);
   // After the features, whose peer routes the relay serves too.
   ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
+  followPeers(s, ctx.changes, ctx.abort.signal, (node, topic) => {
+    if (topic === "threads") forgetView(handoffs, node);
+    ctx.changes.bumpFromPeer(topic);
+  });
   gateway.builtin = () => handoffSource(handoffs, ctx.factory);
   gateway.factoryTools = (project) => factoryToolsSource(ctx.factory, project);
   gateway.scope = (thread) => threadScope(ctx.factory, thread);
@@ -235,7 +241,10 @@ export function app(ctx: Ctx) {
   });
 
   // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route("/peer", peerRoutes(s).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer));
+  app.route(
+    "/peer",
+    peerRoutes(s, undefined, ctx.changes).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer),
+  );
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).

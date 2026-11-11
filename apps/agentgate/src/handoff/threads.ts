@@ -1,6 +1,7 @@
 import {
   firstServer,
   handoffTargets,
+  nodeThreadsSchema,
   type HandoffCancel,
   type HandoffJob,
   type NodeThreads,
@@ -12,7 +13,7 @@ import { getErrorMessage, getUniqueValues, isTruthy, partition } from "hanzio";
 import { lastSeen } from "../sync.ts";
 import { peerCall, transport, type Handoffs } from "./jobs.ts";
 import { cancelHandoff, startHandoff, type SourceState } from "./source.ts";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   isWorkingStatus,
   T3Error,
@@ -170,6 +171,21 @@ export async function allNodes(h: Handoffs): Promise<NodeThreads[]> {
   );
 }
 
+/** A node's answer to `GET /peer/threads`. Unknown fields from newer nodes are dropped; a node whose answer does not
+ * fit is listed with an error, never the reason the others go missing. */
+const peerAnswer = nodeThreadsSchema.pick({ t3: true, jobs: true, error: true }).extend({
+  threads: z.array(nodeThreadsSchema.shape.threads.element.extend({ needsYou: z.boolean().optional() })),
+});
+
+/** How long a node's view is reused: the app, the board and the MCP tools each read every node's at once. */
+const VIEW_TTL = 2000;
+const viewKey = (node: string) => `view:${node}`;
+
+/** Drops a node's reused view once that node says its threads changed (sync.ts followPeers). */
+export function forgetView(h: Handoffs, node: string) {
+  h.cache.delete(viewKey(node));
+}
+
 /** Another node's view through `GET /peer/threads`, or why it cannot be read. */
 export async function peerView(
   h: Handoffs,
@@ -179,14 +195,16 @@ export async function peerView(
   const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
   if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };
   if (!online) return { ...base, error: "offline" };
-  try {
-    return {
-      ...base,
-      ...(await peerCall<Awaited<ReturnType<typeof localView>>>(h.s, n.id, "/threads", { timeout: 8000 })),
-    };
-  } catch (e) {
-    return { ...base, error: getErrorMessage(e) };
-  }
+  const read = async () => {
+    try {
+      const answer = peerAnswer.safeParse(await peerCall(h.s, n.id, "/threads", { timeout: 8000 }));
+      if (!answer.success) return { error: `${n.id} answered with threads this machine cannot read; update agentgate` };
+      return answer.data;
+    } catch (e) {
+      return { error: getErrorMessage(e) };
+    }
+  };
+  return { ...base, ...(await h.cache.getOrSet(viewKey(n.id), read, { ttlMs: VIEW_TTL })) };
 }
 
 export async function resolveTarget(
