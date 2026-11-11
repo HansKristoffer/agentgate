@@ -569,6 +569,63 @@ test("watch setup failures and emitted errors are recoverable and close allocate
   expect(closes).toBe(3);
 });
 
+test("in the git dir only a worktrees change schedules a sync, not git status rewriting index", () => {
+  const { s, root, repo, links: initial } = setup();
+  initial.close();
+  const events = new Map<string, (event: string, name: string | null) => void>();
+  const factory = ((path: string, callback: (event: string, name: string | null) => void) => {
+    events.set(path, callback);
+    return watch(path, () => {});
+  }) as typeof watch;
+  const links = new SkillLinks(s, root, () => [], { watch: factory });
+  try {
+    writeSkillMd(s, "x", "instructions");
+    setSkillProjects(s, "x", ["owner/repo"]);
+    links.register(repo, "owner/repo");
+    const soon = spyOn(links, "soon");
+    const gitDir = events.get(join(repo, ".git"))!;
+    gitDir("change", "index");
+    gitDir("rename", "index.lock");
+    expect(soon).not.toHaveBeenCalled();
+    gitDir("rename", "worktrees");
+    expect(soon).toHaveBeenCalledTimes(1);
+  } finally {
+    links.close();
+  }
+});
+
+test("a pass that changes nothing writes no skill health or mirror ownership", () => {
+  const { s, repo, links } = setup();
+  writeSkillMd(s, "x", "instructions");
+  setSkillProjects(s, "x", ["owner/repo"]);
+  mkdirSync(join(repo, ".claude", "skills", "native"), { recursive: true });
+  writeFileSync(join(repo, ".claude", "skills", "native", "SKILL.md"), md("native"));
+  links.register(repo, "owner/repo");
+  links.setMirroring(repo, true);
+  const writes = spyOn(s, "setLocal");
+  links.sync();
+  links.sync();
+  expect(writes.mock.calls.map(([key]) => key)).toEqual([]);
+});
+
+test("a sync that throws in the debounce timer is logged by name, and the daemon keeps running", async () => {
+  const { links } = setup();
+  const thrown = Promise.withResolvers<void>();
+  spyOn(links, "sync").mockImplementationOnce(() => {
+    thrown.resolve();
+    throw new Error("database is locked near TOKEN=secret");
+  });
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    links.soon();
+    await thrown.promise;
+    links.close();
+    expect(errors.mock.calls.map((c) => c.join(" "))).toEqual(["skills: sync failed: Error"]);
+  } finally {
+    errors.mockRestore();
+  }
+});
+
 test("a repository's skills are read from .claude/skills and .agents/skills, skipping mirrors and unreadable ones", () => {
   const { dir } = setup();
   const repo = join(dir, "gh");

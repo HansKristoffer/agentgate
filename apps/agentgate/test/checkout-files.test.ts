@@ -221,6 +221,41 @@ test("concurrent edits on two machines: each file goes to its newer save, and a 
   expect(contents(join(b.root, KEY))).toEqual(want);
 });
 
+test("a store that vanished deletes nothing: it is refilled from the record", () => {
+  const a = node("a");
+  pair(a);
+  fixtureStore(join(a.root, KEY), {
+    ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+    "apps/web/.env": { data: "W=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
+  });
+  files(a).sync();
+  // A cleaned-up ~/.buncargo, a restore or another HOME.
+  rmSync(join(a.root, KEY), { recursive: true });
+  files(a).sync();
+  const record = a.s.get("project", "bliss-budget/budget-app")!;
+  expect(record.files!.filter((f) => f.deleted)).toEqual([]);
+  expect(contents(join(a.root, KEY))).toEqual({ ".env": "V=1\n", "apps/web/.env": "W=1\n" });
+});
+
+test("a sync that throws in the debounce timer is logged by name, and the daemon keeps running", async () => {
+  const a = node("a");
+  const f = files(a);
+  const thrown = Promise.withResolvers<void>();
+  spyOn(f, "sync").mockImplementationOnce(() => {
+    thrown.resolve();
+    throw new Error("database is locked near TOKEN=secret");
+  });
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    f.soon();
+    await thrown.promise;
+    f.close();
+    expect(errors.mock.calls.map((c) => c.join(" "))).toEqual(["checkout files: sync failed: Error"]);
+  } finally {
+    errors.mockRestore();
+  }
+});
+
 test("a store in a format this agentgate does not know is left alone, and old nodes hold the record back", () => {
   const a = node("a"),
     old = node("old", 5);
