@@ -722,10 +722,16 @@ test("a comment claimed just before a restart is posted once by the next daemon,
 
   // A send whose answer never comes, then a restart: it may have reached GitHub, so it is never sent again.
   const realGh = host.gh;
-  host.gh = (args, stdin) => (args[1]?.endsWith("/1/comments") ? new Promise(() => {}) : realGh(args, stdin));
+  let sending!: () => void;
+  const sent = new Promise<void>((resolve) => (sending = resolve));
+  host.gh = (args, stdin) => {
+    if (!args[1]?.endsWith("/1/comments")) return realGh(args, stdin);
+    sending();
+    return new Promise(() => {});
+  };
   cleanup.push(() => (host.gh = realGh));
   writeBack(m.f, items.get(m.s, item.id)!, "closed", { text: "Out of scope." });
-  await Bun.sleep(10);
+  await sent;
   const later = await m.restart();
   host.gh = realGh;
   await loopTask(

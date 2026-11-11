@@ -298,7 +298,8 @@ test("when the factory moves to another machine, this one closes its hook socket
   n.s.put("setting", "settings", { ...n.s.settings(), factory: { ...n.s.settings().factory!, node: "b" } });
   n.ctx.remote.reconcile();
   await n.until(() => relay.sockets.get(key)?.readyState === WebSocket.CLOSED, "the hook socket to close");
-  await Bun.sleep(50); // a queued deletion is sent without being awaited
+  // Every deletion of a relay endpoint is queued first, and this one was not.
+  expect(n.s.local("remote:delete")).toBeUndefined();
   expect(relay.deletes).toEqual([]);
   expect(getSecret(n.s, "~hook:alerts")).toBeDefined();
 });

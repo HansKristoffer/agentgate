@@ -5,7 +5,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { mirrorOf, timing } from "../src/factory/mirror.ts";
 import { FACTORY_PAGE } from "../src/factory/page.ts";
-import { connectT3 } from "../src/handoff/t3.ts";
+import * as t3 from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
@@ -46,7 +46,7 @@ function fixture() {
 async function withT3(s: Store, routes?: (req: Request) => Response | undefined) {
   const fake = fakeT3({ claudeDir: tmp(), routes });
   cleanup.push(fake.stop);
-  await connectT3(s, { url: fake.url, token: fake.pairingToken() });
+  await t3.connectT3(s, { url: fake.url, token: fake.pairingToken() });
   return fake;
 }
 
@@ -163,11 +163,16 @@ test("a machine that does not run the factory opens no stream, even with open it
     phase: "implement",
     configCommit: "c0ffee",
   });
+  // A mirror that starts its stream asks for a T3 client at once, before anything is awaited.
+  const clients = spyOn(t3, "t3Client");
+  cleanup.push(() => clients.mockRestore());
   const mirror = mirrorOf(f);
-  await Bun.sleep(100);
+  expect(clients).not.toHaveBeenCalled();
   expect(mirror.status().stream).toBe("down");
 
   useFactory(s, "a");
+  mirrorOf(f);
+  expect(clients).toHaveBeenCalled();
   await until(() => mirrorOf(f).status().stream === "live", "the stream");
 });
 
