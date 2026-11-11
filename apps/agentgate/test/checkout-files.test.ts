@@ -326,6 +326,43 @@ test("in a buncargo checkout, buncargo's status picks what a handoff carries and
   expect(readFileSync(join(cwd, "calls.log"), "utf8")).toBe(`${home} files status --json\n${home} files pull\n`);
 });
 
+test("closing stops a running buncargo together with the processes it started", async () => {
+  const root = join(tmp(), ".buncargo", "files"),
+    cwd = tmp();
+  fakeBuncargo(cwd);
+  // This buncargo starts a child of its own, writes both pids once it has, and hangs.
+  writeFileSync(
+    join(cwd, "node_modules", "buncargo", "cli.js"),
+    `const { spawn } = require("node:child_process");
+const { renameSync, writeFileSync } = require("node:fs");
+const child = spawn("sleep", ["30"], { stdio: "ignore" });
+writeFileSync("pids.tmp", process.pid + " " + child.pid);
+renameSync("pids.tmp", "pids");
+setInterval(() => {}, 1000);
+`,
+  );
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const pull = fillCheckout(root, cwd, KEY);
+  const pidsFile = join(cwd, "pids");
+  while (!existsSync(pidsFile)) await Bun.sleep(10);
+  const pids = readFileSync(pidsFile, "utf8").split(" ").map(Number);
+  try {
+    files(node("mac")).close();
+    await expect(pull).rejects.toThrow("buncargo files pull failed");
+    // The orphaned child is gone once init reaps it, shortly after the kill.
+    while (pids.some(alive)) await Bun.sleep(10);
+  } finally {
+    for (const pid of pids.filter(alive)) process.kill(pid, "SIGKILL");
+  }
+});
+
 test("a handed-off file replaces the checkout's copy only when that copy has no edits of its own", () => {
   const root = tmp(),
     cwd = tmp();
