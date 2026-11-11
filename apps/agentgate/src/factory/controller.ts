@@ -251,8 +251,13 @@ function freeKey(f: FactoryRuntime, key: string) {
   return candidate;
 }
 
-/** One item per issue, whichever source took it in. A new item is held, or enters triage with a queued triage run, and
- * its issue hears that the factory took it. */
+/** Whether a new item waits for approval before triage. A source's `intake: hold` holds that source's items, and
+ * `start: manual` in stages/triage.md holds every new item, as if each source said `intake: hold`. */
+export const holdsNewItems = (f: FactoryRuntime, intake: "auto" | "hold" = "auto") =>
+  intake === "hold" || currentFolder(f)?.stages.triage?.file.start === "manual";
+
+/** One item per issue, whichever source took it in. A new item is held (`hold`, or `holdsNewItems`), or enters triage
+ * with a queued triage run, and its issue hears that the factory took it. */
 export function addItem(
   f: FactoryRuntime,
   input: { source: string; repo: string; incoming: IncomingItem; hold?: boolean },
@@ -263,7 +268,7 @@ export function addItem(
   if (existing) return existing;
   const folder = currentFolder(f);
   if (!folder) throw new Error("The factory's folder has not loaded yet; see agentgate factory status");
-  const held = !!input.hold || folder.stages.triage?.file.start === "manual";
+  const held = !!input.hold || holdsNewItems(f);
   const key = freeKey(f, incoming.key);
   const item = items.insert(s, {
     id: newId("it"),
@@ -1227,6 +1232,7 @@ const CLOSING: Partial<Record<Outcome, (r: FactoryReport) => string>> = {
   "not-a-bug": () => "Triage found nothing here for the factory to fix.",
   duplicate: (r) => `This duplicates ${r.duplicateOf}.`,
   "already-fixed": () => "The default branch already fixes this.",
+  "nothing-to-do": () => "There is nothing to do.",
 };
 
 /** The run a call from a T3 thread names, when that thread is the run's own; with `subagents`, also a T3 subagent
@@ -1278,7 +1284,8 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   // The thread could only go on to report once the person answered it.
   if (asksInT3(item, run)) answeredInT3(f, item!, run);
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
-  const closing = CLOSING[report.outcome];
+  // A run without an item, a scout's, has nothing to close: its own accept takes nothing-to-do.
+  const closing = item && CLOSING[report.outcome];
   if (item && closing) await closeItem(f, item, closing(report), report);
   else if (item && asks)
     ask(f, items.get(s, item.id)!, {
@@ -1531,7 +1538,8 @@ const triage = (f: FactoryRuntime) => ({
     return { brief: renderBrief(f, { kind: "triage", run, item, builtIn: TRIAGE_BRIEF }) };
   },
   async accept(report: FactoryReport, _run: FactoryRun, item: FactoryItem) {
-    if (report.result?.kind !== "triage") return closeItem(f, item, "There is nothing to do.", report);
+    // Accept hears only the outcome done, whose result `takeReport` checked is the run's kind.
+    if (report.result?.kind !== "triage") throw new Error("a triage report without its result");
     moveOn(f, item, report.result.route, { moment: "triaged", comment: { report } });
   },
 });

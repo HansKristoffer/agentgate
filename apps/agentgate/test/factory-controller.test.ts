@@ -6,6 +6,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { currentFolder } from "../src/factory/config.ts";
 import { endRun, enqueueRun, setRunState } from "../src/factory/controller.ts";
 import { items, runs } from "../src/factory/db.ts";
+import { admission } from "../src/factory/intake.ts";
 import { loopTask, withItem, type IncomingItem, type SourceAdapter } from "../src/factory/runtime.ts";
 import { setSecret } from "../src/factory/secrets.ts";
 import { t3Mcp } from "../src/factory/t3-mcp.ts";
@@ -203,6 +204,8 @@ test("a triage stage with start: manual holds new items until approve, and intak
     files: { "stages/triage.md": "---\nstart: manual\n---\n" },
   });
   const { polled } = fakeSource(n, {});
+  // A webhook delivery or a scout's finding is held the same way, as if its source said `intake: hold`.
+  expect(admission(n.f, { source: "hook", intake: "auto", dedupeWindow: "7d" })).toEqual({ hold: true });
   await n.command("add", n.repo, "Crash on save");
   const [held] = items.list(n.s);
   expect(held).toMatchObject({ phase: "held", needsYou: { cause: "held" } });

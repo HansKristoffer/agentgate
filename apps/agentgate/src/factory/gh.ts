@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { host } from "../logins.ts";
-import type { PostResult } from "./runtime.ts";
+import { postFailure, type PostResult } from "./runtime.ts";
 
 /**
  * Every GitHub call the factory makes, through this machine's `gh` login (`host.gh`). Each call is classified once, in
@@ -335,11 +335,15 @@ export async function issueComments(
  * nothing says whether it was applied. */
 function written(what: string, r: GhResult): PostResult {
   if (r.kind === "ok") return { status: "posted" };
-  if (r.kind === "limited") return { status: "limited", error: `gh could not ${what} yet: ${r.message}` };
-  if (r.kind === "unreachable") return { status: "unreachable", error: `gh could not ${what}: ${r.message}` };
-  if (r.kind === "unknown")
-    return { status: "uncertain", error: `gh could not ${what}, though GitHub may have taken it: ${r.message}` };
-  return { status: "failed", error: `GitHub refused to ${what}: ${r.message}` };
+  // A 404 is GitHub refusing the write too.
+  const outcome = r.kind === "missing" ? "refused" : r.kind;
+  const said = {
+    limited: `gh could not ${what} yet`,
+    unreachable: `gh could not ${what}`,
+    unknown: `gh could not ${what}, though GitHub may have taken it`,
+    refused: `GitHub refused to ${what}`,
+  }[outcome];
+  return postFailure(outcome, `${said}: ${r.message}`);
 }
 
 // Writes are made with `--include`, so a secondary rate limit's 403 shows by its headers and is sent again later.

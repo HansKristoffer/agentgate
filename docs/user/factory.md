@@ -103,6 +103,8 @@ beside it. [An example](#an-example) shows a whole folder.
 | `sources`                  | GitHub, Linear and webhook sources, up to 50. Scouts are files in `scouts/`. See [Sources](#sources).                                                                                                                                                             |
 | `stages.<stage>.note`      | A note for this project, added after that stage's brief (triage, spec, implement or review) under "For this project", up to 4,000 characters. It keeps the built-in brief and adds to it; see [stages/\<stage\>.md](#stagesstagemd).                              |
 
+An item keeps the `reviewRounds`, `nudges` and `stalledAfter` of the folder it started under, so changing them affects new items only. The other limits apply to every item as soon as the folder loads.
+
 Repository names are matched without regard to case, and a source names a repository listed under `repositories`.
 
 ### stages/\<stage\>.md
@@ -238,7 +240,7 @@ Summarize the change for users in one sentence.
 
 ## Sources
 
-Every source has an `id` (up to 40 lowercase letters, digits and dashes, unique in the file), a `type` and the `repo` its items are fixed in. `intake: hold` makes each new item wait for `agentgate factory approve <item>` before triage; `agentgate factory reject <item>` turns it away.
+Every source has an `id` (up to 40 lowercase letters, digits and dashes, unique in the file), a `type` and the `repo` its items are fixed in. `intake: hold` makes each new item wait for `agentgate factory approve <item>` before triage; `agentgate factory reject <item>` turns it away. Use it on a source anyone outside can feed, such as a webhook or a scout. To approve every new item from every source, items you add by hand included, put `start: manual` in `stages/triage.md` instead; it holds them the same way.
 
 The factory polls every source every 2 minutes, and backs off while one fails. An issue the factory has finished does not come back by itself. `agentgate factory retry api-42` takes it in again while the machine that runs the factory still has the item. Items are kept for 90 days on the machine that worked them, so after `move --now` the new machine cannot retry the old one's.
 

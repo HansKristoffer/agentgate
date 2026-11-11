@@ -1,7 +1,7 @@
 import type { FactoryBoard, FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
-import { closeItem, defaultBranch, moveOn, originBranches } from "./controller.ts";
+import { defaultBranch, moveOn, originBranches } from "./controller.ts";
 import { items, runs, type FactoryItem, type FactoryRun } from "./db.ts";
 import { defaultBranchCi, prView, type CheckState, type PrView } from "./gh.ts";
 import { shortError, type FactoryRuntime, type NoLaunch, type StageLaunch } from "./runtime.ts";
@@ -157,7 +157,7 @@ const implement = (f: FactoryRuntime) => ({
 
   async accept(report: FactoryReport, run: FactoryRun, item: FactoryItem) {
     const { result } = report;
-    if (result?.kind !== "implement") return closeItem(f, item, "There is nothing to do.", report);
+    if (result?.kind !== "implement") throw new Error("an implement report without its result");
     const head = heads.get(report) ?? result.commit;
     // A run that took the PR over keeps what GitHub was already told: the conversations answered and the comments
     // quoted. Its nudges start again.

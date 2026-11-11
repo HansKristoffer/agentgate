@@ -1,7 +1,7 @@
 import type { MarkerPayload, NeedsYou } from "@agentgate/protocol";
 import { act } from "./actions.ts";
 import { currentFolder, durationMs, limits } from "./config.ts";
-import { addItem, intakeState } from "./controller.ts";
+import { addItem, holdsNewItems, intakeState } from "./controller.ts";
 import { items, type FactoryItem } from "./db.ts";
 import { adapterOf, questionRef } from "./outbox.ts";
 import { Backoff, shortError, withItem, type FactoryRuntime, type IncomingItem } from "./runtime.ts";
@@ -55,7 +55,7 @@ export function admission(
 ): "duplicate" | "full" | { hold: boolean } {
   const since = f.s.now() - durationMs(input.dedupeWindow);
   if (input.dedupe && items.hasDedupe(f.s, input.source, input.dedupe, since)) return "duplicate";
-  const hold = input.intake !== "auto" || intakeState(f) !== "on";
+  const hold = holdsNewItems(f, input.intake) || intakeState(f) !== "on";
   if (hold && items.heldCount(f.s, input.source) >= HELD_LIMIT) return "full";
   return { hold };
 }
@@ -92,7 +92,7 @@ export async function pollSource(f: FactoryRuntime, sourceId: string): Promise<v
       if (incoming.updatedAt) markers.set(incoming.externalId, { updatedAt: incoming.updatedAt, marker });
       // Intake is asked after the read: the item before, a pause or a move may have ended it meanwhile.
       if (marker?.state === "finished" || intakeState(f) !== "on") continue;
-      addItem(f, { source: source.id, repo: source.repo, incoming, hold: source.intake === "hold" });
+      addItem(f, { source: source.id, repo: source.repo, incoming, hold: holdsNewItems(f, source.intake) });
     }
     st.markers = markers;
     if (backoff.ok(source.id)) console.log(`factory: the source ${source.id} works again`);
