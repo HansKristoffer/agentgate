@@ -10,7 +10,7 @@ import {
   type RequestPage,
 } from "@agentgate/protocol";
 import { clamp, startTimer } from "hanzio";
-import type { Store } from "../store.ts";
+import type { Data, Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
 export class Telemetry {
@@ -243,40 +243,77 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
   };
 }
 
-/** Every hourly token count this node knows after `?1`: its own, the `tokens` records other nodes publish, and Cursor's
- * account-wide history, which may come from more than one node, once per account and hour. */
-const TOKEN_ROWS = `with remote as (
-    select json_extract(r.value, '$.hour') as hour, json_extract(r.value, '$.provider') as provider, json_extract(r.value, '$.model') as model,
-      json_extract(r.value, '$.account') as account, json_extract(r.value, '$.input') as input, json_extract(r.value, '$.output') as output,
-      json_extract(r.value, '$.cacheRead') as cache_read, json_extract(r.value, '$.cacheWrite') as cache_write
-    from records, json_each(records.data, '$.rows') as r
-    where records.kind = 'tokens' and records.deleted = 0 and json_extract(records.data, '$.node') != ?2
-      and substr(records.id, -10) >= ?3
-  ), cursor as (
-    select hour, model, max(input) as input, max(output) as output, max(cache_read) as cache_read, max(cache_write) as cache_write from (
-      select account, hour, model, input, output, cache_read, cache_write from cursor_tokens
-      union all select account, hour, model, input, output, cache_read, cache_write from remote where provider = 'cursor'
-    ) group by account, hour, model
-  ), rows as (
-    select * from (
-      select hour, provider, model, input, output, cache_read, cache_write from token_usage
-      union all select hour, provider, model, input, output, cache_read, cache_write from remote where provider != 'cursor'
-      union all select hour, 'cursor', model, input, output, cache_read, cache_write from cursor
-    ) where hour > ?1
-  )`;
-const HOUR = 3600000;
-/** An hour bucket counts if any of it is after `since`. */
-const tokenArgs = (s: Store, since: number) => {
-  const after = since - HOUR;
-  return [after, s.nodeId, new Date(Math.max(0, after)).toISOString().slice(0, 10)] as const;
+/** Every hourly token count this node knows after `?1`, summed by `key`: its own, the `tokens` records other nodes
+ * publish (`?2` is this node), and Cursor's account-wide history, which may come from more than one node, once per
+ * account and hour. Each source is summed before the union, so the final sort is over groups rather than every row. */
+const tokenSums = (key: string) => {
+  const sums =
+    "sum(input) as input, sum(output) as output, sum(cache_read) as cache_read, sum(cache_write) as cache_write";
+  return `select ${key}, ${sums} from (
+    select ${key}, ${sums} from token_usage where hour > ?1 group by ${key}
+    union all select ${key}, ${sums} from token_records where hour > ?1 and node != ?2 and provider != 'cursor' group by ${key}
+    union all select ${key}, ${sums} from (
+      select hour, 'cursor' as provider, model, max(input) as input, max(output) as output, max(cache_read) as cache_read, max(cache_write) as cache_write from (
+        select account, hour, model, input, output, cache_read, cache_write from cursor_tokens where hour > ?1
+        union all select account, hour, model, input, output, cache_read, cache_write from token_records where hour > ?1 and node != ?2 and provider = 'cursor'
+      ) group by account, hour, model
+    ) group by ${key}
+  ) group by ${key}`;
 };
+const HOUR = 3600000;
 
-/** TOKEN_ROWS reads every `tokens` record's JSON, about 100 ms on a year of history, and the app asks on every view.
- * An answer is reused for a minute unless a `tokens` record changed since; this node's own counts may lag that minute. */
+/** The rows of every `tokens` record, kept in a node-local table so a read is an indexed sum rather than a parse of
+ * every record's JSON. Records arrive through sync, the relay, backups and the CLI's own connection, so instead of
+ * hooking each, a read first replaces the rows of the records written since the last one, by `seq`. Never synced or
+ * backed up: the records are the source, and a store without the table refills it from them. */
+const tokenTables = new WeakSet<Store>();
+function refreshTokenRecords(s: Store) {
+  if (!tokenTables.has(s)) {
+    s.db.run(
+      "create table if not exists token_records (record text not null, node text not null, hour integer not null, provider text not null, model text not null, account text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (hour, record, provider, model, account)) without rowid",
+    );
+    s.db.run("create index if not exists token_records_record on token_records(record)");
+    // Cursor's few rows are read apart from the rest, to count each account's hour once.
+    s.db.run("create index if not exists token_records_cursor on token_records(hour) where provider = 'cursor'");
+    tokenTables.add(s);
+  }
+  const from = Number(s.local("tokens:table") ?? 0);
+  if (!s.db.query("select 1 from records where seq > ? and kind = 'tokens' limit 1").get(from)) return;
+  s.transaction(() => {
+    const high = s.seq(),
+      insert = s.db.prepare("insert into token_records values (?,?,?,?,?,?,?,?,?,?)");
+    for (const r of s.db
+      .query("select id, deleted, data from records where seq > ? and seq <= ? and kind = 'tokens'")
+      .all(from, high) as { id: string; deleted: number; data: string }[]) {
+      s.db.run("delete from token_records where record = ?", [r.id]);
+      if (r.deleted) continue;
+      const data = JSON.parse(r.data) as Data<"tokens">;
+      for (const row of data.rows)
+        insert.run(
+          r.id,
+          data.node,
+          row.hour,
+          row.provider,
+          row.model,
+          row.account ?? "",
+          row.input,
+          row.output,
+          row.cacheRead,
+          row.cacheWrite,
+        );
+    }
+    s.setLocal("tokens:table", String(high));
+  });
+}
+/** A read sums every hour of history, about 7 ms for a year from three machines, and the app reads on every activity
+ * change, up to once a second while the proxy is busy. An answer is reused for a minute unless a `tokens` record
+ * changed since; this node's own counts may lag that minute. */
 const tokenCache = new WeakMap<Store, Map<string, { at: number; seq: number; value: unknown }>>();
-function cachedTokens<T>(s: Store, name: string, since: number, read: () => T): T {
-  // Every `since` within one hour selects the same buckets, so the app's "now minus 7 days" shares one entry an hour.
-  const key = `${name}:${Math.floor((since - HOUR) / HOUR)}`,
+function cachedTokens<T>(s: Store, name: string, since: number, read: (after: number) => T): T {
+  // An hour bucket counts if any of it is after `since`, so every `since` within one hour selects the same buckets and
+  // the app's "now minus 7 days" shares one entry an hour.
+  const after = since - HOUR,
+    key = `${name}:${Math.floor(after / HOUR)}`,
     now = s.now(),
     seq = (
       s.db.query("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'").get() as { seq: number }
@@ -285,7 +322,8 @@ function cachedTokens<T>(s: Store, name: string, since: number, read: () => T): 
   if (!cache) tokenCache.set(s, (cache = new Map()));
   const hit = cache.get(key);
   if (hit && hit.seq === seq && now - hit.at < 60000) return hit.value as T;
-  const value = read();
+  refreshTokenRecords(s);
+  const value = read(after);
   cache.delete(key);
   cache.set(key, { at: now, seq, value });
   if (cache.size > 8) cache.delete(cache.keys().next().value!);
@@ -298,13 +336,13 @@ export function tokenUsage(s: Store, since = 0): ModelTokens[] {
     s,
     "usage",
     since,
-    () =>
+    (after) =>
       s.db
         .query(
-          `${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
-      from rows group by provider, model order by sum(input + output + cache_read + cache_write) desc`,
+          `select provider, model, input, output, cache_read as cacheRead, cache_write as cacheWrite
+          from (${tokenSums("provider, model")}) order by input + output + cache_read + cache_write desc`,
         )
-        .all(...tokenArgs(s, since)) as ModelTokens[],
+        .all(after, s.nodeId) as ModelTokens[],
   );
 }
 
@@ -314,12 +352,10 @@ export function tokenHours(s: Store, since = 0): TokenHour[] {
     s,
     "hours",
     since,
-    () =>
+    (after) =>
       s.db
-        .query(
-          `${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`,
-        )
-        .values(...tokenArgs(s, since)) as TokenHour[],
+        .query(`select hour, input + output + cache_read + cache_write from (${tokenSums("hour")}) order by hour`)
+        .values(after, s.nodeId) as TokenHour[],
   );
 }
 

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { groupBy, typedEntries } from "hanzio";
 import { listClaudeCodeFiles, listCodexFiles, parseClaudeCodeFile, parseCodexFile } from "llm-usage-extraction";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR } from "../setup.ts";
-import { parseData, type Data, type Store } from "../store.ts";
+import { parseData, type Data, type Rec, type Store } from "../store.ts";
 import type { Tokens } from "./telemetry.ts";
 
 const HOUR = 3_600_000,
@@ -81,8 +81,55 @@ export async function backfillTokens(s: Store, dirs = LOG_DIRS, signal?: AbortSi
   }
 }
 
-/** Each node publishes its own hourly totals, one `tokens` record per UTC day, so every machine can show all of them.
- * Cursor rows carry their account: its history is account-wide, and whichever node holds the login reads it. */
+const FOLD_AFTER = 90 * DAY;
+/** Well under the relay's 1 MiB record limit; a month heavier than this stays in days. */
+const MAX_MONTH = 512 * 1024;
+
+/** Days older than 90 fold into one record per month, so the synced history stops growing by a record a day. A month
+ * folds once all of it is that old, under the ID of its last day: that ID then never belongs to a live day record, and
+ * a node on the previous version, which skips records whose date is before the range it reads, still reads the month
+ * for any range that reaches into it. The month's rows are its days' rows, so the totals do not change; the days
+ * become tombstones. */
+function foldTokens(s: Store) {
+  const prefix = `${s.nodeId}:`,
+    months = new Map<string, Rec[]>();
+  // `;` follows `:`, so the range is every ID with this node's prefix.
+  for (const r of s.db
+    .query("select * from records where kind = 'tokens' and deleted = 0 and id > ? and id < ?")
+    .all(prefix, `${s.nodeId};`) as Rec[]) {
+    const day = r.id.slice(prefix.length);
+    if (!/^\d{4}-\d\d-\d\d$/.test(day)) continue;
+    const date = new Date(day),
+      monthEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1);
+    if (monthEnd > s.now() - FOLD_AFTER) continue;
+    const month = new Date(monthEnd - DAY).toISOString().slice(0, 10);
+    months.set(month, [...(months.get(month) ?? []), r]);
+  }
+  for (const [month, records] of months) {
+    const id = `${prefix}${month}`;
+    if (records.length === 1 && records[0]!.id === id) continue;
+    // Keyed, so a row in both the month and a day counts once. The month's own record sorts last and is read first: a
+    // day that a full republish rewrote is newer.
+    const rows = new Map<string, Data<"tokens">["rows"][number]>();
+    for (const r of records.toReversed())
+      for (const row of parseData("tokens", r.id, JSON.parse(r.data)).rows)
+        rows.set(`${row.hour}\0${row.provider}\0${row.model}\0${row.account ?? ""}`, row);
+    const data = parseData("tokens", id, {
+      id,
+      node: s.nodeId,
+      rows: [...rows.values()].sort((a, b) => a.hour - b.hour),
+    });
+    if (Buffer.byteLength(JSON.stringify(data)) > MAX_MONTH) continue;
+    s.transaction(() => {
+      s.put("tokens", id, data);
+      for (const r of records) if (r.id !== id) s.del("tokens", r.id);
+    });
+  }
+}
+
+/** Each node publishes its own hourly totals, one `tokens` record per UTC day and later per month (`foldTokens`), so
+ * every machine can show all of them. Cursor rows carry their account: its history is account-wide, and whichever node
+ * holds the login reads it. */
 export function publishTokens(s: Store) {
   // An older daemon stalls its Tailscale sync on a record kind it does not know.
   const nodes = s.list("node");
@@ -105,4 +152,6 @@ export function publishTokens(s: Store) {
   // Recheck the last week each time: Cursor publishes some usage late.
   const recheck = s.now() - 8 * DAY;
   s.setLocal("tokens:published", String(recheck - (recheck % DAY)));
+  // After publishing: a full republish (after a backfill) rewrites folded months as days, which this folds again.
+  foldTokens(s);
 }
