@@ -247,29 +247,63 @@ const TOKEN_ROWS = `with remote as (
       union all select hour, 'cursor', model, input, output, cache_read, cache_write from cursor
     ) where hour > ?1
   )`;
+const HOUR = 3600000;
 /** An hour bucket counts if any of it is after `since`. */
 const tokenArgs = (s: Store, since: number) => {
-  const after = since - 3600000;
+  const after = since - HOUR;
   return [after, s.nodeId, new Date(Math.max(0, after)).toISOString().slice(0, 10)] as const;
 };
 
+/** TOKEN_ROWS reads every `tokens` record's JSON, about 100 ms on a year of history, and the app asks on every view.
+ * An answer is reused for a minute unless a `tokens` record changed since; this node's own counts may lag that minute. */
+const tokenCache = new WeakMap<Store, Map<string, { at: number; seq: number; value: unknown }>>();
+function cachedTokens<T>(s: Store, name: string, since: number, read: () => T): T {
+  // Every `since` within one hour selects the same buckets, so the app's "now minus 7 days" shares one entry an hour.
+  const key = `${name}:${Math.floor((since - HOUR) / HOUR)}`,
+    now = s.now(),
+    seq = (
+      s.db.query("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'").get() as { seq: number }
+    ).seq;
+  let cache = tokenCache.get(s);
+  if (!cache) tokenCache.set(s, (cache = new Map()));
+  const hit = cache.get(key);
+  if (hit && hit.seq === seq && now - hit.at < 60000) return hit.value as T;
+  const value = read();
+  cache.delete(key);
+  cache.set(key, { at: now, seq, value });
+  if (cache.size > 8) cache.delete(cache.keys().next().value!);
+  return value;
+}
+
 /** Token totals per model since a time, over every machine. */
 export function tokenUsage(s: Store, since = 0): ModelTokens[] {
-  return s.db
-    .query(
-      `${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
+  return cachedTokens(
+    s,
+    "usage",
+    since,
+    () =>
+      s.db
+        .query(
+          `${TOKEN_ROWS} select provider, model, sum(input) as input, sum(output) as output, sum(cache_read) as cacheRead, sum(cache_write) as cacheWrite
       from rows group by provider, model order by sum(input + output + cache_read + cache_write) desc`,
-    )
-    .all(...tokenArgs(s, since)) as ModelTokens[];
+        )
+        .all(...tokenArgs(s, since)) as ModelTokens[],
+  );
 }
 
 /** Total tokens per hour since a time, over every machine; the app groups them into its own local days. */
 export function tokenHours(s: Store, since = 0): TokenHour[] {
-  return s.db
-    .query(
-      `${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`,
-    )
-    .values(...tokenArgs(s, since)) as TokenHour[];
+  return cachedTokens(
+    s,
+    "hours",
+    since,
+    () =>
+      s.db
+        .query(
+          `${TOKEN_ROWS} select hour, sum(input + output + cache_read + cache_write) from rows group by hour order by hour`,
+        )
+        .values(...tokenArgs(s, since)) as TokenHour[],
+  );
 }
 
 /** Requests a previous daemon left pending ended with it: mark them, so retention and metrics count them again. */
@@ -279,33 +313,36 @@ export function interruptPending(s: Store) {
   );
 }
 
-export function trimTelemetry(s: Store) {
-  const settings = s.settings();
+/** Keeps the newest requests within the count and byte limits, counting each request's attempts with it; requests
+ * still pending are kept wherever they fall. Trimming walks the whole table, so it runs on every 100th finish or once
+ * an hour has passed. */
+const trims = new WeakMap<Store, { finishes: number; at: number }>();
+function trimTelemetry(s: Store) {
+  const last = trims.get(s) ?? { finishes: 0, at: s.now() };
+  if (++last.finishes < 100 && s.now() - last.at < HOUR) return void trims.set(s, last);
+  trims.set(s, { finishes: 0, at: s.now() });
+  const { logRetention, logRetentionBytes } = s.settings();
+  const size = s.db
+    .query(
+      "select (select count(*) from proxy_requests) as n, (select coalesce(sum(bytes), 0) from proxy_requests) + (select coalesce(sum(bytes), 0) from proxy_attempts) as bytes",
+    )
+    .get() as { n: number; bytes: number };
+  if (size.n <= logRetention && size.bytes <= logRetentionBytes) return;
   s.transaction(() => {
-    const rows = s.db.query("select seq,id,bytes,outcome from proxy_requests order by seq desc").all() as {
-      seq: number;
-      id: string;
-      bytes: number;
-      outcome: string;
-    }[];
-    const attemptBytes = new Map(
-      (
-        s.db.query("select request_id as id,sum(bytes) as bytes from proxy_attempts group by request_id").all() as {
-          id: string;
-          bytes: number;
-        }[]
-      ).map((r) => [r.id, r.bytes]),
+    s.db.run(
+      `delete from proxy_requests where seq in (
+        select seq from (
+          select r.seq, r.outcome, row_number() over w as n, sum(r.bytes + coalesce(a.bytes, 0)) over w as total
+          from proxy_requests r
+          left join (select request_id, sum(bytes) as bytes from proxy_attempts group by request_id) a
+            on a.request_id = r.id
+          window w as (order by r.seq desc)
+        ) where outcome != 'pending' and (n > ?1 or total > ?2)
+      )`,
+      [logRetention, logRetentionBytes],
     );
-    let bytes = 0,
-      count = 0;
-    for (const r of rows) {
-      bytes += r.bytes + (attemptBytes.get(r.id) ?? 0);
-      count++;
-      if (r.outcome !== "pending" && (count > settings.logRetention || bytes > settings.logRetentionBytes)) {
-        s.db.run("delete from proxy_attempts where request_id=?", [r.id]);
-        s.db.run("delete from proxy_requests where seq=?", [r.seq]);
-      }
-    }
+    // An attempt is written after its request, so the only attempts without one are those just trimmed.
+    s.db.run("delete from proxy_attempts where request_id not in (select id from proxy_requests)");
   });
 }
 export type Tokens = Omit<ModelTokens, "provider" | "model">;

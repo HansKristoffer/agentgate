@@ -153,3 +153,26 @@ test("each machine's totals reach the others, and Cursor's account-wide history 
     [hour + HOUR, 10],
   ]);
 });
+
+test("token history is reused for a minute, unless another machine's totals arrive", () => {
+  const a = node("a"),
+    b = node("b");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 3 });
+  const hour = Date.UTC(2026, 9, 1, 10),
+    start = a.now();
+  a.db.run("insert into token_usage values (?, 'claude', 'opus', 1, 0, 0, 0)", [hour]);
+  expect(tokenHours(a)).toEqual([[hour, 1]]);
+  a.db.run("update token_usage set input = 5");
+  expect(tokenHours(a)).toEqual([[hour, 1]]);
+
+  b.db.run("insert into token_usage values (?, 'claude', 'opus', 10, 0, 0, 0)", [hour]);
+  publishTokens(b);
+  for (const r of b.changes(0).records) a.merge(r);
+  expect(tokenHours(a)).toEqual([[hour, 15]]);
+
+  a.db.run("update token_usage set input = 7");
+  a.now = () => start + 59_000;
+  expect(tokenHours(a)).toEqual([[hour, 15]]);
+  a.now = () => start + 60_000;
+  expect(tokenHours(a)).toEqual([[hour, 17]]);
+});

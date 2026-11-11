@@ -362,14 +362,31 @@ test("advertised model lists preserve metadata, respect policy, and expose resol
   expect(((await res.json()) as any).data.map((m: any) => m.id)).toEqual(["sonnet", "friendly"]);
 });
 
-test("telemetry byte retention includes attempts and never leaves orphan attempt rows", () => {
+test("telemetry byte retention includes attempts, runs an hour after the last trim, and leaves no orphan attempts", () => {
   const { s } = fixture();
   s.put("setting", "settings", { logRetentionBytes: 65536 });
+  let now = s.now();
+  s.now = () => now;
   const t = new Telemetry(s, "claude");
   for (let i = 0; i < 400; i++) t.attempt("a", "rate-limit retry");
   t.finish("failed", "rate");
+  expect(requestDetail(s, t.request.id)).toBeDefined();
+  now += 3600000;
+  new Telemetry(s, "claude").finish("success");
   expect(requestDetail(s, t.request.id)).toBeUndefined();
   expect(s.db.query("select count(*) as n from proxy_attempts").get()).toEqual({ n: 0 });
+});
+
+test("telemetry trims on every 100th finish, keeping the newest requests and any still pending", () => {
+  const { s } = fixture();
+  s.put("setting", "settings", { logRetention: 100 });
+  const pending = new Telemetry(s, "claude"),
+    open = Array.from({ length: 120 }, () => new Telemetry(s, "claude"));
+  const ids = () => (s.db.query("select id from proxy_requests order by seq").values() as string[][]).flat();
+  for (const t of open.slice(0, 99)) t.finish("success");
+  expect(ids().length).toBe(121);
+  open[99]!.finish("success");
+  expect(ids()).toEqual([pending, ...open.slice(20)].map((t) => t.request.id));
 });
 
 test("account retry zero overrides the global policy while inheritance retains bounded retries", async () => {
@@ -488,6 +505,8 @@ test("request cursors remain stable during concurrent inserts and reset after re
   expect(second.requests.some((r) => first.requests.some((x) => x.id === r.id))).toBe(false);
   expect(second.requests.some((r) => r.id === t.request.id)).toBe(false);
   s.put("setting", "settings", { logRetention: 100 });
+  const now = s.now() + 3600000;
+  s.now = () => now;
   const last = new Telemetry(s, "claude");
   last.finish("success");
   expect(requestDetail(s, ids[0]!)).toBeUndefined();
