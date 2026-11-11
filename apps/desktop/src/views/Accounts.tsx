@@ -17,7 +17,7 @@ import {
   usable,
 } from "./ClaudeDesktop.tsx";
 import { control, request } from "../api.ts";
-import { accountProblem } from "@agentgate/protocol/attention";
+import { accountProblem, accountState } from "@agentgate/protocol/attention";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
 import { field, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
@@ -70,19 +70,18 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
   const desktopOnly = app?.logins.filter((l) => !l.accountId) ?? [];
   // A login Desktop runs that Agentgate hasn't saved yet: it shows on its account's row, or as its own row.
   const unsaved = app?.mode === "signed-in" && app.current && !app.current.saved ? app.current : undefined;
-  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead.
-   * An expired copy of a login another machine holds is not missing: that machine refreshes it and sync brings it here. */
-  const problem = (a: AccountStatus) => {
-    const p = accountProblem(a);
-    return p === "Needs sign-in" ? undefined : p;
-  };
-  const pinnable = (a: AccountStatus) => a.account.enabled && !a.needsLogin;
+  /** An expired token is not a missing login: this machine refreshes it on the next request, or the machine holding it
+   * does and sync brings it here. */
+  const needsLogin = (a: AccountStatus) => accountState(a).kind === "needs-login";
+  /** Only states that need attention get a badge; a working account needs none, and a missing login shows Sign in again instead. */
+  const problem = (a: AccountStatus) => (needsLogin(a) ? undefined : accountProblem(a));
+  const pinnable = (a: AccountStatus) => a.account.enabled && !needsLogin(a);
   const pinTitle = (a: AccountStatus) =>
     a.account.pinned
       ? "Pinned. Click to go back to automatic."
       : !a.account.enabled
         ? "Enable this account to pin it"
-        : a.needsLogin
+        : needsLogin(a)
           ? "Sign in again to pin this account"
           : `Pin: ${a.account.provider === "claude" ? "Claude Code" : "Codex"} prefers this account while it has room`;
   const setPin = async (a: AccountStatus, pinned: boolean) => {
@@ -224,7 +223,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       refreshing={pending.has(`quota:${a.account.id}`)}
                       onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined}
                     />
-                    {(a.needsLogin || (a.expired && !a.waitingFor)) && (
+                    {needsLogin(a) && (
                       <Button
                         size="sm"
                         variant="tertiary"

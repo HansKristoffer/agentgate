@@ -1,4 +1,10 @@
-import { operationFor, statusSchema, type FactoryCommandResult, type FactoryOperationInfo } from "@agentgate/protocol";
+import {
+  operationFor,
+  statusSchema,
+  type AccountState,
+  type FactoryCommandResult,
+  type FactoryOperationInfo,
+} from "@agentgate/protocol";
 import { problems } from "@agentgate/protocol/attention";
 import { hostname } from "node:os";
 import packageInfo from "../../../../package.json";
@@ -44,6 +50,26 @@ const bar = (pct: number) => {
   return `${"█".repeat(n)}${"░".repeat(20 - n)} ${Math.round(pct)}%`;
 };
 const mins = (t?: number) => (t ? `${Math.max(0, Math.round((t - Date.now()) / 60_000))} min` : "?");
+/** Disabled is left to the account's own flag, which `status` prints beside a login problem too. */
+function stateFlag(state: AccountState) {
+  switch (state.kind) {
+    case "needs-login":
+      return "NEEDS LOGIN";
+    case "waiting-for-holder":
+      return `waiting for ${state.holder} to refresh`;
+    case "refresh-failed":
+      return "REFRESH FAILED";
+    case "refreshing":
+      return "token expired, refreshes on the next request";
+    case "exhausted":
+      return `exhausted, resets in ${mins(state.until)}`;
+    case "cooling":
+      return `backing off (${state.reason}) for ${mins(state.until)}`;
+    case "disabled":
+    case "ready":
+      return undefined;
+  }
+}
 
 /** init, serve, status, settings, factory, setup, service, update, export, import-backup and admin-token. */
 export const run: Run = async (cmd, [sub], opts) => {
@@ -111,15 +137,7 @@ export const run: Run = async (cmd, [sub], opts) => {
         if (!accounts.length) console.log("  (no accounts)");
         for (const a of accounts) {
           const st = accountStatus(s, a);
-          const flags = [
-            st.active && "active",
-            a.pinned && "pinned",
-            !a.enabled && "disabled",
-            st.needsLogin && "NEEDS LOGIN",
-            st.waitingFor ? `waiting for ${st.waitingFor} to refresh` : st.expired && "TOKEN EXPIRED",
-            st.refreshError && "REFRESH FAILED",
-            st.exhausted && "exhausted",
-          ]
+          const flags = [st.active && "active", a.pinned && "pinned", !a.enabled && "disabled", stateFlag(st.state)]
             .filter(Boolean)
             .join(", ");
           console.log(
@@ -127,7 +145,7 @@ export const run: Run = async (cmd, [sub], opts) => {
           );
           for (const w of st.windows)
             console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
-          if (!st.windows.length && !st.needsLogin)
+          if (!st.windows.length && st.state.kind !== "needs-login")
             console.log("    no quota data yet (or unrecognised quota headers)");
         }
       }

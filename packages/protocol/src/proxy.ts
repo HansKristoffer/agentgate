@@ -194,6 +194,20 @@ export interface ModelTokens {
 }
 /** One hour's tokens, all models and machines together: [hour start in ms, tokens]. */
 export type TokenHour = [hour: number, tokens: number];
+/** Why the router passed over an account for a request. */
+export const routeReasonSchema = z.enum([
+  "disabled",
+  "login unavailable",
+  "already attempted",
+  "quota exhausted",
+  "model unavailable",
+  "model excluded",
+  "cooldown",
+  "continuation belongs to another account",
+]);
+export type RouteReason = z.infer<typeof routeReasonSchema>;
+/** The reasons that hold for the requested model only; another model may still be served. */
+export const isModelReason = (reason: RouteReason) => reason === "model unavailable" || reason === "model excluded";
 export interface RouteExplanation {
   provider: Provider;
   requestedModel?: string;
@@ -204,7 +218,7 @@ export interface RouteExplanation {
   candidates: {
     id: string;
     eligible: boolean;
-    reasons: string[];
+    reasons: RouteReason[];
     inFlight: number;
   }[];
 }

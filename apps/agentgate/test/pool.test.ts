@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
-import { proxy, recordUsage } from "../src/llm/pool.ts";
+import { accountStatus, proxy, recordUsage } from "../src/llm/pool.ts";
 import { route } from "../src/llm/routing.ts";
 import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
@@ -536,6 +536,18 @@ test("a short cooldown after a longer one keeps the longer one's reason, and onl
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "rate" }]);
   cool(s, "a", "transient", Date.now() + 120_000);
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "transient" }]);
+});
+
+test("an expired login this node holds is refreshing, not a sign-in, and a day-long backoff benches the account", () => {
+  const state = (id: string) => accountStatus(s, s.get("account", id)!).state;
+  s.put("credential", "a", { ...s.get("credential", "a")!, expiresAt: Date.now() - 1000 });
+  expect(state("a")).toEqual({ kind: "refreshing" });
+  s.put("credential", "a", { ...s.get("credential", "a")!, holder: "server" });
+  expect(state("a")).toEqual({ kind: "waiting-for-holder", holder: "server" });
+
+  const tomorrow = Date.now() + 86_400_000;
+  cool(s, "b", "transient", tomorrow);
+  expect(state("b")).toEqual({ kind: "cooling", until: tomorrow, reason: "transient" });
 });
 
 test("requests a stopped daemon left pending are marked interrupted", () => {

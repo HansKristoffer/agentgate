@@ -7,6 +7,7 @@ import {
   modelPolicySchema,
   quotaWindowSchema,
   cooldownSchema,
+  failureSchema,
   quotaHealthSchema,
   modelSnapshotSchema,
   capabilitiesSchema,
@@ -225,6 +226,22 @@ export type Project = z.infer<typeof projectSchema>;
 export type Settings = z.infer<typeof settingsSchema>;
 /** Saved settings plus the revision produced by the same transaction. */
 export type SettingsUpdateResult = Settings & { revision: string };
+/** What an account can do right now. The daemon derives it once (`accountStatus` in llm/pool.ts) so every surface labels
+ * an account the same way. Login problems come first, then the user's choice, then quota. */
+export const accountStateSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("ready") }),
+  z.object({ kind: z.literal("needs-login") }),
+  /** This machine's copy expired; the machine holding the login refreshes it and sync brings it here. */
+  z.object({ kind: z.literal("waiting-for-holder"), holder: z.string() }),
+  z.object({ kind: z.literal("refresh-failed") }),
+  /** Expired, and this machine holds the login, so it refreshes on the next request. */
+  z.object({ kind: z.literal("refreshing") }),
+  z.object({ kind: z.literal("disabled") }),
+  z.object({ kind: z.literal("exhausted"), until: z.number().optional() }),
+  /** Benched as a whole after an upstream rejection, until `until`. */
+  z.object({ kind: z.literal("cooling"), until: z.number(), reason: failureSchema }),
+]);
+export type AccountState = z.infer<typeof accountStateSchema>;
 export const accountStatusSchema = z.object({
   account: accountSchema,
   windows: z.array(quotaWindowSchema),
@@ -247,6 +264,9 @@ export const accountStatusSchema = z.object({
   waitingFor: z.string().optional(),
   expiresAt: z.number().optional(),
   refreshError: z.string().optional(),
+  /** Absent from older daemons, and a kind this version does not know reads as absent too. Read it through
+   * `accountState` (attention.ts), which falls back to the flags above. */
+  state: accountStateSchema.optional().catch(undefined),
 });
 export type AccountStatus = z.infer<typeof accountStatusSchema>;
 export interface ServerSummary {

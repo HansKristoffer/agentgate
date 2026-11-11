@@ -1,4 +1,10 @@
-import { modelSnapshotSchema, type QuotaWindow, type RouteExplanation } from "@agentgate/protocol";
+import {
+  isModelReason,
+  modelSnapshotSchema,
+  type QuotaWindow,
+  type RouteExplanation,
+  type RouteReason,
+} from "@agentgate/protocol";
 import { once } from "hanzio";
 import { z } from "zod";
 import { defineLocal } from "../local-state.ts";
@@ -59,7 +65,7 @@ export function resolveModel(s: Store, provider: ProviderName, model?: string): 
 }
 /** Evaluate eligibility and limiting quota from the same account observation. */
 function assess(s: Store, account: Account, model?: string, exclude = new Set<string>(), now = s.now()) {
-  const reasons: string[] = [];
+  const reasons: RouteReason[] = [];
   const credential = s.get("credential", account.id);
   const usage = s.get("usage", account.id);
   const windows = relevant(usage, model, now);
@@ -253,7 +259,7 @@ export function earliestReset(s: Store, provider: ProviderName, model?: string) 
     .flatMap((candidate) => {
       if (
         candidate.reasons.some(
-          (reason) => reason === "disabled" || reason === "login unavailable" || reason.startsWith("model"),
+          (reason) => reason === "disabled" || reason === "login unavailable" || isModelReason(reason),
         )
       )
         return [];

@@ -22,6 +22,7 @@ import { run as git } from "../handoff/code.ts";
 import { cloneProject, findProject } from "../handoff/destination.ts";
 import type { SessionScope } from "../mcp/gateway.ts";
 import type { ProviderName } from "../llm/provider.ts";
+import { accountState } from "../llm/pool.ts";
 import { candidates, earliestReset } from "../llm/routing.ts";
 import { renderBrief, TRIAGE_BRIEF } from "./briefs.ts";
 import { currentFolder, durationMs, folderFor, limits, type LoadedFolder } from "./config.ts";
@@ -835,10 +836,7 @@ async function prepareLaunch(
   // Only a pool that can serve can be waited for: without signed-in accounts here, T3 runs on its own logins.
   const pooled =
     provider &&
-    s.list("account").some((a) => {
-      const credential = s.get("credential", a.id);
-      return a.provider === provider && a.enabled && credential && !credential.needsLogin;
-    });
+    s.list("account").some((a) => a.provider === provider && a.enabled && accountState(s, a).kind !== "needs-login");
   if (limits(f).waitForQuota && pooled && !candidates(s, provider).length) {
     const until = earliestReset(s, provider);
     if (run.item)
