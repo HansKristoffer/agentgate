@@ -187,6 +187,7 @@ test("while the stream is down the mirror polls T3's shell on the interval, and 
       polls.push(Date.now());
       return Response.json(waitingShell);
     }
+    return undefined;
   });
   polls.length = 0; // connecting read the shell once
   timing.pollMs = 40;

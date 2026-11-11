@@ -192,7 +192,7 @@ export function app(ctx: Ctx) {
     const host = c.req.header("host")?.replace(/:\d+$/, "");
     if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost")
       return c.text("forbidden host", 403);
-    await next();
+    return next();
   });
 
   // Register before every API handler, including the MCP shim's checkout write.
@@ -204,7 +204,7 @@ export function app(ctx: Ctx) {
       if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`))
         return c.json({ error: "unauthorized" }, 401);
     }
-    await next();
+    return next();
   });
 
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.

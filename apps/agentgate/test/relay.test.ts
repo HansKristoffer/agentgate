@@ -170,6 +170,7 @@ test("invites and pairing commands are validated without echoing secrets", () =>
       } catch (e) {
         return String(e);
       }
+      return undefined;
     })();
     expect(error).toBeDefined();
     expect(error).not.toContain("AAAA");

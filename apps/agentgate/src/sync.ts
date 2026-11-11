@@ -367,7 +367,7 @@ export function peerRoutes(
     const peer = token ? peers(s).find((p) => safeEqual(p.token, token)) : undefined;
     if (!token || !peer) return c.json({ error: "unauthorized" }, 401);
     c.set("peer", peer);
-    await next();
+    return next();
   });
 
   app.get("/changes", (c) => {
