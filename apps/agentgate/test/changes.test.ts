@@ -39,3 +39,20 @@ test("a write from another connection to the same file, as the CLI makes, wakes 
   changes.close();
   daemon.close();
 });
+
+test("a node renamed from the CLI while the daemon runs writes under the new name", async () => {
+  const file = join(tmp(), "agentgate.db");
+  const daemon = new Store(file);
+  daemon.setLocal("node", "old");
+  expect(daemon.nodeId).toBe("old");
+  const changes = new Changes(daemon, { externalMs: 5 });
+  const waiting = changes.wait(changes.snapshot().token, 60_000, new AbortController().signal);
+  const cli = new Store(file);
+  cli.setLocal("node", "new");
+  await waiting;
+  daemon.put("project", project.id, project);
+  expect(daemon.record("project", project.id)?.node).toBe("new");
+  cli.close();
+  changes.close();
+  daemon.close();
+});

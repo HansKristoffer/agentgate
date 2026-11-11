@@ -5,7 +5,7 @@ import { z } from "zod";
 import { revision } from "../configuration.ts";
 import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
-import type { Account, Store } from "../store.ts";
+import { sent, type Account, type Data, type Store } from "../store.ts";
 import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { PLACEHOLDER_TOKEN } from "../setup.ts";
@@ -480,7 +480,7 @@ export function accountStatus(s: Store, account: Account): AccountStatus & { sta
     c = s.get("credential", account.id);
   return {
     state: accountState(s, account, now),
-    account,
+    account: sent<Data<"account">>(account),
     windows: (u?.windows ?? []).map((w) => ({
       ...normalizedWindow(w),
       inferredReset: w.inferredReset || !!(w.resetsAt && w.resetsAt <= now),

@@ -277,3 +277,33 @@ test("a change answer from an older or newer daemon parses", () => {
   const newer = { token: "2.0", versions: { status: 1, someday: 3 } };
   expect(changesSchema.parse(newer)).toEqual(newer);
 });
+
+test("a write from another process on the same file, as the CLI makes, is seen by the next read", () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-cache-")),
+    file = join(dir, "db");
+  const daemon = new Store(file),
+    cli = new Store(file);
+  daemon.put("account", "a", { id: "a", provider: "claude", label: "old" });
+  daemon.put("account", "b", { id: "b", provider: "claude", label: "kept" });
+  expect(daemon.list("account").map((a) => a.label)).toEqual(["old", "kept"]);
+  cli.put("account", "a", { id: "a", provider: "claude", label: "new" });
+  expect(daemon.get("account", "a")?.label).toBe("new");
+  cli.del("account", "b");
+  expect(daemon.list("account").map((a) => a.label)).toEqual(["new"]);
+  expect(daemon.get("account", "b")).toBeUndefined();
+  cli.close();
+  daemon.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a record read from the store cannot be changed, since later reads share it", () => {
+  const s = new Store(":memory:");
+  s.put("project", "acme/web", { id: "acme/web", skills: ["a"] });
+  const project = s.get("project", "acme/web")!;
+  // @ts-expect-error read-only: copy before changing
+  expect(() => project.skills.push("b")).toThrow(TypeError);
+  // @ts-expect-error read-only: copy before changing
+  expect(() => (s.list("project")[0]!.inheritDefaults = false)).toThrow(TypeError);
+  expect(s.get("project", "acme/web")).toMatchObject({ skills: ["a"], inheritDefaults: true });
+  s.close();
+});

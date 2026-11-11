@@ -23,14 +23,14 @@ import { basename, join, sep } from "node:path";
 import { z } from "zod";
 import { UserError } from "./ops/registry.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import type { Skill } from "./store.ts";
+import type { Data } from "./store.ts";
 
 export const SKILLS_CLI_VERSION = "1.7.0";
 export const MAX_PACK = 24 * 1024 * 1024;
 export interface FetchedSkill {
   id: string;
   description: string;
-  files: Skill["files"];
+  files: Data<"skill">["files"];
   selector?: string;
   hash?: string;
   security?: Record<string, string>;
@@ -62,7 +62,7 @@ export function description(text: string, expectedName?: string): string {
 }
 
 export function readSkill(dir: string): Pick<FetchedSkill, "description" | "files"> {
-  const files: Skill["files"] = [];
+  const files: Data<"skill">["files"] = [];
   let bytes = 0;
   const walk = (rel: string, depth = 0) => {
     if (depth > 32) throw new UserError("skill directory nesting exceeds 32 levels");

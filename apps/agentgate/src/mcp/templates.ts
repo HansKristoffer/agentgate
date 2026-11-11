@@ -1,4 +1,4 @@
-import type { McpInstance } from "../store.ts";
+import type { Data, McpInstance } from "../store.ts";
 
 /** A one-click server: a hosted MCP URL (login happens through its OAuth), or a local command. */
 export interface Preset {
@@ -76,7 +76,7 @@ export function newInstance(o: {
   command?: string;
   args?: string[];
   mode?: McpInstance["mode"];
-}): McpInstance {
+}): Data<"mcp"> {
   if (!validId(o.id)) throw new Error("name: letters, digits, - and _ (it becomes the tool prefix)");
   const base = { id: o.id, template: o.template ?? "custom", secrets: {}, fields: {} };
   if (o.url) {
@@ -89,7 +89,7 @@ export function newInstance(o: {
   return { ...base, transport: "stdio", mode: o.mode ?? "shared", command: o.command, args: o.args ?? [] };
 }
 
-export function fromPreset(p: Preset, id = p.id): McpInstance {
+export function fromPreset(p: Preset, id = p.id): Data<"mcp"> {
   return newInstance({ id, template: p.id, url: p.url, command: p.command, args: p.args, mode: p.mode });
 }
 

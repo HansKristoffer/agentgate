@@ -172,8 +172,10 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
 function itemDetail(f: FactoryRuntime, item: FactoryItem): FactoryItemDetail {
   const { s } = f;
   const events = s.db
-    .query("select seq, at, kind, text from factory_events where item=? order by seq desc limit 100")
-    .all(item.id) as { seq: number; at: number; kind: string; text: string }[];
+    .query<{ seq: number; at: number; kind: string; text: string }, [string]>(
+      "select seq, at, kind, text from factory_events where item=? order by seq desc limit 100",
+    )
+    .all(item.id);
   return factoryItemDetailSchema.parse({
     item: boardItems(f, [item])[0],
     runs: runs.forItem(s, item.id).map((r) => ({

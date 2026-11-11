@@ -133,11 +133,11 @@ function issueAnswer(body: string, kind: NeedsYou["kind"]) {
 
 /** Whether the item's question is on its issue: its `waiting` comment was posted, so a later comment can answer it. */
 const askedOnIssue = (f: FactoryRuntime, item: FactoryItem, wait: NeedsYou) =>
-  (
-    f.s.db
-      .query("select status from factory_writebacks where item=? and moment='waiting' and ref=?")
-      .get(item.id, questionRef(wait.run ?? wait.cause, wait.question)) as { status: string } | null
-  )?.status === "posted";
+  f.s.db
+    .query<{ status: string }, [string, string]>(
+      "select status from factory_writebacks where item=? and moment='waiting' and ref=?",
+    )
+    .get(item.id, questionRef(wait.run ?? wait.cause, wait.question))?.status === "posted";
 
 /**
  * Answers given on the issue (N3): for each item that waits for a start or an answer, at most

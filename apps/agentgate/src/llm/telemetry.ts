@@ -10,7 +10,7 @@ import {
   type RequestPage,
 } from "@agentgate/protocol";
 import { clamp, safeJsonParse, startTimer } from "hanzio";
-import type { Data, Store } from "../store.ts";
+import type { Data, Rec, Store } from "../store.ts";
 import type { ProviderName } from "./provider.ts";
 
 export class Telemetry {
@@ -179,11 +179,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     const search = `%${filter.search.replace(/[\\%_]/g, "\\$&")}%`;
     args.push(search, search, search);
   }
-  const minimum = (
-    s.db.query("select min(seq) as n from proxy_requests").get() as {
-      n: number | null;
-    }
-  ).n;
+  const minimum = s.db.query<{ n: number | null }, []>("select min(seq) as n from proxy_requests").get()!.n;
   const cursor = filter.cursor ? Number(filter.cursor) : undefined;
   if (cursor !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1)) throw new Error("Invalid request cursor");
   if (cursor !== undefined) {
@@ -192,10 +188,10 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   }
   const limit = clamp(filter.limit ?? 50, 1, 100);
   const rows = s.db
-    .query(
+    .query<{ seq: number; data: string }, (string | number)[]>(
       `select seq,data from proxy_requests ${where.length ? `where ${where.join(" and ")}` : ""} order by seq desc limit ?`,
     )
-    .all(...args, limit + 1) as { seq: number; data: string }[];
+    .all(...args, limit + 1);
   return {
     requests: rows.slice(0, limit).map((r) => JSON.parse(r.data)),
     nextCursor: rows.length > limit ? String(rows[limit - 1]!.seq) : undefined,
@@ -203,19 +199,26 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   };
 }
 export function requestDetail(s: Store, id: string): RequestDetail | undefined {
-  const row = s.db.query("select data from proxy_requests where id=?").get(id) as { data: string } | null;
+  const row = s.db.query<{ data: string }, [string]>("select data from proxy_requests where id=?").get(id);
   return row
     ? {
         request: JSON.parse(row.data),
-        attempts: (
-          s.db.query("select data from proxy_attempts where request_id=? order by number").all(id) as { data: string }[]
-        ).map((r) => JSON.parse(r.data)),
+        attempts: s.db
+          .query<{ data: string }, [string]>("select data from proxy_attempts where request_id=? order by number")
+          .all(id)
+          .map((r) => JSON.parse(r.data)),
       }
     : undefined;
 }
 export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
   const row = s.db
-    .query(
+    .query<
+      Omit<ProxyMetrics, "since" | "averageHeadersMs" | "averageFirstByteMs"> & {
+        averageHeadersMs: number | null;
+        averageFirstByteMs: number | null;
+      },
+      [number]
+    >(
       `
     select count(*) as total,
       coalesce(sum(outcome = 'success'), 0) as succeeded,
@@ -231,10 +234,7 @@ export function metrics(s: Store, since = s.now() - 86400000): ProxyMetrics {
     from proxy_requests as request where at >= ? and outcome != 'pending'
   `,
     )
-    .get(since) as Omit<ProxyMetrics, "since" | "averageHeadersMs" | "averageFirstByteMs"> & {
-    averageHeadersMs: number | null;
-    averageFirstByteMs: number | null;
-  };
+    .get(since)!;
   return {
     ...row,
     since,
@@ -283,8 +283,10 @@ function refreshTokenRecords(s: Store) {
     const high = s.seq(),
       insert = s.db.prepare("insert into token_records values (?,?,?,?,?,?,?,?,?,?)");
     for (const r of s.db
-      .query("select id, deleted, data from records where seq > ? and seq <= ? and kind = 'tokens'")
-      .all(from, high) as { id: string; deleted: number; data: string }[]) {
+      .query<Pick<Rec, "id" | "deleted" | "data">, [number, number]>(
+        "select id, deleted, data from records where seq > ? and seq <= ? and kind = 'tokens'",
+      )
+      .all(from, high)) {
       s.db.run("delete from token_records where record = ?", [r.id]);
       if (r.deleted) continue;
       const data = JSON.parse(r.data) as Data<"tokens">;
@@ -315,9 +317,9 @@ function cachedTokens<T>(s: Store, name: string, since: number, read: (after: nu
   const after = since - HOUR,
     key = `${name}:${Math.floor(after / HOUR)}`,
     now = s.now(),
-    seq = (
-      s.db.query("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'").get() as { seq: number }
-    ).seq;
+    seq = s.db
+      .query<{ seq: number }, []>("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'")
+      .get()!.seq;
   let cache = tokenCache.get(s);
   if (!cache) tokenCache.set(s, (cache = new Map()));
   const hit = cache.get(key);
@@ -332,17 +334,13 @@ function cachedTokens<T>(s: Store, name: string, since: number, read: (after: nu
 
 /** Token totals per model since a time, over every machine. */
 export function tokenUsage(s: Store, since = 0): ModelTokens[] {
-  return cachedTokens(
-    s,
-    "usage",
-    since,
-    (after) =>
-      s.db
-        .query(
-          `select provider, model, input, output, cache_read as cacheRead, cache_write as cacheWrite
+  return cachedTokens(s, "usage", since, (after) =>
+    s.db
+      .query<ModelTokens, [number, string]>(
+        `select provider, model, input, output, cache_read as cacheRead, cache_write as cacheWrite
           from (${tokenSums("provider, model")}) order by input + output + cache_read + cache_write desc`,
-        )
-        .all(after, s.nodeId) as ModelTokens[],
+      )
+      .all(after, s.nodeId),
   );
 }
 
@@ -376,10 +374,10 @@ function trimTelemetry(s: Store) {
   trims.set(s, { finishes: 0, at: s.now() });
   const { logRetention, logRetentionBytes } = s.settings();
   const size = s.db
-    .query(
+    .query<{ n: number; bytes: number }, []>(
       "select (select count(*) from proxy_requests) as n, (select coalesce(sum(bytes), 0) from proxy_requests) + (select coalesce(sum(bytes), 0) from proxy_attempts) as bytes",
     )
-    .get() as { n: number; bytes: number };
+    .get()!;
   if (size.n <= logRetention && size.bytes <= logRetentionBytes) return;
   s.transaction(() => {
     s.db.run(

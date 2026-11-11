@@ -132,7 +132,7 @@ function openCookies(readonly: boolean) {
   return db;
 }
 const schemaOf = (db: Database) =>
-  String((db.query("select value from meta where key = 'version'").get() as { value: unknown } | null)?.value ?? "");
+  String(db.query<{ value: unknown }, []>("select value from meta where key = 'version'").get()?.value ?? "");
 
 /** Chromium stores times as microseconds since 1601. */
 const chromeTime = (t: unknown) =>
@@ -147,7 +147,7 @@ export function readLogin(cookies?: Database): Login | undefined {
   const db = cookies ?? openCookies(true);
   try {
     const { where, params } = hostFilter();
-    const raw = db.query(`select * from cookies where ${where}`).all(...params) as Record<string, unknown>[];
+    const raw = db.query<Record<string, unknown>, string[]>(`select * from cookies where ${where}`).all(...params);
     // No session cookie yet: Chromium flushes cookies to disk up to ~30 s after a sign-in.
     const session =
       raw.find((r) => r.name === "sessionKey") ?? raw.find((r) => String(r.name).startsWith("sessionKey"));
@@ -222,7 +222,7 @@ function writeLogin(login: Login | undefined) {
       if (problem) throw new Error(problem);
     }
     const { where, params } = hostFilter();
-    const before = db.query(`select * from cookies where ${where}`).all(...params) as Record<string, unknown>[];
+    const before = db.query<Record<string, unknown>, string[]>(`select * from cookies where ${where}`).all(...params);
     const replace = (rows: Record<string, unknown>[]) =>
       db
         .transaction(() => {

@@ -191,7 +191,55 @@ export const isOpenPhase = (phase: ItemPhase) => !FINISHED.includes(phase);
 export const ACTIVE: readonly RunState[] = ["queued", "starting", "running", "waiting"];
 export const isStage = (kind: string): kind is StageName => (stageNames as readonly string[]).includes(kind);
 
-type Row = Record<string, string | number | null>;
+/** A `factory_items` row, with its runs' `tokens` summed (ITEMS). */
+interface ItemRow {
+  id: string;
+  source: string;
+  external_id: string;
+  key: string;
+  repo: string;
+  title: string;
+  url: string | null;
+  snapshot: string;
+  phase: ItemPhase;
+  needs_you: string | null;
+  pr: string | null;
+  config_commit: string;
+  dedupe: string | null;
+  outcome: string | null;
+  touches: number;
+  phase_at: number;
+  created_at: number;
+  updated_at: number;
+  finished_at: number | null;
+  tokens: number;
+}
+interface RunRow {
+  id: string;
+  item: string | null;
+  kind: RunKind;
+  attempt: number;
+  state: RunState;
+  node: string | null;
+  thread_id: string | null;
+  thread_link: string | null;
+  report: string | null;
+  checked: string | null;
+  nudges: number;
+  error: string | null;
+  config_commit: string;
+  launch_session: string | null;
+  failed_launches: number | null;
+  source: string | null;
+  branch: string | null;
+  answered: string | null;
+  tokens: number;
+  sessions: number;
+  measured_at: number | null;
+  queued_at: number;
+  started_at: number | null;
+  ended_at: number | null;
+}
 const opt = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
 /** A JSON column as stored, or undefined when it is empty or not JSON. Untyped: callers parse what they read. */
 const json = (v: unknown): unknown => {
@@ -205,7 +253,7 @@ const json = (v: unknown): unknown => {
 /** The JSON cells already said to be unreadable, so a loop that reads one every pass says it once. */
 const unreadable = new Set<string>();
 /** A JSON column read through its schema. A corrupt value, or one this version cannot read, reads as unset. */
-function parsed<T>(schema: z.ZodType<T>, row: Row, column: string): T | undefined {
+function parsed<T, R extends { id: string }>(schema: z.ZodType<T>, row: R, column: keyof R & string): T | undefined {
   if (row[column] === null) return undefined;
   const result = schema.safeParse(json(row[column]));
   if (result.success) return result.data;
@@ -281,27 +329,27 @@ const insertSql = (table: string, names: string[]) =>
 const updateSql = (table: string, names: string[]) =>
   `update ${table} set ${names.map((n) => `${n}=?`).join(",")} where id=?`;
 
-const toItem = (r: Row): FactoryItem => ({
-  id: r.id as string,
-  source: r.source as string,
-  externalId: r.external_id as string,
-  key: r.key as string,
-  repo: r.repo as string,
-  title: r.title as string,
-  url: opt(r.url as string | null),
+const toItem = (r: ItemRow): FactoryItem => ({
+  id: r.id,
+  source: r.source,
+  externalId: r.external_id,
+  key: r.key,
+  repo: r.repo,
+  title: r.title,
+  url: opt(r.url),
   snapshot: json(r.snapshot),
-  phase: r.phase as ItemPhase,
+  phase: r.phase,
   needsYou: parsed(needsYouSchema, r, "needs_you"),
   pr: parsed(itemPrSchema, r, "pr"),
-  configCommit: r.config_commit as string,
-  tokens: r.tokens as number,
-  dedupe: opt(r.dedupe as string | null),
+  configCommit: r.config_commit,
+  tokens: r.tokens,
+  dedupe: opt(r.dedupe),
   outcome: json(r.outcome),
-  touches: r.touches as number,
-  phaseAt: r.phase_at as number,
-  createdAt: r.created_at as number,
-  updatedAt: r.updated_at as number,
-  finishedAt: opt(r.finished_at as number | null),
+  touches: r.touches,
+  phaseAt: r.phase_at,
+  createdAt: r.created_at,
+  updatedAt: r.updated_at,
+  finishedAt: opt(r.finished_at),
 });
 /** Items with their tokens, the sum of their runs'. */
 const ITEMS = `select i.*, (select coalesce(sum(r.tokens), 0) from factory_runs r where r.item = i.id) as tokens
@@ -313,31 +361,31 @@ const runData = (v: unknown): RunData | undefined => {
   return parsed.success ? parsed.data : undefined;
 };
 
-const toRun = (r: Row): FactoryRun => ({
-  id: r.id as string,
-  item: opt(r.item as string | null),
-  kind: r.kind as RunKind,
-  attempt: r.attempt as number,
-  state: r.state as RunState,
-  node: opt(r.node as string | null),
-  threadId: opt(r.thread_id as string | null),
-  threadLink: opt(r.thread_link as string | null),
+const toRun = (r: RunRow): FactoryRun => ({
+  id: r.id,
+  item: opt(r.item),
+  kind: r.kind,
+  attempt: r.attempt,
+  state: r.state,
+  node: opt(r.node),
+  threadId: opt(r.thread_id),
+  threadLink: opt(r.thread_link),
   report: parsed(factoryReportSchema, r, "report"),
   checked: runData(r.checked),
-  nudges: r.nudges as number,
-  error: opt(r.error as string | null),
-  configCommit: r.config_commit as string,
-  launchSession: opt(r.launch_session as string | null),
-  failedLaunches: opt(r.failed_launches as number | null),
-  source: opt(r.source as string | null),
-  branch: opt(r.branch as string | null),
-  answered: opt(r.answered as string | null),
-  tokens: r.tokens as number,
-  sessions: r.sessions as number,
-  measuredAt: opt(r.measured_at as number | null),
-  queuedAt: r.queued_at as number,
-  startedAt: opt(r.started_at as number | null),
-  endedAt: opt(r.ended_at as number | null),
+  nudges: r.nudges,
+  error: opt(r.error),
+  configCommit: r.config_commit,
+  launchSession: opt(r.launch_session),
+  failedLaunches: opt(r.failed_launches),
+  source: opt(r.source),
+  branch: opt(r.branch),
+  answered: opt(r.answered),
+  tokens: r.tokens,
+  sessions: r.sessions,
+  measuredAt: opt(r.measured_at),
+  queuedAt: r.queued_at,
+  startedAt: opt(r.started_at),
+  endedAt: opt(r.ended_at),
 });
 
 /** The run data of a kind, or undefined when the run holds another kind's or none. */
@@ -347,16 +395,16 @@ export function dataOf<K extends RunData["kind"]>(run: FactoryRun | undefined, k
 
 export const items = {
   get: (s: Store, id: string) => {
-    const r = s.db.query(`${ITEMS} where i.id=?`).get(id) as Row | null;
+    const r = s.db.query<ItemRow, [string]>(`${ITEMS} where i.id=?`).get(id);
     return r ? toItem(r) : undefined;
   },
   byKey: (s: Store, key: string) => {
-    const r = s.db.query(`${ITEMS} where i.key=?`).get(key) as Row | null;
+    const r = s.db.query<ItemRow, [string]>(`${ITEMS} where i.key=?`).get(key);
     return r ? toItem(r) : undefined;
   },
   /** The item of a tracker issue (`owner/repo#123`, `ENG-42`), whichever source took it in. */
   byExternal: (s: Store, externalId: string) => {
-    const r = s.db.query(`${ITEMS} where i.external_id=?`).get(externalId) as Row | null;
+    const r = s.db.query<ItemRow, [string]>(`${ITEMS} where i.external_id=?`).get(externalId);
     return r ? toItem(r) : undefined;
   },
   /** open: only open items, or only finished ones when false. finishedSince drops items that finished before it. */
@@ -367,7 +415,10 @@ export const items = {
       filter.finishedSince !== undefined && `(i.finished_at is null or i.finished_at >= ?)`,
     ].filter(Boolean);
     const args = filter.finishedSince === undefined ? [] : [filter.finishedSince];
-    return (s.db.query(`${ITEMS} ${whereSql(where)} order by i.created_at`).all(...args) as Row[]).map(toItem);
+    return s.db
+      .query<ItemRow, number[]>(`${ITEMS} ${whereSql(where)} order by i.created_at`)
+      .all(...args)
+      .map(toItem);
   },
   /** Whether the source has an item with this dedupe key that is open, or finished since `at`. */
   hasDedupe: (s: Store, source: string, dedupe: string, at: number) =>
@@ -376,8 +427,9 @@ export const items = {
       .get(source, dedupe, at),
   /** How many of the source's items wait for approval. */
   heldCount: (s: Store, source: string) =>
-    (s.db.query("select count(*) as n from factory_items where source=? and phase='held'").get(source) as { n: number })
-      .n,
+    s.db
+      .query<{ n: number }, [string]>("select count(*) as n from factory_items where source=? and phase='held'")
+      .get(source)!.n,
   /** Every key in use, so a new item can take one no other item has. */
   keyTaken: (s: Store, key: string) => !!s.db.query("select 1 from factory_items where key=?").get(key),
   insert: (
@@ -418,13 +470,14 @@ export interface RunHead {
   threadId?: string;
   threadLink?: string;
 }
-const toHead = (r: Row): RunHead => ({
-  id: r.id as string,
-  item: opt(r.item as string | null),
-  kind: r.kind as RunKind,
-  state: r.state as RunState,
-  threadId: opt(r.thread_id as string | null),
-  threadLink: opt(r.thread_link as string | null),
+type HeadRow = Pick<RunRow, "id" | "item" | "kind" | "state" | "thread_id" | "thread_link">;
+const toHead = (r: HeadRow): RunHead => ({
+  id: r.id,
+  item: opt(r.item),
+  kind: r.kind,
+  state: r.state,
+  threadId: opt(r.thread_id),
+  threadLink: opt(r.thread_link),
 });
 const HEAD = "id, item, kind, state, thread_id, thread_link";
 
@@ -459,46 +512,68 @@ function runFilter(filter: RunFilter) {
 
 export const runs = {
   get: (s: Store, id: string) => {
-    const r = s.db.query("select * from factory_runs where id=?").get(id) as Row | null;
+    const r = s.db.query<RunRow, [string]>("select * from factory_runs where id=?").get(id);
     return r ? toRun(r) : undefined;
   },
   forItem: (s: Store, item: string) =>
-    (s.db.query("select * from factory_runs where item=? order by queued_at").all(item) as Row[]).map(toRun),
+    s.db.query<RunRow, [string]>("select * from factory_runs where item=? order by queued_at").all(item).map(toRun),
   list: (s: Store, filter: RunFilter = {}) => {
     const { where, args } = runFilter(filter);
-    return (s.db.query(`select * from factory_runs ${where} order by queued_at`).all(...args) as Row[]).map(toRun);
+    return s.db
+      .query<RunRow, (string | number)[]>(`select * from factory_runs ${where} order by queued_at`)
+      .all(...args)
+      .map(toRun);
   },
   /** The newest matching run, without reading the others. */
   newest: (s: Store, filter: RunFilter) => {
     const { where, args } = runFilter(filter);
-    const r = s.db.query(`select * from factory_runs ${where} order by queued_at desc, id desc limit 1`).get(...args);
-    return r ? toRun(r as Row) : undefined;
+    const r = s.db
+      .query<RunRow, (string | number)[]>(
+        `select * from factory_runs ${where} order by queued_at desc, id desc limit 1`,
+      )
+      .get(...args);
+    return r ? toRun(r) : undefined;
   },
   /** The board's rows of these items' runs, oldest first: only the columns a row shows, and the report only of a
    * reported review round, whose findings it counts. */
   forBoard: (s: Store, itemIds: string[]) => {
     const rows = s.db
-      .query(
+      .query<
+        Pick<
+          RunRow,
+          | "id"
+          | "item"
+          | "kind"
+          | "state"
+          | "node"
+          | "thread_link"
+          | "started_at"
+          | "measured_at"
+          | "sessions"
+          | "checked"
+        > & { report: string | null },
+        [string]
+      >(
         `select id, item, kind, state, node, thread_link, started_at, measured_at, sessions, checked,
            case when kind = 'review' and state = 'reported' then report end as report
          from factory_runs where item in (select value from json_each(?)) order by queued_at`,
       )
-      .all(JSON.stringify(itemIds)) as Row[];
+      .all(JSON.stringify(itemIds));
     const byItem = new Map<string, BoardRun[]>();
     for (const r of rows) {
       const run: BoardRun = {
-        id: r.id as string,
-        kind: r.kind as RunKind,
-        state: r.state as RunState,
-        node: opt(r.node as string | null),
-        threadLink: opt(r.thread_link as string | null),
-        startedAt: opt(r.started_at as number | null),
-        measuredAt: opt(r.measured_at as number | null),
-        sessions: r.sessions as number,
+        id: r.id,
+        kind: r.kind,
+        state: r.state,
+        node: opt(r.node),
+        threadLink: opt(r.thread_link),
+        startedAt: opt(r.started_at),
+        measuredAt: opt(r.measured_at),
+        sessions: r.sessions,
         checked: runData(r.checked),
         report: parsed(factoryReportSchema, r, "report"),
       };
-      const item = r.item as string;
+      const item = r.item!;
       if (!byItem.has(item)) byItem.set(item, []);
       byItem.get(item)!.push(run);
     }
@@ -507,34 +582,33 @@ export const runs = {
   /** The runs whose threads may still spend tokens: active ones and each PR's owner, of open items that do not wait
    * for the maintainer. */
   toMeasure: (s: Store) =>
-    (
-      s.db
-        .query(
-          `select r.* from factory_runs r join factory_items i on i.id = r.item
+    s.db
+      .query<RunRow, string[]>(
+        `select r.* from factory_runs r join factory_items i on i.id = r.item
            where i.finished_at is null and i.needs_you is null and r.thread_id is not null
              and (r.state in (${ACTIVE.map(() => "?").join(",")})
                or r.id = case when json_valid(i.pr) then json_extract(i.pr, '$.run') end)
            order by r.queued_at`,
-        )
-        .all(...ACTIVE) as Row[]
-    ).map(toRun),
+      )
+      .all(...ACTIVE)
+      .map(toRun),
   /** Runs in these states that belong to an open item or to none: the ones whose threads can still be working. */
   heads: (s: Store, states: readonly RunState[]) =>
-    (
-      s.db
-        .query(
-          `select ${HEAD} from factory_runs where state in (${states.map(() => "?").join(",")}) and (item is null or item in (select id from factory_items where finished_at is null))`,
-        )
-        .all(...states) as Row[]
-    ).map(toHead),
+    s.db
+      .query<HeadRow, string[]>(
+        `select ${HEAD} from factory_runs where state in (${states.map(() => "?").join(",")}) and (item is null or item in (select id from factory_items where finished_at is null))`,
+      )
+      .all(...states)
+      .map(toHead),
   /** The runs whose threads these are. */
   byThreads: (s: Store, threads: string[]) =>
     threads.length
-      ? (
-          s.db
-            .query(`select ${HEAD} from factory_runs where thread_id in (select value from json_each(?))`)
-            .all(JSON.stringify(threads)) as Row[]
-        ).map(toHead)
+      ? s.db
+          .query<HeadRow, [string]>(
+            `select ${HEAD} from factory_runs where thread_id in (select value from json_each(?))`,
+          )
+          .all(JSON.stringify(threads))
+          .map(toHead)
       : [],
   insert: (s: Store, run: Omit<FactoryRun, "queuedAt" | "tokens" | "sessions"> & { queuedAt?: number }) => {
     const full: FactoryRun = { ...run, tokens: 0, sessions: 0, queuedAt: run.queuedAt ?? s.now() };

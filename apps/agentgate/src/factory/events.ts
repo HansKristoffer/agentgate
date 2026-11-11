@@ -63,8 +63,10 @@ export class FactoryEvents {
 
   recent(limit: number) {
     const rows = this.s.db
-      .query("select seq, at, item, kind, text from factory_events order by seq desc limit ?")
-      .all(limit) as { seq: number; at: number; item: string | null; kind: string; text: string }[];
+      .query<{ seq: number; at: number; item: string | null; kind: string; text: string }, [number]>(
+        "select seq, at, item, kind, text from factory_events order by seq desc limit ?",
+      )
+      .all(limit);
     return rows.map(({ item, ...r }) => ({ ...r, ...(item !== null && { item }) }));
   }
 }

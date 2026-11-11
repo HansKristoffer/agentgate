@@ -1,4 +1,4 @@
-import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
+import { isVirtual, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
 import { exponentialBackoff } from "hanzio";
 import {
@@ -14,7 +14,7 @@ import type { Gateway } from "./mcp/gateway.ts";
 import { RelaySocket } from "./relay-socket.ts";
 import { checkRelayUrl, relayUrl, serviceKeyFor } from "./relay.ts";
 import { fetchHeaders, serialTask } from "./runtime.ts";
-import type { Store } from "./store.ts";
+import { sent, type Data, type Project, type Store } from "./store.ts";
 
 /**
  * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
@@ -247,8 +247,8 @@ export class RemoteEndpoints {
     for (const [id, next] of wanted) if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
     // A key range rather than LIKE, which ignores case and so cannot use the primary key. ';' sorts right after ':'.
     for (const row of this.s.db
-      .query("select key from local where key >= 'remote:deleted:' and key < 'remote:deleted;'")
-      .all() as { key: string }[])
+      .query<{ key: string }, []>("select key from local where key >= 'remote:deleted:' and key < 'remote:deleted;'")
+      .all())
       if (!used(row.key.slice("remote:deleted:".length))) this.s.setLocal(row.key, undefined);
     // A disabled endpoint served here: tell the relay, so it refuses requests even from a stale copy.
     for (const p of projects)
@@ -499,9 +499,11 @@ export class RemoteEndpoints {
 /** The last request an endpoint answered, from what `answer` logs: `id` is the project, or `~hook:<source>`. */
 export function lastRequest(s: Store, id: string): { at: number; status: number } | undefined {
   return (
-    (s.db
-      .query("select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1")
-      .get(id) as { at: number; status: number } | null) ?? undefined
+    s.db
+      .query<{ at: number; status: number }, [string]>(
+        "select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1",
+      )
+      .get(id) ?? undefined
   );
 }
 
@@ -522,7 +524,7 @@ function hookRequest(frame: RequestFrame, signal: AbortSignal) {
 
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, files, factoryWebhook, ...rest } = p;
+  const { remote, files, factoryWebhook, ...rest } = sent<Data<"project">>(p);
   const summary = endpoints.summary(p);
   const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
   return {

@@ -23,7 +23,7 @@ import {
   type RepoFetcher,
   type SkillFetcher,
 } from "./skill-import.ts";
-import type { Skill, Store } from "./store.ts";
+import type { Skill, Store, Stored } from "./store.ts";
 
 export { SkillLinks } from "./skill-links.ts";
 export { description, readSkill, fetchSkills, searchSkills, repoUrl, type FetchedSkill } from "./skill-import.ts";
@@ -80,7 +80,14 @@ const contentHash = (files: Skill["files"]) =>
 /** JSON metadata only; legacy bundles are measured without decoding all contents. */
 export function skillSummaries(s: Store): SkillSummary[] {
   return s.db
-    .query(
+    .query<
+      Omit<SkillSummary, "source" | "hash" | "contentHash"> & {
+        source: string | null;
+        hash: string | null;
+        contentHash: string | null;
+      },
+      []
+    >(
       `select r.id, json_extract(r.data, '$.description') as description,
     json_extract(r.data, '$.source') as source, json_extract(r.data, '$.hash') as hash,
     json_extract(r.data, '$.contentHash') as contentHash, json_extract(r.data, '$.updatedAt') as updatedAt,
@@ -90,18 +97,15 @@ export function skillSummaries(s: Store): SkillSummary[] {
     from records r where kind = 'skill' and deleted = 0 order by id`,
     )
     .all()
-    .map((row) => {
-      const r = row as SkillSummary;
-      return {
-        ...r,
-        source: r.source ?? undefined,
-        hash: r.hash ?? undefined,
-        contentHash: r.contentHash ?? undefined,
-      };
-    });
+    .map((r) => ({
+      ...r,
+      source: r.source ?? undefined,
+      hash: r.hash ?? undefined,
+      contentHash: r.contentHash ?? undefined,
+    }));
 }
 
-function putSkill(s: Store, input: Omit<z.input<typeof skillSchema>, "updatedAt">) {
+function putSkill(s: Store, input: Stored<Omit<z.input<typeof skillSchema>, "updatedAt">>) {
   const skill = skillSchema.parse({ ...input, updatedAt: s.now() });
   skill.contentHash = contentHash(skill.files);
   const prev = s.get("skill", skill.id);

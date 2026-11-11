@@ -233,25 +233,23 @@ export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequ
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
-export type Account = Data<"account">;
-export type Credential = Data<"credential">;
-export type Usage = Data<"usage">;
-export type McpInstance = Data<"mcp">;
-export type Project = Data<"project">;
-export type Settings = Data<"setting">;
-export type McpCredential = Data<"mcpCredential">;
-export type Skill = Data<"skill">;
-
-export interface Rec {
-  kind: Kind;
-  id: string;
-  rev: number;
-  node: string;
-  updated_at: number;
-  deleted: number;
-  data: string;
-  seq?: number;
-}
+export type Account = Stored<Data<"account">>;
+export type Credential = Stored<Data<"credential">>;
+export type Usage = Stored<Data<"usage">>;
+export type McpInstance = Stored<Data<"mcp">>;
+export type Project = Stored<Data<"project">>;
+export type Settings = Stored<Data<"setting">>;
+export type McpCredential = Stored<Data<"mcpCredential">>;
+export type Skill = Stored<Data<"skill">>;
+/** What `get` and `list` return. Later reads share the value, so it is read-only: copy it before changing it. */
+export type Stored<T> = T extends readonly (infer U)[]
+  ? readonly Stored<U>[]
+  : T extends object
+    ? { readonly [P in keyof T]: Stored<T[P]> }
+    : T;
+/** A stored value going out in an answer: the protocol's types are mutable, and nothing changes the value between here
+ * and the JSON it is sent as. */
+export const sent = <T>(value: Stored<T>) => value as T;
 
 export const recordSchema = z.object({
   kind: z.enum(nonEmpty(typedKeys(schemas))),
@@ -263,6 +261,7 @@ export const recordSchema = z.object({
   data: z.string().max(MAX_RECORD),
   seq: timestamp.optional(),
 });
+export type Rec = z.infer<typeof recordSchema>;
 
 export function parseData<K extends Kind>(kind: K, key: string, input: unknown): Data<K> {
   id.parse(key);
@@ -300,6 +299,10 @@ export class Store {
   /** Set by the daemon's change hub (changes.ts); the CLI leaves it unset. Called synchronously, possibly inside a
    * transaction, so the listener must defer its own work. */
   onChange?: (topic: Topic) => void;
+  /** Parsed records by kind and id, each with the `seq` of the row it came from. Every local write and merge gives the
+   * row a new `seq`, as does a write from another process, so a read that finds a different `seq` parses again. */
+  private readonly cache = new Map<Kind, Map<string, Cached>>();
+  private node?: string;
 
   constructor(path = join(CONFIG_DIR, "agentgate.db")) {
     if (path !== ":memory:") {
@@ -354,10 +357,10 @@ export class Store {
 
   private migrate() {
     this.transaction(() => {
-      const version = (this.db.query("pragma user_version").get() as { user_version: number }).user_version;
+      const version = this.db.query<{ user_version: number }, []>("pragma user_version").get()!.user_version;
       if (version > 2) throw new Error("database was created by a newer agentgate version");
       if (version === 0) {
-        for (const row of this.db.query("select * from records where kind = 'mcp' and deleted = 0").all() as Rec[]) {
+        for (const row of this.db.query<Rec, []>("select * from records where kind = 'mcp' and deleted = 0").all()) {
           const inst = parseData("mcp", row.id, JSON.parse(row.data));
           if (inst.oauth) {
             this.put("mcpCredential", inst.id, { ...inst.oauth, instanceId: inst.id, holder: row.node });
@@ -386,26 +389,34 @@ export class Store {
     });
   }
 
+  /** Kept, since every write reads it. `init` renames the node through `setLocal`, which drops it, or from the CLI
+   * while the daemon runs, which the daemon learns through `externalWrite`. */
   get nodeId(): string {
-    return this.local("node") ?? "unnamed";
+    return (this.node ??= this.local("node") ?? "unnamed");
+  }
+
+  /** Another process (the CLI) committed to this database. */
+  externalWrite() {
+    this.node = undefined;
   }
 
   local(key: string): string | undefined {
-    return (this.db.query("select value from local where key = ?").get(key) as { value: string } | null)?.value;
+    return this.db.query<{ value: string }, [string]>("select value from local where key = ?").get(key)?.value;
   }
 
   /** A key range rather than `like`, so the primary key serves it. */
   localPrefixed(prefix: string): [string, string][] {
     const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
-    return (
-      this.db.query("select key, value from local where key >= ? and key < ? order by key").all(prefix, end) as {
-        key: string;
-        value: string;
-      }[]
-    ).map((r) => [r.key, r.value]);
+    return this.db
+      .query<{ key: string; value: string }, [string, string]>(
+        "select key, value from local where key >= ? and key < ? order by key",
+      )
+      .all(prefix, end)
+      .map((r) => [r.key, r.value]);
   }
 
   setLocal(key: string, value: string | undefined) {
+    if (key === "node") this.node = undefined;
     if (value === undefined) this.db.run("delete from local where key = ?", [key]);
     else this.db.run("insert or replace into local values (?, ?)", [key, value]);
   }
@@ -416,15 +427,17 @@ export class Store {
   }
 
   seq(): number {
-    return (this.db.query("select value from local_seq").get() as { value: number }).value;
+    return this.db.query<{ value: number }, []>("select value from local_seq").get()!.value;
   }
 
   private nextSeq(): number {
-    return (this.db.query("update local_seq set value = value + 1 returning value").get() as { value: number }).value;
+    return this.db.query<{ value: number }, []>("update local_seq set value = value + 1 returning value").get()!.value;
   }
 
   record(kind: Kind, id: string): Rec | undefined {
-    return (this.db.query("select * from records where kind = ? and id = ?").get(kind, id) as Rec | null) ?? undefined;
+    return (
+      this.db.query<Rec, [string, string]>("select * from records where kind = ? and id = ?").get(kind, id) ?? undefined
+    );
   }
 
   /** Existence without parsing: a skill record can be megabytes of base64 that `get` would validate. */
@@ -432,19 +445,65 @@ export class Store {
     return !!this.db.query("select 1 from records where kind = ? and id = ? and deleted = 0").get(kind, id);
   }
 
-  get<K extends Kind>(kind: K, id: string): Data<K> | undefined {
-    const r = this.record(kind, id);
-    return r && !r.deleted ? (schemas[kind].parse(JSON.parse(r.data)) as Data<K>) : undefined;
+  get<K extends Kind>(kind: K, id: string): Stored<Data<K>> | undefined {
+    const cache = this.cacheOf(kind);
+    const row = this.db
+      .query<{ seq: number; deleted: number }, [string, string]>(
+        "select seq, deleted from records where kind = ? and id = ?",
+      )
+      .get(kind, id);
+    if (!row || row.deleted) cache.delete(id);
+    else if (cache.get(id)?.seq !== row.seq) {
+      const r = this.record(kind, id);
+      if (r) this.remember(cache, r);
+      else cache.delete(id);
+    }
+    return cache.get(id)?.value as Stored<Data<K>> | undefined;
   }
 
-  list<K extends Kind>(kind: K): Data<K>[] {
-    const rows = this.db.query("select data from records where kind = ? and deleted = 0 order by id").all(kind) as {
-      data: string;
-    }[];
-    return rows.map((r) => schemas[kind].parse(JSON.parse(r.data)) as Data<K>);
+  list<K extends Kind>(kind: K): Stored<Data<K>>[] {
+    const cache = this.cacheOf(kind);
+    const rows = this.db
+      .query<{ id: string; seq: number }, [string]>(
+        "select id, seq from records where kind = ? and deleted = 0 order by id",
+      )
+      .all(kind);
+    const stale = rows.filter((r) => cache.get(r.id)?.seq !== r.seq).map((r) => r.id);
+    if (stale.length) {
+      for (const id of stale) cache.delete(id);
+      const changed = this.db
+        .query<Rec, [string, string]>("select * from records where kind = ? and id in (select value from json_each(?))")
+        .all(kind, JSON.stringify(stale));
+      for (const r of changed) this.remember(cache, r);
+    }
+    // Rebuilt from this list, which drops records deleted since the last one.
+    const live = new Map<string, Cached>();
+    for (const { id } of rows) {
+      const entry = cache.get(id);
+      if (entry) live.set(id, entry);
+    }
+    this.cache.set(kind, live);
+    return Array.from(live.values(), (entry) => entry.value as Stored<Data<K>>);
   }
 
-  put<K extends Kind>(kind: K, id: string, data: z.input<(typeof schemas)[K]> | Data<K>): Data<K> {
+  private cacheOf(kind: Kind) {
+    let cache = this.cache.get(kind);
+    if (!cache) this.cache.set(kind, (cache = new Map()));
+    return cache;
+  }
+
+  /** Caches a row read after its `seq`: another process may have written between the two reads, so the entry keeps the
+   * `seq` of the row it was parsed from. */
+  private remember(cache: Map<string, Cached>, r: Rec) {
+    if (r.deleted) cache.delete(r.id);
+    else cache.set(r.id, { seq: r.seq!, value: deepFreeze(schemas[r.kind].parse(JSON.parse(r.data))) });
+  }
+
+  put<K extends Kind>(
+    kind: K,
+    id: string,
+    data: Data<K> | Stored<z.input<(typeof schemas)[K]>> | Stored<Data<K>>,
+  ): Data<K> {
     const parsed = parseData(kind, id, data);
     this.write(kind, id, JSON.stringify(parsed), 0);
     return parsed;
@@ -484,8 +543,8 @@ export class Store {
     return this.db.transaction(() => {
       const seq = this.seq(); // establish the read snapshot before reading its records
       const records = this.db
-        .query("select * from records where seq > ? and seq <= ? order by seq")
-        .all(since, seq) as Rec[];
+        .query<Rec, [number, number]>("select * from records where seq > ? and seq <= ? order by seq")
+        .all(since, seq);
       return { records, seq };
     })();
   }
@@ -501,9 +560,11 @@ export class Store {
       const high = this.seq(),
         records: Rec[] = [];
       let bytes = 0;
-      const statement = this.db.prepare("select * from records where seq > ? and seq <= ? order by seq");
+      const statement = this.db.prepare<Rec, [number, number]>(
+        "select * from records where seq > ? and seq <= ? order by seq",
+      );
       try {
-        for (const row of statement.iterate(since, high) as Iterable<Rec>) {
+        for (const row of statement.iterate(since, high)) {
           if (records.length === maxRecords) return { records, seq: records.at(-1)!.seq!, more: true };
           const size = Buffer.byteLength(JSON.stringify(row)) + 1;
           if (bytes + size > maxBytes) {
@@ -528,8 +589,8 @@ export class Store {
     const took = this.db
       .transaction(() => {
         const cur = this.db
-          .query("select rev, updated_at, node from records where kind = ? and id = ?")
-          .get(envelope.kind, envelope.id) as Version | null;
+          .query<Version, [string, string]>("select rev, updated_at, node from records where kind = ? and id = ?")
+          .get(envelope.kind, envelope.id);
         if (cur && !newer(envelope, cur)) return false;
         const r = { ...envelope, data: storedData(envelope) };
         if (cur && staleRotation(this, r)) {
@@ -643,6 +704,20 @@ function staleRotation(s: Store, incoming: Rec) {
   return rotated.includes(theirs) && !rotated.includes(mine);
 }
 
+interface Cached {
+  seq: number;
+  value: unknown;
+}
+
+/** Cached values are handed to every later reader, so a change to one would show in all of them; frozen, it throws. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
 type Version = Pick<Rec, "rev" | "updated_at" | "node">;
 function newer(a: Version, b: Version): boolean {
   if (a.rev !== b.rev) return a.rev > b.rev;
@@ -670,11 +745,11 @@ function publicMcp(inst: McpInstance) {
 }
 
 export function exportBackup(s: Store, secrets = true) {
-  const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as {
-    kind: Kind;
-    id: string;
-    data: string;
-  }[];
+  const rows = s.db
+    .query<Pick<Rec, "kind" | "id" | "data">, []>(
+      "select kind, id, data from records where deleted = 0 order by kind, id",
+    )
+    .all();
   const records = rows
     .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {

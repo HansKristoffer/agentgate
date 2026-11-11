@@ -141,8 +141,10 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
   const { s } = f;
   const key = [item, moment, ref];
   const row = s.db
-    .query("select status, body, what, refusals, claimed from factory_writebacks where item=? and moment=? and ref=?")
-    .get(...key) as Row | null;
+    .query<Row, string[]>(
+      "select status, body, what, refusals, claimed from factory_writebacks where item=? and moment=? and ref=?",
+    )
+    .get(...key);
   if (!row || !UNSENT.includes(row.status)) return;
   s.db.run("update factory_writebacks set status='sending' where item=? and moment=? and ref=?", key);
   s.bump("factory");
@@ -235,8 +237,8 @@ export function fileIssue(f: FactoryRuntime, item: string, ref: string, issue: S
 /** Sends what a restart left pending, and again what a service refused or never received. */
 function drain(f: FactoryRuntime) {
   const rows = f.s.db
-    .query("select item, moment, ref from factory_writebacks where status in ('pending', 'unreachable')")
-    .all() as WriteKey[];
+    .query<WriteKey, []>("select item, moment, ref from factory_writebacks where status in ('pending', 'unreachable')")
+    .all();
   for (const row of rows) later(f, row.item, "Sending a write", () => sendWrite(f, row.item, row.moment, row.ref));
 }
 
@@ -250,10 +252,10 @@ const COMMENT_MOMENTS = writeBackMoments.map((m) => `'${m}'`).join(", ");
  */
 function settle(f: FactoryRuntime) {
   const rows = f.s.db
-    .query(
+    .query<WriteKey & Row, [number]>(
       `select item, moment, ref, body, what, claimed from factory_writebacks where status='uncertain' and moment in (${COMMENT_MOMENTS}) and at <= ?`,
     )
-    .all(f.s.now() - EVERY) as (WriteKey & Row)[];
+    .all(f.s.now() - EVERY);
   const settled = rows.filter((r) => parseMarkers(r.body).at(-1)?.moment === r.moment);
   for (const id of new Set(settled.map((r) => r.item)))
     later(f, id, "Reading back an uncertain comment", async () => {
@@ -288,8 +290,8 @@ function settle(f: FactoryRuntime) {
 /** A send a restart cut off may have reached the service: it is uncertain, and only `settle` sends it again. */
 function settleInterrupted(f: FactoryRuntime) {
   const rows = f.s.db
-    .query("select item, moment, ref from factory_writebacks where status='sending'")
-    .all() as WriteKey[];
+    .query<WriteKey, []>("select item, moment, ref from factory_writebacks where status='sending'")
+    .all();
   for (const { item, moment, ref } of rows)
     if (!flying(f).has(JSON.stringify([item, moment, ref])))
       f.s.db.run("update factory_writebacks set status='uncertain' where item=? and moment=? and ref=?", [
