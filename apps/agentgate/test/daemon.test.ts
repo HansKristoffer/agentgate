@@ -224,3 +224,46 @@ test("a SQLite error in a request logs its code, message and free space, and the
     error.mockRestore();
   }
 });
+
+test("the daemon's own startup node write pokes peers", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  s.put("node", "n", { id: "n" }); // an older daemon's record: the start rewrites it with this release
+  let poked!: () => void;
+  const poke = new Promise<void>((resolve) => (poked = resolve));
+  const peer = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      if (new URL(req.url).pathname === "/peer/poke") poked();
+      return new Response("not found", { status: 404 });
+    },
+  });
+  s.db.run("insert into peers values ('b', ?, 'peer-token', 0, null)", [`http://127.0.0.1:${peer.port}`]);
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    await poke;
+  } finally {
+    await daemon.stop();
+    peer.stop(true);
+    s.close();
+  }
+});
+
+test("a project written after start reaches open sessions' tool lists and the skill links at once", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    const tools = new Promise<void>((resolve) =>
+      spyOn(daemon.ctx.gateway, "toolsChanged").mockImplementation(() => resolve()),
+    );
+    const skills = new Promise<void>((resolve) => spyOn(daemon.ctx.skills, "soon").mockImplementation(() => resolve()));
+    s.put("project", "acme/web", { id: "acme/web" });
+    // Microtasks only: a timer-driven reaction loses to this zero-delay timer.
+    const timer = new Promise((resolve) => setTimeout(() => resolve("timer"), 0));
+    expect(await Promise.race([Promise.all([tools, skills]).then(() => "reacted"), timer])).toBe("reacted");
+  } finally {
+    await daemon.stop();
+    s.close();
+  }
+});

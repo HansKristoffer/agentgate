@@ -13,9 +13,10 @@ import { ProxyOperations } from "./llm/operations.ts";
 import { Gateway, aliasesFor, inScope } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
-import { pollDesktopLogin } from "./desktop.ts";
+import { pollDesktopLogin, status as desktopStatus } from "./desktop.ts";
+import { Changes } from "./changes.ts";
 import { rotateLogs } from "./service.ts";
-import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Store } from "./store.ts";
+import { CONFIG_DIR, DEV, PORT, sqliteDetail, type Kind, type Store } from "./store.ts";
 import {
   PULL_INTERVAL,
   drainPulls,
@@ -74,6 +75,8 @@ export interface Ctx {
   health: HealthDashboard;
   /** The software factory's features and what they registered (factory/runtime.ts). */
   factory: FactoryRuntime;
+  /** What changed, for `/api/changes` and the daemon's reactions to record writes. */
+  changes: Changes;
 }
 
 /** Where handoffs put new worktrees and clones (node-local, read on each use); a checkout's dev daemon keeps them in its own state. */
@@ -117,6 +120,7 @@ export function makeCtx(
   ensureFactoryTables(s);
   const base: Omit<Ctx, "factory" | "channel"> = {
     s,
+    changes: new Changes(s),
     creds,
     quotas,
     proxyOperations: new ProxyOperations(s, creds, quotas, providers),
@@ -260,6 +264,24 @@ export async function serve(
   let stopped = false;
   const timers: ReturnType<typeof setInterval>[] = [];
   const jobs = new Set<Promise<unknown>>();
+  // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
+  const logins = DEV ? async () => {} : serialTask(() => syncLogins(s));
+  // Subscribed before the startup `node` write below, so peers hear about that write too.
+  ctx.changes.onRecords((kinds) => {
+    if (stopped) return;
+    const any = (...of: Kind[]) => of.some((k) => kinds.has(k));
+    poke(s);
+    void relaySync(s, { pull: false });
+    if (any("mcp", "mcpCredential", "project")) ctx.gateway.toolsChanged();
+    if (any("skill", "project")) ctx.skills.soon();
+    if (any("project")) ctx.remote.reconcile();
+    // A store arrived from another machine, or the last old node updated so stores may sync.
+    if (any("project", "node")) ctx.files.soon();
+    if (any("node")) ctx.health.reconcile();
+    // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
+    if (any("project", "setting")) void ctx.handoffs.syncProjects().catch(() => {});
+    if (any("login")) void logins().catch(() => {});
+  });
   const listen = (hostname: string, listener: Listener, port: number) =>
     Bun.serve({
       hostname,
@@ -322,26 +344,6 @@ export async function serve(
     const self = s.get("node", s.nodeId);
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
   }, 30000);
-  // Signing in changes this machine's gh and Infisical setup, which a checkout's dev daemon must not do.
-  const logins = DEV ? async () => {} : serialTask(() => syncLogins(s));
-  let lastSeq = s.seq();
-  schedule(async () => {
-    const snapshot = s.changes(lastSeq);
-    if (snapshot.seq === lastSeq) return;
-    lastSeq = snapshot.seq;
-    poke(s);
-    void relaySync(s, { pull: false });
-    if (snapshot.records.some((r) => ["mcp", "mcpCredential", "project"].includes(r.kind))) ctx.gateway.toolsChanged();
-    if (snapshot.records.some((r) => ["skill", "project"].includes(r.kind))) ctx.skills.soon();
-    if (snapshot.records.some((r) => r.kind === "project")) ctx.remote.reconcile();
-    // A store arrived from another machine, or the last old node updated so stores may sync.
-    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "node")) ctx.files.soon();
-    if (snapshot.records.some((r) => r.kind === "node")) ctx.health.reconcile();
-    // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
-    if (snapshot.records.some((r) => r.kind === "project" || r.kind === "setting"))
-      void ctx.handoffs.syncProjects().catch(() => {});
-    if (snapshot.records.some((r) => r.kind === "login")) void logins().catch(() => {});
-  }, 1000);
   schedule(logins, 10 * 60_000);
   schedule(async () => {
     ctx.remote.reconcile();
@@ -376,8 +378,14 @@ export async function serve(
     await backfill;
     publishTokens(s);
   }, 15 * 60_000);
+  let desktopSeen: string | undefined;
   schedule(async () => {
-    if (process.platform === "darwin") await pollDesktopLogin(s);
+    if (process.platform !== "darwin") return;
+    await pollDesktopLogin(s);
+    // Desktop changes behind the daemon (the user signs in, or quits it): tell the app when what it shows moved.
+    const seen = JSON.stringify(desktopStatus(s));
+    if (desktopSeen !== undefined && seen !== desktopSeen) ctx.changes.bump("desktop");
+    desktopSeen = seen;
   }, 2000);
   schedule(async () => {
     s.trimLog();
@@ -399,6 +407,7 @@ export async function serve(
     stop: () =>
       (stopping ??= (async () => {
         stopped = true;
+        ctx.changes.close();
         ctx.abort.abort();
         timers.forEach(clearInterval);
         lagProbe.stop();

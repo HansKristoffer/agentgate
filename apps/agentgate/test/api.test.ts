@@ -1,6 +1,6 @@
 import { revision } from "../src/configuration.ts";
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { API_VERSION, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
+import { API_VERSION, changesSchema, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { route } from "../src/llm/routing.ts";
@@ -602,4 +602,19 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
   expect([...readStore(join(root, `github.com/${project}`)).files.keys()]).toEqual([]);
   const after = (await (await call("/api/status")).json()) as Status;
   expect(after.projects.find((p) => p.id === project)!.files).toEqual([]);
+});
+
+test("changes: an old token answers at once, the current one waits for a write and says which topics moved", async () => {
+  const { s, call } = fixture();
+  const first = changesSchema.parse(await (await call("/api/changes?after=old")).json());
+  expect(first.versions?.status).toBe(0);
+  const waiting = (async () => (await call(`/api/changes?after=${first.token}`)).json())();
+  // The route runs on microtasks, so a zero-delay timer fires only once it is waiting rather than answering.
+  const timer = new Promise((resolve) => setTimeout(() => resolve("still waiting"), 0));
+  expect(await Promise.race([waiting, timer])).toBe("still waiting");
+  s.put("project", "acme/web", { id: "acme/web" });
+  const next = changesSchema.parse(await waiting);
+  expect(next.token).not.toBe(first.token);
+  expect(next.versions?.status).toBe(1);
+  expect(next.versions?.desktop).toBe(0);
 });

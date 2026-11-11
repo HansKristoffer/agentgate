@@ -39,7 +39,6 @@ import {
   accountPatchSchema,
   settingsPatchSchema,
 } from "@agentgate/protocol";
-import { sleep } from "./runtime.ts";
 import packageInfo from "../../../package.json";
 import { nodeUpdate, routeNode, updateTracked } from "./update.ts";
 import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName } from "./mcp/gateway.ts";
@@ -200,22 +199,11 @@ export function management(ctx: Ctx) {
       });
     }
   };
-  // The app waits here and refreshes when something changed: a record (from this daemon, a peer or the CLI, which writes
-  // the store from its own process, so no in-process event sees every change) or a factory event. Reading two counters
-  // four times a second is cheaper than the app reading the status every second.
-  const changeToken = () => {
-    const events = s.db.query("select coalesce(max(seq), 0) as seq from factory_events").get() as { seq: number };
-    return `${s.seq()}.${events.seq}`;
-  };
+  // The app waits here and refreshes when something changed (changes.ts).
   app.get("/changes", async (c) => {
-    const after = c.req.query("after");
-    const until = Date.now() + Math.min(25, Math.max(0, Number(c.req.query("wait") ?? 25) || 0)) * 1000;
-    let token = changeToken();
-    while (token === after && Date.now() < until && !c.req.raw.signal.aborted && !ctx.abort.signal.aborted) {
-      await sleep(250);
-      token = changeToken();
-    }
-    return c.json({ token });
+    const wait = Math.min(25, Math.max(0, Number(c.req.query("wait") ?? 25) || 0));
+    await ctx.changes.wait(c.req.query("after"), wait * 1000, AbortSignal.any([c.req.raw.signal, ctx.abort.signal]));
+    return c.json(ctx.changes.snapshot());
   });
   app.get("/status", (c) => {
     const status: Status = {
