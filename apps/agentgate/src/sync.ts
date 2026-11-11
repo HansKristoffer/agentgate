@@ -5,7 +5,7 @@ import { z } from "zod";
 import { PEER_TOPICS, type Changes, type PeerTopic } from "./changes.ts";
 import { defineLocal } from "./local-state.ts";
 import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
-import { parseRecord, PORT, type Rec, type Store } from "./store.ts";
+import { parseEnvelope, PORT, type Rec, type Store } from "./store.ts";
 
 export const PULL_INTERVAL = 15_000;
 // 4: byte-bounded pages with explicit continuation, plus validated skill bundles.
@@ -189,7 +189,8 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
     const body = batchSchema.parse(
       JSON.parse(new TextDecoder().decode(await readBody(res.body, 16 * 1024 * 1024, signal))),
     );
-    const records: Rec[] = body.records.map(parseRecord);
+    // Only the envelope here: `merge` parses a record's data once it knows the record wins.
+    const records: Rec[] = body.records.map(parseEnvelope);
     if (
       records.some(
         (r, index) => r.seq === undefined || r.seq > body.seq || r.seq <= (index ? records[index - 1]!.seq! : p.cursor),
@@ -378,11 +379,7 @@ export function peerRoutes(
     if (!cursor.success) return c.json({ error: "invalid cursor" }, 400);
     const seen: Record<string, number> = { [s.nodeId]: s.now() };
     for (const p of peers(s)) if (p.last_seen) seen[p.node] = p.last_seen;
-    for (const row of s.db.query("select key, value from local where key like 'seen:%'").all() as {
-      key: string;
-      value: string;
-    }[])
-      seen[row.key.slice(5)] = Math.min(Number(row.value), s.now());
+    for (const [key, value] of s.localPrefixed("seen:")) seen[key.slice(5)] = Math.min(Number(value), s.now());
     return c.json({
       protocol: SYNC_PROTOCOL,
       ...s.changePage(cursor.data),

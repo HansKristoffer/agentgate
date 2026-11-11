@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as path } from "node:path";
@@ -271,6 +271,12 @@ test("relay policy payloads are versioned and incompatible encrypted records nev
   await joinRelay(b, invite);
   expect(b.get("account", "acc")).toBeUndefined();
   expect(relayStatus(b)?.skipped).toBe(1);
+  // A current payload whose data is invalid is skipped too, rather than failing its page on every read.
+  const invalid = { ...payload, record: { ...payload.record, rev: 99, data: '{"id":"acc","provider":"nope"}' } };
+  db.run("update entries set blob=? where key=?", [await seal(keys, aad, JSON.stringify(invalid)), entry.key]);
+  await reconcileRelay(b);
+  expect(b.get("account", "acc")).toBeUndefined();
+  expect(relayStatus(b)?.skipped).toBe(1);
   db.run("update entries set blob=? where key=?", [entry.blob, entry.key]);
   await reconcileRelay(b);
   expect(b.get("account", "acc")?.policy?.retryLimit).toBe(0);
@@ -370,6 +376,35 @@ test("restoring a whole database (and the clock) recovers newer records and coun
   expect(b.get("project", "o/r")).toBeDefined();
 });
 
+test("a restart uploads only the records that changed while the daemon was down", async () => {
+  const r = relay();
+  const aFile = file("a");
+  const a = node("a", aFile),
+    b = node("b");
+  seed(a);
+  const invite = await createRelay(a, r.url);
+  const grp = await groupOf(invite);
+  await stopRelay(a);
+  a.close();
+
+  const unchanged = node("a", aFile);
+  r.ctl.pushes = 0;
+  await sync(unchanged);
+  expect(r.ctl.pushes).toBe(0);
+  expect(relayStatus(unchanged)).toMatchObject({ reconciling: false, pushed: unchanged.seq() });
+  await stopRelay(unchanged);
+  unchanged.close();
+
+  const edited = node("a", aFile);
+  edited.put("account", "acc", { id: "acc", provider: "claude", label: "edited while down" });
+  const before = head(r, grp);
+  await sync(edited);
+  expect(head(r, grp)).toBe(before + 1);
+  await joinRelay(b, invite);
+  expect(b.get("account", "acc")!.label).toBe("edited while down");
+  expect(b.get("credential", "acc")).toEqual(edited.get("credential", "acc")!);
+});
+
 test("a wiped group is repopulated from surviving nodes, tombstones included", async () => {
   const r = relay();
   const a = node("a"),
@@ -437,16 +472,19 @@ test("large stores page and chunk without omissions, including writes made durin
   const a = node("a"),
     b = node("b");
   a.transaction(() => {
-    for (let i = 0; i < 1300; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} });
+    for (let i = 0; i < 2000; i++) a.put("project", `o/r${i}`, { id: `o/r${i}`, mcp: {} });
   });
   r.ctl.beforePush = () => {
     if (r.ctl.pushes === 1) a.put("account", "late", { id: "late", provider: "claude", label: "written mid-upload" });
   };
+  const pages = spyOn(a, "changePage");
   const invite = await createRelay(a, r.url);
-  expect(r.ctl.pushes).toBeGreaterThanOrEqual(3);
+  expect(r.ctl.pushes).toBeGreaterThanOrEqual(4);
+  // The feed is read one chunk at a time, not reloaded in full for every chunk.
+  expect(Math.max(...pages.mock.results.map((p) => (p.value as { records: unknown[] }).records.length))).toBe(500);
   await sync(a);
   await joinRelay(b, invite);
-  expect(b.list("project").length).toBe(1300);
+  expect(b.list("project").length).toBe(2000);
   expect(b.get("account", "late")).toBeDefined();
   expect(relayStatus(a)!.pushed).toBe(a.seq());
 });
