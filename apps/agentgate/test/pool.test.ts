@@ -8,7 +8,8 @@ import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
 // Fake Anthropic: behaviour per bearer token.
-type Mode = "ok" | "quota" | "rate-once";
+// "unmetered" answers without quota headers; "disk-full" makes every store write fail as the upstream answers.
+type Mode = "ok" | "quota" | "rate-once" | "unmetered" | "disk-full";
 let modes: Record<string, Mode> = {};
 let seen: string[] = [];
 const soon = Math.floor(Date.now() / 1000) + 3600;
@@ -45,11 +46,15 @@ const upstream = Bun.serve({
         headers: { ...quota, "retry-after": "0" },
       });
     }
+    if (mode === "disk-full")
+      s.db.run = () => {
+        throw new Error("database or disk is full");
+      };
     const body = (await req.json()) as any;
     return new Response(
       `event: message_start\ndata: ${JSON.stringify({ user: body.metadata?.user_id, beta: req.headers.get("anthropic-beta") })}\n\n`,
       {
-        headers: { ...quota, "content-type": "text/event-stream" },
+        headers: { ...(mode === "unmetered" ? {} : quota), "content-type": "text/event-stream" },
       },
     );
   },
@@ -131,9 +136,44 @@ test("a quota 429 is retried on the next account; the client never sees it", asy
   expect(seen).toEqual(["tok-a", "tok-a", "tok-b"]);
   expect(s.get("usage", "a")!.status).toBe("exhausted");
   expect(s.local("active:claude")).toBe("b");
+  // Only events reach the request log, not each successful request.
+  expect(s.db.query("select account, note from request_log").all()).toEqual([
+    { account: "a", note: "active subscription changed" },
+    { account: "a", note: "quota exhausted; switching" },
+    { account: "b", note: "active subscription changed" },
+  ]);
   // Sticky: the next turn stays on b even though a has higher priority.
   await send();
   expect(seen.at(-1)).toBe("tok-b");
+});
+
+test("a store that stops taking writes while the upstream answers still delivers the response", async () => {
+  const run = s.db.run;
+  modes["tok-a"] = "disk-full";
+  try {
+    const res = await send();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain("event: message_start");
+  } finally {
+    s.db.run = run;
+  }
+});
+
+test("a request whose telemetry cannot be created is still proxied", async () => {
+  s.db.run("drop table proxy_requests");
+  const res = await send();
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain("event: message_start");
+});
+
+test("unknown quota is recorded when it starts, not on every response", async () => {
+  modes["tok-a"] = "unmetered";
+  const start = Date.now();
+  s.now = () => start;
+  await (await send()).text();
+  s.now = () => start + 60_000;
+  await (await send()).text();
+  expect(s.local("quotaUnknown:claude")).toBe(String(start));
 });
 
 test("a per-minute 429 retries the same account instead of switching", async () => {

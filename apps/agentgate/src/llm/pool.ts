@@ -45,6 +45,23 @@ export function exhaustedResponse(provider: ProviderName, resetAt: number | unde
   });
   return Response.json(body, { status: 429, headers: { "retry-after": String(secs) } });
 }
+/** Bookkeeping on the proxy path (telemetry, the request log, local state, observed quota) is best-effort, as in
+ * sessions.ts: a full disk or a busy store must not fail a request the upstream can serve, least of all one it already
+ * accepted. Each kind of failure is logged once, by error name and SQLite code only. */
+const bookkeepingFailed = new Set<string>();
+function bestEffort<T>(kind: string, write: () => T): T | undefined {
+  try {
+    return write();
+  } catch (e) {
+    if (bookkeepingFailed.has(kind)) return;
+    bookkeepingFailed.add(kind);
+    const code = isRecord(e) && typeof e.code === "string" ? ` ${e.code}` : "";
+    console.error(`proxy: ${kind} not recorded: ${e instanceof Error ? e.name : "error"}${code}`);
+  }
+}
+/** Telemetry over a store that reads as closed records nothing: the stand-in when the real one cannot write. */
+const silentTelemetry = (s: Store, provider: ProviderName, sensitive: string[] = []) =>
+  new Telemetry(Object.assign(Object.create(s) as Store, { closed: true }), provider, sensitive);
 function cleanHeaders(h: Headers): Headers {
   const out = new Headers(h);
   for (const key of ["content-encoding", "content-length", "transfer-encoding", "connection"]) out.delete(key);
@@ -60,16 +77,29 @@ export async function proxy(
   options: { accountId?: string } = {},
 ): Promise<Response> {
   const settings = s.settings(),
-    telemetry = new Telemetry(s, provider.name, [
+    sensitive = [
       req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "",
       req.headers.get("x-api-key") ?? "",
-    ]),
+    ],
+    telemetry =
+      bestEffort("telemetry", () => new Telemetry(s, provider.name, sensitive)) ??
+      silentTelemetry(s, provider.name, sensitive),
     budget = new Budget(req.signal, settings.bootstrapTimeoutMs);
+  const track = (write: () => void) => bestEffort("telemetry", write);
+  const attemptOn = (account: string, selection: string) =>
+    bestEffort("telemetry", () => telemetry.attempt(account, selection)) ??
+    silentTelemetry(s, provider.name).attempt(account, selection);
+  const log = (account: string, status: number, ms: number, note: string) =>
+    bestEffort("request log", () => s.log(provider.name, account, telemetry.request.routedModel, status, ms, note));
+  const observe = (id: string, observation: Parameters<typeof recordUsage>[2], until?: number) =>
+    bestEffort("quota", () => recordUsage(s, id, observation, until));
   let body: Uint8Array | undefined, json: Record<string, unknown> | undefined;
   const error = (status: number, message: string, failure: Failure) => {
     budget.close();
-    telemetry.headers(status);
-    telemetry.finish(failure === "cancelled" ? "cancelled" : "failed", failure, "none");
+    track(() => {
+      telemetry.headers(status);
+      telemetry.finish(failure === "cancelled" ? "cancelled" : "failed", failure, "none");
+    });
     return Response.json(
       { error: { type: status === 429 ? "rate_limit_error" : "api_error", message: `agentgate: ${message}` } },
       { status },
@@ -93,7 +123,7 @@ export async function proxy(
   }
   const requestedModel = provider.requestedModel?.(json) ?? (typeof json?.model === "string" ? json.model : undefined);
   const model = resolveModel(s, provider.name, requestedModel);
-  telemetry.models(requestedModel, model);
+  track(() => telemetry.models(requestedModel, model));
   if (json && model && model !== requestedModel) {
     json = provider.rewriteModel?.(json, model) ?? { ...json, model };
     body = new TextEncoder().encode(JSON.stringify(json));
@@ -113,7 +143,7 @@ export async function proxy(
   const headerWait = () => Math.min(json && json.stream !== true ? Infinity : limits.headerTimeout, budget.remaining());
   const deliver = (res: Response, accountId: string, release: () => void) => {
     budget.close();
-    telemetry.headers(res.status);
+    track(() => telemetry.headers(res.status));
     const observer = streamObserver((id) => {
       if (accountId) rememberContinuation(s, id, accountId);
     });
@@ -124,7 +154,7 @@ export async function proxy(
       },
       end: (outcome) => {
         release();
-        telemetry.tokens(observer.tokens);
+        track(() => telemetry.tokens(observer.tokens));
         if (usageSession)
           recordSessionUsage(s, {
             session: usageSession,
@@ -134,29 +164,31 @@ export async function proxy(
             at: s.now(),
           });
         const streamOutcome = outcome === "eof" ? (observer.terminal ?? "eof") : outcome;
-        telemetry.finish(
-          outcome === "cancelled"
-            ? "cancelled"
-            : outcome !== "eof"
-              ? "interrupted"
-              : !res.ok || observer.terminal === "provider-error"
-                ? "failed"
-                : "success",
-          outcome === "cancelled"
-            ? "cancelled"
-            : !res.ok
-              ? classify(provider, res.status, res.headers, "")
-              : observer.terminal === "provider-error" || outcome !== "eof"
-                ? "transient"
-                : undefined,
-          streamOutcome,
+        track(() =>
+          telemetry.finish(
+            outcome === "cancelled"
+              ? "cancelled"
+              : outcome !== "eof"
+                ? "interrupted"
+                : !res.ok || observer.terminal === "provider-error"
+                  ? "failed"
+                  : "success",
+            outcome === "cancelled"
+              ? "cancelled"
+              : !res.ok
+                ? classify(provider, res.status, res.headers, "")
+                : observer.terminal === "provider-error" || outcome !== "eof"
+                  ? "transient"
+                  : undefined,
+            streamOutcome,
+          ),
         );
       },
     });
     return new Response(stream, { status: res.status, statusText: res.statusText, headers: cleanHeaders(res.headers) });
   };
   const passthrough = async () => {
-    const attempt = telemetry.attempt("", "client login fallback"),
+    const attempt = attemptOn("", "client login fallback"),
       elapsed = startTimer();
     const up = provider.prepare(path, new Headers(headers), body, {
       accessToken: own,
@@ -170,13 +202,13 @@ export async function proxy(
       attempt.status = res.status;
       attempt.headersMs = Math.round(elapsed());
       if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, "");
-      telemetry.saveAttempt(attempt);
+      track(() => telemetry.saveAttempt(attempt));
       return deliver(res, "", () => {});
     } catch {
       attempt.status = 502;
       attempt.failure = "transient";
       attempt.headersMs = Math.round(elapsed());
-      telemetry.saveAttempt(attempt);
+      track(() => telemetry.saveAttempt(attempt));
       return error(
         req.signal.aborted ? 408 : 502,
         "upstream unreachable or timed out",
@@ -247,8 +279,10 @@ export async function proxy(
       }
       const response = exhaustedResponse(provider.name, reset, s.now());
       budget.close();
-      telemetry.headers(429);
-      telemetry.finish("failed", "quota", "none");
+      track(() => {
+        telemetry.headers(429);
+        telemetry.finish("failed", "quota", "none");
+      });
       return response;
     }
     accountCount++;
@@ -258,8 +292,7 @@ export async function proxy(
       credential = await raceAbort(creds.token(account.id), budget.signal);
     } catch (e) {
       if (budget.signal.aborted) continue;
-      if (!(e instanceof NeedsLogin))
-        s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "credential unavailable");
+      if (!(e instanceof NeedsLogin)) log(account.id, 0, 0, "credential unavailable");
       tried.add(account.id);
       loginFailed.add(account.id);
       continue;
@@ -269,7 +302,7 @@ export async function proxy(
     for (;;) {
       if (budget.signal.aborted) break;
       const up = provider.prepare(path, new Headers(headers), body, credential);
-      const attempt = telemetry.attempt(account.id, decision.reason),
+      const attempt = attemptOn(account.id, decision.reason),
         elapsed = startTimer();
       const release = beginRoute(s, provider.name, account.id, session);
       let res: Response;
@@ -284,7 +317,7 @@ export async function proxy(
         attempt.status = 502;
         attempt.headersMs = Math.round(elapsed());
         attempt.failure = req.signal.aborted ? "cancelled" : budget.signal.aborted ? "budget" : "transient";
-        telemetry.saveAttempt(attempt);
+        track(() => telemetry.saveAttempt(attempt));
         if (!budget.signal.aborted) cool(s, account.id, "transient", s.now() + 15000);
         return error(
           req.signal.aborted ? 408 : 502,
@@ -295,9 +328,13 @@ export async function proxy(
       attempt.status = res.status;
       attempt.headersMs = Math.round(elapsed());
       const observed = provider.usage(res.headers);
-      if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path))
-        s.setLocal(`quotaUnknown:${provider.name}`, String(s.now()));
-      else if (observed) s.setLocal(`quotaUnknown:${provider.name}`, undefined);
+      // Written only when it changes: it is read as a flag, and every response would otherwise write it.
+      const unknownKey = `quotaUnknown:${provider.name}`;
+      bestEffort("local state", () => {
+        if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path)) {
+          if (!s.local(unknownKey)) s.setLocal(unknownKey, String(s.now()));
+        } else if (observed && s.local(unknownKey)) s.setLocal(unknownKey, undefined);
+      });
       if (res.status === 429 || res.status === 401 || res.status === 400 || res.status === 404) {
         let text = "";
         try {
@@ -311,7 +348,7 @@ export async function proxy(
         release();
         const failure = classify(provider, res.status, res.headers, text);
         attempt.failure = failure;
-        telemetry.saveAttempt(attempt);
+        track(() => telemetry.saveAttempt(attempt));
         if (res.status === 401) {
           if (!authRetried) {
             authRetried = true;
@@ -335,19 +372,12 @@ export async function proxy(
             : !windows.length
               ? s.now() + Math.max(1000, retryAfterMs(res.headers))
               : undefined;
-          recordUsage(s, account.id, { windows: observed?.windows ?? [], status: "exhausted" }, until);
-          s.log(
-            provider.name,
-            account.id,
-            telemetry.request.routedModel,
-            429,
-            Math.round(elapsed()),
-            "quota exhausted; switching",
-          );
+          observe(account.id, { windows: observed?.windows ?? [], status: "exhausted" }, until);
+          log(account.id, 429, Math.round(elapsed()), "quota exhausted; switching");
           tried.add(account.id);
           break;
         }
-        if (observed) recordUsage(s, account.id, observed);
+        if (observed) observe(account.id, observed);
         if (failure === "model" && model) {
           cool(s, account.id, "model", s.now() + 300000, model);
           tried.add(account.id);
@@ -366,20 +396,20 @@ export async function proxy(
           }
         }
         budget.close();
-        telemetry.headers(res.status);
-        telemetry.finish("failed", failure, "none");
+        track(() => {
+          telemetry.headers(res.status);
+          telemetry.finish("failed", failure, "none");
+        });
         return new Response(text, { status: res.status, headers: cleanHeaders(res.headers) });
       }
       if (!res.ok) attempt.failure = classify(provider, res.status, res.headers, "");
       if (attempt.failure === "transient") cool(s, account.id, "transient", s.now() + 15000);
-      telemetry.saveAttempt(attempt);
-      if (observed) recordUsage(s, account.id, observed);
-      const previous = s.local(`active:${provider.name}`);
-      if (res.ok && previous !== account.id) {
-        s.setLocal(`active:${provider.name}`, account.id);
-        s.log(provider.name, account.id, telemetry.request.routedModel, 0, 0, "active subscription changed");
+      track(() => telemetry.saveAttempt(attempt));
+      if (observed) observe(account.id, observed);
+      if (res.ok && s.local(`active:${provider.name}`) !== account.id) {
+        bestEffort("local state", () => s.setLocal(`active:${provider.name}`, account.id));
+        log(account.id, 0, 0, "active subscription changed");
       }
-      s.log(provider.name, account.id, telemetry.request.routedModel, res.status, Math.round(elapsed()));
       const listing = req.method === "GET" && res.ok ? provider.modelList?.(path) : undefined;
       if (listing) {
         try {
