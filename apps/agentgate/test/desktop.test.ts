@@ -40,7 +40,8 @@ beforeEach(() => {
     data: join(dir, "Claude"),
     data3p: join(dir, "Claude-3p"),
     backups: join(dir, "backups"),
-    claude: join(dir, "claude"),
+    // Not "claude": macOS folders are case-insensitive, so it would be the same folder as `data`.
+    claude: join(dir, "dot-claude"),
   });
   mkdirSync(DESKTOP.data);
   mkdirSync(DESKTOP.data3p);
