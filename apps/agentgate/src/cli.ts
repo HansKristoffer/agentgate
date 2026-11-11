@@ -23,12 +23,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   serve                                       run the daemon in the foreground
   status                                      quota bars, active accounts, nodes
   login claude|codex|cursor [--label work]    log in in a temporary dir and import it (cursor: browser sign-in)
-  import claude|codex|cursor --from <dir>     take over an existing login [--label]
-  accounts [enable|disable|pin|unpin|rm|exhaust] <id> [minutes]
-  accounts priority <id> <n>                 higher is tried first (default 0)
+  accounts                                    list the pooled accounts
   accounts quota|verify|models|refresh|reset-cooldown <id> [...] (daemon operations)
   accounts verify <id> --probe --model <model>  quota-consuming inference check
-  accounts policy <id> --file policy.json    revision-safe account policy edit
   settings show | set --file patch.json      revision-safe partial settings edit
   proxy route <claude|codex|cursor> [--model <id>]   explain selection without sending traffic
   proxy capabilities                         daemon version and provider features
@@ -155,8 +152,7 @@ const OPTIONS = {
 const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
   init: ["name", "always-on"],
   login: ["label"],
-  import: ["from", "label"],
-  accounts: ["probe", "model", "file"],
+  accounts: ["probe", "model"],
   settings: ["file"],
   proxy: ["model"],
   requests: ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"],
@@ -213,7 +209,6 @@ export function parseFor(argv: string[]) {
 /** Which family runs each command (cli/). */
 const FAMILIES: Record<string, Run> = {
   login: accounts.run,
-  import: accounts.run,
   accounts: accounts.run,
   proxy: accounts.run,
   tokens: accounts.run,

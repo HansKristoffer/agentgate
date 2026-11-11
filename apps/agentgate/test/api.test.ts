@@ -85,18 +85,20 @@ test("proxy management returns validated capabilities, revision-safe patches, an
   expect(
     (await call("/api/settings", "PATCH", { revision: initial.settingsRevision, patch: { threshold: 50 } })).status,
   ).toBe(409);
-  expect((await call("/api/accounts/a", "PATCH", { label: "changed" })).status).toBe(409);
   const accountRevision = revision(s, "account", "a");
   expect(
     (
-      await call("/api/accounts/a", "PATCH", {
+      await call("/api/ops/accounts%20policy", "POST", {
+        id: "a",
         revision: accountRevision,
         policy: { retryLimit: 0, excludeModels: ["opus"] },
       })
     ).status,
   ).toBe(200);
   expect(s.get("account", "a")).toMatchObject({ label: "a", priority: 4, enabled: true });
-  expect((await call("/api/accounts/a", "PATCH", { revision: accountRevision, label: "stale" })).status).toBe(409);
+  expect(
+    (await call("/api/ops/accounts%20rename", "POST", { id: "a", revision: accountRevision, label: "stale" })).status,
+  ).toBe(409);
   expect((await call("/api/proxy/route?provider=claude&model=opus")).status).toBe(200);
   const t = new Telemetry(s, "claude");
   t.models("sonnet", "sonnet");
@@ -136,9 +138,13 @@ test("proxy management retains authentication and browser-origin guards", async 
 
 test("cancelled native OAuth attempts cannot finish later", async () => {
   const { call } = fixture();
-  const login = (await (await call("/api/accounts/login", "POST", { provider: "claude" })).json()) as { state: string };
-  expect((await call(`/api/accounts/login/${login.state}`, "DELETE")).status).toBe(200);
-  expect((await call("/api/accounts/login/finish", "POST", { state: login.state, code: "unused" })).status).toBe(400);
+  const login = (await (await call("/api/ops/accounts%20login%20start", "POST", { provider: "claude" })).json()) as {
+    state: string;
+  };
+  expect((await call("/api/ops/accounts%20login%20cancel", "POST", { state: login.state })).status).toBe(200);
+  expect(
+    (await call("/api/ops/accounts%20login%20finish", "POST", { state: login.state, code: "unused" })).status,
+  ).toBe(400);
 });
 
 test("subscription selection switches each provider independently and keeps quota fallback", async () => {
@@ -156,11 +162,11 @@ test("subscription selection switches each provider independently and keeps quot
       });
     }
     s.setLocal(`active:${provider}`, `${provider}-personal`);
-    expect((await call(`/api/accounts/${provider}-work`, "PATCH", { pinned: true })).status).toBe(200);
+    expect((await call("/api/ops/accounts%20pin", "POST", { id: `${provider}-work` })).status).toBe(200);
     expect(route(s, provider).account).toBe(`${provider}-work`);
   }
   // Switching Claude leaves the Codex preference intact and replaces the old pin.
-  expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: true })).status).toBe(200);
+  expect((await call("/api/ops/accounts%20pin", "POST", { id: "claude-personal" })).status).toBe(200);
   expect(s.get("account", "claude-work")?.pinned).toBe(false);
   expect(route(s, "codex").account).toBe("codex-work");
   // A selected subscription at its limit falls back without clearing the preference.
@@ -176,7 +182,7 @@ test("subscription selection switches each provider independently and keeps quot
   expect(s.get("account", "codex-work")?.pinned).toBe(true);
   // Automatic selection clears the pin and respects the account used most recently.
   s.setLocal("active:claude", "claude-work");
-  expect((await call("/api/accounts/claude-personal", "PATCH", { pinned: false })).status).toBe(200);
+  expect((await call("/api/ops/accounts%20unpin", "POST", { id: "claude-personal" })).status).toBe(200);
   expect(route(s, "claude").account).toBe("claude-work");
   const status = (await (await call("/api/status")).json()) as Status;
   expect(status.accounts.filter((a) => a.account.pinned).map((a) => a.account.id)).toEqual(["codex-work"]);
@@ -275,13 +281,10 @@ test("status contains native data and omits provider, peer and MCP secrets", asy
 test("native operations validate JSON and update accounts, projects and server references together", async () => {
   const { s, call } = fixture();
   for (const id of ["a", "b"]) s.put("account", id, { id, label: id, provider: "codex" });
-  expect((await call("/api/accounts/a", "PATCH", { pinned: true })).status).toBe(200);
-  expect(
-    (await call("/api/accounts/b", "PATCH", { pinned: true, priority: 10, revision: revision(s, "account", "b") }))
-      .status,
-  ).toBe(200);
+  expect((await call("/api/ops/accounts%20pin", "POST", { id: "a" })).status).toBe(200);
+  expect((await call("/api/ops/accounts%20pin", "POST", { id: "b" })).status).toBe(200);
   expect(s.get("account", "a")?.pinned).toBe(false);
-  expect((await call("/api/accounts/b", "PATCH", { provider: "claude" })).status).toBe(400);
+  expect((await call("/api/ops/accounts%20pin", "POST", { id: "b", provider: "claude" })).status).toBe(400);
   expect(s.get("account", "b")?.provider).toBe("codex");
   expect((await call("/api/servers", "POST", { id: "fs", target: "filesystem" })).status).toBe(201);
   expect(
@@ -306,7 +309,6 @@ test("native operations validate JSON and update accounts, projects and server r
   expect(s.get("project", "owner/repo")?.mcp).toEqual({ files: "files" });
   expect((await call("/api/servers/files", "DELETE")).status).toBe(200);
   expect(s.get("project", "owner/repo")?.mcp).toEqual({});
-  expect((await call("/api/accounts/missing", "DELETE")).status).toBe(404);
 });
 
 test("local backup round trips and remote clients cannot export secrets, restore or import local logins", async () => {
@@ -337,7 +339,7 @@ test("local backup round trips and remote clients cannot export secrets, restore
   for (const [path, method, body] of [
     ["/api/backup?secrets=true", "GET", undefined],
     ["/api/backup", "POST", backup],
-    ["/api/accounts/import", "POST", { provider: "claude", dir: "~/.claude" }],
+    ["/api/ops/import", "POST", { provider: "claude", dir: "~/.claude" }],
   ] as const) {
     expect(
       (

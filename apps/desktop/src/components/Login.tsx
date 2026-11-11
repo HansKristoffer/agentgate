@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { Button } from "@heroui/react";
 import type { Connection, LoginStart, Provider } from "@agentgate/protocol";
-import { openExternal, request } from "../api.ts";
+import { control, openExternal } from "../api.ts";
 import type { Perform } from "../types.ts";
 import { field, providerName } from "../views/utils.ts";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
@@ -19,9 +19,7 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
     const previous = pending.current;
     pending.current = undefined;
     if (previous)
-      await request(previous.connection, `/accounts/login/${encodeURIComponent(previous.state)}`, "DELETE").catch(
-        () => {},
-      );
+      await control(previous.connection, "accounts login cancel", { state: previous.state }).catch(() => {});
   };
   useEffect(
     () => () => {
@@ -40,10 +38,10 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
     void (async () => {
       try {
         let id: string | undefined;
-        while (!id && live())
-          ({ id } = await request<{ id?: string }>(connection, "/accounts/login/finish", "POST", {
-            state: login.state,
-          }));
+        while (!id && live()) {
+          const result = await control(connection, "accounts login finish", { state: login.state });
+          if ("id" in result) id = result.id;
+        }
         if (!id || !live()) return;
         pending.current = undefined;
         setLogin(undefined);
@@ -63,13 +61,13 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
       const current = capture(),
         generation = ++attempt.current;
       await cancel();
-      const result = await request<LoginStart>(connection, "/accounts/login", "POST", {
+      const result = await control(connection, "accounts login start", {
         provider,
         label: label || undefined,
         email,
       });
       if (!current() || generation !== attempt.current) {
-        await request(connection, `/accounts/login/${encodeURIComponent(result.state)}`, "DELETE").catch(() => {});
+        await control(connection, "accounts login cancel", { state: result.state }).catch(() => {});
         return;
       }
       pending.current = { connection, state: result.state };
@@ -102,10 +100,7 @@ export function useAccountLogin(connection: Connection, perform: Perform, done?:
             void perform(async () => {
               const current = capture(),
                 generation = attempt.current;
-              await request(connection, "/accounts/login/finish", "POST", {
-                state: login.state,
-                code: field(f, "code"),
-              });
+              await control(connection, "accounts login finish", { state: login.state, code: field(f, "code") });
               if (!current() || generation !== attempt.current) return;
               pending.current = undefined;
               setLogin(undefined);

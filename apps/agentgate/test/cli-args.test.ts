@@ -29,9 +29,7 @@ describe("parseFor", () => {
   test.each([
     "init --always-on --name srv",
     "login claude --label work",
-    "import codex --from ~/.codex --label personal",
     "accounts verify account-a --probe --model claude-sonnet-4-5",
-    "accounts policy account-a --file /absolute/path/policy.json",
     "settings set --file /absolute/path/patch.json",
     "proxy route claude --model claude-sonnet-4-5",
     "requests --provider claude --outcome failed",

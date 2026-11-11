@@ -124,7 +124,7 @@ test("native login expiry is enforced when finishing without another login start
     handler = app(ctx);
   try {
     const start = await handler.fetch(
-      request("/api/accounts/login", {
+      request("/api/ops/accounts%20login%20start", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ provider: "claude" }),
@@ -135,7 +135,7 @@ test("native login expiry is enforced when finishing without another login start
     expect(state).toBeDefined();
     s.now = () => Date.now() + 31 * 60000;
     const finish = await handler.fetch(
-      request("/api/accounts/login/finish", {
+      request("/api/ops/accounts%20login%20finish", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ state, code: "code#state" }),

@@ -1,60 +1,21 @@
-import {
-  ConfigurationConflict,
-  accountPatchSchema,
-  failureSchema,
-  loginIdSchema,
-  modelIdSchema,
-  providerSchema,
-} from "@agentgate/protocol";
+import { failureSchema, loginIdSchema, modelIdSchema, providerSchema } from "@agentgate/protocol";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { homedir } from "node:os";
 import { z } from "zod";
-import { checkRevision } from "../configuration.ts";
-import { pkce } from "../credentials.ts";
 import type { Ctx, Env } from "../daemon.ts";
 import { jsonInput as json } from "../http.ts";
-import * as cursor from "../llm/cursor.ts";
 import { providerLogins } from "../llm/providers.ts";
 import { route } from "../llm/routing.ts";
 import { metrics, requestDetail, requests, tokenHours, tokenUsage } from "../llm/telemetry.ts";
 import { forgetLogin, infisicalSite, setInfisicalIdentity, shareLogins, startInfisicalSignIn } from "../logins.ts";
-import { deleteAccount, setAccount } from "../operations.ts";
 import { input, inputAsync, local, optionalJson, required, signal } from "./http.ts";
 
 export const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 
-/** Pooled accounts and their logins, the proxy's diagnostics, and the shared gh and Infisical logins. */
+/** The proxy's diagnostics and account checks (account writes are operations, ops/accounts.ts), and the shared gh and Infisical logins. */
 export function accounts(ctx: Ctx) {
   const { s } = ctx;
   const app = new Hono<Env>();
-  const pending = new Map<
-    string,
-    {
-      provider: z.infer<typeof providerSchema>;
-      verifier: string;
-      label?: string;
-      at: number;
-    }
-  >();
-  app.patch("/accounts/:id", async (c) => {
-    required(s.get("account", c.req.param("id")), "account");
-    const patch = accountPatchSchema
-      .extend({ revision: z.string().length(64).optional() })
-      .strict()
-      .parse(await json(c.req.raw));
-    const { revision: expected, ...fields } = patch;
-    if ((fields.label !== undefined || fields.priority !== undefined || fields.policy !== undefined) && !expected)
-      throw new ConfigurationConflict();
-    return c.json(
-      input(() =>
-        s.transaction(() => {
-          if (expected) checkRevision(s, "account", c.req.param("id"), expected);
-          return setAccount(s, c.req.param("id"), fields);
-        }),
-      ),
-    );
-  });
   app.get("/requests", (c) => {
     const f = z
       .object({
@@ -119,65 +80,6 @@ export function accounts(ctx: Ctx) {
         f,
       ),
     );
-  });
-  app.delete("/accounts/:id", (c) => {
-    required(s.get("account", c.req.param("id")), "account");
-    deleteAccount(s, c.req.param("id"));
-    return c.json({ ok: true });
-  });
-  app.post("/accounts/import", async (c) => {
-    local(c.env.listener);
-    const f = z
-      .object({
-        provider: providerSchema,
-        dir: z.string().min(1),
-        label: z.string().optional(),
-      })
-      .parse(await json(c.req.raw));
-    return c.json({
-      id: await moduleFor(f.provider).importFrom(s, f.dir.replace(/^~/, homedir()), f.label),
-    });
-  });
-  app.post("/accounts/login", async (c) => {
-    const f = z
-      .object({ provider: providerSchema, label: z.string().optional(), email: z.email().optional() })
-      .parse(await json(c.req.raw));
-    for (const [state, p] of pending) if (s.now() - p.at > 30 * 60_000) pending.delete(state);
-    if (pending.size >= 128) throw new HTTPException(429, { message: "Too many pending logins" });
-    const { verifier, challenge, state: oauthState } = await pkce();
-    // Cursor names the attempt with a UUID that it polls on, rather than an OAuth state.
-    const state = f.provider === "cursor" ? crypto.randomUUID() : oauthState;
-    pending.set(state, { provider: f.provider, label: f.label, verifier, at: s.now() });
-    return c.json({
-      state,
-      provider: f.provider,
-      url: moduleFor(f.provider).authorizeUrl(challenge, state, f.email),
-    });
-  });
-  app.delete("/accounts/login/:state", (c) => {
-    pending.delete(c.req.param("state"));
-    return c.json({ ok: true });
-  });
-  app.post("/accounts/login/finish", async (c) => {
-    const f = z.object({ state: z.string().min(1), code: z.string().min(1).optional() }).parse(await json(c.req.raw));
-    const p = pending.get(f.state);
-    if (!p || s.now() - p.at > 30 * 60_000) {
-      pending.delete(f.state);
-      throw new HTTPException(400, {
-        message: "That login expired; start again",
-      });
-    }
-    // Cursor has no code to paste: wait for the browser sign-in, and answer `pending` before the client's request times out.
-    if (p.provider === "cursor") {
-      const id = await cursor.finish(s, f.state, p.verifier, p.label, signal(ctx, c.req.raw));
-      if (id) pending.delete(f.state);
-      return c.json(id ? { id } : { pending: true });
-    }
-    pending.delete(f.state);
-    if (!f.code) throw new HTTPException(400, { message: "Paste the code shown after signing in" });
-    return c.json({
-      id: await moduleFor(p.provider).exchange(s, f.code, p.verifier, p.label, f.state),
-    });
   });
   // Sharing reads this machine's own gh and Infisical logins, like coding-tool setup: loopback only.
   app.post("/logins/share", async (c) => {
