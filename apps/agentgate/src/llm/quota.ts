@@ -38,7 +38,9 @@ export function recordUsage(
     w = normalizedWindow(w);
     if (w.usedPct >= 100 && !w.resetsAt) w = { ...w, resetsAt: until ?? s.now() + 60000, inferredReset: true };
     const old = windows.get(w.name);
-    if (old?.usedPct === 100 && (!old.resetsAt || old.resetsAt > s.now()) && w.usedPct < 100) continue;
+    // Model responses can arrive late; a fresh usage poll can confirm an early reset.
+    if (source === "headers" && old?.usedPct === 100 && (!old.resetsAt || old.resetsAt > s.now()) && w.usedPct < 100)
+      continue;
     windows.set(w.name, w);
   }
   const next = {
@@ -49,7 +51,10 @@ export function recordUsage(
     status: observation.status,
     source,
     exhaustedUntil:
-      until ?? (previous?.exhaustedUntil && previous.exhaustedUntil > s.now() ? previous.exhaustedUntil : undefined),
+      until ??
+      (source === "headers" && previous?.exhaustedUntil && previous.exhaustedUntil > s.now()
+        ? previous.exhaustedUntil
+        : undefined),
   };
   const key = (u: Usage) =>
     JSON.stringify([
