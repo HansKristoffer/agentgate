@@ -24,6 +24,7 @@ import { worktrees } from "./handoff/code.ts";
 import { defineLocal } from "./local-state.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
 import { CONFIG_DIR, DEV, sqliteDetail, timerSync, type Store } from "./store.ts";
+import { killGroup } from "./runtime.ts";
 import { registeredCheckouts } from "./skill-links.ts";
 
 /** Checkout files (docs/internals/checkout-files.md): buncargo's per-machine file store of a repository's gitignored
@@ -464,10 +465,12 @@ export class CheckoutFiles {
     }
   }
 
+  /** Also stops every buncargo still running, whoever started it, so none outlives the daemon. */
   close() {
     this.closed = true;
     for (const t of this.timers) clearTimeout(t);
     this.watcher?.close();
+    for (const child of runningBuncargo) killGroup(child);
   }
 }
 
@@ -494,7 +497,10 @@ function buncargoBin(cwd: string): string | undefined {
 /** A checkout that uses buncargo: `dev.config.ts` and buncargo installed. Buncargo then owns its checkout files. */
 const usesBuncargo = (cwd: string) => existsSync(join(cwd, "dev.config.ts")) && !!buncargoBin(cwd);
 
-/** The checkout's buncargo, with the HOME whose store `root` is. Never reports output: it may hold values. */
+const runningBuncargo = new Set<Bun.Subprocess>();
+
+/** The checkout's buncargo, with the HOME whose store `root` is. Never reports output: it may hold values. It can start
+ * children of its own, so it runs in its own process group, which `CheckoutFiles.close` stops. */
 async function buncargo(root: string, cwd: string, args: string[]): Promise<string> {
   const bin = buncargoBin(cwd);
   if (!bin) throw new Error("buncargo is not installed in this checkout");
@@ -503,11 +509,15 @@ async function buncargo(root: string, cwd: string, args: string[]): Promise<stri
     stdin: "ignore",
     stdout: "pipe",
     stderr: "ignore",
+    detached: true,
     env: { ...process.env, HOME: dirname(dirname(root)) },
   });
-  const timer = setTimeout(() => child.kill(), 120_000);
-  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-  clearTimeout(timer);
+  runningBuncargo.add(child);
+  const timer = setTimeout(() => killGroup(child), 120_000);
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]).finally(() => {
+    clearTimeout(timer);
+    runningBuncargo.delete(child);
+  });
   if (code !== 0) throw new Error(`buncargo ${args.slice(0, 2).join(" ")} failed (exit ${code})`);
   return out;
 }

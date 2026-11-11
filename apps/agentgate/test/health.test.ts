@@ -123,12 +123,49 @@ test.skipIf(process.platform !== "linux")(
           services: Record<string, boolean>;
         }
       ).services;
+    let now = Date.now();
+    s.now = () => now;
 
+    await call(HEALTH_PATH, { headers: { accept: "text/html" } });
     await ctx.health.sample();
     expect(await services()).toMatchObject({ t3_code: true });
     t3.stop(true);
+    // Services are asked every 30 seconds, not on every sample.
+    await ctx.health.sample();
+    expect(await services()).toMatchObject({ t3_code: true });
+    now += 30_000;
     await ctx.health.sample();
     expect(await services()).toMatchObject({ t3_code: false });
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "the daemon samples only while someone watches: from the first request until a minute after the last",
+  async () => {
+    const { s, ctx, call } = machine();
+    let now = Date.now();
+    s.now = () => now;
+    setHealthDashboard(s, "mac", true);
+    ctx.health.reconcile();
+    const history = async () => {
+      const response = await call(`${HEALTH_PATH}?history=1`, { headers: { accept: "application/json" } });
+      return response.status === 503 ? "starting" : ((await response.json()) as { history: unknown[] }).history.length;
+    };
+
+    // On but unwatched: the timer's ticks take nothing.
+    await ctx.health.sample();
+    expect(await history()).toBe("starting");
+
+    await ctx.health.sample();
+    await ctx.health.sample();
+    expect(await history()).toBe(2);
+
+    // A minute without a request: the next tick stops sampling and drops what it had.
+    now += 60_000;
+    await ctx.health.sample();
+    expect(await history()).toBe("starting");
+    await ctx.health.sample();
+    expect(await history()).toBe(1);
   },
 );
 
