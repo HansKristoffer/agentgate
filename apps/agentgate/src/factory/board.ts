@@ -21,8 +21,8 @@ import { frozenItems } from "./view.ts";
 
 /** How long other machines' threads, read through `/peer/threads`, are reused. */
 const PEER_EVERY = 10_000;
-/** How long the token-less page's board is reused: every open page asks for it. */
-const PAGE_EVERY = 5000;
+/** How long a board is reused when nothing in the factory changed (`buildBoard`). */
+const BUILD_EVERY = 2000;
 /** A factory machine heard from within this long is asked for its board; sync hears from it every 15 s. */
 const SEEN_WITHIN = 60_000;
 
@@ -103,7 +103,23 @@ export async function boardView(f: FactoryRuntime, opts: BoardOptions): Promise<
 /** `allThreads` lists every open thread under Machines, not only the factory's: `factory status --all`. */
 type BoardOptions = { includeWebhookUrls: boolean; allThreads?: boolean };
 
-export async function buildBoard(f: FactoryRuntime, opts: BoardOptions): Promise<FactoryBoard> {
+/** This machine's board. It is built once per change to the `factory` topic, and at most every 2 s however often it
+ * is read: the app asks for it on every change, and quota, preflight and other machines' threads change without one. */
+export function buildBoard(f: FactoryRuntime, opts: BoardOptions): Promise<FactoryBoard> {
+  const version = f.ctx.changes.snapshot().versions.factory;
+  const all = !!opts.allThreads;
+  const built = cache(f).built;
+  let last = built.get(all);
+  if (!last || last.version !== version || f.s.now() - last.at >= BUILD_EVERY) {
+    const board = assemble(f, all);
+    last = { version, at: f.s.now(), board };
+    built.set(all, last);
+    board.catch(() => built.get(all)?.board === board && built.delete(all));
+  }
+  return last.board.then((board) => strip(board, opts));
+}
+
+async function assemble(f: FactoryRuntime, allThreads: boolean): Promise<FactoryBoard> {
   const { stream, error } = mirrorOf(f).status();
   const base: FactoryBoard = {
     node: f.s.nodeId,
@@ -122,7 +138,7 @@ export async function buildBoard(f: FactoryRuntime, opts: BoardOptions): Promise
       mainRed: [],
     },
     items: [],
-    machines: await machines(f, !!opts.allThreads),
+    machines: await machines(f, allThreads),
     sources: [],
     metrics: { merged: 0, mergeRate: 0, reverts14d: 0 },
     events: f.events.recent(50),
@@ -135,7 +151,7 @@ export async function buildBoard(f: FactoryRuntime, opts: BoardOptions): Promise
       }),
     ),
   );
-  return strip(parts.reduce(merge, base), opts);
+  return parts.reduce(merge, base);
 }
 
 const defined = <T extends object>(o: T | undefined) =>
@@ -222,11 +238,12 @@ const viewThread = (t: ViewThread): BoardThread => ({
   updatedAt: Date.parse(t.updatedAt) || 0,
 });
 
-/** The last read of the other machines' threads, and of the page's board: each is read again once it is old. */
+/** The last read of the other machines' threads, and the last board built with and without `allThreads`, with the
+ * `factory` topic's version it was built at. */
 const cache = (f: FactoryRuntime) =>
   f.memory("board cache", () => ({
     peers: undefined as { at: number; machines: Promise<FactoryBoard["machines"]> } | undefined,
-    page: undefined as { at: number; board: Promise<FactoryBoard> } | undefined,
+    built: new Map<boolean, { version: number; at: number; board: Promise<FactoryBoard> }>(),
   }));
 
 function peerMachines(f: FactoryRuntime) {
@@ -257,21 +274,11 @@ async function respond(f: FactoryRuntime, req: Request, listener: Listener) {
   if (req.headers.get("accept")?.includes("text/html"))
     return new Response(FACTORY_PAGE, { headers: { ...headers, "content-type": "text/html; charset=utf-8" } });
   try {
-    return Response.json(await pageBoard(f), { headers });
+    return Response.json(await buildBoard(f, { includeWebhookUrls: false }), { headers });
   } catch (e) {
     console.error(`factory: the board failed: ${logError(e)}`);
     return Response.json({ error: "the board could not be built" }, { status: 500, headers });
   }
-}
-
-/** The page's board, built at most every 5 seconds however many pages are open. */
-function pageBoard(f: FactoryRuntime) {
-  const cached = cache(f).page;
-  if (cached && f.s.now() - cached.at < PAGE_EVERY) return cached.board;
-  const board = buildBoard(f, { includeWebhookUrls: false });
-  cache(f).page = { at: f.s.now(), board };
-  board.catch(() => (cache(f).page = undefined));
-  return board;
 }
 
 /** The rule health.ts applies to /health (DNS rebinding): an IPv4 address or this node's own tailnet name. */

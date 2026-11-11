@@ -104,31 +104,22 @@ test("an item over its token budget has its threads interrupted and waits for th
 
 test("a report that races its item's budget stop is refused: the item stays stopped and no run is queued", async () => {
   const n = await prFactory(cleanup, () => ({ limits: { threads: 20, itemTokens: 1000 } }));
-  const { item, run: first } = await n.implementing(1);
-  // Attempt 1 ends twice without a report, so attempt 2 works in a thread of its own.
-  n.mcp.setThread(first.threadId!, { status: "idle" });
-  await n.until(() => n.sent(first.threadId!).length === 1, "the reminder");
-  await n.until(() => n.mirror.thread(first.threadId!)?.status === "running", "the reminded thread to run");
-  n.mcp.setThread(first.threadId!, { status: "idle" });
-  await n.until(() => runs.get(n.s, first.id)?.state === "silent", "attempt 1's silent end");
-  await n.dispatch();
-  const second = n.implementRuns(item).find((r) => r.attempt === 2)!;
-  expect(second.state).toBe("running");
+  const { item, run } = await n.implementing(1);
 
-  // Attempt 1's thread went over the budget. While the stop interrupts the threads, attempt 2 reports its PR.
+  // The run's thread went over the budget. While the stop interrupts it, the run reports its PR.
   let interrupted!: () => void;
   const stopping = new Promise<void>((resolve) => (interrupted = resolve));
   n.mcp.answer("t3_thread_interrupt", async () => {
     await stopping;
     return { ok: true };
   });
-  use(n.s, n.t3.threads.get(first.threadId!)!.sessionId, "opus", { input: 1000, output: 100 });
+  use(n.s, n.t3.threads.get(run.threadId!)!.sessionId, "opus", { input: 1000, output: 100 });
   const measuring = loop(n.f, "factory-tokens")();
   await n.until(() => n.mcp.calls.some((c) => c.tool === "t3_thread_interrupt"), "the stop to interrupt a thread");
-  const reporting = n.done(second, n.github.openPr(101, `factory/${item.key}-2`));
+  const reporting = n.done(run, n.github.openPr(101, `factory/${item.key}`));
   interrupted();
   await measuring;
-  expect(await reporting).toEqual({ error: `Run ${second.id} is cancelled and takes no report` });
+  expect(await reporting).toEqual({ error: `Run ${run.id} is cancelled and takes no report` });
   expect(items.get(n.s, item.id)).toMatchObject({ phase: "implement", needsYou: { cause: "budget" } });
   expect(items.get(n.s, item.id)!.pr).toBeUndefined();
   expect(runs.forItem(n.s, item.id).filter((r) => r.state === "queued")).toEqual([]);
@@ -207,6 +198,32 @@ test("the token loop reads a thread's projections when a subagent starts, not ev
   expect(reads()).toBe(first + 2);
   await measure();
   expect(reads()).toBe(first + 2);
+});
+
+test("the token loop leaves the threads of an item's settled runs alone", async () => {
+  const n = await prFactory(cleanup);
+  const { item, run: owner } = await n.opened(1);
+  const measure = loop(n.f, "factory-tokens");
+  const reads = () => n.t3.reads.get("orchestration.getThreadProjection") ?? 0;
+  await measure();
+  const before = reads();
+  const projectId = n.t3.threads.get(owner.threadId!)!.projectId;
+  for (let i = 0; i < 20; i++) {
+    const thread = n.t3.addThread({ projectId, sessionId: crypto.randomUUID() });
+    runs.insert(n.s, {
+      id: `run_old${i}`,
+      item: item.id,
+      kind: "triage",
+      attempt: 1,
+      state: "reported",
+      threadId: thread.id,
+      nudges: 0,
+      configCommit: owner.configCommit,
+      queuedAt: 0,
+    });
+  }
+  await measure();
+  expect(reads()).toBe(before);
 });
 
 test("a run whose tokens cannot be measured is noted once, and its item's tokens show as unknown after 10 minutes", async () => {
