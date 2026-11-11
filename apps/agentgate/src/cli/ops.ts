@@ -34,7 +34,7 @@ async function here(op: TerminalOp, words: string[], stdin: string | undefined, 
     return await runTerminal(op, words, stdin, cwd, { s });
   } catch (e) {
     // The same text the daemon's routes would answer (daemon.ts onError): refused input, and a conflict's message.
-    const conflict = e instanceof SkillConflict || e instanceof ConfigurationConflict ? e.message : undefined;
-    return die(conflict ?? (shownError(e) || `The operation failed (${e instanceof Error ? e.name : "error"})`));
+    if (e instanceof SkillConflict || e instanceof ConfigurationConflict) return die(e.message);
+    return die(shownError(e) || `The operation failed (${e instanceof Error ? e.name : "error"})`);
   }
 }
