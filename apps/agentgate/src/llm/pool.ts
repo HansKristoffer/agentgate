@@ -1,16 +1,16 @@
-import type { AccountStatus, Failure } from "@agentgate/protocol";
+import { isModelReason, type AccountState, type AccountStatus, type Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
 import { z } from "zod";
 import { revision } from "../configuration.ts";
 import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
-import type { Store } from "../store.ts";
+import type { Account, Store } from "../store.ts";
 import { Budget } from "./policy.ts";
 import { cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { PLACEHOLDER_TOKEN } from "../setup.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
-import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
+import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE, relevant } from "./quota.ts";
 import {
   activeAccount,
   beginRoute,
@@ -254,9 +254,9 @@ export async function proxy(
       if (own) return passthrough();
       const reset = earliestReset(s, provider.name, model);
       const enabled = s.list("account").filter((a) => a.provider === provider.name && a.enabled);
-      const loginBlocked = (a: import("../store.ts").Account) =>
+      const loginBlocked = (a: Account) =>
         loginFailed.has(a.id) || !s.get("credential", a.id) || !!s.get("credential", a.id)?.needsLogin;
-      const eligible = enabled.filter((a) => !eligibility(s, a, model).some((r) => r.startsWith("model")));
+      const eligible = enabled.filter((a) => !eligibility(s, a, model).some(isModelReason));
       const usable = eligible.filter((a) => !loginBlocked(a));
       // Only when logins are why nothing could serve: an account skipped for quota or a cooldown still owes the client
       // its 429 and retry-after, or a wait for its reset.
@@ -266,7 +266,7 @@ export async function proxy(
           !enabled.length ? "no enabled accounts configured" : "no valid account login available; check account status",
           "login",
         );
-      if (decision.candidates.every((c) => c.reasons.some((r) => r.startsWith("model"))))
+      if (decision.candidates.every((c) => c.reasons.some(isModelReason)))
         return error(400, "no eligible account for this model", "model");
       if (accountCount >= settings.maxAccounts) return error(429, "maximum accounts attempted", "budget");
       if (
@@ -452,11 +452,34 @@ export async function proxy(
     }
   }
 }
-export function accountStatus(s: Store, account: import("../store.ts").Account): AccountStatus {
+/** The one reading of an account's flags that the app, the CLI and the factory label it by. A login this machine holds
+ * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
+export function accountState(s: Store, account: Account, now = s.now()): AccountState {
+  const c = s.get("credential", account.id),
+    u = s.get("usage", account.id);
+  if (!c || c.needsLogin) return { kind: "needs-login" };
+  const expired = c.expiresAt <= now;
+  if (expired && c.holder !== s.nodeId) return { kind: "waiting-for-holder", holder: c.holder };
+  if (refreshFailure(s, "credential", account.id)) return { kind: "refresh-failed" };
+  if (expired) return { kind: "refreshing" };
+  if (!account.enabled) return { kind: "disabled" };
+  if (exhausted(u, undefined, now)) {
+    const resets = relevant(u, undefined, now).flatMap((w) => (w.usedPct >= 100 && w.resetsAt ? [w.resetsAt] : []));
+    if (u?.exhaustedUntil && u.exhaustedUntil > now) resets.push(u.exhaustedUntil);
+    return { kind: "exhausted", until: resets.length ? Math.max(...resets) : undefined };
+  }
+  const benched = cooldowns(s, account.id)
+    .filter((cooldown) => cooldown.scope === "account")
+    .sort((a, b) => b.retryAt - a.retryAt)[0];
+  if (benched) return { kind: "cooling", until: benched.retryAt, reason: benched.reason };
+  return { kind: "ready" };
+}
+export function accountStatus(s: Store, account: Account): AccountStatus & { state: AccountState } {
   const now = s.now(),
     u = s.get("usage", account.id),
     c = s.get("credential", account.id);
   return {
+    state: accountState(s, account, now),
     account,
     windows: (u?.windows ?? []).map((w) => ({
       ...normalizedWindow(w),
