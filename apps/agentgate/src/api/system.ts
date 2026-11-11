@@ -110,10 +110,6 @@ export function system(ctx: Ctx) {
       relay: relayStatus(s),
       logins: listLogins(s),
       unknownQuota: recordFromKeys(["claude", "codex"], (p) => s.local(`quotaUnknown:${p}`)),
-      // Nothing reads these, and activity changed on every model request. An app on the current API_VERSION still
-      // requires both, so they stay empty until the next bump removes them.
-      peers: [],
-      activity: [],
     };
     return c.json(status);
   });

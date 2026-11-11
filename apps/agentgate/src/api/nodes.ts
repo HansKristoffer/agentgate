@@ -98,16 +98,7 @@ export function nodes(ctx: Ctx) {
     setServiceKey(s, f.key ?? undefined);
     return c.json({ ok: true });
   });
-  app.patch("/nodes/:id", async (c) => {
-    const f = z
-      .object({ alwaysOn: z.boolean() })
-      .strict()
-      .parse(await json(c.req.raw));
-    const n = s.get("node", c.req.param("id"));
-    required(n, "node");
-    return c.json(s.put("node", n!.id, { ...n!, ...f }));
-  });
-  // Not local-only, like always-on: any paired machine's dashboard is turned on from here (operations.ts).
+  // Not local-only, like always-on (ops/nodes.ts): any paired machine's dashboard is turned on from here (operations.ts).
   app.post("/nodes/:id/dashboard", async (c) => {
     const { on } = z
       .object({ on: z.boolean() })

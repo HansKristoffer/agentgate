@@ -527,15 +527,6 @@ test("a one-key settings patch needs no revision; a patch of several still does"
   expect(s.settings()).toMatchObject({ threshold: 50, t3ProjectSync: true });
 });
 
-test("status sends empty activity and peers, which an app on this API version still requires", async () => {
-  const { s, call } = fixture();
-  s.log("claude", "a", "m", 200, 5);
-  s.db.run("insert into peers values ('b', 'http://b.invalid', 'peer-token', 0, 0)");
-  const parsed = statusSchema.parse(await (await call("/api/status")).json());
-  expect(parsed.activity).toEqual([]);
-  expect(parsed.peers).toEqual([]);
-});
-
 test("the app's status schema keeps the relay and how each machine is reached", async () => {
   const { s, call } = fixture();
   s.put("node", "test", { id: "test", alwaysOn: false });

@@ -18,7 +18,7 @@ export * from "./proxy.ts";
 export * from "./handoff.ts";
 export * from "./factory.ts";
 
-export const API_VERSION = 4;
+export const API_VERSION = 5;
 export const accountSchema = z.object({
   id: z.string(),
   provider: providerSchema,
@@ -484,28 +484,8 @@ export const statusSchema = z.object({
     }),
   ),
   relay: relayStatusSchema.optional(),
-  peers: z.array(
-    z.object({
-      node: z.string(),
-      url: z.string(),
-      lastSeen: z.number(),
-      cursor: z.number(),
-      error: z.string().optional(),
-    }),
-  ),
   unknownQuota: z.record(z.string(), z.string().optional()),
   settings: settingsSchema,
-  activity: z.array(
-    z.object({
-      at: z.number(),
-      provider: z.string(),
-      account: z.string(),
-      model: z.string(),
-      status: z.number(),
-      ms: z.number(),
-      note: z.string(),
-    }),
-  ),
   settingsRevision: z.string().optional(),
   daemon: z
     .object({

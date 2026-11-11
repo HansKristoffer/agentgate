@@ -6,11 +6,13 @@ import * as accounts from "./cli/accounts.ts";
 import { die, ShowHelp, type Run } from "./cli/common.ts";
 import * as desktop from "./cli/desktop.ts";
 import * as nodes from "./cli/nodes.ts";
+import { runOp } from "./cli/ops.ts";
 import * as projects from "./cli/projects.ts";
 import * as servers from "./cli/servers.ts";
 import * as skills from "./cli/skills.ts";
 import * as system from "./cli/system.ts";
 import * as t3 from "./cli/t3.ts";
+import { controlOps, terminalOpFor } from "./ops/index.ts";
 import { store } from "./store.ts";
 
 export { attentionLines } from "./cli/system.ts";
@@ -95,7 +97,10 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   service install [--no-routing] | start | restart | stop | logs   the first install also routes your own tools
   update [node]                               install the latest release and restart the service, here or on a paired node
   export [--no-secrets] > backup.json | import-backup backup.json
-  admin-token                                 print the token for native app control over the tailnet`;
+  admin-token                                 print the token for native app control over the tailnet
+${[...controlOps.values()]
+  .flatMap((op) => (op.terminal ? [`  ${op.terminal.usage.padEnd(44)}${op.summary}`] : []))
+  .join("\n")}`;
 
 const OPTIONS = {
   name: { type: "string" },
@@ -243,9 +248,13 @@ const FAMILIES: Record<string, Run> = {
 };
 
 async function main() {
+  const argv = Bun.argv.slice(2);
+  // A registered operation parses its own words (ops/).
+  const op = terminalOpFor(argv);
+  if (op) return runOp(op, argv);
   let parsed;
   try {
-    parsed = parseFor(Bun.argv.slice(2));
+    parsed = parseFor(argv);
   } catch (e) {
     console.error(getErrorMessage(e));
     process.exit(2);

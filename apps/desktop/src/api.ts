@@ -6,6 +6,7 @@ import {
   type DesktopStatus,
   type FactoryOps,
 } from "@agentgate/protocol";
+import type { ControlOps } from "@agentgate/protocol/control";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
@@ -19,6 +20,14 @@ export function request<T>(connection: Connection, path: string, method = "GET",
  * refusal rejects with its reason. */
 export const factoryOp = <N extends keyof FactoryOps>(connection: Connection, name: N, input: FactoryOps[N]["input"]) =>
   request<FactoryOps[N]["result"]>(connection, `/factory/op/${encodeURIComponent(name)}`, "POST", input);
+/** One control operation by its name, the CLI words, with the input and result `ControlOps` gives it. A refusal
+ * rejects with its reason. */
+export const control = <N extends keyof ControlOps>(
+  connection: Connection,
+  name: N,
+  input: ControlOps[N]["input"],
+): Promise<ControlOps[N]["result"]> =>
+  request<ControlOps[N]["result"]>(connection, `/ops/${encodeURIComponent(name)}`, "POST", input);
 export async function status(connection: Connection) {
   const data = await request<unknown>(connection, "/status");
   if (!data || typeof data !== "object" || !("apiVersion" in data) || data.apiVersion !== API_VERSION)

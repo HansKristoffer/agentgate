@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { accounts } from "./api/accounts.ts";
 import { desktopRoutes } from "./api/desktop.ts";
 import { nodes } from "./api/nodes.ts";
+import { ops } from "./api/ops.ts";
 import { projects } from "./api/projects.ts";
 import { servers } from "./api/servers.ts";
 import { skills } from "./api/skills.ts";
@@ -23,6 +24,7 @@ export function management(ctx: Ctx) {
       .route("/", nodes(ctx))
       .route("/", t3(ctx))
       .route("/", desktopRoutes(ctx))
+      .route("/", ops(ctx))
       // The board and every factory operation (factory/runtime.ts).
       .route("/factory", ctx.factory.api)
   );
