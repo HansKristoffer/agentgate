@@ -1,4 +1,10 @@
-import { ConfigurationConflict, projectIdSchema, skillIdSchema, type ToolPreview } from "@agentgate/protocol";
+import {
+  ConfigurationConflict,
+  isVirtual,
+  projectIdSchema,
+  skillIdSchema,
+  type ToolPreview,
+} from "@agentgate/protocol";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -15,9 +21,9 @@ import {
 import { revision } from "../configuration.ts";
 import type { Ctx } from "../daemon.ts";
 import { aliasesFor, canonicalProject, parseRemote, toolName } from "../mcp/gateway.ts";
-import { saveProject, setFactoryTools, setFactoryWebhook } from "../operations.ts";
+import { saveProject, setFactoryWebhook } from "../operations.ts";
 import { deleteProject, disableRemote, enableRemote, regenerate, rotateSecret } from "../remote.ts";
-import type { Store } from "../store.ts";
+import { requireNodeProtocol, type Store } from "../store.ts";
 import { controlOp, UserError } from "./registry.ts";
 import { toolList } from "./servers.ts";
 
@@ -497,6 +503,24 @@ controlOp({
     print: ({ id }) => [`${id}'s endpoint is off`],
   },
 });
+
+/** The node protocol that keeps `factoryTools` on project records (see NODE_PROTOCOL in remote.ts). */
+const FACTORY_TOOLS_PROTOCOL = 9;
+
+/** Offers the software factory's tools on a virtual project's endpoint, or stops offering them
+ * (factory/remote-tools.ts). Turning them on waits until every node keeps the field; turning them off needs no wait,
+ * since a dropped field reads as off. */
+export function setFactoryTools(s: Store, id: string, on: boolean) {
+  return s.transaction(() => {
+    if (!isVirtual(id)) throw new Error("Only virtual projects (@name) can offer the factory's tools");
+    const p = s.get("project", id);
+    if (!p) throw new Error(`no project ${id}`);
+    if (on) requireNodeProtocol(s, FACTORY_TOOLS_PROTOCOL, "drop the factory tools setting");
+    // Turning the tools off drops the webhook too: it was set for them, and turning them on again must not resume posting.
+    const { factoryTools: _, factoryWebhook: __, ...rest } = p;
+    return s.put("project", id, on ? { ...p, factoryTools: true } : rest);
+  });
+}
 
 controlOp({
   name: "remote factory",

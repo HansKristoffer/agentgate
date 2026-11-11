@@ -6,7 +6,6 @@ import { getErrorMessage } from "hanzio";
 import { z } from "zod";
 import { PeerError } from "../handoff/jobs.ts";
 import { defineLocal } from "../local-state.ts";
-import { removeNode, setHealthDashboard } from "../operations.ts";
 import {
   cleanupRelay,
   createRelay,
@@ -18,12 +17,15 @@ import {
   reconcileRelay,
   RelayBusy,
   RelayError,
+  relayInvite,
   relayStatus,
   rotateRelay,
   setServiceKey,
+  via,
 } from "../relay.ts";
-import type { Store } from "../store.ts";
-import { join, pairCode, peers, tailscale } from "../sync.ts";
+import { regenerateAfterUnpair } from "../remote.ts";
+import { requireNodeProtocol, type Store } from "../store.ts";
+import { join, pairCode, peers, tailscale, unpair } from "../sync.ts";
 import { nodeUpdate, routeNode, updateTracked } from "../update.ts";
 import { controlOp, UserError } from "./registry.ts";
 
@@ -218,7 +220,11 @@ controlOp({
   loopbackOnly: true,
   async run({ node }, { s, daemon }) {
     if (!s.get("node", node) && !peers(s).some((p) => p.node === node)) throw new UserError(`No machine named ${node}`);
-    const { endpoints, rotated } = await relayed(() => removeNode(s, node));
+    // Only a new relay secret shuts a relay machine out, and every remote endpoint then gets a URL it has never seen.
+    // The rotation goes first, so a failed one changes nothing and can be retried.
+    const rotated = relayInvite(s) && via(s, node).includes("relay") ? await relayed(() => rotateRelay(s)) : undefined;
+    const endpoints = regenerateAfterUnpair(s, node);
+    unpair(s, node);
     if (endpoints.length) daemon?.remote.reconcile();
     return rotated ? { endpoints, rotated } : { endpoints };
   },
@@ -249,6 +255,22 @@ controlOp({
     },
   },
 });
+
+/** The node protocol that keeps `healthDashboard` on node records (see NODE_PROTOCOL in remote.ts). Pinned, not
+ * NODE_PROTOCOL: later protocol bumps add nothing the dashboard needs, and must not make turning it on wait for them. */
+const HEALTH_PROTOCOL = 7;
+
+/** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a
+ * node record, so turning it on waits until every node reports HEALTH_PROTOCOL. Turning it off needs no wait: a dropped
+ * field reads as off. */
+export function setHealthDashboard(s: Store, node: string, on: boolean) {
+  return s.transaction(() => {
+    const n = s.get("node", node);
+    if (!n) throw new Error(`no machine ${node}`);
+    if (on) requireNodeProtocol(s, HEALTH_PROTOCOL, "drop the dashboard setting");
+    return s.put("node", node, { ...n, healthDashboard: on });
+  });
+}
 
 // Not loopback-only, like always-on: any paired machine's dashboard is turned on from here.
 controlOp({

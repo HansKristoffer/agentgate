@@ -10,7 +10,7 @@ import * as cursor from "../llm/cursor.ts";
 import { resetCooldown } from "../llm/policy.ts";
 import { providerLogins } from "../llm/providers.ts";
 import { resetRouting } from "../llm/routing.ts";
-import { deleteAccount, setAccount } from "../operations.ts";
+import { setAccount } from "../operations.ts";
 import type { Account, Store } from "../store.ts";
 import { controlOp, UserError } from "./registry.ts";
 
@@ -147,6 +147,20 @@ for (const [name, patch, summary, done] of [
     run: (input, { s }) => change(s, input.id, patch),
     terminal: { usage: `${name} <id>`, parse: justId, print: (a) => [`${a.id} ${done}`] },
   });
+
+/** Removes the account, its login and usage from every machine, and this machine's state about it. */
+export function deleteAccount(s: Store, id: string) {
+  s.transaction(() => {
+    const provider = s.get("account", id)?.provider;
+    for (const kind of ["account", "credential", "usage"] as const) s.del(kind, id);
+    s.del("refreshRequest", `credential:${id}`);
+    s.setLocal(`refreshError:credential:${id}`, undefined);
+    for (const key of ["models", "modelError", "quotaHealth"]) s.setLocal(`${key}:${id}`, undefined);
+    resetCooldown(s, id);
+    resetRouting(s, id);
+    if (provider && s.local(`active:${provider}`) === id) s.setLocal(`active:${provider}`, undefined);
+  });
+}
 
 controlOp({
   name: "accounts rm",

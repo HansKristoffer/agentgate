@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { projectChangeSchema } from "@agentgate/protocol";
 import { projectSkillChoices, repoClashes } from "../../desktop/src/skill-assignment.ts";
-import { changeServerProjects, changeSkillProjects, createInstance } from "../src/operations.ts";
-import { writeSkillMd } from "../src/skills.ts";
+import { changeServerProjects, createInstance } from "../src/ops/servers.ts";
+import { changeSkillProjects, writeSkillMd } from "../src/skills.ts";
 import { Store, type Project } from "../src/store.ts";
 
 test("derived availability preserves explicit assignments across global and checkout changes", () => {

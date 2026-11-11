@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { app, makeCtx } from "../src/daemon.ts";
 import { aliasesFor, connect, parseRemote, toolName } from "../src/mcp/gateway.ts";
-import { renameInstance } from "../src/operations.ts";
+import { renameInstance } from "../src/ops/servers.ts";
 import { DAEMON_DOWN, buildShim } from "../src/mcp/shim.ts";
 import { fromPreset, newInstance, preset } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";

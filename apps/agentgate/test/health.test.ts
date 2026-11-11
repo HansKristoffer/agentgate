@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { HEALTH_PATH, statusSchema } from "@agentgate/protocol";
 import { app, makeCtx } from "../src/daemon.ts";
 import { startLagProbe } from "../src/lag.ts";
-import { setHealthDashboard } from "../src/operations.ts";
+import { setHealthDashboard } from "../src/ops/nodes.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { Store } from "../src/store.ts";
 

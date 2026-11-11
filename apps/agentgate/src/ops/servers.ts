@@ -1,19 +1,13 @@
-import { projectChangeSchema } from "@agentgate/protocol";
+import { isVirtual, projectChangeSchema, projectIdSchema, slugify, type ProjectChange } from "@agentgate/protocol";
 import type { ControlOps } from "@agentgate/protocol/control";
+import { getUniqueValues } from "hanzio";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
-import { listAllTools, needsLogin, serverTools } from "../mcp/gateway.ts";
-import {
-  changeServerProjects,
-  createInstance,
-  deleteInstance,
-  labelInstance,
-  renameInstance,
-  tuneInstance,
-  tuneTool,
-} from "../operations.ts";
-import { sent, type Data, type McpInstance, type Store, type Stored } from "../store.ts";
+import { canonicalProject, listAllTools, needsLogin, serverTools } from "../mcp/gateway.ts";
+import { fromPreset, newInstance, parseHeaders, preset, validId } from "../mcp/templates.ts";
+import { saveProject } from "../operations.ts";
+import { sent, type Data, type McpInstance, type Project, type Store, type Stored } from "../store.ts";
 import { controlOp, UserError } from "./registry.ts";
 
 /** The MCP servers family's control operations. None is loopback-only: a remote node's servers are managed from the
@@ -29,7 +23,7 @@ function server(s: Store, name: string) {
   return inst;
 }
 
-/** operations.ts throws a plain `Error` for input it refuses, with a message written for the user. `invalid` replaces
+/** The record changes below throw a plain `Error` for input they refuse, with a message written for the user. `invalid` replaces
  * the text of a TypeError from `URL` or `Headers`, which can quote a URL with its credentials. */
 function refused<T>(fn: () => T, invalid?: string): T {
   try {
@@ -53,6 +47,160 @@ function words<O extends ParseArgsOptionsConfig>(args: string[], options: O) {
   } catch (e) {
     throw new UserError(e instanceof Error ? e.message : "");
   }
+}
+
+/** Parse quoted arguments without invoking a shell or expanding variables. */
+function parseCommand(text: string): string[] {
+  const args: string[] = [];
+  let current = "",
+    quote = "",
+    escaped = false,
+    started = false;
+  for (const char of text.trim()) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      started = true;
+    } else if (char === "\\" && quote !== "'") {
+      escaped = true;
+      started = true;
+    } else if (quote) {
+      if (char === quote) quote = "";
+      else current += char;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+      started = true;
+    } else if (/\s/.test(char)) {
+      if (started) {
+        args.push(current);
+        current = "";
+        started = false;
+      }
+    } else {
+      current += char;
+      started = true;
+    }
+  }
+  if (quote || escaped) throw new Error("unfinished quote or escape in command");
+  if (started) args.push(current);
+  if (!args[0]) throw new Error("a command is required");
+  return args;
+}
+
+/** `name` is whatever the user typed; its slug becomes the id and tool prefix, and the name itself is kept for display. */
+export function createInstance(
+  s: Store,
+  input: { name: string; target?: string; command?: string; perSession?: boolean; headers?: string | string[] },
+): McpInstance {
+  const name = input.name.trim(),
+    id = slugify(name);
+  if (!id) throw new Error("name: use at least one letter or digit");
+  if (name.length > 100) throw new Error("name: 100 characters at most");
+  if (s.get("mcp", id)) throw new Error(`${id} already exists; choose another name`);
+  const p = input.target ? preset(input.target) : undefined;
+  const command = input.command ? parseCommand(input.command) : undefined;
+  const inst = p
+    ? fromPreset(p, id)
+    : command
+      ? newInstance({
+          id,
+          command: command[0],
+          args: command.slice(1),
+          mode: input.perSession ? "perSession" : "shared",
+        })
+      : newInstance({ id, url: input.target });
+  inst.headers = { ...inst.headers, ...parseHeaders(input.headers) };
+  if (name !== id) inst.label = name;
+  return s.put("mcp", id, inst);
+}
+/** Changes only the name shown in the app; the id and tool prefix stay, so project mappings keep working. */
+export function labelInstance(s: Store, id: string, label: string) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  const name = label.trim();
+  if (!name || name.length > 100) throw new Error("name: 1 to 100 characters");
+  s.put("mcp", id, { ...inst, label: name === id ? undefined : name });
+}
+/** How a server is offered to agents; a key set to `undefined` goes back to the default. */
+function tuneInstance(
+  s: Store,
+  id: string,
+  change: Partial<Pick<McpInstance, "tools" | "instructions" | "maxResultChars">>,
+) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  s.put("mcp", id, { ...inst, ...change });
+}
+/** One tool's result limit or default arguments; a key set to `undefined` goes back to the server's. */
+function tuneTool(s: Store, id: string, tool: string, change: NonNullable<McpInstance["toolOptions"]>[string]) {
+  const inst = s.get("mcp", id);
+  if (!inst) throw new Error(`no MCP server ${id}`);
+  const options = { ...inst.toolOptions, [tool]: { ...inst.toolOptions?.[tool], ...change } };
+  for (const [name, o] of Object.entries(options))
+    if (o.maxResultChars === undefined && o.defaults === undefined) delete options[name];
+  s.put("mcp", id, { ...inst, toolOptions: Object.keys(options).length ? options : undefined });
+}
+const unmap = (s: Store, p: Project, id: string) =>
+  s.put("project", p.id, { ...p, mcp: Object.fromEntries(Object.entries(p.mcp).filter(([, v]) => v !== id)) });
+export function deleteInstance(s: Store, id: string) {
+  s.transaction(() => {
+    s.del("mcp", id);
+    s.del("mcpCredential", id);
+    s.del("refreshRequest", `mcpCredential:${id}`);
+    s.setLocal(`refreshError:mcpCredential:${id}`, undefined);
+    for (const p of s.list("project")) if (Object.values(p.mcp).includes(id)) unmap(s, p, id);
+  });
+}
+/** Maps a server into exactly these projects (`*` is Global defaults), or into its current ones with `change`'s
+ * additions and removals applied, so a form opened before another machine's change does not undo it. A project that
+ * already has it keeps its tool prefix; a new mapping uses the server's id. */
+export function changeServerProjects(s: Store, id: string, change: ProjectChange) {
+  s.transaction(() => {
+    const inst = s.get("mcp", id);
+    if (!inst) throw new Error(`no MCP server ${id}`);
+    const mapped = s.list("project").filter((p) => Object.values(p.mcp).includes(id));
+    const remove = new Set("remove" in change ? change.remove.map((p) => canonicalProject(s, p)) : []);
+    const projects =
+      "projects" in change
+        ? change.projects
+        : [...mapped.map((p) => p.id).filter((p) => !remove.has(p)), ...change.add];
+    const targets = getUniqueValues(projects.map((p) => canonicalProject(s, projectIdSchema.parse(p))));
+    for (const p of mapped) if (!targets.includes(p.id)) unmap(s, p, id);
+    for (const target of targets) {
+      const p = s.get("project", target);
+      if (p && Object.values(p.mcp).includes(id)) continue;
+      if (isVirtual(target) && inst.mode === "perSession")
+        throw new Error(`${id} starts in each session's worktree, which ${target} does not have`);
+      const taken = p?.mcp[id];
+      if (taken) throw new Error(`${target} already uses the tool prefix ${id} for ${taken}`);
+      saveProject(s, target, { mcp: { ...p?.mcp, [id]: id } });
+    }
+  });
+}
+export function renameInstance(s: Store, from: string, to: string) {
+  s.transaction(() => {
+    const inst = s.get("mcp", from);
+    if (!inst) throw new Error(`no MCP server ${from}`);
+    if (!validId(to)) throw new Error("name: letters, digits, - and _");
+    if (from === to) return;
+    if (s.get("mcp", to)) throw new Error(`${to} already exists`);
+    s.put("mcp", to, { ...inst, id: to });
+    const credentials = s.get("mcpCredential", from);
+    if (credentials) s.put("mcpCredential", to, { ...credentials, instanceId: to, loginId: undefined });
+    for (const p of s.list("project"))
+      if (Object.values(p.mcp).includes(from)) {
+        const mappings: Record<string, string> = {};
+        for (const [alias, target] of Object.entries(p.mcp)) {
+          const name = target === from && alias === from ? to : alias;
+          if (name in mappings) throw new Error(`rename conflicts with alias ${name} in ${p.id}`);
+          mappings[name] = target === from ? to : target;
+        }
+        s.put("project", p.id, { ...p, mcp: mappings });
+      }
+    s.del("mcp", from);
+    s.del("mcpCredential", from);
+    s.del("refreshRequest", `mcpCredential:${from}`);
+  });
 }
 
 type ServerTuning = ControlOps["mcp test"]["result"]["tuning"];
