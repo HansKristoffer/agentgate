@@ -3,7 +3,7 @@ import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { slugify, type SkillPreview, type SkillSearchResult } from "@agentgate/protocol";
-import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
+import { Button, Input, TextField, toast } from "@heroui/react";
 import {
   Badge,
   Check,
@@ -13,10 +13,11 @@ import {
   Panel,
   HeaderActions,
   RowMenu,
+  Segmented,
   Working,
   usePending,
 } from "../components/ui.tsx";
-import { ProjectChecks, projectChange } from "../components/Assignments.tsx";
+import { AssignProjects, ProjectChecks } from "../components/Assignments.tsx";
 import type { ViewProps } from "../types.ts";
 import { control, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
@@ -370,25 +371,17 @@ export function Skills({ data, connection, perform }: ViewProps) {
       )}
       {add && (
         <Modal title="Add skills" close={() => setAdd(undefined)}>
-          <Tabs className="segmented" selectedKey={add} onSelectionChange={(key) => setAdd(key as typeof add)}>
-            <Tabs.ListContainer>
-              <Tabs.List aria-label="Where the skills come from">
-                {(
-                  [
-                    ["browse", "skills.sh"],
-                    ["source", "Source"],
-                    ["repo", "Synced repo"],
-                    ["write", "Write"],
-                  ] as const
-                ).map(([id, label]) => (
-                  <Tabs.Tab key={id} id={id}>
-                    {label}
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                ))}
-              </Tabs.List>
-            </Tabs.ListContainer>
-          </Tabs>
+          <Segmented
+            label="Where the skills come from"
+            value={add}
+            onChange={setAdd}
+            options={[
+              { id: "browse", label: "skills.sh" },
+              { id: "source", label: "Source" },
+              { id: "repo", label: "Synced repo" },
+              { id: "write", label: "Write" },
+            ]}
+          />
           {typedSwitch(add, {
             browse: () => (
               <>
@@ -491,33 +484,24 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {repoAssign && (
-        <Modal title={`Where ${repoName(repoAssign)} is used`} close={() => setRepoAssign(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const projects = new FormData(e.currentTarget).getAll("project");
-              // Only what changed since the form opened, so a project another machine added meanwhile stays.
-              const change = projectChange(e.currentTarget);
-              void perform(async () => {
-                if (!projects.length) throw new Error("Choose at least one project, or disconnect the repository");
-                await control(connection, "skills repo projects", { url: repoAssign, change });
-                setRepoAssign(undefined);
-              }, "Saved. New sessions pick it up.");
-            }}
-          >
-            <ProjectChecks
-              data={data}
-              skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
-              selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
-            />
-            <p className="note">
-              All of the repository's skills are linked to the projects you add and unlinked from the ones you remove.
-            </p>
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        </Modal>
+        <AssignProjects
+          title={`Where ${repoName(repoAssign)} is used`}
+          note="All of the repository's skills are linked to the projects you add and unlinked from the ones you remove."
+          close={() => setRepoAssign(undefined)}
+          save={(change, chosen) =>
+            void perform(async () => {
+              if (!chosen.length) throw new Error("Choose at least one project, or disconnect the repository");
+              await control(connection, "skills repo projects", { url: repoAssign, change });
+              setRepoAssign(undefined);
+            }, "Saved. New sessions pick it up.")
+          }
+        >
+          <ProjectChecks
+            data={data}
+            skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
+            selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
+          />
+        </AssignProjects>
       )}
       {preview && (
         <Modal title={preview.source} close={() => setPreview(undefined)}>
@@ -587,30 +571,22 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {assign && (
-        <Modal title={`Where ${assign} is used`} close={() => setAssign(undefined)}>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const change = projectChange(e.currentTarget);
-              void perform(async () => {
-                await control(connection, "skills projects", { id: assign, change });
-                setAssign(undefined);
-              }, "Saved. New sessions pick it up.");
-            }}
-          >
-            <ProjectChecks
-              data={data}
-              skills={[assign]}
-              selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
-            />
-            <p className="note">
-              Repositories appear here once a session starts in them, or after you add or scan them in Projects.
-            </p>
-            <Button type="submit" size="sm">
-              Save
-            </Button>
-          </form>
-        </Modal>
+        <AssignProjects
+          title={`Where ${assign} is used`}
+          close={() => setAssign(undefined)}
+          save={(change) =>
+            void perform(async () => {
+              await control(connection, "skills projects", { id: assign, change });
+              setAssign(undefined);
+            }, "Saved. New sessions pick it up.")
+          }
+        >
+          <ProjectChecks
+            data={data}
+            skills={[assign]}
+            selected={data.projects.filter((p) => p.skills.includes(assign)).map((p) => p.id)}
+          />
+        </AssignProjects>
       )}
       {editor && (
         <Modal title={`Edit ${editor.id}`} close={() => setEditor(undefined)}>

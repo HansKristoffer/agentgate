@@ -1,9 +1,8 @@
 import { useState } from "react";
-import { Tabs } from "@heroui/react";
 import { sumBy, typedSwitch } from "hanzio";
 import type { Connection, ModelTokens } from "@agentgate/protocol";
 import { request } from "../../api.ts";
-import { Empty, Panel } from "../../components/ui.tsx";
+import { Empty, Panel, Segmented } from "../../components/ui.tsx";
 import { useDaemon } from "../../useDaemon.ts";
 
 const RANGES = [
@@ -49,18 +48,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
       title="Token usage"
       detail="Every machine and account, by model. Cursor's come from its own usage history."
       action={
-        <Tabs className="token-range" selectedKey={range} onSelectionChange={(key) => setRange(key as Range)}>
-          <Tabs.ListContainer>
-            <Tabs.List aria-label="Time range">
-              {RANGES.map((r) => (
-                <Tabs.Tab key={r.id} id={r.id}>
-                  {r.label}
-                  <Tabs.Indicator />
-                </Tabs.Tab>
-              ))}
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </Tabs>
+        <Segmented className="token-range" label="Time range" value={range} onChange={setRange} options={RANGES} />
       }
     >
       {error ? (

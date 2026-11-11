@@ -1,6 +1,6 @@
 import { Button } from "@heroui/react";
 import { ExternalLink, GitPullRequest } from "lucide-react";
-import type { Connection, FactoryBoard } from "@agentgate/protocol";
+import type { Connection, FactoryBoard, WriteMoment } from "@agentgate/protocol";
 import { factoryOp, openExternal } from "../../api.ts";
 import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
 import { useDaemon } from "../../useDaemon.ts";
@@ -15,7 +15,7 @@ import {
   type Act,
   type AskReason,
   type Tone,
-} from "../Factory.tsx";
+} from "./parts.tsx";
 
 const STAGES: Record<string, string> = {
   triage: "Triage",
@@ -45,7 +45,7 @@ const RUN_STATES: Record<string, string> = {
   cancelled: "stopped",
 };
 /** What each write-back is, for a person: the moment's comment on the issue, or the other things the outbox writes. */
-const WRITES: Record<string, string> = {
+const WRITES: Record<WriteMoment, string> = {
   taken: "Said the factory took it",
   triaged: "Posted the triage result",
   "spec-approved": "Posted the approved spec",
@@ -56,6 +56,7 @@ const WRITES: Record<string, string> = {
   waiting: "Asked you on the issue",
   reply: "Replied in a review conversation",
   issue: "Filed a follow-up issue",
+  notify: "Sent a notification",
 };
 
 /** One item: its runs with their T3 Code threads and errors, what the factory posted for it, and its events. Read with
