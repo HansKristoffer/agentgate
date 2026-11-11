@@ -44,10 +44,9 @@ const sessionSchema = z.object({
 const pendingLogins = defineLocal("oauth-state:", sessionSchema);
 /** Drop expired pending logins, and those of `replaced`: a newer login replaces the ones started here before it. */
 export function expireLogins(s: Store, replaced?: string) {
-  for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as {
-    key: string;
-    value: string;
-  }[]) {
+  for (const row of s.db
+    .query<{ key: string; value: string }, []>("select key, value from local where key like 'oauth-state:%'")
+    .all()) {
     const result = sessionSchema.safeParse(safeJsonParse(row.value).data);
     if (!result.success || result.data.expiresAt <= s.now() || result.data.id === replaced)
       s.setLocal(row.key, undefined);

@@ -64,7 +64,7 @@ export interface Peer {
   last_seen: number | null;
 }
 
-export const peers = (s: Store) => s.db.query("select * from peers").all() as Peer[];
+export const peers = (s: Store) => s.db.query<Peer, []>("select * from peers").all();
 
 const randomToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("hex");
 

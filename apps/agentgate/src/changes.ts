@@ -155,8 +155,8 @@ export class Changes {
     const { rows, high } = this.s.db.transaction(() => {
       const high = this.s.seq();
       const rows = this.s.db
-        .query("select distinct kind from records where seq > ? and seq <= ?")
-        .all(this.seq, high) as { kind: Kind }[];
+        .query<{ kind: Kind }, [number, number]>("select distinct kind from records where seq > ? and seq <= ?")
+        .all(this.seq, high);
       return { rows, high };
     })();
     this.seq = high;
@@ -164,7 +164,7 @@ export class Changes {
   }
 
   private readDataVersion() {
-    return (this.s.db.query("pragma data_version").get() as { data_version: number }).data_version;
+    return this.s.db.query<{ data_version: number }, []>("pragma data_version").get()!.data_version;
   }
 
   /** Another connection (the CLI) committed: its writes reach no onChange here. */

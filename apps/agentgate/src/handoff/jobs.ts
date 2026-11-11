@@ -256,13 +256,17 @@ export class Handoffs {
   }
 
   load<R extends Role>(role: R, id: string): JobOf<R> | undefined {
-    const row = this.s.db.query("select * from handoffs where role = ? and id = ?").get(role, id) as Row | null;
+    const row = this.s.db
+      .query<Row, [string, string]>("select * from handoffs where role = ? and id = ?")
+      .get(role, id);
     return row ? (this.read(row) as JobOf<R>) : undefined;
   }
   list<R extends Role = Role>(role?: R): JobOf<R>[] {
     const rows = this.s.db
-      .query("select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200")
-      .all(role ?? null) as Row[];
+      .query<Row, [string | null]>(
+        "select * from handoffs where ?1 is null or role = ?1 order by created_at desc limit 200",
+      )
+      .all(role ?? null);
     return rows.map((r) => this.read(r) as JobOf<R>);
   }
   // Jobs are shown with the threads, so every write the user can see marks `threads` changed; `touch` does not.
@@ -312,7 +316,7 @@ export class Handoffs {
   /** Resume unfinished jobs after a restart, and give up on prepares whose source never started. */
   tick() {
     // Only unfinished rows: a finished one can hold thousands of file entries, and nothing here reads them.
-    const rows = this.s.db.query("select * from handoffs where step not in ('done', 'failed')").all() as Row[];
+    const rows = this.s.db.query<Row, []>("select * from handoffs where step not in ('done', 'failed')").all();
     for (const job of rows.map((r) => this.read(r))) {
       if (this.starting.has(job.id) || job.step === "failed") continue;
       const waiting =

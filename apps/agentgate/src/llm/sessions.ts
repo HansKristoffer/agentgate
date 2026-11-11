@@ -92,11 +92,11 @@ export function sessionUsage(s: Store, sessions: string[]): SessionUsage[] {
   if (!sessions.length) return [];
   table(s);
   return s.db
-    .query(
+    .query<SessionUsage, [string]>(
       `select session, provider, model, input, output, cache_read as cacheRead, cache_write as cacheWrite, requests, first_at as firstAt, last_at as lastAt
       from session_usage where session in (select value from json_each(?)) order by session, provider, model`,
     )
-    .all(JSON.stringify(sessions)) as SessionUsage[];
+    .all(JSON.stringify(sessions));
 }
 
 /** Runs are kept for 90 days, and so are the sessions behind them. */

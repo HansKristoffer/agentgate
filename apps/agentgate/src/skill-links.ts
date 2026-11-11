@@ -23,7 +23,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
-import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from "./store.ts";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 
@@ -303,8 +303,10 @@ export class SkillLinks {
 
   private records() {
     return this.s.db
-      .query("select id, rev, node, updated_at from records where kind = 'skill' and deleted = 0")
-      .all() as { id: string; rev: number; node: string; updated_at: number }[];
+      .query<Pick<Rec, "id" | "rev" | "node" | "updated_at">, []>(
+        "select id, rev, node, updated_at from records where kind = 'skill' and deleted = 0",
+      )
+      .all();
   }
 
   /** Store → `<root>/<id>/`, swapped in whole, skipped when the folder's marker matches the record revision. */

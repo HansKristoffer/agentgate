@@ -54,11 +54,9 @@ export async function backfillTokens(s: Store, dirs = LOG_DIRS, signal?: AbortSi
   for (const provider of ["claude", "codex"] as const) {
     const key = `tokens:backfill:${provider}`;
     if (s.local(key)) continue;
-    const first = (
-      s.db.query("select min(hour) as hour from token_usage where provider = ?").get(provider) as {
-        hour: number | null;
-      }
-    ).hour;
+    const first = s.db
+      .query<{ hour: number | null }, [string]>("select min(hour) as hour from token_usage where provider = ?")
+      .get(provider)!.hour;
     const before = first ?? s.now() - (s.now() % HOUR),
       hours: Hours = new Map(),
       seen = new Set<number>();
@@ -95,8 +93,8 @@ function foldTokens(s: Store) {
     months = new Map<string, Rec[]>();
   // `;` follows `:`, so the range is every ID with this node's prefix.
   for (const r of s.db
-    .query("select * from records where kind = 'tokens' and deleted = 0 and id > ? and id < ?")
-    .all(prefix, `${s.nodeId};`) as Rec[]) {
+    .query<Rec, [string, string]>("select * from records where kind = 'tokens' and deleted = 0 and id > ? and id < ?")
+    .all(prefix, `${s.nodeId};`)) {
     const day = r.id.slice(prefix.length);
     if (!/^\d{4}-\d\d-\d\d$/.test(day)) continue;
     const date = new Date(day),
@@ -136,12 +134,12 @@ export function publishTokens(s: Store) {
   if (!nodes.some((n) => n.id === s.nodeId) || nodes.some((n) => (n.protocol ?? 0) < TOKENS_PROTOCOL)) return;
   const from = Number(s.local("tokens:published") ?? 0);
   const rows = s.db
-    .query(
+    .query<Data<"tokens">["rows"][number] & { account: string | null }, [number]>(
       `select hour, provider, model, null as account, input, output, cache_read as cacheRead, cache_write as cacheWrite from token_usage where hour >= ?1
      union all select hour, 'cursor', model, account, input, output, cache_read, cache_write from cursor_tokens where hour >= ?1
      order by hour, provider, model, account`,
     )
-    .all(from) as (Data<"tokens">["rows"][number] & { account: string | null })[];
+    .all(from);
   const tokenRows: Data<"tokens">["rows"] = rows.map(({ account, ...row }) => (account ? { ...row, account } : row));
   const days = groupBy(tokenRows, (row) => new Date(row.hour).toISOString().slice(0, 10));
   for (const [day, dayRows = []] of typedEntries(days)) {

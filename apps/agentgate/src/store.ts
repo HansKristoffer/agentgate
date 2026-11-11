@@ -251,17 +251,6 @@ export type Stored<T> = T extends readonly (infer U)[]
  * and the JSON it is sent as. */
 export const sent = <T>(value: Stored<T>) => value as T;
 
-export interface Rec {
-  kind: Kind;
-  id: string;
-  rev: number;
-  node: string;
-  updated_at: number;
-  deleted: number;
-  data: string;
-  seq?: number;
-}
-
 export const recordSchema = z.object({
   kind: z.enum(nonEmpty(typedKeys(schemas))),
   id,
@@ -272,6 +261,7 @@ export const recordSchema = z.object({
   data: z.string().max(MAX_RECORD),
   seq: timestamp.optional(),
 });
+export type Rec = z.infer<typeof recordSchema>;
 
 export function parseData<K extends Kind>(kind: K, key: string, input: unknown): Data<K> {
   id.parse(key);
@@ -367,10 +357,10 @@ export class Store {
 
   private migrate() {
     this.transaction(() => {
-      const version = (this.db.query("pragma user_version").get() as { user_version: number }).user_version;
+      const version = this.db.query<{ user_version: number }, []>("pragma user_version").get()!.user_version;
       if (version > 2) throw new Error("database was created by a newer agentgate version");
       if (version === 0) {
-        for (const row of this.db.query("select * from records where kind = 'mcp' and deleted = 0").all() as Rec[]) {
+        for (const row of this.db.query<Rec, []>("select * from records where kind = 'mcp' and deleted = 0").all()) {
           const inst = parseData("mcp", row.id, JSON.parse(row.data));
           if (inst.oauth) {
             this.put("mcpCredential", inst.id, { ...inst.oauth, instanceId: inst.id, holder: row.node });
@@ -399,8 +389,8 @@ export class Store {
     });
   }
 
-  /** Read on every write, so it is kept; `init` renames it through `setLocal` here, or from the CLI while the daemon
-   * runs, which the daemon hears through `externalWrite`. */
+  /** Kept, since every write reads it. `init` renames the node through `setLocal`, which drops it, or from the CLI
+   * while the daemon runs, which the daemon learns through `externalWrite`. */
   get nodeId(): string {
     return (this.node ??= this.local("node") ?? "unnamed");
   }
@@ -411,18 +401,18 @@ export class Store {
   }
 
   local(key: string): string | undefined {
-    return (this.db.query("select value from local where key = ?").get(key) as { value: string } | null)?.value;
+    return this.db.query<{ value: string }, [string]>("select value from local where key = ?").get(key)?.value;
   }
 
   /** A key range rather than `like`, so the primary key serves it. */
   localPrefixed(prefix: string): [string, string][] {
     const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
-    return (
-      this.db.query("select key, value from local where key >= ? and key < ? order by key").all(prefix, end) as {
-        key: string;
-        value: string;
-      }[]
-    ).map((r) => [r.key, r.value]);
+    return this.db
+      .query<{ key: string; value: string }, [string, string]>(
+        "select key, value from local where key >= ? and key < ? order by key",
+      )
+      .all(prefix, end)
+      .map((r) => [r.key, r.value]);
   }
 
   setLocal(key: string, value: string | undefined) {
@@ -437,15 +427,17 @@ export class Store {
   }
 
   seq(): number {
-    return (this.db.query("select value from local_seq").get() as { value: number }).value;
+    return this.db.query<{ value: number }, []>("select value from local_seq").get()!.value;
   }
 
   private nextSeq(): number {
-    return (this.db.query("update local_seq set value = value + 1 returning value").get() as { value: number }).value;
+    return this.db.query<{ value: number }, []>("update local_seq set value = value + 1 returning value").get()!.value;
   }
 
   record(kind: Kind, id: string): Rec | undefined {
-    return (this.db.query("select * from records where kind = ? and id = ?").get(kind, id) as Rec | null) ?? undefined;
+    return (
+      this.db.query<Rec, [string, string]>("select * from records where kind = ? and id = ?").get(kind, id) ?? undefined
+    );
   }
 
   /** Existence without parsing: a skill record can be megabytes of base64 that `get` would validate. */
@@ -551,8 +543,8 @@ export class Store {
     return this.db.transaction(() => {
       const seq = this.seq(); // establish the read snapshot before reading its records
       const records = this.db
-        .query("select * from records where seq > ? and seq <= ? order by seq")
-        .all(since, seq) as Rec[];
+        .query<Rec, [number, number]>("select * from records where seq > ? and seq <= ? order by seq")
+        .all(since, seq);
       return { records, seq };
     })();
   }
@@ -568,9 +560,11 @@ export class Store {
       const high = this.seq(),
         records: Rec[] = [];
       let bytes = 0;
-      const statement = this.db.prepare("select * from records where seq > ? and seq <= ? order by seq");
+      const statement = this.db.prepare<Rec, [number, number]>(
+        "select * from records where seq > ? and seq <= ? order by seq",
+      );
       try {
-        for (const row of statement.iterate(since, high) as Iterable<Rec>) {
+        for (const row of statement.iterate(since, high)) {
           if (records.length === maxRecords) return { records, seq: records.at(-1)!.seq!, more: true };
           const size = Buffer.byteLength(JSON.stringify(row)) + 1;
           if (bytes + size > maxBytes) {
@@ -595,8 +589,8 @@ export class Store {
     const took = this.db
       .transaction(() => {
         const cur = this.db
-          .query("select rev, updated_at, node from records where kind = ? and id = ?")
-          .get(envelope.kind, envelope.id) as Version | null;
+          .query<Version, [string, string]>("select rev, updated_at, node from records where kind = ? and id = ?")
+          .get(envelope.kind, envelope.id);
         if (cur && !newer(envelope, cur)) return false;
         const r = { ...envelope, data: storedData(envelope) };
         if (cur && staleRotation(this, r)) {
@@ -751,11 +745,11 @@ function publicMcp(inst: McpInstance) {
 }
 
 export function exportBackup(s: Store, secrets = true) {
-  const rows = s.db.query("select kind, id, data from records where deleted = 0 order by kind, id").all() as {
-    kind: Kind;
-    id: string;
-    data: string;
-  }[];
+  const rows = s.db
+    .query<Pick<Rec, "kind" | "id" | "data">, []>(
+      "select kind, id, data from records where deleted = 0 order by kind, id",
+    )
+    .all();
   const records = rows
     .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {

@@ -247,22 +247,22 @@ function tables(s: Store) {
 }
 
 const counter = (s: Store, grp: string, gen: string, node: string, key: string) =>
-  (
-    s.db
-      .query("select counter from relay_counters where grp = ? and generation = ? and node = ? and key = ?")
-      .get(grp, gen, node, key) as { counter: number } | null
-  )?.counter ?? 0;
+  s.db
+    .query<{ counter: number }, [string, string, string, string]>(
+      "select counter from relay_counters where grp = ? and generation = ? and node = ? and key = ?",
+    )
+    .get(grp, gen, node, key)?.counter ?? 0;
 const setCounter = (s: Store, grp: string, gen: string, node: string, key: string, value: number) =>
   s.db.run(
     "insert into relay_counters values (?, ?, ?, ?, ?) on conflict (grp, generation, node, key) do update set counter = max(counter, excluded.counter)",
     [grp, gen, node, key, value],
   );
 const pending = (s: Store, grp: string) =>
-  s.db.query("select * from relay_pending where grp = ?").get(grp) as {
-    generation: string;
-    checkpoint: number;
-    body: string;
-  } | null;
+  s.db
+    .query<{ generation: string; checkpoint: number; body: string }, [string]>(
+      "select * from relay_pending where grp = ?",
+    )
+    .get(grp);
 const dropGroup = (s: Store, grp: string) => {
   s.db.run("delete from relay_pending where grp = ?", [grp]);
   s.db.run("delete from relay_counters where grp = ?", [grp]);

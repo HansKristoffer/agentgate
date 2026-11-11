@@ -484,8 +484,10 @@ async function resolveFixed(f: FactoryRuntime, item: FactoryItem, feedback: PrFe
     const live = feedback.conversations.find((x) => x.id === id);
     if (c.outcome !== "fixed" || !live || live.resolved) continue;
     const reply = f.s.db
-      .query("select status from factory_writebacks where item=? and moment='reply' and ref=?")
-      .get(item.id, `${id}@${c.commit}`) as { status: string } | null;
+      .query<{ status: string }, [string, string]>(
+        "select status from factory_writebacks where item=? and moment='reply' and ref=?",
+      )
+      .get(item.id, `${id}@${c.commit}`);
     if (reply && reply.status !== "posted") continue;
     if (!live.canResolve) {
       failed(f, item, `The factory may not resolve a review conversation on ${item.key}'s PR; it replied there`);
