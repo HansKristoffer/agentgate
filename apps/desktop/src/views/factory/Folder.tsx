@@ -1,33 +1,26 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@heroui/react";
-import { confirmDialog, messageOf } from "@hanskristoffer/taurio/runtime";
-import type { StoredFolderView } from "@agentgate/protocol";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import type { ViewProps } from "../../types.ts";
 import { factoryOp } from "../../api.ts";
 import { Empty, Field, Modal, Panel } from "../../components/ui.tsx";
+import { useDaemon } from "../../useDaemon.ts";
 import { field } from "../utils.ts";
 import { ReadFailed, type Run } from "./Settings.tsx";
 
 /** `agentgate factory folder`: the files of the folder agentgate stores, edited one at a time. The daemon refuses a
  * save that leaves a folder that does not load, and says which file and field. */
 export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> & { run: Run }) {
-  const [folder, setFolder] = useState<StoredFolderView>();
   const [editing, setEditing] = useState<{ path: string; text: string; isNew: boolean }>();
-  const [error, setError] = useState("");
-  const load = () =>
-    factoryOp(connection, "folder ls", {}).then(
-      (next) => {
-        setFolder(next);
-        setError("");
-      },
-      (e) => setError(messageOf(e)),
-    );
-  useEffect(() => {
-    setFolder(undefined);
-    void load();
-  }, [connection]);
-  const put = async (files: Record<string, string | null>) =>
-    setFolder(await factoryOp(connection, "folder put", { files }));
+  const {
+    data: folder,
+    error,
+    reload,
+  } = useDaemon(() => factoryOp(connection, "folder ls", {}), { topics: ["factory"] });
+  const put = async (files: Record<string, string | null>) => {
+    await factoryOp(connection, "folder put", { files });
+    await reload();
+  };
   return (
     <Panel
       title="Stored folder"
@@ -52,7 +45,7 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
             Remove
           </Button>
         </div>
-      )) ?? <Empty>{error ? <ReadFailed error={error} retry={() => void load()} /> : <p>Loading…</p>}</Empty>}
+      )) ?? <Empty>{error ? <ReadFailed error={error} retry={reload} /> : <p>Loading…</p>}</Empty>}
       <div className="item">
         <Button size="sm" variant="tertiary" onPress={() => setEditing({ path: "", text: "", isNew: true })}>
           New file…

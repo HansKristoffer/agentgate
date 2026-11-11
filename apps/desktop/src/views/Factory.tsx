@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Alert, Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
 import {
@@ -10,9 +10,9 @@ import {
   type ItemPhase,
 } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
-import { factoryOp, openExternal, request } from "../api.ts";
+import { factoryBoard, factoryOp, openExternal } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
-import { useGeneration } from "../features/proxy/useGeneration.ts";
+import { useDaemon } from "../useDaemon.ts";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
 import { FactoryOff } from "./factory/Init.tsx";
@@ -20,7 +20,7 @@ import { FactorySettings } from "./factory/Settings.tsx";
 import { Sources } from "./factory/Sources.tsx";
 
 /**
- * The software factory: what waits for you first, then every stage. The board is polled from `/api/factory` and
+ * The software factory: what waits for you first, then every stage. The board is read from `/api/factory` and
  * everything else is a factory operation (`factoryOp`); both reach the factory machine from whichever machine the app
  * is connected to. Only the items frozen on the connected machine itself are that machine's to show and drop.
  */
@@ -29,6 +29,8 @@ import { Sources } from "./factory/Sources.tsx";
 export type Act = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, reason?: string) => Promise<void>;
 /** Asks for a reason, then acts. */
 export type AskReason = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, title: string) => void;
+/** What an action on an item is pending under, for its button and for `perform`. */
+const pendingKey = (action: ItemAction, item: Pick<BoardItem, "id">) => `factory:${action}:${item.id}`;
 
 const OPEN_PHASES: readonly ItemPhase[] = ["held", "triage", "spec", "implement", "pr", "review", "ready"];
 const PHASE_TITLES: Record<ItemPhase, string> = {
@@ -93,7 +95,7 @@ export function ItemActions({ item, act, ask }: { item: BoardItem; act: Act; ask
           <ActionButton
             size="sm"
             variant="tertiary"
-            pendingKey={`factory:${a.name}:${item.id}`}
+            pendingKey={pendingKey(a.name, item)}
             onPress={() =>
               a.takesText ? ask(item, a.name, `${a.label.replace(/…$/, "")}: ${item.key}`) : void act(item, a.name)
             }
@@ -592,50 +594,21 @@ function Reason({ title, close, submit }: { title: string; close: () => void; su
 }
 
 export function Factory(props: ViewProps) {
-  const { connection, perform } = props;
-  const [board, setBoard] = useState<FactoryBoard>();
-  const [error, setError] = useState("");
+  const { connection, perform, data } = props;
   const [tab, setTab] = useState("items");
   const [selected, setSelected] = useState<string>();
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<{ item: Pick<BoardItem, "id" | "key">; action: ItemAction; title: string }>();
-  const capture = useGeneration(connection);
-  // One read at a time, for the connection shown: a read whose answer would be dropped (another connection, or the
-  // first of StrictMode's two mounts) must not hold back the next for five seconds.
-  const loading = useRef<{ current: () => boolean; done: Promise<void>; again?: Promise<void> }>(undefined);
-
-  /** Reads the board. A poll skips while a read runs; `refresh` waits for it and reads once more, since that read may
-   * have started before the action or change it follows. Refreshes asked for meanwhile share that one read. */
-  const load = (refresh = false): Promise<void> => {
-    const running = loading.current;
-    if (running?.current()) return refresh ? (running.again ??= running.done.then(() => load())) : running.done;
-    const current = capture();
-    const done = (async () => {
-      try {
-        const next = await request<FactoryBoard>(connection, "/factory");
-        if (current()) {
-          setBoard(next);
-          setError("");
-        }
-      } catch (e) {
-        if (current()) setError(String(e));
-      } finally {
-        if (loading.current?.current === current) loading.current = undefined;
-      }
-    })();
-    loading.current = { current, done };
-    return done;
-  };
-  const refresh = () => load(true);
-  useEffect(() => {
-    setBoard(undefined);
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
-  }, [connection]);
-  useEffect(() => {
-    if (props.changes) void refresh();
-  }, [props.changes]);
+  // This daemon's feed does not carry the changes of a factory on another machine, so that board is asked more often.
+  const factory = data.settings.factory;
+  const every = factory && factory.node !== data.node ? 10_000 : undefined;
+  // Its own read rather than the app's shared board, which is not read while the factory is off: this page shows the
+  // way to turn it on from the same board. A reload waits for a read under way and reads once more after an action.
+  const {
+    data: board,
+    error,
+    reload: refresh,
+  } = useDaemon(() => factoryBoard(connection), { topics: ["factory"], every, key: "factory" });
 
   /** An action, then the board as it is after it. */
   const run = (task: () => Promise<unknown>, message?: string, key?: string) =>
@@ -656,7 +629,7 @@ export function Factory(props: ViewProps) {
         retry: `Retrying ${item.key}`,
         drop: `Dropped ${item.key}`,
       }[action],
-      `factory:${action}:${item.id}`,
+      pendingKey(action, item),
     );
   const ask: AskReason = (item, action, title) => setAsking({ item, action, title });
 
@@ -748,7 +721,7 @@ export function Factory(props: ViewProps) {
       {selected && (
         <ItemDrawer
           connection={connection}
-          changes={props.changes ?? 0}
+          every={every}
           id={selected}
           board={board}
           act={act}

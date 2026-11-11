@@ -1,17 +1,18 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@heroui/react";
-import { confirmDialog, messageOf } from "@hanskristoffer/taurio/runtime";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { movingLabel, type FactoryBoard } from "@agentgate/protocol";
 import type { ViewProps } from "../../types.ts";
 import { factoryOp } from "../../api.ts";
 import { ActionButton, Badge, Check, Choice, Empty, Field, Modal, Panel } from "../../components/ui.tsx";
+import { useDaemon } from "../../useDaemon.ts";
 import { field } from "../utils.ts";
 import { StoredFolder } from "./Folder.tsx";
 
 export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
 
 /** What a panel shows when its read failed, in place of "Loading…" that would never end. */
-export function ReadFailed({ error, retry }: { error: string; retry: () => void }) {
+export function ReadFailed({ error, retry }: { error: string; retry: () => unknown }) {
   return (
     <>
       <p className="danger">{error}</p>
@@ -25,18 +26,12 @@ export function ReadFailed({ error, retry }: { error: string; retry: () => void 
 /** The secrets factory.yaml names, set and delete. Loopback only, like the operations: values never cross the network
  * from the app. */
 function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
-  const [names, setNames] = useState<{ set: string[]; missing: string[] }>();
   const [editing, setEditing] = useState<string>();
-  const [error, setError] = useState("");
-  const load = async () => {
-    setNames(await factoryOp(connection, "secret list", {}));
-    setError("");
-  };
-  const read = () => void load().catch((e) => setError(messageOf(e)));
-  useEffect(() => {
-    setNames(undefined);
-    if (local) read();
-  }, [connection, local]);
+  const {
+    data: names,
+    error,
+    reload,
+  } = useDaemon(local && (() => factoryOp(connection, "secret list", {})), { topics: ["factory"] });
   if (!local)
     return (
       <Panel title="Secrets">
@@ -74,7 +69,7 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
                   if (await confirmDialog(`Delete ${name} on every machine?`, { destructive: true, okLabel: "Delete" }))
                     void run(async () => {
                       await factoryOp(connection, "secret delete", { name });
-                      await load();
+                      await reload();
                     }, `${name} deleted`);
                 }}
               >
@@ -88,7 +83,7 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
           {names || !error ? (
             <p>{names ? "factory.yaml names no secrets." : "Loading…"}</p>
           ) : (
-            <ReadFailed error={error} retry={read} />
+            <ReadFailed error={error} retry={reload} />
           )}
         </Empty>
       )}
@@ -103,7 +98,7 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
               void run(async () => {
                 await factoryOp(connection, "secret set", { name, value });
                 setEditing(undefined);
-                await load();
+                await reload();
               }, `${name} set`);
             }}
           >
@@ -120,18 +115,12 @@ function Secrets({ connection, local, run }: Pick<ViewProps, "connection" | "loc
 
 /** The person's own notify URL (factory/notify.ts): a secret, so loopback only, and shown by its host. */
 function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "local"> & { run: Run }) {
-  const [host, setHost] = useState<string | null>();
   const [editing, setEditing] = useState(false);
-  const [error, setError] = useState("");
-  const load = async () => {
-    setHost((await factoryOp(connection, "notify", {})).host ?? null);
-    setError("");
-  };
-  const read = () => void load().catch((e) => setError(messageOf(e)));
-  useEffect(() => {
-    setHost(undefined);
-    if (local) read();
-  }, [connection, local]);
+  const { data, error, reload } = useDaemon(local && (() => factoryOp(connection, "notify", {})), {
+    topics: ["factory"],
+  });
+  // Undefined while loading, null when not set.
+  const host = data && (data.host ?? null);
   return (
     <Panel
       title="Notifications"
@@ -139,7 +128,7 @@ function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "loca
     >
       {local && host === undefined && error ? (
         <Empty>
-          <ReadFailed error={error} retry={read} />
+          <ReadFailed error={error} retry={reload} />
         </Empty>
       ) : local ? (
         <div className="item">
@@ -154,7 +143,7 @@ function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "loca
               onPress={() =>
                 void run(async () => {
                   await factoryOp(connection, "notify", { url: null });
-                  await load();
+                  await reload();
                 }, "Notifications are off")
               }
             >
@@ -179,7 +168,7 @@ function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "loca
               void run(async () => {
                 await factoryOp(connection, "notify", { url });
                 setEditing(false);
-                await load();
+                await reload();
               }, "Notify URL set");
             }}
           >
