@@ -5,6 +5,7 @@ import { sortBy, sumBy } from "hanzio";
 import os from "node:os";
 import { t3State } from "./handoff/t3.ts";
 import { HEALTH_PAGE } from "./health-page.ts";
+import { lag } from "./lag.ts";
 import type { Store } from "./store.ts";
 
 const GB = 1024 ** 3;
@@ -410,6 +411,7 @@ export class HealthDashboard {
         oom_kills: { since_boot: oom, last_hour: oom - (this.history[0]?.oom_kills ?? oom) },
       },
       services: await this.services(count("dockerd") > 0),
+      daemon_lag: lag() ?? null,
       top_processes: sortBy(
         [...byProgram].map(([program, group]) => ({
           program,

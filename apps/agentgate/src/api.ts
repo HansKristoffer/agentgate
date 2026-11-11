@@ -97,6 +97,7 @@ import {
   requestHandoff,
 } from "./handoff/threads.ts";
 import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
+import { lag } from "./lag.ts";
 import {
   RelayBusy,
   RelayError,
@@ -223,6 +224,7 @@ export function management(ctx: Ctx) {
         version: packageInfo.version,
         build: process.env.AGENTGATE_BUILD ?? "development",
         providers: providerCapabilities(),
+        lag: lag(),
       },
       settingsRevision: revision(s, "setting", "settings"),
       node: s.nodeId,
