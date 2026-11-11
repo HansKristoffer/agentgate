@@ -8,6 +8,7 @@ import { checkRevision, revision } from "../configuration.ts";
 import { pkce } from "../credentials.ts";
 import * as cursor from "../llm/cursor.ts";
 import { resetCooldown } from "../llm/policy.ts";
+import { recordUsage } from "../llm/quota.ts";
 import { providerLogins } from "../llm/providers.ts";
 import { resetRouting } from "../llm/routing.ts";
 import { setAccount } from "../operations.ts";
@@ -191,16 +192,7 @@ controlOp({
   needs: "store",
   run(input, { s }) {
     existing(s, input.id);
-    const until = s.now() + input.minutes * 60_000;
-    s.put("usage", input.id, {
-      accountId: input.id,
-      observedAt: s.now(),
-      observedBy: s.nodeId,
-      windows: [],
-      status: "exhausted",
-      exhaustedUntil: until,
-      source: "manual",
-    });
+    recordUsage(s, input.id, { windows: [], status: "exhausted" }, s.now() + input.minutes * 60_000, "manual");
     return input;
   },
   terminal: {

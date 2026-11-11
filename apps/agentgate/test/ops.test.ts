@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import { z } from "zod";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
+import { recordUsage } from "../src/llm/quota.ts";
 import { controlOp, controlOps } from "../src/ops/index.ts";
 import { Store } from "../src/store.ts";
 import { removeTmp, tmp } from "./fixtures/git.ts";
@@ -102,6 +103,22 @@ test("the app calls an operation by name from a remote connection, and a refusal
   const missing = await call("/ops/nodes%20always-on", { node: "c", on: true }, "tailnet");
   expect(missing.status).toBe(400);
   expect(await missing.json()).toEqual({ error: "No machine named c" });
+});
+
+test("accounts exhaust benches an account for a while and keeps the windows it last saw", async () => {
+  const { s, call } = daemon();
+  s.now = () => 1_000_000;
+  s.put("account", "a", { id: "a", provider: "claude", label: "a" });
+  recordUsage(s, "a", { windows: [{ name: "5h", usedPct: 40 }], status: "ok" }, undefined, "poll");
+
+  expect((await call("/ops/accounts%20exhaust", { id: "a", minutes: 30 })).status).toBe(200);
+
+  expect(s.get("usage", "a")).toMatchObject({
+    status: "exhausted",
+    exhaustedUntil: 1_000_000 + 30 * 60_000,
+    source: "manual",
+    windows: [{ name: "5h", usedPct: 40 }],
+  });
 });
 
 test("every loopback-only operation is refused on the tailnet listener", async () => {
