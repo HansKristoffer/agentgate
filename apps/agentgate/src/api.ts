@@ -37,6 +37,7 @@ import {
   modelIdSchema,
   ConfigurationConflict,
   accountPatchSchema,
+  projectChangeSchema,
   settingsPatchSchema,
 } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
@@ -45,8 +46,9 @@ import { aliasesFor, needsLogin, serverHealth, serverTools, scanRepos, toolName 
 import { finishLogin, startLogin } from "./mcp/oauth.ts";
 import { presets, readableEndpoint } from "./mcp/templates.ts";
 import {
+  changeServerProjects,
+  changeSkillProjects,
   createInstance,
-  setServerProjects,
   labelInstance,
   deleteAccount,
   deleteInstance,
@@ -78,13 +80,12 @@ import {
   skillRepoSummaries,
   syncSkillRepo,
   searchSkills,
-  setSkillProjects,
   skillSummaries,
   updateSkill,
   writeSkillMd,
   skillRevision,
 } from "./skills.ts";
-import { exportBackup, importBackup, SKILL_ID } from "./store.ts";
+import { exportBackup, importBackup, SKILL_ID, type Project } from "./store.ts";
 import { connectInput, pairingLinkInput, t3State } from "./handoff/t3.ts";
 import {
   allNodes,
@@ -168,6 +169,7 @@ export function management(ctx: Ctx) {
     }
   };
   const optionalJson = async (req: Request) => (req.headers.get("content-type") ? json(req) : {});
+  const shownProject = (p: Project) => ({ ...publicProject(p, ctx.remote), revision: revision(s, "project", p.id) });
   const tools = async (id: string) => {
     const inst = s.get("mcp", id);
     required(inst, "server");
@@ -242,7 +244,7 @@ export function management(ctx: Ctx) {
           refreshError: refreshFailure(s, "mcpCredential", i.id) ? "Token refresh failed" : undefined,
         };
       }),
-      projects: s.list("project").map((p) => publicProject(p, ctx.remote)),
+      projects: s.list("project").map(shownProject),
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
       skillKept: ctx.skills.kept(),
@@ -465,11 +467,8 @@ export function management(ctx: Ctx) {
     return c.json({ url: url?.href, ok: !url });
   });
   app.put("/servers/:id/projects", async (c) => {
-    const f = z
-      .object({ projects: z.array(projectIdSchema).max(5000) })
-      .strict()
-      .parse(await json(c.req.raw));
-    input(() => setServerProjects(s, c.req.param("id"), f.projects));
+    const f = projectChangeSchema.parse(await json(c.req.raw));
+    input(() => changeServerProjects(s, c.req.param("id"), f));
     return c.json({ ok: true });
   });
   app.delete("/servers/:id", (c) => {
@@ -583,11 +582,8 @@ export function management(ctx: Ctx) {
   });
   app.put("/skills/:id/projects", async (c) => {
     skillRequired(c.req.param("id"));
-    const f = z
-      .object({ projects: z.array(projectIdSchema).max(5000) })
-      .strict()
-      .parse(await json(c.req.raw));
-    input(() => setSkillProjects(s, c.req.param("id"), f.projects));
+    const f = projectChangeSchema.parse(await json(c.req.raw));
+    input(() => changeSkillProjects(s, c.req.param("id"), f));
     return c.json({ ok: true });
   });
   app.post("/skills/:id/update", async (c) => {
@@ -616,11 +612,12 @@ export function management(ctx: Ctx) {
     const f = projectSchema
       .pick({ id: true, mcp: true, inheritDefaults: true })
       // Optional, so a client that does not know skills cannot clear them.
-      .extend({ skills: z.array(skillIdSchema).max(5000).optional() })
+      .extend({ skills: z.array(skillIdSchema).max(5000).optional(), revision: z.string().length(64).optional() })
       .parse(await json(c.req.raw));
-    const saved = input(() => saveProject(s, f.id, f));
+    const { revision: expected, ...fields } = f;
+    const saved = input(() => saveProject(s, f.id, fields, expected));
     ctx.remote.reconcile();
-    return c.json(publicProject(saved, ctx.remote));
+    return c.json(shownProject(saved));
   });
   // A repository's env files (checkout-files.ts). Adding reads a file from this machine's checkout, so it is local only.
   const filesRoot = () => {
@@ -701,24 +698,14 @@ export function management(ctx: Ctx) {
       .object({ id: z.string().min(1).max(80), on: z.boolean() })
       .strict()
       .parse(await json(c.req.raw));
-    return c.json(
-      publicProject(
-        input(() => setFactoryTools(s, f.id, f.on)),
-        ctx.remote,
-      ),
-    );
+    return c.json(shownProject(input(() => setFactoryTools(s, f.id, f.on))));
   });
   app.put("/projects/factory-webhook", async (c) => {
     const f = z
       .object({ id: z.string().min(1).max(80), url: z.string().max(2000).nullable() })
       .strict()
       .parse(await json(c.req.raw));
-    return c.json(
-      publicProject(
-        input(() => setFactoryWebhook(s, f.id, f.url ?? undefined)),
-        ctx.remote,
-      ),
-    );
+    return c.json(shownProject(input(() => setFactoryWebhook(s, f.id, f.url ?? undefined))));
   });
   app.delete("/projects", (c) => {
     const id = z.string().min(1).parse(c.req.query("id"));
@@ -930,7 +917,7 @@ export function management(ctx: Ctx) {
   );
   app.patch("/settings", async (c) => {
     const f = z
-      .object({ revision: z.string().length(64), patch: settingsPatchSchema })
+      .object({ revision: z.string().length(64).optional(), patch: settingsPatchSchema })
       .strict()
       .parse(await json(c.req.raw));
     return c.json(patchSettings(s, f.patch, f.revision));

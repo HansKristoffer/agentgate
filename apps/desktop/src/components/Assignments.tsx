@@ -1,4 +1,5 @@
-import { isVirtual, type Project, type ServerSummary, type Status } from "@agentgate/protocol";
+import { useState } from "react";
+import { isVirtual, type Project, type ProjectChange, type ServerSummary, type Status } from "@agentgate/protocol";
 import { getUniqueValues } from "hanzio";
 import { Check, Empty } from "./ui.tsx";
 import { repoClashes } from "../skill-assignment.ts";
@@ -12,12 +13,23 @@ function AssignmentChecks({
   name: string;
   choices: { id: string; label?: string; detail?: string; selected: boolean }[];
 }) {
+  // What was chosen when the form opened, for projectChange. A row another machine adds later starts from it too.
+  const [opened] = useState(() => choices.filter((c) => c.selected).map((c) => c.id));
   return (
     <fieldset className="checklist">
       <legend>{title}</legend>
+      {opened.map((id) => (
+        <input type="hidden" key={id} name={`${name}-opened`} value={id} />
+      ))}
       <div className="rows">
         {choices.map((choice) => (
-          <Check className="item" key={choice.id} name={name} value={choice.id} defaultSelected={choice.selected}>
+          <Check
+            className="item"
+            key={choice.id}
+            name={name}
+            value={choice.id}
+            defaultSelected={opened.includes(choice.id)}
+          >
             <span className="grow">
               <strong>{choice.label ?? choice.id}</strong>
               {choice.detail && <small>{choice.detail}</small>}
@@ -28,6 +40,15 @@ function AssignmentChecks({
       </div>
     </fieldset>
   );
+}
+
+/** The projects a "Use in" form added and removed since it opened, so saving it leaves alone a change another machine
+ * made meanwhile. */
+export function projectChange(form: HTMLFormElement): ProjectChange {
+  const f = new FormData(form);
+  const now = f.getAll("project") as string[],
+    opened = f.getAll("project-opened") as string[];
+  return { add: now.filter((p) => !opened.includes(p)), remove: opened.filter((p) => !now.includes(p)) };
 }
 
 /** `skills` are the skills being assigned; the every-session choice warns when a local repository has its own by that name. */

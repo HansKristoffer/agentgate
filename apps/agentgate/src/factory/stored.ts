@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync }
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { factoryFolderSchema, storedFolderChangeSchema, type StoredFolderView } from "@agentgate/protocol";
+import {
+  ConfigurationConflict,
+  factoryFolderSchema,
+  storedFolderChangeSchema,
+  type StoredFolderView,
+} from "@agentgate/protocol";
 import { z } from "zod";
 import { loadFolder, runsOnStoredFolder, storedChanged } from "./config.ts";
 import {
@@ -56,11 +61,14 @@ function checkStored(s: { nodeId: string }, files: FolderFiles) {
 }
 
 /** Saves the stored folder with `changes`, or starts one from them when agentgate stores none. Returns the new
- * folder. */
-export async function changeStored(f: FactoryRuntime, changes: FolderChanges) {
+ * folder. `base` is the commit an editor started from: a save over a folder another machine changed since, or
+ * deleted, is refused. */
+export async function changeStored(f: FactoryRuntime, changes: FolderChanges, base?: string) {
   const { s } = f;
   requireFactoryProtocol(s);
-  const files = withChanges(storedFiles(s) ?? {}, changes);
+  const current = storedFiles(s);
+  if (base !== undefined && (!current || storedCommit(current) !== base)) throw new ConfigurationConflict();
+  const files = withChanges(current ?? {}, changes);
   s.put("factoryFolder", STORED_FOLDER, checkStored(s, files));
   await storedChanged(f);
   return view(f);
@@ -181,7 +189,7 @@ export function setup(f: FactoryRuntime): void {
     summary: "write a file from stdin",
     input: storedFolderChangeSchema,
     local: true,
-    run: ({ files }) => changeStored(f, files),
+    run: ({ files, base }) => changeStored(f, files, base),
     terminal: {
       usage: "folder put <path> < file",
       stdin: true,

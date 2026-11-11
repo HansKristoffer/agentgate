@@ -269,7 +269,10 @@ export const storedFolderViewSchema = z.object({
 export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
 /** `folder put`: files to write by path, `null` to delete one. The daemon checks the folder that results as a whole,
  * its paths and size included, so its refusal names the file. */
-export const storedFolderChangeSchema = z.object({ files: z.record(z.string(), z.string().nullable()) }).strict();
+/** `base` is the commit the editor started from; a save over a folder that changed since is refused. */
+export const storedFolderChangeSchema = z
+  .object({ files: z.record(z.string(), z.string().nullable()), base: z.string().optional() })
+  .strict();
 
 /** The synced `secret` record. `~` ids are agentgate's own, never declared in a folder: `~hook:` webhook URL keys, and
  * `~notify`, the person's notify URL (factory/notify.ts). */

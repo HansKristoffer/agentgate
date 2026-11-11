@@ -540,8 +540,8 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           isSelected={data.settings.t3ProjectSync}
           onChange={(on) =>
             perform(
-              () =>
-                request(conn, "/settings", "PATCH", { revision: data.settingsRevision, patch: { t3ProjectSync: on } }),
+              // One key needs no revision, so a change to another setting never refuses this toggle.
+              () => request(conn, "/settings", "PATCH", { patch: { t3ProjectSync: on } }),
               undefined,
               "t3ProjectSync",
             )
@@ -562,11 +562,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           isSelected={data.settings.t3HandoffHistory}
           onChange={(on) =>
             perform(
-              () =>
-                request(conn, "/settings", "PATCH", {
-                  revision: data.settingsRevision,
-                  patch: { t3HandoffHistory: on },
-                }),
+              () => request(conn, "/settings", "PATCH", { patch: { t3HandoffHistory: on } }),
               undefined,
               "t3HandoffHistory",
             )

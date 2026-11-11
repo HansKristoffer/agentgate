@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { getUniqueValues, isTruthy } from "hanzio";
-import { safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
+import { projectIdSchema, safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
 import { factoryPointerSchema } from "./factory.ts";
 import {
   aliasesSchema,
@@ -118,8 +118,17 @@ export const publicProjectSchema = projectSchema.extend({
   /** The webhook's origin, never its path or query, which may carry the receiver's token. */
   factoryWebhook: z.string().optional(),
   files: z.array(z.object({ path: z.string(), updatedAt: z.string() })).optional(),
+  /** `PUT /projects` takes it back, so a form opened before another machine's change cannot save over it. */
+  revision: z.string().optional(),
 });
 export type PublicProject = z.infer<typeof publicProjectSchema>;
+/** Where a server or skill is used: the whole set, or only what a "Use in" dialog changed, which leaves alone a project
+ * another machine added or removed after the dialog opened. */
+export const projectChangeSchema = z.union([
+  z.object({ projects: z.array(projectIdSchema).max(5000) }).strict(),
+  z.object({ add: z.array(projectIdSchema).max(5000), remove: z.array(projectIdSchema).max(5000) }).strict(),
+]);
+export type ProjectChange = z.infer<typeof projectChangeSchema>;
 /** What the app fetches, one topic each, so a change refetches only what moved. */
 export const TOPICS = ["status", "desktop", "factory", "threads", "activity"] as const;
 export type Topic = (typeof TOPICS)[number];

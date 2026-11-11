@@ -11,14 +11,15 @@ import { ReadFailed, type Run } from "./Settings.tsx";
 /** `agentgate factory folder`: the files of the folder agentgate stores, edited one at a time. The daemon refuses a
  * save that leaves a folder that does not load, and says which file and field. */
 export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> & { run: Run }) {
-  const [editing, setEditing] = useState<{ path: string; text: string; isNew: boolean }>();
+  /** `base` is the commit the dialog opened on; the daemon refuses the save if another machine changed the folder since. */
+  const [editing, setEditing] = useState<{ path: string; text: string; isNew: boolean; base?: string }>();
   const {
     data: folder,
     error,
     reload,
   } = useDaemon(() => factoryOp(connection, "folder ls", {}), { topics: ["factory"] });
-  const put = async (files: Record<string, string | null>) => {
-    await factoryOp(connection, "folder put", { files });
+  const put = async (files: Record<string, string | null>, base: string | undefined) => {
+    await factoryOp(connection, "folder put", { files, base });
     await reload();
   };
   return (
@@ -31,7 +32,11 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
           <span className="grow">
             <code>{file.path}</code>
           </span>
-          <Button size="sm" variant="tertiary" onPress={() => setEditing({ ...file, isNew: false })}>
+          <Button
+            size="sm"
+            variant="tertiary"
+            onPress={() => setEditing({ ...file, isNew: false, base: folder.commit })}
+          >
             Edit
           </Button>
           <Button
@@ -39,7 +44,7 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
             variant="ghost"
             onPress={async () => {
               if (await confirmDialog(`Remove ${file.path}?`, { destructive: true, okLabel: "Remove" }))
-                void run(() => put({ [file.path]: null }), `${file.path} removed`);
+                void run(() => put({ [file.path]: null }, folder.commit), `${file.path} removed`);
             }}
           >
             Remove
@@ -47,7 +52,11 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
         </div>
       )) ?? <Empty>{error ? <ReadFailed error={error} retry={reload} /> : <p>Loading…</p>}</Empty>}
       <div className="item">
-        <Button size="sm" variant="tertiary" onPress={() => setEditing({ path: "", text: "", isNew: true })}>
+        <Button
+          size="sm"
+          variant="tertiary"
+          onPress={() => setEditing({ path: "", text: "", isNew: true, base: folder?.commit })}
+        >
           New file…
         </Button>
       </div>
@@ -60,7 +69,7 @@ export function StoredFolder({ connection, run }: Pick<ViewProps, "connection"> 
               const path = editing.isNew ? field(form, "path") : editing.path;
               // Closes only once saved: a refused save keeps the dialog and its text, and the error shows as a toast.
               void run(async () => {
-                await put({ [path]: String(form.get("text") ?? "") });
+                await put({ [path]: String(form.get("text") ?? "") }, editing.base);
                 setEditing(undefined);
               }, `${path} saved`);
             }}
