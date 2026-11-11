@@ -21,7 +21,7 @@ import {
   SquareTerminal,
   Users,
 } from "lucide-react";
-import type { Connection, DesktopStatus, Status } from "@agentgate/protocol";
+import type { Connection } from "@agentgate/protocol";
 import {
   desktopStatus,
   factoryBoard,
@@ -50,6 +50,7 @@ import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./
 
 import type { Perform } from "./types.ts";
 import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./components/ui.tsx";
+import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 
 const navigation = [
   { id: "overview", title: "Overview", icon: LayoutDashboard },
@@ -76,20 +77,6 @@ const descriptions: Record<View, string> = {
   activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
-
-/** Something that changes on its own over the next seconds, which the app follows by polling every second. Stuck states
- * (an error is shown) go back to the normal pace. */
-function underWay(data: Status, desktop?: DesktopStatus) {
-  const relay = data.relay;
-  return (
-    data.nodes.some((n) => n.update?.state === "installing" || n.update?.state === "restarting") ||
-    (!!relay && (relay.reconciling || relay.rotating) && !relay.pushError && !relay.pullError) ||
-    data.projects.some(
-      (p) => p.remote?.enabled && p.remote.servedBy === data.node && !p.remote.connected && !p.remote.error,
-    ) ||
-    !!desktop?.pendingAdd
-  );
-}
 
 /** Loads the saved connection and follows its change feed, which every read under it uses. */
 export function App() {
@@ -124,7 +111,7 @@ export function App() {
       cancelled = true;
     };
   }, []);
-  const { versions, changes } = useChanges(connection, ready);
+  const { versions } = useChanges(connection, ready);
   const cache = useMemo(() => new Map<string, unknown>(), [connection]);
   return (
     <Feed value={{ connection, versions, cache }}>
@@ -134,7 +121,6 @@ export function App() {
         local={trimTrailingSlash(connection.url.replace("localhost", "127.0.0.1")) === localUrl}
         ready={ready && native}
         loadError={loadError}
-        changes={changes}
       />
     </Feed>
   );
@@ -146,21 +132,20 @@ function Main({
   local,
   ready,
   loadError,
-  changes,
 }: {
   connection: Connection;
   connect: (c: Connection) => void;
   local: boolean;
   ready: boolean;
   loadError: string;
-  changes: number;
 }) {
   const [view, setView] = useState<View>("overview");
   const version = useAppVersion();
   const [welcome, setWelcome] = useState(false);
-  // Actions under way, by key: each control shows its own, and the rest of the window stays usable.
+  // Actions under way, by key: each control shows its own, and the rest of the window stays usable. Only actions
+  // without a key of their own block the open dialogs, since a dialog's own submit is one of those.
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
-  const busy = pending.size > 0;
+  const [busy, setBusy] = useState(false);
   // Checked on launch and every four hours, since the app is left open for days.
   // Nothing downloads until the user chooses to install; offline is not an error.
   const updater = useAppUpdate({ enabled: native });
@@ -168,35 +153,34 @@ function Main({
   const [help, setHelp] = useState(false);
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
   const running = useRef(new Set<string>());
+  const unkeyed = useRef(new Set<string>());
   const selected = navigation.find((n) => n.id === view)!;
   const { versions } = useFeed();
 
-  // The three reads the whole app shares. They keep following the feed while the window is hidden, because the tray
-  // menu and the notifications depend on them; only their safety interval slows.
-  const [live, setLive] = useState(false);
-  const statusRead = useDaemon(ready && (() => status(connection)), {
-    topics: ["status"],
-    every: live ? 1000 : 5000,
-    hidden: 60_000,
-  });
+  // The three reads the whole app shares. They follow the change feed, also while the window is hidden, because the
+  // tray menu and the notifications depend on them; only their safety interval slows.
+  const statusRead = useDaemon(ready && (() => status(connection)), { topics: ["status"], hidden: 60_000 });
   const data = statusRead.data;
   // Claude Desktop is per Mac: only the local daemon reports it.
   const desktopRead = useDaemon(ready && local && (() => desktopStatus(connection)), {
     topics: ["desktop"],
-    every: live ? 1000 : 5000,
     hidden: 60_000,
   });
   const desktop = desktopRead.data;
   const factory = data?.settings.factory;
-  const board = useDaemon(ready && !!factory && (() => factoryBoard(connection)), {
+  // Read while the factory is off too: the Factory page shows the way to turn it on from the same board.
+  const boardRead = useDaemon(ready && (() => factoryBoard(connection)), {
     topics: ["factory"],
     // This daemon's feed does not carry the changes of a factory on another machine, so that board is asked more often.
     every: factory && factory.node !== data.node ? 10_000 : undefined,
     hidden: 60_000,
-  }).data;
-  // Every second while something is under way, so it shows as it happens.
-  useEffect(() => setLive(!!data && underWay(data, desktop)), [data, desktop]);
-  const error = loadError || statusRead.error;
+  });
+  const board = boardRead.data;
+  // One failed read, such as during a daemon restart, leaves the window usable while someone types; two in a row
+  // block it. With nothing shown yet, the first error is all there is to show.
+  const down = statusRead.failures >= 2 || (!data && !!statusRead.error);
+  const error = loadError || (down ? statusRead.error : "");
+  const updated = statusRead.stale && statusRead.at ? Math.round((Date.now() - statusRead.at) / 1000) : undefined;
   const refresh = () => Promise.all([statusRead.reload(), desktopRead.reload()]).then(() => {});
   useEffect(() => {
     if (!updater.update) return;
@@ -215,31 +199,37 @@ function Main({
   useEffect(() => {
     if (local && data && !data.accounts.length && !localStorage.getItem("onboarding")) setWelcome(true);
   }, [local, data]);
-  /** Runs an action and refreshes. A second press of the same action while it runs is ignored; `key` names it when the
-   * message does not, and is what `usePending` asks about. An action with neither is never mistaken for another. */
-  const perform: Perform = async (task, message, key = message ?? crypto.randomUUID()) => {
-    if (running.current.has(key)) return;
-    running.current.add(key);
+  const track = () => {
     setPending(new Set(running.current));
+    setBusy(unkeyed.current.size > 0);
+  };
+  /** Runs an action and refreshes; what the daemon applies after it arrives through the change feed. A second press of
+   * the same action while it runs is ignored; `key` names it when the message does not, and is what `usePending` asks
+   * about. An action with neither is never mistaken for another. */
+  const perform: Perform = async (task, message, key) => {
+    const id = key ?? message ?? crypto.randomUUID();
+    if (running.current.has(id)) return;
+    running.current.add(id);
+    if (key === undefined) unkeyed.current.add(id);
+    track();
     try {
       await task();
       await refresh();
       // Confirmations fade on their own; errors stay until dismissed.
       if (message) toast(message);
-      // The daemon applies record changes within a second (links, endpoints, peers): show those too.
-      setTimeout(() => void refresh(), 1500);
     } catch (e) {
       toast.danger(messageOf(e), { timeout: 0 });
     } finally {
-      running.current.delete(key);
-      setPending(new Set(running.current));
+      running.current.delete(id);
+      unkeyed.current.delete(id);
+      track();
     }
   };
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
   const factoryWaiting = useFactoryAttention(connection.url, board);
-  const props = data && { data, connection, perform, local, desktop, changes };
+  const props = data && { data, connection, perform, local, desktop };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
     accounts: <Accounts {...props} />,
@@ -265,7 +255,17 @@ function Main({
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
   if (factoryWaiting) attention.add("factory");
   return (
-    <AppContext value={{ connection, local, perform, versions, board }}>
+    <AppContext
+      value={{
+        connection,
+        local,
+        perform,
+        versions,
+        board,
+        boardError: boardRead.error,
+        reloadBoard: boardRead.reload,
+      }}
+    >
       <BusyContext value={busy}>
         <PendingContext value={pending}>
           <HeaderSlot value={actions}>
@@ -323,6 +323,9 @@ function Main({
                       >
                         {data && !error ? (data.node ?? "This machine") : "Offline"}
                       </span>
+                      {!error && updated !== undefined && (
+                        <span className="shrink-0 text-xs text-(--tau-side-fg-2)">Updated {updated} s ago</span>
+                      )}
                       <ChevronRight size={14} className="text-(--tau-side-fg-2)" />
                     </Button>
                   </div>
@@ -333,7 +336,7 @@ function Main({
                 <div className="card-title-row">
                   <h1>{selected.title}</h1>
                   {!local && <Badge>Remote</Badge>}
-                  {busy && <Spinner size="sm" color="current" aria-label="Working" />}
+                  {pending.size > 0 && <Spinner size="sm" color="current" aria-label="Working" />}
                   {/* Views portal their actions here; blocked like the workspace below. */}
                   <div ref={setActions} className="header-actions" inert={!!error} />
                 </div>
@@ -370,7 +373,7 @@ function Main({
                       inert={!!error}
                       className="workspace"
                     >
-                      {views[view]}
+                      <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
                       {view === "settings" && (
                         <p className="version-line">
                           Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
