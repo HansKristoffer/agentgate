@@ -27,6 +27,8 @@ import { recordSessionUsage, sessionFromRequest } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
 export const PLACEHOLDER_TOKEN = "agentgate";
+/** Rate-limit waits up to this long retry the same account; longer ones move to the next account. */
+const SHORT_RATE_WAIT = 5000;
 /** Since when a provider's responses have carried no quota headers, per provider. */
 const quotaUnknown = defineLocal("quotaUnknown:", z.string(), { topic: "status" });
 const HOP_HEADERS = [
@@ -228,6 +230,8 @@ export async function proxy(
   const tried = new Set<string>();
   /** Accounts whose login failed during this request: no usable token, or refused even after a refresh. */
   const loginFailed = new Set<string>();
+  /** The last upstream rate-limit rejection, returned once no other account can take the request. */
+  let rateLimited: { text: string; headers: Headers } | undefined;
   let waited = false,
     accountCount = 0;
   for (;;) {
@@ -236,6 +240,14 @@ export async function proxy(
     const decision = route(s, provider.name, requestedModel, { exclude: tried, session, requiredAccount });
     const account = decision.account ? s.get("account", decision.account) : undefined;
     if (!account || accountCount >= settings.maxAccounts) {
+      if (rateLimited) {
+        budget.close();
+        track(() => {
+          telemetry.headers(429);
+          telemetry.finish("failed", "rate", "none");
+        });
+        return new Response(rateLimited.text, { status: 429, headers: rateLimited.headers });
+      }
       if (requiredAccount) return error(409, "selected account cannot serve this continuation or probe", "stateful");
       if (own) return passthrough();
       const reset = earliestReset(s, provider.name, model);
@@ -391,7 +403,11 @@ export async function proxy(
         if (failure === "rate") {
           const delay = retryAfterMs(res.headers, s.now());
           cool(s, account.id, "rate", s.now() + delay);
-          if (rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) && delay < budget.remaining()) {
+          if (
+            delay <= SHORT_RATE_WAIT &&
+            rateRetries++ < (account.policy?.retryLimit ?? settings.retryLimit) &&
+            delay < budget.remaining()
+          ) {
             try {
               await sleep(delay + clamp(budget.remaining() - delay - 1, 0, 250) * Math.random(), budget.signal);
             } catch {
@@ -399,6 +415,10 @@ export async function proxy(
             }
             continue;
           }
+          // A 429 is a certain rejection, so another account replays nothing; the client sees it only when none is left.
+          rateLimited = { text, headers: cleanHeaders(res.headers) };
+          tried.add(account.id);
+          break;
         }
         budget.close();
         track(() => {

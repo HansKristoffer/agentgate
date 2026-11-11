@@ -7,7 +7,7 @@ import { patchSettings, revision } from "../src/configuration.ts";
 import { Credentials } from "../src/credentials.ts";
 import { deleteAccount, saveAccount } from "../src/operations.ts";
 import { Store, exportBackup, importBackup } from "../src/store.ts";
-import { cool, cooldowns, resetCooldown, retryAfterMs } from "../src/llm/policy.ts";
+import { cool, cooldowns, resetCooldown } from "../src/llm/policy.ts";
 import { Quotas, exhausted, matchesWindow, recordUsage } from "../src/llm/quota.ts";
 import {
   beginRoute,
@@ -436,22 +436,24 @@ test("telemetry trims on every 100th finish, keeping the newest requests and any
   expect(ids()).toEqual([pending, ...open.slice(20)].map((t) => t.request.id));
 });
 
-test("account retry zero overrides the global policy while inheritance retains bounded retries", async () => {
+test("a short Retry-After retries the same account while its retry policy allows, then moves on", async () => {
   const { s, creds } = fixture();
-  let count = 0;
-  const url = upstream(() => {
-    count++;
-    return count % 2 ? new Response("rate", { status: 429, headers: { "retry-after": "0" } }) : new Response("ok");
+  const seen: string[] = [];
+  const url = upstream((req) => {
+    seen.push(req.headers.get("authorization")!);
+    return seen.length % 2
+      ? new Response("rate", { status: 429, headers: { "retry-after": "1" } })
+      : new Response("ok");
   });
-  s.put("setting", "settings", { retryLimit: 1 });
+  s.put("setting", "settings", { strategy: "priority", retryLimit: 1 });
   s.put("account", "a", { ...s.get("account", "a")!, policy: { retryLimit: 0 } });
-  expect((await proxy(s, creds, adapter, client(), url)).status).toBe(429);
-  expect(count).toBe(1);
-  count = 0;
+  await (await proxy(s, creds, adapter, client(), url)).text();
+  expect(seen).toEqual(["access-a", "access-b"]);
+  seen.length = 0;
+  resetCooldown(s, "a");
   s.put("account", "a", { ...s.get("account", "a")!, policy: {} });
   await (await proxy(s, creds, adapter, client(), url)).text();
-  expect(count).toBe(2);
-  expect(metrics(s).fallback).toBe(0);
+  expect(seen).toEqual(["access-a", "access-a"]);
 });
 
 test("relogin clears local backoff, affinity and continuation ownership without deleting in-flight work", () => {
@@ -650,23 +652,37 @@ test("quota fallback is one request with two attempts; aliases reach the upstrea
   expect(requestDetail(s, record.id)?.attempts[0]?.failure).toBe("quota");
 });
 
-test("Retry-After beyond bootstrap budget never retries early and shared backoff blocks peers", async () => {
+test("a long Retry-After moves to the next account, and the client gets the 429 once every account is limited", async () => {
   const { s, creds } = fixture();
-  let count = 0;
-  const url = upstream(() => {
-    count++;
-    return new Response("rate", { status: 429, headers: { "retry-after": "86400" } });
+  let limited = new Set(["access-a"]);
+  const seen: string[] = [];
+  const url = upstream((req) => {
+    const token = req.headers.get("authorization")!;
+    seen.push(token);
+    return limited.has(token)
+      ? new Response("rate", { status: 429, headers: { "retry-after": "60" } })
+      : new Response("ok");
   });
-  s.put("setting", "settings", { bootstrapTimeoutMs: 1000 });
-  expect((await proxy(s, creds, adapter, client(), url)).status).toBe(429);
-  expect(count).toBe(1);
-  expect(cooldowns(s, "a")[0]!.retryAt - s.now()).toBeGreaterThan(86390000);
-  cool(s, "b", "rate", s.now() + 86400000);
+  s.put("setting", "settings", { strategy: "priority" });
+  expect(await (await proxy(s, creds, adapter, client(), url)).text()).toBe("ok");
+  expect(seen).toEqual(["access-a", "access-b"]);
+  expect(cooldowns(s, "a")[0]!.retryAt - s.now()).toBeGreaterThan(59000);
+
+  resetCooldown(s, "a");
+  seen.length = 0;
+  limited = new Set(["access-a", "access-b"]);
+  const rejected = await proxy(s, creds, adapter, client(), url);
+  expect(rejected.status).toBe(429);
+  expect(rejected.headers.get("retry-after")).toBe("60");
+  expect(await rejected.text()).toBe("rate");
+  expect(seen).toEqual(["access-a", "access-b"]);
+  expect(requests(s).requests[0]?.failure).toBe("rate");
+
+  // The shared backoff now keeps further requests off both accounts until it ends.
   const blocked = await proxy(s, creds, adapter, client(), url);
   expect(blocked.status).toBe(429);
   expect(await blocked.text()).toContain("rate limited");
-  expect(count).toBe(1);
-  expect(retryAfterMs(new Headers({ "retry-after": "86400" }))).toBe(86400000);
+  expect(seen).toHaveLength(2);
 });
 
 test("account attempt limits prevent unbounded quota failover", async () => {
