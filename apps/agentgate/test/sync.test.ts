@@ -1,7 +1,16 @@
 import { afterAll, expect, test } from "bun:test";
 import { Hono } from "hono";
 import { type Rec, Store } from "../src/store.ts";
-import { listeningFor, pairCode, peerRoutes, peers, pullAll, pullPeer, SYNC_PROTOCOL } from "../src/sync.ts";
+import {
+  listeningFor,
+  pairCode,
+  peerRoutes,
+  peers,
+  pullAll,
+  pullPeer,
+  startPulls,
+  SYNC_PROTOCOL,
+} from "../src/sync.ts";
 
 function node(name: string) {
   const s = new Store(":memory:");
@@ -322,6 +331,65 @@ test("a joiner that lost the answer gets the same token for the same code; nobod
   expect((await join({ code: pairCode(a) })).status).toBe(409); // a new code still cannot pair b twice
   a.now = () => Date.now() + 11 * 60_000;
   expect((await join({})).status).toBe(403);
+});
+
+/** A peer whose change feed answers each request once the test calls `answer`; `requests` resolves the nth request. */
+function heldPeer() {
+  const held: (() => void)[] = [];
+  const arrived: ((n: number) => void)[] = [];
+  let count = 0;
+  const server = Bun.serve({
+    port: 0,
+    idleTimeout: 0,
+    fetch: () => {
+      count++;
+      arrived.splice(0).forEach((r) => r(count));
+      return new Promise<Response>((resolve) =>
+        held.push(() => resolve(Response.json({ protocol: SYNC_PROTOCOL, records: [], seq: 0 }))),
+      );
+    },
+  });
+  servers.push(server);
+  const requests = async (n: number) => {
+    while (count < n) await new Promise<number>((r) => arrived.push(r));
+  };
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    count: () => count,
+    requests,
+    answer: () => held.shift()?.(),
+  };
+}
+
+test("a peer whose pull hangs does not hold back another peer's next round", async () => {
+  const b = node("b");
+  const asleep = heldPeer();
+  const awake = heldPeer();
+  b.db.run("insert into peers values ('asleep', ?, 'tok', 0, null)", [asleep.url]);
+  b.db.run("insert into peers values ('awake', ?, 'tok', 0, null)", [awake.url]);
+  startPulls(b);
+  await awake.requests(1);
+  awake.answer();
+  await asleep.requests(1);
+  while (peers(b).find((p) => p.node === "awake")!.last_seen === null) await Bun.sleep(1);
+  startPulls(b);
+  await awake.requests(2);
+  expect(asleep.count()).toBe(1); // still pending, and not started twice
+});
+
+test("a poke during a pull brings exactly one more pull after it", async () => {
+  const b = node("b");
+  const a = heldPeer();
+  b.db.run("insert into peers values ('a', ?, 'tok', 0, null)", [a.url]);
+  const first = pullPeer(b, peers(b)[0]!);
+  await a.requests(1);
+  // Two pokes while the first pull reads: the change they announce may be past what it already read.
+  const poked = [pullPeer(b, peers(b)[0]!), pullPeer(b, peers(b)[0]!)];
+  a.answer();
+  await a.requests(2);
+  a.answer();
+  await Promise.all([first, ...poked]);
+  expect(a.count()).toBe(2);
 });
 
 test("a pull failure marks status changed once, until the peer recovers", async () => {

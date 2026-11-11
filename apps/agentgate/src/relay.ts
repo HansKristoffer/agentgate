@@ -511,12 +511,14 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
 /**
  * Upload the change feed after `pushed` in chunks. Each chunk's counters and exact body are
  * persisted before sending, so a lost response is retried byte for byte and a crash never reuses
- * a counter for different ciphertext. The checkpoint never passes the snapshot a chunk came from.
+ * a counter for different ciphertext. The checkpoint never passes the snapshot a chunk came from. True when what it
+ * sent held this node's own writes (a chunk left over from before a restart counts as such).
  */
-async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
+async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Promise<boolean> {
   // A pending rotation means the old secret is being retired: nothing new goes to the old group.
-  if (t === "active" && rotation.get(s)) return;
+  if (t === "active" && rotation.get(s)) return false;
   const grp = c.keys.groupId;
+  let own = false;
   // Stop at what exists now, so constant local writes cannot keep this loop from reaching the pull.
   const target = s.seq();
   for (;;) {
@@ -533,9 +535,9 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
         put(s, t, "phase", "read");
         throw new RelayError("Local history moved backwards; reconciling with the relay");
       }
-      if (pushed >= target) return;
+      if (pushed >= target) return own;
       const snapshot = s.changes(pushed);
-      if (snapshot.seq === pushed) return;
+      if (snapshot.seq === pushed) return own;
       const before = identity(s, t);
       const entries: RelayEnvelope[] = [];
       const counters: [string, number][] = [];
@@ -582,7 +584,8 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal) {
       });
       if (!entries.length) continue;
       chunk = { generation, checkpoint, body };
-    }
+      own ||= snapshot.records.slice(0, taken).some((r) => r.node === s.nodeId);
+    } else own = true;
     const sent = identity(s, t);
     try {
       await call(c, "POST", "/push", chunk.body, signal);
@@ -661,6 +664,16 @@ function rotationBlocks(s: Store, t: Target) {
   return `Uploads wait for the new relay group: ${get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "it is not ready yet"}`;
 }
 
+const pushHooks = new WeakMap<Store, () => void>();
+/** `fn` runs after each push to the active group that carried this node's own writes; the node channel uses it to
+ * poke the other members. Returns the unsubscribe. */
+export function onOwnPush(s: Store, fn: () => void) {
+  pushHooks.set(s, fn);
+  return () => {
+    if (pushHooks.get(s) === fn) pushHooks.delete(s);
+  };
+}
+
 /** Reconcile if needed, then push and pull independently. Errors are kept per direction. */
 async function syncTarget(
   s: Store,
@@ -695,9 +708,10 @@ async function syncTarget(
   }
   if (want.push && get(s, t, "phase") === "done" && ready(s, r, slot("push"), want.force)) {
     try {
-      await pushLoop(s, t, c, signal);
+      const own = await pushLoop(s, t, c, signal);
       put(s, t, "pushError", rotationBlocks(s, t));
       succeeded(r, slot("push"));
+      if (own && t === "active") pushHooks.get(s)?.();
     } catch (e) {
       if (signal.aborted) throw e;
       backoff(s, r, slot("push"), e);

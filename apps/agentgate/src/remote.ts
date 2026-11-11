@@ -1,6 +1,6 @@
 import { isVirtual, type Project, type PublicProject, type RemoteSummary } from "@agentgate/protocol";
 import { randomToken } from "hanzio/crypto";
-import { getErrorMessage } from "hanzio";
+import { exponentialBackoff, getErrorMessage } from "hanzio";
 import {
   REMOTE_LIMITS,
   relayFrame,
@@ -133,7 +133,16 @@ export function deleteProject(s: Store, id: string) {
 
 const deletes = defineLocal(
   "remote:delete",
-  z.array(z.object({ relay: z.string(), key: z.string(), token: z.string() })),
+  z.array(
+    z.object({
+      relay: z.string(),
+      key: z.string(),
+      token: z.string(),
+      // Absent on entries queued before retries backed off, and on new ones: those go out on the next pass.
+      attempts: z.number().optional(),
+      nextAt: z.number().optional(),
+    }),
+  ),
 );
 
 /** Deletes a relay endpoint best-effort: the endpoint manager retries until the relay confirms. */
@@ -488,7 +497,7 @@ export class RemoteEndpoints {
 
   /** One pass at a time: a slow relay would otherwise pile up a pass per reconcile. */
   private drainDeletes = serialTask(async () => {
-    const queue = deletes.get(this.s) ?? [];
+    const queue = (deletes.get(this.s) ?? []).filter((d) => (d.nextAt ?? 0) <= this.s.now());
     if (!queue.length) return;
     const left: typeof queue = [];
     for (const d of queue) {
@@ -505,13 +514,20 @@ export class RemoteEndpoints {
         left.push(d);
       }
     }
-    // Re-read: regenerate may have queued more meanwhile.
+    // Re-read: regenerate may have queued more meanwhile. A relay that keeps failing is asked less often, up to hourly.
     const now = deletes.get(this.s) ?? [];
     const done = new Set(queue.filter((d) => !left.includes(d)).map((d) => d.key));
+    const failed = new Map(
+      left.map((d) => {
+        const attempts = (d.attempts ?? 0) + 1;
+        const wait = exponentialBackoff(attempts, { baseMs: 30_000, maxMs: 3_600_000, jitter: false });
+        return [d.key, { ...d, attempts, nextAt: this.s.now() + wait }];
+      }),
+    );
     deletes.set(
       this.s,
       undefined,
-      now.filter((d) => !done.has(d.key)),
+      now.filter((d) => !done.has(d.key)).map((d) => failed.get(d.key) ?? d),
     );
   });
 

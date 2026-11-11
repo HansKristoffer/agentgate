@@ -3,7 +3,7 @@ import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as path } from "node:path";
 import { Hono } from "hono";
-import { memoryRelay } from "../../relay/test/memory.ts";
+import { memoryRelay, serveRelay } from "../../relay/test/memory.ts";
 import { NodeChannel } from "../src/channel.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import {
@@ -961,6 +961,62 @@ test("relay work is serialized: leave waits for in-flight work, other processes 
   await stopRelay(c);
   await hanging;
   expect(Date.now() - started).toBeLessThan(2000);
+});
+
+test("a push with this node's writes pokes the other members through the channel, and they pull at once", async () => {
+  const r = memoryRelay();
+  const calls: string[] = [];
+  const server = serveRelay(r, (req) => {
+    const { pathname } = new URL(req.url);
+    if (pathname.endsWith("/call")) calls.push(pathname.split("/")[4]!);
+    return undefined;
+  });
+  servers.push(server);
+  const url = `http://127.0.0.1:${server.port}`;
+  const a = node("a"),
+    b = node("b"),
+    old = node("old");
+  const invite = await createRelay(a, url);
+  await joinRelay(b, invite);
+  await joinRelay(old, invite);
+  // Each member pulls once, so the relay has seen it lately.
+  for (const s of [b, old, a]) await sync(s);
+
+  const channels = [a, b].map((s) => new NodeChannel(s, async () => new Response("", { status: 404 })));
+  // A member from before the poke: its channel hands the call to routes that do not know it. Standing in for that
+  // answer, this socket refuses every call; either way the caller gets no success back.
+  const keys = await deriveKeys(parseInvite(invite).secret);
+  const oldSocket = new WebSocket(`${url.replace("http", "ws")}/g/${keys.groupId}/n/old/connect`, {
+    headers: { authorization: `Bearer ${keys.authToken}` },
+  } as unknown as string[]);
+  let oldCalls = 0;
+  oldSocket.onmessage = (e) => {
+    const frame = JSON.parse(String(e.data));
+    oldCalls++;
+    oldSocket.send(JSON.stringify({ t: "res", id: frame.id, body: "" }));
+  };
+  try {
+    for (const c of channels) {
+      await c.reconcile();
+      while (!c.connected) await Bun.sleep(5);
+    }
+    while (oldSocket.readyState !== WebSocket.OPEN) await Bun.sleep(5);
+
+    a.put("account", "acc", { id: "acc", provider: "claude", label: "work" });
+    await relaySync(a, { pull: false, force: true });
+    while (!b.get("account", "acc")) await Bun.sleep(5); // b never ran a sync turn of its own
+    while (oldCalls < 1) await Bun.sleep(5);
+    expect(calls.sort()).toEqual(["b", "old"]);
+    expect(relayStatus(a)!.pushError).toBeUndefined();
+    expect(oldSocket.readyState).toBe(WebSocket.OPEN);
+
+    // b took a's record in through its pull, not as a write of its own: pushing it on pokes nobody.
+    await relaySync(b, { pull: false, force: true });
+    expect(calls).toHaveLength(2);
+  } finally {
+    channels.forEach((c) => c.close());
+    oldSocket.close();
+  }
 });
 
 /** Published in docs/operations/relay.md; cross-checked against Node's crypto.hkdfSync / createCipheriv. */
