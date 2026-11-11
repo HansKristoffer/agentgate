@@ -268,7 +268,7 @@ test("sessions hear of tool changes only when their tools may differ", async () 
     let notices = 0;
     client.setNotificationHandler("notifications/tools/list_changed", () => void notices++);
     await client.listTools();
-    await g.session(); // another session starts, and records its project
+    await g.session(); // another session starts
     g.s.put("mcpCredential", "up", {
       instanceId: "up",
       holder: "n",
@@ -282,10 +282,32 @@ test("sessions hear of tool changes only when their tools may differ", async () 
     });
     g.ctx.gateway.toolsChanged(); // a token refresh does not
     g.s.put("project", "o/r", { ...g.s.get("project", "o/r")!, seenAt: g.s.now() + 1 });
-    g.ctx.gateway.toolsChanged(); // nor does recording the project again
+    g.ctx.gateway.toolsChanged(); // nor does a project change that keeps its mapping
     for (let i = 0; i < 50 && notices < 1; i++) await Bun.sleep(10);
     await Bun.sleep(50);
     expect(notices).toBe(1);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a repo's first session creates its project, and later sessions never raise its revision", async () => {
+  const g = await setup();
+  try {
+    await g.session({ env: { AGENTGATE_PROJECT: "o/new" } });
+    expect(g.s.record("project", "o/new")?.rev).toBe(1);
+
+    // A peer on the previous version still sends the fields it stamps on session start.
+    const old = g.s.record("project", "o/new")!;
+    const data = JSON.stringify({ id: "o/new", seenAt: g.s.now(), seenOn: "old" });
+    expect(g.s.merge({ ...old, rev: 2, node: "old", data })).toBe(true);
+    expect(g.s.get("project", "o/new")?.seenOn).toBe("old");
+
+    // Hours later, another session here must not outrank an edit another machine makes offline.
+    const start = g.s.now();
+    g.s.now = () => start + 3 * 3_600_000;
+    await g.session({ env: { AGENTGATE_PROJECT: "o/new" } });
+    expect(g.s.record("project", "o/new")?.rev).toBe(2);
   } finally {
     await g.done();
   }
