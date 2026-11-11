@@ -171,10 +171,10 @@ test("change feed cursor and records use one SQLite snapshot despite another wri
     }
     return value;
   };
-  const snapshot = s.changes(0);
+  const snapshot = s.changePage(0);
   expect(JSON.parse(snapshot.records[0]!.data).label).toBe("old");
   expect(snapshot.records[0]!.seq).toBeLessThanOrEqual(snapshot.seq);
-  expect(JSON.parse(s.changes(snapshot.seq).records[0]!.data).label).toBe("new");
+  expect(JSON.parse(s.changePage(snapshot.seq).records[0]!.data).label).toBe("new");
   s.close();
   other.close();
   rmSync(dir, { recursive: true, force: true });

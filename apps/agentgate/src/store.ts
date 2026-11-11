@@ -551,19 +551,8 @@ export class Store {
     return this.get("setting", "settings") ?? schemas.setting.parse({});
   }
 
-  /** Change feed for peers: every record (secrets and tombstones included) newer than `since`. */
-  changes(since: number): { records: Rec[]; seq: number } {
-    timestamp.parse(since);
-    return this.db.transaction(() => {
-      const seq = this.seq(); // establish the read snapshot before reading its records
-      const records = this.db
-        .query<Rec, [number, number]>("select * from records where seq > ? and seq <= ? order by seq")
-        .all(since, seq);
-      return { records, seq };
-    })();
-  }
-
-  /** A peer cursor acknowledges only records actually present in this page, bounded by bytes and by count. */
+  /** Change feed for peers and the relay: records (secrets and tombstones included) newer than `since`, read in one
+   * snapshot. A cursor acknowledges only records actually present in this page, bounded by bytes and by count. */
   changePage(
     since: number,
     maxBytes = 8 * 1024 * 1024,

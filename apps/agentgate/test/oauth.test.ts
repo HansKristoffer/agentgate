@@ -245,7 +245,7 @@ test("MCP refresh uses holder coordination and concurrent callers rotate once", 
   );
   const remote = new Store(":memory:");
   remote.setLocal("node", "remote");
-  for (const r of holder.changes(0).records) remote.merge(r);
+  for (const r of holder.changePage(0).records) remote.merge(r);
   remote.db.run("insert into peers values ('holder', 'http://127.0.0.1:1', 'fake', 0, ?)", [remote.now()]);
   const { refreshMcp } = await import("../src/mcp/oauth.ts");
   const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;

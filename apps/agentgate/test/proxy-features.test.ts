@@ -488,7 +488,7 @@ test("telemetry separates account fallback from same-account retries and redacts
   expect(exported).not.toContain("access-a");
   expect(exported).not.toContain("secret.invalid");
   expect(exported).toContain("[redacted]");
-  expect(s.changes(0).records.some((r) => (r.kind as string) === "proxy_requests")).toBe(false);
+  expect(s.changePage(0).records.some((r) => (r.kind as string) === "proxy_requests")).toBe(false);
   expect(JSON.stringify(exportBackup(s, false))).not.toContain(retry.request.id);
 });
 

@@ -122,7 +122,7 @@ test("each machine's totals reach the others, and Cursor's account-wide history 
   // Both machines have held the Cursor login, so both read the same history.
   for (const s of [a, b]) s.db.run("insert into cursor_tokens values ('c1', ?, 'auto', 100, 0, 0, 0)", [hour]);
   const sync = (from: Store, to: Store) => {
-    for (const r of from.changes(0).records) to.merge(r);
+    for (const r of from.changePage(0).records) to.merge(r);
   };
 
   // A node on the previous version would stall on the new record kind.
@@ -162,7 +162,7 @@ const paired = (...names: string[]) =>
     return s;
   });
 const syncSince = (from: Store, to: Store, since: number) => {
-  for (const r of from.changes(since).records) to.merge(r);
+  for (const r of from.changePage(since).records) to.merge(r);
   return from.seq();
 };
 
@@ -263,7 +263,7 @@ test("token history is reused for a minute, unless another machine's totals arri
 
   b.db.run("insert into token_usage values (?, 'claude', 'opus', 10, 0, 0, 0)", [hour]);
   publishTokens(b);
-  for (const r of b.changes(0).records) a.merge(r);
+  for (const r of b.changePage(0).records) a.merge(r);
   expect(tokenHours(a)).toEqual([[hour, 15]]);
 
   a.db.run("update token_usage set input = 7");
