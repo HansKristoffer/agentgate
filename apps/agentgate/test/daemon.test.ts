@@ -1,6 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
 import { app, makeCtx, serve } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
+import { prepare } from "../src/handoff/destination.ts";
+import { connectT3 } from "../src/handoff/t3.ts";
+import { removeTmp, tmp } from "./fixtures/git.ts";
+import { fakeT3 } from "./fixtures/t3.ts";
 
 const request = (path: string, options?: RequestInit) =>
   new Request(`http://127.0.0.1:7878${path}`, { ...options, headers: { host: "127.0.0.1:7878", ...options?.headers } });
@@ -72,6 +76,46 @@ test("daemon lifecycle closes listeners and drains work before returning", async
   await daemon.stop();
   await expect(fetch(url)).rejects.toThrow();
   s.close();
+});
+
+test("stopping mid-clone kills git and returns, leaving the handoff to resume on the next start", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  s.setLocal("handoff:cloneDir", tmp());
+  const t3 = fakeT3({ claudeDir: tmp() });
+  await connectT3(s, { url: t3.url, token: t3.pairingToken() });
+  // A remote that takes the connection and never answers, like a dead host or an SSH agent waiting for approval.
+  const reached = Promise.withResolvers<void>(),
+    dropped = Promise.withResolvers<void>();
+  const remote = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      req.signal.addEventListener("abort", () => dropped.resolve());
+      reached.resolve();
+      return new Promise<Response>(() => {});
+    },
+  });
+  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  try {
+    const remoteUrl = `http://127.0.0.1:${remote.port}/test/hang.git`;
+    prepare(daemon.ctx.handoffs, "h1", "a", {
+      remoteUrl,
+      projectTitle: "hang",
+      branch: null,
+      baseSha: null,
+      worktree: false,
+    });
+    await reached.promise;
+    await daemon.stop();
+    await dropped.promise;
+    expect(daemon.ctx.handoffs.load("destination", "h1")?.step).toBe("prepare");
+  } finally {
+    await daemon.stop();
+    remote.stop(true);
+    t3.stop();
+    s.close();
+    removeTmp();
+  }
 });
 
 test("native login expiry is enforced when finishing without another login starting", async () => {

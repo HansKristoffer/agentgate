@@ -262,6 +262,9 @@ function pathAfter(url: string, prefix: string) {
   return u.pathname.slice(prefix.length) + u.search;
 }
 
+/** How long a stop waits for handoff steps. Refreshes and pending requests are still drained in full after it. */
+const HANDOFF_STOP = 15_000;
+
 /** `agentgate serve`: both listeners and the background timers. */
 export async function serve(
   s: Store,
@@ -405,6 +408,7 @@ export async function serve(
   }, 3600000);
   // On its own, so a failed trim never skips the login expiry or log rotation above.
   schedule(async () => trimFactory(s), 3600000);
+  schedule(async () => ctx.handoffs.trim(), 3600000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);
@@ -432,7 +436,13 @@ export async function serve(
         ctx.channel.close();
         ctx.health.stop();
         await ctx.gateway.close();
-        await ctx.handoffs.close();
+        // The listeners are closed already: a handoff step that outlasts its killed git resumes on the next start.
+        let capped: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          ctx.handoffs.close(),
+          new Promise((resolve) => (capped = setTimeout(resolve, HANDOFF_STOP))),
+        ]);
+        clearTimeout(capped);
         await stopRelay(s);
         await Promise.allSettled([...jobs, ...ctx.pending]);
         await ctx.imports.drain();

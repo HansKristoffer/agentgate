@@ -1,13 +1,22 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { Hono } from "hono";
 import { repos, sh, tmp, removeTmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
-import { CONTINUE, READY, abort, restartTasks, type DestState } from "../src/handoff/destination.ts";
+import {
+  CONTINUE,
+  READY,
+  abort,
+  cloneProject,
+  restartTasks,
+  type DestState,
+  type Manifest,
+} from "../src/handoff/destination.ts";
+import { createBundle, snapshot } from "../src/handoff/code.ts";
 import { startHandoff } from "../src/handoff/source.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
 import { connectT3 } from "../src/handoff/t3.ts";
@@ -966,4 +975,129 @@ test("a handoff works through the relay alone; the relay sees only sealed calls 
   });
   expect(replay.status).toBe(200);
   expect(await replay.text()).toBe("");
+});
+
+test("a clone a stop cut short is replaced on the retry, not cloned again beside it", async () => {
+  const b = await node("b", tmp());
+  const reached = Promise.withResolvers<void>();
+  const remote = Bun.serve({
+    port: 0,
+    fetch: () => {
+      reached.resolve();
+      return new Promise<Response>(() => {});
+    },
+  });
+  cleanup.push(() => remote.stop(true));
+  const url = `http://127.0.0.1:${remote.port}/test/hang.git`;
+  const cut = cloneProject(b.h, url).then(
+    () => "cloned",
+    () => "failed",
+  );
+  await reached.promise;
+  await b.h.close();
+  expect(await cut).toBe("failed");
+
+  // After the restart the remote answers: the same URL now reaches a real repository.
+  const r = repos("a");
+  appendFileSync(process.env.GIT_CONFIG_GLOBAL!, `[url "${r.origin}"]\n\tinsteadOf = ${url}\n`);
+  const restarted = new Handoffs(b.s, b.h.options);
+  cleanup.push(() => restarted.close());
+  const { main } = await cloneProject(restarted, url);
+  expect(main).toBe(join(b.h.options.cloneDir, "hang"));
+  expect(readdirSync(b.h.options.cloneDir)).toEqual(["hang"]);
+  expect(readFileSync(join(main, "README.md"), "utf8")).toBe("hello\n");
+});
+
+test("apply run again after a restart mid-restore moves the code here instead of keeping the restored files as local changes", async () => {
+  const r = repos("a", "b");
+  writeFileSync(join(r.a, "notes.txt"), "uncommitted\n");
+  const headSha = sh(r.a, "rev-parse", "HEAD");
+  const snap = await snapshot(r.a, "h1", headSha);
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
+  cleanup.push(async () => {
+    await h.close();
+    s.close();
+  });
+  const bundle = join(h.dir("h1"), "files", "bundle");
+  mkdirSync(dirname(bundle), { recursive: true });
+  expect(await createBundle(r.a, "h1", snap.sha, bundle)).toBe(true);
+  // The daemon stopped after the restore wrote the source's files and before apply finished.
+  writeFileSync(join(r.b, "notes.txt"), "uncommitted\n");
+  const prepare = { remoteUrl: r.url, projectTitle: "repo", branch: "main", baseSha: headSha, worktree: false };
+  const manifest: Manifest = {
+    ...prepare,
+    source: "a",
+    sourceThreadId: "t",
+    sessionId: SID,
+    driver: "claudeAgent",
+    title: "Fix the bug",
+    modelSelection: {},
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    headSha,
+    snapshot: { sha: snap.sha, uncommitted: true },
+    bundle: true,
+    wasWorking: false,
+    oldPaths: [],
+    files: [],
+  };
+  h.create<DestState>({
+    id: "h1",
+    role: "destination",
+    thread: "t",
+    target: "b",
+    step: "apply",
+    state: { source: "a", prepare, manifest, main: r.b, cwd: r.b, restoring: true, warnings: [], timings: [] },
+  });
+
+  // Apply finishes; the next step fails here for want of T3 Code, which this test does not need.
+  await h.drive("destination", "h1");
+  const job = h.load<DestState>("destination", "h1")!;
+  expect(job.state.codeTaken).toBe(true);
+  expect(job.state.warnings).toEqual([]);
+  expect(readFileSync(join(r.b, "notes.txt"), "utf8")).toBe("uncommitted\n");
+});
+
+test("the tick reads only unfinished handoffs, and finished ones are trimmed after 30 days", () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
+  const start = Date.now();
+  let now = start;
+  s.now = () => now;
+  // A finished row the tick must not parse: finished rows can be large, and nothing reads them there.
+  s.db.run("insert into handoffs values ('old', 'source', 't', 'b', 'done', '{not json', null, ?, ?)", [now, now]);
+  h.create<DestState>({
+    id: "waiting",
+    role: "destination",
+    thread: "",
+    target: "b",
+    step: "prepare",
+    state: {
+      source: "a",
+      prepare: {
+        remoteUrl: "https://github.com/test/x.git",
+        projectTitle: "x",
+        branch: null,
+        baseSha: null,
+        worktree: false,
+      },
+      warnings: [],
+      timings: [],
+    },
+  });
+
+  now += 11 * 60_000;
+  h.tick();
+  expect(h.load("destination", "waiting")).toMatchObject({
+    step: "failed",
+    error: expect.stringContaining("abandoned"),
+  });
+
+  now = start + 30 * 86_400_000 + 60_000;
+  h.trim();
+  const ids = (s.db.query("select id from handoffs").all() as { id: string }[]).map((r) => r.id);
+  expect(ids).toEqual(["waiting"]);
 });

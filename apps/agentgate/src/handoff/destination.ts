@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
@@ -93,6 +93,8 @@ export interface DestState {
   created?: boolean;
   /** Whether the checkout moved onto the source's code; the source parks its sent changes only then. */
   codeTaken?: boolean;
+  /** Apply began writing the source's files into the checkout: after a restart, the changes there came from the source. */
+  restoring?: boolean;
   threadId?: string;
   /** T3 Code here has the thread (imported or brought back): from then on the thread lives here, a failure is only a
    * warning, and the source must not take it back. */
@@ -261,6 +263,8 @@ export async function runDestination(h: Handoffs, id: string) {
           return;
       }
     } catch (e) {
+      // A stop cuts the step short (its git is killed); it runs again on the next start.
+      if (h.closed) return;
       const message = `${job.step} on ${h.s.nodeId}: ${getErrorMessage(e)}`;
       // Imported: the thread lives here now, and a failure must not make the source take it back.
       if (job.step === "continue" || job.state.live) {
@@ -309,23 +313,36 @@ async function doPrepare(h: Handoffs, job: Job<DestState>) {
 
 /** This node's T3 project for the repository, matched by `owner/repo` of its origin. */
 export async function findProject(h: Handoffs, remoteUrl: string) {
-  const want = parseRemote(remoteUrl)?.toLowerCase();
-  if (!want) return undefined;
+  if (!parseRemote(remoteUrl)) return undefined;
   for (const project of (await t3Client(h.s).shell()).projects) {
-    if (!existsSync(project.workspaceRoot)) continue;
-    const origin = (await run(project.workspaceRoot, ["config", "--get", "remote.origin.url"])).out;
-    if (parseRemote(origin)?.toLowerCase() === want) return project;
+    if (existsSync(project.workspaceRoot) && (await sameRepo(project.workspaceRoot, remoteUrl))) return project;
   }
   return undefined;
 }
 
-/** Clone the repository with this node's own git credentials and make it a T3 project. */
+/** Whether the checkout at `dir` has `remoteUrl`'s repository as its origin. */
+async function sameRepo(dir: string, remoteUrl: string) {
+  const want = parseRemote(remoteUrl)?.toLowerCase();
+  const origin = (await run(dir, ["config", "--get", "remote.origin.url"])).out;
+  return !!want && parseRemote(origin)?.toLowerCase() === want;
+}
+
+/** Clone the repository with this node's own git credentials and make it a T3 project. A clone an earlier attempt
+ * finished is used again; one cut short (a stop, a crash) lives under a temporary name and is replaced. */
 export async function cloneProject(h: Handoffs, remoteUrl: string) {
   const repo = repoName(remoteUrl);
   mkdirSync(h.options.cloneDir, { recursive: true });
   let dir = join(h.options.cloneDir, repo);
-  for (let n = 2; existsSync(dir); n++) dir = join(h.options.cloneDir, `${repo}-${n}`);
-  await git(h.options.cloneDir, ["clone", remoteUrl, dir]);
+  for (let n = 2; existsSync(dir); n++) {
+    if (await sameRepo(dir, remoteUrl)) break;
+    dir = join(h.options.cloneDir, `${repo}-${n}`);
+  }
+  if (!existsSync(dir)) {
+    const partial = join(h.options.cloneDir, `.${basename(dir)}.cloning`);
+    rmSync(partial, { recursive: true, force: true });
+    await git(h.options.cloneDir, ["clone", remoteUrl, partial], undefined, { signal: h.signal });
+    renameSync(partial, dir);
+  }
 
   const create = {
     type: "project.create",
@@ -372,7 +389,7 @@ async function workspace(h: Handoffs, job: Job<DestState>, startAt: string | nul
   if (!p.worktree) return use(main);
   const existing = p.branch && (await worktrees(main)).find((w) => w.branch === p.branch && existsSync(w.path));
   if (existing) return use(existing.path);
-  if (!startAt || !(await ensureCommit(main, startAt))) return;
+  if (!startAt || !(await ensureCommit(main, startAt, h.signal))) return;
 
   const repo = basename(main);
   const path = join(h.options.worktreesDir, repo, `${repo}-${job.id.slice(0, 8)}`);
@@ -438,8 +455,8 @@ async function apply(h: Handoffs, job: Job<DestState>) {
 
   await timed(h.s, st.timings, "apply", async () => {
     const present = m.bundle
-      ? await fetchBundle(main, join(h.dir(job.id), "files", "bundle"), job.id)
-      : await ensureCommit(main, m.snapshot.sha);
+      ? await fetchBundle(main, join(h.dir(job.id), "files", "bundle"), job.id, h.signal)
+      : await ensureCommit(main, m.snapshot.sha, h.signal);
     // The code builds on a commit origin no longer has (a force-push): nothing here can recover it.
     if (!present) {
       throw new T3Error(
@@ -451,7 +468,13 @@ async function apply(h: Handoffs, job: Job<DestState>) {
     if (!st.cwd) throw new T3Error("could not create a worktree for the thread");
 
     const before = await git(st.cwd, ["rev-parse", "HEAD"]);
-    const { kept, replaced } = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot);
+    const { kept, replaced } = await moveToSource(st.cwd, m.branch, m.headSha, m.snapshot, {
+      resumed: st.restoring,
+      restoring: () => {
+        st.restoring = true;
+        h.save(job);
+      },
+    });
     st.codeTaken = !kept;
     if (kept) {
       st.warnings.push(`Kept ${h.s.nodeId}'s code in ${st.cwd}: ${kept}`);

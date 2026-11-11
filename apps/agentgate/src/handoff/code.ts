@@ -18,10 +18,15 @@ const IDENTITY = {
 };
 
 /** A fetch or clone can stall on a dead remote or an SSH agent waiting for approval; past the deadline git and its
- * helpers are killed, and the step fails instead of holding the handoff and daemon shutdown. */
+ * helpers are killed, and the step fails instead of holding the handoff. */
 const GIT_TIMEOUT = 10 * 60_000;
 
-export async function run(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {
+/** `signal` kills git and its helpers early, for the network steps a daemon stop must not wait on (clone, fetch,
+ * bundle). Never pass it to a step that rewrites the checkout, such as `restore` or `stash`. */
+type RunOptions = { input?: string; signal?: AbortSignal };
+
+export async function run(cwd: string, args: string[], env: Record<string, string> = {}, opts: RunOptions = {}) {
+  const { input, signal } = opts;
   const child = Bun.spawn(["git", ...args], {
     cwd,
     stdout: "pipe",
@@ -31,7 +36,10 @@ export async function run(cwd: string, args: string[], env: Record<string, strin
     // Never wait on a credential prompt nobody can answer.
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...env },
   });
-  const timer = setTimeout(() => killGroup(child), GIT_TIMEOUT);
+  const kill = () => killGroup(child);
+  const timer = setTimeout(kill, GIT_TIMEOUT);
+  if (signal?.aborted) kill();
+  else signal?.addEventListener("abort", kill);
   try {
     const [out, err, code] = await Promise.all([
       new Response(child.stdout).text(),
@@ -41,10 +49,16 @@ export async function run(cwd: string, args: string[], env: Record<string, strin
     return { ok: code === 0, out: out.trim(), err: err.trim() };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener("abort", kill);
   }
 }
-export async function git(cwd: string, args: string[], env?: Record<string, string>, input?: string): Promise<string> {
-  const r = await run(cwd, args, env, input);
+export async function git(
+  cwd: string,
+  args: string[],
+  env?: Record<string, string>,
+  opts?: RunOptions,
+): Promise<string> {
+  const r = await run(cwd, args, env, opts);
   if (!r.ok) throw new Error(`git ${args[0]} failed: ${r.err.split("\n").at(-1) || "unknown error"}`);
   return r.out;
 }
@@ -60,17 +74,27 @@ const ref = (id: string) => `refs/agentgate/handoff/${id}`;
 export async function describe(cwd: string) {
   const headSha = await git(cwd, ["rev-parse", "HEAD"]);
   const branch = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const remoteUrl = await maybe(cwd, ["config", "--get", "remote.origin.url"]);
-  if (!remoteUrl) throw new Error("the repository has no origin remote, so the other machine cannot find or clone it");
+  const origin = await maybe(cwd, ["config", "--get", "remote.origin.url"]);
+  if (!origin) throw new Error("the repository has no origin remote, so the other machine cannot find or clone it");
   const unpushed = (await git(cwd, ["rev-list", "--reverse", "HEAD", "--not", "--remotes=origin"]))
     .split("\n")
     .filter(Boolean);
   return {
     headSha,
     branch: branch === "HEAD" ? null : branch,
-    remoteUrl,
+    remoteUrl: withoutCredentials(origin),
     baseSha: unpushed.length ? ((await maybe(cwd, ["rev-parse", "--verify", `${unpushed[0]}^`])) ?? null) : headSha,
   };
+}
+
+/** The URL travels to the other machine, which clones with its own git credentials: a token in an HTTPS origin's
+ * user part stays here. An SSH URL's user (`git@`) is no secret, and the other machine needs it. */
+function withoutCredentials(url: string) {
+  if (!/^https?:\/\//i.test(url) || !URL.canParse(url)) return url;
+  const u = new URL(url);
+  u.username = "";
+  u.password = "";
+  return u.toString();
 }
 
 // Ignored folders that setup or a build makes again, often large or built for one platform: they stay behind.
@@ -140,11 +164,17 @@ export async function snapshot(cwd: string, id: string, headSha: string, skip: s
 }
 
 /** Write the commits origin lacks to `out`. False when origin already has everything. */
-export async function createBundle(cwd: string, id: string, sha: string, out: string): Promise<boolean> {
+export async function createBundle(
+  cwd: string,
+  id: string,
+  sha: string,
+  out: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   if ((await git(cwd, ["rev-list", "--count", sha, "--not", "--remotes=origin"])) === "0") return false;
   await git(cwd, ["update-ref", ref(id), sha]);
   try {
-    await git(cwd, ["bundle", "create", out, ref(id), "--not", "--remotes=origin"]);
+    await git(cwd, ["bundle", "create", out, ref(id), "--not", "--remotes=origin"], undefined, { signal });
   } finally {
     await run(cwd, ["update-ref", "-d", ref(id)]);
   }
@@ -152,21 +182,21 @@ export async function createBundle(cwd: string, id: string, sha: string, out: st
 }
 
 /** Fetch a received bundle. False when its prerequisites are missing even after fetching origin. */
-export async function fetchBundle(cwd: string, bundle: string, id: string): Promise<boolean> {
+export async function fetchBundle(cwd: string, bundle: string, id: string, signal?: AbortSignal): Promise<boolean> {
   if (!(await run(cwd, ["bundle", "verify", bundle])).ok) {
-    await run(cwd, ["fetch", "origin"]);
+    await run(cwd, ["fetch", "origin"], undefined, { signal });
     if (!(await run(cwd, ["bundle", "verify", bundle])).ok) return false;
   }
-  await git(cwd, ["fetch", bundle, `${ref(id)}:${ref(id)}`]);
+  await git(cwd, ["fetch", bundle, `${ref(id)}:${ref(id)}`], undefined, { signal });
   return true;
 }
 /** The fetched ref keeps the snapshot commit alive until the code is applied. */
 export const dropRef = (cwd: string, id: string) => run(cwd, ["update-ref", "-d", ref(id)]);
 
 /** Make `sha` present, fetching origin only when it is missing: the common round trip needs no network. */
-export async function ensureCommit(cwd: string, sha: string): Promise<boolean> {
+export async function ensureCommit(cwd: string, sha: string, signal?: AbortSignal): Promise<boolean> {
   if (await hasCommit(cwd, sha)) return true;
-  await run(cwd, ["fetch", "origin"]);
+  await run(cwd, ["fetch", "origin"], undefined, { signal });
   return hasCommit(cwd, sha);
 }
 
@@ -181,8 +211,8 @@ async function unsaved(cwd: string, sha: string): Promise<string[]> {
       .split("\0")
       .filter((p) => p && !p.includes("\n") && lstatSync(join(cwd, p), { throwIfNoEntry: false })?.isFile());
     if (!changed.length) return [];
-    const blobs = await git(cwd, ["hash-object", "--stdin-paths"], undefined, `${changed.join("\n")}\n`);
-    const known = (await git(cwd, ["cat-file", "--batch-check"], undefined, `${blobs}\n`)).split("\n");
+    const blobs = await git(cwd, ["hash-object", "--stdin-paths"], undefined, { input: `${changed.join("\n")}\n` });
+    const known = (await git(cwd, ["cat-file", "--batch-check"], undefined, { input: `${blobs}\n` })).split("\n");
     return changed.filter((_, i) => known[i]?.endsWith(" missing"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -192,15 +222,18 @@ async function unsaved(cwd: string, sha: string): Promise<string[]> {
 /** Move the destination's checkout onto the source's code, only when that loses nothing: clean, on the same branch,
  * at or behind `headSha`. Restores a snapshot's uncommitted and ignored files (deletions included) as uncommitted
  * changes. `kept` says why it kept the checkout as it was; `replaced` lists files of this machine's own it parked in a
- * stash because the snapshot brought other versions of them. */
+ * stash because the snapshot brought other versions of them.
+ * `restoring` runs just before the restore. The caller records it, and after a crash passes `resumed`, so the changes
+ * an interrupted restore left are not taken for this machine's own. */
 export async function moveToSource(
   cwd: string,
   branch: string | null,
   headSha: string,
   snap: Snapshot | undefined,
+  { resumed = false, restoring = () => {} }: { resumed?: boolean; restoring?: () => void } = {},
 ): Promise<{ kept?: string; replaced: string[] }> {
   const keep = (kept: string) => ({ kept, replaced: [] });
-  if ((await git(cwd, ["status", "--porcelain"])) !== "") return keep("it has uncommitted changes");
+  if (!resumed && (await git(cwd, ["status", "--porcelain"])) !== "") return keep("it has uncommitted changes");
   const current = await git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (current !== (branch ?? "HEAD"))
     return keep(`it is on ${current === "HEAD" ? "a detached HEAD" : current}, not ${branch ?? "a detached HEAD"}`);
@@ -227,6 +260,7 @@ export async function moveToSource(
       { ...IDENTITY, ...LITERAL },
     );
   }
+  restoring();
   await git(cwd, ["restore", `--source=${snap.sha}`, "--worktree", "--", "."]);
   return { replaced };
 }
