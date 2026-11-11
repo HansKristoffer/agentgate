@@ -504,6 +504,15 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect(statusSchema.safeParse(missing).success).toBe(false);
 });
 
+test("status sends empty activity and peers, which an app on this API version still requires", async () => {
+  const { s, call } = fixture();
+  s.log("claude", "a", "m", 200, 5);
+  s.db.run("insert into peers values ('b', 'http://b.invalid', 'peer-token', 0, 0)");
+  const parsed = statusSchema.parse(await (await call("/api/status")).json());
+  expect(parsed.activity).toEqual([]);
+  expect(parsed.peers).toEqual([]);
+});
+
 test("the app's status schema keeps the relay and how each machine is reached", async () => {
   const { s, call } = fixture();
   s.put("node", "test", { id: "test", alwaysOn: false });

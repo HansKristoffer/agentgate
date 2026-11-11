@@ -275,10 +275,21 @@ const repoStates = defineLocal(
 const repoState = (s: Store, url: string) => repoStates.get(s, url) ?? {};
 
 export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
-  const urls = getUniqueValues(s.list("project").flatMap((p) => p.skillRepos)).sort();
+  const projects = s.list("project");
+  const urls = getUniqueValues(projects.flatMap((p) => p.skillRepos)).sort();
+  if (!urls.length) return [];
+  const skills = skillSummaries(s);
   return urls.map((url) => {
     const { commit, syncedAt, error, skipped = [] } = repoState(s, url);
-    return { url, projects: repoProjects(s, url), skills: repoSkills(s, url), commit, syncedAt, error, skipped };
+    return {
+      url,
+      projects: projects.filter((p) => p.skillRepos.includes(url)).map((p) => p.id),
+      skills: skills.filter((k) => k.source === url).map((k) => k.id),
+      commit,
+      syncedAt,
+      error,
+      skipped,
+    };
   });
 }
 

@@ -95,7 +95,7 @@ import {
   pairingLinkNode,
   requestHandoff,
 } from "./handoff/threads.ts";
-import { join, lastSeen, pairCode, peers, tailscale } from "./sync.ts";
+import { join, lastSeen, pairCode, tailscale } from "./sync.ts";
 import { lag } from "./lag.ts";
 import {
   RelayBusy,
@@ -266,17 +266,11 @@ export function management(ctx: Ctx) {
       })),
       relay: relayStatus(s),
       logins: listLogins(s),
-      peers: peers(s).map((p) => ({
-        node: p.node,
-        url: p.url,
-        lastSeen: p.last_seen ?? 0,
-        cursor: p.cursor,
-        error: s.local(`syncError:${p.node}`) ? "Sync failed" : undefined,
-      })),
       unknownQuota: recordFromKeys(["claude", "codex"], (p) => s.local(`quotaUnknown:${p}`)),
-      activity: s.db
-        .query("select at, provider, account, model, status, ms, note from request_log order by at desc limit 50")
-        .all() as Status["activity"],
+      // Nothing reads these, and activity changed on every model request. An app on the current API_VERSION still
+      // requires both, so they stay empty until the next bump removes them.
+      peers: [],
+      activity: [],
     };
     return c.json(status);
   });

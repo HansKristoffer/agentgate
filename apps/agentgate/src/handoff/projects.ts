@@ -3,6 +3,8 @@ import { getErrorMessage, safeJsonParse } from "hanzio";
 import { join } from "node:path";
 import { projectIdSchema, projectSchema } from "@agentgate/protocol";
 import { canonicalProject, parseRemote, scanRepos } from "../mcp/gateway.ts";
+import { z } from "zod";
+import { defineLocal } from "../local-state.ts";
 import { run } from "./code.ts";
 import type { Handoffs } from "./jobs.ts";
 import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
@@ -47,13 +49,18 @@ async function originOf(path: string) {
 // ponytail: an SSH host alias (git@github-work:…) is not recognised; match on `gh` hosts if anyone uses one.
 const github = (url: string) => /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:www\.)?github\.com[:/]/i.test(url.trim());
 
+// Shown with the T3 connection (t3State), so a new or cleared error refreshes the threads view.
+const projectSyncError = defineLocal("t3:projectSyncError", z.string(), { topic: "threads" });
+
 export async function syncT3Projects(h: Handoffs) {
   const s = h.s;
   // A round that finds nothing new writes nothing.
   const put = (key: string, value: string | undefined) => {
     if (s.local(key) !== value) s.setLocal(key, value);
   };
-  const report = (errors: string[]) => put("t3:projectSyncError", errors.length ? errors.join("; ") : undefined);
+  const report = (errors: string[]) => {
+    projectSyncError.set(s, undefined, errors.length ? errors.join("; ") : undefined);
+  };
   if (!t3State(s).connected) return report([]);
   const t3 = t3Client(s);
   // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
