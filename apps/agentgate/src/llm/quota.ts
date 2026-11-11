@@ -8,6 +8,7 @@ import { pMap, raceAbort } from "hanzio";
 import type { Credentials } from "../credentials.ts";
 import type { Store, Usage } from "../store.ts";
 import { revision } from "../configuration.ts";
+import { defineLocal } from "../local-state.ts";
 import type { Observation, Provider, ProviderName } from "./provider.ts";
 
 /** How often the credential's holder reads an account's usage. */
@@ -60,9 +61,8 @@ export function recordUsage(
   if (previous && key(previous) === key(next) && s.now() - previous.observedAt < 300000) return;
   s.put("usage", id, next);
 }
-export function quotaHealth(s: Store, id: string) {
-  return quotaHealthSchema.parse(JSON.parse(s.local(`quotaHealth:${id}`) ?? "{}"));
-}
+const health = defineLocal("quotaHealth:", quotaHealthSchema, { topic: "status" });
+export const quotaHealth = (s: Store, id: string) => health.get(s, id) ?? {};
 const flights = new WeakMap<Store, Map<string, Promise<boolean>>>();
 export class Quotas {
   constructor(
@@ -111,18 +111,11 @@ export class Quotas {
       if (s.closed || !s.get("account", id) || revision(s, "credential", id) !== credentialRev) return false;
       if (!result) throw new Error("Provider returned no recognizable quota windows");
       if (revision(s, "usage", id) === usageRev) recordUsage(s, id, result, undefined, "poll");
-      s.setLocal(`quotaHealth:${id}`, JSON.stringify({ attemptedAt, succeededAt: s.now() }));
+      health.set(s, id, { attemptedAt, succeededAt: s.now() });
       return true;
     } catch (error) {
       if (!s.closed && !signal.aborted && s.get("account", id) && revision(s, "credential", id) === credentialRev)
-        s.setLocal(
-          `quotaHealth:${id}`,
-          JSON.stringify({
-            ...prior,
-            attemptedAt,
-            error: "Usage refresh failed; last observation retained",
-          }),
-        );
+        health.set(s, id, { ...prior, attemptedAt, error: "Usage refresh failed; last observation retained" });
       throw error;
     }
   }

@@ -14,7 +14,9 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { REMOTE_LIMITS } from "@agentgate/protocol/remote";
+import { z } from "zod";
 import { NeedsLogin } from "../credentials.ts";
+import { defineLocal } from "../local-state.ts";
 import { infisicalMcpEnv } from "../logins.ts";
 import { fetchHeaders, sleep } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
@@ -61,22 +63,29 @@ export function parseRemote(url: string): string | undefined {
   return parts && parts.length >= 2 ? parts.slice(-2).join("/") : undefined;
 }
 
-/** Pass the store to use the instance's OAuth login (refreshing it when needed). */
 /** Whether this node last reached the server, from Test or a gateway connection. Node-local: a local command or a
  * network path can work on one machine and not another. Holds no error text, so it can never carry a secret. */
-export function serverHealth(s: Store, id: string): { ok: boolean; needsLogin?: boolean; at: number } | undefined {
-  const raw = s.local(`mcpHealth:${id}`);
-  return raw ? JSON.parse(raw) : undefined;
+const health = defineLocal(
+  "mcpHealth:",
+  z.object({ ok: z.boolean(), needsLogin: z.boolean().optional(), at: z.number() }),
+);
+export const serverHealth = (s: Store, id: string) => health.get(s, id);
+/** Every check moves `at`; only a change of outcome is news for the app. */
+export function recordHealth(s: Store, id: string, outcome: { ok: boolean; needsLogin?: boolean } | undefined) {
+  const before = health.get(s, id);
+  health.set(s, id, outcome && { ...outcome, at: s.now() });
+  if (before?.ok !== outcome?.ok || before?.needsLogin !== outcome?.needsLogin) s.bump("status");
 }
 
-/** Connect to an instance; with a store, record the outcome as its health. */
+/** Connect to an instance; with a store, record the outcome as its health and use the instance's OAuth login
+ * (refreshing it when needed). */
 export async function connect(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
   try {
     const client = await open(inst, cwd, s);
-    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: true, at: s.now() }));
+    if (s) recordHealth(s, inst.id, { ok: true });
     return client;
   } catch (e) {
-    s?.setLocal(`mcpHealth:${inst.id}`, JSON.stringify({ ok: false, needsLogin: needsLogin(e), at: s.now() }));
+    if (s) recordHealth(s, inst.id, { ok: false, needsLogin: needsLogin(e) });
     throw e;
   }
 }

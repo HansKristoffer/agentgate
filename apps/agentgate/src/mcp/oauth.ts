@@ -9,9 +9,11 @@ import {
 import { z } from "zod";
 import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
 import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
+import { defineLocal } from "../local-state.ts";
 import { fetchHeaders, Unavailable } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
 import { syncAll } from "../relay.ts";
+import { recordHealth } from "./gateway.ts";
 import { resolve } from "./templates.ts";
 
 const SESSION_TTL = 10 * 60_000;
@@ -33,6 +35,8 @@ const sessionSchema = z.object({
   verifier: z.string().optional(),
   discovery: z.custom<OAuthDiscoveryState>((v) => typeof v === "object" && v !== null).optional(),
 });
+/** Logins started here and not finished yet, per OAuth `state`. */
+const pendingLogins = defineLocal("oauth-state:", sessionSchema);
 /** Drop expired pending logins, and those of `replaced`: a newer login replaces the ones started here before it. */
 export function expireLogins(s: Store, replaced?: string) {
   for (const row of s.db.query("select key, value from local where key like 'oauth-state:%'").all() as {
@@ -92,17 +96,14 @@ export class InstanceAuth implements OAuthClientProvider {
     const c = this.credential();
     this.stateValue = state;
     // The new client and redirect stay with the pending login until it finishes; the stored login keeps working.
-    this.s.setLocal(
-      `oauth-state:${state}`,
-      JSON.stringify({
-        id: this.id,
-        loginId: c.loginId,
-        base: this.s.get("mcpCredential", this.id)?.loginId,
-        redirectUri: c.redirectUri,
-        client: c.client,
-        expiresAt: this.s.now() + SESSION_TTL,
-      }),
-    );
+    pendingLogins.set(this.s, state, {
+      id: this.id,
+      loginId: c.loginId!, // an interactive login starts from a snapshot with a new loginId (startLogin)
+      base: this.s.get("mcpCredential", this.id)?.loginId,
+      redirectUri: c.redirectUri,
+      client: c.client as OAuthClientInformationMixed | undefined,
+      expiresAt: this.s.now() + SESSION_TTL,
+    });
     return state;
   }
   clientInformation() {
@@ -123,7 +124,7 @@ export class InstanceAuth implements OAuthClientProvider {
       needsLogin: false,
     });
     // A recorded "needs login" (serverHealth in gateway.ts) was about the old tokens.
-    this.s.setLocal(`mcpHealth:${this.id}`, undefined);
+    recordHealth(this.s, this.id, undefined);
   }
   redirectToAuthorization(url: URL) {
     if (!this.interactive) this.noLogin();
@@ -131,9 +132,9 @@ export class InstanceAuth implements OAuthClientProvider {
   }
   saveCodeVerifier(verifier: string) {
     if (!this.stateValue) throw new Error("no pending login");
-    const key = `oauth-state:${this.stateValue}`;
-    const pending = sessionSchema.parse(JSON.parse(this.s.local(key)!));
-    this.s.setLocal(key, JSON.stringify({ ...pending, verifier, discovery: this.discovery }));
+    const pending = pendingLogins.get(this.s, this.stateValue);
+    if (!pending) throw new Error("login expired; start it again");
+    pendingLogins.set(this.s, this.stateValue, { ...pending, verifier, discovery: this.discovery });
   }
   codeVerifier() {
     if (!this.verifier) throw new Error("login expired; start it again");
@@ -232,10 +233,9 @@ export async function startLogin(s: Store, id: string, callbackUrl: string): Pro
 
 export async function finishLogin(s: Store, state: string, code: string, iss?: string): Promise<string> {
   const pending = s.transaction(() => {
-    const raw = s.local(`oauth-state:${state}`);
-    if (!raw) throw new Error("unknown or expired login; start it again");
-    s.setLocal(`oauth-state:${state}`, undefined);
-    const session = sessionSchema.parse(JSON.parse(raw));
+    const session = pendingLogins.get(s, state);
+    if (!session) throw new Error("unknown or expired login; start it again");
+    pendingLogins.set(s, state, undefined);
     if (
       session.expiresAt <= s.now() ||
       session.base !== s.get("mcpCredential", session.id)?.loginId ||

@@ -1,7 +1,9 @@
 import type { AccountStatus, Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
 import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
+import { z } from "zod";
 import { revision } from "../configuration.ts";
+import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
 import type { Store } from "../store.ts";
 import { Budget } from "./policy.ts";
@@ -9,11 +11,13 @@ import { cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
 import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE } from "./quota.ts";
 import {
+  activeAccount,
   beginRoute,
   eligibility,
   continuationAccount,
   earliestReset,
   filterModelList,
+  modelErrors,
   modelsFor,
   rememberContinuation,
   resolveModel,
@@ -23,6 +27,8 @@ import { recordSessionUsage, sessionFromRequest } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
 export const PLACEHOLDER_TOKEN = "agentgate";
+/** Since when a provider's responses have carried no quota headers, per provider. */
+const quotaUnknown = defineLocal("quotaUnknown:", z.string(), { topic: "status" });
 const HOP_HEADERS = [
   "host",
   "connection",
@@ -328,12 +334,11 @@ export async function proxy(
       attempt.status = res.status;
       attempt.headersMs = Math.round(elapsed());
       const observed = provider.usage(res.headers);
-      // Written only when it changes: it is read as a flag, and every response would otherwise write it.
-      const unknownKey = `quotaUnknown:${provider.name}`;
+      // Holds when quota went unknown, so it is written only when that starts or ends, not on every response.
       bestEffort("local state", () => {
         if (provider.headerQuota !== false && res.ok && !observed && provider.pooled(path)) {
-          if (!s.local(unknownKey)) s.setLocal(unknownKey, String(s.now()));
-        } else if (observed && s.local(unknownKey)) s.setLocal(unknownKey, undefined);
+          if (!quotaUnknown.get(s, provider.name)) quotaUnknown.set(s, provider.name, String(s.now()));
+        } else if (observed) quotaUnknown.set(s, provider.name, undefined);
       });
       if (res.status === 429 || res.status === 401 || res.status === 400 || res.status === 404) {
         let text = "";
@@ -406,8 +411,8 @@ export async function proxy(
       if (attempt.failure === "transient") cool(s, account.id, "transient", s.now() + 15000);
       track(() => telemetry.saveAttempt(attempt));
       if (observed) observe(account.id, observed);
-      if (res.ok && s.local(`active:${provider.name}`) !== account.id) {
-        bestEffort("local state", () => s.setLocal(`active:${provider.name}`, account.id));
+      if (res.ok && activeAccount.get(s, provider.name) !== account.id) {
+        bestEffort("local state", () => activeAccount.set(s, provider.name, account.id));
         log(account.id, 0, 0, "active subscription changed");
       }
       const listing = req.method === "GET" && res.ok ? provider.modelList?.(path) : undefined;
@@ -440,7 +445,7 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     observedAt: u?.observedAt,
     observedBy: u?.observedBy,
     observationSource: u?.source,
-    active: s.local(`active:${account.provider}`) === account.id,
+    active: activeAccount.get(s, account.provider) === account.id,
     needsLogin: !c || !!c.needsLogin,
     holder: c?.holder,
     expiresAt: c?.expiresAt,
@@ -452,6 +457,6 @@ export function accountStatus(s: Store, account: import("../store.ts").Account):
     quotaHealth: quotaHealth(s, account.id),
     cooldowns: cooldowns(s, account.id),
     models: modelsFor(s, account.id),
-    modelError: s.local(`modelError:${account.id}`),
+    modelError: modelErrors.get(s, account.id),
   };
 }

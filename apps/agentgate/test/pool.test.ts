@@ -176,6 +176,19 @@ test("unknown quota is recorded when it starts, not on every response", async ()
   expect(s.local("quotaUnknown:claude")).toBe(String(start));
 });
 
+test("the app hears of a switch of active account once, and not of later requests on it", async () => {
+  modes = { "tok-a": "unmetered", "tok-b": "unmetered" };
+  await (await send()).text();
+  s.put("account", "a", { ...s.get("account", "a")!, enabled: false });
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
+  await (await send()).text();
+  expect(s.local("active:claude")).toBe("b");
+  expect(bumps).toBe(1);
+  await (await send()).text();
+  expect(bumps).toBe(1);
+});
+
 test("a per-minute 429 retries the same account instead of switching", async () => {
   modes["tok-a"] = "rate-once";
   const res = await send();
@@ -479,9 +492,13 @@ test("an account whose login failed does not hide the other's quota 429 behind a
   expect(seen).toEqual(["tok-b"]);
 });
 
-test("a short cooldown after a longer one keeps the longer one's reason", () => {
+test("a short cooldown after a longer one keeps the longer one's reason, and only a start is news", () => {
+  let bumps = 0;
+  s.onChange = (topic) => topic === "status" && bumps++;
   cool(s, "a", "rate", Date.now() + 60_000);
+  expect(bumps).toBe(1);
   cool(s, "a", "transient", Date.now() + 15_000);
+  expect(bumps).toBe(1);
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "rate" }]);
   cool(s, "a", "transient", Date.now() + 120_000);
   expect(cooldowns(s, "a")).toMatchObject([{ reason: "transient" }]);
