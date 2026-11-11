@@ -17,7 +17,7 @@ import {
   usable,
 } from "./ClaudeDesktop.tsx";
 import { request } from "../api.ts";
-import { accountProblem } from "../attention.ts";
+import { accountProblem } from "@agentgate/protocol/attention";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
 import { field, idPath, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";

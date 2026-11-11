@@ -634,6 +634,10 @@ export const boardItemSchema = z.object({
   updatedAt: z.number(),
 });
 export type BoardItem = z.infer<typeof boardItemSchema>;
+/** An item waits for the maintainer while it asks something or its PR is ready to merge. One rule for the app's dot and
+ * queue and the daemon's intake count, so they never disagree. */
+export const waitsForYou = (item: { needsYou?: unknown; phase: ItemPhase }) =>
+  !!item.needsYou || item.phase === "ready";
 
 /** One thing the factory needs, as `agentgate factory doctor` and the board show it. `unknown`: it could not be
  * answered, and `detail` says why. `fix` is the command or step that fixes it. */

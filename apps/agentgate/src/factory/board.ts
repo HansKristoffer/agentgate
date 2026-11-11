@@ -1,4 +1,4 @@
-import { itemPhases, movingLabel, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
+import { itemPhases, movingLabel, waitsForYou, type BoardThread, type FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import type { Listener } from "../daemon.ts";
 import { peerCall } from "../handoff/jobs.ts";
@@ -378,7 +378,7 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   lines.push(capacity.join(", "));
   if (p) lines.push(metricsText(b.metrics));
 
-  const waiting = b.items.filter((i) => i.needsYou || i.phase === "ready");
+  const waiting = b.items.filter(waitsForYou);
   if (waiting.length) lines.push("", "Needs you:");
   for (const { key, title, needsYou: n, pr, actions } of waiting) {
     lines.push(

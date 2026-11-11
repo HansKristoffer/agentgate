@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Alert, Button, Card, Tabs } from "@heroui/react";
 import { ExternalLink, GitPullRequest, Pause, Play, Plus, SquareTerminal } from "lucide-react";
-import { movingLabel, type BoardItem, type FactoryBoard, type ItemAction, type ItemPhase } from "@agentgate/protocol";
+import {
+  movingLabel,
+  waitsForYou,
+  type BoardItem,
+  type FactoryBoard,
+  type ItemAction,
+  type ItemPhase,
+} from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { factoryOp, openExternal, request } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
@@ -136,8 +143,8 @@ function NeedsYouQueue({
   ask: AskReason;
   open: (id: string) => void;
 }) {
-  // The daemon's definition: a question, or a PR ready for your review. Intake pauses on the same count.
-  const waiting = board.items.filter((i) => i.needsYou || i.phase === "ready");
+  // Intake pauses on the same count.
+  const waiting = board.items.filter(waitsForYou);
   const { waitingForYou, waitingForYouLimit } = board.capacity;
   return (
     <Panel

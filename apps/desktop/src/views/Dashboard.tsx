@@ -6,7 +6,7 @@ import { TokenCalendar } from "../features/proxy/TokenCalendar.tsx";
 import { TokenUsage } from "../features/proxy/TokenUsage.tsx";
 import type { ViewProps } from "../types.ts";
 import { INFISICAL_SIGNIN_STARTED, signInToInfisical } from "../api.ts";
-import { accountProblem, problems, type Page } from "../attention.ts";
+import { accountProblem, problems, type Page } from "@agentgate/protocol/attention";
 import { providerIcon, providerName, toolName } from "./utils.ts";
 
 const pageTitle: Record<Page, string> = {
