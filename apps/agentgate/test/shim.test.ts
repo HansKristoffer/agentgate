@@ -124,6 +124,151 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   rmSync(cwd, { recursive: true, force: true });
 });
 
+test("a mapping change reaches a session that sat idle longer than the handshake deadline", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "t");
+  s.put("mcp", "docs", newInstance({ id: "docs", url: fakeUpstream("docs") }));
+  s.put("project", "o/r", { id: "o/r", mcp: { docs: "docs" } });
+  const ctx = makeCtx(s),
+    handler = app(ctx);
+  const daemon = Bun.serve({ port: 0, fetch: (req) => handler.fetch(req, { listener: "loopback" }) });
+  const shim = await buildShim(
+    tmpdir(),
+    `http://127.0.0.1:${daemon.port}`,
+    { AGENTGATE_PROJECT: "o/r" },
+    { handshakeMs: 200, reconnectMs: 60_000 },
+  );
+  const client = await connectTo(shim.server);
+  try {
+    // The deadline is a real timer on the notification stream's request, so only real time passing exercises it.
+    await Bun.sleep(500);
+    const changed = new Promise<void>((r) =>
+      client.setNotificationHandler("notifications/tools/list_changed", () => r()),
+    );
+    s.put("project", "o/r", { id: "o/r", mcp: { docs: "docs", more: "docs" } });
+    ctx.gateway.toolsChanged();
+    await changed;
+    expect((await client.listTools()).tools.map((t) => t.name)).toContain("more__whoami");
+  } finally {
+    await client.close();
+    await shim.close();
+    await ctx.gateway.close();
+    daemon.stop(true);
+    s.close();
+  }
+});
+
+test("a call after the daemon forgot the session succeeds on the first try", async () => {
+  const gateway = await gatewayWith(countingUpstream(0).url);
+  const container = await gateway.shim();
+  const client = await connectTo(container.server);
+  try {
+    expect((await client.callTool({ name: "brain__caller" })).isError).not.toBe(true);
+    gateway.s.now = () => Date.now() + 31 * 60_000;
+    await gateway.ctx.gateway.closeIdle();
+    expect((await client.callTool({ name: "brain__caller" })).isError).not.toBe(true);
+  } finally {
+    await client.close();
+    await container.close();
+    await gateway.done();
+  }
+});
+
+test("the shim polls for the daemon only while it has no connection to it", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const reserve = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("reserve") });
+  const port = reserve.port!;
+  reserve.stop(true);
+  const shim = await buildShim(tmpdir(), `http://127.0.0.1:${port}`, { AGENTGATE_PROJECT: "*" }, { reconnectMs: 10 });
+  const client = await connectTo(shim.server);
+  const reconnected = new Promise<void>((r) =>
+    client.setNotificationHandler("notifications/tools/list_changed", () => r()),
+  );
+  const ctx = makeCtx(s),
+    handler = app(ctx);
+  let reads = 0;
+  const daemon = Bun.serve({
+    hostname: "127.0.0.1",
+    port,
+    fetch: (req) => {
+      if (new URL(req.url).pathname === "/api/shim") reads++;
+      return handler.fetch(req, { listener: "loopback" });
+    },
+  });
+  try {
+    // Nothing but the timer asks for the daemon here.
+    await reconnected;
+    // Ten poll intervals pass while connected: the reconnect read the configuration once, the timer never.
+    await Bun.sleep(100);
+    expect(reads).toBe(1);
+  } finally {
+    await client.close();
+    await shim.close();
+    await ctx.gateway.close();
+    daemon.stop(true);
+    s.close();
+  }
+});
+
+test("a stdio server that ignores its closed stdin is gone after the shim is told to stop", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const cwd = mkdtempSync(join(tmpdir(), "agentgate-exit-")),
+    pidFile = join(cwd, "pid");
+  // The fixture server, kept alive by a timer after stdin closes.
+  const server = `await Bun.write(${JSON.stringify(pidFile)}, String(process.pid));
+setInterval(() => {}, 1 << 30);
+await import(${JSON.stringify(join(import.meta.dir, "fixtures", "mcp.ts"))});`;
+  s.put(
+    "mcp",
+    "stubborn",
+    newInstance({ id: "stubborn", command: process.execPath, args: ["-e", server], mode: "perSession" }),
+  );
+  s.put("project", "*", { id: "*", mcp: { stubborn: "stubborn" } });
+  const ctx = makeCtx(s),
+    handler = app(ctx);
+  const daemon = Bun.serve({ port: 0, fetch: (req) => handler.fetch(req, { listener: "loopback" }) });
+  const shimModule = join(import.meta.dir, "..", "src", "mcp", "shim.ts");
+  const shim = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `await (await import(${JSON.stringify(shimModule)})).runShim("http://127.0.0.1:${daemon.port}")`,
+    ],
+    { cwd, env: { ...process.env, AGENTGATE_PROJECT: "*" }, stdin: "pipe", stdout: "pipe", stderr: "ignore" },
+  );
+  let pid: number | undefined;
+  try {
+    // The shim answers its client only after its per-session servers started.
+    shim.stdin.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+      })}\n`,
+    );
+    await shim.stdin.flush();
+    const reader = shim.stdout.getReader();
+    for (let out = ""; !out.includes('"id":1');) out += new TextDecoder().decode((await reader.read()).value);
+    reader.releaseLock();
+    pid = Number(await Bun.file(pidFile).text());
+    shim.kill("SIGTERM");
+    await shim.exited;
+    expect(() => process.kill(pid!, 0)).toThrow();
+  } finally {
+    shim.kill("SIGKILL");
+    try {
+      if (pid) process.kill(pid, "SIGKILL");
+    } catch {}
+    await ctx.gateway.close();
+    daemon.stop(true);
+    s.close();
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 /** An upstream that counts its tools/list requests, answers them after `delayMs`, and echoes who called. */
 function countingUpstream(delayMs: number) {
   const seen = { lists: 0 };
@@ -165,7 +310,7 @@ async function gatewayWith(upstreamUrl: string) {
     s.close();
     rmSync(cwd, { recursive: true, force: true });
   };
-  return { shim, done };
+  return { s, ctx, shim, done };
 }
 
 test("sessions list each upstream's tools once, and parallel first calls share that listing", async () => {

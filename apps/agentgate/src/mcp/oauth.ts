@@ -24,6 +24,11 @@ export const CALL_LIMIT = 30 * 60_000;
  * failed, and agents then run it again. */
 export const headerWait = (method: string | undefined, others: number) =>
   method === "POST" ? CALL_LIMIT : method === "DELETE" ? 2000 : others;
+/** A request to an MCP server with `headerWait`'s deadline, except the notification stream (GET): Bun.serve sends an
+ * SSE response's headers with its first event, which may come hours later, and the stream lives until its transport
+ * closes it. */
+export const mcpFetch = (url: string | URL, init: RequestInit = {}, others: number) =>
+  init.method === "GET" ? fetch(url, init) : fetchHeaders(url, init, headerWait(init.method, others));
 const sessionSchema = z.object({
   id: z.string(),
   loginId: z.string(),
@@ -200,7 +205,7 @@ export function authenticatedFetch(s: Store, id: string) {
     const send = (token?: string) => {
       const headers = new Headers(init.headers);
       if (token) headers.set("authorization", `Bearer ${token}`);
-      return fetchHeaders(url, { ...init, headers }, headerWait(init.method, 30000));
+      return mcpFetch(url, { ...init, headers }, 30000);
     };
     const res = await send(c?.tokens?.access_token);
     if (res.status !== 401 || !c?.tokens) return res;
