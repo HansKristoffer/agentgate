@@ -144,6 +144,36 @@ test("late observations cannot clear active exhaustion and reset timing combines
   expect(earliestReset(s, "claude", "sonnet")).toBe(now + 7000);
 });
 
+test.each([true, false])("usage refresh accepts an early quota reset (manual: %s)", async (force) => {
+  const { s, creds } = fixture();
+  let now = s.now();
+  s.now = () => now;
+  const resetsAt = now + 24 * 3600_000;
+  recordUsage(
+    s,
+    "a",
+    {
+      windows: [{ name: "7d", usedPct: 100, resetsAt }],
+      status: "exhausted",
+    },
+    resetsAt,
+  );
+  expect(route(s, "claude", "sonnet").account).toBe("b");
+  now += 10 * 60_000;
+  const quotas = new Quotas(s, creds, {
+    claude: {
+      ...adapter,
+      fetchQuota: async () => ({ windows: [{ name: "7d", usedPct: 0, resetsAt }], status: "ok" }),
+    },
+  });
+  expect(await quotas.refresh("a", new AbortController().signal, force)).toBe(true);
+  expect(accountStatus(s, s.get("account", "a")!)).toMatchObject({
+    windows: [{ name: "7d", usedPct: 0, resetsAt }],
+    exhausted: false,
+  });
+  expect(route(s, "claude", "sonnet").account).toBe("a");
+});
+
 test("quota polls coalesce and a late poll preserves newer live-response usage", async () => {
   const { s, creds } = fixture();
   const result = gate<any>(),
