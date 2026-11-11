@@ -1,5 +1,5 @@
 import { createContext, use } from "react";
-import type { Connection, FactoryBoard } from "@agentgate/protocol";
+import type { Connection, FactoryBoard, Status } from "@agentgate/protocol";
 import type { Perform } from "./types.ts";
 import type { Versions } from "./useChanges.ts";
 
@@ -25,6 +25,10 @@ export type AppValue = {
   boardError: string;
   reloadBoard(): Promise<void>;
 };
+/** How often the board, and an item's detail, are read with no change reported. The daemon's feed carries a factory
+ * on another machine only over Tailscale; over a relay this poll is all there is. */
+export const boardEvery = ({ settings, node }: Pick<Status, "settings" | "node">) =>
+  settings.factory && settings.factory.node !== node ? 30_000 : undefined;
 export const AppContext = createContext<AppValue | null>(null);
 export function useApp() {
   const app = use(AppContext);

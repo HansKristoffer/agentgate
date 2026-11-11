@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { getErrorMessage, safeJsonParse } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import { join } from "node:path";
 import { projectIdSchema, projectSchema } from "@agentgate/protocol";
 import { canonicalProject, parseRemote, scanRepos } from "../mcp/gateway.ts";
 import { z } from "zod";
 import { defineLocal } from "../local-state.ts";
+import { registeredCheckouts } from "../skill-links.ts";
 import { run } from "./code.ts";
 import type { Handoffs } from "./jobs.ts";
-import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
+import { T3PermissionError, t3Client, t3Local, t3State, type T3 } from "./t3.ts";
 
 /** Every T3 project's checkout is registered for skill links, whatever the setting: Claude Code and Codex read skills
  * before the shim could report the checkout, so a project T3 cloned or the user added would miss them the first time.
@@ -19,10 +20,11 @@ import { T3PermissionError, t3Client, t3State, type T3 } from "./t3.ts";
  * counts once it has arrived: removing a failed clone in T3 lets the next round try again. */
 
 // Renamed from t3:knownRepos, which also held clones that never arrived.
-const KNOWN = "t3:repos";
+const KNOWN = defineLocal("t3:repos", z.array(z.string()));
+const OLD_KNOWN = defineLocal("t3:knownRepos", z.string());
 /** Clones this node started, as lowercase `owner/repo` → destination. Whatever arrives there counts, even when its
  * origin names another repository: GitHub redirects a renamed one, so a clone of `old/name` checks out `new/name`. */
-const CLONES = "t3:clones";
+const CLONES = defineLocal("t3:clones", z.record(z.string(), z.string()));
 
 /** T3 projects on this node, with the GitHub `owner/repo` and origin URL of those whose checkout has one. */
 export async function t3Projects(t3: T3) {
@@ -49,17 +51,11 @@ async function originOf(path: string) {
 // ponytail: an SSH host alias (git@github-work:…) is not recognised; match on `gh` hosts if anyone uses one.
 const github = (url: string) => /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:www\.)?github\.com[:/]/i.test(url.trim());
 
-// Shown with the T3 connection (t3State), so a new or cleared error refreshes the threads view.
-const projectSyncError = defineLocal("t3:projectSyncError", z.string(), { topic: "threads" });
-
 export async function syncT3Projects(h: Handoffs) {
   const s = h.s;
-  // A round that finds nothing new writes nothing.
-  const put = (key: string, value: string | undefined) => {
-    if (s.local(key) !== value) s.setLocal(key, value);
-  };
+  // Shown with the T3 connection (t3State).
   const report = (errors: string[]) => {
-    projectSyncError.set(s, undefined, errors.length ? errors.join("; ") : undefined);
+    t3Local.set(s, "projectSyncError", errors.length ? errors.join("; ") : undefined);
   };
   if (!t3State(s).connected) return report([]);
   const t3 = t3Client(s);
@@ -68,7 +64,7 @@ export async function syncT3Projects(h: Handoffs) {
   if (!all) return report([]);
   const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
   // Registering spawns git; a checkout already registered for its repository needs none.
-  const registered = registeredCheckouts(h);
+  const registered = registeredCheckouts(s);
   const isRegistered = (path: string, repo: string) => {
     try {
       return registered[realpathSync(path)]?.toLowerCase() === canonicalProject(s, repo).toLowerCase();
@@ -79,15 +75,14 @@ export async function syncT3Projects(h: Handoffs) {
   const fresh = here.filter((p) => !isRegistered(p.project.workspaceRoot, p.repo));
   if (fresh.length) h.register(fresh.map((p) => ({ path: p.project.workspaceRoot, project: p.repo })));
   if (!s.settings().t3ProjectSync) return report([]);
-  put("t3:knownRepos", undefined);
-  const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
+  OLD_KNOWN.set(s, undefined, undefined);
+  const known = new Set(KNOWN.get(s));
   const remember = (repo: string) => {
-    if (known.has(repo.toLowerCase())) return;
     known.add(repo.toLowerCase());
-    s.setLocal(KNOWN, JSON.stringify([...known]));
+    KNOWN.set(s, undefined, [...known]);
   };
-  const clones: Record<string, string> = JSON.parse(s.local(CLONES) ?? "{}");
-  const saveClones = () => put(CLONES, Object.keys(clones).length ? JSON.stringify(clones) : undefined);
+  const clones = CLONES.get(s) ?? {};
+  const saveClones = () => CLONES.set(s, undefined, Object.keys(clones).length ? clones : undefined);
   // Repositories by error, so a cause they share is said once.
   const errors = new Map<string, string[]>();
   // A permission T3 Code refused is refused for every clone; stop asking until agentgate is paired again.
@@ -158,17 +153,13 @@ export async function syncT3Projects(h: Handoffs) {
   report([...(denied ? [denied] : []), ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
 }
 
-/** Main checkout path → project, as SkillLinks.checkouts() keeps them. */
-const registeredCheckouts = (h: Handoffs) =>
-  safeJsonParse<Record<string, string>>(h.s.local("checkouts") ?? "{}").data ?? {};
-
 /** This node's main checkouts by lowercase `owner/repo`: registered ones, then clones in the clone folder. */
 function localCheckouts(h: Handoffs) {
   const found = new Map<string, string>();
   const add = (repo: string, path: string) => {
     if (existsSync(join(path, ".git")) && !found.has(repo.toLowerCase())) found.set(repo.toLowerCase(), path);
   };
-  for (const [path, repo] of Object.entries(registeredCheckouts(h))) add(repo, path);
+  for (const [path, repo] of Object.entries(registeredCheckouts(h.s))) add(repo, path);
   if (existsSync(h.options.cloneDir)) for (const { repo, path } of scanRepos(h.options.cloneDir)) add(repo, path);
   return found;
 }

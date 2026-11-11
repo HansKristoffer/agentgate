@@ -470,6 +470,9 @@ function loopback(link: string): string {
   return `http://127.0.0.1:${u.port}`;
 }
 
+/** This node's T3 Code connection, and its project sync error (projects.ts), which the app shows with the threads. */
+export const t3Local = defineLocal("t3:", z.string(), { topic: "threads" });
+
 /** Exchange a single-use pairing token for a 30-day bearer token. `mintedBy` is the `t3` binary that made the token a
  * moment ago, when agentgate ran it itself: a refusal then points at the binary, as the token is neither used nor old. */
 export async function connectT3(s: Store, input: { url: string; token: string }, mintedBy?: string) {
@@ -522,9 +525,6 @@ export async function connectT3(s: Store, input: { url: string; token: string },
   await new T3(url, token.access_token, s.nodeId).shell();
   return t3State(s);
 }
-
-// This node's T3 Code connection, which the app shows with the threads.
-const t3Local = defineLocal("t3:", z.string(), { topic: "threads" });
 
 export function disconnectT3(s: Store) {
   s.transaction(() => {

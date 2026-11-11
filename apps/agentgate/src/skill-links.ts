@@ -1,5 +1,5 @@
 import type { SkillHealth } from "@agentgate/protocol";
-import { getErrorMessage, safeJsonParse } from "hanzio";
+import { getErrorMessage } from "hanzio";
 import { SKILL_MARKER as MARKER, isVirtual, projectIdSchema, statusSchema } from "@agentgate/protocol";
 import {
   cpSync,
@@ -23,7 +23,7 @@ import {
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
-import { CONFIG_DIR, liveOnly, SKILL_ID, sqliteDetail, type Store } from "./store.ts";
+import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Store } from "./store.ts";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 
@@ -114,8 +114,12 @@ export function globalSkillDirs(): [dir: string, on: boolean][] {
 const healthLocal = defineLocal("skillHealth", statusSchema.shape.skillHealth, { topic: "status" });
 const mirrorLocal = defineLocal("skillMirror:", z.string(), { topic: "status" });
 const checkoutsLocal = defineLocal("checkouts", z.record(z.string(), z.string()), { topic: "status" });
+/** Main checkout path → project, for every checkout this node registered (`SkillLinks.register`). */
+export const registeredCheckouts = (s: Store) => checkoutsLocal.get(s) ?? {};
 const conflictsLocal = defineLocal("skillConflicts", z.array(z.string()), { topic: "status" });
 const keptLocal = defineLocal("skillKept", z.array(z.string()), { topic: "status" });
+// Per worktree: the mirror links `mirror` made there, link path → target.
+const mirrorsLocal = defineLocal("skillMirrors:", z.record(z.string(), z.string()));
 
 /** Writes skill records to disk and keeps the symlinks that expose them to Claude Code and Codex in step.
  * Agents read skills when a session starts, so project links must exist before then: each known repo's
@@ -154,7 +158,7 @@ export class SkillLinks {
   }
 
   checkouts(): Record<string, string> {
-    return checkoutsLocal.get(this.s) ?? {};
+    return registeredCheckouts(this.s);
   }
 
   /** Skills the repository itself carries in a checkout: SKILL.md folders we did not link. */
@@ -251,15 +255,10 @@ export class SkillLinks {
     if (this.closed || !this.root) return;
     for (const t of this.timers) clearTimeout(t);
     this.timers = [50, 600, 2000, 5000, 10000].map((ms) => {
-      // The daemon exits on an uncaught exception, so a locked or full database must not escape the timer.
-      const t = setTimeout(() => {
-        try {
-          this.sync();
-        } catch (e) {
-          const why = sqliteDetail(e, this.s.db.filename) ?? (e instanceof Error ? e.name : "failed");
-          console.error(`skills: sync failed: ${why}`);
-        }
-      }, ms);
+      const t = setTimeout(
+        timerSync(this.s, "skills", () => this.sync()),
+        ms,
+      );
       t.unref?.();
       return t;
     });
@@ -484,9 +483,7 @@ export class SkillLinks {
    * Returns the names it links. An owned, untracked mirror is removed once its source is gone. */
   private mirror(root: string, tree: string): string[] {
     const names: string[] = [];
-    const key = `skillMirrors:${tree}`,
-      before = this.s.local(key);
-    const owned = safeJsonParse<Record<string, string>>(before ?? "{}").data ?? {};
+    const owned = mirrorsLocal.get(this.s, tree) ?? {};
     const pairs = [
       [".claude", ".agents"],
       [".agents", ".claude"],
@@ -534,8 +531,7 @@ export class SkillLinks {
         }
       }
     }
-    const after = JSON.stringify(owned);
-    if (after !== (before ?? "{}")) this.s.setLocal(key, after);
+    mirrorsLocal.set(this.s, tree, Object.keys(owned).length ? owned : undefined);
     return names;
   }
 

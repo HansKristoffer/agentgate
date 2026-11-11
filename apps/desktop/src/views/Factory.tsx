@@ -12,7 +12,7 @@ import {
 import type { ViewProps } from "../types.ts";
 import { factoryOp, openExternal } from "../api.ts";
 import { ActionButton, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
-import { useApp } from "../AppContext.tsx";
+import { boardEvery, useApp } from "../AppContext.tsx";
 import { ago, field } from "./utils.ts";
 import { ItemDrawer } from "./factory/ItemDrawer.tsx";
 import { FactoryOff } from "./factory/Init.tsx";
@@ -599,9 +599,7 @@ export function Factory(props: ViewProps) {
   const [selected, setSelected] = useState<string>();
   const [adding, setAdding] = useState(false);
   const [asking, setAsking] = useState<{ item: Pick<BoardItem, "id" | "key">; action: ItemAction; title: string }>();
-  // This daemon's feed does not carry the changes of a factory on another machine, so that board is asked more often.
-  const factory = data.settings.factory;
-  const every = factory && factory.node !== data.node ? 10_000 : undefined;
+  const every = boardEvery(data);
   // The app's shared read. A reload waits for a read under way and reads once more after an action.
   const { board, boardError: error, reloadBoard: refresh } = useApp();
 

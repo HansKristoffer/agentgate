@@ -31,9 +31,10 @@ type Answer<T> = { data?: T; error: string; failures: number; at?: number; conne
 const none: Answer<never> = { error: "", failures: 0 };
 
 /** One read. One request in flight; a reload asked meanwhile runs once after it. Answers for older deps or an
- * unmounted view are dropped. Data is kept on error, and `failures` counts the errors since the last answer. Reloads when a named topic changes, when the window regains
- * focus, and on a slow safety interval. With `key`, the last answer is kept for the connection and shown at once
- * when the view mounts again. Stops while the window is hidden, unless `hidden` gives an interval for that. */
+ * unmounted view are dropped. Data is kept on error, and `failures` counts the errors since the last answer. Reloads
+ * when a named topic changes, when the window regains focus, and on a slow safety interval. With `key`, the last
+ * answer is kept for the connection and shown at once when the view mounts again. Stops while the window is hidden,
+ * unless `hidden` gives an interval for that. */
 export function useDaemon<T>(
   read: (() => Promise<T>) | false,
   opts: { topics: Topic[]; deps?: unknown[]; every?: number; key?: string; hidden?: number },

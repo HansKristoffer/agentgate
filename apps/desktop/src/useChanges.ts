@@ -17,11 +17,10 @@ export function moved(before?: Record<string, number>, after?: Record<string, nu
 
 /**
  * The daemon's changes from `GET /api/changes`, so reads follow them as they happen instead of on their next poll.
- * `changes` goes up on any change, for views that read everything again; `versions` goes up per topic. A daemon without
- * the route answers 404, and the reads' own intervals are all there is.
+ * A daemon without the route answers 404, and the reads' own intervals are all there is.
  */
 export function useChanges(connection: Connection, enabled: boolean) {
-  const [state, setState] = useState({ versions: none, changes: 0 });
+  const [versions, setVersions] = useState(none);
   useEffect(() => {
     if (!native || !enabled) return;
     let stopped = false;
@@ -34,12 +33,7 @@ export function useChanges(connection: Connection, enabled: boolean) {
           if (stopped) return;
           if (last && next.token !== last.token) {
             const topics = moved(last.versions, next.versions);
-            setState((s) => ({
-              changes: s.changes + 1,
-              versions: topics.length
-                ? { ...s.versions, ...Object.fromEntries(topics.map((t) => [t, s.versions[t] + 1])) }
-                : s.versions,
-            }));
+            if (topics.length) setVersions((v) => ({ ...v, ...Object.fromEntries(topics.map((t) => [t, v[t] + 1])) }));
           }
           last = next;
           // A burst of changes, such as a sync, refreshes at most twice a second.
@@ -53,5 +47,5 @@ export function useChanges(connection: Connection, enabled: boolean) {
       stopped = true;
     };
   }, [connection, enabled]);
-  return state;
+  return versions;
 }
