@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
 import { ExternalLink, GitPullRequest } from "lucide-react";
-import type { Connection, FactoryBoard, FactoryItemDetail } from "@agentgate/protocol";
+import type { Connection, FactoryBoard } from "@agentgate/protocol";
 import { factoryOp, openExternal } from "../../api.ts";
 import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
-import { useGeneration } from "../../features/proxy/useGeneration.ts";
+import { useDaemon } from "../../useDaemon.ts";
 import { ago } from "../utils.ts";
 import {
   ItemActions,
@@ -63,7 +62,7 @@ const WRITES: Record<string, string> = {
  * the `show` operation, which reaches the factory machine. */
 export function ItemDrawer({
   connection,
-  changes,
+  every,
   id,
   board,
   act,
@@ -71,49 +70,23 @@ export function ItemDrawer({
   close,
 }: {
   connection: Connection;
-  /** useChanges: the item is read again when it goes up. */
-  changes: number;
+  /** How often the detail is asked again with no change reported; the board's own interval. */
+  every?: number;
   id: string;
   board: FactoryBoard;
   act: Act;
   ask: AskReason;
   close: () => void;
 }) {
-  const [detail, setDetail] = useState<FactoryItemDetail>();
-  const [error, setError] = useState("");
-  const capture = useGeneration(connection);
-  // A forwarded read can take longer than the poll; like the board, one at a time for the item shown. A read for
-  // another item or connection neither holds back this one nor lands in it.
-  const loading = useRef<() => boolean>(undefined);
-  useEffect(() => {
-    let live = true;
-    const load = async () => {
-      if (loading.current?.()) return;
-      const generation = capture();
-      const current = () => live && generation();
-      loading.current = current;
-      try {
-        const next = await factoryOp(connection, "show", { item: id });
-        if (current()) {
-          setDetail(next);
-          setError("");
-        }
-      } catch (e) {
-        if (current()) setError(String(e));
-      } finally {
-        if (loading.current === current) loading.current = undefined;
-      }
-    };
-    void load();
-    const timer = setInterval(() => void load(), 5000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [connection, id, changes]);
+  const { data: detail, error } = useDaemon(() => factoryOp(connection, "show", { item: id }), {
+    topics: ["factory"],
+    deps: [id],
+    every,
+  });
 
-  // The board's row shows at once; the detail fills in.
-  const item = detail?.item ?? board.items.find((i) => i.id === id);
+  // The item from the board the cards behind it show, so the header never lags them; the detail adds its runs,
+  // write-backs and events.
+  const item = board.items.find((i) => i.id === id);
   if (!item) return null;
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">

@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { isVirtual, type FactoryBoard, type PublicProject, type ToolPreview } from "@agentgate/protocol";
+import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
 import { Button, Input, Tabs, TextField, toast } from "@heroui/react";
 import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../components/ui.tsx";
 import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
+import { useApp } from "../AppContext.tsx";
 import { factoryOp, openExternal, request } from "../api.ts";
 import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
@@ -37,15 +38,8 @@ export function Projects(props: ViewProps) {
   const [files, setFiles] = useState<string>();
   const [factoryRepo, setFactoryRepo] = useState<string>();
   /** The repositories the factory's folder names, while a factory is on and its folder loaded. */
-  const [factoryRepos, setFactoryRepos] = useState<string[]>();
+  const factoryRepos = useApp().board?.config?.repositories;
   const factoryOn = !!data.settings.factory;
-  useEffect(() => {
-    setFactoryRepos(undefined);
-    if (factoryOn)
-      void request<FactoryBoard>(connection, "/factory")
-        .then((board) => setFactoryRepos(board.config?.repositories))
-        .catch(() => {});
-  }, [connection, factoryOn]);
   const factoryItem = (repo: string) => {
     // One factory at a time: while one is on, a repository joins it instead.
     if (!factoryOn) return { label: "Start a factory", onAction: () => setFactoryRepo(repo) };
@@ -63,7 +57,6 @@ export function Projects(props: ViewProps) {
               actionProps: { children: "Open PR", onPress: () => void openExternal(pr) },
             });
           } else {
-            setFactoryRepos([...factoryRepos, repo]);
             toast(`The factory works in ${repo}`, { description: "It takes in issues labelled factory." });
           }
         }),
