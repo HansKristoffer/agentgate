@@ -1,7 +1,8 @@
-import { closeSync, ftruncateSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
+import { closeSync, fstatSync, ftruncateSync, mkdirSync, openSync, statSync, writeSync } from "node:fs";
 import { getErrorMessage } from "hanzio";
 import { dirname, join } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { promisify } from "node:util";
+import { gunzip as gunzipCallback } from "node:zlib";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { CHANNEL_CHUNK } from "../channel.ts";
@@ -24,8 +25,15 @@ import { routeHere } from "../setup.ts";
 /** Decompressed size of everything one handoff may bring: session transcripts plus the code bundle. */
 const MAX_TOTAL = 1024 * 1024 * 1024;
 const id = z.string().uuid();
+const gunzip = promisify(gunzipCallback);
+/** Bytes each destination job holds on disk, kept up by its chunks. Counted from disk once per `Handoffs` (so again
+ * after a restart), and shared by the Tailscale and relay routes, which one handoff may switch between. */
+const received = new WeakMap<Handoffs, Map<string, number>>();
 
-export function handoffRoutes(h: Handoffs) {
+/** `maxTotal` is for tests. */
+export function handoffRoutes(h: Handoffs, maxTotal = MAX_TOTAL) {
+  const counts = received.get(h) ?? new Map<string, number>();
+  received.set(h, counts);
   const app = new Hono<{ Variables: { peer: Peer } }>();
   app.onError((error, c) => {
     if (error instanceof z.ZodError) return c.json({ error: "invalid handoff request" }, 400);
@@ -103,19 +111,24 @@ export function handoffRoutes(h: Handoffs) {
       return c.json({ error: "invalid path" }, 400);
     if (!Number.isInteger(offset) || offset < 0) return c.json({ error: "invalid offset" }, 400);
 
-    const chunk = gunzipSync(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), {
+    const chunk = await gunzip(await readBody(c.req.raw.body, MAX_BODY, c.req.raw.signal), {
       maxOutputLength: CHANNEL_CHUNK,
     });
-    const file = join(h.dir(job.id), "files", path);
+    const dir = join(h.dir(job.id), "files");
+    const file = join(dir, path);
     mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    // Synchronous from here on, so concurrent chunks of one job keep its byte count right.
     const fd = openSync(file, "a+", 0o600);
     try {
+      const size = fstatSync(fd).size;
+      if (offset > size) return c.json({ error: "offset past the end of the file" }, 409);
+      const total = (counts.get(job.id) ?? sizeOnDisk(dir)) - size + offset;
       // A retry restarts a file: cut it back to this chunk's offset before writing.
-      if (offset > statSync(file).size) return c.json({ error: "offset past the end of the file" }, 409);
       ftruncateSync(fd, offset);
-      if (totalSize(h, job.id) + chunk.byteLength > MAX_TOTAL)
-        return c.json({ error: "the handoff is larger than 1 GiB" }, 413);
+      counts.set(job.id, total);
+      if (total + chunk.byteLength > maxTotal) return c.json({ error: "the handoff is larger than 1 GiB" }, 413);
       writeSync(fd, chunk, 0, chunk.byteLength, offset);
+      counts.set(job.id, total + chunk.byteLength);
     } finally {
       closeSync(fd);
     }
@@ -123,7 +136,10 @@ export function handoffRoutes(h: Handoffs) {
     return c.json({ size: offset + chunk.byteLength });
   });
   app.post("/handoff/:id/start", async (c) => {
-    start(h, id.parse(c.req.param("id")), c.get("peer").node, manifestSchema.parse(await jsonInput(c.req.raw)));
+    const handoff = id.parse(c.req.param("id"));
+    start(h, handoff, c.get("peer").node, manifestSchema.parse(await jsonInput(c.req.raw)));
+    // Started, the job takes no more files.
+    counts.delete(handoff);
     return c.json({ ok: true });
   });
   app.get("/handoff/:id", (c) => {
@@ -133,6 +149,7 @@ export function handoffRoutes(h: Handoffs) {
   app.delete("/handoff/:id", (c) => {
     const job = own(c);
     if (!job) return c.json(missing, 404);
+    counts.delete(job.id);
     abort(h, job);
     return c.json({ ok: true });
   });
@@ -152,8 +169,7 @@ export function relayedRoutes(h: Handoffs, factory: Hono<Env>) {
   return async (from: string, req: Request) => app.fetch(req, { from });
 }
 
-function totalSize(h: Handoffs, jobId: string): number {
-  const dir = join(h.dir(jobId), "files");
+function sizeOnDisk(dir: string): number {
   let total = 0;
   for (const f of new Bun.Glob("**/*").scanSync({ cwd: dir, onlyFiles: true, dot: true }))
     total += statSync(join(dir, f)).size;

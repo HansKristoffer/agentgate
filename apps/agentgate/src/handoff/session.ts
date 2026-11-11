@@ -1,7 +1,7 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, rmdirSync } from "node:fs";
+import { open, rename, rm } from "node:fs/promises";
 import { escapeRegExp } from "hanzio";
 import { dirname, join, relative, sep } from "node:path";
-import { atomicWrite } from "../files.ts";
 
 /** Native session files of a provider: where they live, and how to place them under another checkout.
  * Only Claude Code today; Codex keeps rollouts under `sessions/YYYY/MM/DD/` with `cwd` in `session_meta`
@@ -10,7 +10,7 @@ interface SessionProvider {
   /** Files relative to `root`, the session file first; undefined when the session is not in this home. */
   locate(home: string, sessionId: string, cwd: string): { root: string; files: string[] } | undefined;
   /** Copy received files (relative to `from`) so the session resumes in `cwd`, rewriting recorded paths in `oldPaths`. */
-  place(home: string, sessionId: string, from: string, files: string[], cwd: string, oldPaths: string[]): void;
+  place(home: string, sessionId: string, from: string, files: string[], cwd: string, oldPaths: string[]): Promise<void>;
   /** Delete the session's files under `cwd`'s key: a copy placed only so T3 could import it. */
   remove(home: string, sessionId: string, cwd: string): void;
   /** Whether a received relative path belongs to the session. */
@@ -63,6 +63,46 @@ export function rewriteCwd(text: string, oldPaths: string[], to: string): string
   return out;
 }
 
+/** A file's text as it streams in, cut at line breaks: the pieces of all yields together are `text.split("\n")`. A
+ * transcript can be hundreds of megabytes, which read or split whole would stall every other stream. */
+export async function* splitLines(file: Blob): AsyncGenerator<string[]> {
+  const decoder = new TextDecoder();
+  // A line longer than a read: kept in parts, so joining it is linear.
+  let partial: string[] = [];
+  for await (const bytes of file.stream()) {
+    const text = decoder.decode(bytes, { stream: true });
+    const end = text.lastIndexOf("\n");
+    if (end < 0) {
+      partial.push(text);
+      continue;
+    }
+    const lines = text.slice(0, end).split("\n");
+    lines[0] = partial.join("") + lines[0];
+    partial = [text.slice(end + 1)];
+    yield lines;
+  }
+  yield [partial.join("") + decoder.decode()];
+}
+
+/** Copy `from` to `target` with its recorded cwd rewritten (`rewriteCwd`, line by line, which a match never spans),
+ * then rename it into place: the rename replaces a symlink at `target` rather than following it. */
+async function placeFile(from: string, target: string, oldPaths: string[], cwd: string) {
+  const temp = `${target}.${crypto.randomUUID()}.tmp`;
+  const out = await open(temp, "wx", 0o600);
+  try {
+    let first = true;
+    for await (const lines of splitLines(Bun.file(from))) {
+      await out.write((first ? "" : "\n") + rewriteCwd(lines.join("\n"), oldPaths, cwd));
+      first = false;
+    }
+    await out.sync();
+    await rename(temp, target);
+  } finally {
+    await out.close();
+    await rm(temp, { force: true });
+  }
+}
+
 /** Create `dir` under `root` without passing through a symlink, so placed files stay inside the Claude home. */
 function safeDir(root: string, dir: string) {
   const rel = relative(root, dir);
@@ -101,7 +141,7 @@ export const claudeSessions: SessionProvider = {
     }
     return undefined;
   },
-  place(home, sessionId, from, files, cwd, oldPaths) {
+  async place(home, sessionId, from, files, cwd, oldPaths) {
     const root = join(home, "projects", claudeProjectKey(realPath(cwd)));
     mkdirSync(home, { recursive: true, mode: 0o700 });
     safeDir(home, root);
@@ -109,8 +149,7 @@ export const claudeSessions: SessionProvider = {
       if (!this.accepts(sessionId, file)) throw new Error(`unexpected session file ${file}`);
       const target = join(root, file);
       safeDir(home, dirname(target));
-      // atomicWrite renames over the target, which replaces a symlink rather than following it.
-      atomicWrite(target, rewriteCwd(readFileSync(join(from, file), "utf8"), oldPaths, cwd));
+      await placeFile(join(from, file), target, oldPaths, cwd);
     }
   },
   remove(home, sessionId, cwd) {

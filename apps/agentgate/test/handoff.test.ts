@@ -26,11 +26,21 @@ import {
   t3State,
 } from "../src/handoff/t3.ts";
 import { allNodes, handoffJob } from "../src/handoff/threads.ts";
+import { sessionLines, sessionMessages } from "../src/handoff/history.ts";
+import { Handoffs } from "../src/handoff/jobs.ts";
+import { handoffRoutes } from "../src/handoff/routes.ts";
+import { CHANNEL_CHUNK } from "../src/channel.ts";
+import { startLagProbe } from "../src/lag.ts";
+import type { Peer } from "../src/sync.ts";
+import { Hono } from "hono";
+import { promisify } from "node:util";
+import { gzip as gzipCallback } from "node:zlib";
 import { Store } from "../src/store.ts";
 import { nodeThreadsSchema } from "@agentgate/protocol";
 import { startNodes } from "./fixtures/nodes.ts";
 
 afterAll(removeTmp);
+const gzip = promisify(gzipCallback);
 
 const stops: (() => unknown)[] = [];
 afterEach(() => {
@@ -61,7 +71,7 @@ test("rewriteCwd changes only recorded cwd values and keeps every other byte", (
   );
 });
 
-test("a Claude session is found with its subagent transcripts and placed under another checkout", () => {
+test("a Claude session is found with its subagent transcripts and placed under another checkout", async () => {
   const home = tmp(),
     cwd = tmp(),
     sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
@@ -76,7 +86,7 @@ test("a Claude session is found with its subagent transcripts and placed under a
 
   const dest = tmp(),
     target = tmp();
-  claudeSessions.place(dest, sid, found.root, found.files, target, ["/a/wt"]);
+  await claudeSessions.place(dest, sid, found.root, found.files, target, ["/a/wt"]);
   const root = join(dest, "projects", claudeProjectKey(target));
   expect(readFileSync(join(root, `${sid}.jsonl`), "utf8")).toBe(`{"cwd":${JSON.stringify(target)}}\n`);
   expect(readFileSync(join(root, sid, "subagents", "agent-1.jsonl"), "utf8")).toBe(
@@ -89,9 +99,113 @@ test("a Claude session is found with its subagent transcripts and placed under a
   expect(safeRelative("/abs") || safeRelative("a//b") || safeRelative("a\\b")).toBe(false);
   const elsewhereTarget = tmp();
   symlinkSync(tmp(), join(dest, "projects", claudeProjectKey(elsewhereTarget)));
-  expect(() => claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).toThrow(
+  await expect(claudeSessions.place(dest, sid, found.root, found.files, elsewhereTarget, [])).rejects.toThrow(
     "not a directory",
   );
+});
+
+/** Node b with a handoff from a waiting for its files, and b's peer routes as a reaches them. `restart` stands for a
+ * daemon restart: the same store and folders, new routes. */
+function receiver(maxTotal?: number) {
+  const s = new Store(":memory:");
+  s.setLocal("node", "b");
+  stops.push(() => s.close());
+  const options = { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() };
+  const routes = (h: Handoffs) =>
+    new Hono<{ Variables: { peer: Peer } }>()
+      .use("*", async (c, next) => {
+        c.set("peer", { node: "a" } as Peer);
+        await next();
+      })
+      .route("/", handoffRoutes(h, maxTotal));
+  const h = new Handoffs(s, options);
+  let app = routes(h);
+  const { id } = h.create({
+    id: crypto.randomUUID(),
+    role: "destination",
+    thread: "",
+    target: "b",
+    step: "prepare",
+    state: {
+      source: "a",
+      prepare: {
+        remoteUrl: "https://github.com/test/repo.git",
+        projectTitle: "repo",
+        branch: null,
+        baseSha: null,
+        worktree: false,
+      },
+      warnings: [],
+      timings: [],
+    },
+  });
+  return {
+    files: join(h.dir(id), "files"),
+    /** Send `bytes` gzipped as the source does, and answer with the status. */
+    async put(path: string, offset: number, bytes: Uint8Array) {
+      const query = new URLSearchParams({ path, offset: String(offset) });
+      const body = await gzip(bytes);
+      return (await app.request(`/handoff/${id}/files?${query}`, { method: "PUT", body })).status;
+    },
+    restart() {
+      app = routes(new Handoffs(s, options));
+    },
+  };
+}
+
+test("a 50 MB transcript is received, placed and read for its history without stalling the daemon", async () => {
+  const sid = "44957c3e-2fd8-41d9-a055-4301c88e0d7e";
+  const { files, put } = receiver();
+  // Lines of uneven length, so reads end mid-line and mid-character.
+  const lines: string[] = [];
+  let size = 0;
+  while (size < 50 * 1024 * 1024) {
+    const i = lines.length;
+    const content = `${i} ø ${"x".repeat(i % 3000)}`;
+    lines.push(JSON.stringify({ type: i % 2 ? "assistant" : "user", cwd: "/a/wt", message: { content } }));
+    size += lines[i]!.length + 1;
+  }
+  const text = lines.join("\n") + "\n";
+  const transcript = new TextEncoder().encode(text);
+
+  const home = tmp(),
+    target = tmp();
+  const file = Bun.file(join(files, "session", `${sid}.jsonl`));
+  const statuses = new Set<number>();
+  const probe = startLagProbe(10);
+  let n, history;
+  try {
+    for (let offset = 0; offset < transcript.length; offset += CHANNEL_CHUNK)
+      statuses.add(await put(`session/${sid}.jsonl`, offset, transcript.subarray(offset, offset + CHANNEL_CHUNK)));
+    await claudeSessions.place(home, sid, join(files, "session"), [`${sid}.jsonl`], target, ["/a/wt"]);
+    n = await sessionLines(file);
+    history = await sessionMessages(file, n - 3, "2026-10-15T08:00:00.000Z");
+  } finally {
+    probe.stop();
+  }
+
+  expect(probe.read().worstMs).toBeLessThan(50);
+  expect([...statuses]).toEqual([200]);
+  expect(n).toBe(lines.length);
+  expect(history?.map((m) => m.text.split(" ")[0])).toEqual([n - 3, n - 2, n - 1].map(String));
+  const placed = await Bun.file(join(home, "projects", claudeProjectKey(target), `${sid}.jsonl`)).text();
+  // Compared as a boolean: a failure would otherwise print both 50 MB strings.
+  expect(placed === rewriteCwd(text, ["/a/wt"], target)).toBe(true);
+});
+
+test("a handoff past its size cap is refused, counting retried chunks once and the files already there after a restart", async () => {
+  const b = receiver(10);
+  const bytes = (n: number) => new Uint8Array(n).fill(120);
+
+  expect(await b.put("session/s.jsonl", 0, bytes(6))).toBe(200);
+  expect(await b.put("bundle", 0, bytes(4))).toBe(200);
+  // A retry restarts the file: its earlier bytes no longer count.
+  expect(await b.put("session/s.jsonl", 0, bytes(6))).toBe(200);
+  expect(await b.put("bundle", 4, bytes(1))).toBe(413);
+
+  b.restart();
+  expect(await b.put("bundle", 4, bytes(1))).toBe(413);
+  expect(await b.put("bundle", 0, bytes(4))).toBe(200);
 });
 
 test("code travels as a bundle: unpushed commits and uncommitted, untracked and deleted files arrive; the source stays untouched until it stashes", async () => {
