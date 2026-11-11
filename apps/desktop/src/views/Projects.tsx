@@ -7,7 +7,7 @@ import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu } from "../co
 import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
 import { useApp } from "../AppContext.tsx";
-import { factoryOp, openExternal, request } from "../api.ts";
+import { control, factoryOp, openExternal, request } from "../api.ts";
 import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
 import { InitDialog } from "./factory/Init.tsx";
@@ -27,9 +27,7 @@ export function Projects(props: ViewProps) {
   const shown = (repos ?? []).filter((r) => `${r.repo} ${r.path}`.toLowerCase().includes(needle));
   const scan = (folder: string) =>
     perform(async () => {
-      const result = await request<{ repos: { repo: string; path: string }[] }>(connection, "/projects/scan", "POST", {
-        dir: folder,
-      });
+      const result = await control(connection, "project scan", { dir: folder });
       setRepos(result.repos);
       setQuery("");
     });
@@ -80,7 +78,7 @@ export function Projects(props: ViewProps) {
       const path = await open({ title: `Choose a gitignored file in a checkout of ${project}`, defaultPath: checkout });
       if (typeof path === "string")
         await perform(
-          () => request(connection, "/projects/files", "POST", { project, path }),
+          () => control(connection, "project files add", { project, paths: [path] }),
           "File saved for every machine",
         );
     })();
@@ -98,10 +96,7 @@ export function Projects(props: ViewProps) {
       label: on ? "Stop sharing repo skills between Claude and Codex" : "Share repo skills between Claude and Codex",
       onAction: () =>
         void perform(
-          async () => {
-            for (const c of mine)
-              await request(connection, "/checkouts/mirroring", "PUT", { path: c.path, enabled: !on });
-          },
+          () => control(connection, "project mirroring", { project: id, on: !on }),
           on ? "Repository skills no longer shared" : "Repository skills shared between Claude and Codex",
         ),
     };
@@ -181,9 +176,7 @@ export function Projects(props: ViewProps) {
                 {
                   label: "Preview tools",
                   onAction: () =>
-                    void perform(async () =>
-                      setTools(await request<ToolPreview[]>(connection, `/projects/tools?id=${idPath(p.id)}`)),
-                    ),
+                    void perform(async () => setTools(await control(connection, "project tools", { id: p.id }))),
                 },
                 { label: "Env files", onAction: () => setFiles(p.id) },
                 factoryItem(p.id),
@@ -193,10 +186,7 @@ export function Projects(props: ViewProps) {
                   danger: true,
                   onAction: async () => {
                     if (await confirmDelete(p.id))
-                      void perform(
-                        () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
-                        "Project removed",
-                      );
+                      void perform(() => control(connection, "project rm", { id: p.id }), "Project removed");
                   },
                 },
               ]}
@@ -242,7 +232,7 @@ export function Projects(props: ViewProps) {
                         onAction: async () => {
                           if (await confirmDelete(p.id))
                             void perform(
-                              () => request(connection, `/projects?id=${idPath(p.id)}`, "DELETE"),
+                              () => control(connection, "project rm", { id: p.id }),
                               "Virtual project removed",
                             );
                         },
@@ -374,7 +364,7 @@ export function Projects(props: ViewProps) {
               picked={picked}
               save={(project) =>
                 void perform(async () => {
-                  await request(connection, "/projects", "PUT", project);
+                  await control(connection, "project set", project);
                   setEdit(undefined);
                 }, "Project saved")
               }
@@ -397,7 +387,7 @@ export function Projects(props: ViewProps) {
                 // Untrimmed: an env file's whitespace is its own.
                 const content = String(new FormData(e.currentTarget).get("content") ?? "");
                 void perform(async () => {
-                  await request(connection, "/projects/files/content", "PUT", {
+                  await control(connection, "project files set", {
                     project: files,
                     path: fileEdit.path,
                     content,
@@ -457,12 +447,7 @@ export function Projects(props: ViewProps) {
                         variant="ghost"
                         onPress={() =>
                           void perform(
-                            () =>
-                              request(
-                                connection,
-                                `/projects/files?id=${idPath(files)}&path=${encodeURIComponent(f.path)}`,
-                                "DELETE",
-                              ),
+                            () => control(connection, "project files rm", { project: files, paths: [f.path] }),
                             "Removed from every machine",
                           )
                         }

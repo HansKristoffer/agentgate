@@ -406,12 +406,13 @@ test("JSON project updates preserve explicit custom prefixes and remove excluded
   const a = app(ctx);
   const body = JSON.stringify({
     id: "o/r",
-    mcp: { posthog: "posthog-lullu", geysier: "geysier" },
+    // As the app's form sends it: a prefix it dropped is named with null.
+    mcp: { posthog: "posthog-lullu", geysier: "geysier", linear: null },
     inheritDefaults: true,
   });
   const res = await a.fetch(
-    new Request("http://127.0.0.1:7878/api/projects", {
-      method: "PUT",
+    new Request("http://127.0.0.1:7878/api/ops/project%20set", {
+      method: "POST",
       body,
       headers: { host: "127.0.0.1:7878", "content-type": "application/json" },
     }),

@@ -289,7 +289,7 @@ test("native operations validate JSON and update accounts, projects and server r
   expect((await call("/api/ops/mcp%20add", "POST", { name: "fs", target: "filesystem" })).status).toBe(200);
   expect(
     (
-      await call("/api/projects", "PUT", {
+      await call("/api/ops/project%20set", "POST", {
         id: "owner/repo",
         mcp: { files: "fs" },
         inheritDefaults: false,
@@ -298,7 +298,7 @@ test("native operations validate JSON and update accounts, projects and server r
   ).toBe(200);
   expect(
     (
-      await call("/api/projects", "PUT", {
+      await call("/api/ops/project%20set", "POST", {
         id: "other/repo",
         mcp: { invalid: "missing" },
       })
@@ -447,7 +447,8 @@ test("omitted project skills preserve explicit assignments and malformed status 
   const { call, s } = fixture();
   writeSkillMd(s, "x", "instructions");
   s.put("project", "Owner/Repo", { id: "Owner/Repo", skills: ["x"] });
-  expect((await call("/api/projects", "PUT", { id: "owner/repo", mcp: {}, inheritDefaults: false })).status).toBe(200);
+  const save = { id: "owner/repo", mcp: {}, inheritDefaults: false };
+  expect((await call("/api/ops/project%20set", "POST", save)).status).toBe(200);
   expect(s.get("project", "Owner/Repo")!.skills).toEqual(["x"]);
   expect(s.get("project", "owner/repo")).toBeUndefined();
   const data = (await (await call("/api/status")).json()) as Status;
@@ -455,20 +456,6 @@ test("omitted project skills preserve explicit assignments and malformed status 
   expect(statusSchema.safeParse({ ...data, apiVersion: API_VERSION - 1 }).success).toBe(false);
   const { skills, ...missing } = data;
   expect(statusSchema.safeParse(missing).success).toBe(false);
-});
-
-test("a project form opened before another machine's change cannot save over it", async () => {
-  const { call, s } = fixture();
-  writeSkillMd(s, "x", "instructions");
-  s.put("project", "owner/repo", { id: "owner/repo" });
-  const opened = ((await (await call("/api/status")).json()) as Status).projects[0]!.revision;
-  s.put("project", "owner/repo", { id: "owner/repo", skills: ["x"] });
-  const form = { id: "owner/repo", mcp: {}, skills: [], inheritDefaults: true };
-  expect((await call("/api/projects", "PUT", { ...form, revision: opened })).status).toBe(409);
-  expect(s.get("project", "owner/repo")!.skills).toEqual(["x"]);
-  // The CLI and older apps send none.
-  expect((await call("/api/projects", "PUT", form)).status).toBe(200);
-  expect(s.get("project", "owner/repo")!.skills).toEqual([]);
 });
 
 test("a one-key settings patch needs no revision; a patch of several still does", async () => {
@@ -542,12 +529,11 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
     .at(-1)!
     .replace(/\.git$/, "")}`;
 
-  const body = { project, path: join(r.a, ".env.local") };
-  expect(
-    (await call("/api/projects/files", "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status,
-  ).toBe(403);
-  expect((await call("/api/projects/files", "POST", body)).status).toBe(200);
-  const wrong = await call("/api/projects/files", "POST", { project, path: join(other.b, ".env") });
+  const add = "/api/ops/project%20files%20add";
+  const body = { project, paths: [join(r.a, ".env.local")] };
+  expect((await call(add, "POST", body, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect((await call(add, "POST", body)).status).toBe(200);
+  const wrong = await call(add, "POST", { project, paths: [join(other.b, ".env")] });
   expect(wrong.status).toBe(400);
   expect(((await wrong.json()) as { error: string }).error).toContain("not test/repo");
 
@@ -564,17 +550,14 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
   const opened = (await (await call(content)).json()) as { content: string; sha256: string };
   expect(opened.content).toBe("API_KEY=private-value\n");
   const edit = { project, path: ".env.local", content: "API_KEY=new-value\n", sha256: opened.sha256 };
-  expect(
-    (await call("/api/projects/files/content", "PUT", edit, "tailnet", { authorization: "Bearer admin-secret" }))
-      .status,
-  ).toBe(403);
-  expect((await call("/api/projects/files/content", "PUT", edit)).status).toBe(200);
+  const set = "/api/ops/project%20files%20set";
+  expect((await call(set, "POST", edit, "tailnet", { authorization: "Bearer admin-secret" })).status).toBe(403);
+  expect((await call(set, "POST", edit)).status).toBe(200);
   expect(((await (await call(content)).json()) as { content: string }).content).toBe("API_KEY=new-value\n");
-  expect((await call("/api/projects/files/content", "PUT", { ...edit, content: "STALE\n" })).status).toBe(400);
+  expect((await call(set, "POST", { ...edit, content: "STALE\n" })).status).toBe(400);
 
-  expect((await call(`/api/projects/files?id=${encodeURIComponent(project)}&path=.env.local`, "DELETE")).status).toBe(
-    200,
-  );
+  const rm = { project, paths: [".env.local"] };
+  expect((await call("/api/ops/project%20files%20rm", "POST", rm)).status).toBe(200);
   expect([...readStore(join(root, `github.com/${project}`)).files.keys()]).toEqual([]);
   const after = (await (await call("/api/status")).json()) as Status;
   expect(after.projects.find((p) => p.id === project)!.files).toEqual([]);

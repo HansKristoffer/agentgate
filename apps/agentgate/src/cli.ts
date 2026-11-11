@@ -40,17 +40,9 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   skills [ls] | show <name> | repo [ls]
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   skills conflicts                            skill folders that clash with Agentgate's copy, and the ones you kept
-  project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
-  project ls | show <owner/repo> | defaults <owner/repo> on|off | rm <owner/repo>
-  project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
-  project files cat <path> | set <path> [--if-sha <sha256>] < new-contents
-                                             print or replace a synced file's contents; --if-sha refuses to
-                                             replace a newer version than the one cat printed (cat | shasum -a 256)
-  remote enable @name [--node srv]            public MCP endpoint for a virtual project (e.g. for Grok)
-  remote show|secret|regenerate|disable @name | remote ls
-  remote factory @name on|off                 let the endpoint see and steer the software factory: the board, items,
-                                             adding tasks, approve/reject/retry/drop, pause and resume
-  remote webhook @name <https-url>|off        post the factory's updates (items added, moved, waiting for you) there
+  project ls | show <owner/repo>              projects, and a project's tool prefixes and revision
+  project files ls | cat <path>               in a checkout: its synced gitignored files (.env.local), or one's contents
+  remote ls | show @name                      virtual projects' endpoints, or one's URL and secret
   nodes                                       paired machines, how each connects, and pending updates
   relay [status]                              relay sync state and errors
   t3 connect [<pairing link> | --url <url> --token <token>] [--node <node>]   connect a machine's agentgate to its T3 Code; with no link, its T3 Code creates one
@@ -107,7 +99,6 @@ const OPTIONS = {
   skill: { type: "string" },
   project: { type: "string", multiple: true },
   file: { type: "string" },
-  "if-sha": { type: "string" },
   tailscale: { type: "boolean" },
   "client-id": { type: "string" },
   site: { type: "string" },
@@ -129,8 +120,6 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
   proxy: ["model"],
   requests: ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"],
   skills: ["skill", "project", "yes"],
-  project: ["if-sha"],
-  remote: ["node"],
   logins: ["client-id", "site"],
   t3: ["node", "url", "token", "tailscale"],
   threads: ["node"],
