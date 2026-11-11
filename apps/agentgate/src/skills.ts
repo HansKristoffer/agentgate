@@ -1,13 +1,17 @@
 import {
   SkillConflict,
+  decodedSize,
   projectIdSchema,
   skillSchema,
+  type ProjectChange,
+  type SkillPreviewResponse,
   type SkillRepoSummary,
   type SkillSummary,
 } from "@agentgate/protocol";
-import { exponentialBackoff, getErrorMessage, getUniqueValues } from "hanzio";
+import { exponentialBackoff, getErrorMessage, getUniqueValues, sumBy } from "hanzio";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
+import { UserError } from "./ops/registry.ts";
 import { canonicalProject } from "./mcp/gateway.ts";
 import {
   description,
@@ -28,6 +32,46 @@ export const skillRevision = (s: Store, id: string) => {
   const record = s.record("skill", id);
   return record && !record.deleted ? JSON.stringify([record.rev, record.node, record.updated_at]) : null;
 };
+/** A skill's SKILL.md text and its files, for the editor and `skills show`. */
+export function skillDetail(s: Store, id: string) {
+  const skill = s.get("skill", id);
+  if (!skill) return undefined;
+  const md = skill.files.find((f) => f.path === "SKILL.md");
+  return {
+    id: skill.id,
+    source: skill.source,
+    revision: skillRevision(s, id),
+    skillMd: md ? Buffer.from(md.data, "base64").toString() : "",
+    files: skill.files.map((f) => ({ path: f.path, size: decodedSize(f.data) })),
+  };
+}
+
+/** What a fetched source would install, with each skill's audit and whether it clashes with one already here. */
+export function skillPreview(
+  s: Store,
+  artifact: { token: string; source: string; skills: FetchedSkill[] },
+): SkillPreviewResponse {
+  return {
+    token: artifact.token,
+    skills: artifact.skills.map((k) => {
+      const existing = s.get("skill", k.id);
+      return {
+        id: k.id,
+        description: k.description,
+        files: k.files.length,
+        size: sumBy(k.files, (file) => decodedSize(file.data)),
+        hash: k.hash,
+        security: k.security,
+        installed: !!existing,
+        conflict:
+          existing && existing.source !== artifact.source
+            ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}`
+            : undefined,
+      };
+    }),
+  };
+}
+
 /** Skills the software factory installs from its folder (factory/skills.ts); only a folder load changes them. */
 const isFactorySource = (source: string) => source.startsWith("factory:");
 const contentHash = (files: Skill["files"]) =>
@@ -93,9 +137,9 @@ export function installSkills(
 ): string[] {
   fetched = validateFetched(fetched);
   const selected = new Set(ids ?? fetched.map((f) => f.id));
-  if (!selected.size) throw new Error("Choose at least one skill");
+  if (!selected.size) throw new UserError("Choose at least one skill");
   const missing = [...selected].filter((id) => !fetched.some((f) => f.id === id));
-  if (missing.length) throw new Error(`not in ${source}: ${missing.join(", ")}`);
+  if (missing.length) throw new UserError(`not in ${source}: ${missing.join(", ")}`);
   return s.transaction(() => {
     const targets = projectsFor(s, projects);
     return fetched
@@ -128,7 +172,7 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
     // It follows its source, which would overwrite any edit on the next update.
     if (prev?.source)
       throw new SkillConflict(`${id} comes from ${prev.source} and updates from it, so it can't be edited`);
-    if (!text.trim()) throw new Error("SKILL.md is empty");
+    if (!text.trim()) throw new UserError("SKILL.md is empty");
     description(text, id);
     const files = [
       ...(prev?.files.filter((f) => f.path !== "SKILL.md") ?? []),
@@ -155,10 +199,28 @@ export function deleteSkill(s: Store, id: string) {
 
 export function setSkillProjects(s: Store, id: string, projects: string[]) {
   s.transaction(() => {
-    if (!s.get("skill", id)) throw new Error(`no skill ${id}`);
+    if (!s.get("skill", id)) throw new UserError(`no skill ${id}`);
     const targets = projectsFor(s, projects);
     for (const p of s.list("project")) if (!targets.includes(p.id)) assign(s, p.id, id, false);
     for (const p of targets) assign(s, p, id, true);
+  });
+}
+
+/** The projects `change` leaves: its whole set, or `current` with only its additions and removals applied, so a form
+ * opened before another machine's change does not undo it. */
+function changed(s: Store, current: string[], change: ProjectChange) {
+  if ("projects" in change) return change.projects;
+  const remove = new Set(change.remove.map((p) => canonicalProject(s, p)));
+  return [...current.filter((p) => !remove.has(p)), ...change.add];
+}
+
+export function changeSkillProjects(s: Store, id: string, change: ProjectChange) {
+  s.transaction(() => {
+    const current = s
+      .list("project")
+      .filter((p) => p.skills.includes(id))
+      .map((p) => p.id);
+    setSkillProjects(s, id, changed(s, current, change));
   });
 }
 
@@ -175,13 +237,15 @@ export function updateSkill(
   if (hit) return hit;
   const work = (async () => {
     const { skill, revision } = s.transaction(() => ({ skill: s.get("skill", id), revision: skillRevision(s, id) }));
-    if (!skill) throw new Error(`no skill ${id}`);
-    if (!skill.source) throw new Error(`${id} was written by hand; edit it instead`);
+    if (!skill) throw new UserError(`no skill ${id}`);
+    if (!skill.source) throw new UserError(`${id} was written by hand; edit it instead`);
     if (isFactorySource(skill.source))
-      throw new Error(`${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`);
+      throw new UserError(
+        `${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`,
+      );
     if (repoProjects(s, skill.source).length) return syncSkillRepo(s, skill.source, fetchRepo, signal);
     const fresh = validateFetched(await fetch(skill.source, skill.selector ?? "*", signal)).find((f) => f.id === id);
-    if (!fresh) throw new Error(`${skill.source} no longer has ${id}`);
+    if (!fresh) throw new UserError(`${skill.source} no longer has ${id}`);
     signal?.throwIfAborted();
     return s.transaction(() => {
       if (skillRevision(s, id) !== revision) throw new SkillConflict();
@@ -299,7 +363,7 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
   s.transaction(() => {
     const targets = projectsFor(s, projects),
       ids = repoSkills(s, url);
-    if (!targets.length && !repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    if (!targets.length && !repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
     for (const p of s.list("project"))
       if (p.skillRepos.includes(url) && !targets.includes(p.id)) {
         s.put("project", p.id, { ...p, skillRepos: p.skillRepos.filter((r) => r !== url) });
@@ -317,6 +381,20 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
   });
 }
 
+/** Moves a connected repository's skills to other projects. Never disconnects it, which deletes its skills on every
+ * machine and is asked for on its own (`skills repo rm`). */
+export function changeSkillRepoProjects(s: Store, input: string, change: ProjectChange) {
+  const url = repoUrl(input);
+  return s.transaction(() => {
+    const current = repoProjects(s, url);
+    if (!current.length) throw new UserError(`${url} is not connected`);
+    const projects = changed(s, current, change);
+    if (!projects.length) throw new UserError("Choose at least one project, or disconnect the repository");
+    setSkillRepoProjects(s, url, projects);
+    return repoProjects(s, url);
+  });
+}
+
 /** Fetch first, so a missing or empty repository is never connected. */
 export async function connectSkillRepo(
   s: Store,
@@ -326,7 +404,7 @@ export async function connectSkillRepo(
   signal?: AbortSignal,
 ) {
   const url = repoUrl(input);
-  if (!projects.length) throw new Error("Choose every session or at least one project");
+  if (!projects.length) throw new UserError("Choose every session or at least one project");
   const fetched = (await fetch(url, undefined, signal))!;
   signal?.throwIfAborted();
   s.transaction(() => {
@@ -374,7 +452,7 @@ export function syncSkillRepo(
   const hit = flights.get(url);
   if (hit) return hit;
   const work = (async () => {
-    if (!repoProjects(s, url).length) throw new Error(`${url} is not connected`);
+    if (!repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
     const state = repoState(s, url),
       present = repoSkills(s, url);
     const since = state.skills?.every((id) => present.includes(id)) ? state.commit : undefined;

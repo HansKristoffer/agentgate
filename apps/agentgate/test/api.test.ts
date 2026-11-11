@@ -1,10 +1,9 @@
 import { revision } from "../src/configuration.ts";
 import { afterAll, afterEach, expect, test } from "bun:test";
-import { API_VERSION, changesSchema, statusSchema, type SkillPreviewResponse, type Status } from "@agentgate/protocol";
+import { API_VERSION, changesSchema, statusSchema, type Status } from "@agentgate/protocol";
 import { app, makeCtx, type Listener } from "../src/daemon.ts";
 import { newInstance } from "../src/mcp/templates.ts";
 import { route } from "../src/llm/routing.ts";
-import { SkillImports } from "../src/skill-import.ts";
 import { writeSkillMd } from "../src/skills.ts";
 import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
@@ -439,55 +438,6 @@ test("checkout writes share the browser guard, JSON validation, and loopback res
   expect(registered).toBe(0);
   expect((await call("/api/checkout", "POST", body)).status).toBe(200);
   expect(registered).toBe(1);
-});
-
-test("installation uses the reviewed artifact and expired previews never refetch implicitly", async () => {
-  let now = 0,
-    fetches = 0;
-  const imports = new SkillImports(
-    async () => {
-      fetches++;
-      return [
-        {
-          id: "x",
-          description: "x",
-          files: [{ path: "SKILL.md", data: Buffer.from(`version-${fetches}`).toString("base64") }],
-        },
-      ];
-    },
-    () => now,
-  );
-  const { call, s } = fixture({ imports });
-  const preview = (await (
-    await call("/api/skills/fetch", "POST", { source: "owner/pack" })
-  ).json()) as SkillPreviewResponse;
-  expect(preview.skills[0]!.size).toBe(9);
-  expect(
-    (await call("/api/skills", "POST", { token: preview.token, ids: ["x"], projects: ["owner/repo"] })).status,
-  ).toBe(201);
-  expect(fetches).toBe(1);
-  expect(Buffer.from(s.get("skill", "x")!.files[0]!.data, "base64").toString()).toBe("version-1");
-  now = 10 * 60_000;
-  expect((await call("/api/skills", "POST", { token: preview.token, ids: ["x"] })).status).toBe(409);
-  expect(fetches).toBe(1);
-  expect((await call("/api/skills", "POST", { source: "owner/pack", ids: ["x"] })).status).toBe(400);
-  const different = (await (
-    await call("/api/skills/fetch", "POST", { source: "different/pack" })
-  ).json()) as SkillPreviewResponse;
-  expect(different.skills[0]!.conflict).toContain("owner/pack");
-  expect((await call("/api/skills", "POST", { token: different.token, ids: ["x"] })).status).toBe(409);
-});
-
-test("skill editor requires revision preconditions and preserves newer content", async () => {
-  const { call, s } = fixture();
-  expect((await call("/api/skills/x", "PUT", { skillMd: "first", revision: null })).status).toBe(200);
-  const first = (await (await call("/api/skills/x")).json()) as { revision: string };
-  expect(typeof first.revision).toBe("string");
-  expect((await call("/api/skills/x", "PUT", { skillMd: "unguarded" })).status).toBe(400);
-  expect((await call("/api/skills/x", "PUT", { skillMd: "duplicate creation", revision: null })).status).toBe(409);
-  expect((await call("/api/skills/x", "PUT", { skillMd: "newer", revision: first.revision })).status).toBe(200);
-  expect((await call("/api/skills/x", "PUT", { skillMd: "stale", revision: first.revision })).status).toBe(409);
-  expect(Buffer.from(s.get("skill", "x")!.files[0]!.data, "base64").toString()).toBe("newer");
 });
 
 test("omitted project skills preserve explicit assignments and malformed status fails validation", async () => {

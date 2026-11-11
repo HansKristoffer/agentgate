@@ -21,6 +21,7 @@ import {
 import { homedir, tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { z } from "zod";
+import { UserError } from "./ops/registry.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
 import type { Skill } from "./store.ts";
 
@@ -46,16 +47,16 @@ export const skillId = (name: string) =>
 export function description(text: string, expectedName?: string): string {
   const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
   if (!match) {
-    if (expectedName && text.startsWith("---")) throw new Error("SKILL.md has unterminated frontmatter");
+    if (expectedName && text.startsWith("---")) throw new UserError("SKILL.md has unterminated frontmatter");
     return "";
   }
   try {
     const value = Bun.YAML.parse(match[1]!) as { name?: unknown; description?: unknown } | null;
     if (expectedName && value?.name !== undefined && value.name !== expectedName)
-      throw new Error(`Frontmatter name must be ${expectedName}`);
+      throw new UserError(`Frontmatter name must be ${expectedName}`);
     return typeof value?.description === "string" ? value.description.trim().slice(0, 8192) : "";
   } catch (error) {
-    if (expectedName) throw new Error(`Invalid SKILL.md frontmatter: ${getErrorMessage(error)}`);
+    if (expectedName) throw new UserError(`Invalid SKILL.md frontmatter: ${getErrorMessage(error)}`);
     return "";
   }
 }
@@ -64,24 +65,24 @@ export function readSkill(dir: string): Pick<FetchedSkill, "description" | "file
   const files: Skill["files"] = [];
   let bytes = 0;
   const walk = (rel: string, depth = 0) => {
-    if (depth > 32) throw new Error("skill directory nesting exceeds 32 levels");
+    if (depth > 32) throw new UserError("skill directory nesting exceeds 32 levels");
     for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
       if (entry.name === ".git" || entry.name === SKILL_MARKER) continue;
       const path = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(path, depth + 1);
       else if (entry.isFile()) {
-        if (files.length >= MAX_SKILL_FILES) throw new Error("skill has too many files");
+        if (files.length >= MAX_SKILL_FILES) throw new UserError("skill has too many files");
         const disk = join(dir, path),
           stat = lstatSync(disk);
-        if (!stat.isFile()) throw new Error(`skill file changed while reading: ${path}`);
+        if (!stat.isFile()) throw new UserError(`skill file changed while reading: ${path}`);
         bytes += Math.ceil(stat.size / 3) * 4;
-        if (bytes > MAX_SKILL) throw new Error("skill exceeds 3 MiB of encoded data (about 2.25 MiB of files)");
+        if (bytes > MAX_SKILL) throw new UserError("skill exceeds 3 MiB of encoded data (about 2.25 MiB of files)");
         files.push({
           path,
           data: readFileSync(disk).toString("base64"),
           ...(stat.mode & 0o111 ? { executable: true } : {}),
         });
-      } else throw new Error(`unsupported skill entry ${path}: symlinks and special files cannot be synced`);
+      } else throw new UserError(`unsupported skill entry ${path}: symlinks and special files cannot be synced`);
     }
   };
   walk("");
@@ -91,15 +92,15 @@ export function readSkill(dir: string): Pick<FetchedSkill, "description" | "file
 }
 
 export function validateFetched(fetched: FetchedSkill[]): FetchedSkill[] {
-  if (!fetched.length || fetched.length > 100) throw new Error("a source must contain between 1 and 100 skills");
+  if (!fetched.length || fetched.length > 100) throw new UserError("a source must contain between 1 and 100 skills");
   const ids = new Set<string>();
   let bytes = 0;
   return fetched.map((f) => {
     const parsed = skillSchema.parse({ ...f, updatedAt: 0 });
-    if (ids.has(parsed.id)) throw new Error(`duplicate skill name in source: ${parsed.id}`);
+    if (ids.has(parsed.id)) throw new UserError(`duplicate skill name in source: ${parsed.id}`);
     ids.add(parsed.id);
     bytes += Buffer.byteLength(JSON.stringify(f));
-    if (bytes > MAX_PACK) throw new Error("skill pack exceeds 24 MiB of encoded data; select individual skills");
+    if (bytes > MAX_PACK) throw new UserError("skill pack exceeds 24 MiB of encoded data; select individual skills");
     return { ...f, files: parsed.files };
   });
 }
@@ -128,12 +129,12 @@ export function parseSkillOutput(out: string) {
   try {
     json = JSON.parse(out);
   } catch {
-    throw new Error(`skills CLI ${SKILLS_CLI_VERSION} returned invalid JSON`);
+    throw new UserError(`skills CLI ${SKILLS_CLI_VERSION} returned invalid JSON`);
   }
   const parsed = cliResultSchema.safeParse(json);
-  if (!parsed.success) throw new Error(`skills CLI ${SKILLS_CLI_VERSION} returned incompatible JSON`);
+  if (!parsed.success) throw new UserError(`skills CLI ${SKILLS_CLI_VERSION} returned incompatible JSON`);
   if (parsed.data.some((row) => row.status === "installed" && !row.path))
-    throw new Error("skills CLI omitted an installed skill path");
+    throw new UserError("skills CLI omitted an installed skill path");
   return parsed.data;
 }
 
@@ -191,12 +192,12 @@ export function runSkillCommand(
     const abort = () => cancel(signal.reason ?? new Error("skill import cancelled"));
     child.stdout?.on("data", (chunk: Buffer) => {
       outBytes += chunk.length;
-      if (outBytes > outputLimit) cancel(new Error("skills CLI output exceeds its limit"));
+      if (outBytes > outputLimit) cancel(new UserError("skills CLI output exceeds its limit"));
       else out.push(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       errBytes += chunk.length;
-      if (errBytes > outputLimit) cancel(new Error("skills CLI diagnostics exceed their limit"));
+      if (errBytes > outputLimit) cancel(new UserError("skills CLI diagnostics exceed their limit"));
       else err.push(chunk);
     });
     child.on("error", (error) => finish(error));
@@ -213,8 +214,8 @@ export async function fetchSkills(source: string, selector = "*", signal?: Abort
   const npx = Bun.which("npx"),
     bunx = Bun.which("bunx");
   const runner = npx ? [npx, "-y"] : bunx ? [bunx] : undefined;
-  if (!runner) throw new Error("adding skills needs Node (npx) or Bun (bunx) on the daemon's machine");
-  if (source.startsWith("-")) throw new Error("a skill source cannot start with a dash");
+  if (!runner) throw new UserError("adding skills needs Node (npx) or Bun (bunx) on the daemon's machine");
+  if (source.startsWith("-")) throw new UserError("a skill source cannot start with a dash");
   const dir = mkdtempSync(join(tmpdir(), "agentgate-skills-"));
   const bounded = timeoutSignal(100_000, signal);
   try {
@@ -235,16 +236,16 @@ export async function fetchSkills(source: string, selector = "*", signal?: Abort
       dir,
       bounded,
     );
-    if (code !== 0) throw new Error(`skills add failed: ${plain(err) || plain(out) || `exit ${code}`}`);
+    if (code !== 0) throw new UserError(`skills add failed: ${plain(err) || plain(out) || `exit ${code}`}`);
     const rows = parseSkillOutput(out);
     const root = realpathSync(dir) + sep;
     return validateFetched(
       rows
         .filter((row) => row.status === "installed")
         .map((row) => {
-          if (!row.path) throw new Error("skills CLI omitted an installed skill path");
+          if (!row.path) throw new UserError("skills CLI omitted an installed skill path");
           const path = realpathSync(row.path);
-          if (!path.startsWith(root)) throw new Error("the skills CLI wrote outside its scratch folder");
+          if (!path.startsWith(root)) throw new UserError("the skills CLI wrote outside its scratch folder");
           return {
             id: skillId(basename(path)),
             selector: row.name ?? (selector === "*" ? undefined : selector),
@@ -265,7 +266,7 @@ export function repoUrl(input: string): string {
     .trim()
     .match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([a-z0-9-]+)\/([a-z0-9._-]+?)(?:\.git)?\/?$/i);
   if (!m || /^\.+$/.test(m[2]!))
-    throw new Error("Enter a public GitHub repository, like https://github.com/owner/repo");
+    throw new UserError("Enter a public GitHub repository, like https://github.com/owner/repo");
   return `https://github.com/${m[1]}/${m[2]}`.toLowerCase();
 }
 
@@ -293,7 +294,7 @@ export function readRepoSkills(root: string): { skills: FetchedSkill[]; skipped:
     }
   }
   if (!skills.length)
-    throw new Error(
+    throw new UserError(
       skipped.length ? `no usable skills: ${skipped.join("; ")}` : "no skills in .claude/skills or .agents/skills",
     );
   return { skills: validateFetched(skills), skipped };
@@ -311,13 +312,13 @@ export type RepoFetcher = (url: string, since?: string, signal?: AbortSignal) =>
 export const fetchRepo: RepoFetcher = async (url, since, signal) => {
   url = repoUrl(url);
   const bin = Bun.which("git");
-  if (!bin) throw new Error("syncing skill repositories needs git on the daemon's machine");
+  if (!bin) throw new UserError("syncing skill repositories needs git on the daemon's machine");
   const dir = mkdtempSync(join(tmpdir(), "agentgate-repo-"));
   const bounded = timeoutSignal(120_000, signal);
   const git = async (cwd: string, ...args: string[]) => {
     const { out, err, code } = await runSkillCommand([bin, "-c", "credential.helper=", ...args], cwd, bounded);
     if (code !== 0)
-      throw new Error(
+      throw new UserError(
         args[0] === "ls-remote"
           ? `${url} was not found or is not public${err.trim() ? ` (${plain(err)})` : ""}`
           : `git ${args[0]} failed: ${plain(err) || `exit ${code}`}`,
@@ -409,7 +410,8 @@ export class SkillImports {
         const skills = validateFetched(await this.fetch(source, selector, abort.signal));
         abort.signal.throwIfAborted();
         const bytes = Buffer.byteLength(JSON.stringify(skills));
-        if (bytes > this.maxBytes) throw new Error("skill preview exceeds the cache limit; select individual skills");
+        if (bytes > this.maxBytes)
+          throw new UserError("skill preview exceeds the cache limit; select individual skills");
         this.prune();
         while (
           !fresh &&

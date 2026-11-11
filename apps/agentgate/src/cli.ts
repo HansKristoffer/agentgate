@@ -46,15 +46,11 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   mcp limit <name> <chars|off|default> [--tool <tool>]   cut longer results (default 20000 characters)
   mcp defaults <name> <tool> [<json>]         arguments a call gets unless the agent passes them (no json: none)
   skills find <query>                         search skills.sh
-  skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...]
-  skills new|edit <name> --file SKILL.md      write a skill by hand
-  skills [ls] | show <name> | update [name] | rm <name>
-  skills projects <name> [<owner/repo|*> ...] where the skill is linked (* = every session)
-  skills repo add <github-url> --project <owner/repo|*> ...  keep a public repo's .claude/skills and .agents/skills in sync
-  skills repo ls | sync [url] | projects <url> <owner/repo|*> ... | rm <url>
+  skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...] [--yes]
+                                              show the preview and security audit, then install once you agree
+  skills [ls] | show <name> | repo [ls]
   skills prepare [checkout] [--project <owner/repo>] register and apply links before launch
   skills conflicts                            skill folders that clash with Agentgate's copy, and the ones you kept
-  skills resolve <path> agentgate|keep        link Agentgate's copy there (the old one moves to a backup), or keep it
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
   project ls | show <owner/repo> | defaults <owner/repo> on|off | rm <owner/repo>
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
@@ -148,6 +144,7 @@ const OPTIONS = {
   "no-routing": { type: "boolean" },
   worktrees: { type: "string" },
   clones: { type: "string" },
+  yes: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } satisfies ParseArgsOptionsConfig;
 
@@ -161,7 +158,7 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
   proxy: ["model"],
   requests: ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"],
   mcp: ["header", "command", "per-session", "hide", "tool"],
-  skills: ["skill", "project", "file"],
+  skills: ["skill", "project", "yes"],
   project: ["if-sha"],
   remote: ["node"],
   pair: ["name", "tailnet", "relay", "relay-url"],
