@@ -4,13 +4,10 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { Ctx, Env } from "../daemon.ts";
 import { jsonInput as json } from "../http.ts";
-import { providerLogins } from "../llm/providers.ts";
 import { route } from "../llm/routing.ts";
 import { requestDetail, requests, tokenHours, tokenUsage } from "../llm/telemetry.ts";
 import { forgetLogin, infisicalSite, setInfisicalIdentity, shareLogins, startInfisicalSignIn } from "../logins.ts";
 import { input, inputAsync, local, optionalJson, required, signal } from "./http.ts";
-
-export const moduleFor = <P extends keyof typeof providerLogins>(provider: P) => providerLogins[provider];
 
 /** The proxy's diagnostics and account checks (account writes are operations, ops/accounts.ts), and the shared gh and Infisical logins. */
 export function accounts(ctx: Ctx) {

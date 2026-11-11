@@ -18,7 +18,6 @@ import { skillRepoSummaries, skillSummaries } from "../skills.ts";
 import { exportBackup, importBackup, sent, type Data } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { nodeUpdate } from "../update.ts";
-import { moduleFor } from "./accounts.ts";
 import { input, local } from "./http.ts";
 import { shownProject } from "./projects.ts";
 
@@ -32,7 +31,7 @@ const detections = new Map<
 function detect(provider: keyof typeof providerLogins) {
   const cached = detections.get(provider);
   if (cached && Date.now() - cached.at < 30_000) return cached.found;
-  const found = moduleFor(provider).detect();
+  const found = providerLogins[provider].detect();
   detections.set(provider, { at: Date.now(), found });
   return found;
 }

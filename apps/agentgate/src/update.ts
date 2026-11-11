@@ -2,9 +2,8 @@ import { chmodSync, readFileSync, realpathSync, renameSync, rmSync } from "node:
 import { dirname, join, resolve } from "node:path";
 import packageInfo from "../../../package.json";
 import { PeerError, peerCall } from "./handoff/jobs.ts";
-import { routeHere } from "./setup.ts";
 import { isServiceProcess, serviceRuns } from "./service.ts";
-import { selfCommand } from "./setup.ts";
+import { routeHere, selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
 import { nodeUpdateSchema, type NodeUpdate } from "@agentgate/protocol";
 import { z } from "zod";
@@ -16,7 +15,7 @@ const asset = `agentgate-${process.platform}-${process.arch === "arm64" ? "arm64
 
 /** An update failure whose message is ours: it names paths, versions and HTTP statuses, never another program's text,
  * so status and a paired node may show it. */
-export class UpdateError extends Error {}
+class UpdateError extends Error {}
 
 /** Replace `target` with the latest release's binary for this machine, checked against the release's SHA256SUMS
  * like install.sh does. Returns the new version, or undefined when `current` is already the latest. */

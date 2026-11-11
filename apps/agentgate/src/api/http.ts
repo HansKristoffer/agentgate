@@ -3,7 +3,6 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
 import { jsonInput } from "../http.ts";
-import { RelayBusy, RelayError } from "../relay.ts";
 
 /** The control API's shared helpers, used by every family's routes in this folder. */
 
@@ -22,20 +21,6 @@ export const local = (listener: string) => {
 export const signal = (ctx: Ctx, req: Request) => AbortSignal.any([req.signal, ctx.abort.signal]);
 
 export const optionalJson = async (req: Request) => (req.headers.get("content-type") ? jsonInput(req) : {});
-
-// Relay messages are sanitized summaries, safe for a signed-in administrator.
-export const relayed = async <T>(fn: () => Promise<T>): Promise<T> => {
-  try {
-    return await fn();
-  } catch (error) {
-    if (error instanceof RelayBusy) throw new HTTPException(409, { message: error.message });
-    if (error instanceof RelayError)
-      throw new HTTPException(error.status ? 502 : 400, {
-        message: error.message,
-      });
-    throw error;
-  }
-};
 
 // Operational input errors are safe to show to a signed-in administrator.
 export const input = <T>(fn: () => T): T => {

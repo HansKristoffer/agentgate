@@ -22,7 +22,7 @@ function assigned(s: Store, project: string): string[] {
 }
 
 /** Skills for clients that can't install them (Grok): list them, then read SKILL.md and the files it references. */
-export function skillsServer(s: Store, project: string): Server {
+function skillsServer(s: Store, project: string): Server {
   const server = new Server(
     { name: "agentgate-skills", version: "1" },
     {

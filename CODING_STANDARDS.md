@@ -20,4 +20,4 @@ Apply every rule below to the whole diff before calling a change done. These are
 
 ## One way to do a thing
 
-- When the CLI and the API do the same thing, both call one function in `operations.ts`. Two copies drift, and the order of steps in a removal or rotation matters.
+- When the CLI and the API do the same thing, both go through one control operation (`ops/`). Two copies drift, and the order of steps in a removal or rotation matters.

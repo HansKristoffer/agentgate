@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { accountStatusSchema, type AccountStatus } from "@agentgate/protocol";
 import { problems } from "@agentgate/protocol/attention";
-import { attentionLines } from "../src/cli.ts";
+import { attentionLines } from "../src/cli/system.ts";
 
 const account = (id: string, state: object) =>
   accountStatusSchema.parse({
