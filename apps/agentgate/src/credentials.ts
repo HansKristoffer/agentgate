@@ -98,7 +98,14 @@ export function refreshOwned<K extends OwnedKind>(
       await pull().catch(() => {});
       c = s.get(kind, id);
       if (!c || c.needsLogin) throw new NeedsLogin(id);
-      if (identity(c) !== before && (!c.expiresAt || c.expiresAt > s.now())) return c;
+      const valid = !c.expiresAt || c.expiresAt > s.now();
+      if (valid && identity(c) !== before) return c;
+      // A holder back from sleep lands here with the taker's copy, pulled above. Unless a refresh was forced (a 401, or
+      // a request for these tokens), a valid copy serves; the holder only needs asking once it nears expiry.
+      if (valid && !force) {
+        if ((c.expiresAt ?? Infinity) - s.now() < 10 * MIN) requestRefresh(s, kind, id, c);
+        return c;
+      }
       requestRefresh(s, kind, id, c);
       throw new Unavailable(`${id}: waiting for the credential holder to refresh`);
     }

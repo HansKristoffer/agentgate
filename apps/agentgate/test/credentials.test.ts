@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Credentials, NeedsLogin } from "../src/credentials.ts";
+import { Credentials, NeedsLogin, tokenHash } from "../src/credentials.ts";
 import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { accountStatus } from "../src/llm/pool.ts";
 import { Store } from "../src/store.ts";
@@ -185,6 +185,29 @@ test("a holder back from sleep hears the others before refreshing, and never use
   await credsFor(mac, () => srv).tick();
   expect(reused).toBe(0);
   expect(mac.get("credential", "a")).toMatchObject({ holder: "srv", refreshToken: "rt-1" });
+});
+
+test("a holder waking after a takeover serves the taker's valid copy without asking for a refresh", async () => {
+  syncFor(srv, 12 * MIN);
+  await credsFor(srv, () => mac).token("a");
+  T += 3 * 60 * MIN; // mac's own copy expired while it slept; srv's is still valid
+  const c = await credsFor(mac, () => srv).token("a");
+  expect(c).toMatchObject({ holder: "srv", refreshToken: "rt-1" });
+  expect(refreshes).toBe(1);
+  expect(reused).toBe(0);
+  expect(mac.get("refreshRequest", "credential:a")).toBeUndefined();
+});
+
+test("a holder waking after a takeover asks the taker to refresh a copy near expiry, and never refreshes it itself", async () => {
+  syncFor(srv, 12 * MIN);
+  await credsFor(srv, () => mac).token("a");
+  T += 3 * 60 * MIN;
+  srv.put("credential", "a", { ...srv.get("credential", "a")!, expiresAt: T + 5 * MIN });
+  const c = await credsFor(mac, () => srv).token("a");
+  expect(c).toMatchObject({ holder: "srv", refreshToken: "rt-1" });
+  expect(refreshes).toBe(1);
+  expect(reused).toBe(0);
+  expect(mac.get("refreshRequest", "credential:a")?.tokenHash).toBe(tokenHash(c));
 });
 
 test("a holder that hears from nobody right after waking waits instead of refreshing", async () => {
