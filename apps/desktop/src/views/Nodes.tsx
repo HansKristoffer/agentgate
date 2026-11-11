@@ -6,7 +6,7 @@ import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protoco
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { INFISICAL_SIGNIN_STARTED, openExternal, request, signInToInfisical } from "../api.ts";
+import { INFISICAL_SIGNIN_STARTED, control, openExternal, request, signInToInfisical } from "../api.ts";
 import { field, idPath, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
@@ -171,7 +171,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                     label: n.alwaysOn ? "No longer always on" : "Mark as always on",
                     onAction: () =>
                       void perform(
-                        () => request(connection, `/nodes/${idPath(n.id)}`, "PATCH", { alwaysOn: !n.alwaysOn }),
+                        () => control(connection, "nodes always-on", { node: n.id, on: !n.alwaysOn }),
                         n.alwaysOn
                           ? `${n.id} is no longer always on`
                           : `${n.id} is always on: it takes care of token refreshes while your other machines are away`,

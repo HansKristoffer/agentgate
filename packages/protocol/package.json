@@ -6,7 +6,8 @@
     ".": "./src/index.ts",
     "./relay": "./src/relay.ts",
     "./remote": "./src/remote.ts",
-    "./attention": "./src/attention.ts"
+    "./attention": "./src/attention.ts",
+    "./control": "./src/control.ts"
   },
   "scripts": {
     "typecheck": "bun check",
