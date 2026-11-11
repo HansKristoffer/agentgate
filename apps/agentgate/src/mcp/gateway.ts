@@ -843,13 +843,14 @@ export class Gateway {
     }
   }
 
-  /** Auto-discovered repos for the native app; written at most every 5 minutes per repo to keep sync quiet. */
+  /**
+   * A repo's first session creates its project, so the app can list it. Later sessions write nothing: every put raises
+   * the synced revision, which would let a busy machine outrank another machine's offline edit.
+   */
   private seen(project: string) {
     if (project === "*") return;
     project = canonicalProject(this.s, project);
-    const p = this.s.get("project", project);
-    if (p?.seenAt && this.s.now() - p.seenAt < 5 * 60_000 && p.seenOn === this.s.nodeId) return;
-    this.s.put("project", project, { ...(p ?? { id: project }), seenAt: this.s.now(), seenOn: this.s.nodeId });
+    if (!this.s.get("project", project)) this.s.put("project", project, { id: project });
   }
 
   async closeIdle() {
@@ -906,7 +907,7 @@ export function scanRepos(dir: string): { repo: string; path: string }[] {
       const cfg = readFileSync(join(git, "config"), "utf8");
       remote = cfg.match(/\[remote "origin"\][^[]*?\burl\s*=\s*(.+)/)?.[1];
     } else {
-      const r = Bun.spawnSync(["git", "remote", "get-url", "origin"], { cwd: path, stderr: "ignore" });
+      const r = Bun.spawnSync(["git", "remote", "get-url", "origin"], { cwd: path, stderr: "ignore", timeout: 5000 });
       if (r.exitCode === 0) remote = r.stdout.toString();
     }
     const repo = remote && parseRemote(remote);

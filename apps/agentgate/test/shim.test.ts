@@ -108,7 +108,6 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   expect(await call(shimB, "posthog__whoami")).toBe("B:2");
   expect(await call(shimB, "docs__whoami")).toBe("docs:0");
   expect(shimA.getInstructions()).toContain("## posthog\nData for A");
-  expect(s.get("project", "o/a")!.seenOn).toBe("t");
 
   // A mapping change reaches the running session.
   const changed = new Promise<void>((r) => shimA.setNotificationHandler("notifications/tools/list_changed", () => r()));
