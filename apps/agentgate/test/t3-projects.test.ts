@@ -126,8 +126,14 @@ test("a clone T3 Code refuses for a permission is reported once, with how to fix
   await syncT3Projects(a.h);
   carry(a.s, b.s);
   b.t3.denyClones = true;
+  const bumps: string[] = [];
+  b.s.onChange = (topic) => bumps.push(topic);
 
   await syncT3Projects(b.h);
+  expect(bumps).toContain("threads");
+  bumps.length = 0;
+  await syncT3Projects(b.h);
+  expect(bumps).not.toContain("threads");
   expect(t3State(b.s).projectSyncError).toBe(
     "T3 Code on b has not given agentgate the source-control:write permission; pair it again: Connect T3 Code under Machines on the T3 Code page, or agentgate t3 connect on b",
   );

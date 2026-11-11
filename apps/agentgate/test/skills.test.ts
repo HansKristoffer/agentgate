@@ -725,6 +725,26 @@ test("a connected repository installs, links, updates and removes its skills, an
   await expect(syncSkillRepo(s, url, fetch)).rejects.toThrow(/not connected/);
 });
 
+test("repository summaries read the project and skill records once however many repositories are connected", async () => {
+  const { s } = setup();
+  for (const name of ["one", "two", "three"])
+    await connectSkillRepo(s, `owner/${name}`, ["*"], async () => ({
+      commit: "c1",
+      skills: [fetched(name)],
+      skipped: [],
+    }));
+  const query = spyOn(s.db, "query");
+  const summaries = skillRepoSummaries(s);
+  const recordReads = query.mock.calls.filter(([sql]) => sql.includes("from records")).length;
+  query.mockRestore();
+  expect(recordReads).toBe(2);
+  expect(summaries.map((r) => `${r.url} ${r.projects} ${r.skills}`)).toEqual([
+    "https://github.com/owner/one * one",
+    "https://github.com/owner/three * three",
+    "https://github.com/owner/two * two",
+  ]);
+});
+
 test("a repository's skills folder that links outside the repository is ignored", () => {
   const { dir } = setup();
   const repo = join(dir, "gh"),

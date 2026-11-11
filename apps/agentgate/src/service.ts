@@ -60,7 +60,7 @@ WantedBy=default.target
 const run = (cmd: string[]) => Bun.spawnSync(cmd, { stdio: ["inherit", "inherit", "inherit"] }).exitCode;
 
 /** launchctl/systemctl can accept a job that subsequently fails to start. */
-export async function waitForService(url = `${LOCAL_URL}/api/status`, timeout = 10000) {
+export async function waitForService(url = `${LOCAL_URL}/api/changes?wait=0`, timeout = 10000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     try {
