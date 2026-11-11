@@ -103,7 +103,9 @@ export class Telemetry {
       durationMs: Math.round(this.elapsed()),
     });
     this.save();
-    if (!this.s.closed) trimTelemetry(this.s);
+    if (this.s.closed) return;
+    trimTelemetry(this.s);
+    bumpActivity(this.s);
   }
   /** The model a response's tokens count under. */
   get tokenModel() {
@@ -128,6 +130,21 @@ export class Telemetry {
       [r.id, r.at, r.provider, r.account, r.routedModel, r.outcome, r.failure ?? null, Buffer.byteLength(data), data],
     );
   }
+}
+/** Each store's open throttle window: a busy proxy finishes many requests a second, and the app needs one refresh. */
+const activityWindows = new WeakMap<Store, { again: boolean }>();
+/** Bumps `activity` at once, then at most once a second: a finish inside the window gets one bump at its end, so the
+ * last change is never lost. */
+function bumpActivity(s: Store) {
+  const current = activityWindows.get(s);
+  if (current) return void (current.again = true);
+  s.bump("activity");
+  const opened = { again: false };
+  activityWindows.set(s, opened);
+  setTimeout(() => {
+    activityWindows.delete(s);
+    if (opened.again && !s.closed) bumpActivity(s);
+  }, 1000).unref();
 }
 export interface RequestFilter {
   provider?: string;

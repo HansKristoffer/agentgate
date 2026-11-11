@@ -1,11 +1,13 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { buildBoard } from "../src/factory/board.ts";
-import { items, runs } from "../src/factory/db.ts";
+import { makeCtx } from "../src/daemon.ts";
+import { ensureFactoryTables, items, runs } from "../src/factory/db.ts";
+import { claimWrite } from "../src/factory/outbox.ts";
 import { itemOutcome, runTokens } from "../src/factory/records.ts";
 import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { recordSessionUsage } from "../src/llm/sessions.ts";
 import { host } from "../src/logins.ts";
-import type { Store } from "../src/store.ts";
+import { Store } from "../src/store.ts";
 import { prFactory } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { idle } from "./fixtures/t3-mcp.ts";
@@ -285,4 +287,53 @@ test("outcomes come from each item's PR and stay the item's, and the board shows
     humanTouchesPerItem: 0.25,
     tokensPerMergedPr: 0,
   });
+});
+
+test("each factory write the board shows bumps the factory topic", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  const ctx = makeCtx(s);
+  cleanup.push(async () => {
+    ctx.abort.abort();
+    ctx.skills.close();
+    ctx.imports.close();
+    await ctx.gateway.close();
+    s.close();
+  });
+  const f = ctx.factory;
+  ensureFactoryTables(s);
+  const item = items.insert(s, {
+    id: "it_1",
+    source: "bugs",
+    externalId: "acme/api#12",
+    key: "api-12",
+    repo: "acme/api",
+    title: "Crash on save",
+    snapshot: { body: "steps", labels: ["factory"] },
+    phase: "implement",
+    configCommit: "3f2c1a9",
+  });
+  runs.insert(s, {
+    id: "run_1",
+    item: item.id,
+    kind: "implement",
+    attempt: 1,
+    state: "queued",
+    nudges: 0,
+    configCommit: "3f2c1a9",
+  });
+  const bumped = (write: () => unknown) => {
+    const bumps: string[] = [];
+    s.onChange = (topic) => bumps.push(topic);
+    write();
+    s.onChange = undefined;
+    return bumps;
+  };
+
+  expect(bumped(() => items.update(s, item.id, { title: "Crash on every save" }))).toEqual(["factory"]);
+  expect(bumped(() => runs.update(s, "run_1", { state: "running" }))).toEqual(["factory"]);
+  expect(bumped(() => runs.measured(s, "run_1", 500, 1))).toEqual(["factory"]);
+  expect(bumped(() => claimWrite(f, item.id, "note", "r1", "body", "A note"))).toEqual(["factory"]);
+  expect(bumped(() => f.events.emit({ kind: "note", item: item.id, text: "Noted" }))).toEqual(["factory"]);
+  await idle(f);
 });

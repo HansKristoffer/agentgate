@@ -369,6 +369,7 @@ export const items = {
     };
     const { names, values } = columnsOf(full, itemColumns, itemJson);
     s.db.run(insertSql("factory_items", names), [item.id, ...values]);
+    s.bump("factory");
     return full;
   },
   /** A phase in the patch sets or clears when the item finished. */
@@ -376,6 +377,7 @@ export const items = {
     const finished = patch.phase && { finishedAt: isOpenPhase(patch.phase) ? undefined : s.now() };
     const { names, values } = columnsOf({ updatedAt: s.now(), ...patch, ...finished }, itemColumns, itemJson);
     if (!s.db.run(updateSql("factory_items", names), [...values, id]).changes) throw new Error(`no factory item ${id}`);
+    s.bump("factory");
     return items.get(s, id)!;
   },
 };
@@ -454,24 +456,27 @@ export const runs = {
     const full: FactoryRun = { ...run, tokens: 0, sessions: 0, queuedAt: run.queuedAt ?? s.now() };
     const { names, values } = columnsOf(full, runColumns, runJson);
     s.db.run(insertSql("factory_runs", names), [run.id, ...values]);
+    s.bump("factory");
     return full;
   },
   update: (s: Store, id: string, patch: Partial<Omit<FactoryRun, "id" | "tokens" | "sessions" | "measuredAt">>) => {
     const { names, values } = columnsOf(patch, runColumns, runJson);
-    if (names.length) s.db.run(updateSql("factory_runs", names), [...values, id]);
+    if (names.length && s.db.run(updateSql("factory_runs", names), [...values, id]).changes) s.bump("factory");
     const run = runs.get(s, id);
     if (!run) throw new Error(`no factory run ${id}`);
     return run;
   },
   /** Records a measurement. Tokens and sessions only grow: a subagent thread T3 dropped, or a machine that cannot be
    * reached, does not lower them. */
-  measured: (s: Store, id: string, tokens: number, sessions: number) =>
+  measured: (s: Store, id: string, tokens: number, sessions: number) => {
     s.db.run("update factory_runs set tokens=max(tokens, ?), sessions=max(sessions, ?), measured_at=? where id=?", [
       tokens,
       sessions,
       s.now(),
       id,
-    ]),
+    ]);
+    s.bump("factory");
+  },
 };
 
 /** Whether the outbox (outbox.ts) still has a write to send, or one in flight. */

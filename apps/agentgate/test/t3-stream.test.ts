@@ -3,14 +3,16 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { removeTmp, tmp } from "./fixtures/git.ts";
 import { fakeT3 } from "./fixtures/t3.ts";
+import { makeCtx } from "../src/daemon.ts";
+import { mirrorOf } from "../src/factory/mirror.ts";
 import { connectT3, createPairingLink, host as t3Host, t3Client, T3Error } from "../src/handoff/t3.ts";
 import { Store } from "../src/store.ts";
 
 afterAll(removeTmp);
 
 const stops: (() => unknown)[] = [];
-afterEach(() => {
-  for (const stop of stops.splice(0)) stop();
+afterEach(async () => {
+  for (const stop of stops.splice(0).reverse()) await stop();
 });
 
 async function until(fn: () => boolean, what: string) {
@@ -79,6 +81,44 @@ test("a shell subscription gets the snapshot, then live updates, acknowledging e
   fake.shell.end();
   await sub.done;
   expect(fake.shell.subscriptions).toEqual([{}]);
+});
+
+test("the mirror bumps the factory topic when its stream goes live and when a thread changes", async () => {
+  const { fake, s } = await connected();
+  const project = fake.addProject(tmp());
+  const thread = fake.addThread({ projectId: project.id, sessionId: "s1", title: "Fix login" });
+  s.put("node", "a", { id: "a", protocol: 8 });
+  s.put("setting", "settings", { ...s.settings(), factory: { store: "github", repo: "acme/api", node: "a" } });
+  const ctx = makeCtx(s);
+  stops.push(async () => {
+    ctx.abort.abort();
+    ctx.skills.close();
+    ctx.imports.close();
+    await ctx.gateway.close();
+  });
+  const mirror = mirrorOf(ctx.factory);
+  // What the mirror holds at each factory bump.
+  const seen: string[] = [];
+  s.onChange = (topic) => {
+    if (topic === "factory") seen.push(`${mirror.status().stream} ${mirror.thread(thread.id)?.status}`);
+  };
+
+  await until(() => mirror.status().stream === "live", "the snapshot");
+  expect(seen).toContain("live idle");
+  fake.shell.push({
+    kind: "thread.updated",
+    sequence: 1_500_000,
+    location: "active",
+    thread: {
+      id: thread.id,
+      projectId: project.id,
+      title: "Fix login",
+      status: "running",
+      updatedAt: thread.updatedAt,
+    },
+  });
+  await until(() => mirror.thread(thread.id)?.status === "running", "the thread update");
+  expect(seen.at(-1)).toBe("live running");
 });
 
 test("a resumed subscription sends its sequence and gets no snapshot", async () => {

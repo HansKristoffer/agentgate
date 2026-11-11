@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -375,6 +375,23 @@ test("telemetry byte retention includes attempts, runs an hour after the last tr
   new Telemetry(s, "claude").finish("success");
   expect(requestDetail(s, t.request.id)).toBeUndefined();
   expect(s.db.query("select count(*) as n from proxy_attempts").get()).toEqual({ n: 0 });
+});
+
+test("finished requests bump activity at once, then at most once a second, and the last finish is never lost", () => {
+  const { s } = fixture();
+  jest.useFakeTimers();
+  cleanup.push(() => jest.useRealTimers());
+  let bumps = 0;
+  s.onChange = (topic) => void (topic === "activity" && bumps++);
+
+  for (let i = 0; i < 10; i++) new Telemetry(s, "claude").finish("success");
+  expect(bumps).toBe(1);
+  jest.advanceTimersByTime(1000);
+  expect(bumps).toBe(2);
+  jest.advanceTimersByTime(5000);
+  expect(bumps).toBe(2);
+  new Telemetry(s, "claude").finish("success");
+  expect(bumps).toBe(3);
 });
 
 test("telemetry trims on every 100th finish, keeping the newest requests and any still pending", () => {

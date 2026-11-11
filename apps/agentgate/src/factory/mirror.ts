@@ -159,7 +159,7 @@ class Mirror implements T3Mirror {
       this.byId.clear();
       this.projects.clear();
       this.sequence = undefined;
-      this.state = { stream: "down" };
+      this.setState({ stream: "down" });
     }
   }
 
@@ -193,9 +193,9 @@ class Mirror implements T3Mirror {
       const { threads, archivedThreads, projects, snapshotSequence } = parsed.data;
       this.replace(threads, archivedThreads, projects);
       if (snapshotSequence !== undefined) this.sequence = snapshotSequence;
-      this.state = { stream: "polling", error: streamError };
+      this.setState({ stream: "polling", error: streamError });
     } catch (e) {
-      if (!signal.aborted) this.state = { stream: "down", error: reason(e) };
+      if (!signal.aborted) this.setState({ stream: "down", error: reason(e) });
     }
   }
 
@@ -208,7 +208,7 @@ class Mirror implements T3Mirror {
     if (!parsed.success) throw unreadable(parsed.error);
     const item = parsed.data;
     if (item.kind === "synchronized") {
-      this.state = { stream: "live" };
+      this.setState({ stream: "live" });
       return;
     }
     if (item.kind === "snapshot") {
@@ -219,7 +219,7 @@ class Mirror implements T3Mirror {
       }
       this.replace(snapshot.threads, snapshot.archivedThreads, snapshot.projects);
       this.sequence = snapshot.snapshotSequence;
-      this.state = { stream: "live" };
+      this.setState({ stream: "live" });
       return;
     }
     // A resumed stream may repeat what a poll or the previous stream already applied.
@@ -257,7 +257,15 @@ class Mirror implements T3Mirror {
     if (thread && this.byId.delete(id)) this.tell(this.removeListeners, thread);
   }
 
+  /** The board shows the stream's state, which lives only here. */
+  private setState(state: ReturnType<T3Mirror["status"]>) {
+    if (state.stream === this.state.stream && state.error === this.state.error) return;
+    this.state = state;
+    this.f.s.bump("factory");
+  }
+
   private tell<A extends unknown[]>(listeners: Set<(...args: A) => void>, ...args: A) {
+    this.f.s.bump("factory");
     for (const listener of listeners) {
       try {
         listener(...args);
