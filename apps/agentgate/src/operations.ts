@@ -205,7 +205,7 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>) {
       throw new Error(`the prefix ${BUILTIN_ALIAS} is reserved for agentgate's own tools`);
     if (!s.get("mcp", target)) throw new Error(`no MCP instance ${target}`);
   }
-  for (const skill of patch.skills ?? []) if (!s.get("skill", skill)) throw new Error(`no skill ${skill}`);
+  for (const skill of patch.skills ?? []) if (!s.has("skill", skill)) throw new Error(`no skill ${skill}`);
   // Virtual projects list their servers explicitly; `*` defaults never leak into a public endpoint.
   return s.put("project", id, {
     ...prev,

@@ -398,6 +398,11 @@ export class Store {
     return (this.db.query("select * from records where kind = ? and id = ?").get(kind, id) as Rec | null) ?? undefined;
   }
 
+  /** Existence without parsing: a skill record can be megabytes of base64 that `get` would validate. */
+  has(kind: Kind, id: string): boolean {
+    return !!this.db.query("select 1 from records where kind = ? and id = ? and deleted = 0").get(kind, id);
+  }
+
   get<K extends Kind>(kind: K, id: string): Data<K> | undefined {
     const r = this.record(kind, id);
     return r && !r.deleted ? (schemas[kind].parse(JSON.parse(r.data)) as Data<K>) : undefined;
