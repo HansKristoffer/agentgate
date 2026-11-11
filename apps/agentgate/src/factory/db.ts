@@ -1,4 +1,6 @@
 import {
+  factoryReportSchema,
+  needsYouSchema,
   stageNames,
   type FactoryReport,
   type ItemPhase,
@@ -45,34 +47,37 @@ export interface FactoryItem {
 }
 
 /** An item's PR and what the PR follower (pr.ts) keeps about it. Set when an implement report is accepted. */
-export interface ItemPr {
-  url: string;
+const itemPrSchema = z.object({
+  url: z.string(),
   /** Its head as the factory last read it, and when the factory first saw that head. */
-  head: string;
-  headAt: number;
+  head: z.string(),
+  headAt: z.number(),
   /** The implement run whose thread owns the PR, and that thread: only it is nudged about the PR. */
-  run: string;
-  thread: string;
+  run: z.string(),
+  thread: z.string(),
   /** The nudges about the PR since the owning thread reported or `retry`, and the problems (`problemsOf` keys) the
    * last one was about, and when. */
-  nudges: number;
-  nudged?: string;
-  nudgedAt?: number;
+  nudges: z.number(),
+  nudged: z.string().optional(),
+  nudgedAt: z.number().optional(),
   /** GitHub's time of the newest comment or review a nudge quoted: newer trusted ones are what the thread has not seen. */
-  quotedUntil?: string;
+  quotedUntil: z.string().optional(),
   /** The `updatedAt` of the thread when the factory found it stopped in T3 Code; a later stop is a new one. */
-  stopSeen?: number;
+  stopSeen: z.number().optional(),
   /** What the thread did with each review conversation, by id, and whether the factory has replied on GitHub. */
-  conversations?: Record<
-    string,
-    {
-      outcome: "fixed" | "declined";
-      commit: string; // the PR's head when the thread reported
-      note?: string;
-      seen: string; // GitHub's time of the conversation's newest comment then; a newer trusted one reopens it
-    }
-  >;
-}
+  conversations: z
+    .record(
+      z.string(),
+      z.object({
+        outcome: z.enum(["fixed", "declined"]),
+        commit: z.string(), // the PR's head when the thread reported
+        note: z.string().optional(),
+        seen: z.string(), // GitHub's time of the conversation's newest comment then; a newer trusted one reopens it
+      }),
+    )
+    .optional(),
+});
+export type ItemPr = z.infer<typeof itemPrSchema>;
 
 /** What the factory recorded about a run as it went: a review round, a scout's source and what it filed. Stored as
  * JSON in `checked`. */
@@ -188,7 +193,29 @@ export const isStage = (kind: string): kind is StageName => (stageNames as reado
 
 type Row = Record<string, string | number | null>;
 const opt = <T>(v: T | null): T | undefined => (v === null ? undefined : v);
-const json = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : undefined);
+/** A JSON column as stored, or undefined when it is empty or not JSON. Untyped: callers parse what they read. */
+const json = (v: unknown): unknown => {
+  if (typeof v !== "string") return undefined;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return undefined;
+  }
+};
+/** The JSON cells already said to be unreadable, so a loop that reads one every pass says it once. */
+const unreadable = new Set<string>();
+/** A JSON column read through its schema. A corrupt value, or one this version cannot read, reads as unset. */
+function parsed<T>(schema: z.ZodType<T>, row: Row, column: string): T | undefined {
+  if (row[column] === null) return undefined;
+  const result = schema.safeParse(json(row[column]));
+  if (result.success) return result.data;
+  const cell = `${row.id}.${column}`;
+  if (!unreadable.has(cell)) {
+    unreadable.add(cell);
+    console.error(`factory: the ${column} of ${row.id} cannot be read, so it reads as unset`);
+  }
+  return undefined;
+}
 const encode = (v: unknown) => (v === undefined ? null : JSON.stringify(v));
 
 const itemColumns = {
@@ -264,8 +291,8 @@ const toItem = (r: Row): FactoryItem => ({
   url: opt(r.url as string | null),
   snapshot: json(r.snapshot),
   phase: r.phase as ItemPhase,
-  needsYou: json(r.needs_you),
-  pr: json(r.pr),
+  needsYou: parsed(needsYouSchema, r, "needs_you"),
+  pr: parsed(itemPrSchema, r, "pr"),
   configCommit: r.config_commit as string,
   tokens: r.tokens as number,
   dedupe: opt(r.dedupe as string | null),
@@ -295,7 +322,7 @@ const toRun = (r: Row): FactoryRun => ({
   node: opt(r.node as string | null),
   threadId: opt(r.thread_id as string | null),
   threadLink: opt(r.thread_link as string | null),
-  report: json(r.report),
+  report: parsed(factoryReportSchema, r, "report"),
   checked: runData(r.checked),
   nudges: r.nudges as number,
   error: opt(r.error as string | null),
@@ -401,6 +428,35 @@ const toHead = (r: Row): RunHead => ({
 });
 const HEAD = "id, item, kind, state, thread_id, thread_link";
 
+/** A run as a board row reads it (`runs.forBoard`). */
+export type BoardRun = Pick<
+  FactoryRun,
+  "id" | "kind" | "state" | "node" | "threadLink" | "startedAt" | "measuredAt" | "sessions" | "checked" | "report"
+>;
+
+type RunFilter = { states?: readonly RunState[]; kinds?: RunKind[]; source?: string; endedSince?: number };
+function runFilter(filter: RunFilter) {
+  const where: string[] = [],
+    args: (string | number)[] = [];
+  for (const [column, values] of [
+    ["state", filter.states],
+    ["kind", filter.kinds],
+  ] as const)
+    if (values) {
+      where.push(`${column} in (${values.map(() => "?").join(",") || "null"})`);
+      args.push(...values);
+    }
+  if (filter.source !== undefined) {
+    where.push("source = ?");
+    args.push(filter.source);
+  }
+  if (filter.endedSince !== undefined) {
+    where.push("ended_at >= ?");
+    args.push(filter.endedSince);
+  }
+  return { where: whereSql(where), args };
+}
+
 export const runs = {
   get: (s: Store, id: string) => {
     const r = s.db.query("select * from factory_runs where id=?").get(id) as Row | null;
@@ -408,32 +464,60 @@ export const runs = {
   },
   forItem: (s: Store, item: string) =>
     (s.db.query("select * from factory_runs where item=? order by queued_at").all(item) as Row[]).map(toRun),
-  list: (
-    s: Store,
-    filter: { states?: readonly RunState[]; kinds?: RunKind[]; source?: string; endedSince?: number } = {},
-  ) => {
-    const where: string[] = [],
-      args: (string | number)[] = [];
-    for (const [column, values] of [
-      ["state", filter.states],
-      ["kind", filter.kinds],
-    ] as const)
-      if (values) {
-        where.push(`${column} in (${values.map(() => "?").join(",") || "null"})`);
-        args.push(...values);
-      }
-    if (filter.source !== undefined) {
-      where.push("source = ?");
-      args.push(filter.source);
-    }
-    if (filter.endedSince !== undefined) {
-      where.push("ended_at >= ?");
-      args.push(filter.endedSince);
-    }
-    return (s.db.query(`select * from factory_runs ${whereSql(where)} order by queued_at`).all(...args) as Row[]).map(
-      toRun,
-    );
+  list: (s: Store, filter: RunFilter = {}) => {
+    const { where, args } = runFilter(filter);
+    return (s.db.query(`select * from factory_runs ${where} order by queued_at`).all(...args) as Row[]).map(toRun);
   },
+  /** The newest matching run, without reading the others. */
+  newest: (s: Store, filter: RunFilter) => {
+    const { where, args } = runFilter(filter);
+    const r = s.db.query(`select * from factory_runs ${where} order by queued_at desc, id desc limit 1`).get(...args);
+    return r ? toRun(r as Row) : undefined;
+  },
+  /** The board's rows of these items' runs, oldest first: only the columns a row shows, and the report only of a
+   * reported review round, whose findings it counts. */
+  forBoard: (s: Store, itemIds: string[]) => {
+    const rows = s.db
+      .query(
+        `select id, item, kind, state, node, thread_link, started_at, measured_at, sessions, checked,
+           case when kind = 'review' and state = 'reported' then report end as report
+         from factory_runs where item in (select value from json_each(?)) order by queued_at`,
+      )
+      .all(JSON.stringify(itemIds)) as Row[];
+    const byItem = new Map<string, BoardRun[]>();
+    for (const r of rows) {
+      const run: BoardRun = {
+        id: r.id as string,
+        kind: r.kind as RunKind,
+        state: r.state as RunState,
+        node: opt(r.node as string | null),
+        threadLink: opt(r.thread_link as string | null),
+        startedAt: opt(r.started_at as number | null),
+        measuredAt: opt(r.measured_at as number | null),
+        sessions: r.sessions as number,
+        checked: runData(r.checked),
+        report: parsed(factoryReportSchema, r, "report"),
+      };
+      const item = r.item as string;
+      if (!byItem.has(item)) byItem.set(item, []);
+      byItem.get(item)!.push(run);
+    }
+    return byItem;
+  },
+  /** The runs whose threads may still spend tokens: active ones and each PR's owner, of open items that do not wait
+   * for the maintainer. */
+  toMeasure: (s: Store) =>
+    (
+      s.db
+        .query(
+          `select r.* from factory_runs r join factory_items i on i.id = r.item
+           where i.finished_at is null and i.needs_you is null and r.thread_id is not null
+             and (r.state in (${ACTIVE.map(() => "?").join(",")})
+               or r.id = case when json_valid(i.pr) then json_extract(i.pr, '$.run') end)
+           order by r.queued_at`,
+        )
+        .all(...ACTIVE) as Row[]
+    ).map(toRun),
   /** Runs in these states that belong to an open item or to none: the ones whose threads can still be working. */
   heads: (s: Store, states: readonly RunState[]) =>
     (

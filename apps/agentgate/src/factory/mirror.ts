@@ -31,6 +31,8 @@ export { isWorkingStatus };
 export interface T3Mirror {
   threads(): MirrorThread[];
   thread(id: string): MirrorThread | undefined;
+  /** The subagent threads the thread delegated to directly. */
+  children(id: string): MirrorThread[];
   /** The project's title in T3 Code. */
   projectTitle(id: string): string | undefined;
   onChange(listener: (thread: MirrorThread, previous: MirrorThread | undefined) => void): () => void;
@@ -123,6 +125,8 @@ type RemoveListener = Parameters<T3Mirror["onRemove"]>[0];
 
 class Mirror implements T3Mirror {
   private byId = new Map<string, MirrorThread>();
+  /** Threads by parent, built on the first `children` call after a change. */
+  private byParent?: Map<string, MirrorThread[]>;
   private projects = new Map<string, string>();
   private listeners = new Set<Listener>();
   private removeListeners = new Set<RemoveListener>();
@@ -135,6 +139,17 @@ class Mirror implements T3Mirror {
 
   threads = () => [...this.byId.values()];
   thread = (id: string) => this.byId.get(id);
+  children(id: string) {
+    if (!this.byParent) {
+      this.byParent = new Map();
+      for (const t of this.byId.values()) {
+        if (!t.parentThreadId) continue;
+        if (!this.byParent.has(t.parentThreadId)) this.byParent.set(t.parentThreadId, []);
+        this.byParent.get(t.parentThreadId)!.push(t);
+      }
+    }
+    return this.byParent.get(id) ?? [];
+  }
   projectTitle = (id: string) => this.projects.get(id);
   status = () => ({ ...this.state });
   onChange(listener: Listener) {
@@ -157,6 +172,7 @@ class Mirror implements T3Mirror {
       this.running.abort();
       this.running = undefined;
       this.byId.clear();
+      this.byParent = undefined;
       this.projects.clear();
       this.sequence = undefined;
       this.setState({ stream: "down" });
@@ -248,13 +264,16 @@ class Mirror implements T3Mirror {
   private set(thread: MirrorThread, previous = this.byId) {
     const before = previous.get(thread.id);
     this.byId.set(thread.id, thread);
+    this.byParent = undefined;
     if (before && JSON.stringify(before) === JSON.stringify(thread)) return;
     this.tell(this.listeners, thread, before);
   }
 
   private remove(id: string) {
     const thread = this.byId.get(id);
-    if (thread && this.byId.delete(id)) this.tell(this.removeListeners, thread);
+    if (!thread || !this.byId.delete(id)) return;
+    this.byParent = undefined;
+    this.tell(this.removeListeners, thread);
   }
 
   /** The board shows the stream's state, which lives only here. */

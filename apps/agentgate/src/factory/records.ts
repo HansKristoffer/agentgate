@@ -24,12 +24,10 @@ const SESSION_ID = /^[\w-]{1,128}$/;
 
 /** The thread's subagents, and theirs, from this machine's mirror. */
 function subagents(f: FactoryRuntime, thread: string) {
-  const all = mirrorOf(f).threads();
+  const mirror = mirrorOf(f);
   const found: string[] = [];
-  for (let i = -1; i < found.length; i++) {
-    const parent = i < 0 ? thread : found[i];
-    for (const t of all) if (t.parentThreadId === parent && !found.includes(t.id)) found.push(t.id);
-  }
+  for (let i = -1; i < found.length; i++)
+    for (const t of mirror.children(i < 0 ? thread : found[i]!)) if (!found.includes(t.id)) found.push(t.id);
   return found;
 }
 
@@ -144,31 +142,29 @@ async function currentTokens(f: FactoryRuntime, run: FactoryRun) {
   return { tokens: total(sessionUsage(f.s, known.sessions)), sessions: known.sessions };
 }
 
-/** Threads keep working after their run reports (an implement thread owns its PR), so the runs of open items are
- * measured every minute. An item that waits for the maintainer is left alone: its threads are stopped or wait for an
- * answer. A failure is noted once per run; the board shows the tokens as unknown while a working run goes unmeasured. */
+/** The runs of open items whose threads may still work are measured every minute: active ones, and the implement run
+ * that owns the item's PR, whose thread keeps working on it after it reported. A settled run was measured when it
+ * ended, and is again when its item finishes. An item that waits for the maintainer is left alone: its threads are
+ * stopped or wait for an answer. A failure is noted once per run; the board shows the tokens as unknown while a working
+ * run goes unmeasured. */
 async function measureOpen(f: FactoryRuntime) {
   const m = measuringOf(f);
   const measured = new Set<string>();
   const budget = (currentFolder(f)?.config.limits ?? DEFAULT_LIMITS).itemTokens;
-  for (const item of items.list(f.s, { open: true })) {
-    if (item.needsYou) continue;
-    for (const run of runs.forItem(f.s, item.id)) {
-      if (!run.threadId) continue;
-      measured.add(run.id);
-      try {
-        const now = await currentTokens(f, run);
-        if (!now) continue;
-        m.failed.clear(run.id);
-        const after = saveTokens(f, run, now.tokens, now.sessions.length);
-        // A step of the item only when it went over: under budget, nothing waits behind its other steps.
-        if (after && isOpenPhase(after.phase) && after.tokens > budget)
-          await withItem(f, after.id, () => enforceBudget(f, after.id));
-      } catch (e) {
-        m.sessions.delete(run.id);
-        const text = `Measuring the tokens of ${run.id} failed: ${shortError(e)}`;
-        if (m.failed.fresh(run.id, text)) f.events.emit({ kind: "note", item: item.id, run: run.id, text });
-      }
+  for (const run of runs.toMeasure(f.s)) {
+    measured.add(run.id);
+    try {
+      const now = await currentTokens(f, run);
+      if (!now) continue;
+      m.failed.clear(run.id);
+      const after = saveTokens(f, run, now.tokens, now.sessions.length);
+      // A step of the item only when it went over: under budget, nothing waits behind its other steps.
+      if (after && isOpenPhase(after.phase) && after.tokens > budget)
+        await withItem(f, after.id, () => enforceBudget(f, after.id));
+    } catch (e) {
+      m.sessions.delete(run.id);
+      const text = `Measuring the tokens of ${run.id} failed: ${shortError(e)}`;
+      if (m.failed.fresh(run.id, text)) f.events.emit({ kind: "note", item: run.item, run: run.id, text });
     }
   }
   // Runs of items that finished or wait are measured again from scratch if they come back.

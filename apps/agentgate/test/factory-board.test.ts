@@ -209,6 +209,79 @@ test("while the stream is down the mirror polls T3's shell on the interval, and 
   ]);
 });
 
+test("the mirror lists a thread's direct subagents, not theirs", async () => {
+  timing.pollMs = 50;
+  const { s, f } = fixture();
+  const fake = await withT3(s);
+  const { id: projectId } = fake.addProject(tmp());
+  const parent = fake.addThread({ projectId, sessionId: "s1" });
+  const child = fake.addThread({ projectId, sessionId: "s2", subagent: true, parentThreadId: parent.id });
+  fake.addThread({ projectId, sessionId: "s3", subagent: true, parentThreadId: child.id });
+  useFactory(s, "a");
+  const mirror = mirrorOf(f);
+  await until(() => mirror.status().stream === "live", "the snapshot");
+  expect(mirror.children(parent.id).map((t) => t.id)).toEqual([child.id]);
+});
+
+test("the board is built once per factory change, and again after 2 s", async () => {
+  const { s, f } = fixture();
+  let now = 1_000_000;
+  s.now = () => now;
+  let builds = 0;
+  f.boardParts.push(async () => {
+    builds++;
+    return {};
+  });
+  const read = () => buildBoard(f, { includeWebhookUrls: false });
+
+  await Promise.all([read(), read()]);
+  await read();
+  expect(builds).toBe(1);
+
+  const item = items.insert(s, {
+    id: "it_1",
+    source: "bugs",
+    externalId: "1",
+    key: "gh-1",
+    repo: "acme/api",
+    title: "Crash",
+    snapshot: {},
+    phase: "implement",
+    configCommit: "c0ffee",
+  });
+  const board = await read();
+  expect(builds).toBe(2);
+  expect(board.items.map((i) => i.id)).toEqual([item.id]);
+
+  now += 2000;
+  await read();
+  expect(builds).toBe(3);
+});
+
+test("an item whose needs_you is corrupt reads as not waiting, and the board still lists it", async () => {
+  const { s, f } = fixture();
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  cleanup.push(() => errors.mockRestore());
+  const item = { source: "bugs", repo: "acme/api", title: "Crash", snapshot: {}, configCommit: "c0ffee" };
+  items.insert(s, { ...item, id: "it_1", externalId: "1", key: "gh-1", phase: "implement" });
+  items.insert(s, { ...item, id: "it_2", externalId: "2", key: "gh-2", phase: "implement" });
+  s.db.run("update factory_items set needs_you = '{not json' where id = 'it_1'");
+  s.db.run(`update factory_items set needs_you = '{"kind":"answer"}' where id = 'it_2'`);
+
+  expect(items.get(s, "it_1")!.needsYou).toBeUndefined();
+  expect(items.get(s, "it_2")!.needsYou).toBeUndefined();
+  items.get(s, "it_1");
+  expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
+    "factory: the needs_you of it_1 cannot be read, so it reads as unset",
+    "factory: the needs_you of it_2 cannot be read, so it reads as unset",
+  ]);
+  const board = await buildBoard(f, { includeWebhookUrls: false });
+  expect(board.items.map((i) => [i.id, i.needsYou])).toEqual([
+    ["it_1", undefined],
+    ["it_2", undefined],
+  ]);
+});
+
 const hookSource = {
   id: "hooks",
   type: "webhook" as const,

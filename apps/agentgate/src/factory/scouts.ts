@@ -122,7 +122,10 @@ const scoutsOf = (folder: LoadedFolder | undefined) =>
 
 const sourceOfRun = (run: FactoryRun) => (run.checked?.kind === "scout" ? run.checked.source : undefined);
 
-const runsOf = (f: FactoryRuntime, id: string) => runs.list(f.s, { kinds: ["scout"], source: id });
+/** The scout's newest run, and one that has not ended: its 90 days of runs are never read whole. */
+const lastRunOf = (f: FactoryRuntime, id: string) => runs.newest(f.s, { kinds: ["scout"], source: id });
+const activeRunOf = (f: FactoryRuntime, id: string) =>
+  runs.newest(f.s, { kinds: ["scout"], source: id, states: ACTIVE });
 
 /** The scout's items that block a finding with the same key: open, or finished within its `dedupeWindow`. */
 function knownItems(f: FactoryRuntime, scout: Scout) {
@@ -143,7 +146,7 @@ function scoutOf(f: FactoryRuntime, id: string) {
 /** Run now: queues a run whatever the schedule says, unless one is going. */
 export function scoutNow(f: FactoryRuntime, id: string): { run: string } | { skipped: string } {
   scoutOf(f, id);
-  const going = runsOf(f, id).find((r) => ACTIVE.includes(r.state));
+  const going = activeRunOf(f, id);
   if (going) return { skipped: `The ${id} scout's run ${going.id} has not finished yet` };
   return { run: enqueueRun(f, { kind: "scout", checked: { kind: "scout", source: id } }).id };
 }
@@ -153,9 +156,8 @@ function scoutWhenDue(f: FactoryRuntime) {
   const now = f.s.now();
   for (const scout of scoutsOf(currentFolder(f))) {
     if (!scout.enabled) continue;
-    const own = runsOf(f, scout.id);
-    if (own.some((r) => ACTIVE.includes(r.state))) continue;
-    const { due, slot } = scoutDue(scout.schedule, own.at(-1)?.queuedAt, now);
+    if (activeRunOf(f, scout.id)) continue;
+    const { due, slot } = scoutDue(scout.schedule, lastRunOf(f, scout.id)?.queuedAt, now);
     if (!due) continue;
     const intake = intakeState(f);
     if (intake !== "on") {
@@ -308,10 +310,9 @@ const scoutRun = (f: FactoryRuntime) => ({
 // ---- the board
 
 function scoutRow(f: FactoryRuntime, scout: Scout) {
-  const own = runsOf(f, scout.id);
-  const last = own.at(-1);
+  const last = lastRunOf(f, scout.id);
   const on = scout.enabled && intakeState(f) === "on";
-  const going = own.some((r) => ACTIVE.includes(r.state));
+  const going = !!activeRunOf(f, scout.id);
   const data = last?.checked?.kind === "scout" ? last.checked : undefined;
   return {
     id: scout.id,
