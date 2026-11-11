@@ -1,5 +1,6 @@
 import { CHANNEL_LIMITS, MiB, channelResponseFrame, relayNode } from "@agentgate/protocol/relay";
 import { safeEqual } from "hanzio/crypto";
+import { readBounded } from "./body.ts";
 import { Window } from "./group.ts";
 
 /**
@@ -38,7 +39,6 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
     status,
     headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
   });
-const BODY_DEADLINE_MS = 30_000;
 
 /** Bytes per minute, like Window counts requests. */
 class Budget {
@@ -106,8 +106,9 @@ export class ChannelCore {
     if (inFlight >= CHANNEL_LIMITS.inFlight)
       return json(503, { error: "too many calls in flight", code: "busy" }, { "retry-after": "1" });
 
-    const body = await readBounded(req, CHANNEL_LIMITS.bodyBytes);
-    if (body === undefined) return json(413, { error: "call too large", code: "size" });
+    const bytes = await readBounded(req, CHANNEL_LIMITS.bodyBytes);
+    if (!bytes) return json(413, { error: "call too large", code: "size" });
+    const body = new TextDecoder().decode(bytes);
     const budget = this.bytes.take(body.length, this.deps.limits.mibPerMinute * MiB, now);
     if (budget)
       return json(429, { error: "too much data for this group", code: "rate" }, { "retry-after": String(budget) });
@@ -174,36 +175,4 @@ export class ChannelCore {
     this.pending.delete(id);
     p.resolve(res);
   }
-}
-
-async function readBounded(req: Request, max: number): Promise<string | undefined> {
-  if (Number(req.headers.get("content-length") ?? 0) > max) return undefined;
-  const reader = req.body?.getReader();
-  if (!reader) return "";
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const deadline = setTimeout(() => {
-    void reader.cancel();
-  }, BODY_DEADLINE_MS);
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > max) {
-        await reader.cancel();
-        return undefined;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    clearTimeout(deadline);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const c of chunks) {
-    bytes.set(c, offset);
-    offset += c.byteLength;
-  }
-  return new TextDecoder().decode(bytes);
 }
