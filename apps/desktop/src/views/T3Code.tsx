@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { Button, toast } from "@heroui/react";
 import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
 import { ArrowLeft, ArrowRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
@@ -18,6 +18,7 @@ import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
 import { OpenInT3 } from "./Factory.tsx";
 import { ago, elapsed, field, since } from "./utils.ts";
+import { useDaemon } from "../useDaemon.ts";
 
 const STEPS: Record<string, string> = {
   resolve: "Starting",
@@ -319,64 +320,51 @@ function ThreadRow({
   );
 }
 
+type Started = { handoffId: string; node: string };
+/** The handoffs this app started on each daemon (by URL), until they finish, and their last answers: the node driving
+ * one may stop listing it while it runs. Outside the view, so leaving the page and coming back keeps following them. */
+const tracking = new Map<string, { started: Started[]; jobs: Record<string, HandoffJob> }>();
+function trackingOf(url: string) {
+  let track = tracking.get(url);
+  if (!track) tracking.set(url, (track = { started: [], jobs: {} }));
+  return track;
+}
+
 /** Threads on every machine with one action each: "To here" for a thread elsewhere, "To server" for one here. */
 export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
-  const [nodes, setNodes] = useState<NodeThreads[]>();
-  const [started, setStarted] = useState<{ handoffId: string; node: string }[]>([]);
-  const [jobs, setJobs] = useState<Record<string, HandoffJob>>({});
-  const [error, setError] = useState("");
   const [machinesOpen, setMachinesOpen] = useState(false);
-  const live = useRef(true);
   const here = data.node;
-  const load = async () => {
-    try {
-      // Validated like status: the daemon may be another machine's, on another version.
-      const parsed = nodeThreadsSchema.array().safeParse(await request(conn, "/threads"));
-      if (!parsed.success)
-        throw new Error("A machine returned incompatible thread data. Update Agentgate on every machine.");
-      const next = parsed.data;
-      // Jobs started from this app, until they finish: the node driving one may stop listing it while it runs.
-      const job = async (s: (typeof started)[number]) => {
-        const answer = await request(conn, `/handoffs/${s.handoffId}?node=${encodeURIComponent(s.node)}`).catch(
-          () => undefined,
-        );
-        return handoffJobSchema.safeParse(answer).data;
-      };
-      const tracked = await Promise.all(started.map(job));
-
-      if (!live.current) return;
-      setNodes(next);
-      const found = tracked.filter(isTruthy);
-      setJobs((old) => ({ ...old, ...Object.fromEntries(found.map((j) => [j.id, j])) }));
-      const finished = new Set(found.filter((j) => j.status !== "running").map((j) => j.id));
-      if (finished.size) setStarted((old) => old.filter((s) => !finished.has(s.handoffId)));
-      setError("");
-    } catch (e) {
-      if (live.current) setError(String(e));
-    }
+  const track = trackingOf(conn.url);
+  const [following, setFollowing] = useState(track.started.length > 0);
+  const read = async () => {
+    // Validated like status: the daemon may be another machine's, on another version.
+    const parsed = nodeThreadsSchema.array().safeParse(await request(conn, "/threads"));
+    if (!parsed.success)
+      throw new Error("A machine returned incompatible thread data. Update Agentgate on every machine.");
+    const job = async (s: Started) => {
+      const answer = await request(conn, `/handoffs/${s.handoffId}?node=${encodeURIComponent(s.node)}`).catch(
+        () => undefined,
+      );
+      return handoffJobSchema.safeParse(answer).data;
+    };
+    const found = (await Promise.all(track.started.map(job))).filter(isTruthy);
+    for (const j of found) track.jobs[j.id] = j;
+    const finished = new Set(found.filter((j) => j.status !== "running").map((j) => j.id));
+    track.started = track.started.filter((s) => !finished.has(s.handoffId));
+    setFollowing(track.started.length > 0);
+    return { nodes: parsed.data, jobs: { ...track.jobs } };
   };
+  const threads = useDaemon(read, { topics: ["threads"], key: "threads", every: following ? 1_500 : 15_000 });
+  const { error, reload } = threads;
   // Opening the page catches T3 Code up with projects added on other machines.
   useEffect(() => {
     if (data.settings.t3ProjectSync) void request(conn, "/t3/projects/sync", "POST").catch(() => {});
   }, [conn]);
-  useEffect(() => {
-    live.current = true;
-    void load();
-    const timer = setInterval(() => void load(), started.length ? 1500 : 5000);
-    // Like the rest of the app: coming back to the window shows current threads, not the last poll.
-    const focus = () => void load();
-    window.addEventListener("focus", focus);
-    return () => {
-      live.current = false;
-      clearInterval(timer);
-      window.removeEventListener("focus", focus);
-    };
-  }, [conn, started]);
 
-  const views = nodes ?? [];
+  const views = threads.data?.nodes ?? [];
   // A job may come from the listing and from this app's own tracking; the newer copy wins.
   const all = new Map<string, HandoffJob>();
-  for (const j of [...views.flatMap((v) => v.jobs), ...Object.values(jobs)]) {
+  for (const j of [...views.flatMap((v) => v.jobs), ...Object.values(threads.data?.jobs ?? {})]) {
     if ((all.get(j.id)?.updatedAt ?? 0) <= j.updatedAt) all.set(j.id, j);
   }
   const recent = [...all.values()].filter(
@@ -419,7 +407,9 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
               async () => {
                 const body = { threadId: t.id, node: t.node, to: toHere ? "here" : "server" };
                 const r = await request<{ handoffId: string; node: string }>(conn, "/handoffs", "POST", body);
-                setStarted((old) => [...old, { handoffId: r.handoffId, node: r.node }]);
+                track.started.push({ handoffId: r.handoffId, node: r.node });
+                setFollowing(true);
+                void reload();
                 toast(`Handing ${t.title} to ${toHere ? here : target!.node}`);
               },
               undefined,
@@ -459,7 +449,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           local={local}
           conn={conn}
           perform={perform}
-          connected={load}
+          connected={reload}
           close={() => setMachinesOpen(false)}
         />
       )}
@@ -488,7 +478,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
                       async () => {
                         const path = `/handoffs/${j.id}/cancel?node=${encodeURIComponent(j.node)}`;
                         toast(handoffCancelSchema.parse(await request(conn, path, "POST")).message);
-                        await load();
+                        await reload();
                       },
                       undefined,
                       `handoff-cancel:${j.id}`,
@@ -518,7 +508,10 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
             <small>{error}</small>
           </div>
         )}
-        {!views.some((v) => v.threads.length) ? (
+        {!threads.data ? (
+          // Before the first answer: whether T3 Code is connected is not known yet.
+          !error && <Empty>Loading threads…</Empty>
+        ) : !views.some((v) => v.threads.length) ? (
           <Empty>
             <SquareTerminal size={22} />
             <strong>
