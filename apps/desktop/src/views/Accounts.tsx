@@ -16,11 +16,11 @@ import {
   nameOf,
   usable,
 } from "./ClaudeDesktop.tsx";
-import { request } from "../api.ts";
+import { control, request } from "../api.ts";
 import { accountProblem } from "@agentgate/protocol/attention";
 import { AccountQuota, QuotaNotes } from "../features/proxy/AccountQuota.tsx";
 import { AccountPolicy } from "../features/proxy/AccountPolicy.tsx";
-import { field, idPath, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
+import { field, providerIcon, providerName, toolName, confirmDelete, planName } from "./utils.ts";
 
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
@@ -89,7 +89,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
     let saved = false;
     await perform(
       async () => {
-        await request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", { pinned });
+        await control(connection, pinned ? "accounts pin" : "accounts unpin", { id: a.account.id });
         saved = true;
       },
       pinned ? `${a.account.label} pinned` : `${providerName(a.account.provider)} is back on automatic`,
@@ -265,8 +265,8 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           label: a.account.enabled ? "Disable" : "Enable",
                           onAction: () =>
                             void perform(() =>
-                              request(connection, `/accounts/${idPath(a.account.id)}`, "PATCH", {
-                                enabled: !a.account.enabled,
+                              control(connection, a.account.enabled ? "accounts disable" : "accounts enable", {
+                                id: a.account.id,
                               }),
                             ),
                         },
@@ -282,7 +282,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           onAction: async () => {
                             if (await confirmDelete(a.account.label))
                               void perform(
-                                () => request(connection, `/accounts/${idPath(a.account.id)}`, "DELETE"),
+                                () => control(connection, "accounts rm", { id: a.account.id }),
                                 "Account deleted",
                               );
                           },
@@ -372,7 +372,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
               if (mode === "login") void start(provider, field(f, "label"));
               else
                 void perform(async () => {
-                  await request(connection, "/accounts/import", "POST", {
+                  await control(connection, "import", {
                     provider,
                     dir: folder,
                     label: field(f, "label") || undefined,

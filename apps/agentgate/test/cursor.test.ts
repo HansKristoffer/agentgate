@@ -137,15 +137,17 @@ test("the control API signs in to Cursor without a pasted code", async () => {
     );
   try {
     polls = 0;
-    const start = (await (await call("/accounts/login", { provider: "cursor" })).json()) as {
+    const start = (await (await call("/ops/accounts%20login%20start", { provider: "cursor" })).json()) as {
       state: string;
       url: string;
     };
     expect(new URL(start.url).searchParams.get("uuid")).toBe(start.state);
     expect(start.state).toMatch(/^[0-9a-f-]{36}$/);
-    const done = (await (await call("/accounts/login/finish", { state: start.state })).json()) as { id?: string };
+    const done = (await (await call("/ops/accounts%20login%20finish", { state: start.state })).json()) as {
+      id?: string;
+    };
     expect(s.get("account", done.id!)?.provider).toBe("cursor");
-    expect((await call("/accounts/login/finish", { state: start.state })).status).toBe(400);
+    expect((await call("/ops/accounts%20login%20finish", { state: start.state })).status).toBe(400);
   } finally {
     ctx.abort.abort();
     ctx.skills.close();

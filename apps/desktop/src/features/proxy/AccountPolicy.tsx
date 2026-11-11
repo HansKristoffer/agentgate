@@ -2,7 +2,7 @@ import { useState, type FormEvent, type ReactNode } from "react";
 import { Button } from "@heroui/react";
 import { accountPatchSchema, type AccountStatus, type Connection } from "@agentgate/protocol";
 import type { Perform } from "../../types.ts";
-import { request } from "../../api.ts";
+import { control } from "../../api.ts";
 import { Changes, Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
 import { useGeneration } from "./useGeneration.ts";
 const list = (value: FormDataEntryValue | null) =>
@@ -44,13 +44,19 @@ export function AccountPolicy({
     setPatch(result.data);
     setError("");
   };
+  // One operation per field, each passing the revision the one before saved, so a change made elsewhere since this
+  // dialog opened stops the save instead of being overwritten.
   const saveChanges = () =>
     perform(async () => {
+      if (!patch) return;
       const isCurrent = capture();
-      await request(connection, `/accounts/${encodeURIComponent(current.id)}`, "PATCH", {
-        ...patch,
-        revision: account.revision,
-      });
+      const id = current.id;
+      let { revision } = account;
+      if (patch.label !== undefined && patch.label !== current.label)
+        ({ revision } = await control(connection, "accounts rename", { id, label: patch.label, revision }));
+      if (patch.priority !== undefined && patch.priority !== current.priority)
+        ({ revision } = await control(connection, "accounts priority", { id, priority: patch.priority, revision }));
+      await control(connection, "accounts policy", { id, policy: patch.policy ?? {}, revision });
       if (isCurrent()) close();
     }, "Account policy saved");
   const changes: [string, ReactNode, ReactNode][] | undefined = patch && [

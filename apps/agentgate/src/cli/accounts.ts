@@ -1,29 +1,27 @@
-import { loginIdSchema, modelPolicySchema, type RequestPage } from "@agentgate/protocol";
+import { loginIdSchema, type RequestPage } from "@agentgate/protocol";
 import { buildQueryString, getErrorMessage } from "hanzio";
-import { checkRevision, revision } from "../configuration.ts";
 import { providerLogins } from "../llm/providers.ts";
-import { deleteAccount, setAccount } from "../operations.ts";
 import { store } from "../store.ts";
 import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
 
-/** login, import, accounts, proxy, tokens, requests and logins. */
+/** login, the account list and checks, proxy, tokens, requests and logins. Account writes are operations
+ * (ops/accounts.ts). */
 export const run: Run = async (cmd, [sub, ...rest], opts) => {
   const s = initialized(store());
   const str = stringOption(opts);
   switch (cmd) {
-    case "login":
-    case "import": {
+    case "login": {
       const mod =
         sub === "claude" || sub === "codex" || sub === "cursor"
           ? providerLogins[sub]
-          : die(`${cmd} claude|codex|cursor`);
-      if (cmd === "login") return console.log(`added ${await mod.login(s, str("label"))}`);
-      const dir = (str("from") ?? die("--from <dir> is required")).replace(/^~/, process.env.HOME ?? "~");
-      const id = await mod.importFrom(s, dir, str("label"));
-      console.log(`imported ${id}`);
-      console.warn(
-        `\nWARNING: agentgate now owns this login. Stop using ${dir} directly: its CLI would refresh the token and log agentgate out.`,
-      );
+          : die("login claude|codex|cursor [--label work]");
+      // The provider's own sign-in needs this terminal, so it runs and saves here rather than in the daemon.
+      const id = await mod.login(s, str("label"));
+      console.log(`added ${id}`);
+      await management(`/ops/${encodeURIComponent("accounts signed-in")}`, "POST", { id }).catch((e) => {
+        if ((e as { code?: unknown } | null)?.code !== "ECONNREFUSED")
+          console.warn(`The running daemon may skip ${id} until its backoff ends: ${getErrorMessage(e)}`);
+      });
       return;
     }
 
@@ -51,42 +49,7 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         return console.log(
           JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2),
         );
-      if ((sub === "enable" || sub === "disable") && rest.length > 1)
-        return console.log(
-          JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2),
-        );
-      if (sub === "policy") {
-        const expected = revision(s, "account", id);
-        const policy = modelPolicySchema.parse(
-          await Bun.file(str("file") ?? die("--file policy.json is required")).json(),
-        );
-        s.transaction(() => {
-          checkRevision(s, "account", id, expected);
-          setAccount(s, id, { policy });
-        });
-        return console.log("Policy saved; synchronizes to paired machines");
-      }
-      if (sub === "enable") setAccount(s, id, { enabled: true });
-      else if (sub === "disable") setAccount(s, id, { enabled: false });
-      else if (sub === "pin") setAccount(s, id, { pinned: true });
-      else if (sub === "unpin") setAccount(s, id, { pinned: false });
-      else if (sub === "priority") setAccount(s, id, { priority: Number(rest[1] ?? 0) });
-      else if (sub === "rm") deleteAccount(s, id);
-      else if (sub === "exhaust") {
-        // Test flag: pretend this account hit its quota.
-        s.get("account", id) ?? die(`no account ${id}`);
-        const until = Date.now() + Number(rest[1] ?? 60) * 60_000;
-        s.put("usage", id, {
-          accountId: id,
-          observedAt: Date.now(),
-          observedBy: s.nodeId,
-          windows: [],
-          status: "exhausted",
-          exhaustedUntil: until,
-          source: "manual",
-        });
-      } else showHelp();
-      return console.log("ok");
+      return showHelp();
     }
 
     case "proxy": {
