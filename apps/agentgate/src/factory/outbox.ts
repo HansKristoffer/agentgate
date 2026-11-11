@@ -11,8 +11,8 @@ import { defuse, renderComment } from "./markers.ts";
  * review conversation, an issue the factory files) goes through one claim. A write is claimed with its body, once per
  * item, moment and `ref`, in the step that decides it, and sent after that step:
  *
- * - `pending` is sent, by the step after the claim or by the loop: it was never attempted, or the service refused
- *   it, which wrote nothing, fewer than three times;
+ * - `pending` is sent, by the step after the claim or by the loop: it was never attempted, the service's rate limit
+ *   turned it away, or the service refused it fewer than three times. None of those wrote anything;
  * - `sending` was attempted, and a restart then leaves it as `uncertain`;
  * - `unreachable` certainly never reached the service (`gh` is logged out, the machine is offline), so the loop
  *   sends it again until it goes through, however many passes that takes;
@@ -136,12 +136,15 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
   const result = await deliver(f, item, moment, ref, row.body)
     .catch((e): PostResult => ({ status: "uncertain", error: shortError(e) }))
     .finally(() => flying(f).delete(id));
-  // A refusal wrote nothing, so the write goes back to pending until the service has refused it REFUSALS times. One
-  // that never arrived stays unreachable, for the loop to send, until its claim is GIVE_UP old.
-  const refusals = row.refusals + (result.status === "failed" ? 1 : 0);
-  const expired = result.status === "unreachable" && s.now() - row.claimed >= GIVE_UP;
-  const again = result.status === "failed" ? refusals < REFUSALS : result.status === "unreachable" && !expired;
-  const status = expired ? "failed" : result.status === "failed" && again ? "pending" : result.status;
+  // A refusal wrote nothing, so the write goes back to pending until the service has refused it REFUSALS times; one a
+  // rate limit turned away goes back to pending without counting. One that never arrived stays unreachable, for the
+  // loop to send, until its claim is GIVE_UP old.
+  const refused = result.status === "failed";
+  const refusals = row.refusals + (refused ? 1 : 0);
+  const unreachable = result.status === "unreachable";
+  const expired = unreachable && s.now() - row.claimed >= GIVE_UP;
+  const again = result.status === "limited" || (refused && refusals < REFUSALS) || (unreachable && !expired);
+  const status = expired ? "failed" : again && !unreachable ? "pending" : result.status;
   s.db.run("update factory_writebacks set status=?, refusals=?, at=? where item=? and moment=? and ref=?", [
     status,
     refusals,
