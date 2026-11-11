@@ -8,7 +8,7 @@ import {
 } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { safeJsonParse, typedSwitch, typedSwitchGroup } from "hanzio";
-import { InvalidGrant, NeedsLogin, canRefresh, refreshOwned, tokenHash } from "../credentials.ts";
+import { InvalidGrant, NeedsLogin, canRefresh, reclaimHolder, refreshOwned, tokenHash } from "../credentials.ts";
 import { defineLocal } from "../local-state.ts";
 import { fetchHeaders, Unavailable } from "../runtime.ts";
 import type { McpCredential, Store } from "../store.ts";
@@ -280,13 +280,7 @@ export async function tickMcp(s: Store, signal?: AbortSignal) {
   for (const c of s.list("mcpCredential")) {
     if (signal?.aborted) break;
     if (c.needsLogin || !c.tokens) continue;
-    if (
-      s.get("node", s.nodeId)?.alwaysOn &&
-      c.holder !== s.nodeId &&
-      !s.get("node", c.holder)?.alwaysOn &&
-      (c.expiresAt ?? 0) - s.now() > 45 * 60_000
-    )
-      s.put("mcpCredential", c.instanceId, { ...c, holder: s.nodeId });
+    reclaimHolder(s, "mcpCredential", c.instanceId, c);
     await refreshMcp(s, c.instanceId).catch(() => {});
   }
 }

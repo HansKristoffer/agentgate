@@ -57,6 +57,13 @@ export function canRefresh(s: Store, c: { holder: string; expiresAt?: number }, 
   return expiring && s.now() - lastSeen(s, c.holder) > 2 * MIN && listeningFor(s) >= 2 * MIN;
 }
 
+/** An always-on node takes the holder role from one that sleeps, while no refresh is near, so the login is refreshed by
+ * the machine that is around when it expires. A token without an expiry is never near one, as in `canRefresh`. */
+export function reclaimHolder(s: Store, kind: OwnedKind, id: string, c: Owned) {
+  if (!s.get("node", s.nodeId)?.alwaysOn || c.holder === s.nodeId || s.get("node", c.holder)?.alwaysOn) return;
+  if ((c.expiresAt ?? Infinity) - s.now() > 45 * MIN) s.put(kind, id, { ...c, holder: s.nodeId });
+}
+
 export function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
   const key = `${kind}:${id}`;
   const prev = s.get("refreshRequest", key);
@@ -255,17 +262,10 @@ export class Credentials {
     );
   }
   async tick(signal?: AbortSignal) {
-    const self = this.s.get("node", this.s.nodeId);
     for (const c of this.s.list("credential")) {
       if (signal?.aborted) break;
       if (c.needsLogin) continue;
-      if (
-        self?.alwaysOn &&
-        c.holder !== this.s.nodeId &&
-        !this.s.get("node", c.holder)?.alwaysOn &&
-        c.expiresAt - this.s.now() > 45 * MIN
-      )
-        this.s.put("credential", c.accountId, { ...c, holder: this.s.nodeId });
+      reclaimHolder(this.s, "credential", c.accountId, c);
       await this.token(c.accountId).catch(() => {});
     }
   }
