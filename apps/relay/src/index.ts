@@ -185,14 +185,18 @@ export class RelayAdmission extends DurableObject<Env> {
   }
 }
 
+// Bindings are fixed for an isolate's life, so the app (and the relay key's hash) is built on its first request.
+let app: ReturnType<typeof relayApp> | undefined;
+
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext) {
-    return relayApp({
+    app ??= relayApp({
       group: (id) => env.GROUPS.get(env.GROUPS.idFromName(id)),
       endpoint: (key) => env.ENDPOINTS.getByName(key),
       channel: (groupId) => env.CHANNELS.getByName(groupId),
       relayKey: env.RELAY_KEY || undefined,
       ipLimit: env.IP_LIMITER ? async (key) => (await env.IP_LIMITER!.limit({ key })).success : undefined,
-    }).fetch(request, env, ctx);
+    });
+    return app.fetch(request, env, ctx);
   },
 } satisfies ExportedHandler<Env>;

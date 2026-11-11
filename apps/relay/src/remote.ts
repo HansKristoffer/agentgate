@@ -2,6 +2,7 @@ import { REMOTE_LIMITS, endpointUpdate, remoteResponseFrame, sha256Hex } from "@
 import { safeEqual } from "hanzio/crypto";
 import { relayNode } from "@agentgate/protocol/relay";
 import type { EndpointOp } from "./app.ts";
+import { readBounded } from "./body.ts";
 import { Window, type Config } from "./group.ts";
 
 /**
@@ -48,7 +49,6 @@ interface Attachment {
 }
 
 const PENDING_MS = 10 * 60_000;
-const BODY_DEADLINE_MS = 30_000;
 const SOCKET_MESSAGES_PER_MINUTE = 1200;
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), {
@@ -59,38 +59,6 @@ const rpcError: Fail = (status, message, headers = {}) =>
   json(status, { jsonrpc: "2.0", error: { code: -32000, message }, id: null }, headers);
 const hookError: Fail = (status, message, headers = {}) => json(status, { error: message }, headers);
 const bearer = (req: Request) => req.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
-
-async function readBounded(req: Request, max: number): Promise<Uint8Array | undefined> {
-  if (Number(req.headers.get("content-length") ?? 0) > max) return undefined;
-  const reader = req.body?.getReader();
-  if (!reader) return new Uint8Array();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  const deadline = setTimeout(() => {
-    void reader.cancel();
-  }, BODY_DEADLINE_MS);
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > max) {
-        await reader.cancel();
-        return undefined;
-      }
-      chunks.push(value);
-    }
-  } finally {
-    clearTimeout(deadline);
-  }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const c of chunks) {
-    bytes.set(c, offset);
-    offset += c.byteLength;
-  }
-  return bytes;
-}
 
 export class EndpointCore {
   private pending = new Map<string, Pending>();

@@ -1,7 +1,6 @@
 import {
   RELAY_LIMITS,
   RELAY_PROTOCOL,
-  changesResponse,
   createRequest,
   pushRequest,
   relayGeneration,
@@ -362,7 +361,8 @@ export class GroupCore {
       more = false;
     for (const r of rows) {
       const e = { node: r.node, key: r.key, seq: r.seq, pusherSeq: r.pusher_seq, blob: r.blob };
-      const length = utf8.encode(JSON.stringify(e)).length + 1; // bytes: node names may be non-ASCII
+      // Node names may be non-ASCII, so they are measured in bytes; a blob is base64url, one byte per character.
+      const length = utf8.encode(JSON.stringify({ ...e, blob: "" })).length + r.blob.length + 1;
       if (entries.length === RELAY_LIMITS.pullEntries || (entries.length && size + length > PAGE_BUDGET)) {
         more = true;
         break;
@@ -380,7 +380,6 @@ export class GroupCore {
       entries,
       seen,
     };
-    changesResponse.parse(page);
     return ok(page);
   }
 
