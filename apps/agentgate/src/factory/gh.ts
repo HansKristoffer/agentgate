@@ -304,6 +304,16 @@ export async function issueStateAndComments(repo: string, number: number) {
   };
 }
 
+/** An issue's state alone, without its comments. A pull request's number can answer MERGED, which counts as closed. */
+export async function issueState(repo: string, number: number): Promise<"OPEN" | "CLOSED"> {
+  const view = await ghJson(
+    `read the state of ${repo}#${number}`,
+    z.object({ state: z.enum(["OPEN", "CLOSED", "MERGED"]) }),
+    ["issue", "view", String(number), "--repo", repo, "--json", "state"],
+  );
+  return view.state === "OPEN" ? "OPEN" : "CLOSED";
+}
+
 /** Every comment, oldest first: `gh` pages through them when `comments` is asked for. Zod drops the other fields. */
 export async function issueComments(
   repo: string,
@@ -873,16 +883,9 @@ export async function prReady(url: string): Promise<void> {
 }
 
 /** GitHub refuses a review request to the PR's own author, and in v1 that author is often the maintainer (D42). */
-export async function prAddReviewers(url: string, reviewers: string[]): Promise<void> {
+export async function prAddReviewers(url: string, author: string, reviewers: string[]): Promise<void> {
   const { repo, number } = prOf(url);
-  const { author } = await ghJson(`read the author of ${repo}#${number}`, z.object({ author: login }), [
-    "pr",
-    "view",
-    url,
-    "--json",
-    "author",
-  ]);
-  const others = reviewers.filter((r) => r.toLowerCase() !== author.login.toLowerCase());
+  const others = reviewers.filter((r) => r.toLowerCase() !== author.toLowerCase());
   if (!others.length) return;
   await gh(`request reviews on ${repo}#${number}`, ["pr", "edit", url, "--add-reviewer", others.join(",")]);
 }
