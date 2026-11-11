@@ -1,19 +1,24 @@
 import {
   Client,
   ProtocolError,
+  ReadBuffer,
   SdkError,
   SdkErrorCode,
   SdkHttpError,
   StreamableHTTPClientTransport,
+  serializeMessage,
   type CallToolRequest,
   type CallToolResult,
   type Implementation,
+  type JSONRPCMessage,
   type RequestOptions,
   type Tool,
+  type Transport,
 } from "@modelcontextprotocol/client";
-import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { spawn, type ChildProcess } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { anySignal, getErrorMessage, isTruthy } from "hanzio";
+import { anySignal, exponentialBackoff, getErrorMessage, isTruthy } from "hanzio";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
@@ -22,9 +27,9 @@ import { z } from "zod";
 import { NeedsLogin } from "../credentials.ts";
 import { defineLocal } from "../local-state.ts";
 import { infisicalMcpEnv } from "../logins.ts";
-import { fetchHeaders, sleep, Unavailable } from "../runtime.ts";
+import { killGroup, sleep, Unavailable } from "../runtime.ts";
 import type { McpInstance, Store } from "../store.ts";
-import { CALL_LIMIT, authenticatedFetch, headerWait } from "./oauth.ts";
+import { CALL_LIMIT, authenticatedFetch, mcpFetch } from "./oauth.ts";
 import { skillsSource } from "./skills.ts";
 import { resolve } from "./templates.ts";
 
@@ -163,18 +168,97 @@ export async function connect(inst: McpInstance, cwd?: string, s?: Store): Promi
   }
 }
 
+/**
+ * The SDK's stdio transport, except that the server starts in its own process group: closing it also stops what the
+ * server started (npx runs node, uvx runs python), which would otherwise outlive the session and the daemon.
+ */
+export class StdioTransport implements Transport {
+  onclose?: () => void;
+  onerror?: (error: Error) => void;
+  onmessage?: (message: JSONRPCMessage) => void;
+  readonly stderr = new PassThrough();
+  private child?: ChildProcess;
+  private buffer = new ReadBuffer();
+  constructor(
+    private command: string,
+    private args: string[],
+    private env: NodeJS.ProcessEnv,
+    private cwd?: string,
+  ) {}
+  get pid() {
+    return this.child?.pid;
+  }
+  start() {
+    return new Promise<void>((resolve, reject) => {
+      const child = spawn(this.command, this.args, { env: this.env, cwd: this.cwd, detached: true });
+      this.child = child;
+      child.once("error", (e) => {
+        reject(e);
+        this.onerror?.(e);
+      });
+      child.once("spawn", resolve);
+      child.once("close", () => {
+        if (this.child === child) this.child = undefined;
+        this.onclose?.();
+      });
+      child.stdout.on("data", (chunk: Buffer) => {
+        try {
+          this.buffer.append(chunk);
+          for (let m = this.buffer.readMessage(); m; m = this.buffer.readMessage()) this.onmessage?.(m);
+        } catch (e) {
+          this.onerror?.(e instanceof Error ? e : new Error(String(e)));
+        }
+      });
+      child.stdin.on("error", (e) => this.onerror?.(e));
+      child.stdout.on("error", (e) => this.onerror?.(e));
+      child.stderr.pipe(this.stderr);
+    });
+  }
+  send(message: JSONRPCMessage) {
+    const stdin = this.child?.stdin;
+    if (!stdin) return Promise.reject(new SdkError(SdkErrorCode.NotConnected, "Not connected"));
+    return new Promise<void>((resolve) => {
+      if (stdin.write(serializeMessage(message))) resolve();
+      else stdin.once("drain", resolve);
+    });
+  }
+  /** Closes stdin, as the SDK does, then sends SIGTERM and then SIGKILL to the whole group, 2 s apart. */
+  async close() {
+    const child = this.child;
+    this.child = undefined;
+    this.buffer.clear();
+    if (!child?.pid) return;
+    const pid = child.pid;
+    const running = () => child.exitCode === null && child.signalCode === null;
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    const wait = () => Promise.race([exited, sleep(2000)]);
+    if (running()) {
+      child.stdin?.end();
+      await wait();
+    }
+    if (running()) {
+      try {
+        process.kill(-pid, "SIGTERM");
+      } catch {
+        // the group is gone
+      }
+      await wait();
+    }
+    // Even after the server exited: what it started may still run.
+    killGroup({ pid, kill: (signal) => child.kill(signal) });
+  }
+}
+
 async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client> {
   const r = resolved(inst, s);
   const client = new Client({ name: "agentgate", version: VERSION });
-  let transport: StdioClientTransport | StreamableHTTPClientTransport;
+  let transport: StdioTransport | StreamableHTTPClientTransport;
   let stderr = "";
   if (r.transport === "http") {
     if (!r.url) throw new ConnectError("failed", `${inst.id}: no url`);
     transport = new StreamableHTTPClientTransport(new URL(r.url), {
       requestInit: { headers: r.headers },
-      fetch: s
-        ? authenticatedFetch(s, inst.id)
-        : (url, init) => fetchHeaders(url, init, headerWait(init?.method, 10000)),
+      fetch: s ? authenticatedFetch(s, inst.id) : (url, init) => mcpFetch(url, init, 10000),
     });
   } else {
     if (!r.command) throw new ConnectError("failed", `${inst.id}: no command`);
@@ -183,18 +267,12 @@ async function open(inst: McpInstance, cwd?: string, s?: Store): Promise<Client>
         "failed",
         `${inst.id}: '${r.command}' is not installed (install Node for npx or uv for uvx)`,
       );
-    transport = new StdioClientTransport({
-      command: r.command,
-      args: r.args,
-      env: { ...(process.env as Record<string, string>), ...r.env },
-      cwd,
-      stderr: "pipe",
-    });
+    transport = new StdioTransport(r.command, r.args ?? [], { ...process.env, ...r.env }, cwd);
   }
   try {
     const pending = client.connect(transport, { timeout: 10000 });
-    if (transport instanceof StdioClientTransport)
-      transport.stderr?.on("data", (chunk) => {
+    if (transport instanceof StdioTransport)
+      transport.stderr.on("data", (chunk) => {
         stderr = (stderr + String(chunk)).slice(-2048);
       });
     await pending;
@@ -585,7 +663,8 @@ const connectionKey = (s: Store, inst: McpInstance) => {
 };
 
 /** A server that failed to connect is tried again after 30 s, doubling to 5 minutes, not on every listing. */
-const retryDelay = (failures: number) => Math.min(5 * 60_000, 30_000 * 2 ** (failures - 1));
+const retryDelay = (failures: number) =>
+  exponentialBackoff(failures, { baseMs: 30_000, maxMs: 5 * 60_000, jitter: false });
 
 /** A connect skipped because the server failed recently; already logged when it failed. */
 class Backoff extends Error {}

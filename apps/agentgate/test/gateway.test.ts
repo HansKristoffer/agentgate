@@ -1,6 +1,6 @@
 import { Client, InMemoryTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { ProtocolError, Server, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, jest, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -512,5 +512,74 @@ test("a new label or tool filter keeps the server's connection", async () => {
     expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
   } finally {
     await g.done();
+  }
+});
+
+test("a server without a login keeps its notification stream while no event comes for longer than 10 s", async () => {
+  const mcp = new Server({ name: "quiet", version: "0" }, { capabilities: { tools: { listChanged: true } } });
+  mcp.setRequestHandler("tools/list", async () => ({ tools: [] }));
+  const t = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: () => crypto.randomUUID() });
+  await mcp.connect(t);
+  const opened = Promise.withResolvers<void>(),
+    closed = Promise.withResolvers<"closed">();
+  const quiet = Bun.serve({
+    port: 0,
+    idleTimeout: 0,
+    fetch: (req) => {
+      if (req.method === "GET") {
+        req.signal.addEventListener("abort", () => closed.resolve("closed"));
+        opened.resolve();
+      }
+      return t.handleRequest(req);
+    },
+  });
+  servers.push(quiet);
+  // The header deadline is a timer, and Bun sends the stream's headers only with its first event.
+  jest.useFakeTimers();
+  let client: Client | undefined;
+  try {
+    client = await connect(newInstance({ id: "quiet", url: `http://127.0.0.1:${quiet.port}/mcp` }));
+    const notified = Promise.withResolvers<"notified">();
+    client.setNotificationHandler("notifications/tools/list_changed", () => notified.resolve("notified"));
+    await opened.promise;
+    jest.advanceTimersByTime(11_000);
+    jest.useRealTimers();
+    await mcp.sendToolListChanged();
+    expect(await Promise.race([notified.promise, closed.promise])).toBe("notified");
+  } finally {
+    jest.useRealTimers();
+    await client?.close();
+    await mcp.close();
+  }
+});
+
+test("closing a stdio server also stops the processes it started", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-group-")),
+    pidFile = join(dir, "pid");
+  // The fixture server, after starting a child of its own that outlives it, as npx's node does. The server still exits
+  // when its stdin closes.
+  const script = `const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1 << 30)"], { stdio: ["ignore", "ignore", "ignore"] });
+child.unref();
+await Bun.write(${JSON.stringify(pidFile)}, String(child.pid));
+await import(${JSON.stringify(join(import.meta.dir, "fixtures", "mcp.ts"))});`;
+  const client = await connect({ ...newInstance({ id: "forks", command: process.execPath }), args: ["-e", script] });
+  const pid = Number(await Bun.file(pidFile).text());
+  const alive = () => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    expect(alive()).toBe(true);
+    await client.close();
+    // A killed process is gone a moment later, once init has reaped the orphan.
+    for (let i = 0; i < 100 && alive(); i++) await Bun.sleep(10);
+    expect(alive()).toBe(false);
+  } finally {
+    if (alive()) process.kill(pid, "SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
   }
 });
