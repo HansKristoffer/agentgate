@@ -49,7 +49,7 @@ The first `service install` points the Claude Code, Codex and Cursor you already
 
 You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, starts a launchd service, and routes your Claude Code, Codex and Cursor the same way. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
 
-The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it. **Settings → Coding tools** routes your own Claude Code and Codex or undoes it, and can generate [separate folders for T3 Code](#or-separate-folders-for-t3-code) instead. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
+The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it; `agentgate status` prints the same list. **Settings → Coding tools** routes your own Claude Code and Codex or undoes it, and can generate [separate folders for T3 Code](#or-separate-folders-for-t3-code) instead. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
 
 ## A second machine (e.g. an always-on server)
 
@@ -64,7 +64,7 @@ On the first machine, run `agentgate pair` or use **Pair a machine** in the app.
 curl -fsSL https://raw.githubusercontent.com/HansKristoffer/agentgate/main/install.sh | AGENTGATE_NAME=srv sh -s -- join agr1.…
 ```
 
-If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on` or **Mark as always on** in its ⋯ menu on Machines.
+If agentgate is already installed there, `agentgate join agr1.…` (relay) or `agentgate join http://mac.<tailnet>.ts.net:7878 <code>` (Tailscale) joins without reinstalling. Mark an always-on server with `agentgate init --always-on`, `agentgate nodes always-on <node> on|off`, or **Mark as always on** in its ⋯ menu on Machines.
 
 The server now has every account, MCP instance and repo mapping, and takes over token refreshes.
 
@@ -78,12 +78,12 @@ To control the server from the native app over Tailscale, open the connection se
 
 ## Machine dashboard
 
-Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and the last hour as charts. In **Machines**, choose **Turn on health dashboard** in a machine's ⋯ menu, then **Open health dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
+Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and charts of the last hour. In **Machines**, choose **Turn on health dashboard** in a machine's ⋯ menu, then **Open health dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
 
 - It runs on Linux machines only, since it reads `/proc`. On a Mac, opening it only says so.
 - Anyone on your tailnet can open it without signing in, as they could the server health page before. It shows program names and resource use, never command lines, credentials or accounts. Turn it off on machines you don't want it on.
 - Turning it on waits until every machine runs this release, because older releases drop the setting when they save a machine's record.
-- The history is kept in memory for the last hour, so a restart starts the charts over.
+- It measures only while someone has the page open. The charts start when the page is first opened and stop a minute after the last view; the next view, like a restart, starts them over.
 
 ## T3 Code
 
@@ -172,7 +172,7 @@ agentgate mcp limit railway 10000 [--tool get-logs]                   # cut long
 agentgate mcp defaults railway get-logs '{"limit": 30}'               # arguments a call gets unless the agent passes them
 ```
 
-A tool result longer than 20,000 characters is cut there, with a note telling the agent to ask for less. `agentgate mcp test <name>` lists a server's tools with these settings (it asks the running daemon, over the connection sessions use), and `agentgate service logs` shows one line per tool call with its server, tool, time and result size.
+A tool result longer than 20,000 characters is cut there, with a note telling the agent to ask for less. `agentgate mcp test <name>` lists a server's tools with these settings (it asks the running daemon, over the connection sessions use), `agentgate project tools <owner/repo>` lists every tool that repo's sessions see, and `agentgate service logs` shows one line per tool call with its server, tool, time and result size.
 
 ## Skills per repo
 
@@ -203,13 +203,13 @@ Fetching needs Node (`npx`) or Bun (`bunx`) on the daemon's machine, and connect
 
 Cursor also reads `~/.claude/skills`, `~/.codex/skills` and a repo's `.claude/skills` and `.agents/skills`, so it gets the same skills, except from the separate folders `agentgate setup` writes.
 
-Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine once it is a project in that machine's T3 Code (with T3 Code connected; this includes clones from [project sync](#keep-projects-in-sync) and handoffs), after its first agentgate session there, or after a scan under Projects → **Add project** → **Find on this machine**; from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Outside T3 Code, register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create on its own: a name clash is listed under Skills → Skills need attention, where **Use Agentgate's** moves the existing folder to `skill-backups` in agentgate's state folder and links agentgate's copy, and **Keep this one** leaves it and stops linking agentgate's copy there on that machine (`agentgate skills conflicts`, `agentgate skills resolve <path> agentgate|keep`). A folder the repository tracks is never moved. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app and `skills add` show the skills.sh audit before installing, and `skills add` asks first (`--yes` installs without asking).
+Claude Code and Codex read skills before a session's MCP servers start, so repo links must exist ahead of time. A repo is known on a machine once it is a project in that machine's T3 Code (with T3 Code connected; this includes clones from [project sync](#keep-projects-in-sync) and handoffs), after its first agentgate session there, or after a scan under Projects → **Add project** → **Find on this machine** (`agentgate project scan <folder>`); from then on its worktrees are watched and new ones are linked with bounded retries and independent periodic repair. Outside T3 Code, register or scan a checkout before launching its first session; watcher timing cannot guarantee first-session readiness. Changes apply to new sessions. Agentgate never replaces a folder it did not create on its own: a name clash is listed under Skills → Skills need attention, where **Use Agentgate's** moves the existing folder to `skill-backups` in agentgate's state folder and links agentgate's copy, and **Keep this one** leaves it and stops linking agentgate's copy there on that machine (`agentgate skills conflicts`, `agentgate skills resolve <path> agentgate|keep`). A folder the repository tracks is never moved. Skills run with your agent's permissions and are copied to every paired machine, so install only sources you trust; the app and `skills add` show the skills.sh audit before installing, and `skills add` asks first (`--yes` installs without asking).
 
 The app installs the exact files shown in a preview. Previews expire after ten minutes or cache eviction; preview again to continue. Skills installed from skills.sh, a source or a connected repository follow it and can't be edited; only hand-written skills can. Editing checks the saved revision and reports a conflict if another client or peer changed the skill. Skills → **Skills need attention** shows failed local materialization/link work, which the daemon retries automatically.
 
 Bundles must contain a nonempty root `SKILL.md`, with unique portable paths and regular files. Symlinks and special files cannot be synced. Each bundle is limited to 3 MiB of base64 data (about 2.25 MiB of files) and 5,000 files; imports are limited to 100 skills and 24 MiB per pack. Large sources can be imported with `--skill` one skill at a time.
 
-Repository-owned skills are mirrored only when you opt in with **Share repo skills between Claude and Codex** in a project's ⋯ menu in Projects. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
+Repository-owned skills are mirrored only when you opt in with **Share repo skills between Claude and Codex** in a project's ⋯ menu in Projects, or `agentgate project mirroring <owner/repo> on|off`. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
 
 ## Env files between machines
 
@@ -291,7 +291,7 @@ Things to know:
 
 ## Commands
 
-Run `agentgate --help`. Useful ones: `status`, `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `factory help`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. A command refuses an option it does not know, so a misspelt flag fails instead of being ignored. Useful ones: `status` (also how late the daemon's event loop ran in the last minute), `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `factory help`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 
@@ -335,7 +335,7 @@ The app uses Tauri commands to send HTTP requests from Rust. It has no browser H
 
 See [running agentgate](docs/operations/running.md) for backup, upgrade, and live distribution checks. Account and MCP OAuth refreshes share holder coordination and a local cross-process lease. Running MCP shims reconnect after daemon restarts and update per-session mappings; tool calls with uncertain outcomes are never automatically replayed.
 
-Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 4** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
+Nodes use **sync protocol 5** (update every paired machine together) and the app checks **management API version 5** when connecting. Deletion history is retained so offline machines cannot resurrect old configuration.
 
 `export --no-secrets` (or a backup with **Include credentials** off) produces an inventory: it omits logins, OAuth client secrets, and arbitrary MCP URLs, headers, commands/arguments, environment, fields, and secrets. Restored inventory transports need configuration again. Full exports contain working credentials and transport configuration.
 
