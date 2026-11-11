@@ -435,21 +435,21 @@ test("active MCP calls survive idle sweeps and cached tools acquire a new connec
   const client = await connectTo(shim.server);
   try {
     await client.listTools();
-    const before = ctx.gateway.upstreams.get("fake")?.client;
+    const before = ctx.gateway.upstreams.get("fake")?.state;
     let time = Date.now();
     s.now = () => time;
     for (let i = 0; i < 3; i++) {
       time += 9 * 60000;
       await client.callTool({ name: "fake__whoami" });
       await ctx.gateway.closeIdle();
-      expect(ctx.gateway.upstreams.get("fake")?.client).toBe(before);
+      expect(ctx.gateway.upstreams.get("fake")?.state).toBe(before);
     }
     time += 11 * 60000;
     await ctx.gateway.closeIdle();
     expect(ctx.gateway.upstreams.get("fake")).toBeUndefined();
     const result = await client.callTool({ name: "fake__whoami" });
     expect(result.isError).not.toBe(true);
-    expect(ctx.gateway.upstreams.get("fake")?.client).not.toBe(before);
+    expect(ctx.gateway.upstreams.get("fake")?.state).not.toBe(before);
     s.put("project", "*", { id: "*", mcp: {} });
     const removed = await client.callTool({ name: "fake__whoami" });
     expect(removed.isError).toBe(true);
@@ -671,7 +671,7 @@ test("shared long tools stay open during idle sweeps and carry cancellation/prog
     expect(ctx.gateway.upstreams.get("shared")?.calls).toBe(1);
     s.now = () => Date.now() + 31 * 60000;
     await ctx.gateway.closeIdle();
-    expect(ctx.gateway.upstreams.get("shared")?.client).toBeDefined();
+    expect(ctx.gateway.upstreams.get("shared")?.state.kind).toBe("connected");
     abort.abort();
     await expect(task).rejects.toThrow();
     for (let i = 0; i < 100 && !(await Bun.file(cancelled).exists()); i++) await Bun.sleep(10);

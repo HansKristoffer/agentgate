@@ -71,8 +71,9 @@ test("a result past the limit is cut, keeps other content, and says how to ask f
   expect(result.structuredContent).toBeUndefined();
 });
 
-/** An upstream with a huge result, a strict output schema it breaks, a slow tool, an echo and a failing tool. */
-function upstream() {
+/** An upstream with a huge result, a strict output schema it breaks, a slow tool, an echo and a failing tool. Each
+ * request's JSON-RPC method goes into `methods`. */
+function upstream(methods: string[] = []) {
   const strictSchema = {
     type: "object" as const,
     properties: { fix: { type: "object", properties: { title: { type: "string" } }, additionalProperties: false } },
@@ -80,6 +81,7 @@ function upstream() {
   const server = Bun.serve({
     port: 0,
     fetch: async (req) => {
+      if (req.method === "POST") methods.push(((await req.clone().json()) as { method?: string }).method ?? "");
       const mcp = new Server(
         { name: "upstream", version: "0" },
         { capabilities: { tools: {} }, instructions: "Upstream's own instructions." },
@@ -116,10 +118,10 @@ function upstream() {
   return `http://127.0.0.1:${server.port}/mcp`;
 }
 
-async function setup(instance: Partial<McpInstance> = {}) {
+async function setup(instance: Partial<McpInstance> = {}, methods: string[] = []) {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
-  s.put("mcp", "up", { ...newInstance({ id: "up", url: upstream() }), ...instance });
+  s.put("mcp", "up", { ...newInstance({ id: "up", url: upstream(methods) }), ...instance });
   s.put("project", "o/r", { id: "o/r", mcp: { up: "up" } });
   const ctx = makeCtx(s),
     handler = app(ctx);
@@ -446,5 +448,69 @@ test("a health check tells the app only when the server's state flips, and still
     expect(bumps).toBe(1);
   } finally {
     s.close();
+  }
+});
+
+test("only a 401 from an HTTP server asks for a login, never a stdio server's own text", async () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const refused = Bun.serve({ port: 0, fetch: () => new Response("invalid_token for body-secret", { status: 401 }) });
+  servers.push(refused);
+  s.put("mcp", "http", newInstance({ id: "http", url: `http://127.0.0.1:${refused.port}/mcp` }));
+  s.put("mcp", "stdio", {
+    ...newInstance({ id: "stdio", command: process.execPath }),
+    args: ["-e", "console.error('401 Unauthorized'); process.exit(1)"],
+  });
+  try {
+    await expect(connect(s.get("mcp", "stdio")!, undefined, s)).rejects.toThrow();
+    expect(serverHealth(s, "stdio")).toMatchObject({ ok: false, needsLogin: false });
+    const http = await connect(s.get("mcp", "http")!, undefined, s).catch((e: Error) => e);
+    expect(serverHealth(s, "http")?.needsLogin).toBe(true);
+    expect(String(http)).not.toContain("body-secret");
+  } finally {
+    s.close();
+  }
+});
+
+test("a remote endpoint lists only the server a call names, and answers a failure with the server's alias only", async () => {
+  const closed = Bun.serve({ port: 0, fetch: () => new Response() });
+  closed.stop(true);
+  const otherMethods: string[] = [];
+  const g = await setup();
+  g.s.put("mcp", "other", newInstance({ id: "other", url: upstream(otherMethods) }));
+  g.s.put("mcp", "down", newInstance({ id: "down", url: `http://127.0.0.1:${closed.port}/mcp` }));
+  g.s.put("project", "@grok", { id: "@grok", mcp: { up: "up", other: "other", down: "down" } });
+  const call = async (name: string) => {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } });
+    const { response } = await g.ctx.gateway.handleRemote("@grok", body, {}, AbortSignal.timeout(5000));
+    return response.text();
+  };
+  try {
+    expect(JSON.parse(await call("up__echo")).result.content[0].text).toBe("{}");
+    expect(otherMethods).toEqual([]);
+
+    for (const alias of ["up", "down"]) {
+      const answer = await call(alias === "up" ? "up__fail" : "down__anything");
+      expect(JSON.parse(answer).error.message).toContain(`${alias} failed`);
+      expect(answer).not.toContain("limit must be at most 500");
+      expect(answer).not.toContain("127.0.0.1");
+    }
+    expect(otherMethods).toEqual([]);
+  } finally {
+    await g.done();
+  }
+});
+
+test("a new label or tool filter keeps the server's connection", async () => {
+  const methods: string[] = [];
+  const g = await setup({}, methods);
+  try {
+    const client = await g.session();
+    await client.callTool({ name: "up__echo", arguments: {} });
+    g.s.put("mcp", "up", { ...g.s.get("mcp", "up")!, label: "Upstream", tools: ["echo"] });
+    await client.callTool({ name: "up__echo", arguments: {} });
+    expect(methods.filter((m) => m === "initialize")).toHaveLength(1);
+  } finally {
+    await g.done();
   }
 });
