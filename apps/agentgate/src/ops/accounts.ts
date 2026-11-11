@@ -2,7 +2,6 @@ import { modelPolicySchema, providerSchema } from "@agentgate/protocol";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
-import { parseArgs } from "node:util";
 import { z } from "zod";
 import { checkRevision, revision } from "../configuration.ts";
 import { pkce } from "../credentials.ts";
@@ -13,7 +12,7 @@ import { providerLogins } from "../llm/providers.ts";
 import { resetRouting } from "../llm/routing.ts";
 import { setAccount } from "../operations.ts";
 import type { Account, Store } from "../store.ts";
-import { controlOp, UserError } from "./registry.ts";
+import { asUserError, controlOp, parseWords, UserError } from "./registry.ts";
 
 /** The accounts family's control operations. */
 
@@ -42,32 +41,6 @@ function justId(args: string[]) {
   const [accountId, ...extra] = args;
   if (!accountId || extra.length) throw new UserError();
   return { input: { id: accountId } };
-}
-
-/** `--name value` options after the positional words. A misspelt option fails instead of being ignored. */
-function flags<K extends string>(args: string[], names: readonly K[]) {
-  try {
-    const { values, positionals } = parseArgs({
-      args,
-      options: Object.fromEntries(names.map((name) => [name, { type: "string" as const }])),
-      allowPositionals: true,
-      strict: true,
-    });
-    return { values: values as Partial<Record<K, string>>, positionals };
-  } catch (e) {
-    throw new UserError(e instanceof Error ? e.message : "");
-  }
-}
-
-/** The provider adapters throw a plain Error with text written for the user, such as a missing login file or a state
- * that does not match. Anything else, such as a JSON parse error quoting a credentials file, stays hidden. */
-async function adapter<T>(fn: () => Promise<T>) {
-  try {
-    return await fn();
-  } catch (e) {
-    if (e instanceof Error && e.constructor === Error) throw new UserError(e.message);
-    throw e;
-  }
 }
 
 controlOp({
@@ -114,7 +87,7 @@ controlOp({
   terminal: {
     usage: "accounts policy <id> --file policy.json",
     parse(args, _stdin, cwd) {
-      const { values, positionals } = flags(args, ["file"]);
+      const { values, positionals } = parseWords(args, { file: { type: "string" } });
       const [accountId, ...extra] = positionals;
       if (!accountId || !values.file || extra.length) throw new UserError();
       let policy: unknown;
@@ -215,12 +188,12 @@ controlOp({
   loopbackOnly: true,
   async run({ provider, dir, label }, { s }) {
     const from = dir.replace(/^~(?=$|\/)/, homedir());
-    return { id: await adapter(() => providerLogins[provider].importFrom(s, from, label)) };
+    return { id: await asUserError(() => providerLogins[provider].importFrom(s, from, label)) };
   },
   terminal: {
     usage: "import claude|codex|cursor --from <dir> [--label work]",
     parse(args, _stdin, cwd) {
-      const { values, positionals } = flags(args, ["from", "label"]);
+      const { values, positionals } = parseWords(args, { from: { type: "string" }, label: { type: "string" } });
       const [provider, ...extra] = positionals;
       if (!providerSchema.safeParse(provider).success || extra.length) throw new UserError();
       if (!values.from) throw new UserError("--from <dir> is required");
@@ -284,14 +257,14 @@ controlOp({
     // Cursor has no code to paste: wait for the browser sign-in, and answer `pending` before the app's request times out.
     if (provider === "cursor") {
       const signal = daemon?.abort.signal ?? AbortSignal.timeout(90_000);
-      const accountId = await adapter(() => cursor.finish(s, input.state, verifier, label, signal));
+      const accountId = await asUserError(() => cursor.finish(s, input.state, verifier, label, signal));
       if (accountId) map.delete(input.state);
       return accountId ? { id: accountId } : { pending: true as const };
     }
     map.delete(input.state);
     const { code } = input;
     if (!code) throw new UserError("Paste the code shown after signing in");
-    return { id: await adapter(() => providerLogins[provider].exchange(s, code, verifier, label, input.state)) };
+    return { id: await asUserError(() => providerLogins[provider].exchange(s, code, verifier, label, input.state)) };
   },
 });
 

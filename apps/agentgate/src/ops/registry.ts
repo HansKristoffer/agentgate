@@ -1,4 +1,5 @@
 import { operationFor } from "@agentgate/protocol";
+import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import type { ControlOps } from "@agentgate/protocol/control";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
@@ -18,7 +19,7 @@ export interface ControlOp<S extends z.ZodType = z.ZodType, O = unknown, N exten
   input: S;
   /** "store": may run in the CLI's own process when no daemon answers. "daemon": needs the running daemon. */
   needs: "store" | "daemon";
-  /** Refused on the tailnet listener (replaces hand-placed `local()` for migrated routes). */
+  /** Refused on the tailnet listener. */
   loopbackOnly?: boolean;
   run(input: z.output<S>, ctx: { s: Store; daemon?: Ctx }): O | Promise<O>;
   terminal?: {
@@ -84,6 +85,48 @@ export async function runTerminal(
   const result = await op.run(input, ctx);
   const printed = terminal.print(result, { input, ...(asked.json && { json: true }) });
   return Array.isArray(printed) ? { lines: printed, code: 0 } : printed;
+}
+
+/** The words after an operation's name, read strictly: an unknown or malformed flag prints the usage. */
+export function parseWords<const O extends ParseArgsOptionsConfig>(args: string[], options: O) {
+  try {
+    return parseArgs<{ args: string[]; options: O; allowPositionals: true; strict: true }>({
+      args,
+      options,
+      allowPositionals: true,
+      strict: true,
+    });
+  } catch (e) {
+    throw new UserError(e instanceof Error ? e.message : "");
+  }
+}
+
+/** The word `on` or `off`; any other prints the usage. */
+export const onOff = (word: string | undefined) => {
+  if (word !== "on" && word !== "off") throw new UserError();
+  return word === "on";
+};
+
+/** A plain `Error`'s message: the record changes and provider adapters word those for the caller. A subclass, such as
+ * a TypeError from `URL` quoting credentials or a SyntaxError quoting a credentials file, stays hidden. */
+export const plainMessage = (e: unknown) => (e instanceof Error && e.constructor === Error ? e.message : undefined);
+
+/** Runs `fn`, sync or async, and rethrows an error `shown` gives a message for as a UserError with that message. */
+export function asUserError<T>(fn: () => T, shown: (e: unknown) => string | undefined = plainMessage): T {
+  const mapped = (e: unknown) => {
+    const message = shown(e);
+    return message === undefined ? e : new UserError(message);
+  };
+  let result: T;
+  try {
+    result = fn();
+  } catch (e) {
+    throw mapped(e);
+  }
+  if (!(result instanceof Promise)) return result;
+  return result.catch((e) => {
+    throw mapped(e);
+  }) as T;
 }
 
 /** The text a caller may see for an operation's error: a UserError's message or what the input schema refused.
