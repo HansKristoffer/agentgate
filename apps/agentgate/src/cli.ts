@@ -2,7 +2,7 @@
 import { homedir, hostname } from "node:os";
 import { relative as relativePath, resolve } from "node:path";
 import { realpathSync } from "node:fs";
-import { parseArgs } from "node:util";
+import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { buildQueryString, getErrorMessage, typedSwitch } from "hanzio";
 import packageInfo from "../../../package.json";
 import { providerLogins } from "./llm/providers.ts";
@@ -75,6 +75,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   login claude|codex|cursor [--label work]    log in in a temporary dir and import it (cursor: browser sign-in)
   import claude|codex|cursor --from <dir>     take over an existing login [--label]
   accounts [enable|disable|pin|unpin|rm|exhaust] <id> [minutes]
+  accounts priority <id> <n>                 higher is tried first (default 0)
   accounts quota|verify|models|refresh|reset-cooldown <id> [...] (daemon operations)
   accounts verify <id> --probe --model <model>  quota-consuming inference check
   accounts policy <id> --file policy.json    revision-safe account policy edit
@@ -105,7 +106,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   skills conflicts                            skill folders that clash with Agentgate's copy, and the ones you kept
   skills resolve <path> agentgate|keep        link Agentgate's copy there (the old one moves to a backup), or keep it
   project set <owner/repo|*> <alias>=<instance> [...]   (alias= removes)
-  project ls | show <owner/repo> | defaults <owner/repo> on|off
+  project ls | show <owner/repo> | defaults <owner/repo> on|off | rm <owner/repo>
   project files add|rm <path> [...] | ls     in a checkout: sync gitignored files (.env.local) to every machine
   project files cat <path> | set <path> [--if-sha <sha256>] < new-contents
                                              print or replace a synced file's contents; --if-sha refuses to
@@ -153,60 +154,113 @@ const die = (msg: string): never => {
   process.exit(1);
 };
 
-const { values: opts, positionals: pos } = parseArgs({
-  args: Bun.argv.slice(2),
-  allowPositionals: true,
-  strict: false,
-  options: {
-    name: { type: "string" },
-    model: { type: "string" },
-    provider: { type: "string" },
-    account: { type: "string" },
-    outcome: { type: "string" },
-    failure: { type: "string" },
-    search: { type: "string" },
-    since: { type: "string" },
-    until: { type: "string" },
-    limit: { type: "string" },
-    cursor: { type: "string" },
-    probe: { type: "boolean" },
-    "always-on": { type: "boolean" },
-    node: { type: "string" },
-    label: { type: "string" },
-    from: { type: "string" },
-    header: { type: "string", multiple: true },
-    command: { type: "string" },
-    "per-session": { type: "boolean" },
-    tool: { type: "string" },
-    hide: { type: "boolean" },
-    "no-secrets": { type: "boolean" },
-    primary: { type: "boolean" },
-    mcp: { type: "boolean" },
-    skill: { type: "string" },
-    project: { type: "string", multiple: true },
-    file: { type: "string" },
-    "if-sha": { type: "string" },
-    tailnet: { type: "boolean" },
-    tailscale: { type: "boolean" },
-    relay: { type: "boolean" },
-    "relay-url": { type: "string" },
-    force: { type: "boolean" },
-    wipe: { type: "boolean" },
-    abandon: { type: "boolean" },
-    clear: { type: "boolean" },
-    "client-id": { type: "string" },
-    site: { type: "string" },
-    to: { type: "string" },
-    url: { type: "string" },
-    token: { type: "string" },
-    "no-wait": { type: "boolean" },
-    "no-routing": { type: "boolean" },
-    worktrees: { type: "string" },
-    clones: { type: "string" },
-    help: { type: "boolean", short: "h" },
-  },
-});
-const str = (k: string) => opts[k] as string | undefined;
+const OPTIONS = {
+  name: { type: "string" },
+  model: { type: "string" },
+  provider: { type: "string" },
+  account: { type: "string" },
+  outcome: { type: "string" },
+  failure: { type: "string" },
+  search: { type: "string" },
+  since: { type: "string" },
+  until: { type: "string" },
+  limit: { type: "string" },
+  cursor: { type: "string" },
+  probe: { type: "boolean" },
+  "always-on": { type: "boolean" },
+  node: { type: "string" },
+  label: { type: "string" },
+  from: { type: "string" },
+  header: { type: "string", multiple: true },
+  command: { type: "string" },
+  "per-session": { type: "boolean" },
+  tool: { type: "string" },
+  hide: { type: "boolean" },
+  "no-secrets": { type: "boolean" },
+  primary: { type: "boolean" },
+  mcp: { type: "boolean" },
+  skill: { type: "string" },
+  project: { type: "string", multiple: true },
+  file: { type: "string" },
+  "if-sha": { type: "string" },
+  tailnet: { type: "boolean" },
+  tailscale: { type: "boolean" },
+  relay: { type: "boolean" },
+  "relay-url": { type: "string" },
+  force: { type: "boolean" },
+  wipe: { type: "boolean" },
+  abandon: { type: "boolean" },
+  clear: { type: "boolean" },
+  "client-id": { type: "string" },
+  site: { type: "string" },
+  to: { type: "string" },
+  url: { type: "string" },
+  token: { type: "string" },
+  "no-wait": { type: "boolean" },
+  "no-routing": { type: "boolean" },
+  worktrees: { type: "string" },
+  clones: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} satisfies ParseArgsOptionsConfig;
+
+/** The options each command reads; `--help` works everywhere. */
+const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
+  init: ["name", "always-on"],
+  login: ["label"],
+  import: ["from", "label"],
+  accounts: ["probe", "model", "file"],
+  settings: ["file"],
+  proxy: ["model"],
+  requests: ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"],
+  mcp: ["header", "command", "per-session", "hide", "tool"],
+  skills: ["skill", "project", "file"],
+  project: ["if-sha"],
+  remote: ["node"],
+  pair: ["name", "tailnet", "relay", "relay-url"],
+  join: ["force"],
+  dashboard: ["node"],
+  relay: ["wipe", "abandon", "clear"],
+  logins: ["client-id", "site"],
+  t3: ["node", "url", "token", "tailscale", "worktrees", "clones"],
+  threads: ["node"],
+  handoff: ["to", "no-wait"],
+  handoffs: ["node"],
+  setup: ["primary", "mcp", "node"],
+  service: ["no-routing"],
+  export: ["no-secrets"],
+};
+
+/**
+ * Parses argv against only the options its command reads, so a misspelt flag fails instead of being ignored
+ * (`export --no-secret` once exported secrets). Throws the message to show; `factory` parses its own words.
+ */
+export function parseFor(argv: string[]) {
+  const command = argv.find((a) => !a.startsWith("-"));
+  if (command === "factory") return { values: {}, positionals: [command] };
+  const options: ParseArgsOptionsConfig = { help: OPTIONS.help };
+  for (const key of COMMAND_OPTIONS[command ?? ""] ?? []) options[key] = OPTIONS[key];
+  // Not strict, so the tokens can be checked here with messages that name the command.
+  const { values, positionals, tokens } = parseArgs({
+    args: argv,
+    options,
+    allowPositionals: true,
+    strict: false,
+    tokens: true,
+  });
+  const usage = command ? `"agentgate ${command}"` : '"agentgate"';
+  for (const token of tokens) {
+    if (token.kind !== "option") continue;
+    const type = options[token.name]?.type;
+    if (!type) throw new Error(`Unknown option ${token.rawName} for ${usage}`);
+    // Non-strict parsing takes the next word as the value even when it is a flag: `init --name --always-on`.
+    const flagAsValue = !token.inlineValue && token.value?.startsWith("-");
+    if (type === "string" && (token.value === undefined || flagAsValue))
+      throw new Error(`${token.rawName} needs a value for ${usage}`);
+    if (type === "boolean" && token.value !== undefined)
+      throw new Error(`${token.rawName} takes no value for ${usage}`);
+  }
+  return { values, positionals };
+}
 /** How a server is offered to agents, where it differs from the default. */
 const tuning = (i: McpInstance) => {
   const notes = [
@@ -218,7 +272,6 @@ const tuning = (i: McpInstance) => {
   return notes.length ? `  (${notes.join(", ")})` : "";
 };
 
-const [cmd, sub, ...rest] = pos;
 async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const signal = AbortSignal.timeout(100000);
   const res = await fetchHeaders(
@@ -270,6 +323,16 @@ const bar = (pct: number) => {
 const mins = (t?: number) => (t ? `${Math.max(0, Math.round((t - Date.now()) / 60_000))} min` : "?");
 
 async function main() {
+  let parsed;
+  try {
+    parsed = parseFor(Bun.argv.slice(2));
+  } catch (e) {
+    console.error(getErrorMessage(e));
+    process.exit(2);
+  }
+  const { values: opts, positionals: pos } = parsed;
+  const str = (k: string) => opts[k] as string | undefined;
+  const [cmd, sub, ...rest] = pos;
   if (!cmd || opts.help) return console.log(HELP);
 
   // The shim must never block or print to stdout: it speaks MCP there.
@@ -1546,4 +1609,4 @@ async function main() {
   }
 }
 
-main().catch((e) => die(String(e?.message ?? e)));
+if (import.meta.main) main().catch((e) => die(String(e?.message ?? e)));
