@@ -1,5 +1,5 @@
 import { changesSchema } from "@agentgate/protocol";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import {
   setAccount,
   setServerProjects,
 } from "../src/operations.ts";
-import { Store, exportBackup, importBackup } from "../src/store.ts";
+import { Store, exportBackup, importBackup, schemas } from "../src/store.ts";
 
 test("choosing a server's projects keeps existing tool prefixes and refuses a prefix another server has", () => {
   const s = new Store(":memory:");
@@ -230,6 +230,34 @@ test("record writes announce the topics that show them, and a merge that loses a
   expect(s.merge(loser)).toBe(false);
   expect(bumps).toEqual([]);
   s.close();
+});
+
+test("a merge parses a large record's data only when the record wins", () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  const day = { id: "n:2026-11-11", node: "n" };
+  const rows = Array.from({ length: 10_000 }, (_, hour) => ({
+    hour,
+    provider: "claude" as const,
+    model: "opus",
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+  }));
+  s.put("tokens", day.id, { ...day, rows });
+  s.put("tokens", day.id, { ...day, rows });
+  const older = { ...s.record("tokens", day.id)!, rev: 1 };
+  const parse = spyOn(schemas.tokens, "parse");
+  try {
+    expect(s.merge(older)).toBe(false);
+    expect(parse).not.toHaveBeenCalled();
+    expect(s.merge({ ...older, rev: 3 })).toBe(true);
+    expect(parse).toHaveBeenCalledTimes(1);
+  } finally {
+    parse.mockRestore();
+    s.close();
+  }
 });
 
 test("a corrupt rotated-token row does not fail the merge of a credential", () => {

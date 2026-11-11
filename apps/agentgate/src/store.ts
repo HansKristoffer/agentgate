@@ -277,12 +277,19 @@ export function parseData<K extends Kind>(kind: K, key: string, input: unknown):
   return parsed;
 }
 
-export function parseRecord(input: unknown): Rec {
+/** A record's envelope without its data, which `merge` parses only once it has decided to take the record. */
+export function parseEnvelope(input: unknown): Rec {
   const r = recordSchema.parse(input);
   if (Buffer.byteLength(r.data) > MAX_RECORD) throw new Error("record exceeds 4 MiB");
-  if (!r.deleted) r.data = JSON.stringify(parseData(r.kind, r.id, JSON.parse(r.data)));
-  else r.data = "{}";
   return r;
+}
+
+/** The record's data as it is stored: validated and re-serialized, or `{}` for a tombstone. */
+const storedData = (r: Rec) => (r.deleted ? "{}" : JSON.stringify(parseData(r.kind, r.id, JSON.parse(r.data))));
+
+export function parseRecord(input: unknown): Rec {
+  const r = parseEnvelope(input);
+  return { ...r, data: storedData(r) };
 }
 
 export class Store {
@@ -387,10 +394,11 @@ export class Store {
     return (this.db.query("select value from local where key = ?").get(key) as { value: string } | null)?.value;
   }
 
+  /** A key range rather than `like`, so the primary key serves it. */
   localPrefixed(prefix: string): [string, string][] {
-    const like = `${prefix.replace(/[\\%_]/g, "\\$&")}%`;
+    const end = prefix.slice(0, -1) + String.fromCharCode(prefix.charCodeAt(prefix.length - 1) + 1);
     return (
-      this.db.query("select key, value from local where key like ? escape '\\' order by key").all(like) as {
+      this.db.query("select key, value from local where key >= ? and key < ? order by key").all(prefix, end) as {
         key: string;
         value: string;
       }[]
@@ -482,8 +490,12 @@ export class Store {
     })();
   }
 
-  /** A peer cursor acknowledges only records actually present in this byte-bounded page. */
-  changePage(since: number, maxBytes = 8 * 1024 * 1024): { records: Rec[]; seq: number; more: boolean } {
+  /** A peer cursor acknowledges only records actually present in this page, bounded by bytes and by count. */
+  changePage(
+    since: number,
+    maxBytes = 8 * 1024 * 1024,
+    maxRecords = Infinity,
+  ): { records: Rec[]; seq: number; more: boolean } {
     timestamp.parse(since);
     return this.db.transaction(() => {
       const high = this.seq(),
@@ -492,6 +504,7 @@ export class Store {
       const statement = this.db.prepare("select * from records where seq > ? and seq <= ? order by seq");
       try {
         for (const row of statement.iterate(since, high) as Iterable<Rec>) {
+          if (records.length === maxRecords) return { records, seq: records.at(-1)!.seq!, more: true };
           const size = Buffer.byteLength(JSON.stringify(row)) + 1;
           if (bytes + size > maxBytes) {
             if (!records.length) throw new Error("one record exceeds the sync page limit");
@@ -507,14 +520,19 @@ export class Store {
     })();
   }
 
-  /** Last-writer-wins by (rev, updated_at, node). Returns true when the incoming record was taken. */
-  merge(r: Rec): boolean {
-    r = parseRecord(r);
+  /** Last-writer-wins by (rev, updated_at, node). Returns true when the incoming record was taken. Its data is parsed
+   * only when it wins, so a full read that mostly sees versions this node has does not validate data it discards; an
+   * invalid record that would win still throws. */
+  merge(input: Rec): boolean {
+    const envelope = parseEnvelope(input);
     const took = this.db
       .transaction(() => {
-        const cur = this.record(r.kind, r.id);
-        if (cur && !newer(r, cur)) return false;
-        if (cur && staleRotation(this, r, cur)) {
+        const cur = this.db
+          .query("select rev, updated_at, node from records where kind = ? and id = ?")
+          .get(envelope.kind, envelope.id) as Version | null;
+        if (cur && !newer(envelope, cur)) return false;
+        const r = { ...envelope, data: storedData(envelope) };
+        if (cur && staleRotation(this, r)) {
           // A copy carrying a refresh token this node already rotated away from (a peer that slept through the
           // rotation, then took over or marked the login dead) would wipe the only working tokens everywhere. Keep
           // ours and save it above that copy's revision, so it wins plain last-writer-wins on every peer.
@@ -524,7 +542,7 @@ export class Store {
             Math.max(r.rev, cur.rev) + 1,
             this.nodeId,
             this.now(),
-            cur.data,
+            this.record(r.kind, r.id)!.data,
             this.nextSeq(),
           ]);
           this.log(
@@ -550,7 +568,7 @@ export class Store {
         return true;
       })
       .immediate();
-    if (took) for (const topic of topicsOf(r.kind)) this.bump(topic);
+    if (took) for (const topic of topicsOf(envelope.kind)) this.bump(topic);
     return took;
   }
 
@@ -613,9 +631,10 @@ export const rotatedAway = (s: Store, kind: Kind, id: string) => rotations.get(s
 
 /** Whether `incoming` carries a refresh token this node rotated away from while its own copy holds newer, working
  * tokens. A new login has a token this node never rotated, so it always wins. */
-function staleRotation(s: Store, incoming: Rec, cur: Rec) {
-  if ((incoming.kind !== "credential" && incoming.kind !== "mcpCredential") || incoming.deleted || cur.deleted)
-    return false;
+function staleRotation(s: Store, incoming: Rec) {
+  if ((incoming.kind !== "credential" && incoming.kind !== "mcpCredential") || incoming.deleted) return false;
+  const cur = s.record(incoming.kind, incoming.id);
+  if (!cur || cur.deleted) return false;
   const ours = JSON.parse(cur.data);
   const theirs = refreshHash(incoming.kind, JSON.parse(incoming.data)),
     mine = refreshHash(cur.kind, ours);
@@ -624,7 +643,8 @@ function staleRotation(s: Store, incoming: Rec, cur: Rec) {
   return rotated.includes(theirs) && !rotated.includes(mine);
 }
 
-function newer(a: Rec, b: Rec): boolean {
+type Version = Pick<Rec, "rev" | "updated_at" | "node">;
+function newer(a: Version, b: Version): boolean {
   if (a.rev !== b.rev) return a.rev > b.rev;
   if (a.updated_at !== b.updated_at) return a.updated_at > b.updated_at;
   return a.node > b.node;

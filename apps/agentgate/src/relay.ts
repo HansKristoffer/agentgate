@@ -14,7 +14,7 @@ import { exponentialBackoff, isTruthy, trimTrailingSlash } from "hanzio";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import { parseRecord, type Rec, type Store } from "./store.ts";
+import { parseEnvelope, type Rec, type Store } from "./store.ts";
 import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
 
 /**
@@ -189,8 +189,13 @@ type Field =
   | "pullError"
   | "skipped"
   | "oversize";
+/** Reconciliation: "read" everything (this node's entries included), then "upload" what the relay lacks, then "done",
+ * after which pushes and pulls only move cursors. */
+type Phase = "read" | "upload" | "done";
 const k = (t: Target, f: Field) => (t === "active" ? `relay:${f}` : `relay:rot:${f}`);
 const get = (s: Store, t: Target, f: Field) => s.local(k(t, f));
+const phase = (s: Store, t: Target) => get(s, t, "phase") as Phase | undefined;
+const setPhase = (s: Store, t: Target, p: Phase) => put(s, t, "phase", p);
 const num = (s: Store, t: Target, f: Field) => Number(get(s, t, f) ?? 0);
 // The active group's fields `relayStatus` shows; cursors and counters move every turn and mark nothing.
 const STATUS_FIELDS = new Set<Field>(["invite", "phase", "pushError", "pullError", "skipped", "oversize"]);
@@ -272,6 +277,9 @@ interface Runtime {
   started: Set<string>;
   backoff: Map<string, { until: number; failures: number }>;
   lastTurn: number;
+  /** Per target, the version of each of this node's entries the full read found on the relay, by entry key, so the
+   * upload after it skips what is already there. `group` is `<groupId>|<generation>`: another group has none of them. */
+  relayHas: Map<Target, { group: string; versions: Map<string, string> }>;
   wanted?: { push: boolean; pull: boolean; force: boolean };
   running?: Promise<void>;
 }
@@ -289,6 +297,7 @@ function rt(s: Store): Runtime {
         started: new Set(),
         backoff: new Map(),
         lastTurn: 0,
+        relayHas: new Map(),
       }),
     );
   }
@@ -424,7 +433,7 @@ const identity = (s: Store, t: Target) => `${get(s, t, "invite") ?? ""}|${get(s,
 function resetTarget(s: Store, t: Target, grp: string) {
   s.transaction(() => {
     for (const f of ["generation", "pushed", "cursor", "readCursor"] as const) put(s, t, f, undefined);
-    put(s, t, "phase", "read");
+    setPhase(s, t, "read");
     s.db.run("delete from relay_pending where grp = ?", [grp]);
   });
 }
@@ -453,7 +462,8 @@ async function decode(
       );
       if (payload.protocol !== SYNC_PROTOCOL || !payload.record)
         throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
-      const rec = parseRecord(payload.record);
+      // Only the envelope: `merge` parses the data if the record wins.
+      const rec = parseEnvelope(payload.record);
       if ((await entryKey(c.keys, rec.kind, rec.id)) !== e.key) throw new Error("entry key mismatch");
       decoded.push({ node: e.node, key: e.key, pusherSeq: e.pusherSeq, rec });
     } catch {
@@ -490,14 +500,21 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
   if (!page.success || page.data.generation !== generation) throw new RelayError("The relay returned an invalid page");
   const problem = checkPage(page.data, since);
   if (problem) throw new RelayError(`The relay returned an invalid page (${problem})`);
-  const { decoded, skipped } = await decode(c, generation, page.data);
+  const { decoded, skipped: undecodable } = await decode(c, generation, page.data);
+  let skipped = undecodable;
   s.transaction(() => {
     if (identity(s, t) !== before) throw new RelayError("relay configuration changed");
     for (const d of decoded) {
       // Replay protection per (group, generation, node, key): only strictly newer counters count.
       if (d.pusherSeq <= counter(s, c.keys.groupId, generation, d.node, d.key)) continue;
+      try {
+        s.merge(d.rec!);
+      } catch {
+        // Invalid data; `merge` rolled back its own savepoint, so the rest of the page still commits.
+        skipped++;
+        continue;
+      }
       setCounter(s, c.keys.groupId, generation, d.node, d.key, d.pusherSeq);
-      s.merge(d.rec!);
     }
     put(s, t, full ? "readCursor" : "cursor", page.data.nextCursor);
     noteSkipped(s, t, skipped);
@@ -505,8 +522,18 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
     noteSyncRound(s);
     put(s, t, "pullError", undefined);
   });
+  if (full) {
+    const r = rt(s),
+      group = `${c.keys.groupId}|${generation}`;
+    let has = r.relayHas.get(t);
+    if (!since || has?.group !== group) r.relayHas.set(t, (has = { group, versions: new Map() }));
+    for (const d of decoded) if (d.node === s.nodeId) has.versions.set(d.key, version(d.rec!));
+  }
   return page.data.more;
 }
+
+/** Same version, same write: last-writer-wins never gives two different records one version. */
+const version = (r: Rec) => `${r.rev}|${r.updated_at}|${r.node}|${r.deleted}`;
 
 /**
  * Upload the change feed after `pushed` in chunks. Each chunk's counters and exact body are
@@ -514,7 +541,13 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
  * a counter for different ciphertext. The checkpoint never passes the snapshot a chunk came from. True when what it
  * sent held this node's own writes (a chunk left over from before a restart counts as such).
  */
-async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Promise<boolean> {
+async function pushLoop(
+  s: Store,
+  t: Target,
+  c: Conn,
+  signal: AbortSignal,
+  relayHas?: Map<string, string>,
+): Promise<boolean> {
   // A pending rotation means the old secret is being retired: nothing new goes to the old group.
   if (t === "active" && rotation.get(s)) return false;
   const grp = c.keys.groupId;
@@ -532,11 +565,12 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Prom
     if (!chunk) {
       const pushed = num(s, t, "pushed");
       if (pushed > s.seq()) {
-        put(s, t, "phase", "read");
+        setPhase(s, t, "read");
         throw new RelayError("Local history moved backwards; reconciling with the relay");
       }
       if (pushed >= target) return own;
-      const snapshot = s.changes(pushed);
+      // One chunk's worth of the feed at a time. The byte bound fits one 4 MiB record even with its JSON escaped.
+      const snapshot = s.changePage(pushed, 16 * 1024 * 1024, RELAY_LIMITS.pushEntries);
       if (snapshot.seq === pushed) return own;
       const before = identity(s, t);
       const entries: RelayEnvelope[] = [];
@@ -546,6 +580,10 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Prom
         taken = 0;
       for (const r of snapshot.records) {
         const key = await entryKey(c.keys, r.kind, r.id);
+        if (relayHas?.get(key) === version(r)) {
+          taken++;
+          continue;
+        }
         const pusherSeq = counter(s, grp, generation, s.nodeId, key) + 1;
         const { seq: _, ...plain } = r;
         const blob = await seal(
@@ -578,7 +616,7 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Prom
       s.transaction(() => {
         if (identity(s, t) !== before) throw new RelayError("relay configuration changed");
         put(s, t, "oversize", oversize.size ? JSON.stringify([...oversize]) : undefined);
-        if (!entries.length) return put(s, t, "pushed", checkpoint); // only records the relay cannot take
+        if (!entries.length) return put(s, t, "pushed", checkpoint); // only records the relay has or cannot take
         for (const [key, value] of counters) setCounter(s, grp, generation, s.nodeId, key, value);
         s.db.run("insert or replace into relay_pending values (?, ?, ?, ?)", [grp, generation, checkpoint, body]);
       });
@@ -594,7 +632,7 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Prom
       if (e instanceof RelayError && e.code === "counter")
         s.transaction(() => {
           s.db.run("delete from relay_pending where grp = ?", [grp]);
-          put(s, t, "phase", "read");
+          setPhase(s, t, "read");
         });
       throw e;
     }
@@ -609,11 +647,11 @@ async function pushLoop(s: Store, t: Target, c: Conn, signal: AbortSignal): Prom
 
 /**
  * Full reconciliation: read every entry (this node's included) to recover newer records and
- * counters, then upload the whole store. Runs on startup, join, rotation and after any reset,
- * because a restored database restores its own checkpoints too.
+ * counters, then upload every record whose version the relay does not hold under this node's name. Runs on startup,
+ * join, rotation and after any reset, because a restored database restores its own checkpoints too.
  */
 async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budget = 200) {
-  if (get(s, t, "phase") !== "upload") {
+  if (phase(s, t) !== "upload") {
     const { json } = await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal);
     const state = groupState.parse(json);
     if (state.generation !== get(s, t, "generation"))
@@ -632,14 +670,23 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
       s.db.run("delete from relay_pending where grp = ?", [c.keys.groupId]);
       put(s, t, "cursor", num(s, t, "readCursor"));
       put(s, t, "pushed", 0);
-      put(s, t, "phase", "upload");
+      setPhase(s, t, "upload");
     });
   }
-  await pushLoop(s, t, c, signal);
+  const r = rt(s),
+    has = r.relayHas.get(t);
+  await pushLoop(
+    s,
+    t,
+    c,
+    signal,
+    has?.group === `${c.keys.groupId}|${get(s, t, "generation")}` ? has.versions : undefined,
+  );
   s.transaction(() => {
-    put(s, t, "phase", "done");
+    setPhase(s, t, "done");
     put(s, t, "pushError", undefined);
   });
+  r.relayHas.delete(t);
   return true;
 }
 
@@ -689,24 +736,24 @@ async function syncTarget(
   // database cannot be detected by comparing values stored inside it.
   if (!r.started.has(`${t}|${invite}`)) {
     s.transaction(() => {
-      put(s, t, "phase", "read");
+      setPhase(s, t, "read");
       put(s, t, "readCursor", 0);
     });
     r.started.add(`${t}|${invite}`);
   }
   // Per group: failures against a group that was left or rotated away say nothing about the next one.
   const slot = (d: string) => `${t}|${c.keys.groupId}|${d}`;
-  if (get(s, t, "phase") !== "done" && ready(s, r, slot("reconcile"), want.force)) {
+  if (phase(s, t) !== "done" && ready(s, r, slot("reconcile"), want.force)) {
     try {
       if (await reconcile(s, t, c, signal)) succeeded(r, slot("reconcile"));
     } catch (e) {
       if (signal.aborted) throw e;
       backoff(s, r, slot("reconcile"), e);
       if (isReset(e)) resetTarget(s, t, c.keys.groupId);
-      put(s, t, get(s, t, "phase") === "upload" ? "pushError" : "pullError", message(e));
+      put(s, t, phase(s, t) === "upload" ? "pushError" : "pullError", message(e));
     }
   }
-  if (want.push && get(s, t, "phase") === "done" && ready(s, r, slot("push"), want.force)) {
+  if (want.push && phase(s, t) === "done" && ready(s, r, slot("push"), want.force)) {
     try {
       const own = await pushLoop(s, t, c, signal);
       put(s, t, "pushError", rotationBlocks(s, t));
@@ -720,7 +767,7 @@ async function syncTarget(
     }
   }
   // Pulls continue while an upload is blocked, so newer credentials still arrive.
-  if (want.pull && get(s, t, "phase") !== "read" && get(s, t, "generation") && ready(s, r, slot("pull"), want.force)) {
+  if (want.pull && phase(s, t) !== "read" && get(s, t, "generation") && ready(s, r, slot("pull"), want.force)) {
     try {
       for (let pages = 0, more = true; more && pages < 20; pages++) more = await pullPage(s, t, c, signal, false);
       succeeded(r, slot("pull"));
@@ -773,7 +820,7 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false): Promi
   const newInvite = pending.invite;
   if (get(s, "rot", "invite") !== newInvite) put(s, "rot", "invite", newInvite);
   await syncTarget(s, "rot", signal, { push: false, pull: false, force });
-  if (get(s, "rot", "phase") !== "done")
+  if (phase(s, "rot") !== "done")
     throw new RelayError(
       get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "The new relay group is not ready yet",
     );
@@ -815,8 +862,7 @@ async function abandonRotation(s: Store) {
 }
 
 function clearSeen(s: Store) {
-  for (const row of s.db.query("select key from local where key like 'relaySeen:%'").all() as { key: string }[])
-    s.setLocal(row.key, undefined);
+  for (const [key] of s.localPrefixed("relaySeen:")) s.setLocal(key, undefined);
 }
 
 // ---------------------------------------------------------------- public operations
@@ -891,7 +937,7 @@ export function createRelay(s: Store, url?: string): Promise<string> {
     s.transaction(() => {
       for (const f of FIELDS) put(s, "active", f, undefined);
       put(s, "active", "invite", invite);
-      put(s, "active", "phase", "read");
+      setPhase(s, "active", "read");
     });
     const c = await conn(s, invite);
     try {
@@ -933,7 +979,7 @@ export function joinRelay(s: Store, text: string, force = false): Promise<{ node
     s.transaction(() => {
       for (const f of FIELDS) put(s, "active", f, undefined);
       put(s, "active", "invite", invite.text);
-      put(s, "active", "phase", "read");
+      setPhase(s, "active", "read");
     });
     rt(s).started.add(`active|${invite.text}`);
     try {
@@ -953,7 +999,7 @@ export function reconcileRelay(s: Store): Promise<void> {
     const invite = get(s, "active", "invite");
     if (!invite) throw new RelayError("This machine does not use a relay");
     s.transaction(() => {
-      put(s, "active", "phase", "read");
+      setPhase(s, "active", "read");
       put(s, "active", "readCursor", 0);
     });
     rt(s).started.add(`active|${invite}`);
@@ -975,7 +1021,7 @@ export function rotateRelay(s: Store): Promise<{ command: string; cleanupPending
       s.transaction(() => {
         for (const f of FIELDS) put(s, "rot", f, undefined);
         put(s, "rot", "invite", invite);
-        put(s, "rot", "phase", "read");
+        setPhase(s, "rot", "read");
         rotation.set(s, undefined, { invite, startedAt: s.now() });
       });
     }
@@ -1059,7 +1105,7 @@ export function relayStatus(s: Store) {
     generation: get(s, "active", "generation"),
     cursor: num(s, "active", "cursor"),
     pushed: num(s, "active", "pushed"),
-    reconciling: !!invite && get(s, "active", "phase") !== "done",
+    reconciling: !!invite && phase(s, "active") !== "done",
     rotating: !!rotation.get(s),
     rotatedAt: Number(rotatedAt.get(s)) || undefined,
     cleanupPending: cleanups(s).length > 0,
@@ -1083,9 +1129,7 @@ export function via(s: Store, node: string): ("tailnet" | "relay")[] {
 
 /** Nodes seen through the relay; used to tell relay unpairs from Tailscale ones. */
 export const relayNodes = (s: Store) =>
-  (
-    s.db.query("select key, value from local where key like 'relaySeen:%'").all() as { key: string; value: string }[]
-  ).map((r) => ({ node: r.key.slice(10), lastSeen: Number(r.value) }));
+  s.localPrefixed("relaySeen:").map(([key, value]) => ({ node: key.slice(10), lastSeen: Number(value) }));
 
 /** The name a pairing command gives the other machine: shell-safe, and not an existing node's (two machines would share records). */
 export function newNodeName(s: Store, name: string) {
