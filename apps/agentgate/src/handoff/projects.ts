@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { getErrorMessage, safeJsonParse } from "hanzio";
 import { join } from "node:path";
 import { projectIdSchema, projectSchema } from "@agentgate/protocol";
@@ -26,13 +26,22 @@ const CLONES = "t3:clones";
 export async function t3Projects(t3: T3) {
   const out: { repo?: string; origin?: string; project: Awaited<ReturnType<T3["shell"]>>["projects"][number] }[] = [];
   for (const project of (await t3.shell()).projects) {
-    const origin = existsSync(project.workspaceRoot)
-      ? (await run(project.workspaceRoot, ["config", "--get", "remote.origin.url"])).out
-      : "";
+    const origin = await originOf(project.workspaceRoot);
     const repo = github(origin) ? parseRemote(origin) : undefined;
     out.push(repo && projectIdSchema.safeParse(repo).success ? { repo, origin, project } : { project });
   }
   return out;
+}
+
+/** A checkout's origin URL, or "". Sync runs every 30 s over every T3 project, so a main checkout's config is read
+ * rather than spawning git, as scanRepos does. A worktree's .git is a file and a folder inside a checkout has none:
+ * those ask git. */
+async function originOf(path: string) {
+  if (!existsSync(path)) return "";
+  const config = join(path, ".git", "config");
+  if (!existsSync(config)) return (await run(path, ["config", "--get", "remote.origin.url"])).out;
+  const url = readFileSync(config, "utf8").match(/\[remote "origin"\][^[]*?\burl\s*=\s*(.+)/)?.[1];
+  return url?.trim() ?? "";
 }
 
 // ponytail: an SSH host alias (git@github-work:…) is not recognised; match on `gh` hosts if anyone uses one.
@@ -40,23 +49,38 @@ const github = (url: string) => /^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?(?:www\.)?github\
 
 export async function syncT3Projects(h: Handoffs) {
   const s = h.s;
-  const report = (errors: string[]) => s.setLocal("t3:projectSyncError", errors.length ? errors.join("; ") : undefined);
+  // A round that finds nothing new writes nothing.
+  const put = (key: string, value: string | undefined) => {
+    if (s.local(key) !== value) s.setLocal(key, value);
+  };
+  const report = (errors: string[]) => put("t3:projectSyncError", errors.length ? errors.join("; ") : undefined);
   if (!t3State(s).connected) return report([]);
   const t3 = t3Client(s);
   // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
   const all = await t3Projects(t3).catch(() => undefined);
   if (!all) return report([]);
   const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
-  h.register(here.map((p) => ({ path: p.project.workspaceRoot, project: p.repo })));
+  // Registering spawns git; a checkout already registered for its repository needs none.
+  const registered = registeredCheckouts(h);
+  const isRegistered = (path: string, repo: string) => {
+    try {
+      return registered[realpathSync(path)]?.toLowerCase() === canonicalProject(s, repo).toLowerCase();
+    } catch {
+      return false;
+    }
+  };
+  const fresh = here.filter((p) => !isRegistered(p.project.workspaceRoot, p.repo));
+  if (fresh.length) h.register(fresh.map((p) => ({ path: p.project.workspaceRoot, project: p.repo })));
   if (!s.settings().t3ProjectSync) return report([]);
-  s.setLocal("t3:knownRepos", undefined);
+  put("t3:knownRepos", undefined);
   const known = new Set<string>(JSON.parse(s.local(KNOWN) ?? "[]"));
   const remember = (repo: string) => {
+    if (known.has(repo.toLowerCase())) return;
     known.add(repo.toLowerCase());
     s.setLocal(KNOWN, JSON.stringify([...known]));
   };
   const clones: Record<string, string> = JSON.parse(s.local(CLONES) ?? "{}");
-  const saveClones = () => s.setLocal(CLONES, Object.keys(clones).length ? JSON.stringify(clones) : undefined);
+  const saveClones = () => put(CLONES, Object.keys(clones).length ? JSON.stringify(clones) : undefined);
   // Repositories by error, so a cause they share is said once.
   const errors = new Map<string, string[]>();
   // A permission T3 Code refused is refused for every clone; stop asking until agentgate is paired again.
@@ -127,14 +151,17 @@ export async function syncT3Projects(h: Handoffs) {
   report([...(denied ? [denied] : []), ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
 }
 
+/** Main checkout path → project, as SkillLinks.checkouts() keeps them. */
+const registeredCheckouts = (h: Handoffs) =>
+  safeJsonParse<Record<string, string>>(h.s.local("checkouts") ?? "{}").data ?? {};
+
 /** This node's main checkouts by lowercase `owner/repo`: registered ones, then clones in the clone folder. */
 function localCheckouts(h: Handoffs) {
   const found = new Map<string, string>();
   const add = (repo: string, path: string) => {
     if (existsSync(join(path, ".git")) && !found.has(repo.toLowerCase())) found.set(repo.toLowerCase(), path);
   };
-  const registered = safeJsonParse<Record<string, string>>(h.s.local("checkouts") ?? "{}").data ?? {}; // SkillLinks.checkouts()
-  for (const [path, repo] of Object.entries(registered)) add(repo, path);
+  for (const [path, repo] of Object.entries(registeredCheckouts(h))) add(repo, path);
   if (existsSync(h.options.cloneDir)) for (const { repo, path } of scanRepos(h.options.cloneDir)) add(repo, path);
   return found;
 }
