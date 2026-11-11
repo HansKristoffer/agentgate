@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { hostname } from "node:os";
 import { HEALTH_PATH, statusSchema } from "@agentgate/protocol";
 import { app, makeCtx } from "../src/daemon.ts";
+import { startLagProbe } from "../src/lag.ts";
 import { setHealthDashboard } from "../src/operations.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { Store } from "../src/store.ts";
@@ -140,6 +141,8 @@ test.skipIf(process.platform !== "linux")(
     const json = { headers: { accept: "application/json" } };
     expect((await call(`${HEALTH_PATH}?history=1`, json)).status).toBe(503); // no sample yet
 
+    const probe = startLagProbe();
+    cleanup.push(() => probe.stop());
     await ctx.health.sample();
     const data = (await (await call(`${HEALTH_PATH}?history=1`, json)).json()) as {
       status: string;
@@ -147,7 +150,7 @@ test.skipIf(process.platform !== "linux")(
       history: unknown[];
       services: Record<string, boolean>;
     };
-    expect(data).toMatchObject({ status: "ok", host: hostname() });
+    expect(data).toMatchObject({ status: "ok", host: hostname(), daemon_lag: { worstMs: 0, p99Ms: 0 } });
     expect(data.history).toHaveLength(1);
     expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
 

@@ -50,6 +50,7 @@ import { loopTask, type FactoryRuntime } from "./factory/runtime.ts";
 import { threadScope } from "./factory/controller.ts";
 import { factoryToolsSource } from "./factory/remote-tools.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
+import { startLagProbe } from "./lag.ts";
 import packageInfo from "../../../package.json";
 
 export type Listener = "loopback" | "tailnet";
@@ -255,6 +256,7 @@ export async function serve(
 ) {
   const ctx = makeCtx(s);
   const a = app(ctx);
+  const lagProbe = startLagProbe();
   let stopped = false;
   const timers: ReturnType<typeof setInterval>[] = [];
   const jobs = new Set<Promise<unknown>>();
@@ -399,6 +401,7 @@ export async function serve(
         stopped = true;
         ctx.abort.abort();
         timers.forEach(clearInterval);
+        lagProbe.stop();
         ctx.skills.close();
         ctx.files.close();
         ctx.imports.close();

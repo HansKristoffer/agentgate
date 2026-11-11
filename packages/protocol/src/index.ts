@@ -495,6 +495,8 @@ export const statusSchema = z.object({
       version: z.string(),
       build: z.string(),
       providers: z.object({ claude: capabilitiesSchema, codex: capabilitiesSchema, cursor: capabilitiesSchema }),
+      /** How late the daemon's event loop ran over the last minute (lag.ts). An older daemon leaves it out. */
+      lag: z.object({ worstMs: z.number(), p99Ms: z.number() }).optional(),
     })
     .optional(),
   /** GitHub and Infisical CLI logins shared with every machine, and whether this one is signed in. No tokens. */

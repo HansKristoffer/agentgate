@@ -11,6 +11,7 @@ import { Telemetry } from "../src/llm/telemetry.ts";
 import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
 import { repos, tmp, removeTmp } from "./fixtures/git.ts";
 import { writeFileSync } from "node:fs";
+import { startLagProbe } from "../src/lag.ts";
 import { join } from "node:path";
 
 afterAll(removeTmp);
@@ -65,8 +66,11 @@ test("proxy management returns validated capabilities, revision-safe patches, an
     holder: "test",
     expiresAt: s.now() + 3600000,
   });
+  const probe = startLagProbe();
+  cleanup.push(async () => probe.stop());
   const initial = (await (await call("/api/status")).json()) as Status;
   expect(statusSchema.safeParse(initial).success).toBe(true);
+  expect(initial.daemon?.lag).toEqual({ worstMs: 0, p99Ms: 0 });
   expect(initial.daemon?.providers.claude).toEqual({ quota: true, models: true, session: true, probe: true });
   expect(initial.daemon?.providers.codex).toEqual(initial.daemon?.providers.claude);
   expect(initial.daemon?.providers.cursor).toEqual(initial.daemon?.providers.claude);
