@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Boxes, Plus } from "lucide-react";
-import { slugify, type Preset, type ServerSummary, type ToolPreview } from "@agentgate/protocol";
+import { slugify, type Connection, type Preset, type ServerSummary } from "@agentgate/protocol";
+import type { ControlOps } from "@agentgate/protocol/control";
 import { Button, toast } from "@heroui/react";
 import {
   Badge,
@@ -11,13 +12,14 @@ import {
   Modal,
   Panel,
   HeaderActions,
+  NumberInput,
   RowMenu,
   Working,
   usePending,
 } from "../components/ui.tsx";
 import { ServerProjectChecks, projectChange } from "../components/Assignments.tsx";
-import type { ViewProps } from "../types.ts";
-import { openExternal, request } from "../api.ts";
+import type { Perform, ViewProps } from "../types.ts";
+import { control, openExternal, request } from "../api.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 // The preset select's "no preset" entry; a list item cannot have an empty id.
@@ -30,7 +32,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [preset, setPreset] = useState("");
   const [mode, setMode] = useState("http");
-  const [tools, setTools] = useState<{ id: string; tools: ToolPreview[] }>();
+  const [tools, setTools] = useState<ControlOps["mcp test"]["result"]>();
   const [rename, setRename] = useState<ServerSummary>();
   const [name, setName] = useState("");
   /** The server whose projects are being chosen. */
@@ -101,7 +103,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     onClick={() =>
                       void perform(
                         () =>
-                          request(connection, `/servers/${idPath(server.id)}/test`, "POST").then(
+                          control(connection, "mcp test", { id: server.id }).then(
                             () => {},
                             () => {},
                           ),
@@ -142,17 +144,10 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 items={[
                   { label: "Choose projects", onAction: () => setAssign(server.id) },
                   {
-                    label: "Test",
+                    label: "Tools and limits",
                     onAction: () =>
                       void perform(
-                        async () => {
-                          const result = await request<{ tools: ToolPreview[] }>(
-                            connection,
-                            `/servers/${idPath(server.id)}/test`,
-                            "POST",
-                          );
-                          setTools({ id: server.id, tools: result.tools });
-                        },
+                        async () => setTools(await control(connection, "mcp test", { id: server.id })),
                         undefined,
                         `test:${server.id}`,
                       ),
@@ -165,10 +160,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     danger: true,
                     onAction: async () => {
                       if (await confirmDelete(server.id))
-                        void perform(
-                          () => request(connection, `/servers/${idPath(server.id)}`, "DELETE"),
-                          "Server deleted",
-                        );
+                        void perform(() => control(connection, "mcp rm", { id: server.id }), "Server deleted");
                     },
                   },
                 ]}
@@ -185,8 +177,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
               const f = new FormData(e.currentTarget);
               void perform(async () => {
                 // The daemon turns the name into the id and tool prefix, and connects to a hosted server right away.
-                const added = await request<{ id: string; needsLogin?: boolean }>(connection, "/servers", "POST", {
-                  id: name,
+                const added = await control(connection, "mcp add", {
+                  name,
                   target: preset || (mode === "http" ? field(f, "url") : undefined),
                   command: !preset && mode === "stdio" ? field(f, "command") : undefined,
                   perSession: f.get("perSession") === "on",
@@ -265,16 +257,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
         </Modal>
       )}
       {tools && (
-        <Modal title={`${tools.id} · ${tools.tools.length} tools`} close={() => setTools(undefined)}>
-          <div className="tool-list">
-            {tools.tools.map((t) => (
-              <div key={t.name}>
-                <code>{t.name}</code>
-                <p>{t.description}</p>
-              </div>
-            ))}
-          </div>
-        </Modal>
+        <ToolSettings preview={tools} connection={connection} perform={perform} close={() => setTools(undefined)} />
       )}
       {assigning && (
         <Modal title={`Where ${assigning.label ?? assigning.id} is used`} close={() => setAssign(undefined)}>
@@ -283,7 +266,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const change = projectChange(e.currentTarget);
               void perform(async () => {
-                await request(connection, `/servers/${idPath(assigning.id)}/projects`, "PUT", change);
+                await control(connection, "mcp projects", { id: assigning.id, ...change });
                 setAssign(undefined);
               }, "Saved. Running sessions pick up the change.");
             }}
@@ -304,8 +287,12 @@ export function Servers({ data, connection, perform }: ViewProps) {
             onSubmit={(e) => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
+              const label = field(f, "label"),
+                prefix = field(f, "prefix");
               void perform(async () => {
-                await request(connection, `/servers/${idPath(rename.id)}`, "PATCH", { label: field(f, "label") });
+                if (label !== (rename.label ?? rename.id))
+                  await control(connection, "mcp label", { id: rename.id, label });
+                if (prefix !== rename.id) await control(connection, "mcp rename", { id: rename.id, to: prefix });
                 setRename(undefined);
               }, "Server renamed");
             }}
@@ -315,14 +302,144 @@ export function Servers({ data, connection, perform }: ViewProps) {
               name="label"
               isRequired
               defaultValue={rename.label ?? rename.id}
-              description={`Only the name changes. Agents keep seeing its tools as ${rename.id}__…`}
+              description="The name shown here."
+            />
+            <Field
+              label="Tool prefix"
+              name="prefix"
+              isRequired
+              defaultValue={rename.id}
+              description="Agents see its tools as prefix__…. Changing it changes it in every project that uses the server."
             />
             <Button type="submit" size="sm">
-              Save name
+              Save
             </Button>
           </form>
         </Modal>
       )}
     </>
+  );
+}
+
+/** A limit field's value: empty is the default, 0 never cuts. */
+const limitOf = (f: FormData, name: string) => {
+  const value = field(f, name);
+  return value === "" ? undefined : Number(value);
+};
+const sameSet = (a: string[] | undefined, b: string[] | undefined) =>
+  JSON.stringify(a && [...a].sort()) === JSON.stringify(b && [...b].sort());
+
+function parseDefaults(json: string, tool: string) {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {}
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${tool}: default arguments are a JSON object, such as {"limit": 30}`);
+  return Object.fromEntries(Object.entries(value));
+}
+
+/** A server's tools and how agents are offered them. Saving sends each changed setting through its own operation, the
+ * one `mcp tools|instructions|limit|defaults` runs. */
+function ToolSettings({
+  preview: { tools, tuning },
+  connection,
+  perform,
+  close,
+}: {
+  preview: ControlOps["mcp test"]["result"];
+  connection: Connection;
+  perform: Perform;
+  close: () => void;
+}) {
+  const id = tuning.id;
+  const [instructions, setInstructions] = useState(
+    tuning.instructions === undefined ? "own" : tuning.instructions ? "replace" : "hide",
+  );
+  const save = (f: FormData) =>
+    perform(async () => {
+      const offered = f.getAll("offered") as string[];
+      if (!offered.length) throw new Error("Offer agents at least one tool");
+      const filter = offered.length === tools.length ? undefined : offered;
+      if (!sameSet(filter, tuning.tools)) await control(connection, "mcp tools", { id, tools: filter });
+      const text = instructions === "own" ? undefined : instructions === "hide" ? "" : field(f, "instructions");
+      if (text !== tuning.instructions) await control(connection, "mcp instructions", { id, instructions: text });
+      const chars = limitOf(f, "limit");
+      if (chars !== tuning.maxResultChars) await control(connection, "mcp limit", { id, chars });
+      for (const t of tools) {
+        const o = tuning.toolOptions?.[t.name];
+        const toolChars = limitOf(f, `limit:${t.name}`);
+        if (toolChars !== o?.maxResultChars)
+          await control(connection, "mcp limit", { id, tool: t.name, chars: toolChars });
+        const json = field(f, `defaults:${t.name}`);
+        const defaults = json ? parseDefaults(json, t.name) : undefined;
+        if (JSON.stringify(defaults) !== JSON.stringify(o?.defaults))
+          await control(connection, "mcp defaults", { id, tool: t.name, defaults });
+      }
+      close();
+    }, "Saved. Running sessions pick up the change.");
+  return (
+    <Modal title={`${id} · ${tools.length} tools`} close={close}>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          void save(new FormData(e.currentTarget));
+        }}
+      >
+        <div className="tool-list">
+          {tools.map((t) => {
+            const o = tuning.toolOptions?.[t.name];
+            return (
+              <div key={t.name}>
+                <Check name="offered" value={t.name} defaultSelected={!tuning.tools || tuning.tools.includes(t.name)}>
+                  <code>{t.name}</code>
+                </Check>
+                {t.description && <p>{t.description}</p>}
+                <details>
+                  <summary>Limit and default arguments</summary>
+                  <NumberInput
+                    label="Cut results past"
+                    name={`limit:${t.name}`}
+                    minValue={0}
+                    defaultValue={o?.maxResultChars}
+                    description="Characters. Empty: the server's limit. 0: never cut."
+                  />
+                  <Field
+                    label="Default arguments"
+                    name={`defaults:${t.name}`}
+                    defaultValue={o?.defaults ? JSON.stringify(o.defaults) : ""}
+                    placeholder='{"limit": 30}'
+                    description="JSON a call gets unless the agent passes them."
+                  />
+                </details>
+              </div>
+            );
+          })}
+        </div>
+        <Choice
+          label="Instructions to agents"
+          value={instructions}
+          onChange={(key) => setInstructions(String(key))}
+          options={[
+            { id: "own", label: "The server's own" },
+            { id: "replace", label: "Replace them" },
+            { id: "hide", label: "Hide them" },
+          ]}
+        />
+        {instructions === "replace" && (
+          <Field multiline label="Instructions" name="instructions" isRequired defaultValue={tuning.instructions} />
+        )}
+        <NumberInput
+          label="Cut results past"
+          name="limit"
+          minValue={0}
+          defaultValue={tuning.maxResultChars}
+          description="Characters. Empty: 20000. 0: never cut."
+        />
+        <Button type="submit" size="sm">
+          Save
+        </Button>
+      </form>
+    </Modal>
   );
 }

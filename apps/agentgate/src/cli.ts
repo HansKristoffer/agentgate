@@ -33,15 +33,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
                                              structured local request diagnostics
   tokens [today|7d|30d|all]                  tokens used per model on this machine (default: today)
   mcp                                         (the stdio shim, started by Claude Code, Codex, or Cursor)
-  mcp add <name> <url|preset> [--header "Name: value" ...]   any name; its slug is the id and tool prefix
-  mcp add <name> --command "npx -y …" [--per-session]
-  mcp label <id> <name>                                      change the name shown in the app
-  mcp login <name> | rename <name> <new> | ls | presets | test <name> | rm <name>
-  mcp projects <name> [<owner/repo|*> ...]   the projects that use the server (* = Global defaults)
-  mcp tools <name> [<tool> ...]               offer agents only these tools (none listed: every tool)
-  mcp instructions <name> [<text>] [--hide]   replace the server's instructions to agents (no text: its own)
-  mcp limit <name> <chars|off|default> [--tool <tool>]   cut longer results (default 20000 characters)
-  mcp defaults <name> <tool> [<json>]         arguments a call gets unless the agent passes them (no json: none)
+  mcp ls | presets | login <name>
   skills find <query>                         search skills.sh
   skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...]
   skills new|edit <name> --file SKILL.md      write a skill by hand
@@ -116,11 +108,6 @@ const OPTIONS = {
   node: { type: "string" },
   label: { type: "string" },
   from: { type: "string" },
-  header: { type: "string", multiple: true },
-  command: { type: "string" },
-  "per-session": { type: "boolean" },
-  tool: { type: "string" },
-  hide: { type: "boolean" },
   "no-secrets": { type: "boolean" },
   primary: { type: "boolean" },
   mcp: { type: "boolean" },
@@ -156,7 +143,6 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
   settings: ["file"],
   proxy: ["model"],
   requests: ["provider", "account", "model", "outcome", "failure", "search", "since", "until", "limit", "cursor"],
-  mcp: ["header", "command", "per-session", "hide", "tool"],
   skills: ["skill", "project", "file"],
   project: ["if-sha"],
   remote: ["node"],

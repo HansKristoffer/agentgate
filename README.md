@@ -149,8 +149,8 @@ In the native app (MCP servers), paste a server's URL and a name and click **Con
 From the CLI:
 
 ```sh
-agentgate mcp add geysier https://app.geysier.com/api/mcp   # opens the login page when the server needs one
-agentgate mcp login geysier                   # sign in again; the daemon receives the callback
+agentgate mcp add geysier https://app.geysier.com/api/mcp   # says so when the server needs a login
+agentgate mcp login geysier                   # sign in; the daemon receives the callback
 agentgate mcp add posthog-lullu posthog --header "x-posthog-project-id: 12345"
 agentgate mcp add fs filesystem               # presets: agentgate mcp presets
 agentgate mcp add mytool --command "npx -y @some/mcp-server" [--per-session]
@@ -163,7 +163,7 @@ agentgate mcp test posthog-lullu
 
 A server can have any name, such as "PostHog Lullu"; its slug (`posthog-lullu`) becomes its id and the default tool prefix, and `agentgate mcp label <id> <name>` changes only the name shown in the app. The alias is the tool prefix: in every repo mapped to `posthog-lullu` under the alias `posthog`, the agent sees `posthog__…` tools that reach that repo's PostHog project. The repo is taken from `git remote get-url origin` in the session's working directory (override with `AGENTGATE_PROJECT=owner/repo`). Running Claude Code sessions pick up new servers and mapping changes without a restart. Codex reads the tool list only when a session starts, so start a new Codex session to see them.
 
-Every tool and every server's instructions cost an agent context in every session, so map a server only to the repos that use it rather than to Global defaults. Agents see the servers' instructions merged into one text of at most 4,000 characters, which is what Claude Code keeps; when they are longer, each server keeps its first lines. You can also narrow what a server offers:
+Every tool and every server's instructions cost an agent context in every session, so map a server only to the repos that use it rather than to Global defaults. Agents see the servers' instructions merged into one text of at most 4,000 characters, which is what Claude Code keeps; when they are longer, each server keeps its first lines. You can also narrow what a server offers, under **Tools and limits** in its ⋯ menu or from the CLI:
 
 ```sh
 agentgate mcp tools railway get-logs list-deployments list-services   # offer only these tools (none: every tool)
@@ -172,7 +172,7 @@ agentgate mcp limit railway 10000 [--tool get-logs]                   # cut long
 agentgate mcp defaults railway get-logs '{"limit": 30}'               # arguments a call gets unless the agent passes them
 ```
 
-A tool result longer than 20,000 characters is cut there, with a note telling the agent to ask for less. `agentgate mcp test <name>` lists a server's tools with these settings, and `agentgate service logs` shows one line per tool call with its server, tool, time and result size.
+A tool result longer than 20,000 characters is cut there, with a note telling the agent to ask for less. `agentgate mcp test <name>` lists a server's tools with these settings (it asks the running daemon, over the connection sessions use), and `agentgate service logs` shows one line per tool call with its server, tool, time and result size.
 
 ## Skills per repo
 
