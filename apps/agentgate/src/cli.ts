@@ -1428,8 +1428,7 @@ async function main() {
         return console.log(`worktrees  ${o.worktreesDir}\nclones     ${o.cloneDir}`);
       }
       if (sub === "sync") {
-        if (rest[0] === "on" || rest[0] === "off")
-          patchSettings(s, { t3ProjectSync: rest[0] === "on" }, revision(s, "setting", "settings"));
+        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3ProjectSync: rest[0] === "on" });
         else if (rest[0]) die("t3 sync [on|off]");
         await management("/t3/projects/sync", "POST").catch(() => {}); // a stopped daemon syncs when it starts
         const error = t3.t3State(s).projectSyncError;
@@ -1438,8 +1437,7 @@ async function main() {
         );
       }
       if (sub === "history") {
-        if (rest[0] === "on" || rest[0] === "off")
-          patchSettings(s, { t3HandoffHistory: rest[0] === "on" }, revision(s, "setting", "settings"));
+        if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3HandoffHistory: rest[0] === "on" });
         else if (rest[0]) die("t3 history [on|off]");
         return console.log(
           `Copying a returning thread's messages into T3 Code is ${s.settings().t3HandoffHistory ? "on" : "off"} on every machine. It writes T3 Code's own database, which T3 Code does not support; turn it off if T3 Code misbehaves after a handoff.`,

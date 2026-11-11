@@ -441,13 +441,12 @@ test("a deletion the relay keeps failing is retried less and less often, at most
   queueDelete(s, { relay: `http://127.0.0.1:${relay.port}`, key: "gone", token: "t" });
   const attempts = () => JSON.parse(s.local("remote:delete")!)[0].attempts ?? 0;
   /** A reconcile pass `after` ms later. A due deletion is awaited until its failure is recorded. One not due sends
-   * nothing, which the count after the next due pass would show; a macrotask lets its empty drain settle, since a
-   * drain asked for while the last one is finishing is dropped (serialTask in runtime.ts). */
+   * nothing, which the count after the next due pass would show. */
   const pass = async (after: number, due: boolean) => {
     T += after;
     const before = attempts();
     endpoints.reconcile();
-    if (!due) return Bun.sleep(0);
+    if (!due) return;
     while (attempts() === before) await Bun.sleep(1);
   };
 

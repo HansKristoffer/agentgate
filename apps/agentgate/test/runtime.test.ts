@@ -77,3 +77,21 @@ test("background task invocations coalesce without overlapping work", async () =
   expect(max).toBe(1);
   expect(runs).toBe(2);
 });
+
+test("a background task call that arrives while the last run is finishing is not lost", async () => {
+  // The call lands a few microtasks after the run's body ends; some count of hops hits the moment between the loop's
+  // last check and the task being marked idle.
+  for (let hops = 0; hops < 10; hops++) {
+    let runs = 0;
+    let late: Promise<void> | undefined;
+    const task = serialTask(async () => {
+      if (++runs > 1) return;
+      let wait = Promise.resolve();
+      for (let i = 0; i < hops; i++) wait = wait.then(() => {});
+      late = wait.then(() => task());
+    });
+    await task();
+    await late;
+    expect(runs).toBe(2);
+  }
+});
