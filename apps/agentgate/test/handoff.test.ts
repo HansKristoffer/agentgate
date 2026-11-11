@@ -25,7 +25,7 @@ import {
   t3Client,
   t3State,
 } from "../src/handoff/t3.ts";
-import { allNodes } from "../src/handoff/threads.ts";
+import { allNodes, handoffJob } from "../src/handoff/threads.ts";
 import { Store } from "../src/store.ts";
 import { nodeThreadsSchema } from "@agentgate/protocol";
 import { startNodes } from "./fixtures/nodes.ts";
@@ -366,7 +366,11 @@ test("a machine whose thread view this one cannot read is listed with an error, 
   const byNode = new Map(views.map((v) => [v.node, v]));
   expect(byNode.get("b")).toMatchObject({ online: true, threads: [] });
   expect(byNode.get("b")!.error).toBeUndefined();
-  expect(byNode.get("c")).toMatchObject({ threads: [], error: expect.stringContaining("cannot read") });
+  expect(byNode.get("c")).toMatchObject({ threads: [], error: expect.stringContaining("c answered /threads") });
+  // An answer read for its fields is checked too, and the error names the machine.
+  await expect(handoffJob(a!.ctx.handoffs, crypto.randomUUID(), "c")).rejects.toThrow(
+    /^c answered \/handoff\/[^ ]+\/job in a form a cannot read \(/,
+  );
 });
 
 test("a T3 Code server on another orchestration protocol fails with an update message", async () => {

@@ -7,15 +7,7 @@ import { fakeT3 } from "./fixtures/t3.ts";
 import { t3StateDir, timeline } from "./fixtures/t3-state.ts";
 import { Handoffs } from "../src/handoff/jobs.ts";
 import { handoffRoutes } from "../src/handoff/routes.ts";
-import {
-  CONTINUE,
-  READY,
-  abort,
-  cloneProject,
-  restartTasks,
-  type DestState,
-  type Manifest,
-} from "../src/handoff/destination.ts";
+import { CONTINUE, READY, abort, cloneProject, restartTasks, type Manifest } from "../src/handoff/destination.ts";
 import { createBundle, snapshot } from "../src/handoff/code.ts";
 import { startHandoff } from "../src/handoff/source.ts";
 import { claudeProjectKey } from "../src/handoff/session.ts";
@@ -578,13 +570,25 @@ test("a failure on the destination once T3 Code has the thread finishes there wi
   expect(a.t3.threads.get(thread.id)!.archivedAt).not.toBeNull();
 
   // From the import step on, T3 Code here may have the thread, so the source can no longer abort.
-  const importing = b.h.create<DestState>({
+  const { source, prepare, manifest } = b.h.load("destination", handoffId)!.state;
+  const importing = b.h.create({
     id: crypto.randomUUID(),
     role: "destination",
     thread: "t",
     target: "b",
     step: "import",
-    state: { source: "a", prepare: (dest.state as DestState).prepare, warnings: [], timings: [] },
+    state: {
+      source: source!,
+      prepare: prepare!,
+      manifest: manifest!,
+      main: r.b,
+      cwd: r.b,
+      instanceId: "claudeAgent",
+      claudeHome: b.claudeDir,
+      imported: true,
+      warnings: [],
+      timings: [],
+    },
   });
   expect(() => abort(b.h, importing)).toThrow("already imported");
   expect(b.h.load("destination", importing.id)!.step).toBe("import");
@@ -885,13 +889,20 @@ test("each step a handoff takes marks threads changed; activity and writes after
   const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
   const bumps: string[] = [];
   s.onChange = (topic) => bumps.push(topic);
-  const job = h.create({ id: "j", role: "source", thread: "t", target: "srv", step: "start", state: {} });
+  const job = h.create({
+    id: "j",
+    role: "source",
+    thread: "t",
+    target: "srv",
+    step: "resolve",
+    state: { warnings: [], timings: [] },
+  });
   expect(bumps).toEqual(["threads"]);
-  h.advance(job, "upload");
+  h.advance(job, "stop");
   h.touch("source", "j");
   expect(bumps).toEqual(["threads", "threads"]);
   h.fail(job, "aborted");
-  h.advance(job, "upload");
+  h.advance(job, "stop");
   expect(bumps).toEqual(["threads", "threads", "threads"]);
   expect(h.load("source", "j")!.step).toBe("failed");
 });
@@ -1043,7 +1054,7 @@ test("apply run again after a restart mid-restore moves the code here instead of
     oldPaths: [],
     files: [],
   };
-  h.create<DestState>({
+  h.create({
     id: "h1",
     role: "destination",
     thread: "t",
@@ -1054,7 +1065,7 @@ test("apply run again after a restart mid-restore moves the code here instead of
 
   // Apply finishes; the next step fails here for want of T3 Code, which this test does not need.
   await h.drive("destination", "h1");
-  const job = h.load<DestState>("destination", "h1")!;
+  const job = h.load("destination", "h1")!;
   expect(job.state.codeTaken).toBe(true);
   expect(job.state.warnings).toEqual([]);
   expect(readFileSync(join(r.b, "notes.txt"), "utf8")).toBe("uncommitted\n");
@@ -1069,7 +1080,7 @@ test("the tick reads only unfinished handoffs, and finished ones are trimmed aft
   s.now = () => now;
   // A finished row the tick must not parse: finished rows can be large, and nothing reads them there.
   s.db.run("insert into handoffs values ('old', 'source', 't', 'b', 'done', '{not json', null, ?, ?)", [now, now]);
-  h.create<DestState>({
+  h.create({
     id: "waiting",
     role: "destination",
     thread: "",
@@ -1100,4 +1111,30 @@ test("the tick reads only unfinished handoffs, and finished ones are trimmed aft
   h.trim();
   const ids = (s.db.query("select id from handoffs").all() as { id: string }[]).map((r) => r.id);
   expect(ids).toEqual(["waiting"]);
+});
+
+test("a job another version wrote, at a step or with a state this one does not know, fails with the reason instead of waiting", () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  const h = new Handoffs(s, { claudeDir: tmp(), worktreesDir: tmp(), cloneDir: tmp(), tempDir: tmp() });
+  const insert = (id: string, step: string, state: unknown) =>
+    s.db.run("insert into handoffs values (?, 'source', 't', 'b', ?, ?, null, 0, 0)", [
+      id,
+      step,
+      JSON.stringify(state),
+    ]);
+  insert("newer", "export", { warnings: [], timings: [] });
+  // Past resolve, a source job always knows its thread's session.
+  insert("partial", "package", { title: "Fix the bug", warnings: [], timings: [] });
+
+  h.tick();
+  for (const id of ["newer", "partial"]) {
+    const job = h.load("source", id)!;
+    expect(h.view(job)).toMatchObject({ status: "failed", error: expect.stringContaining("another version") });
+  }
+  expect(h.load("source", "newer")!.error).toContain("(unknown step)");
+  expect(h.load("source", "partial")!.error).toContain("sessionId");
+  // Stored as failed, so the step loops leave them alone from then on.
+  const steps = s.db.query("select distinct step from handoffs").all();
+  expect(steps).toEqual([{ step: "failed" }]);
 });
