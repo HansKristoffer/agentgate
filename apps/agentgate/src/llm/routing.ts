@@ -1,6 +1,7 @@
 import {
   isModelReason,
   modelSnapshotSchema,
+  normalizeQuotaWindow,
   type QuotaWindow,
   type RouteExplanation,
   type RouteReason,
@@ -63,6 +64,22 @@ export function resolveModel(s: Store, provider: ProviderName, model?: string): 
   }
   return next;
 }
+/** Accounts whose quota expires within this much of the soonest one's count as level, so the active account keeps
+ * serving (and its prompt cache stays warm) rather than flipping on a few seconds of reset jitter. */
+const LEVEL_EXPIRY = 30 * 60_000;
+/** When an account's unused quota is lost: the reset of its longest window. That window is the scarce one; a five-hour
+ * window resets many times before a weekly one does. A window that has not started, or has already reset, starts a full
+ * period with the next request. */
+function quotaExpiry(windows: QuotaWindow[], now: number) {
+  let longest = 0,
+    expiry = Infinity;
+  for (const w of windows.map(normalizeQuotaWindow)) {
+    const duration = w.durationMs ?? 0,
+      end = w.resetsAt && w.resetsAt > now ? w.resetsAt : duration ? now + duration : Infinity;
+    if (duration > longest || (duration === longest && end < expiry)) [longest, expiry] = [duration, end];
+  }
+  return expiry;
+}
 /** Evaluate eligibility and limiting quota from the same account observation. */
 function assess(s: Store, account: Account, model?: string, exclude = new Set<string>(), now = s.now()) {
   const reasons: RouteReason[] = [];
@@ -104,6 +121,7 @@ function assess(s: Store, account: Account, model?: string, exclude = new Set<st
     account,
     reasons,
     window,
+    expiry: quotaExpiry(windows, now),
     retryAt: blockers.length ? Math.max(...blockers) : undefined,
   };
 }
@@ -159,20 +177,20 @@ export function route(
     selected = sorted.find((candidate) => !last || candidate.account.id > last) ?? sorted[0];
     reason = "round robin";
   }
+  // Use it or lose it: the account whose quota expires soonest serves first, so quota that would reset unused is spent
+  // before quota that keeps. Accounts at the threshold come last.
   if (!selected) {
-    const under = eligible.filter((candidate) => (candidate.window?.usedPct ?? 0) < settings.threshold);
-    const active = activeAccount.get(s, provider);
-    selected = under.find((candidate) => candidate.account.id === active);
-    if (selected) reason = "active subscription below threshold";
-    else {
-      selected = [...(under.length ? under : eligible)].sort(
+    const under = eligible.filter((candidate) => (candidate.window?.usedPct ?? 0) < settings.threshold),
+      pool = under.length ? under : eligible,
+      soonest = [...pool].sort(
         (a, b) =>
-          (a.window?.resetsAt ?? Infinity) - (b.window?.resetsAt ?? Infinity) ||
-          b.account.priority - a.account.priority ||
-          a.account.id.localeCompare(b.account.id),
-      )[0];
-      if (selected) reason = "earliest reset, then priority";
-    }
+          a.expiry - b.expiry || b.account.priority - a.account.priority || a.account.id.localeCompare(b.account.id),
+      )[0],
+      active = pool.find((candidate) => candidate.account.id === activeAccount.get(s, provider));
+    selected = active && soonest && active.expiry <= soonest.expiry + LEVEL_EXPIRY ? active : soonest;
+    if (selected)
+      reason =
+        selected === active ? "active subscription, reset level with the soonest" : "soonest reset, then priority";
   }
   return {
     provider,
