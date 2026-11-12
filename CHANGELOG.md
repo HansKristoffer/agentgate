@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.30.0](https://github.com/HansKristoffer/agentgate/compare/v0.29.0...v0.30.0) (2026-11-12)
+
+
+### Features
+
+* **logins:** share OpenCode API keys with every machine ([#148](https://github.com/HansKristoffer/agentgate/issues/148)) ([89c718c](https://github.com/HansKristoffer/agentgate/commit/89c718c57ac00fac5a559fbc738acf174467159f))
+* the app stays live with every change, and the CLI and app share one set of operations ([#146](https://github.com/HansKristoffer/agentgate/issues/146)) ([8dbbc32](https://github.com/HansKristoffer/agentgate/commit/8dbbc322fea8682db7bc74535cd6f29caff05017))
+
 ## [0.29.0](https://github.com/HansKristoffer/agentgate/compare/v0.28.0...v0.29.0) (2026-11-11)
 
 
