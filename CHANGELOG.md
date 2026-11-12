@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.31.0](https://github.com/HansKristoffer/agentgate/compare/v0.30.0...v0.31.0) (2026-11-12)
+
+
+### Features
+
+* **proxy:** automatic routing spends the quota that resets soonest first ([#149](https://github.com/HansKristoffer/agentgate/issues/149)) ([4bd9f5b](https://github.com/HansKristoffer/agentgate/commit/4bd9f5bde424e7dade2ee082c2c49f41ebbf5861))
+
 ## [0.30.0](https://github.com/HansKristoffer/agentgate/compare/v0.29.0...v0.30.0) (2026-11-12)
 
 
