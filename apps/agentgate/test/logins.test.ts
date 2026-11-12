@@ -64,8 +64,43 @@ const on = (home: string) => {
     }
     return { ok: false, out: "" };
   };
+  host.opencode = async (args, stdin) => {
+    const oc = opencode.get(home);
+    if (!oc) return undefined;
+    oc.calls.push(args);
+    const [, cmd, integration, id] = args;
+    if (cmd === "export") return { ok: true, out: JSON.stringify(oc.credentials) };
+    if (cmd === "logout") oc.credentials = oc.credentials.filter((c) => c.id !== id);
+    if (cmd === "switch") for (const c of oc.credentials) if (c.integrationID === integration) c.active = c.id === id;
+    // Like OpenCode: an id it has is skipped, and a new key does not take over from one in use.
+    if (cmd === "import")
+      for (const c of JSON.parse(stdin!) as OpencodeCredential[]) {
+        if (oc.credentials.some((h) => h.id === c.id)) continue;
+        const inUse = oc.credentials.some((h) => h.integrationID === c.integrationID && h.active);
+        oc.credentials.push({ ...c, active: c.active && !inUse });
+      }
+    return { ok: true, out: "" };
+  };
   return me;
 };
+type OpencodeCredential = {
+  id: string;
+  integrationID: string;
+  label: string;
+  active: boolean;
+  value: { type: string; key?: string };
+};
+/** A fake OpenCode per home: its credentials, and every command it ran. */
+const opencode = new Map<string, { credentials: OpencodeCredential[]; calls: string[][] }>();
+const key = (id: string, integrationID: string, k: string, active = true): OpencodeCredential => ({
+  id,
+  integrationID,
+  label: integrationID,
+  active,
+  value: { type: "key", key: k },
+});
+const keys = (home: string) =>
+  opencode.get(home)!.credentials.map((c) => [c.id, c.integrationID, c.value.key ?? c.value.type, c.active]);
 /** A fake Infisical CLI per home: its version, its session's state, and every command it ran. */
 const infisicalCli = new Map<string, { version: string; status: string; calls: string[][] }>();
 const cli = (home: string, status = "authenticated", version = "0.43.145") => {
@@ -95,6 +130,7 @@ test("a machine without gh or Infisical shares nothing", async () => {
   expect(await shareLogins(a)).toEqual([
     { id: "github", skipped: "gh is not logged in to github.com (gh auth login)" },
     { id: "infisical", skipped: "the Infisical CLI is not logged in" },
+    { id: "opencode", skipped: "update agentgate on a, b first" },
   ]);
   expect(a.list("login")).toEqual([]);
   // Infisical in the system keychain cannot be read; the user is told how to move it.
@@ -113,7 +149,7 @@ test("other machines sign in with a shared login once, and again when the sharin
     homeB = join(temp, "b");
   on(homeA).token = "gho_shared";
   infisical(homeA, "me@example.com", "session-1");
-  expect((await shareLogins(a)).map((r) => r.account)).toEqual(["octocat", "me@example.com"]);
+  expect((await shareLogins(a)).map((r) => r.account)).toEqual(["octocat", "me@example.com", undefined]);
   expect(exportBackup(a, false).records.some((r) => r.kind === "login")).toBe(false);
 
   sync(a, b);
@@ -364,4 +400,66 @@ test("a GitHub token GitHub no longer accepts shows as not working", async () =>
   ]);
   await syncLogins(a);
   expect(listLogins(a)[0]!.problems).toEqual([]);
+});
+
+test("OpenCode's API keys reach every machine, the shared key takes over, and a changed key replaces the old one", async () => {
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "oc-a"),
+    homeB = join(temp, "oc-b");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 10 });
+  on(homeA);
+  opencode.set(homeA, {
+    calls: [],
+    credentials: [
+      key("cred_or", "openrouter", "sk-or-1"),
+      key("cred_rp", "runpod", "rp-1"),
+      // A login that refreshes stays on its machine.
+      { id: "cred_cp", integrationID: "github-copilot", label: "Copilot", active: true, value: { type: "oauth" } },
+    ],
+  });
+  expect((await shareLogins(a, "opencode"))[0]).toEqual({ id: "opencode", account: "openrouter, runpod" });
+
+  sync(a, b);
+  on(homeB);
+  opencode.set(homeB, { calls: [], credentials: [key("cred_mine", "openrouter", "sk-or-mine")] });
+  await syncLogins(b);
+  expect(keys(homeB)).toEqual([
+    ["cred_mine", "openrouter", "sk-or-mine", false],
+    ["cred_or", "openrouter", "sk-or-1", true],
+    ["cred_rp", "runpod", "rp-1", true],
+  ]);
+  expect(listLogins(b)[0]).toMatchObject({ id: "opencode", signedIn: true });
+
+  // Unchanged: nothing is imported again, so a key chosen here afterwards stays chosen.
+  opencode.get(homeB)!.calls.length = 0;
+  await syncLogins(b);
+  expect(opencode.get(homeB)!.calls.filter((c) => c[1] !== "export")).toEqual([]);
+
+  // The sharing machine replaces a key under the same id; its next round shares it and b follows.
+  on(homeA);
+  opencode.get(homeA)!.credentials[0]!.value.key = "sk-or-2";
+  await syncLogins(a);
+  sync(a, b);
+  on(homeB);
+  await syncLogins(b);
+  expect(keys(homeB).find(([id]) => id === "cred_or")).toEqual(["cred_or", "openrouter", "sk-or-2", true]);
+});
+
+test("a machine without OpenCode reports it, and one with no API keys shares none", async () => {
+  const a = node("a"),
+    b = node("b");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 10 });
+  on(join(temp, "oc-none"));
+  expect((await shareLogins(a, "opencode"))[0]!.skipped).toBe("OpenCode is not installed");
+  opencode.set(join(temp, "oc-none"), { calls: [], credentials: [] });
+  expect((await shareLogins(a, "opencode"))[0]!.skipped).toBe("OpenCode has no API keys (opencode auth login)");
+
+  on(join(temp, "oc-c"));
+  opencode.set(join(temp, "oc-c"), { calls: [], credentials: [key("cred_or", "openrouter", "sk-or-1")] });
+  await shareLogins(a, "opencode");
+  sync(a, b);
+  on(join(temp, "oc-d"));
+  await syncLogins(b);
+  expect(listLogins(b)[0]).toMatchObject({ signedIn: false, error: "install OpenCode to use its shared API keys" });
 });

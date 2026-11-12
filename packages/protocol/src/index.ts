@@ -345,7 +345,7 @@ export interface Preset {
   args?: string[];
   note?: string;
 }
-export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity"]);
+export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity", "opencode"]);
 export const sharedLoginSchema = z.object({
   id: loginIdSchema,
   account: z.string(),

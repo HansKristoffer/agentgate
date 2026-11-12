@@ -53,10 +53,10 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   handoffs                                    recent handoffs and their state
   handoffs cancel <id> [--node <node>]        give up a handoff stuck waiting for its destination
   factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
-  logins                                      GitHub (gh) and Infisical CLI logins shared with every machine
-  logins share [github|infisical]             share this machine's logins; every machine signs in with them
+  logins                                      GitHub (gh) and Infisical CLI logins and OpenCode API keys shared with every machine
+  logins share [github|infisical|opencode]    share this machine's logins; every machine signs in with them
   logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
-  logins forget github|infisical              stop sharing (machines stay signed in)
+  logins forget github|infisical|opencode     stop sharing (machines stay signed in)
   logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
   logins forget infisical-identity            remove it from every machine
   setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex (and Cursor's MCP) through agentgate,

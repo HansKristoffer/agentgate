@@ -3,11 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import { atomicWrite } from "./files.ts";
-import { liveOnly, requireNodeProtocol, type Data, type Store } from "./store.ts";
+import { killGroup } from "./runtime.ts";
+import { liveOnly, nodesBelow, requireNodeProtocol, type Data, type Store, type Stored } from "./store.ts";
 
 /**
- * The GitHub CLI (gh) and Infisical CLI logins of one machine, shared with every paired machine so a new server clones
- * and reads secrets as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
+ * The GitHub CLI (gh) and Infisical CLI logins and OpenCode's API keys of one machine, shared with every paired machine
+ * so a new server clones, reads secrets and reaches the same models as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
  * The sharing node re-reads it each round, so a refreshed or replaced login follows; every other node signs in with it
  * whenever it changes.
  *
@@ -21,10 +22,13 @@ import { liveOnly, requireNodeProtocol, type Data, type Store } from "./store.ts
 export const LOGINS_PROTOCOL = 4;
 /** The node protocol that understands the `infisical-identity` login. */
 export const IDENTITY_PROTOCOL = 5;
+/** The node protocol that understands the `opencode` login. */
+export const OPENCODE_PROTOCOL = 10;
 type Login = Data<"login">;
+type StoredLogin = Stored<Login>;
 type LoginId = Login["id"];
 /** Logins read from this machine's own tools; the machine identity is entered instead. */
-const SHAREABLE = ["github", "infisical"] as const;
+const SHAREABLE = ["github", "infisical", "opencode"] as const;
 const IDENTITY = "infisical-identity";
 
 /** What a `gh` run came to. `exit` and `err` let a caller tell why it failed; `err` is absent when gh printed none. */
@@ -50,7 +54,7 @@ export function ghAnswer(run: { exit: number; stdout: string; stderr: string }):
   return { ok: run.exit === 0, out: run.stdout.trim(), exit: run.exit, ...(err && { err }) };
 }
 
-/** The user's home and the `gh` and `infisical` commands; tests point them elsewhere. */
+/** The user's home and the `gh`, `infisical` and `opencode` commands; tests point them elsewhere. */
 export const host = {
   home: homedir(),
   /** Runs the Infisical CLI on `home`. `terminal` hands it this process's terminal; otherwise `stderr` sees its output. */
@@ -93,6 +97,27 @@ export const host = {
     ]);
     return ghAnswer({ exit, stdout, stderr });
   },
+  /**
+   * Runs OpenCode's CLI with a private server (`--standalone`), so agentgate never starts or needs OpenCode's background
+   * service; a running one reads the same database and sees the change. Its installer puts it in ~/.opencode/bin, which
+   * a service installed before OpenCode does not have on its PATH.
+   */
+  async opencode(args: string[], stdin?: string): Promise<{ ok: boolean; out: string } | undefined> {
+    const bin = Bun.which("opencode") ?? [join(host.home, ".opencode", "bin", "opencode")].find((f) => existsSync(f));
+    if (!bin) return undefined;
+    // The private server is OpenCode's own process, so its whole group goes at the deadline.
+    const child = Bun.spawn([bin, ...args, "--standalone"], {
+      stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin),
+      stdout: "pipe",
+      stderr: "ignore",
+      detached: true,
+    });
+    const timer = setTimeout(() => killGroup(child), 60_000);
+    const [out, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]).finally(() =>
+      clearTimeout(timer),
+    );
+    return { ok: exit === 0, out: out.trim() };
+  },
 };
 const realHome = (what: string) => {
   if (host.home === homedir()) liveOnly(what);
@@ -104,6 +129,42 @@ const infisical = () => ({
 });
 const requireProtocol = (s: Store, protocol: number) => requireNodeProtocol(s, protocol, "can't sync this login");
 
+type OpencodeKey = Extract<Login, { id: "opencode" }>["credentials"][number];
+/** A credential or integration id goes on OpenCode's command line, so it can never read as a flag. */
+const OPENCODE_ID = /^[A-Za-z0-9_][\w.:@-]{0,255}$/;
+/**
+ * The API keys OpenCode keeps on this machine (`opencode auth export`), sorted so an unchanged set hashes the same, or
+ * undefined without OpenCode. OAuth logins stay behind: they refresh, and two machines refreshing one rotating token log
+ * each other out.
+ */
+async function opencodeKeys(): Promise<OpencodeKey[] | undefined> {
+  const run = await host.opencode(["auth", "export"]);
+  if (!run) return undefined;
+  if (!run.ok) throw new Error("opencode auth export failed; sharing API keys needs OpenCode 2 or later");
+  let all: unknown;
+  try {
+    all = JSON.parse(run.out.slice(run.out.indexOf("[")));
+  } catch {
+    throw new Error("opencode auth export printed something other than JSON");
+  }
+  if (!Array.isArray(all)) throw new Error("opencode auth export printed something other than a list");
+  return all
+    .flatMap((c) => {
+      const key = c?.value?.type === "key" ? c.value.key : undefined;
+      const usable =
+        typeof key === "string" &&
+        key &&
+        typeof c.id === "string" &&
+        OPENCODE_ID.test(c.id) &&
+        typeof c.integrationID === "string" &&
+        OPENCODE_ID.test(c.integrationID);
+      if (!usable) return [];
+      const label = typeof c.label === "string" ? c.label.slice(0, 256) : "";
+      return [{ id: c.id, integrationID: c.integrationID, label, active: c.active === true, key }];
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 /** This machine's login, or why it has none to share. */
 async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | string> {
   if (id === "github") {
@@ -112,6 +173,20 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
     if (!token.ok || !token.out) return "gh is not logged in to github.com (gh auth login)";
     const user = await host.gh(["config", "get", "--host", "github.com", "user"]);
     return { id, from: s.nodeId, account: user?.ok ? user.out : "", token: token.out };
+  }
+  if (id === "opencode") {
+    const old = nodesBelow(s, OPENCODE_PROTOCOL);
+    if (old.length) return `update agentgate on ${old.join(", ")} first`;
+    let credentials;
+    try {
+      credentials = await opencodeKeys();
+    } catch (e) {
+      return getErrorMessage(e);
+    }
+    if (!credentials) return "OpenCode is not installed";
+    if (!credentials.length) return "OpenCode has no API keys (opencode auth login)";
+    const integrations = [...new Set(credentials.map((c) => c.integrationID))].join(", ");
+    return { id, from: s.nodeId, account: integrations.slice(0, 320), credentials };
   }
 
   const files = infisical();
@@ -139,7 +214,7 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
 }
 
 /** Sign this machine in with a login another machine shared. */
-async function apply(l: Login) {
+async function apply(l: StoredLogin) {
   await typedSwitch(l, "id", {
     [IDENTITY]: (l) => {
       atomicWrite(
@@ -161,6 +236,25 @@ async function apply(l: Login) {
       const git = await host.gh(["auth", "setup-git", "--hostname", "github.com"]);
       if (!git?.ok) throw new Error("gh auth setup-git failed");
     },
+    opencode: async (l) => {
+      const here = await opencodeKeys();
+      if (!here) throw new Error("install OpenCode to use its shared API keys");
+      const run = async (args: string[], stdin?: string) => {
+        if (!(await host.opencode(args, stdin))?.ok) throw new Error(`opencode ${args.slice(0, 2).join(" ")} failed`);
+      };
+      // Import skips an id it already has, so a key changed under the same id is logged out first.
+      for (const c of l.credentials) {
+        const old = here.find((h) => h.id === c.id);
+        if (old && old.key !== c.key) await run(["auth", "logout", c.integrationID, c.id]);
+      }
+      const value = l.credentials.map(({ key, ...c }) => ({ ...c, value: { type: "key", key } }));
+      await run(["auth", "import"], JSON.stringify(value));
+      // An imported key does not take over from one this machine already uses for the same provider; the shared one wins.
+      for (const c of l.credentials.filter((c) => c.active)) {
+        if (here.some((h) => h.integrationID === c.integrationID && h.id !== c.id && h.active))
+          await run(["auth", "switch", c.integrationID, c.id]);
+      }
+    },
     infisical: (l) => {
       const files = infisical();
       const entry = join(files.keyring, l.account);
@@ -181,7 +275,7 @@ const INFISICAL_STATUS = "0.43.86";
  * Why a login in place on this machine does not work, asked of the service itself, or undefined when it works or
  * there is no telling (offline, or no Infisical CLI that can check). Never includes a token, and never starts a login.
  */
-async function problem(l: Login): Promise<string | undefined> {
+async function problem(l: StoredLogin): Promise<string | undefined> {
   if (l.id === "github") {
     const res = await fetch("https://api.github.com/user", {
       headers: { authorization: `token ${l.token}`, "user-agent": "agentgate" },
@@ -215,7 +309,7 @@ async function problem(l: Login): Promise<string | undefined> {
 type State = { hash?: string; error?: string; problem?: string };
 const state = (s: Store, id: LoginId): State => JSON.parse(s.local(`login:${id}`) ?? "{}");
 const setState = (s: Store, id: LoginId, value: State) => s.setLocal(`login:${id}`, JSON.stringify(value));
-const hash = (l: Login) => new Bun.CryptoHasher("sha256").update(JSON.stringify(l)).digest("hex");
+const hash = (l: StoredLogin) => new Bun.CryptoHasher("sha256").update(JSON.stringify(l)).digest("hex");
 
 /** Share this machine's logins with every node. Logins this machine does not use are skipped, never shared. */
 export async function shareLogins(s: Store, only?: LoginId) {
