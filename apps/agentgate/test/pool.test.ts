@@ -4,7 +4,7 @@ import { CLAUDE, claude } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
 import { accountStatus, proxy, recordUsage, unknownQuota } from "../src/llm/pool.ts";
 import { providers } from "../src/llm/providers.ts";
-import { route } from "../src/llm/routing.ts";
+import { activeAccount, route } from "../src/llm/routing.ts";
 import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
@@ -247,6 +247,45 @@ test("pinned account wins while it is a candidate", async () => {
   s.put("account", "b", { ...s.get("account", "b")!, pinned: true });
   await send();
   expect(seen).toEqual(["tok-b"]);
+});
+
+test("automatic routing spends the quota whose weekly window resets soonest, not the active account's", () => {
+  const now = s.now(),
+    hour = 3600_000;
+  s.now = () => now;
+  activeAccount.set(s, "claude", "a");
+  // The active account's five-hour window has reset and its week has days left; b's week ends in five hours.
+  recordUsage(s, "a", {
+    windows: [
+      { name: "5h", usedPct: 4, resetsAt: now - 60_000 },
+      { name: "7d", usedPct: 7, resetsAt: now + 157 * hour },
+    ],
+    status: "ok",
+  });
+  recordUsage(s, "b", { windows: [{ name: "7d", usedPct: 34, resetsAt: now + 5 * hour }], status: "ok" });
+  expect(route(s, "claude", "claude-sonnet-4-5")).toMatchObject({
+    account: "b",
+    reason: "soonest reset, then priority",
+  });
+
+  // A fuller five-hour window that resets sooner does not outrank the weekly window.
+  recordUsage(s, "a", {
+    windows: [
+      { name: "5h", usedPct: 80, resetsAt: now + hour },
+      { name: "7d", usedPct: 7, resetsAt: now + 157 * hour },
+    ],
+    status: "ok",
+  });
+  expect(route(s, "claude", "claude-sonnet-4-5").account).toBe("b");
+
+  // Weeks ending minutes apart are level, so the active account keeps serving.
+  recordUsage(s, "a", { windows: [{ name: "7d", usedPct: 7, resetsAt: now + 5 * hour + 10 * 60_000 }], status: "ok" });
+  expect(route(s, "claude", "claude-sonnet-4-5").account).toBe("a");
+
+  // An account at the switch threshold comes last, however soon it resets.
+  recordUsage(s, "b", { windows: [{ name: "7d", usedPct: 98, resetsAt: now + hour }], status: "ok" });
+  activeAccount.set(s, "claude", "b");
+  expect(route(s, "claude", "claude-sonnet-4-5").account).toBe("a");
 });
 
 const sendOwn = (path: string) =>

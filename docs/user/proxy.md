@@ -23,7 +23,7 @@ Resetting local backoff clears transport/model cooldowns, while provider quota a
 
 ## Routing and policy
 
-Settings provides Automatic, Priority, and Round robin strategies. Eligible pinned accounts take precedence. Automatic retains the active account below the threshold, then uses reset time and priority. Optional session affinity prefers an eligible account for a recognized Claude or Codex session, or a Cursor conversation id. Affinity has a TTL and a 2,000-entry bound on each node. In-flight counts are diagnostic; they impose no additional concurrency limit.
+Settings provides Automatic, Priority, and Round robin strategies. Eligible pinned accounts take precedence. Automatic uses first the account whose quota would otherwise go unused soonest: the one whose longest window (the weekly one, for Claude and Codex) resets first. Accounts at or above the switch threshold come last, priority breaks ties, and the active account keeps serving while its reset is within half an hour of the soonest. Optional session affinity prefers an eligible account for a recognized Claude or Codex session, or a Cursor conversation id. Affinity has a TTL and a 2,000-entry bound on each node. In-flight counts are diagnostic; they impose no additional concurrency limit.
 
 Cursor agent runs (`Run`, `RunSSE`, `RunPoll`) and the model-status probe are pooled the same way as Claude and Codex requests. Point the Cursor CLI at this daemon with `CURSOR_API_BASE_URL` set to `http://127.0.0.1:<port>/cursor`. Cursor quota is the billing-cycle read, not response headers. Other Cursor calls keep a caller's own login.
 

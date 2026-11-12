@@ -138,7 +138,7 @@ export function PoolSettings({ data, connection, perform }: ViewProps) {
             options={[
               {
                 id: "automatic",
-                label: "Automatic: active account, then reset and priority",
+                label: "Automatic: soonest weekly reset first, then priority",
               },
               { id: "priority", label: "Highest priority" },
               { id: "round-robin", label: "Round robin" },
