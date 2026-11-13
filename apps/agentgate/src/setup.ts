@@ -129,8 +129,15 @@ const backup = (file: string) => {
   if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`);
 };
 
-/** The token Claude Code sends when it has no login of its own; the proxy replaces it with a pool account's. */
+/** The token routed Claude Code sends; the proxy replaces it with a pool account's. */
 export const PLACEHOLDER_TOKEN = "agentgate";
+
+/** Claude must not refresh its saved OAuth login before it can reach the pool. Explicit auth stays the user's. */
+function proxyAuth(env: Record<string, unknown>) {
+  if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) return false;
+  env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
+  return true;
+}
 
 export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): Promise<string> {
   const codexFile = join(paths.codex, "config.toml");
@@ -238,6 +245,16 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
       JSON.stringify(e.args) !== JSON.stringify(args) ||
       e.env.AGENTGATE_PORT !== env.AGENTGATE_PORT);
   const changed: string[] = [];
+  // Upgrade an already-routed install without changing its independent MCP choice or touching its saved login.
+  const settingsFile = join(dirs.claude, "settings.json");
+  if (existsSync(settingsFile)) {
+    const settings = json(settingsFile);
+    if (settings.env?.ANTHROPIC_BASE_URL === `${LOCAL_URL}/anthropic` && proxyAuth(settings.env)) {
+      backup(settingsFile);
+      atomicWrite(settingsFile, JSON.stringify(settings, null, 2) + "\n");
+      changed.push(`Updated agentgate's Claude proxy authentication in ${settingsFile}`);
+    }
+  }
   const claudeJson = claudeJsonIn(dirs.claude);
   // A missing file is Claude Code mid-rewrite or not set up at all; writing one from scratch would lose its state.
   if (existsSync(claudeJson)) {
@@ -379,15 +396,6 @@ export function codexStatus(dir = PRIMARY_CODEX_DIR): { routing: boolean; mcp: b
   }
 }
 
-/** Whether Claude Code is signed in itself: it saves the account in .claude.json, and the token in .credentials.json or the Keychain. */
-const ownClaudeLogin = (dir: string) => {
-  try {
-    return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount;
-  } catch {
-    return false;
-  }
-};
-
 export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
   const file = join(dir, "settings.json"),
     undo = `${file}.agentgate-undo`;
@@ -403,10 +411,7 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
       );
     backup(file);
     env.ANTHROPIC_BASE_URL = url;
-    // Claude Code will not start without a login, though the proxy never uses it. Keep the user's own where there is
-    // one; a server set up from scratch has none and would answer every turn with "Not logged in".
-    if (!ownClaudeLogin(dir) && !env.ANTHROPIC_AUTH_TOKEN && !env.ANTHROPIC_API_KEY)
-      env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
+    proxyAuth(env);
   } else {
     if (!existsSync(undo) && env.ANTHROPIC_BASE_URL !== url) return `No agentgate setup change to undo in ${file}.`;
     const original = existsSync(`${file}.before-agentgate`) ? (json(`${file}.before-agentgate`).env ?? {}) : {};
