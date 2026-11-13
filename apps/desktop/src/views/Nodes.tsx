@@ -590,6 +590,8 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
         const login = data.logins.find((l) => l.id === id);
         const fromHere = login?.from === data.node;
         const broken = login?.problems.find((p) => p.node === data.node)?.problem;
+        const remoteProblems = login?.problems.filter((p) => p.node !== data.node) ?? [];
+        const needsAttention = !!login?.error || !!login?.problems.length;
         return (
           <div className="item" key={id}>
             <div className="machine-icon">
@@ -598,10 +600,20 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
             <div className="grow">
               <div className="row">
                 <strong>{name}</strong>
-                {login && fromHere && <Badge good={!login.error && !broken}>Shared from this machine</Badge>}
+                {login && fromHere && (
+                  <Badge good={!needsAttention}>
+                    {needsAttention ? "Needs attention" : "Shared from this machine"}
+                  </Badge>
+                )}
                 {login && !fromHere && (
-                  <Badge good={login.signedIn && !broken}>
-                    {!login.signedIn ? "Not signed in here" : broken ? "Not working here" : "Signed in here"}
+                  <Badge good={login.signedIn && !needsAttention}>
+                    {!login.signedIn
+                      ? "Not signed in here"
+                      : broken
+                        ? "Not working here"
+                        : needsAttention
+                          ? "Needs attention"
+                          : "Signed in here"}
                   </Badge>
                 )}
               </div>
@@ -610,7 +622,12 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
                   ? `${login.account || "Signed in"} · shared from ${login.from}`
                   : `Not shared. Share ${tool}'s login from the machine where you are signed in.`}
               </small>
-              {(login?.error ?? broken) && <small>{login?.error ?? broken}</small>}
+              {(login?.error ?? broken) && <small className="danger">{login?.error ?? broken}</small>}
+              {remoteProblems.map((p) => (
+                <small className="danger" key={p.node}>
+                  {p.node}: {p.problem}
+                </small>
+              ))}
             </div>
             {id === "infisical" && login?.problems.length ? (
               <Button
