@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.32.0](https://github.com/HansKristoffer/agentgate/compare/v0.31.0...v0.32.0) (2026-11-13)
+
+
+### Features
+
+* **mcp:** recover failed servers and bypass expired Claude logins ([#151](https://github.com/HansKristoffer/agentgate/issues/151)) ([dd0cfdd](https://github.com/HansKristoffer/agentgate/commit/dd0cfddca59bb5c8d36074e72021bc2b363a49a9))
+
+
+### Bug Fixes
+
+* **logins:** surface expired shared sessions and explain Infisical CLI requirements ([#153](https://github.com/HansKristoffer/agentgate/issues/153)) ([1fce5b4](https://github.com/HansKristoffer/agentgate/commit/1fce5b4701dadbd681da2a4f0f837c5e3318f618))
+
 ## [0.31.0](https://github.com/HansKristoffer/agentgate/compare/v0.30.0...v0.31.0) (2026-11-12)
 
 
