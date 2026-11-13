@@ -468,9 +468,14 @@ export async function signInInfisical(
   realHome("Signing in to Infisical");
   const shared = s.get("login", "infisical");
   if (!shared) throw new Error("Infisical is not shared; run infisical login, then agentgate logins share infisical");
+  const profile = profileFor(shared.account);
+  const help = await host.infisical(["login", "--help"]);
+  if (!help) throw new Error("install the Infisical CLI to sign in");
+  if (!help.ok || !/--profile\b/.test(help.out))
+    throw new Error("update the Infisical CLI to sign in from Agentgate; on macOS, run brew upgrade infisical");
   let printed = "";
   let report = o.url;
-  const login = await host.infisical(["login", "--profile", profileFor(shared.account)], {
+  const login = await host.infisical(["login", "--profile", profile], {
     terminal: o.terminal,
     signal: o.signal,
     timeout: 11 * 60_000, // the CLI gives the browser 10 minutes

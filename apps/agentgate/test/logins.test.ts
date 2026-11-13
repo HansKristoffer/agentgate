@@ -53,6 +53,8 @@ const on = (home: string) => {
     if (!cli) return undefined;
     cli.calls.push(args);
     if (args[0] === "--version") return { ok: true, out: `infisical version ${cli.version}` };
+    if (args[0] === "login" && args[1] === "--help")
+      return { ok: true, out: "Usage: infisical login\n  --profile string" };
     if (args[1] === "status") {
       const session = {
         principalType: "user",
@@ -366,6 +368,25 @@ test("signing in to Infisical again shares the fresh session, after which every 
   expect(readFileSync(join(homeB, "infisical-keyring/me@example.com"), "utf8")).toBe("session-new");
   sync(b, a);
   expect(listLogins(a)[0]!.problems).toEqual([]);
+});
+
+test("signing in with an older Infisical CLI explains the required CLI upgrade before starting a login", async () => {
+  const a = node("a");
+  const home = join(temp, "sign-legacy");
+  on(home);
+  infisical(home, "me@example.com", "session-old");
+  cli(home, "expired", "0.41.98");
+  await shareLogins(a, "infisical");
+  const fake = host.infisical;
+  host.infisical = async (args, options) => {
+    if (args[0] !== "login") return fake(args, options);
+    if (args.includes("--help")) return { ok: true, out: "Usage: infisical login\n  --domain string" };
+    if (args.includes("--profile")) return { ok: false, out: "Error: unknown flag: --profile" };
+    writeFileSync(join(home, "infisical-keyring/me@example.com"), "session-new");
+    return { ok: true, out: "" };
+  };
+  await expect(signInInfisical(a)).rejects.toThrow("update the Infisical CLI");
+  expect(a.get("login", "infisical")).toMatchObject({ keyring: "session-old" });
 });
 
 test("signing in to Infisical fails plainly when the CLI here has no login for the shared account", async () => {
