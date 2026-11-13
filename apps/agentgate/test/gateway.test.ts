@@ -421,6 +421,73 @@ test("a server that cannot be reached is retried with backoff, not on every list
   }
 });
 
+test("background maintenance recovers a failed server without a client listing or manual test", async () => {
+  const methods: string[] = [];
+  const url = upstream(methods);
+  let offline = true;
+  let attempts = 0;
+  const endpoint = Bun.serve({
+    port: 0,
+    fetch: (req) => {
+      attempts++;
+      return offline ? new Response(null, { status: 503 }) : fetch(new Request(url, req));
+    },
+  });
+  servers.push(endpoint);
+  const g = await setup({ url: `http://127.0.0.1:${endpoint.port}/mcp` });
+  let time = Date.now();
+  g.s.now = () => time;
+  try {
+    const client = await g.session();
+    expect((await client.listTools()).tools).toEqual([]);
+    const recovered = Promise.withResolvers<void>();
+    client.setNotificationHandler("notifications/tools/list_changed", () => recovered.resolve());
+    let failedAttempts = attempts;
+    await g.ctx.gateway.maintain();
+    expect(attempts).toBe(failedAttempts);
+    time += 31_000;
+    await g.ctx.gateway.maintain();
+    expect(attempts).toBeGreaterThan(failedAttempts);
+    failedAttempts = attempts;
+    time += 31_000;
+    await g.ctx.gateway.maintain();
+    expect(attempts).toBe(failedAttempts);
+    // Recovery after a network outage, including a wake from sleep: no client activity triggers this.
+    offline = false;
+    time += 6 * 60_000;
+    await g.ctx.gateway.maintain();
+    expect(serverHealth(g.s, "up")).toMatchObject({ ok: true, at: time });
+    await recovered.promise;
+    expect((await client.listTools()).tools.some((tool) => tool.name === "up__echo")).toBe(true);
+    expect(methods).not.toContain("tools/call");
+  } finally {
+    await g.done();
+  }
+});
+
+test("background recovery survives a restart and leaves login-required, per-session and unmapped servers alone", async () => {
+  const g = await setup();
+  let time = Date.now();
+  g.s.now = () => time;
+  try {
+    for (const id of ["up", "login", "session", "unused"]) {
+      g.s.put(
+        "mcp",
+        id,
+        newInstance(id === "session" ? { id, command: "not-started", mode: "perSession" } : { id, url: upstream() }),
+      );
+      g.s.setLocal(`mcpHealth:${id}`, JSON.stringify({ ok: false, needsLogin: id === "login", at: time }));
+    }
+    g.s.put("project", "o/r", { id: "o/r", mcp: { up: "up", login: "login", session: "session" } });
+    time += 6 * 60_000;
+    await g.ctx.gateway.maintain();
+    expect(serverHealth(g.s, "up")).toMatchObject({ ok: true, at: time });
+    for (const id of ["login", "session", "unused"]) expect(serverHealth(g.s, id)?.ok).toBe(false);
+  } finally {
+    await g.done();
+  }
+});
+
 test("a health check tells the app only when the server's state flips, and still records when it ran", async () => {
   const closed = Bun.serve({ port: 0, fetch: () => new Response() });
   closed.stop(true);

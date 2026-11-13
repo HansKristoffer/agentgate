@@ -61,7 +61,7 @@ test("primary undo restores the previous URL without reverting subsequent settin
   rmSync(dir, { recursive: true });
 });
 
-test("primary gives Claude Code a placeholder login only where it has none of its own, and undo removes it", async () => {
+test("primary bypasses Claude Code login expiry while routed, and undo removes the placeholder", async () => {
   const fresh = mkdtempSync(join(tmpdir(), "agentgate-primary-")),
     signedIn = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
   writeFileSync(join(signedIn, ".claude.json"), '{"oauthAccount":{"emailAddress":"me@example.com"}}');
@@ -69,11 +69,34 @@ test("primary gives Claude Code a placeholder login only where it has none of it
   await primary(true, fresh);
   await primary(true, signedIn);
   expect(env(fresh).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
-  expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+  await primary(false, signedIn);
+  expect(env(signedIn)).toBeUndefined();
+  expect(JSON.parse(readFileSync(join(signedIn, ".claude.json"), "utf8")).oauthAccount.emailAddress).toBe(
+    "me@example.com",
+  );
   await primary(false, fresh);
   expect(env(fresh)).toBeUndefined();
   rmSync(fresh, { recursive: true });
   rmSync(signedIn, { recursive: true });
+});
+
+test("primary preserves configured Claude auth tokens and API keys", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
+  const file = join(dir, "settings.json");
+  try {
+    for (const key of ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]) {
+      writeFileSync(file, JSON.stringify({ env: { [key]: "configured-test-value" } }));
+      await primary(true, dir);
+      const routed = JSON.parse(readFileSync(file, "utf8")).env;
+      expect(routed[key]).toBe("configured-test-value");
+      if (key === "ANTHROPIC_API_KEY") expect(routed.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      await primary(false, dir);
+      expect(JSON.parse(readFileSync(file, "utf8")).env).toEqual({ [key]: "configured-test-value" });
+    }
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });
 
 test("generated service definitions propagate custom configuration and quote executable arguments", () => {
@@ -377,6 +400,32 @@ test("the daemon puts back an MCP server Claude Code dropped, unless the user tu
   expect(await keepMcp(s, tools.dirs)).toEqual([]);
   expect(existsSync(file)).toBe(false);
   rmSync(tools.dir, { recursive: true });
+});
+
+test("maintenance repairs existing Claude proxy auth without enabling MCP or changing other routing", async () => {
+  const s = new Store(":memory:");
+  const tools = ownTools();
+  const file = join(tools.dirs.claude, "settings.json");
+  try {
+    await routeHere(s, true, tools.dirs);
+    await mcpHere(s, false, tools.dirs);
+    const settings = JSON.parse(readFileSync(file, "utf8"));
+    delete settings.env.ANTHROPIC_AUTH_TOKEN;
+    writeFileSync(file, JSON.stringify(settings));
+    expect(await keepMcp(s, tools.dirs)).toEqual([`Updated agentgate's Claude proxy authentication in ${file}`]);
+    expect(JSON.parse(readFileSync(file, "utf8")).env.ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+    expect(tools.claudeMcp()).toBeUndefined();
+    expect(await keepMcp(s, tools.dirs)).toEqual([]);
+    await primary(false, tools.dirs.claude);
+    expect(await keepMcp(s, tools.dirs)).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf8")).env).toBeUndefined();
+    writeFileSync(file, JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }));
+    expect(await keepMcp(s, tools.dirs)).toEqual([]);
+    expect(JSON.parse(readFileSync(file, "utf8")).env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  } finally {
+    s.close();
+    rmSync(tools.dir, { recursive: true });
+  }
 });
 
 test("after the binary or port moved, the daemon points this install's MCP entries at the current ones", async () => {

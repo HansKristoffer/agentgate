@@ -165,7 +165,7 @@ test("a call after the daemon forgot the session succeeds on the first try", asy
   try {
     expect((await client.callTool({ name: "brain__caller" })).isError).not.toBe(true);
     gateway.s.now = () => Date.now() + 31 * 60_000;
-    await gateway.ctx.gateway.closeIdle();
+    await gateway.ctx.gateway.maintain();
     expect((await client.callTool({ name: "brain__caller" })).isError).not.toBe(true);
   } finally {
     await client.close();
@@ -442,11 +442,11 @@ test("active MCP calls survive idle sweeps and cached tools acquire a new connec
     for (let i = 0; i < 3; i++) {
       time += 9 * 60000;
       await client.callTool({ name: "fake__whoami" });
-      await ctx.gateway.closeIdle();
+      await ctx.gateway.maintain();
       expect(ctx.gateway.upstreams.get("fake")?.state).toBe(before);
     }
     time += 11 * 60000;
-    await ctx.gateway.closeIdle();
+    await ctx.gateway.maintain();
     expect(ctx.gateway.upstreams.get("fake")).toBeUndefined();
     const result = await client.callTool({ name: "fake__whoami" });
     expect(result.isError).not.toBe(true);
@@ -671,7 +671,7 @@ test("shared long tools stay open during idle sweeps and carry cancellation/prog
     await progress;
     expect(ctx.gateway.upstreams.get("shared")?.calls).toBe(1);
     s.now = () => Date.now() + 31 * 60000;
-    await ctx.gateway.closeIdle();
+    await ctx.gateway.maintain();
     expect(ctx.gateway.upstreams.get("shared")?.state.kind).toBe("connected");
     abort.abort();
     await expect(task).rejects.toThrow();

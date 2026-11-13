@@ -687,9 +687,6 @@ export class Gateway {
     }
   >();
   private trimmed = new Set<string>();
-  private timer = setInterval(() => {
-    void this.closeIdle();
-  }, 60_000);
   private closed = false;
   private retired = new Set<Upstream>();
   /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
@@ -701,9 +698,7 @@ export class Gateway {
    * scope, a session uses every server its project maps. */
   scope?: (thread: string | undefined) => SessionScope | undefined;
 
-  constructor(private s: Store) {
-    this.timer.unref();
-  }
+  constructor(private s: Store) {}
 
   /** One connection per shared instance, opened on first use and reopened when its config changes. */
   async shared(inst: McpInstance): Promise<Client> {
@@ -1086,7 +1081,9 @@ export class Gateway {
     if (!this.s.get("project", project)) this.s.put("project", project, { id: project });
   }
 
-  async closeIdle() {
+  /** Retry failed mapped servers even when clients have stopped listing their tools. Never replay a tool call. */
+  async maintain() {
+    if (this.closed) return;
     const tasks: Promise<unknown>[] = [];
     for (const [id, u] of this.upstreams)
       if (!u.calls && u.state.kind !== "connecting" && this.s.now() - u.lastUsed > IDLE_CLOSE) {
@@ -1099,10 +1096,25 @@ export class Gateway {
         tasks.push(session.server.close().catch(() => {}));
       }
     await Promise.allSettled(tasks);
+    if (this.closed) return;
+    const mapped = new Set(this.s.list("project").flatMap((p) => Object.values(p.mcp)));
+    await Promise.all(
+      this.s.list("mcp").map(async (inst) => {
+        const health = serverHealth(this.s, inst.id);
+        if (inst.mode !== "shared" || !mapped.has(inst.id) || health?.ok !== false) return;
+        if (health.needsLogin || this.s.get("mcpCredential", inst.id)?.needsLogin) return;
+        if (this.s.now() - health.at < retryDelay(1)) return;
+        try {
+          await this.shared(inst);
+          this.toolsChanged(inst.id);
+        } catch (e) {
+          if (!(e instanceof Backoff) && !this.closed) this.s.log("mcp", inst.id, "", 0, 0, `connect failed: ${e}`);
+        }
+      }),
+    );
   }
   async close() {
     this.closed = true;
-    clearInterval(this.timer);
     const tasks: Promise<unknown>[] = [];
     for (const u of new Set([...this.upstreams.values(), ...this.retired])) {
       if (u.state.kind === "connecting") tasks.push(u.state.connecting.catch(() => {}));

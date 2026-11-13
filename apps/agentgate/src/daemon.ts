@@ -384,6 +384,7 @@ export async function serve(
     await ctx.creds.tick(ctx.abort.signal);
     await tickMcp(s, ctx.abort.signal);
   }, 60000);
+  schedule(() => ctx.gateway.maintain(), 60000);
   schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
   schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);
   const backfill = backfillTokens(s, options.logs, ctx.abort.signal).catch(() =>
