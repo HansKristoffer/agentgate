@@ -13,8 +13,58 @@ import { resetRouting } from "../llm/routing.ts";
 import { setAccount } from "../operations.ts";
 import type { Account, Store } from "../store.ts";
 import { asUserError, controlOp, parseWords, UserError } from "./registry.ts";
+import { cancelLocalClaudeLogin, finishLocalClaudeLogin, startLocalClaudeLogin } from "../claude-local.ts";
 
 /** The accounts family's control operations. */
+
+for (const action of ["login", "cancel"] as const)
+  controlOp({
+    name: `accounts claude-code ${action}`,
+    summary: action === "login" ? "sign in to this machine's own Claude Code" : "cancel Claude Code's browser sign-in",
+    input: z.object({}).strict(),
+    needs: "daemon",
+    loopbackOnly: true,
+    async run(_input, { s, daemon }) {
+      if (!daemon) throw new UserError("Start the daemon first");
+      if (action === "cancel") {
+        await cancelLocalClaudeLogin(s);
+        return null;
+      }
+      return asUserError(() => startLocalClaudeLogin(s, daemon.abort.signal, daemon.pending));
+    },
+    terminal: {
+      usage: `accounts claude-code ${action}`,
+      parse(args) {
+        if (args.length) throw new UserError();
+        return { input: {} };
+      },
+      print: (result) =>
+        result
+          ? ["Finish signing in to Claude Code in your browser:", result.url, "Then start a new thread."]
+          : ["Claude Code sign-in cancelled"],
+    },
+  });
+
+controlOp({
+  name: "accounts claude-code finish",
+  summary: "finish this machine's Claude Code sign-in with a code from stdin",
+  input: z.object({ code: z.string().trim().min(1).max(8192) }).strict(),
+  needs: "daemon",
+  loopbackOnly: true,
+  async run({ code }, { s }) {
+    await asUserError(() => finishLocalClaudeLogin(s, code));
+    return null;
+  },
+  terminal: {
+    usage: "accounts claude-code finish < code.txt",
+    stdin: true,
+    parse(args, stdin) {
+      if (args.length || !stdin?.trim()) throw new UserError();
+      return { input: { code: stdin.trim() } };
+    },
+    print: () => ["Claude Code signed in. Start a new thread."],
+  },
+});
 
 const id = z.string().min(1).max(512);
 const label = z.string().trim().min(1).max(320); // an account is named by its email until renamed

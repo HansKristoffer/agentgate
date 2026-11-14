@@ -56,6 +56,7 @@ import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import { startLagProbe } from "./lag.ts";
 import { handoffDirs } from "./ops/nodes.ts";
 import packageInfo from "../../../package.json";
+import { localClaudeLogin } from "./claude-local.ts";
 
 export type Listener = "loopback" | "tailnet";
 export type Env = { Bindings: { listener: Listener } };
@@ -341,6 +342,7 @@ export async function serve(
       publishRouting(s);
       for (const change of await keepMcp(s)) console.log(change);
     }, 60_000);
+  if (!DEV) schedule(() => localClaudeLogin(s), 30_000);
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {
     const ts = await (options.discover ?? tailscale)();

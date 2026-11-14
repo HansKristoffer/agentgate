@@ -434,12 +434,20 @@ export interface DesktopStatus {
   /** ~/.cursor/mcp.json has the agentgate MCP server (setup --mcp or --primary). Absent when the machine has no Cursor. */
   cursorMcp?: boolean;
 }
-/** Validate native status before views access required fields from a remote daemon. */
+export const localClaudeLoginSchema = z.object({
+  email: z.string().optional(),
+  state: z.enum(["needs-login", "signing-in"]),
+  error: z.string().optional(),
+});
+export type LocalClaudeLogin = z.infer<typeof localClaudeLoginSchema>;
+
 /** What `/status` returns. The app validates a remote daemon's answer with it and keeps only the fields named here. */
 export const statusSchema = z.object({
   apiVersion: z.literal(API_VERSION),
   node: z.string(),
   accounts: z.array(accountStatusSchema),
+  /** Claude Code's own login on this node, separate from every pooled credential. Absent when no problem is known. */
+  localClaudeLogin: localClaudeLoginSchema.optional(),
   /** Claude Code / Codex logins on the daemon's machine that are not in the pool yet. Identity only, no tokens. */
   detected: z.array(
     z.object({ provider: providerSchema, email: z.string(), plan: z.string().optional(), source: z.string() }),

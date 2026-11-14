@@ -116,4 +116,18 @@ test("agentgate status prints each problem on one line, and nothing when all is 
   };
   expect(attentionLines(status)).toEqual(["", "needs attention", "  work couldn't refresh its login: invalid_grant"]);
   expect(attentionLines({ ...status, accounts: [account("work", {})] })).toEqual([]);
+  expect(
+    attentionLines({
+      ...status,
+      accounts: [account("work", {})],
+      localClaudeLogin: { email: "me@example.com", state: "needs-login" },
+    }),
+  ).toEqual([
+    "",
+    "needs attention",
+    "  Sign in to Claude Code on this machine: me@example.com: run agentgate accounts claude-code login, then start a new thread",
+  ]);
+  expect(
+    attentionLines({ ...status, accounts: [account("work", {})], localClaudeLogin: { state: "signing-in" } }),
+  ).toEqual([]);
 });

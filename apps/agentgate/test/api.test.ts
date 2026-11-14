@@ -9,9 +9,10 @@ import { exportBackup, Store } from "../src/store.ts";
 import { Telemetry } from "../src/llm/telemetry.ts";
 import { CheckoutFiles, readStore } from "../src/checkout-files.ts";
 import { repos, tmp, removeTmp } from "./fixtures/git.ts";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { startLagProbe } from "../src/lag.ts";
 import { join } from "node:path";
+import { host as claudeLocalHost } from "../src/claude-local.ts";
 
 afterAll(removeTmp);
 
@@ -27,6 +28,7 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
     handler = app(ctx);
   cleanup.push(async () => {
     ctx.abort.abort();
+    await Promise.allSettled([...ctx.pending]);
     ctx.skills.close();
     ctx.imports.close();
     await ctx.imports.drain();
@@ -54,6 +56,185 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
     );
   return { s, call, handler, ctx };
 }
+
+function localClaude() {
+  const home = tmp();
+  mkdirSync(join(home, ".claude"));
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }));
+  const original = { ...claudeLocalHost };
+  claudeLocalHost.home = home;
+  claudeLocalHost.keychain = async () => undefined;
+  cleanup.push(async () => {
+    Object.assign(claudeLocalHost, original);
+  });
+  return (value: object) =>
+    writeFileSync(join(home, ".claude", ".credentials.json"), JSON.stringify({ claudeAiOauth: value }));
+}
+
+test("status reports a failed local Claude Code login separately from the healthy pool account", async () => {
+  const { s, call } = fixture();
+  const write = localClaude();
+  let now = s.now();
+  s.now = () => now;
+  write({
+    accessToken: "native-secret",
+    refreshToken: "native-refresh",
+    expiresAt: 0,
+    refreshTokenExpiresAt: now - 1,
+    loginEnded: "lineage_expired",
+  });
+  s.put("account", "a", { id: "a", provider: "claude", label: "me@example.com", email: "me@example.com" });
+  const credential = s.put("credential", "a", {
+    accountId: "a",
+    accessToken: "pool-secret",
+    refreshToken: "pool-refresh",
+    expiresAt: s.now() + 3600000,
+    holder: s.nodeId,
+  });
+  const text = await (await call("/api/status")).text();
+  const status = statusSchema.parse(JSON.parse(text));
+  expect(status.localClaudeLogin).toEqual({ email: "me@example.com", state: "needs-login" });
+  expect(status.accounts[0]).toMatchObject({ needsLogin: false, state: { kind: "ready" } });
+  expect(s.get("credential", "a")).toEqual(credential);
+  expect(text).not.toMatch(/native-secret|native-refresh|pool-secret|pool-refresh|lineage_expired/);
+  // Expired access alone is refreshable. Older Claude Code versions have no refresh expiry at all.
+  for (const oauth of [
+    { expiresAt: 0, refreshToken: "refreshable", refreshTokenExpiresAt: now + 3600000 },
+    { expiresAt: 0, refreshToken: "refreshable" },
+  ]) {
+    write(oauth);
+    now += 30_000;
+    expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin).toBeUndefined();
+  }
+  // A terminal marker also counts before the refresh expiry; expiry alone counts without that marker.
+  for (const oauth of [
+    { loginEnded: "revoked", refreshTokenExpiresAt: now + 3600000 },
+    { refreshTokenExpiresAt: now - 1 },
+  ]) {
+    write(oauth);
+    now += 30_000;
+    expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin?.state).toBe("needs-login");
+  }
+  if (process.platform === "darwin") {
+    rmSync(join(claudeLocalHost.home, ".claude", ".credentials.json"));
+    claudeLocalHost.keychain = async (service) =>
+      service === "Claude Code-credentials"
+        ? JSON.stringify({ claudeAiOauth: { loginEnded: "lineage_expired" } })
+        : undefined;
+    now += 30_000;
+    expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin?.state).toBe("needs-login");
+    claudeLocalHost.keychain = async () => {
+      throw new Error("locked keychain: native-secret");
+    };
+    now += 30_000;
+    expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin).toBeUndefined();
+  }
+});
+
+test("local Claude browser sign-in is shared by clicks, repairs only the primary login, and clears its warning", async () => {
+  const { s, call, ctx } = fixture();
+  const write = localClaude();
+  write({ loginEnded: "lineage_expired" });
+  await call("/api/status");
+  const bin = join(claudeLocalHost.home, ".local/bin");
+  mkdirSync(bin, { recursive: true });
+  const executable = join(bin, "claude");
+  writeFileSync(
+    executable,
+    `#!${process.execPath}
+import { watch, existsSync, writeFileSync, appendFileSync } from 'node:fs';
+const home = process.env.HOME;
+appendFileSync(home + '/launches', JSON.stringify({ args: process.argv.slice(2), configOverride: !!process.env.CLAUDE_CONFIG_DIR }) + '\\n');
+const finish = () => {
+  writeFileSync(home + '/.claude/.credentials.json', JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 3600000 } }));
+  process.exit(0);
+};
+const watcher = watch(home, () => {
+  if (!existsSync(home + '/finish')) return;
+  finish();
+});
+process.stdin.on('data', (chunk) => { if (chunk.toString().trim() === 'code#test') finish(); else process.exit(1); });
+process.stdout.write('https://claude.ai/oauth/authorize?state=test\\n');
+`,
+  );
+  chmodSync(executable, 0o700);
+  const previousConfig = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = "/an/isolated/session";
+  cleanup.push(async () => {
+    if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = previousConfig;
+  });
+  const path = "/api/ops/accounts%20claude-code%20login";
+  for (let i = 0; i < 2; i++) {
+    const response = await call(path, "POST", {});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ url: "https://claude.ai/oauth/authorize?state=test" });
+  }
+  expect(
+    readFileSync(join(claudeLocalHost.home, "launches"), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line)),
+  ).toEqual([{ args: ["auth", "login", "--claudeai"], configOverride: false }]);
+  expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin?.state).toBe("signing-in");
+  writeFileSync(join(claudeLocalHost.home, "finish"), "");
+  await Promise.all([...ctx.pending]);
+  expect(statusSchema.parse(await (await call("/api/status")).json()).localClaudeLogin).toBeUndefined();
+  expect(s.list("credential")).toEqual([]);
+  expect(s.changePage(0).records.some((r) => r.kind === "credential")).toBe(false);
+  // Some browser flows show a fallback code rather than completing the localhost callback.
+  rmSync(join(claudeLocalHost.home, "finish"));
+  write({ loginEnded: "lineage_expired" });
+  expect((await call(path, "POST", {})).status).toBe(200);
+  expect((await call("/api/ops/accounts%20claude-code%20finish", "POST", { code: "code#test" })).status).toBe(200);
+  const final = await (await call("/api/status")).text();
+  expect(statusSchema.parse(JSON.parse(final)).localClaudeLogin).toBeUndefined();
+  expect(final).not.toContain("code#test");
+});
+
+test("local Claude sign-in refuses remote calls, stops on cancellation or shutdown, and hides child errors", async () => {
+  const { call, ctx } = fixture();
+  const write = localClaude();
+  write({ loginEnded: "lineage_expired" });
+  await call("/api/status");
+  let launches = 0,
+    aborted = 0;
+  claudeLocalHost.signIn = async (signal, url) => {
+    launches++;
+    url("https://claude.ai/oauth/authorize?state=test");
+    await new Promise<void>((resolve) =>
+      signal.addEventListener(
+        "abort",
+        () => {
+          aborted++;
+          resolve();
+        },
+        { once: true },
+      ),
+    );
+    throw new Error("provider error containing native-secret");
+  };
+  const path = (action: string) => `/api/ops/accounts%20claude-code%20${action}`;
+  for (const action of ["login", "cancel", "finish"])
+    expect(
+      (
+        await call(path(action), "POST", action === "finish" ? { code: "code#test" } : {}, "tailnet", {
+          authorization: "Bearer admin-secret",
+        })
+      ).status,
+    ).toBe(403);
+  expect(launches).toBe(0);
+  expect((await call(path("login"), "POST", {})).status).toBe(200);
+  expect((await call(path("cancel"), "POST", {})).status).toBe(200);
+  expect(aborted).toBe(1);
+  expect((await call(path("login"), "POST", {})).status).toBe(200);
+  ctx.abort.abort();
+  await Promise.all([...ctx.pending]);
+  expect(aborted).toBe(2);
+  const text = await (await call("/api/status")).text();
+  expect(text).not.toContain("native-secret");
+  expect(statusSchema.parse(JSON.parse(text)).localClaudeLogin?.state).toBe("needs-login");
+});
 
 test("proxy management returns validated capabilities, revision-safe patches, and filtered diagnostics", async () => {
   const { s, call } = fixture();
