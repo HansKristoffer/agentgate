@@ -1,12 +1,88 @@
 import { useEffect, useRef, useState } from "react";
 import { Check, ExternalLink } from "lucide-react";
 import { Button } from "@heroui/react";
-import type { Connection, LoginStart, Provider } from "@agentgate/protocol";
+import type { Connection, LocalClaudeLogin, LoginStart, Provider } from "@agentgate/protocol";
 import { control, openExternal } from "../api.ts";
 import type { Perform } from "../types.ts";
 import { field, providerName } from "../views/utils.ts";
 import { useGeneration } from "../features/proxy/useGeneration.ts";
 import { Field, Modal } from "./ui.tsx";
+
+/** Claude Code's official login owns the tokens; the app only opens its page and forwards a fallback code. */
+export function useClaudeCodeLogin(connection: Connection, perform: Perform, status?: LocalClaudeLogin) {
+  const [url, setUrl] = useState<string>();
+  const capture = useGeneration(connection);
+  const pending = useRef<Connection | undefined>(undefined);
+  const cancel = async () => {
+    const previous = pending.current;
+    pending.current = undefined;
+    if (previous) await control(previous, "accounts claude-code cancel", {}).catch(() => {});
+  };
+  useEffect(() => {
+    setUrl(undefined);
+    return () => {
+      void cancel();
+    };
+  }, [connection.url, connection.token]);
+  useEffect(() => {
+    if (!status) {
+      pending.current = undefined;
+      setUrl(undefined);
+    }
+  }, [status]);
+  const start = () =>
+    perform(async () => {
+      const current = capture();
+      const result = await control(connection, "accounts claude-code login", {});
+      if (!current()) {
+        await control(connection, "accounts claude-code cancel", {});
+        return;
+      }
+      pending.current = connection;
+      setUrl(result.url);
+      if (!result.opened) await openExternal(result.url);
+    });
+  const dialog = url && (
+    <Modal
+      title="Sign in to Claude Code"
+      close={() => {
+        setUrl(undefined);
+        void cancel();
+      }}
+    >
+      <p>{status?.error ?? "Finish signing in in your browser, then start a new thread."}</p>
+      <Button size="sm" variant="tertiary" onPress={() => void perform(() => openExternal(url))}>
+        Open login page again <ExternalLink size={14} />
+      </Button>
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const code = field(new FormData(e.currentTarget), "code");
+          void perform(async () => {
+            const current = capture();
+            await control(connection, "accounts claude-code finish", { code });
+            if (current()) {
+              pending.current = undefined;
+              setUrl(undefined);
+            }
+          }, "Claude Code signed in. Start a new thread to continue.");
+        }}
+      >
+        <Field
+          multiline
+          label="If the browser shows a code, paste it here"
+          name="code"
+          isRequired
+          placeholder="code#state"
+        />
+        <Button type="submit" size="sm">
+          Finish sign in <Check size={15} />
+        </Button>
+      </form>
+    </Modal>
+  );
+  return { start, dialog };
+}
 
 /** The browser sign-in for an account: `start` opens the login page, `dialog` takes the pasted code,
  * or for Cursor waits until the browser sign-in finishes. */

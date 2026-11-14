@@ -55,6 +55,7 @@ export function problems(
   data: Pick<
     Status,
     | "accounts"
+    | "localClaudeLogin"
     | "servers"
     | "skillHealth"
     | "skillConflicts"
@@ -66,6 +67,13 @@ export function problems(
   >,
 ): Problem[] {
   const list: Problem[] = [];
+  if (data.localClaudeLogin?.state === "needs-login")
+    list.push({
+      key: "claude-code:login",
+      page: "accounts",
+      title: "Sign in to Claude Code on this machine",
+      detail: `${data.localClaudeLogin.email ? `${data.localClaudeLogin.email}: ` : ""}run agentgate accounts claude-code login, then start a new thread`,
+    });
   for (const a of data.accounts) {
     const { kind } = accountState(a);
     if (kind === "needs-login")

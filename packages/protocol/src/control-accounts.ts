@@ -9,6 +9,9 @@ type One = { input: { id: string }; result: Saved };
 
 /** The accounts family's control operations the app calls, by name (see control.ts). */
 export interface AccountOps {
+  "accounts claude-code login": { input: Record<string, never>; result: { url: string; opened: boolean } };
+  "accounts claude-code cancel": { input: Record<string, never>; result: null };
+  "accounts claude-code finish": { input: { code: string }; result: null };
   "accounts rename": Change<{ label: string }>;
   "accounts priority": Change<{ priority: number }>;
   "accounts policy": Change<{ policy: z.input<typeof modelPolicySchema> }>;

@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { typedSwitch } from "hanzio";
 import { Button } from "@heroui/react";
 import type { AccountStatus, BatchResult, DesktopStatus, Provider } from "@agentgate/protocol";
-import { useAccountLogin } from "../components/Login.tsx";
+import { useAccountLogin, useClaudeCodeLogin } from "../components/Login.tsx";
 import {
   Badge,
   Choice,
@@ -74,6 +74,19 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
     );
   const [help, setHelp] = useState(false);
   const { start: begin, dialog: login } = useAccountLogin(connection, perform);
+  const localLogin = data.localClaudeLogin;
+  const claudeCode = useClaudeCodeLogin(connection, perform, localLogin);
+  const localAccount =
+    localLogin?.email &&
+    data.accounts.find(
+      (a) => a.account.provider === "claude" && a.account.email?.toLowerCase() === localLogin.email?.toLowerCase(),
+    );
+  const localLoginFor = (a: AccountStatus) => !!localAccount && localAccount.account.id === a.account.id;
+  const claudeCodeSignIn = localLogin && (
+    <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => void claudeCode.start()}>
+      {localLogin.state === "signing-in" ? "Continue Claude Code sign-in" : "Sign in to Claude Code"}
+    </Button>
+  );
   // Claude Desktop is on this Mac only; its parts of the page appear when it's installed.
   const app = desktop?.available ? desktop : undefined;
   const act = desktopActions(connection, perform);
@@ -134,6 +147,24 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       </HeaderActions>
       {app && (
         <DesktopAlerts data={data} connection={connection} perform={perform} local={local} desktop={app} act={act} />
+      )}
+      {localLogin && !localAccount && (
+        <Panel
+          title="Claude Code needs sign-in"
+          detail={
+            local
+              ? "Your local Claude Code login needs attention before it can start a session."
+              : `Sign in on ${data.node} with agentgate accounts claude-code login.`
+          }
+        >
+          <div className="item">
+            <div className="grow">
+              <strong>{localLogin.email ?? "Claude Code"}</strong>
+              {localLogin.error && <small>{localLogin.error}</small>}
+            </div>
+            {claudeCodeSignIn}
+          </div>
+        </Panel>
       )}
       {data.detected.length > 0 && (
         <Panel
@@ -214,12 +245,17 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                           a.account.plan && planName(a.account.plan),
                           app && desktopNote(app, loginFor(a.account.id)),
                           unsaved?.accountId === a.account.id && "Claude Desktop login not saved",
+                          localLoginFor(a) &&
+                            (localLogin?.error ??
+                              (local
+                                ? "Claude Code needs sign-in on this machine"
+                                : `Claude Code needs sign-in on ${data.node}: agentgate accounts claude-code login`)),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
                       </small>
                     </div>
-                    {a.active && a.account.enabled && <Badge good>In {toolName(provider)}</Badge>}
+                    {a.active && a.account.enabled && !localLoginFor(a) && <Badge good>In {toolName(provider)}</Badge>}
                     {app?.mode === "signed-in" && app.current?.accountId === a.account.id && (
                       <Badge good>In Claude Desktop</Badge>
                     )}
@@ -234,13 +270,14 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                       refreshing={pending.has(`quota:${a.account.id}`)}
                       onRefresh={data.daemon?.providers[provider].quota ? () => refreshUsage(a.account.id) : undefined}
                     />
+                    {localLoginFor(a) && claudeCodeSignIn}
                     {needsLogin(a) && (
                       <Button
                         size="sm"
                         variant="tertiary"
                         onPress={() => void start(provider, a.account.label, a.account.email)}
                       >
-                        Sign in again
+                        {localLoginFor(a) ? "Sign in to pool" : "Sign in again"}
                       </Button>
                     )}
                     <button
@@ -414,6 +451,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           </form>
         </Modal>
       )}
+      {claudeCode.dialog}
       {login}
       {help && <DesktopHelp close={() => setHelp(false)} />}
       {edit && (

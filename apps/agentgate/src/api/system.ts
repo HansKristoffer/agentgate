@@ -18,6 +18,7 @@ import { skillRepoSummaries, skillSummaries } from "../skills.ts";
 import { exportBackup, importBackup, sent, type Data } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { nodeUpdate } from "../update.ts";
+import { localClaudeLogin } from "../claude-local.ts";
 import { input, local } from "./http.ts";
 import { shownProject } from "./projects.ts";
 
@@ -46,7 +47,8 @@ export function system(ctx: Ctx) {
     await ctx.changes.wait(c.req.query("after"), wait * 1000, AbortSignal.any([c.req.raw.signal, ctx.abort.signal]));
     return c.json(ctx.changes.snapshot());
   });
-  app.get("/status", (c) => {
+  app.get("/status", async (c) => {
+    const claudeLogin = await localClaudeLogin(s);
     const status: Status = {
       apiVersion: API_VERSION,
       daemon: {
@@ -58,6 +60,7 @@ export function system(ctx: Ctx) {
       settingsRevision: revision(s, "setting", "settings"),
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
+      localClaudeLogin: claudeLogin,
       detected: providerSchema.options.flatMap((provider) => {
         const found = detect(provider);
         const pooled =
@@ -65,7 +68,9 @@ export function system(ctx: Ctx) {
           s
             .list("account")
             .some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
-        return found && !pooled ? [{ provider, ...found, source: detectedSource[provider] }] : [];
+        return found && !pooled && !(provider === "claude" && claudeLogin)
+          ? [{ provider, ...found, source: detectedSource[provider] }]
+          : [];
       }),
       servers: s.list("mcp").map((i) => {
         const health = serverHealth(s, i.id);
