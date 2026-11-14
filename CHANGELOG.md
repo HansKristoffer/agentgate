@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.34.0](https://github.com/HansKristoffer/agentgate/compare/v0.33.0...v0.34.0) (2026-11-14)
+
+
+### Features
+
+* **accounts:** renew this machine's Claude Code login ([#156](https://github.com/HansKristoffer/agentgate/issues/156)) ([a688dbf](https://github.com/HansKristoffer/agentgate/commit/a688dbf8e90378ccdec0a2accdb000b51375a613))
+
 ## [0.33.0](https://github.com/HansKristoffer/agentgate/compare/v0.32.0...v0.33.0) (2026-11-14)
 
 
