@@ -129,13 +129,28 @@ const backup = (file: string) => {
   if (existsSync(file) && !existsSync(`${file}.before-agentgate`)) copyFileSync(file, `${file}.before-agentgate`);
 };
 
-/** The token routed Claude Code sends; the proxy replaces it with a pool account's. */
+/** The token Claude Code sends when it has no login of its own; the proxy replaces it with a pool account's. */
 export const PLACEHOLDER_TOKEN = "agentgate";
 
-/** Claude must not refresh its saved OAuth login before it can reach the pool. Explicit auth stays the user's. */
-function proxyAuth(env: Record<string, unknown>) {
-  if (env.ANTHROPIC_AUTH_TOKEN || env.ANTHROPIC_API_KEY) return false;
-  env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
+/** Whether Claude Code is signed in itself: it saves the account in .claude.json, and the token in .credentials.json or the Keychain. */
+const ownClaudeLogin = (dir: string) => {
+  try {
+    return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount;
+  } catch {
+    return false;
+  }
+};
+
+/** Claude Code will not start without a login, though the proxy never uses it, so a machine that never signed in (a new
+ * server) gets the placeholder. Where Claude Code has a login it must not have one: any auth token makes Claude Code turn
+ * off the user's claude.ai connectors. Auth the user configured stays theirs. Returns whether `env` changed. */
+function proxyAuth(env: Record<string, unknown>, dir: string) {
+  const placeholder = env.ANTHROPIC_AUTH_TOKEN === PLACEHOLDER_TOKEN;
+  if (env.ANTHROPIC_API_KEY || (env.ANTHROPIC_AUTH_TOKEN && !placeholder)) return false;
+  const wanted = !ownClaudeLogin(dir);
+  if (wanted === placeholder) return false;
+  if (wanted) env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
+  else delete env.ANTHROPIC_AUTH_TOKEN;
   return true;
 }
 
@@ -245,11 +260,12 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
       JSON.stringify(e.args) !== JSON.stringify(args) ||
       e.env.AGENTGATE_PORT !== env.AGENTGATE_PORT);
   const changed: string[] = [];
-  // Upgrade an already-routed install without changing its independent MCP choice or touching its saved login.
+  // A routed install gets the placeholder once it has no login, and loses it once it has one (0.32.0 set it for
+  // everyone), without changing its independent MCP choice or touching its saved login.
   const settingsFile = join(dirs.claude, "settings.json");
   if (existsSync(settingsFile)) {
     const settings = json(settingsFile);
-    if (settings.env?.ANTHROPIC_BASE_URL === `${LOCAL_URL}/anthropic` && proxyAuth(settings.env)) {
+    if (settings.env?.ANTHROPIC_BASE_URL === `${LOCAL_URL}/anthropic` && proxyAuth(settings.env, dirs.claude)) {
       backup(settingsFile);
       atomicWrite(settingsFile, JSON.stringify(settings, null, 2) + "\n");
       changed.push(`Updated agentgate's Claude proxy authentication in ${settingsFile}`);
@@ -411,7 +427,7 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
       );
     backup(file);
     env.ANTHROPIC_BASE_URL = url;
-    proxyAuth(env);
+    proxyAuth(env, dir);
   } else {
     if (!existsSync(undo) && env.ANTHROPIC_BASE_URL !== url) return `No agentgate setup change to undo in ${file}.`;
     const original = existsSync(`${file}.before-agentgate`) ? (json(`${file}.before-agentgate`).env ?? {}) : {};

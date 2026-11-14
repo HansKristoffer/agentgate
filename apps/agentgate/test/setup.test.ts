@@ -61,7 +61,7 @@ test("primary undo restores the previous URL without reverting subsequent settin
   rmSync(dir, { recursive: true });
 });
 
-test("primary bypasses Claude Code login expiry while routed, and undo removes the placeholder", async () => {
+test("primary gives Claude Code a placeholder login only where it has none of its own, and undo removes it", async () => {
   const fresh = mkdtempSync(join(tmpdir(), "agentgate-primary-")),
     signedIn = mkdtempSync(join(tmpdir(), "agentgate-primary-"));
   writeFileSync(join(signedIn, ".claude.json"), '{"oauthAccount":{"emailAddress":"me@example.com"}}');
@@ -69,7 +69,8 @@ test("primary bypasses Claude Code login expiry while routed, and undo removes t
   await primary(true, fresh);
   await primary(true, signedIn);
   expect(env(fresh).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
-  expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+  // Any auth token makes Claude Code turn off the claude.ai connectors of a signed-in user.
+  expect(env(signedIn).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
   await primary(false, signedIn);
   expect(env(signedIn)).toBeUndefined();
   expect(JSON.parse(readFileSync(join(signedIn, ".claude.json"), "utf8")).oauthAccount.emailAddress).toBe(
@@ -402,7 +403,7 @@ test("the daemon puts back an MCP server Claude Code dropped, unless the user tu
   rmSync(tools.dir, { recursive: true });
 });
 
-test("maintenance repairs existing Claude proxy auth without enabling MCP or changing other routing", async () => {
+test("maintenance keeps the proxy placeholder only while Claude Code has no login, without enabling MCP or changing other routing", async () => {
   const s = new Store(":memory:");
   const tools = ownTools();
   const file = join(tools.dirs.claude, "settings.json");
@@ -415,6 +416,13 @@ test("maintenance repairs existing Claude proxy auth without enabling MCP or cha
     expect(await keepMcp(s, tools.dirs)).toEqual([`Updated agentgate's Claude proxy authentication in ${file}`]);
     expect(JSON.parse(readFileSync(file, "utf8")).env.ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
     expect(tools.claudeMcp()).toBeUndefined();
+    expect(await keepMcp(s, tools.dirs)).toEqual([]);
+    // Signing in, or an install 0.32.0 gave the placeholder despite a login, drops it again.
+    writeFileSync(join(tools.dirs.claude, ".credentials.json"), "{}");
+    expect(await keepMcp(s, tools.dirs)).toEqual([`Updated agentgate's Claude proxy authentication in ${file}`]);
+    expect(JSON.parse(readFileSync(file, "utf8")).env).toEqual({
+      ANTHROPIC_BASE_URL: `http://127.0.0.1:${PORT}/anthropic`,
+    });
     expect(await keepMcp(s, tools.dirs)).toEqual([]);
     await primary(false, tools.dirs.claude);
     expect(await keepMcp(s, tools.dirs)).toEqual([]);
