@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.33.0](https://github.com/HansKristoffer/agentgate/compare/v0.32.0...v0.33.0) (2026-11-14)
+
+
+### Features
+
+* signed-in Claude Code keeps its claude.ai connectors, and the app checks for updates on focus ([#154](https://github.com/HansKristoffer/agentgate/issues/154)) ([e385f61](https://github.com/HansKristoffer/agentgate/commit/e385f619d62c1c2e3f8ebae67e69f1d67c4214d4))
+
 ## [0.32.0](https://github.com/HansKristoffer/agentgate/compare/v0.31.0...v0.32.0) (2026-11-13)
 
 
