@@ -146,9 +146,23 @@ function Main({
   // without a key of their own block the open dialogs, since a dialog's own submit is one of those.
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  // Checked on launch and every four hours, since the app is left open for days.
-  // Nothing downloads until the user chooses to install; offline is not an error.
+  // Checked on launch, every four hours, and when the window regains focus (at most every ten minutes), since the app
+  // is left open for days. Nothing downloads until the user chooses to install; offline is not an error.
   const updater = useAppUpdate({ enabled: native });
+  const { check } = updater;
+  useEffect(() => {
+    if (!native) return;
+    let last = Date.now();
+    const focus = () => {
+      if (Date.now() - last < 10 * 60_000) return;
+      last = Date.now();
+      void check();
+    };
+    window.addEventListener("focus", focus);
+    return () => window.removeEventListener("focus", focus);
+  }, [native, check]);
+  // A closed offer stays closed for that version, so the next check does not bring it back; a newer one is offered.
+  const [dismissed, setDismissed] = useState("");
   const [connectOpen, setConnectOpen] = useState(false);
   const [help, setHelp] = useState(false);
   const [actions, setActions] = useState<HTMLDivElement | null>(null);
@@ -181,17 +195,18 @@ function Main({
   const updated = statusRead.stale && statusRead.at ? Math.round((Date.now() - statusRead.at) / 1000) : undefined;
   const refresh = () => Promise.all([statusRead.reload(), desktopRead.reload()]).then(() => {});
   useEffect(() => {
-    if (!updater.update) return;
-    const id = toast(`Agentgate ${updater.update.version} is available.`, {
+    const offer = updater.update;
+    if (!offer || offer.version === dismissed) return;
+    const id = toast(`Agentgate ${offer.version} is available.`, {
       timeout: 0,
-      onClose: updater.dismiss,
+      onClose: () => setDismissed(offer.version),
       actionProps: {
         children: "Restart to update",
         onPress: () => void updater.install().catch((e) => toast.danger(messageOf(e), { timeout: 0 })),
       },
     });
     return () => toast.close(id);
-  }, [updater.update, updater.install, updater.dismiss]);
+  }, [updater.update, updater.install, dismissed]);
   useAppShortcuts({ ",": () => setView("settings") });
   // First run on this Mac: ask where Claude is used, so Claude Desktop users land on their screen.
   useEffect(() => {
