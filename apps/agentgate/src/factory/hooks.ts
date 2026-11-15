@@ -56,16 +56,16 @@ const hookSources = (f: FactoryRuntime) =>
 function ensureHooks(f: FactoryRuntime) {
   if (!f.isFactoryNode() || !currentFolder(f)) return;
   const wanted = new Set(hookSources(f).map((s) => s.id));
-  for (const id of wanted)
-    if (!credentials(f, id)) {
-      const fresh: Credentials = {
-        relay: checkRelayUrl(relayUrl(f.s)),
-        key: randomToken(16),
-        token: randomToken(32),
-        secret: randomToken(32),
-      };
-      setSecret(f.s, hookId(id), JSON.stringify(fresh));
-    }
+  for (const id of wanted) {
+    if (credentials(f, id)) continue;
+    const fresh: Credentials = {
+      relay: checkRelayUrl(relayUrl(f.s)),
+      key: randomToken(16),
+      token: randomToken(32),
+      secret: randomToken(32),
+    };
+    setSecret(f.s, hookId(id), JSON.stringify(fresh));
+  }
   for (const { id } of f.s.list("secret")) {
     if (!id.startsWith("~hook:")) continue;
     const source = id.slice("~hook:".length);
@@ -91,8 +91,6 @@ function served(f: FactoryRuntime) {
   });
 }
 
-// ---- signatures
-
 /** GitHub and Linear sign with fixed headers; a webhook source names its own. */
 function signatureOf(source: HookSource) {
   if (source.type === "webhook") return source.signature;
@@ -115,8 +113,6 @@ function signed(signature: NonNullable<ReturnType<typeof signatureOf>>, secret: 
   const expected = hmac(secret, body);
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
-
-// ---- templates
 
 const PLACEHOLDER = /\{\{\s*(body|headers|query)((?:\.[^\s.{}]+)*)\s*\}\}/g;
 
@@ -145,8 +141,6 @@ function render(template: string, delivery: Delivery & { json: unknown }) {
 const cut = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 const answer = (status: number, body: Record<string, unknown>) => Response.json(body, { status });
-
-// ---- deliveries
 
 /** One poll pass at a time per source; a delivery during a pass runs one more after it. */
 function pollSoon(f: FactoryRuntime, source: string) {
@@ -264,8 +258,6 @@ export async function handleHook(f: FactoryRuntime, sourceId: string, req: Reque
   }
 }
 
-// ---- whether a delivery can reach the factory
-
 /** What a relay answered a GET on a hook URL: `serves` (405, it routes `/hook`), `old` (404, it was deployed before
  * webhook URLs), `unreachable`, or `unknown` with the status. */
 interface Probe {
@@ -286,7 +278,9 @@ async function probeRelays(f: FactoryRuntime) {
     if (c && !byRelay.has(c.relay)) byRelay.set(c.relay, hookUrl(c));
   }
   const known = probes(f);
-  for (const relay of known.keys()) if (!byRelay.has(relay)) known.delete(relay);
+  for (const relay of known.keys()) {
+    if (!byRelay.has(relay)) known.delete(relay);
+  }
   await Promise.all(
     [...byRelay].map(async ([relay, url]) => {
       const last = known.get(relay);
@@ -295,12 +289,10 @@ async function probeRelays(f: FactoryRuntime) {
       try {
         const res = await http.fetch(url, {}, 10_000);
         await res.body?.cancel();
-        probe =
-          res.status === 405
-            ? { state: "serves" }
-            : res.status === 404
-              ? { state: "old" }
-              : { state: "unknown", status: res.status };
+        // A POST-only route answers 405 to a GET; a relay deployed before webhook URLs answers 404.
+        if (res.status === 405) probe = { state: "serves" };
+        else if (res.status === 404) probe = { state: "old" };
+        else probe = { state: "unknown", status: res.status };
       } catch {
         probe = { state: "unreachable" };
       }
@@ -346,29 +338,34 @@ function reachable(f: FactoryRuntime): FactoryCheck[] {
     relays.add(relay);
     const probe = probes(f).get(c.relay);
     const socket = f.ctx.remote.hookState(id);
-    if (probe?.state === "old")
+    if (probe?.state === "old") {
       rows.push({
         state: "fail",
         detail: `the relay ${relay} answers 404 on /hook: it was deployed before webhook URLs, so it loses every delivery`,
         fix: "deploy the relay from this release (docs/operations/relay.md); meanwhile a script on this machine can use agentgate factory deliver <id>",
       });
-    else if (probe?.state === "unreachable")
+    } else if (probe?.state === "unreachable") {
       rows.push({
         state: "fail",
         detail: `the relay ${relay} did not answer`,
         fix: "check this machine's network and the relay URL",
       });
-    else if (probe?.state === "unknown")
+    } else if (probe?.state === "unknown") {
       rows.push({ state: "unknown", detail: `the relay ${relay} answered ${probe.status} on /hook` });
-    else if (!probe) rows.push({ state: "unknown", detail: `the relay ${relay} was not asked yet` });
+    } else if (!probe) {
+      rows.push({ state: "unknown", detail: `the relay ${relay} was not asked yet` });
+    }
+
     if (socket?.connected) continue;
-    if (socket?.error)
+    if (socket?.error) {
       rows.push({
         state: "fail",
         detail: `${id}'s connection to the relay is down`,
         fix: "agentgate factory status shows why",
       });
-    else rows.push({ state: "unknown", detail: `${id} is connecting to the relay` });
+    } else {
+      rows.push({ state: "unknown", detail: `${id} is connecting to the relay` });
+    }
   }
   const state = rows.reduce<FactoryCheck["state"]>((worst, r) => (RANK[r.state] > RANK[worst] ? r.state : worst), "ok");
   // Sources on one relay share its answer, which is said once.
@@ -386,8 +383,6 @@ function reachable(f: FactoryRuntime): FactoryCheck[] {
     },
   ];
 }
-
-// ---- trying a source: `source test` and `deliver`
 
 const deliveryInput = z.object({
   id: z.string().min(1),

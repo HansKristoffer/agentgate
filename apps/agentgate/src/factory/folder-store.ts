@@ -12,14 +12,14 @@ import { changeStored } from "./stored.ts";
  */
 
 /** A change to the folder: files by their path inside it, null to remove one. */
-export interface FolderChange {
+interface FolderChange {
   title: string; // the commit and pull request title
   body: string; // the pull request's description
   branch: string; // the branch a folder in git pushes the change to
   files: Record<string, string | null>;
 }
 
-export type Proposed = Exclude<FolderChangeResult, { unchanged: true }>;
+type Proposed = Exclude<FolderChangeResult, { unchanged: true }>;
 
 export interface FolderStore {
   /** Where the folder is, for a person: `owner/repo:path at ref`, or that agentgate stores it. */

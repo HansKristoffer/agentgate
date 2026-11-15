@@ -80,8 +80,6 @@ export function unreachableCheck(f: FactoryRuntime, node: string): FactoryCheck 
   };
 }
 
-// ---- this machine's T3 Code
-
 const home = (dir: string) => (dir.startsWith(homedir()) ? `~${dir.slice(homedir().length)}` : dir);
 
 function t3Connection(f: FactoryRuntime): FactoryCheck[] {
@@ -254,9 +252,7 @@ async function t3Homes(f: FactoryRuntime): Promise<FactoryCheck[]> {
   ];
 }
 
-// ---- doctor
-
-export interface DoctorResult {
+interface DoctorResult {
   checks: FactoryCheck[];
 }
 
@@ -295,13 +291,14 @@ async function doctor(f: FactoryRuntime, input: { canary?: boolean }, caller: Ca
 const LABELS = { ok: "ok", warn: "warn", fail: "FAIL", unknown: "?" } as const;
 
 /** The checks for a terminal, each with its fix unless it passed, then a count. */
-export function doctorText(checks: FactoryCheck[]): string[] {
+function doctorText(checks: FactoryCheck[]): string[] {
   const lines = checks.flatMap((c) => [
     `${LABELS[c.state].padEnd(4)}  ${c.title}${c.detail ? `: ${c.detail}` : ""}`,
     ...(c.fix && c.state !== "ok" ? [`      fix: ${c.fix}`] : []),
   ]);
   const count = (state: FactoryCheck["state"]) => checks.filter((c) => c.state === state).length;
-  const [failing, warnings] = [count("fail"), count("warn")];
+  const failing = count("fail");
+  const warnings = count("warn");
   lines.push(
     "",
     failing || warnings

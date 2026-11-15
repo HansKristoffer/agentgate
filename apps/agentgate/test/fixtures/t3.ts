@@ -5,8 +5,9 @@ import { claudeProjectKey } from "../../src/handoff/session.ts";
 
 /** A fake T3 Code server speaking the subset agentgate uses: token exchange, the shell snapshot, and Effect RPC frames
  * over a WebSocket, including the `orchestration.subscribeShell` stream that tests drive through `shell`. Session
- * import follows upstream: only sessions recorded in a project's main checkout, named `import:claudeAgent:<sid>`, an earlier import left as it is (a native thread with the same session is not
- * recognised), and a first turn that fails once. */
+ * import follows upstream: only sessions recorded in a project's main checkout, named `import:claudeAgent:<sid>`. An
+ * earlier import is left as it is (a native thread with the same session is not recognised), and a first turn that
+ * fails once. */
 
 type Run = {
   id: string;

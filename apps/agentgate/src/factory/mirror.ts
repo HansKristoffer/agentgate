@@ -1,6 +1,6 @@
 import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
-import { isWorkingStatus, T3Error, t3Client, t3State } from "../handoff/t3.ts";
+import { T3Error, t3Client, t3State } from "../handoff/t3.ts";
 import { logError, type FactoryRuntime } from "./runtime.ts";
 import { needsSignIn } from "./t3-mcp.ts";
 
@@ -27,8 +27,7 @@ export interface MirrorThread {
   worktreePath?: string;
   updatedAt: number;
 }
-export { isWorkingStatus };
-export interface T3Mirror {
+interface T3Mirror {
   threads(): MirrorThread[];
   thread(id: string): MirrorThread | undefined;
   /** The subagent threads the thread delegated to directly. */
@@ -196,6 +195,7 @@ class Mirror implements T3Mirror {
         error = reason(e);
       }
       await this.poll(signal, error);
+      // An abort ends the wait early; the loop condition then ends the run.
       await wait(timing.pollMs, undefined, { signal }).catch(() => {});
     }
   }

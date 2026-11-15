@@ -181,5 +181,8 @@ export function pruneFolders(keep: Iterable<string>) {
     // Nothing fetched on this machine yet.
     return;
   }
-  for (const name of entries) if (!kept.has(name)) rmSync(join(fetcher.root, name), { recursive: true, force: true });
+  for (const name of entries) {
+    if (kept.has(name)) continue;
+    rmSync(join(fetcher.root, name), { recursive: true, force: true });
+  }
 }

@@ -21,7 +21,7 @@ import {
 import { getErrorMessage, safeJsonParse } from "hanzio";
 import { z } from "zod";
 import { PeerError } from "../handoff/jobs.ts";
-import { nodesBelow, type Store } from "../store.ts";
+import { FACTORY_PROTOCOL, nodesBelow, type Store } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { hasUnsentWrites, items } from "./db.ts";
 import { fetcher, folderPath, NO_STORED_FOLDER, pruneFolders, storedFiles } from "./folder.ts";
@@ -29,7 +29,6 @@ import { folderStore, type FolderStore } from "./folder-store.ts";
 import { branchProtected, defaultBranch, protectionAvailable } from "./gh.ts";
 import { Backoff } from "../runtime.ts";
 import {
-  FACTORY_PROTOCOL,
   noWords,
   operation,
   requireFactoryProtocol,
@@ -182,7 +181,8 @@ export function loadFolder(dir: string, commit: string): LoadedFolder {
     stages[stage] = { file: check(stageFileSchema, data, file), brief: body };
   }
 
-  // HTML comments are notes for the person editing the file, such as the prompts `factory init` writes; briefs skip them.
+  // HTML comments are notes for the person editing the file, such as the prompts `factory init` writes. Briefs skip
+  // them.
   const rulings = existsSync(join(dir, "rulings.md"))
     ? readFileSync(join(dir, "rulings.md"), "utf8")
         .replace(/<!--[\s\S]*?-->\n?/g, "")
@@ -366,7 +366,9 @@ function prune(f: FactoryRuntime) {
   const current = pointer && readState(f, pointer).commit;
   if (current) keep.add(current);
   const m = memory(f);
-  for (const commit of m.folders.keys()) if (!keep.has(commit)) m.folders.delete(commit);
+  for (const commit of m.folders.keys()) {
+    if (!keep.has(commit)) m.folders.delete(commit);
+  }
   pruneFolders(keep);
 }
 
@@ -568,10 +570,12 @@ function describe({ factory, config, warning }: FactoryStatus & { warning?: stri
   if (!factory) return ["The factory is off."];
   const offline = factory.online ? "" : " (offline)";
   const lines = [`Factory folder ${factory.label}, run by ${factory.node}${offline}.`];
-  if (factory.moving)
+  if (factory.moving) {
+    const { to } = factory.moving;
     lines.push(
-      `${movingLabel(factory.moving)}; nothing new is taken in until then. agentgate factory move ${factory.moving.to} --now does not wait, and leaves the open items frozen on ${factory.node}; agentgate factory move ${factory.node} cancels.`,
+      `${movingLabel(factory.moving)}; nothing new is taken in until then. agentgate factory move ${to} --now does not wait, and leaves the open items frozen on ${factory.node}; agentgate factory move ${factory.node} cancels.`,
     );
+  }
   if (config?.name) lines.push(`Loaded ${config.name} at ${short(config.commit)}.`);
   if (config?.error) lines.push(`Error: ${config.error}`);
   if (!config) lines.push("Not loaded on this machine yet.");
@@ -605,13 +609,18 @@ function folderChecks(f: FactoryRuntime): FactoryCheck[] {
   const where = runsOnStoredFolder(f) ? "with agentgate factory folder put" : `in ${folderStore(f, pointer).label}`;
   const fix = `fix the file the error names ${where}, then agentgate factory reload`;
   const folder = { id: "folder", title: "The factory's folder loads" };
-  checks.push(
-    !config
-      ? { ...folder, state: "unknown", detail: "not loaded on this machine yet", fix: "agentgate factory reload" }
-      : config.error
-        ? { ...folder, state: "fail", detail: config.error, fix }
-        : { ...folder, state: "ok", detail: `${config.name} at ${short(config.commit)}` },
-  );
+  if (!config) {
+    checks.push({
+      ...folder,
+      state: "unknown",
+      detail: "not loaded on this machine yet",
+      fix: "agentgate factory reload",
+    });
+  } else if (config.error) {
+    checks.push({ ...folder, state: "fail", detail: config.error, fix });
+  } else {
+    checks.push({ ...folder, state: "ok", detail: `${config.name} at ${short(config.commit)}` });
+  }
   return checks;
 }
 

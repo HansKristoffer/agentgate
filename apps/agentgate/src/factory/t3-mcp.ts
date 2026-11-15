@@ -38,7 +38,7 @@ const REQUIRED_T3_INPUTS = {
   t3_pending_request: ["action", "threadId", "requestId", "answers"],
 } as const;
 export const REQUIRED_T3_TOOLS = Object.keys(REQUIRED_T3_INPUTS) as (keyof typeof REQUIRED_T3_INPUTS)[];
-export type T3Tool = keyof typeof REQUIRED_T3_INPUTS;
+type T3Tool = keyof typeof REQUIRED_T3_INPUTS;
 
 const pendingIds = z.object({ requestIds: z.array(z.string()) });
 const pendingRequest = z.object({
@@ -51,22 +51,25 @@ const pendingRequest = z.object({
     }),
   ),
 });
-export type PendingRequest = z.infer<typeof pendingRequest>;
+type PendingRequest = z.infer<typeof pendingRequest>;
 
 /** The question cards a thread waits on in T3 Code. T3 lists questions only, not permission approvals. */
 export async function pendingRequests(mcp: T3McpClient, threadId: string): Promise<PendingRequest[]> {
   const { requestIds } = pendingIds.parse(await mcp.call("t3_pending_request", { action: "list", threadId }));
   const requests: PendingRequest[] = [];
-  for (const requestId of requestIds)
-    requests.push(pendingRequest.parse(await mcp.call("t3_pending_request", { action: "read", threadId, requestId })));
+  for (const requestId of requestIds) {
+    const read = await mcp.call("t3_pending_request", { action: "read", threadId, requestId });
+    requests.push(pendingRequest.parse(read));
+  }
   return requests;
 }
+
 export class T3McpError extends Error {
   /** T3 answered the call with an error, so it ran nothing; otherwise the outcome is unknown. */
   answered = false;
 }
 
-export interface T3McpClient {
+interface T3McpClient {
   /** The tool's result, unchecked: its structured content, else its text parsed as JSON, else the text. Callers parse it
    * with a schema. Throws T3McpError on a tool error or transport failure. With `session`, the call
    * goes only under that MCP session: a sign-in that changed meanwhile, even one this call made after T3 refused the
@@ -267,7 +270,8 @@ function create(f: FactoryRuntime) {
     }
     if (done) return done.value;
     failedAt = s.now();
-    throw new T3McpError((error = `T3 Code on ${s.nodeId} refused the factory's MCP sign-in`));
+    error = `T3 Code on ${s.nodeId} refused the factory's MCP sign-in`;
+    throw new T3McpError(error);
   }
 
   /** The one MCP connection, kept for the token it was opened with. T3 finds a launch's `clientRequestId` by the
@@ -334,7 +338,9 @@ function create(f: FactoryRuntime) {
         let cursor: string | undefined;
         do {
           const page = await mcp.listTools(cursor ? { cursor } : {}, { timeout: 30_000 });
-          for (const tool of page.tools) inputs.set(tool.name, new Set(Object.keys(tool.inputSchema.properties ?? {})));
+          for (const tool of page.tools) {
+            inputs.set(tool.name, new Set(Object.keys(tool.inputSchema.properties ?? {})));
+          }
           cursor = page.nextCursor;
         } while (cursor);
       }, renew);
@@ -444,7 +450,9 @@ function errorText(text: string | undefined) {
 
 /** T3's own text, cut short, with any secret of this sign-in taken out. */
 function scrub(text: string, ...secrets: (string | undefined)[]) {
-  for (const secret of secrets) if (secret) text = text.replaceAll(secret, "[redacted]");
+  for (const secret of secrets) {
+    if (secret) text = text.replaceAll(secret, "[redacted]");
+  }
   return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 

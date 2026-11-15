@@ -21,11 +21,11 @@ export const CAUSES: Record<NeedsYouCause, { kind: NeedsYouKind; title: string }
 export const POSTS: Record<NeedsYouKind, boolean> = { start: false, answer: true, stopped: true };
 
 /** An action as the command that takes it. No angle brackets: GitHub would take `<text>` in a comment for a tag. */
-export const actionCommand = (key: string, action: BoardAction) =>
+const actionCommand = (key: string, action: BoardAction) =>
   `agentgate factory ${action.name} ${key}${action.takesText ? ' --reason "..."' : ""}`;
 
 /** Each action as its command and what it will do, aligned. */
-export function actionLines(key: string, actions: BoardAction[]): string[] {
+function actionLines(key: string, actions: BoardAction[]): string[] {
   const commands = actions.map((a) => actionCommand(key, a));
   const width = Math.max(0, ...commands.map((c) => c.length));
   return actions.map((a, i) => `${commands[i]!.padEnd(width)}  ${a.effect}`);
