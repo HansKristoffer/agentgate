@@ -2,6 +2,8 @@ import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@mod
 import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { exponentialBackoff } from "hanzio";
+import { z } from "zod";
+import { fetchHeaders, readBody } from "../runtime.ts";
 import { LOCAL_URL, schemas, type McpInstance } from "../store.ts";
 import {
   SHIM_CLIENT_NAME,
@@ -15,9 +17,6 @@ import {
 } from "./gateway.ts";
 import { mcpFetch } from "./oauth.ts";
 
-import { z } from "zod";
-import { fetchHeaders, readBody } from "../runtime.ts";
-
 /** A per-session server that failed to start is tried again after 5 s, doubling up to 5 minutes while its
  * configuration stays the same: each try may run npx or uvx. */
 const retryDelay = (failures: number) =>
@@ -30,7 +29,7 @@ export const DAEMON_DOWN =
   "agentgate daemon is not running on this machine (run `agentgate service start`). Tools reconnect automatically when the daemon becomes available.";
 
 /** AGENTGATE_PROJECT, else the git origin as owner/repo, else only the `*` defaults apply. */
-export function detectProject(cwd: string, env = process.env): string {
+function detectProject(cwd: string, env = process.env): string {
   if (env.AGENTGATE_PROJECT) return env.AGENTGATE_PROJECT;
   // Claude Desktop starts MCP servers with a reduced PATH.
   const git = Bun.which("git", { PATH: env.PATH ?? "" }) ?? (process.platform === "darwin" ? "/usr/bin/git" : "git");
@@ -187,27 +186,27 @@ export async function buildShim(
     }));
   };
   await ensure().catch(() => {});
-  const call = (client: Client, ...[params, options]: Parameters<NonNullable<Source["invoke"]>>) =>
+  const call = (client: Client, ...[params, callOptions]: Parameters<NonNullable<Source["invoke"]>>) =>
     client.request(
       {
         method: "tools/call",
         params: thread ? { ...params, _meta: { [T3_THREAD_META_KEY]: thread, ...params._meta } } : params,
       },
-      options,
+      callOptions,
     ) as Promise<CallToolResult>;
   const toDaemon = (client: Client): Source => ({
     alias: "",
     client,
     // A call the daemon refused for a forgotten session never ran, so it goes once more on a new session.
-    invoke: async (params, options) => {
+    invoke: async (params, callOptions) => {
       try {
-        return await call(client, params, options);
+        return await call(client, params, callOptions);
       } catch (e) {
         if (!(e instanceof SessionLost)) throw e;
         invalidate(client);
         await ensure();
         if (!daemon) throw e;
-        return call(daemon, params, options);
+        return call(daemon, params, callOptions);
       }
     },
   });
@@ -235,9 +234,12 @@ export async function buildShim(
       closed = true;
       poll(false);
       await flight?.catch(() => {});
+      // Ending the session is best effort: the daemon's idle sweep ends it anyway.
       try {
         if (transport?.sessionId) await transport.terminateSession();
-      } catch {}
+      } catch {
+        // The daemon may already have dropped the session.
+      }
       // A stdio server may ignore its closed stdin: SIGTERM ends its group now, and its close still escalates to SIGKILL.
       for (const { client } of children.values()) {
         const pid = client.transport instanceof StdioTransport && client.transport.pid;
