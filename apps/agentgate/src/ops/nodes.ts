@@ -31,10 +31,10 @@ import { asUserError, controlOp, onOff, parseWords, UserError } from "./registry
 /** The machines family's control operations: pairing, the relay, and what one machine changes on another. */
 
 const nodeId = z.string().min(1).max(512);
-const machine = (s: Store, id: string) => s.get("node", id) ?? throwUser(`No machine named ${id}`);
 const throwUser = (message: string): never => {
   throw new UserError(message);
 };
+const machine = (s: Store, id: string) => s.get("node", id) ?? throwUser(`No machine named ${id}`);
 
 /** The relay words its errors as sanitized summaries (relay.ts), safe for the caller. */
 const relayed = <T>(fn: () => T) =>
@@ -442,10 +442,15 @@ controlOp({
       ["worktreesDir", worktrees],
       ["cloneDir", clones],
     ] as const;
-    for (const [, dir] of dirs)
+    for (const [, dir] of dirs) {
       if (dir && !isAbsolute(dir) && !/^~(\/|$)/.test(dir))
         throw new UserError(`Give ${dir} as an absolute folder, or one under ~`);
-    for (const [id, dir] of dirs) if (dir) handoffDirs.set(s, id, resolve(dir.replace(/^~(?=\/|$)/, homedir())));
+    }
+    for (const [id, dir] of dirs) {
+      if (dir) handoffDirs.set(s, id, resolve(dir.replace(/^~(?=\/|$)/, homedir())));
+    }
+
+    // Loaded on use, not imported at the top: daemon.ts imports this file.
     const { handoffOptions } = await import("../daemon.ts");
     const o = handoffOptions(s);
     return { worktreesDir: o.worktreesDir, cloneDir: o.cloneDir };
@@ -456,8 +461,8 @@ controlOp({
       const { values, positionals } = parseWords(args, { worktrees: { type: "string" }, clones: { type: "string" } });
       if (positionals.length) throw new UserError();
       const given = (dir: string | undefined) => (dir && !/^~(\/|$)/.test(dir) ? resolve(cwd ?? "/", dir) : dir);
-      const worktrees = given(values.worktrees),
-        clones = given(values.clones);
+      const worktrees = given(values.worktrees);
+      const clones = given(values.clones);
       return { input: { ...(worktrees && { worktrees }), ...(clones && { clones }) } };
     },
     print: (o) => [`worktrees  ${o.worktreesDir}`, `clones     ${o.cloneDir}`],
