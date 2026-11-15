@@ -231,7 +231,7 @@ function fakeRelay() {
   const upgrades: { auth: string | null; node: string | null }[] = [];
   const deletes: string[] = [];
   let socket: import("bun").ServerWebSocket<unknown> | undefined;
-  const frames: any[] = [],
+  const frames: { t: string; id: string; status: number; headers: Record<string, string>; body: string }[] = [],
     waiters: (() => void)[] = [];
   const server = Bun.serve({
     port: 0,
@@ -271,7 +271,7 @@ function fakeRelay() {
   cleanup.push(() => server.stop(true));
   const next = async () => {
     while (!frames.length) await new Promise<void>((r) => waiters.push(r));
-    return frames.shift();
+    return frames.shift()!;
   };
   const connected = async () => {
     while (!socket) await Bun.sleep(10);
