@@ -140,8 +140,8 @@ export const cursor: Provider = {
       body: JSON.stringify({ grant_type: "refresh_token", client_id: CURSOR.clientId, refresh_token: refreshToken }),
       signal: AbortSignal.timeout(30_000),
     });
-    const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30_000)));
-    const body = safeJsonParse<{ access_token?: unknown; shouldLogout?: unknown }>(text).data ?? {};
+    const raw = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30_000)));
+    const body = safeJsonParse<{ access_token?: unknown; shouldLogout?: unknown }>(raw).data ?? {};
     if (body.shouldLogout === true) throw new InvalidGrant("Cursor ended this login");
     if (!res.ok || typeof body.access_token !== "string" || !body.access_token)
       throw new Error(`Cursor token endpoint returned ${res.status}`);
@@ -174,8 +174,10 @@ export async function finish(
       10000,
     );
     if (res.ok) {
-      const t = pollResponse.parse(JSON.parse(new TextDecoder().decode(await readBody(res.body, 64 * 1024, signal))));
-      return save(s, toTokens(t.accessToken, t.refreshToken), label);
+      const poll = pollResponse.parse(
+        JSON.parse(new TextDecoder().decode(await readBody(res.body, 64 * 1024, signal))),
+      );
+      return save(s, toTokens(poll.accessToken, poll.refreshToken), label);
     }
     await res.body?.cancel();
     // 404 means not signed in yet; Cursor's CLI retries server errors the same way.
@@ -187,6 +189,7 @@ export async function finish(
 
 async function save(s: Store, tokens: Tokens, label?: string) {
   const signal = AbortSignal.timeout(10_000);
+  // Identity and plan only label the account: without them the login still saves, and the subject comes from the token.
   const me = record(await dashboard("GetMe", tokens.accessToken, signal).catch(() => undefined));
   const plan = await dashboard("GetPlanInfo", tokens.accessToken, signal).then(
     (p) => text(record(record(p)?.planInfo)?.planName),
@@ -194,6 +197,7 @@ async function save(s: Store, tokens: Tokens, label?: string) {
   );
   const subject = text(me?.authId) ?? text(jwtClaims(tokens.accessToken).sub);
   if (!subject) throw new Error("Cursor login did not identify the account");
+  // The same subject always gets the same id, so logging in again updates the account.
   const id = `cursor-${new Bun.CryptoHasher("sha256").update(subject).digest("hex").slice(0, 8)}`;
   return upsertAccount(s, "cursor", id, { label, email: text(me?.email), plan }, tokens);
 }
@@ -240,6 +244,7 @@ type Hourly = Map<
   string,
   { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number }
 >;
+// Token counts are non-negative safe integers; anything else means Cursor changed its format.
 const count = (value: unknown) => {
   if (value === undefined || value === null) return 0;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
@@ -304,18 +309,14 @@ async function includedSpend(accessToken: string, since: number, until: number, 
 /** Hourly token totals per model between `since` and `until`, from the usage history Cursor's dashboard shows.
  * That endpoint takes the session cookie the website sets, built from the same access token. Included-pool
  * tokens come from the daily spend series and are added on top of the per-request API pool. */
-export async function usageHistory(
-  accessToken: string,
-  since: number,
-  until: number,
-  signal: AbortSignal,
-): Promise<Hourly> {
+async function usageHistory(accessToken: string, since: number, until: number, signal: AbortSignal): Promise<Hourly> {
   const userId = (text(jwtClaims(accessToken).sub) ?? "").split("|").at(-1);
   if (!userId || !/^[\w-]+$/.test(userId)) throw new Error("Cursor login did not identify the account");
   const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`;
   const hours: Hourly = new Map(),
     included = new Map<string, number>();
   let page = 1;
+  // Pages are capped at 1000: a read that would need more is refused, not cut short.
   for (; page <= 1000; page++) {
     const res = await fetchHeaders(
       CURSOR.usageEvents,
@@ -432,6 +433,7 @@ export async function pollTokens(s: Store, creds: Pick<Credentials, "token">, si
     // A read that saved nothing is retried on the next pass. A finished read waits 15 minutes.
     if (state.coveredTo !== undefined && s.now() - (state.triedAt ?? 0) < TOKENS_EVERY) continue;
     s.setLocal(key, JSON.stringify({ ...state, triedAt: s.now() }));
+    // Windows are half-open, [since, until), while usageHistory takes inclusive bounds: hence the -1 below.
     const end = s.now() + 1,
       floor = end - CURSOR.historySpan,
       alignedFloor = floor - (floor % HOUR);

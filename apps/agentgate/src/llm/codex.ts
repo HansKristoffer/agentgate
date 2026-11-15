@@ -35,6 +35,7 @@ const record = (value: unknown) => (isRecord(value) ? value : undefined);
 
 /** Windows are named by their length, never by the primary/secondary slot they arrive in. */
 function windowName(minutes: number, family: string): string {
+  // 300 and 10080 minutes are the five-hour and the weekly window.
   const base = minutes === 300 ? "5h" : minutes === 10080 ? "7d" : `${minutes}m`;
   const extra = family.replace(/^codex-?/, "");
   return extra ? `${base}:${extra}` : base;
@@ -133,6 +134,7 @@ function readCodex(path: string, credential: Credential, signal: AbortSignal) {
     redirect: "manual",
   });
 }
+/** The usage payload's windows: the account's own, then each model family's extra limits. */
 export function parseQuota(payload: unknown): Observation | undefined {
   const object = payload as {
     rate_limit?: { primary_window?: unknown; secondary_window?: unknown };
@@ -180,6 +182,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
   add(object.rate_limit?.primary_window);
   add(object.rate_limit?.secondary_window);
   for (const entry of Array.isArray(object.additional_rate_limits) ? object.additional_rate_limits : []) {
+    // A limit name becomes a model family name, so only plain tokens qualify.
     if (typeof entry.limit_name !== "string" || !/^[\w.-]{1,128}$/.test(entry.limit_name)) continue;
     add(entry.rate_limit?.primary_window, entry.limit_name);
     add(entry.rate_limit?.secondary_window, entry.limit_name);
@@ -237,7 +240,9 @@ function save(
   const auth = record(claims[AUTH_CLAIM]) ?? record(jwtClaims(t.access_token)[AUTH_CLAIM]);
   const chatgptAccountId = t.account_id ?? text(auth?.chatgpt_account_id);
   const email = text(claims.email);
-  const id = `codex-${(chatgptAccountId ?? crypto.randomUUID()).replace(/-/g, "").slice(0, 8)}${email ? "-" + email.split("@")[0]!.replace(/\W/g, "").slice(0, 8) : ""}`;
+  // Logins sharing a ChatGPT account id get the local part of their e-mail, so they stay apart.
+  const emailPart = email ? "-" + email.split("@")[0]!.replace(/\W/g, "").slice(0, 8) : "";
+  const id = `codex-${(chatgptAccountId ?? crypto.randomUUID()).replace(/-/g, "").slice(0, 8)}${emailPart}`;
   return upsertAccount(
     s,
     "codex",
@@ -247,7 +252,6 @@ function save(
   );
 }
 
-/** Take over a Codex login from a CODEX_HOME (`auth.json`). */
 /** Who Codex itself is signed in as on this machine: the ID token's identity claims, nothing that grants access. */
 export function detect(
   dir = process.env.CODEX_HOME ?? join(homedir(), ".codex"),
@@ -261,6 +265,7 @@ export function detect(
   }
 }
 
+/** Take over a Codex login from a CODEX_HOME (`auth.json`). */
 export async function importFrom(s: Store, dir: string, label?: string) {
   const file = join(dir, "auth.json");
   if (!existsSync(file))

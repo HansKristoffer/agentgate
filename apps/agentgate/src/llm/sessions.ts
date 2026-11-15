@@ -4,7 +4,7 @@ import type { ProviderName } from "./provider.ts";
 
 /** Token totals for one coding-agent session and model, so the factory can sum what a run's threads used. Node-local:
  * each machine counts the sessions it proxied, and the factory asks the machine that ran them. */
-export interface SessionUsage {
+interface SessionUsage {
   session: string;
   provider: string;
   model: string;
@@ -17,8 +17,9 @@ export interface SessionUsage {
   lastAt: number;
 }
 
-const RETENTION = 90 * 86_400_000,
-  SESSION_ID = /^[\w-]{1,128}$/;
+const RETENTION = 90 * 86_400_000;
+// A client's session id is short and made of word characters, so it can be stored and logged as it is.
+const SESSION_ID = /^[\w-]{1,128}$/;
 
 /** Claude Code's session id inside `metadata.user_id`, which is either JSON or `user_…_account_<uuid>_session_<id>`. */
 function claudeMetadataSession(body: unknown) {

@@ -159,24 +159,28 @@ export function route(
   const eligible = evaluated.filter((candidate) => !candidate.reasons.length);
   let selected = eligible.find((candidate) => candidate.account.pinned);
   let reason = selected ? "pinned" : "no eligible account";
+
   const affinity =
     options.session && settings.sessionAffinity ? node.affinity.get(`${provider}:${options.session}`) : undefined;
   if (!selected && affinity) {
     selected = eligible.find((candidate) => candidate.account.id === affinity.id);
     if (selected) reason = "session affinity";
   }
+
   if (!selected && settings.strategy === "priority") {
     selected = [...eligible].sort(
       (a, b) => b.account.priority - a.account.priority || a.account.id.localeCompare(b.account.id),
     )[0];
     if (selected) reason = "priority";
   }
+
   if (!selected && settings.strategy === "round-robin" && eligible.length) {
     const sorted = [...eligible].sort((a, b) => a.account.id.localeCompare(b.account.id));
     const last = node.rotation.get(provider);
     selected = sorted.find((candidate) => !last || candidate.account.id > last) ?? sorted[0];
     reason = "round robin";
   }
+
   // Use it or lose it: the account whose quota expires soonest serves first, so quota that would reset unused is spent
   // before quota that keeps. Accounts at the threshold come last.
   if (!selected) {
@@ -263,6 +267,7 @@ export function continuationAccount(s: Store, id: string) {
   return node.continuations.get(id)?.id;
 }
 export function rememberContinuation(s: Store, responseId: string, accountId: string) {
+  // Response ids are word characters and dashes; anything else is not an id to continue from.
   if (!/^[\w-]{1,200}$/.test(responseId)) return;
   const map = state(s).continuations;
   while (map.size >= 2000) map.delete(map.keys().next().value!);

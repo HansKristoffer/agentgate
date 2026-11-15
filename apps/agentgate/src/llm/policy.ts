@@ -10,16 +10,22 @@ function timers(s: Store) {
 }
 export function cooldowns(s: Store, accountId: string, model?: string): Cooldown[] {
   const map = timers(s);
-  for (const [key, entry] of map) if (entry.retryAt <= s.now() || !s.get("account", entry.accountId)) map.delete(key);
+  for (const [key, entry] of map) {
+    const expired = entry.retryAt <= s.now();
+    if (expired || !s.get("account", entry.accountId)) map.delete(key);
+  }
   return [...map.values()].filter(
     (c) => c.accountId === accountId && (!model || c.scope === "account" || c.model === model),
   );
 }
 export function cool(s: Store, accountId: string, reason: Failure, retryAt: number, model?: string) {
   if (!s.get("account", accountId) || retryAt <= s.now()) return;
-  const m = timers(s),
-    key = `${accountId}\0${model ?? ""}`;
+  const m = timers(s);
+  const key = `${accountId}\0${model ?? ""}`;
+
+  // The map holds at most 5000 cooldowns; the oldest one makes room.
   if (m.size >= 5000 && !m.has(key)) m.delete(m.keys().next().value!);
+
   const prev = m.get(key);
   // A shorter cooldown cannot cut a longer one short, and the reason stays the longer one's: a rate limit followed by a
   // brief transient failure is still a rate limit.
@@ -43,6 +49,7 @@ export function resetCooldown(s: Store, accountId: string) {
   if (m.size !== before) s.bump("status");
 }
 
+/** A missing or unreadable Retry-After waits two seconds. */
 export const retryAfterMs = (headers: Headers, now = Date.now()) =>
   parseRetryAfter(headers.get("retry-after"), now) ?? 2000;
 /** One wall-clock bootstrap deadline, independent of the provider's stream lifetime. */

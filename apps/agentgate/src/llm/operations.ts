@@ -95,7 +95,9 @@ export class ProxyOperations {
           : undefined,
       ]);
       if (options.probe) {
-        if (!adapter.probe || !options.model)
+        const { probe } = adapter;
+        const model = options.model;
+        if (!probe || !model)
           checks.probe = { status: "unsupported", message: "Choose a model for the inference probe" };
         else
           checks.probe = await checked(async () => {
@@ -112,9 +114,9 @@ export class ProxyOperations {
                   "anthropic-version": "2023-06-01",
                   authorization: "Bearer agentgate",
                 },
-                body: JSON.stringify(adapter.probe!.body(options.model!)),
+                body: JSON.stringify(probe.body(model)),
               }),
-              adapter.probe!.path,
+              probe.path,
               { maxBody: 16384, headerTimeout: 15000, streamIdle: 15000 },
               { accountId: id },
             );
