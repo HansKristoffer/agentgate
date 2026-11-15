@@ -19,8 +19,8 @@ import { shortError, type FactoryRuntime, type SourceAdapter } from "./runtime.t
 
 /**
  * The GitHub source: open issues with the source's label become items, keyed `<repository name>-<n>` with the external
- * id `owner/repo#<n>`. Intake polls, dedupes and backs off, and the controller re-checks the issue before every stage; this file
- * only talks to GitHub through gh.ts.
+ * id `owner/repo#<n>`. Intake polls, dedupes and backs off, and the controller re-checks the issue before every stage.
+ * This file only talks to GitHub through gh.ts.
  */
 
 const CAPPED = `Only the newest ${ISSUE_LIMIT} open labelled issues are read; the rest wait until fewer are open`;
@@ -41,7 +41,7 @@ function issueOf(item: Pick<FactoryItem, "externalId">) {
   return { repo: m[1]!, number: Number(m[2]) };
 }
 
-export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
+const githubSource = (f: FactoryRuntime): SourceAdapter => ({
   type: "github",
   async poll(source) {
     if (source.type !== "github") return { items: [] };
@@ -80,13 +80,11 @@ export const githubSource = (f: FactoryRuntime): SourceAdapter => ({
     const own = (c: { author: string }) => c.author.toLowerCase() === viewer.toLowerCase();
     const factory = comments.findLastIndex((c) => own(c) && parseMarkers(c.body).length);
     if (factory < 0) return [];
+
+    // Replies after the factory's last comment, or after the one already read, whichever is later.
+    const readUpTo = comments.findIndex((c) => c.id === after);
     return comments
-      .slice(
-        Math.max(
-          factory,
-          comments.findIndex((c) => c.id === after),
-        ) + 1,
-      )
+      .slice(Math.max(factory, readUpTo) + 1)
       .filter((c) => !parseMarkers(c.body).length && (own(c) || COLLABORATORS.includes(c.authorAssociation)))
       .map(({ id, body }) => ({ id, body }));
   },

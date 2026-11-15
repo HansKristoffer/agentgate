@@ -40,7 +40,7 @@ export function resolveSecretRef(s: Store, ref: string) {
 }
 
 /** The names set, and the names the loaded folder declares that this machine lacks. */
-export function secretList(f: FactoryRuntime) {
+function secretList(f: FactoryRuntime) {
   const set = secretNames(f.s);
   const missing = (currentFolder(f)?.secrets ?? []).filter((name) => !set.includes(name));
   return { set, missing };

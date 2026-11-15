@@ -81,7 +81,7 @@ export type ItemPr = z.infer<typeof itemPrSchema>;
 
 /** What the factory recorded about a run as it went: a review round, a scout's source and what it filed. Stored as
  * JSON in `checked`. */
-export const runDataSchema = z.discriminatedUnion("kind", [
+const runDataSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("review"),
     head: z.string(),
@@ -318,10 +318,9 @@ const runJson = new Set(["report", "checked"]);
 /** The columns a patch names and their values; undefined clears a nullable column. */
 function columnsOf(patch: object, columns: Record<string, string>, jsonFields: Set<string>) {
   const fields = Object.entries(patch).filter(([k]) => k in columns);
-  return {
-    names: fields.map(([k]) => columns[k]!),
-    values: fields.map(([k, v]) => (jsonFields.has(k) ? encode(v) : ((v ?? null) as string | number | null))),
-  };
+  const names = fields.map(([k]) => columns[k]!);
+  const values = fields.map(([k, v]) => (jsonFields.has(k) ? encode(v) : ((v ?? null) as string | number | null)));
+  return { names, values };
 }
 const whereSql = (clauses: unknown[]) => (clauses.length ? `where ${clauses.join(" and ")}` : "");
 const insertSql = (table: string, names: string[]) =>
@@ -462,7 +461,7 @@ export const items = {
 };
 
 /** A run as the dispatch loop and the board's thread list need it. */
-export interface RunHead {
+interface RunHead {
   id: string;
   item?: string;
   kind: RunKind;
@@ -489,16 +488,16 @@ export type BoardRun = Pick<
 
 type RunFilter = { states?: readonly RunState[]; kinds?: RunKind[]; source?: string; endedSince?: number };
 function runFilter(filter: RunFilter) {
-  const where: string[] = [],
-    args: (string | number)[] = [];
+  const where: string[] = [];
+  const args: (string | number)[] = [];
   for (const [column, values] of [
     ["state", filter.states],
     ["kind", filter.kinds],
-  ] as const)
-    if (values) {
-      where.push(`${column} in (${values.map(() => "?").join(",") || "null"})`);
-      args.push(...values);
-    }
+  ] as const) {
+    if (!values) continue;
+    where.push(`${column} in (${values.map(() => "?").join(",") || "null"})`);
+    args.push(...values);
+  }
   if (filter.source !== undefined) {
     where.push("source = ?");
     args.push(filter.source);

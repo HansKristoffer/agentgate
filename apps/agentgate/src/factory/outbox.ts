@@ -43,6 +43,7 @@ const MOMENT_STAGE: Partial<Record<Moment, StageName>> = {
 function sourceOf(f: FactoryRuntime, item: Pick<FactoryItem, "source" | "configCommit">) {
   return folderFor(f, item.configCommit)?.config.sources.find((x) => x.id === item.source);
 }
+
 /** The adapter of the source the item came from, as the folder it started under names it. */
 export function adapterOf(f: FactoryRuntime, item: FactoryItem): SourceAdapter | undefined {
   const type = item.source === "manual" ? "manual" : sourceOf(f, item)?.type;
@@ -161,7 +162,10 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
   const unreachable = result.status === "unreachable";
   const expired = unreachable && s.now() - row.claimed >= GIVE_UP;
   const again = result.status === "limited" || (refused && refusals < REFUSALS) || (unreachable && !expired);
-  const status = expired ? "failed" : again && !unreachable ? "pending" : result.status;
+
+  let status: string = result.status;
+  if (expired) status = "failed";
+  else if (again && !unreachable) status = "pending";
   s.db.run("update factory_writebacks set status=?, refusals=?, at=? where item=? and moment=? and ref=?", [
     status,
     refusals,
@@ -169,16 +173,20 @@ async function sendWrite(f: FactoryRuntime, item: string, moment: WriteMoment, r
     ...key,
   ]);
   s.bump("factory");
+
   // The loop sends an unreachable write every pass: its history says so when that starts, not each time.
   if (status === "unreachable" && row.status === "unreachable") return;
+
+  const error = result.error ? ` (${result.error})` : "";
+  let next = "";
+  if (again) next = "; it is tried again";
+  else if (expired) next = "; a day after it was claimed, it is given up";
   f.events.emit({
     kind: "writeback",
     item,
     moment,
     status: result.status,
-    text: `${row.what}: ${result.status}${result.error ? ` (${result.error})` : ""}${
-      again ? "; it is tried again" : expired ? "; a day after it was claimed, it is given up" : ""
-    }`,
+    text: `${row.what}: ${result.status}${error}${next}`,
   });
 }
 
@@ -197,7 +205,7 @@ async function deliver(f: FactoryRuntime, id: string, moment: WriteMoment, ref: 
   return post(item, body);
 }
 
-export interface SuggestedIssue {
+interface SuggestedIssue {
   repo: string;
   title: string;
   body: string;
@@ -257,7 +265,7 @@ function settle(f: FactoryRuntime) {
     )
     .all(f.s.now() - EVERY);
   const settled = rows.filter((r) => parseMarkers(r.body).at(-1)?.moment === r.moment);
-  for (const id of new Set(settled.map((r) => r.item)))
+  for (const id of new Set(settled.map((r) => r.item))) {
     later(f, id, "Reading back an uncertain comment", async () => {
       const item = items.get(f.s, id);
       const check = item && adapterOf(f, item)?.check;
@@ -272,19 +280,22 @@ function settle(f: FactoryRuntime) {
         );
         if (!changes) continue;
         f.s.bump("factory");
-        if (status === "pending") await sendWrite(f, id, row.moment, row.ref);
-        else
-          f.events.emit({
-            kind: "writeback",
-            item: id,
-            moment: row.moment,
-            status: landed ? "posted" : "failed",
-            text: landed
-              ? `${row.what}: posted, as its issue's comments show`
-              : `${row.what}: not on its issue a day after it was claimed, so it is given up`,
-          });
+        if (status === "pending") {
+          await sendWrite(f, id, row.moment, row.ref);
+          continue;
+        }
+        f.events.emit({
+          kind: "writeback",
+          item: id,
+          moment: row.moment,
+          status: landed ? "posted" : "failed",
+          text: landed
+            ? `${row.what}: posted, as its issue's comments show`
+            : `${row.what}: not on its issue a day after it was claimed, so it is given up`,
+        });
       }
     });
+  }
 }
 
 /** A send a restart cut off may have reached the service: it is uncertain, and only `settle` sends it again. */
@@ -292,13 +303,14 @@ function settleInterrupted(f: FactoryRuntime) {
   const rows = f.s.db
     .query<WriteKey, []>("select item, moment, ref from factory_writebacks where status='sending'")
     .all();
-  for (const { item, moment, ref } of rows)
-    if (!flying(f).has(JSON.stringify([item, moment, ref])))
-      f.s.db.run("update factory_writebacks set status='uncertain' where item=? and moment=? and ref=?", [
-        item,
-        moment,
-        ref,
-      ]);
+  for (const { item, moment, ref } of rows) {
+    if (flying(f).has(JSON.stringify([item, moment, ref]))) continue;
+    f.s.db.run("update factory_writebacks set status='uncertain' where item=? and moment=? and ref=?", [
+      item,
+      moment,
+      ref,
+    ]);
+  }
 }
 
 export function setup(f: FactoryRuntime): void {

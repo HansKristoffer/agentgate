@@ -53,10 +53,10 @@ export function initTemplate(repo: string, label = DEFAULT_LABEL): FolderFiles {
 async function initFactory(f: FactoryRuntime, input: FactoryInitInput): Promise<FactoryInitResult> {
   const { s } = f;
   const { repo, node = defaultNode(s), label = DEFAULT_LABEL } = input;
-  const on = f.pointer();
-  if (on)
+  const pointer = f.pointer();
+  if (pointer)
     throw new Error(
-      `The factory is on, ${folderStore(f, on).label}; add ${repo} to it with agentgate factory repo add ${repo}`,
+      `The factory is on, ${folderStore(f, pointer).label}; add ${repo} to it with agentgate factory repo add ${repo}`,
     );
   requireFactoryProtocol(s);
   if (!s.get("node", node)) throw new Error(`No machine is named ${node}; agentgate status lists them`);

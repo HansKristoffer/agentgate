@@ -139,8 +139,6 @@ export const insertSource = (text: string, source: { [key: string]: Json }) =>
     byHand: `add this to it by hand:\n\n${["sources:", sourceYaml(source)].join("\n")}`,
   });
 
-// ---- the PR
-
 function prBody(input: FactorySourceAddInput, secret: string | undefined) {
   const { source } = input;
   const lines =
@@ -213,7 +211,8 @@ async function addSource(f: FactoryRuntime, input: unknown): Promise<FolderChang
   const yaml = await folder.file("factory.yaml");
   if (yaml === undefined) throw new Error(`The factory folder, ${folder.label}, has no factory.yaml`);
   const scoutPath = `scouts/${source.id}.md`;
-  checkNew(yaml, source, (await folder.file(scoutPath)) !== undefined);
+  const scoutExists = (await folder.file(scoutPath)) !== undefined;
+  checkNew(yaml, source, scoutExists);
   const proposed = await folder.propose({
     title: `chore(factory): add the ${source.type === "scout" ? "scout" : "webhook source"} ${source.id}`,
     body: prBody(parsed, secret),

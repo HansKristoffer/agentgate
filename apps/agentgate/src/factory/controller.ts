@@ -40,7 +40,8 @@ import {
 } from "./db.ts";
 import type { HumanAct } from "./events.ts";
 import { defaultBranch as readDefaultBranch } from "./gh.ts";
-import { isWorkingStatus, mirrorOf, type MirrorThread } from "./mirror.ts";
+import { isWorkingStatus } from "../handoff/t3.ts";
+import { mirrorOf, type MirrorThread } from "./mirror.ts";
 import { CAUSES, needsYouLines, POSTS } from "./needs-you.ts";
 import { adapterOf, questionRef, writeBack } from "./outbox.ts";
 import { Backoff } from "../runtime.ts";
@@ -124,8 +125,6 @@ export function repositoryOf(f: FactoryRuntime, item: Pick<FactoryItem, "repo" |
   return name ? repos[name] : undefined;
 }
 
-// ---- phases
-
 /**
  * What the controller does the same for every phase. A phase with `done` is a stage, named like its run kind: entering
  * it queues that run (`moveOn`), and the run's report with the outcome done needs a result of this shape (`takeReport`).
@@ -202,8 +201,6 @@ export function moveOn(
   if (options.moment) writeBack(f, moved, options.moment, options.comment);
   return moved;
 }
-
-// ---- items and runs
 
 /** `approved`: a person started this stage, so `start: manual` does not hold it again. */
 export function enqueueRun(
@@ -490,8 +487,13 @@ export async function finishItem(
   },
 ) {
   if (options.note) f.events.emit({ kind: "note", item: item.id, text: options.reason });
-  if (options.interrupt) await interruptItem(f, item.id, options.reason);
-  else for (const run of runs.forItem(f.s, item.id)) if (run.state === "queued") endRun(f, run, "cancelled");
+  if (options.interrupt) {
+    await interruptItem(f, item.id, options.reason);
+  } else {
+    for (const run of runs.forItem(f.s, item.id)) {
+      if (run.state === "queued") endRun(f, run, "cancelled");
+    }
+  }
   // The item as it was, so the marker names the stage it ended in. Claimed before the move, so the comment is sent
   // before the steps the move's event queues, such as reading the threads' tokens again.
   if (options.comment) writeBack(f, item, to, options.comment);
@@ -501,8 +503,6 @@ export async function finishItem(
 /** An item that ends at a report or a rejection: no thread of it is working, or the one reporting settles itself. */
 export const closeItem = (f: FactoryRuntime, item: FactoryItem, reason: string, report?: FactoryReport) =>
   finishItem(f, item, "closed", { interrupt: false, reason, comment: { text: reason, ...(report && { report }) } });
-
-// ---- T3
 
 type Project = { projectId: string; root: string };
 
@@ -594,7 +594,9 @@ export async function interruptItem(f: FactoryRuntime, item: string, reason: str
   // Cancelled first, all at once, so the mirror does not take an interrupted thread for a silent end, and no report
   // arriving meanwhile finds a run that still takes one.
   const active = new Set(all.filter((run) => ACTIVE.includes(run.state)).map((run) => run.id));
-  for (const run of all) if (active.has(run.id)) endRun(f, run, "cancelled");
+  for (const run of all) {
+    if (active.has(run.id)) endRun(f, run, "cancelled");
+  }
   for (const run of all) {
     if (!run.threadId) continue;
     const thread = mirror.thread(run.threadId);
@@ -689,8 +691,6 @@ function launchUncertain(f: FactoryRuntime, run: FactoryRun, item: FactoryItem |
       run,
     });
 }
-
-// ---- limits and dispatch
 
 /** A thread whose turn goes on: a T3 run that has not finished (`waiting` counts: the turn waits on background work or
  * a subagent), or a subagent thread under it that works. A thread that waits for a person does not count. */
@@ -800,8 +800,10 @@ async function dispatch(f: FactoryRuntime) {
   };
   const free = threads - counts.stage - counts.scout;
   await Promise.all(Array.from({ length: Math.max(0, free) }, launcher));
-  for (const run of queue)
-    if (run.item) waitFor(f, run.item, "thread", `Waits for a free thread; all ${threads} are working`, run);
+  for (const run of queue) {
+    if (!run.item) continue;
+    waitFor(f, run.item, "thread", `Waits for a free thread; all ${threads} are working`, run);
+  }
   m.quota = quota;
 }
 
@@ -943,8 +945,6 @@ function unread(f: FactoryRuntime, run: FactoryRun, what: string, e: unknown) {
   return undefined;
 }
 
-// ---- watching threads
-
 function watch(f: FactoryRuntime) {
   const m = memory(f);
   if (m.watching) return;
@@ -956,9 +956,10 @@ function watch(f: FactoryRuntime) {
     );
   });
   mirror.onRemove((thread) => {
-    for (const run of runs.byThreads(f.s, [thread.id]))
+    for (const run of runs.byThreads(f.s, [thread.id])) {
       if (ACTIVE.includes(run.state) || ownsPr(f, run))
         later(f, run.item ?? run.id, `Ending ${run.id} after its thread was deleted`, () => threadDeleted(f, run.id));
+    }
   });
 }
 
@@ -1004,11 +1005,9 @@ export function threadScope(f: FactoryRuntime, thread: string | undefined): Sess
   const folder = folderFor(f, run.configCommit);
   const { checked } = run;
   const scout = checked?.kind === "scout" ? folder?.config.sources.find((x) => x.id === checked.source) : undefined;
-  const servers = isStage(run.kind)
-    ? folder?.stages[run.kind]?.file.mcp
-    : scout?.type === "scout"
-      ? scout.mcp
-      : undefined;
+  let servers: string[] | undefined;
+  if (isStage(run.kind)) servers = folder?.stages[run.kind]?.file.mcp;
+  else if (scout?.type === "scout") servers = scout.mcp;
   return { servers: servers ?? [] };
 }
 
@@ -1140,8 +1139,6 @@ async function threadDeleted(f: FactoryRuntime, id: string) {
   });
 }
 
-// ---- handoffs
-
 /** The handoff that is moving, or moved, this machine's thread, unless it failed and the thread stayed. */
 const handoffOfThread = (f: FactoryRuntime, thread: string) =>
   f.ctx.handoffs.list("source").find((job) => job.thread === thread && job.step !== "failed");
@@ -1219,8 +1216,6 @@ async function silentEnd(f: FactoryRuntime, run: FactoryRun, { remind = true } =
   });
 }
 
-// ---- reports
-
 const REQUIRED: Partial<Record<Outcome, { key: keyof FactoryReport; name: string }>> = {
   blocked: { key: "blocked", name: "blocked.missing" },
   "needs-decision": { key: "decision", name: "decision (question and recommendation)" },
@@ -1284,8 +1279,9 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
   const asks = report.outcome === "blocked" || report.outcome === "needs-decision";
   // A run without an item, a scout's, has nothing to close: its own accept takes nothing-to-do.
   const closing = item && CLOSING[report.outcome];
-  if (item && closing) await closeItem(f, item, closing(report), report);
-  else if (item && asks)
+  if (item && closing) {
+    await closeItem(f, item, closing(report), report);
+  } else if (item && asks) {
     ask(f, items.get(s, item.id)!, {
       cause: report.outcome === "blocked" ? "blocked" : "decision",
       question: report.blocked?.missing ?? report.decision!.question,
@@ -1297,7 +1293,9 @@ async function takeReport(f: FactoryRuntime, report: FactoryReport, caller: Call
       run: reported,
       report,
     });
-  else if (!closing && !asks) await definition.accept(report, reported, item);
+  } else if (!closing && !asks) {
+    await definition.accept(report, reported, item);
+  }
   // The thread settles once the turn that reported ends (`settleFinished`).
   return { accepted: true };
 }
@@ -1324,8 +1322,6 @@ async function settleFinished(f: FactoryRuntime, thread: MirrorThread) {
   );
 }
 
-// ---- capacity
-
 /** Items that wait for the maintainer: a question, or a PR ready for their review. */
 export const waitingForYou = (f: FactoryRuntime) => items.list(f.s, { open: true }).filter(waitsForYou).length;
 
@@ -1334,7 +1330,6 @@ export function intakeState(f: FactoryRuntime): FactoryBoard["capacity"]["intake
   if (!f.isFactoryNode() || f.pointer()?.moveTo || !currentFolder(f) || isPaused(f)) return "off";
   return waitingForYou(f) >= limits(f).waitingForYou ? "paused-for-you" : "on";
 }
-// ---- items and runs nobody moves
 
 const stalledWindow = (f: FactoryRuntime, started: { configCommit: string }) =>
   4 * durationMs(limits(f, started).stalledAfter);
@@ -1352,24 +1347,29 @@ function findStuck(f: FactoryRuntime) {
   const { s } = f;
   const mirror = mirrorOf(f);
   // Asked again in the item's step: the step that held the item meanwhile, such as a report, may have moved it.
-  for (const item of items.list(s, { open: true }))
-    if (stalledFor(f, item.id))
-      later(f, item.id, `Checking whether ${item.key} is stuck`, async () => {
-        const stalled = stalledFor(f, item.id);
-        if (!stalled) return;
-        const hours = Math.round(stalled.ms / HOUR);
-        ask(f, stalled.item, {
-          cause: "stuck",
-          question: `Nothing moved ${item.key} in ${stalled.item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read its history before you retry it.`,
-        });
+  for (const item of items.list(s, { open: true })) {
+    if (!stalledFor(f, item.id)) continue;
+    later(f, item.id, `Checking whether ${item.key} is stuck`, async () => {
+      const stalled = stalledFor(f, item.id);
+      if (!stalled) return;
+      const hours = Math.round(stalled.ms / HOUR);
+      ask(f, stalled.item, {
+        cause: "stuck",
+        question: `Nothing moved ${item.key} in ${stalled.item.phase} for ${hours} hour${hours === 1 ? "" : "s"}. Read its history before you retry it.`,
       });
+    });
+  }
+
   // Only a mirror that has read T3 Code's threads can tell that one is gone: at start-up, and while T3 Code cannot be
   // read, it knows none of them, or old ones.
   const loaded = mirror.status().stream !== "down";
-  if (loaded)
-    for (const item of items.list(s, { open: true }))
+  if (loaded) {
+    for (const item of items.list(s, { open: true })) {
       if (followsPr(item) && !mirror.thread(item.pr.thread))
         later(f, item.id, `Checking ${item.key}'s PR thread, which is gone`, () => threadDeleted(f, item.pr.run));
+    }
+  }
+
   for (const run of runs.list(s, { states: ["running", "waiting"] })) {
     if (!run.threadId) continue;
     const thread = mirror.thread(run.threadId);
@@ -1410,8 +1410,6 @@ function stalledFor(f: FactoryRuntime, id: string) {
   const ms = s.now() - last;
   return ms < stalledWindow(f, item) ? undefined : { item, ms };
 }
-
-// ---- what a person can do to an item (actions.ts takes the actions)
 
 /** The folder the factory machine runs on, for an operation that changes items; it says why there is none. */
 export function requireFolder(f: FactoryRuntime): LoadedFolder {
@@ -1475,6 +1473,11 @@ function answersOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
   ];
 }
 
+function retryEffectOf(item: FactoryItem, target: ReturnType<typeof retryTarget>) {
+  if ("pr" in target) return "Go on with its PR";
+  return item.pr ? "Start a new implement thread that takes its PR over" : `Start ${target.kind} again in a new thread`;
+}
+
 /** The actions `act` takes for the item now, with what each does, so the CLI, the app and the issue comment offer the
  * same choices and none the daemon refuses. */
 export function actionsOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
@@ -1488,19 +1491,7 @@ export function actionsOf(f: FactoryRuntime, item: FactoryItem): BoardAction[] {
   return [
     ...answersOf(f, item),
     ...(target
-      ? [
-          {
-            name: "retry" as const,
-            label: "Retry",
-            effect:
-              "pr" in target
-                ? "Go on with its PR"
-                : item.pr
-                  ? "Start a new implement thread that takes its PR over"
-                  : `Start ${target.kind} again in a new thread`,
-            takesText: false,
-          },
-        ]
+      ? [{ name: "retry" as const, label: "Retry", effect: retryEffectOf(item, target), takesText: false }]
       : []),
     {
       name: "drop",

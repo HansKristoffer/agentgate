@@ -33,9 +33,10 @@ type FolderChanges = Record<string, string | null>;
 /** `files` with `changes` applied: text writes a file, null deletes it. */
 function withChanges(files: FolderFiles, changes: FolderChanges): FolderFiles {
   const next = { ...files };
-  for (const [path, text] of Object.entries(changes))
+  for (const [path, text] of Object.entries(changes)) {
     if (text === null) delete next[path];
     else next[path] = text;
+  }
   return next;
 }
 
@@ -138,8 +139,6 @@ function dirWords(args: string[], cwd: string | undefined, withForce: boolean) {
   if (!isAbsolute(dir) && !cwd) throw new Error("Give the directory as an absolute path");
   return { input: { dir: resolve(cwd ?? "/", dir), ...(values.force && { force: true }) } };
 }
-
-// ---- setup
 
 const at = (saved: StoredFolderView) => `the stored folder is at ${saved.commit!.slice(0, 7)}`;
 /** The one path `cat`, `put` or `rm` names in a terminal. */

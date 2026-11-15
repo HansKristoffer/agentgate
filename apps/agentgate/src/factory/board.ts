@@ -308,9 +308,9 @@ const inTime = (at: number, now: number) => {
 function scoutText(scout: NonNullable<FactoryBoard["sources"][number]["scout"]>, now: number) {
   const next = scout.enabled ? when(scout.nextAt, `, next ${inTime(scout.nextAt ?? 0, now)}`) : ", disabled";
   const last = scout.lastRun;
-  const ran = last
-    ? `, last run ${ago(last.at, now)} ${last.state === "reported" ? `filed ${last.filed}${when(last.skipped, ` (skipped ${last.skipped})`)}` : last.state}`
-    : "";
+  const outcome =
+    last?.state === "reported" ? `filed ${last.filed}${when(last.skipped, ` (skipped ${last.skipped})`)}` : last?.state;
+  const ran = last ? `, last run ${ago(last.at, now)} ${outcome}` : "";
   return `${scout.schedule}${next}${ran}`;
 }
 
@@ -401,12 +401,13 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
   }
 
   if (b.items.length) lines.push("", "Items:");
-  for (const phase of itemPhases)
+  for (const phase of itemPhases) {
     for (const i of b.items.filter((i) => i.phase === phase)) {
       const run = i.waiting ? `: ${i.waiting.text}` : when(i.run, ` [${i.run?.kind} ${i.run?.state}]`);
       const unknown = when(i.tokensUnknown, " (tokens unknown)");
       lines.push(`  ${phase.padEnd(9)} ${i.key} ${i.title}${run}${when(i.pr, ` ${i.pr?.url}`)}${unknown}`);
     }
+  }
 
   if (b.sources.length) lines.push("", "Sources:");
   for (const s of b.sources) {
@@ -427,10 +428,11 @@ export function boardText(b: FactoryBoard, { short = false, now = Date.now() } =
       : "offline";
     lines.push(`  ${m.node}${here(m.node)}: ${summary}`);
     if (short) continue;
-    for (const t of m.threads)
-      lines.push(
-        `    ${t.needsYou ? "!" : "-"} ${t.title}${when(t.project, ` [${t.project}]`)}: ${t.needsYou ? "needs you" : t.status}`,
-      );
+    for (const t of m.threads) {
+      const flag = t.needsYou ? "!" : "-";
+      const state = t.needsYou ? "needs you" : t.status;
+      lines.push(`    ${flag} ${t.title}${when(t.project, ` [${t.project}]`)}: ${state}`);
+    }
   }
 
   if (!short && b.events.length) {

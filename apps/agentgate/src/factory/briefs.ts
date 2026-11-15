@@ -47,7 +47,7 @@ function itemSection(item: FactoryItem) {
   ].join("\n\n");
 }
 
-export const rulingsSection = (rulings: string) =>
+const rulingsSection = (rulings: string) =>
   `## Rulings\n\nThe maintainer's standing rulings for this factory:\n\n${rulings}`;
 
 function reportSection(kind: RunKind, run: FactoryRun) {

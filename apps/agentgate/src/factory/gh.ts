@@ -350,8 +350,6 @@ function written(what: string, r: GhResult): PostResult {
 const post = async (what: string, path: string, payload: unknown) =>
   written(what, await ask(["api", path, "--method", "POST", "--input", "-", "--include"], JSON.stringify(payload)));
 
-// ---- proposing a change to a factory folder in a repository (folder-store.ts)
-
 const contents = (repo: string, path: string, ref?: string) =>
   `repos/${repo}/contents/${path}${ref ? `?ref=${encodeURIComponent(ref)}` : ""}`;
 
@@ -645,7 +643,7 @@ export interface FeedbackComment {
   association: string;
   bot: boolean;
 }
-export interface ReviewConversation {
+interface ReviewConversation {
   id: string;
   resolved: boolean;
   outdated: boolean;
@@ -719,19 +717,19 @@ const feedbackSchema = z.object({
 });
 
 function toFeedback({ reviews, reviewThreads }: z.infer<z.ZodObject<typeof feedbackShape>>): PrFeedback {
-  const comment = (c: { body: string; authorAssociation: string; author: { __typename: string } | null }) => ({
+  const fromComment = (c: { body: string; authorAssociation: string; author: { __typename: string } | null }) => ({
     body: c.body,
     association: c.authorAssociation,
     bot: c.author?.__typename === "Bot",
   });
   return {
     reviews: reviews.nodes.flatMap((r) =>
-      r.submittedAt ? [{ ...comment(r), at: r.submittedAt, state: r.state }] : [],
+      r.submittedAt ? [{ ...fromComment(r), at: r.submittedAt, state: r.state }] : [],
     ),
     conversations: reviewThreads.nodes.flatMap((t) => {
       const comments = t.comments.nodes
         .filter((c) => c.state !== "PENDING")
-        .map((c) => ({ ...comment(c), at: c.createdAt }));
+        .map((c) => ({ ...fromComment(c), at: c.createdAt }));
       if (!comments.length) return [];
       return [
         {
@@ -824,12 +822,16 @@ export async function followedPrs(repo: string, numbers: number[]): Promise<Map<
     try {
       await read(batch);
     } catch (e) {
-      if (batch.length === 1) found.set(batch[0]!, e as Error);
-      else for (const n of batch) await read([n]).catch((e: Error) => found.set(n, e));
+      if (batch.length === 1) {
+        found.set(batch[0]!, e as Error);
+      } else {
+        for (const n of batch) await read([n]).catch((e: Error) => found.set(n, e));
+      }
     }
   }
-  for (const n of numbers)
+  for (const n of numbers) {
     if (!found.has(n)) found.set(n, new Error(`GitHub does not show ${repo}#${n} to this machine's gh login`));
+  }
   return found;
 }
 

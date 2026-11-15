@@ -203,10 +203,12 @@ function detailText(d: FactoryItemDetail): string[] {
   else if (item.waiting) lines.push(item.waiting.text);
   if (item.pr) lines.push(`PR: ${item.pr.url}`);
   lines.push(`Tokens: ${item.tokensUnknown ? "unknown" : item.tokens}`, "", "Runs:");
-  for (const r of d.runs)
-    lines.push(
-      `  ${r.id} ${r.kind} attempt ${r.attempt}: ${r.state}${r.node ? ` on ${r.node}` : ""}${r.threadLink ? ` ${r.threadLink}` : ""}${r.error ? ` (${r.error})` : ""}`,
-    );
+  for (const r of d.runs) {
+    const node = r.node ? ` on ${r.node}` : "";
+    const thread = r.threadLink ? ` ${r.threadLink}` : "";
+    const error = r.error ? ` (${r.error})` : "";
+    lines.push(`  ${r.id} ${r.kind} attempt ${r.attempt}: ${r.state}${node}${thread}${error}`);
+  }
   if (d.writebacks.length) lines.push("", "Comments:");
   for (const w of d.writebacks) lines.push(`  ${time(w.at)} ${w.moment}: ${w.status}`);
   if (d.events.length) lines.push("", "Events:");

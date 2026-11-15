@@ -116,7 +116,9 @@ async function intake(f: FactoryRuntime) {
   // An answer is the person's action, like one from the CLI, so it is read while intake is off too.
   await readAnswers(f);
   if (intakeState(f) === "off") return;
-  for (const source of folder.config.sources) if (memory(f).backoff.due(source.id)) await pollSource(f, source.id);
+  for (const source of folder.config.sources) {
+    if (memory(f).backoff.due(source.id)) await pollSource(f, source.id);
+  }
 }
 
 /** The newest issue comment `readAnswers` used for each item, so no comment is used twice. */
@@ -127,8 +129,10 @@ const ANSWER_SEEN = "factory:answer-seen:";
 function issueAnswer(body: string, kind: NeedsYou["kind"]) {
   const text = body.trim();
   const command = /^\/(approve|reject)\b([\s\S]*)$/.exec(text);
-  if (command)
-    return { action: command[1] as "approve" | "reject", ...(command[2]!.trim() && { text: command[2]!.trim() }) };
+  if (command) {
+    const rest = command[2]!.trim();
+    return { action: command[1] as "approve" | "reject", ...(rest && { text: rest }) };
+  }
   return kind === "answer" && text ? { action: "approve" as const, text } : undefined;
 }
 

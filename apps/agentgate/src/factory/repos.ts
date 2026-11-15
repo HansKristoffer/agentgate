@@ -83,7 +83,10 @@ function removeRepository(text: string, repo: string) {
         return typeof source?.repo === "string" && same(source.repo, repo);
       });
       if (!drop.length) return undefined;
-      const remove = new Set([...drop, ...gone].flatMap((e) => lines.slice(e.start, e.end).map((_, i) => e.start + i)));
+
+      const removed = [...drop, ...gone];
+      const remove = new Set(removed.flatMap((e) => lines.slice(e.start, e.end).map((_, i) => e.start + i)));
+
       // A list left without entries is written `[]`, which reads back as an empty list rather than null.
       return lines.flatMap((line, i) =>
         remove.has(i)
