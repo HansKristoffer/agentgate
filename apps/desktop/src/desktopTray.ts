@@ -40,39 +40,40 @@ export function useDesktopTray(
   const wanted = !!data && !!desktop?.available && (desktop.logins.length > 0 || desktop.mode === "pool");
 
   useEffect(() => {
-    if (!wanted) {
+    // `wanted` implies both reads are present; the checks here are what narrows them for the closures below.
+    if (!wanted || !data || !desktop) {
       if (tray.current) void tray.current.then((t) => t.close()).catch(() => {});
       tray.current = undefined;
       shown.current = "";
       return;
     }
-    const current = desktop!.mode === "signed-in" ? desktop!.current : undefined;
+    const current = desktop.mode === "signed-in" ? desktop.current : undefined;
     const title =
-      desktop!.mode === "pool"
+      desktop.mode === "pool"
         ? "✳ Shared"
         : current
-          ? `✳ ${name(current)} ${pct(data!, current.accountId)}`.trim()
+          ? `✳ ${name(current)} ${pct(data, current.accountId)}`.trim()
           : "✳";
-    const usable = desktop!.logins.filter((l) => !l.expired && !l.problem);
+    const usable = desktop.logins.filter((l) => !l.expired && !l.problem);
     const key = JSON.stringify([
       title,
-      desktop!.mode,
+      desktop.mode,
       current?.accountUuid,
-      usable.map((l) => [l.accountUuid, name(l), pct(data!, l.accountId)]),
+      usable.map((l) => [l.accountUuid, name(l), pct(data, l.accountId)]),
     ]);
     if (key === shown.current) return;
     shown.current = key;
     void (async () => {
       const items = [
         await MenuItem.new({
-          text: desktop!.mode === "pool" ? "Claude Desktop shares your subscriptions" : "Claude Desktop account",
+          text: desktop.mode === "pool" ? "Claude Desktop shares your subscriptions" : "Claude Desktop account",
           enabled: false,
         }),
         ...(await Promise.all(
           usable.map((l) =>
             CheckMenuItem.new({
-              text: `${name(l)}${pct(data!, l.accountId) ? `  ${pct(data!, l.accountId)}` : ""}`,
-              checked: desktop!.mode === "signed-in" && current?.accountUuid === l.accountUuid,
+              text: `${name(l)}${pct(data, l.accountId) ? `  ${pct(data, l.accountId)}` : ""}`,
+              checked: desktop.mode === "signed-in" && current?.accountUuid === l.accountUuid,
               action: () => handlers.current.use(l),
             }),
           ),
@@ -80,10 +81,10 @@ export function useDesktopTray(
         await PredefinedMenuItem.new({ item: "Separator" }),
         await MenuItem.new({
           text:
-            desktop!.mode === "pool"
+            desktop.mode === "pool"
               ? "Use my own sign-in in Claude Desktop"
               : "Share subscriptions automatically (Code tab)",
-          action: () => handlers.current.pool(desktop!.mode !== "pool"),
+          action: () => handlers.current.pool(desktop.mode !== "pool"),
         }),
         await MenuItem.new({ text: "Open Agentgate", action: () => void showApp() }),
       ];

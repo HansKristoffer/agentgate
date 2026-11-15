@@ -10,6 +10,8 @@ export function ModelAliases({
   aliases: Settings["aliases"];
   change: (aliases: Settings["aliases"]) => void;
 }) {
+  const edit = (index: number, patch: Partial<Settings["aliases"][number]>) =>
+    change(aliases.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   return (
     <div className="item stack">
       <span className="labelled">
@@ -24,21 +26,11 @@ export function ModelAliases({
           <Choice
             label="Provider"
             value={alias.provider}
-            onChange={(v) =>
-              change(aliases.map((row, i) => (i === index ? { ...row, provider: String(v) as Provider } : row)))
-            }
+            onChange={(v) => edit(index, { provider: String(v) as Provider })}
             options={providerOptions}
           />
-          <Field
-            label="Client model name"
-            value={alias.alias}
-            onChange={(v) => change(aliases.map((row, i) => (i === index ? { ...row, alias: v } : row)))}
-          />
-          <Field
-            label="Upstream model"
-            value={alias.target}
-            onChange={(v) => change(aliases.map((row, i) => (i === index ? { ...row, target: v } : row)))}
-          />
+          <Field label="Client model name" value={alias.alias} onChange={(v) => edit(index, { alias: v })} />
+          <Field label="Upstream model" value={alias.target} onChange={(v) => edit(index, { target: v })} />
           <Button size="sm" variant="ghost" onPress={() => change(aliases.filter((_, i) => i !== index))}>
             Remove
           </Button>

@@ -255,7 +255,7 @@ export function Segmented<K extends string>({
 }
 /** A switch that moves when clicked. When `onChange` returns a promise (a `perform`), it shows the new value while the
  * change is saved, and whatever the daemon reports afterwards. */
-export function LiveSwitch({
+function LiveSwitch({
   isSelected,
   onChange,
   ...props
