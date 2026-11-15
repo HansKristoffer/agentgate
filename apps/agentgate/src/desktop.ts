@@ -304,8 +304,10 @@ function save(s: Store, login: Login) {
 function log(s: Store, uuid: string | undefined, note: string) {
   s.log("claude-desktop", (uuid && poolAccount(s, uuid)?.id) ?? "", "", 0, 0, note);
 }
-const nameOf = (s: Store, uuid: string) =>
-  poolAccount(s, uuid)?.label ?? poolAccount(s, uuid)?.email ?? uuid.slice(0, 8);
+const nameOf = (s: Store, uuid: string) => {
+  const account = poolAccount(s, uuid);
+  return account?.label ?? account?.email ?? uuid.slice(0, 8);
+};
 
 const LEASE = "desktop:switch";
 /** Set while Desktop's cookies and config.json are being replaced: they may belong to two accounts until it is cleared. */
@@ -532,7 +534,6 @@ export function forget(s: Store, uuid: string) {
   s.setLocal(key(uuid), undefined);
 }
 
-/** Write the gateway profile's mode. Desktop must not be running. A failed write puts the user's previous gateway setup back. */
 const GATEWAY_JOURNAL = "desktop:gatewayBefore";
 const gatewayPaths = () => [gatewayFile(), join(libraryDir(), "_meta.json")];
 
@@ -546,6 +547,7 @@ function restoreGateway(s: Store, before: (string | null)[]) {
   s.setLocal(GATEWAY_JOURNAL, undefined);
 }
 
+/** Write the gateway profile's mode. Desktop must not be running. A failed write puts the user's previous gateway setup back. */
 function setGatewayMode(s: Store, on: boolean) {
   const before = gatewayPaths().map((f) => (existsSync(f) ? readFileSync(f, "utf8") : null));
   s.setLocal(GATEWAY_JOURNAL, JSON.stringify(before));
@@ -612,7 +614,9 @@ export function status(s: Store): DesktopStatus {
   let cookies: Database | undefined;
   try {
     cookies = openCookies(true);
-  } catch {}
+  } catch {
+    // Without a cookie store, Desktop shows as signed out.
+  }
   try {
     return installedStatus(s, cookies, base);
   } finally {
@@ -632,7 +636,9 @@ function installedStatus(
   let schema = "";
   try {
     if (cookies) schema = schemaOf(cookies);
-  } catch {}
+  } catch {
+    // Without a readable schema, saved logins show no compatibility problem.
+  }
   const who = (uuid: string) => {
     const a = poolAccount(s, uuid);
     return { accountUuid: uuid, accountId: a?.id, label: a?.label, email: a?.email };
@@ -655,13 +661,18 @@ function installedStatus(
     signedIn = !!cookies && !!readLogin(cookies);
     if (signedIn && typeof uuid === "string")
       current = { ...who(uuid), saved: logins.some((l) => l.accountUuid === uuid) };
-  } catch {}
+  } catch {
+    // Unreadable files leave the current account unknown.
+  }
   const pending = s.local("desktop:pendingAdd");
   const wrong = s.local("desktop:addMismatch");
   let m: DesktopMode = "signed-in";
   try {
     m = mode();
-  } catch {}
+  } catch {
+    // An unreadable gateway profile is shown as the default mode.
+  }
+  const mismatch = wrong ? (JSON.parse(wrong) as { expected: string; accountUuid: string }) : undefined;
   return {
     ...base,
     available: true,
@@ -671,9 +682,7 @@ function installedStatus(
     current,
     logins,
     pendingAdd: pending ? pick(JSON.parse(pending) as PendingAdd, ["since", "expected"]) : undefined,
-    addMismatch: wrong
-      ? (({ expected, accountUuid }) => ({ expected, ...who(accountUuid) }))(JSON.parse(wrong))
-      : undefined,
+    addMismatch: mismatch ? { expected: mismatch.expected, ...who(mismatch.accountUuid) } : undefined,
     // Desktop was on an account agentgate put there and now has none: the user signed out in Desktop.
     signedOut: m === "signed-in" && !signedIn && !pending && !!s.local("desktop:current"),
   };
