@@ -26,7 +26,7 @@ Each shim session reaches the daemon at `/mcp`, and the daemon holds one shared 
 
 - Shared upstream connections keep their tool list, listed once when they connect and dropped when the server sends
   `notifications/tools/list_changed`, reconnects or its configuration changes. Asking every upstream on each
-  tools/list cost a session 650–800 ms, bound by the slowest server. Local sources (the shim's daemon, per-session
+  tools/list cost a session 650-800 ms, bound by the slowest server. Local sources (the shim's daemon, per-session
   children, the built-in tools) are asked every time: their lists can change without a notice, and a listing is how
   a shim notices a restarted daemon.
 - One listing runs at a time per session, so parallel first calls share it. A call for a tool the kept lists don't

@@ -50,7 +50,7 @@ folder format is `factoryConfigSchema` in the same protocol file.
   ([`stored.ts`](../../apps/agentgate/src/factory/stored.ts)), which `init` writes; the pointer's `store` says which.
   The stored folder's commit is the SHA-256 of its files, written to `<home>/factory/<commit>` like a fetched commit,
   so items and pruning treat both the same. Unlike a push, every write checks that the folder loads and refuses one
-  that does not: other machines only ever see the newest record, so a broken one would leave a new factory machine
+  that does not. Other machines only ever see the newest record, so a broken one would leave a new factory machine
   nothing to run. Two saves at once keep the later, like any record.
 - Code outside [`folder-store.ts`](../../apps/agentgate/src/factory/folder-store.ts) does not ask which kind it has:
   the folder loop reads through it, and `source add` and `repo add|remove` `propose` a change that the stored folder
@@ -62,7 +62,7 @@ folder format is `factoryConfigSchema` in the same protocol file.
   write the pointer; the generic settings patch has no `factory`.
 - One machine runs the factory. An operation asked for on another machine is sent there through
   `/peer/factory/op` ([`follow.ts`](../../apps/agentgate/src/factory/follow.ts)) as its name, its input and its
-  caller, whichever way it was asked. The machine that was asked checks the input first and words the result: a
+  caller, whichever way it was asked. The machine that was asked checks the input first and words the result. A
   terminal's words are parsed, and the answer printed, where they were typed, so only typed input and JSON cross
   machines. An operation marked `local` runs where it is asked: one that writes the pointer or another synced record,
   or opens a PR with this machine's `gh` login, and `status` and `doctor`, which ask the factory machine themselves

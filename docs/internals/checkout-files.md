@@ -44,7 +44,7 @@ fix this side and its fixture stores in `test/checkout-files.test.ts`.
 - Agentgate never runs buncargo for store sync: it works per machine, and buncargo exists only inside a repository, at
   the version that repository pins. It runs buncargo only inside a checkout (`files pull`, `files status`).
 - Each file merges on its own by `updatedAt`, and a removed file stays on the record as `deleted`. A file missing from
-  one side is unknown there, not deleted. That is what lets two machines save different files while apart: the record
+  one side is unknown there, not deleted. That lets two machines save different files while apart. The record
   as a whole is last-writer-wins, and the losing machine merges its own files back in the next pass. Each node keeps
   what it last reconciled (`checkoutFiles:base:<project>`, node-local) to tell a file removed from its store from one
   it never had.
