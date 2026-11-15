@@ -74,7 +74,7 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
     mainChecks: {} as Record<string, string | null>,
     /** How many of the next replies and resolves GitHub refuses. */
     refuse: { reply: 0, resolve: 0 },
-    /** Issues the factory opened, kept apart from \`issues\`: they carry no label, so intake never lists them. */
+    /** Issues the factory opened, kept apart from `issues`: they carry no label, so intake never lists them. */
     filed: [] as { repo: string; title: string; body: string }[],
     addIssue(number: number) {
       issues.set(number, { title: `Issue ${number}`, state: "OPEN", comments: [] });
@@ -310,21 +310,10 @@ type PrNode = Awaited<ReturnType<typeof prHelpers>> & { restart(): Promise<PrNod
 async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<typeof fakeGitHub>) {
   const builtin = (await n.ctx.gateway.builtin!()).client;
 
-  /** factory_report from the run's own T3 thread: `{ accepted: true }`, or the tool error's text. */
-  const report = async (run: FactoryRun, body: Omit<FactoryReport, "run"> | Record<string, unknown>) => {
+  /** A stage tool called from the run's T3 thread, or from `thread`: the answer, or the tool error's text. */
+  const call = async (name: string, run: FactoryRun, body: object, thread = run.threadId) => {
     const result = await builtin.callTool({
-      name: "factory_report",
-      arguments: { run: run.id, ...body },
-      _meta: { "dev.agentgate/t3Thread": run.threadId },
-    });
-    const text = (result.content as { text: string }[])[0]!.text;
-    await idle(n.f);
-    return result.isError ? { error: text } : JSON.parse(text);
-  };
-  /** factory_pr_threads from the run's own T3 thread, or from `thread`: the answer, or the tool error's text. */
-  const prThreads = async (run: FactoryRun, body: Record<string, unknown>, thread = run.threadId) => {
-    const result = await builtin.callTool({
-      name: "factory_pr_threads",
+      name,
       arguments: { run: run.id, ...body },
       _meta: { "dev.agentgate/t3Thread": thread },
     });
@@ -332,6 +321,12 @@ async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<t
     await idle(n.f);
     return result.isError ? { error: text } : JSON.parse(text);
   };
+  /** factory_report from the run's own T3 thread. */
+  const report = (run: FactoryRun, body: Omit<FactoryReport, "run"> | Record<string, unknown>) =>
+    call("factory_report", run, body);
+  /** factory_pr_threads from the run's own T3 thread, or from `thread`. */
+  const prThreads = (run: FactoryRun, body: Record<string, unknown>, thread = run.threadId) =>
+    call("factory_pr_threads", run, body, thread);
   const implementRuns = (item: FactoryItem) => runs.forItem(n.s, item.id).filter((r) => r.kind === "implement");
 
   /** Issue `number` entered, was triaged to implement, and its implement run was dispatched. */
