@@ -285,10 +285,10 @@ test("proxy management returns validated capabilities, revision-safe patches, an
   t.attempt("a", "priority");
   t.headers(200);
   t.finish("success");
-  const page = (await (
-    await call("/api/requests?provider=claude&outcome=success&search=sonnet&limit=1")
-  ).json()) as any;
-  expect(page.requests.map((r: any) => r.id)).toEqual([t.request.id]);
+  const page = (await (await call("/api/requests?provider=claude&outcome=success&search=sonnet&limit=1")).json()) as {
+    requests: { id: string }[];
+  };
+  expect(page.requests.map((r) => r.id)).toEqual([t.request.id]);
   const detail = await (await call(`/api/requests/${t.request.id}`)).json();
   expect(JSON.stringify(detail)).not.toContain("private-token");
   expect((await call("/api/requests?limit=1000")).status).toBe(400);
@@ -296,7 +296,7 @@ test("proxy management returns validated capabilities, revision-safe patches, an
   expect((await call("/api/accounts/a/verify", "POST", { probe: true })).status).toBe(400);
   const batch = (await (
     await call("/api/accounts/batch", "POST", { ids: ["a", "missing"], action: "disable" })
-  ).json()) as any[];
+  ).json()) as { ok: boolean }[];
   expect(batch.map((r) => r.ok)).toEqual([true, false]);
 });
 
