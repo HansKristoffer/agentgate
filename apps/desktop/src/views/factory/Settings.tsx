@@ -170,6 +170,14 @@ function Notify({ connection, local, run }: Pick<ViewProps, "connection" | "loca
   );
 }
 
+/** The T3 Code sign-in's state, typed against the board so a new state fails to compile until it is named here. */
+const mcpStates = {
+  "signed-in": "Signed in",
+  "signing-in": "Signing in",
+  failed: "Sign-in failed",
+  off: "Signed out",
+} as const satisfies Record<FactoryBoard["t3"]["mcp"], string>;
+
 /** Steering the whole factory: its T3 Code sign-in, the folder, the machine it runs on, and turning it off. */
 export function FactorySettings({
   data,
@@ -187,11 +195,7 @@ export function FactorySettings({
           <div className="grow">
             <strong>T3 Code sign-in</strong>
             <small className="muted">
-              {
-                { "signed-in": "Signed in", "signing-in": "Signing in", failed: "Sign-in failed", off: "Signed out" }[
-                  board.t3.mcp
-                ]
-              }
+              {mcpStates[board.t3.mcp]}
               {board.t3.mcpExpiresAt
                 ? ` until ${new Date(board.t3.mcpExpiresAt).toLocaleDateString(undefined, { dateStyle: "long" })}`
                 : ""}

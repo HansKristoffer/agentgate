@@ -17,7 +17,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
     perform(async () => setOutput(await localAction(name, connection)), "Command completed");
   return (
     <>
-      <PoolSettings data={data} connection={connection} perform={perform} local={local} desktop={desktop} />
+      <PoolSettings data={data} connection={connection} perform={perform} />
       {local && (
         <>
           <Panel title="Coding tools" detail="Provider and MCP settings for Claude Code, Codex, and T3 Code.">
