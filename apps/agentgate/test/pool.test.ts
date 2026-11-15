@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { Credentials } from "../src/credentials.ts";
-import { CLAUDE, claude } from "../src/llm/claude.ts";
+import { CLAUDE, claude, parseUsage } from "../src/llm/claude.ts";
 import { cool, cooldowns } from "../src/llm/policy.ts";
 import { accountStatus, proxy, recordUsage, unknownQuota } from "../src/llm/pool.ts";
+import { Quotas } from "../src/llm/quota.ts";
 import { providers } from "../src/llm/providers.ts";
 import { activeAccount, route } from "../src/llm/routing.ts";
 import { sessionUsage } from "../src/llm/sessions.ts";
@@ -411,8 +412,6 @@ test("an exhausted quota window without a reset cannot permanently disable an ac
 });
 
 test("usage endpoint maps onto the quota windows and is polled only for idle accounts", async () => {
-  const { parseUsage } = await import("../src/llm/claude.ts");
-  const { Quotas } = await import("../src/llm/quota.ts");
   const pollUsage = (
     s: Store,
     token: (id: string) => Promise<{ accessToken: string }>,
@@ -442,10 +441,8 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   expect(parseUsage({})).toBeUndefined();
 
   // A locked account is skipped by the pool; a lock on the Opus window only affects Opus.
-  const { Store: S } = await import("../src/store.ts");
-  const { recordUsage } = await import("../src/llm/pool.ts");
   const choose = (s: Store, provider: "claude", model: string) => route(s, provider, model).account;
-  const p = new S(":memory:");
+  const p = new Store(":memory:");
   p.setLocal("node", "n");
   for (const id of ["claude-a", "claude-b"]) {
     p.put("account", id, { id, provider: "claude", label: id, enabled: true, priority: id === "claude-a" ? 1 : 0 });
@@ -457,22 +454,21 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
       holder: "n",
     });
   }
-  const later = new Date(Date.now() + 3600_000).toISOString();
-  recordUsage(p, "claude-a", parseUsage({ five_hour: { utilization: 1, locked_reason: "x", resets_at: later } })!);
+  const resetsAt = new Date(Date.now() + 3600_000).toISOString();
+  recordUsage(p, "claude-a", parseUsage({ five_hour: { utilization: 1, locked_reason: "x", resets_at: resetsAt } })!);
   expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
   recordUsage(
     p,
     "claude-b",
     parseUsage({
       five_hour: { utilization: 1 },
-      seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: later },
+      seven_day_opus: { utilization: 1, locked_reason: "x", resets_at: resetsAt },
     })!,
   );
   expect(choose(p, "claude", "claude-opus-5")).toBeUndefined();
   expect(choose(p, "claude", "claude-sonnet-5")).toBe("claude-b");
   p.close();
 
-  const { Store } = await import("../src/store.ts");
   const s = new Store(":memory:");
   s.setLocal("node", "n");
   for (const id of ["claude-idle", "claude-busy"]) {
@@ -522,7 +518,6 @@ test("usage endpoint maps onto the quota windows and is polled only for idle acc
   try {
     const poll = pollUsage(s, async () => ({ accessToken: "t" }));
     const answer = await asking.promise;
-    const { recordUsage } = await import("../src/llm/pool.ts");
     recordUsage(s, "claude-idle", { windows: [{ name: "5h", usedPct: 98 }], status: "ok" });
     answer();
     await poll;

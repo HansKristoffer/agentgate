@@ -2,7 +2,7 @@ import { McpServer, WebStandardStreamableHTTPServerTransport } from "@modelconte
 import { afterAll, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { connect, needsLogin, serverHealth } from "../src/mcp/gateway.ts";
-import { finishLogin, startLogin, tickMcp } from "../src/mcp/oauth.ts";
+import { finishLogin, refreshMcp, startLogin, tickMcp } from "../src/mcp/oauth.ts";
 import { newInstance, parseHeaders } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
 
@@ -213,7 +213,6 @@ test("a login that cannot refresh keeps showing that it needs one", async () => 
     expiresAt: s.now() - 1,
   });
   s.setLocal("mcpHealth:fake", JSON.stringify({ ok: false, needsLogin: true, at: s.now() }));
-  const { refreshMcp } = await import("../src/mcp/oauth.ts");
   await expect(refreshMcp(s, "fake")).rejects.toThrow("needs a login");
   expect(serverHealth(s, "fake")).toMatchObject({ needsLogin: true });
   s.close();
@@ -247,7 +246,6 @@ test("MCP refresh uses holder coordination and concurrent callers rotate once", 
   remote.setLocal("node", "remote");
   for (const r of holder.changePage(0).records) remote.merge(r);
   remote.db.run("insert into peers values ('holder', 'http://127.0.0.1:1', 'fake', 0, ?)", [remote.now()]);
-  const { refreshMcp } = await import("../src/mcp/oauth.ts");
   const first = holder.get("mcpCredential", "fake")!.tokens!.access_token;
   await expect(refreshMcp(remote, "fake", true)).rejects.toThrow("holder");
   expect(remote.get("mcpCredential", "fake")?.tokens?.access_token).toBe(first);
@@ -267,7 +265,6 @@ test("an MCP token endpoint that is briefly down keeps the valid token instead o
   const response = await fetch(url!, { redirect: "manual" });
   const back = new URL(response.headers.get("location")!);
   await finishLogin(s, back.searchParams.get("state")!, back.searchParams.get("code")!, back.searchParams.get("iss")!);
-  const { refreshMcp } = await import("../src/mcp/oauth.ts");
   const current = s.get("mcpCredential", "fake")!;
   s.put("mcpCredential", "fake", { ...current, expiresAt: s.now() + 60_000 }); // close to expiry, so it refreshes
   tokenEndpointDown = true;
