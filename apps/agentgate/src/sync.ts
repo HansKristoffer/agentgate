@@ -142,8 +142,8 @@ export function lastSeen(s: Store, node: string): number {
 /** Pulls from `p` now. A call while that peer's pull runs asks for one more after it, since the poke that caused it may
  * announce a change the running pull read past; the promise settles once that one is done too. */
 export function pullPeer(s: Store, p: Peer): Promise<number> {
-  let pending = pulls.get(s);
-  if (!pending) pulls.set(s, (pending = new Map()));
+  const pending = pulls.get(s) ?? new Map<string, PeerPull>();
+  pulls.set(s, pending);
   const current = pending.get(p.node);
   if (current) {
     current.again = true;
@@ -191,13 +191,12 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
     );
     // Only the envelope here: `merge` parses a record's data once it knows the record wins.
     const records: Rec[] = body.records.map(parseEnvelope);
-    if (
-      records.some(
-        (r, index) => r.seq === undefined || r.seq > body.seq || r.seq <= (index ? records[index - 1]!.seq! : p.cursor),
-      ) ||
-      (body.more && (!records.length || body.seq !== records.at(-1)!.seq))
-    )
-      throw new Error(`pull ${p.node}: invalid change-feed sequence`);
+    // Records must climb from the cursor to the page's seq, and a page that says more must end on that seq.
+    const outOfOrder = records.some(
+      (r, index) => r.seq === undefined || r.seq > body.seq || r.seq <= (index ? records[index - 1]!.seq! : p.cursor),
+    );
+    const unfinishedPage = body.more && (!records.length || body.seq !== records.at(-1)!.seq);
+    if (outOfOrder || unfinishedPage) throw new Error(`pull ${p.node}: invalid change-feed sequence`);
     let validPeer = true;
     total += s.transaction(() => {
       const current = peers(s).find((peer) => peer.node === p.node);
@@ -245,6 +244,7 @@ export function startPulls(s: Store) {
   for (const p of peers(s)) if (!running?.has(p.node)) void pullRecordingErrors(s, p).catch(() => {});
 }
 
+/** Nudges each peer to pull now. A missed poke costs nothing: the peer pulls on its own timer. */
 export function poke(s: Store) {
   for (const p of peers(s))
     fetch(`${p.url}/peer/poke`, {
@@ -306,6 +306,7 @@ export function followPeers(
         known.set(node, next);
       }
     } catch {
+      // Any failure waits one pull interval before the next long poll.
       if (!signal.aborted) retryAt.set(node, s.now() + PULL_INTERVAL);
     }
   };
