@@ -58,6 +58,8 @@ export const checkoutFileSchema = z.object({
 });
 export type CheckoutFile = z.infer<typeof checkoutFileSchema>;
 const checkoutPath = z.string().max(512).refine(safePath, "unsafe checkout file path");
+/** The longest global AGENTS.md, in characters: Claude Code already warns about a CLAUDE.md far shorter. */
+export const MAX_AGENTS_MD = 256 * 1024;
 export const projectSchema = z.object({
   id: z.string().min(1),
   mcp: z.record(z.string(), z.string()).default({}),
@@ -97,6 +99,9 @@ export const projectSchema = z.object({
     .optional(),
   /** Paths `agentgate project files add` keeps in the file store, for repositories without buncargo. */
   fileList: z.array(checkoutPath).max(200).optional(),
+  /** Global defaults only: the AGENTS.md every Claude Code and Codex session reads, on every machine (skill-links.ts).
+   * Written only once every node runs node protocol 11, since older daemons drop it when they save the project. */
+  agentsMd: z.string().max(MAX_AGENTS_MD).optional(),
 });
 /** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
 export const remoteSummarySchema = z.object({
@@ -459,6 +464,8 @@ export const statusSchema = z.object({
   skillConflicts: z.array(z.string()),
   /** Clashes the user settled by keeping what was there; Agentgate's copy isn't linked at these paths. */
   skillKept: z.array(z.string()).default([]),
+  /** Where this node keeps the global AGENTS.md; edits saved there sync to every machine. Absent on older daemons. */
+  agentsMdPath: z.string().optional(),
   skillRepos: z.array(skillRepoSummarySchema).default([]),
   skillHealth: skillHealthSchema,
   /** Why a project's env files are not syncing from this node, by project id (checkout-files.ts). */

@@ -213,6 +213,17 @@ Bundles must contain a nonempty root `SKILL.md`, with unique portable paths and 
 
 Repository-owned skills are mirrored only when you opt in with **Share repo skills between Claude and Codex** in a project's ⋯ menu in Projects, or `agentgate project mirroring <owner/repo> on|off`. Mirroring creates relative links that can be reviewed and committed. Stopping mirroring stops future maintenance and leaves existing links in place; repository-owned links are preserved.
 
+### One AGENTS.md for every session
+
+Instructions you want in every project, such as how you like commits written, go in one AGENTS.md that every machine shares. Each machine keeps it at `~/.config/agentgate/AGENTS.md`: open that file in any editor, and a save reaches your other machines within seconds. You can also edit it under **Skills → AGENTS.md**, from the command line, or by asking an agent, which reaches it through agentgate's `agents_md_read` and `agents_md_write` tools.
+
+```sh
+agentgate agents-md                       # where it is and what it says
+agentgate agents-md set --file AGENTS.md  # replace it everywhere; an empty file removes it
+```
+
+Claude Code reads it as `CLAUDE.md` and Codex as `AGENTS.md`, linked in the same places as skills for **Every session**. Your own `~/.claude/CLAUDE.md` or `~/.codex/AGENTS.md` is never replaced: it shows up under Skills need attention, where **Use Agentgate's** moves it to `skill-backups` first. If two machines change it at once, the last save wins. Every machine must run a version of agentgate that knows it; until then it is not shared, and the app and the command name the machine to update.
+
 ## Env files between machines
 
 Gitignored files such as `.env.local` or `apps/expo-app/.env` follow a repository to your other machines. If the repository uses [buncargo](https://github.com/HansKristoffer/buncargo), its file store (`~/.buncargo/files`) syncs on its own: save a file there with buncargo and every machine's store gets it. Otherwise, in a checkout run:

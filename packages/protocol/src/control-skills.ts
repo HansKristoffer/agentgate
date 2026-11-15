@@ -19,6 +19,10 @@ export interface SkillOps {
   /** Never empties the set: disconnecting is `skills repo rm`. */
   "skills repo projects": { input: { url: string; change: ProjectChange }; result: { projects: string[] } };
   "skills repo rm": { input: { url: string }; result: null };
+  /** The global AGENTS.md (Global defaults' `agentsMd`) and where this node keeps it. */
+  "agents-md": { input: Record<string, never>; result: { text: string; path: string } };
+  /** Empty text removes it. `revision` is the Global defaults revision the editor opened; a newer one refuses the save. */
+  "agents-md set": { input: { text: string; revision?: string }; result: null };
   /** A skill folder in a checkout on this machine that clashes with agentgate's copy: link ours, or keep it. */
   "skills resolve": { input: { path: string; use: "agentgate" | "keep" }; result: { backup?: string } };
 }

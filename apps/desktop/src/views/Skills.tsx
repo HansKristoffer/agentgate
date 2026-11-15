@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { truncate, typedSwitch } from "hanzio";
-import { ArrowRight, Copy, FolderGit2, Plus, Sparkles } from "lucide-react";
+import { ArrowRight, Copy, FileText, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { slugify, type SkillPreview, type SkillSearchResult } from "@agentgate/protocol";
 import { Button, Input, TextField, toast } from "@heroui/react";
@@ -45,6 +45,8 @@ function Where({ ids }: { ids: string[] }) {
   );
 }
 type Editor = { id?: string; skillMd: string; revision?: string };
+/** A clash at a coding tool's own instructions file rather than at a skill folder (skill-links.ts). */
+const isInstructions = (path: string) => /[/\\](CLAUDE|AGENTS)\.md$/.test(path);
 const repoName = (url: string) => url.replace("https://github.com/", "");
 /** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
 const sourceLabel = (source?: string) => {
@@ -65,6 +67,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
     skills: SkillPreview[];
   }>();
   const [editor, setEditor] = useState<Editor>();
+  const [instructions, setInstructions] = useState<{ text: string; revision?: string }>();
+  const defaults = data.projects.find((p) => p.id === "*");
+  const agentsMd = defaults?.agentsMd ?? "";
   const [skillName, setSkillName] = useState("");
   const [assign, setAssign] = useState<string>();
   const [repoAssign, setRepoAssign] = useState<string>();
@@ -178,7 +183,9 @@ export function Skills({ data, connection, perform }: ViewProps) {
               <span className="grow">
                 <strong>{path}</strong>
                 <small className="danger">
-                  Another skill with this name is already here, so Agentgate's copy isn't linked.
+                  {isInstructions(path)
+                    ? "Your own instructions file is here, so Agentgate's AGENTS.md isn't linked."
+                    : "Another skill with this name is already here, so Agentgate's copy isn't linked."}
                 </small>
               </span>
               <Button size="sm" variant="tertiary" onPress={() => keepExisting(path)}>
@@ -204,6 +211,47 @@ export function Skills({ data, connection, perform }: ViewProps) {
               </Button>
             </div>
           ))}
+        </Panel>
+      )}
+      {data.agentsMdPath && (
+        <Panel
+          title="AGENTS.md"
+          detail="Instructions Claude Code and Codex read in every project, on every machine. Edit them here or in any editor: saving the file updates your other machines."
+        >
+          <div className="item">
+            <div className="machine-icon">
+              <FileText size={16} />
+            </div>
+            <div className="grow">
+              <div className="row group">
+                <strong>{data.agentsMdPath}</strong>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label="Copy path"
+                  className="-ml-1.5 size-5 min-w-0 rounded-md text-(--muted) opacity-0 group-hover:opacity-100 hover:text-(--foreground) focus-visible:opacity-100"
+                  onPress={() =>
+                    void navigator.clipboard.writeText(data.agentsMdPath!).then(() => toast("Copied the path"))
+                  }
+                >
+                  <Copy size={12} />
+                </Button>
+              </div>
+              <small>
+                {agentsMd.trim()
+                  ? `${truncate(agentsMd.trim().split("\n")[0]!, 120)} · ${size(new TextEncoder().encode(agentsMd).length)}`
+                  : "Empty, so sessions get nothing from it yet."}
+              </small>
+            </div>
+            <Button
+              size="sm"
+              variant="tertiary"
+              onPress={() => setInstructions({ text: agentsMd, revision: defaults?.revision })}
+            >
+              Edit
+            </Button>
+          </div>
         </Panel>
       )}
       <Panel
@@ -591,6 +639,32 @@ export function Skills({ data, connection, perform }: ViewProps) {
       {editor && (
         <Modal title={`Edit ${editor.id}`} close={() => setEditor(undefined)}>
           {editorForm(editor)}
+        </Modal>
+      )}
+      {instructions && (
+        <Modal title="Edit AGENTS.md" close={() => setInstructions(undefined)}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const text = String(new FormData(e.currentTarget).get("text") ?? "");
+              void perform(async () => {
+                await control(connection, "agents-md set", { text, revision: instructions.revision });
+                setInstructions(undefined);
+              }, "AGENTS.md saved. New sessions on every machine use it.");
+            }}
+          >
+            <Field
+              multiline
+              className="field skill-md"
+              label="AGENTS.md"
+              name="text"
+              defaultValue={instructions.text}
+              description="Leave it empty to remove it from every session."
+            />
+            <Button type="submit" size="sm">
+              Save
+            </Button>
+          </form>
         </Modal>
       )}
     </>

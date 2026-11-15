@@ -22,6 +22,11 @@ its own copy to disk and links it where it is assigned
   Skills are deleted only when a fresh fetch no longer has them, or on disconnect, never because a node
   has not yet seen the project change; otherwise a lagging node could tombstone a live repository's skills.
 - Checkout registration (`/api/checkout`) is loopback-only and sits behind the `/api/*` guard.
+- The global AGENTS.md is `agentsMd` on the `*` project, and each node mirrors it to one file the user edits
+  ([`agents-md.ts`](../../apps/agentgate/src/agents-md.ts), `writeAgentsMd` in `skill-links.ts`). A file that
+  differs from the digest the file and store last agreed on was edited here and goes to the store; anything else
+  is overwritten from the store. Comparing the file with the store alone could not tell a local edit from a newer
+  remote one.
 
 ## Traps
 

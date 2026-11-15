@@ -26,8 +26,9 @@ import { nodesBelow, requireNodeProtocol, sent, type Data, type Project, type St
  * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
  * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts), 8 the factory setting, `secret`
  * records and the stored factory folder (factory/runtime.ts), 9 `factoryTools` on virtual projects (factory/remote-tools.ts), 10 the
- * `opencode` login (logins.ts). A feature waits until every node reports its protocol. */
-export const NODE_PROTOCOL = 10;
+ * `opencode` login (logins.ts), 11 the global AGENTS.md on Global defaults (agents-md.ts). A feature waits until every
+ * node reports its protocol. */
+export const NODE_PROTOCOL = 11;
 const REMOTE_PROTOCOL = 2;
 
 type Remote = NonNullable<Project["remote"]>;
