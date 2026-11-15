@@ -190,12 +190,13 @@ let app: ReturnType<typeof relayApp> | undefined;
 
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext) {
+    const limiter = env.IP_LIMITER;
     app ??= relayApp({
       group: (id) => env.GROUPS.get(env.GROUPS.idFromName(id)),
       endpoint: (key) => env.ENDPOINTS.getByName(key),
       channel: (groupId) => env.CHANNELS.getByName(groupId),
       relayKey: env.RELAY_KEY || undefined,
-      ipLimit: env.IP_LIMITER ? async (key) => (await env.IP_LIMITER!.limit({ key })).success : undefined,
+      ipLimit: limiter ? async (key) => (await limiter.limit({ key })).success : undefined,
     });
     return app.fetch(request, env, ctx);
   },

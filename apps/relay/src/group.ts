@@ -195,6 +195,7 @@ export class GroupCore {
     const now = this.now();
     const limited = this.requests.hit(this.deps.config.groupRequestsPerMinute, now);
     if (limited) return { ...fail(429, "too many requests for this group"), retryAfter: limited };
+
     let m = this.meta();
     if (m?.deleting) {
       await this.destroy(m.groupId);
@@ -205,6 +206,7 @@ export class GroupCore {
       if (!createRequest.safeParse(req.body).success)
         return fail(400, "unsupported relay protocol", { code: "protocol" });
       if (m && !safeEqual(m.authHash, req.authHash)) return this.unauthorized(now);
+
       if (!m?.admitted) {
         // Record first, with an alarm, then reserve: a crash at any point leaves storage the alarm
         // deletes, releasing a slot the reservation may already hold. A retry resumes the record.
@@ -228,9 +230,11 @@ export class GroupCore {
           await this.deps.deleteAll();
           return refused;
         }
+
         this.set({ admitted: 1, alarmAt: 0 }); // touch() below moves the alarm to retention
         m = this.meta()!;
       }
+
       await this.touch(m, now);
       return ok({ protocol: RELAY_PROTOCOL, generation: m.generation, headSeq: m.head });
     }
@@ -242,6 +246,7 @@ export class GroupCore {
       await this.destroy(m.groupId);
       return ok({ ok: true });
     }
+
     let reply: Reply;
     if (req.op === "push") reply = this.push(m, req.body, now);
     else if (req.op === "changes") reply = this.changes(m, req.query ?? {}, now);
@@ -283,7 +288,8 @@ export class GroupCore {
         return fail(409, `a group holds at most ${RELAY_LIMITS.nodes} machines`, { code: "tooManyNodes" });
       if (m.bytes + nodeSize(node) > this.deps.config.maxGroupBytes)
         return fail(507, "group storage quota exceeded", { code: "quota" });
-      this.set({ bytes: (m.bytes += nodeSize(node)) });
+      m.bytes += nodeSize(node);
+      this.set({ bytes: m.bytes });
     }
     this.sql.run("insert or replace into nodes values (?, ?)", node, now);
     return undefined;
@@ -296,12 +302,14 @@ export class GroupCore {
     if (generation !== m.generation) return this.reset(m, "stale generation");
     if (new Set(entries.map((e) => e.key)).size !== entries.length)
       return fail(400, "duplicate keys in one push", { code: "shape" });
+    // A refusal is thrown so that the transaction rolls back every entry the push had already written.
     try {
       return this.sql.tx(() => {
         const refused = this.see(m, node, now);
         if (refused) throw refused;
-        let bytes = m.bytes,
-          head = m.head;
+
+        let bytes = m.bytes;
+        let head = m.head;
         for (const e of entries) {
           const cur = this.sql.all<{ pusher_seq: number; blob: string; size: number }>(
             "select pusher_seq, blob, size from entries where node = ? and key = ?",
@@ -309,9 +317,11 @@ export class GroupCore {
             e.key,
           )[0];
           if (cur) {
-            if (e.pusherSeq === cur.pusher_seq && e.blob === cur.blob) continue; // retried push
+            // The same entry again: a push retried after its reply was lost changes nothing.
+            if (e.pusherSeq === cur.pusher_seq && e.blob === cur.blob) continue;
             if (e.pusherSeq <= cur.pusher_seq) throw fail(409, "counter conflict", { code: "counter" });
           }
+
           const size = entrySize(node, e.key, e.blob);
           bytes += size - (cur?.size ?? 0);
           this.sql.run(
@@ -324,6 +334,7 @@ export class GroupCore {
             size,
           );
         }
+
         if (bytes > this.deps.config.maxGroupBytes) throw fail(507, "group storage quota exceeded", { code: "quota" });
         this.set({ bytes, head });
         m.bytes = bytes;
@@ -350,6 +361,7 @@ export class GroupCore {
     const includeSelf = query.includeSelf === "1";
     const refused = this.sql.tx(() => this.see(m, node.data, now));
     if (refused) return refused;
+
     // One synchronous read: nothing can write between these queries.
     const rows = this.sql.all<{ node: string; key: string; seq: number; pusher_seq: number; blob: string }>(
       `select node, key, seq, pusher_seq, blob from entries where seq > ? ${includeSelf ? "" : "and node != ?"} order by seq limit ?`,
@@ -357,19 +369,22 @@ export class GroupCore {
       RELAY_LIMITS.pullEntries + 1,
     );
     const entries: RelayEntry[] = [];
-    let size = 0,
-      more = false;
+    let size = 0;
+    let more = false;
     for (const r of rows) {
       const e = { node: r.node, key: r.key, seq: r.seq, pusherSeq: r.pusher_seq, blob: r.blob };
       // Node names may be non-ASCII, so they are measured in bytes; a blob is base64url, one byte per character.
       const length = utf8.encode(JSON.stringify({ ...e, blob: "" })).length + r.blob.length + 1;
-      if (entries.length === RELAY_LIMITS.pullEntries || (entries.length && size + length > PAGE_BUDGET)) {
+      const pageIsFull =
+        entries.length === RELAY_LIMITS.pullEntries || (entries.length > 0 && size + length > PAGE_BUDGET);
+      if (pageIsFull) {
         more = true;
         break;
       }
       entries.push(e);
       size += length;
     }
+
     const seen = Object.fromEntries(this.nodes().map((n) => [n.node, n.lastSeen]));
     const page: ChangesResponse = {
       protocol: RELAY_PROTOCOL,
@@ -422,10 +437,12 @@ export class AdmissionCore {
       if (this.sql.all("select 1 from groups where id = ?", groupId).length) return undefined;
       if (this.config.newGroupsDisabled)
         return fail(503, "this relay is not accepting new groups", { code: "disabled" });
-      const endpoint = groupId.startsWith("e:"),
-        kind = endpoint ? "groups.id like 'e:%'" : "groups.id not like 'e:%'";
+      const endpoint = groupId.startsWith("e:");
+      const kindFilter = endpoint ? "groups.id like 'e:%'" : "groups.id not like 'e:%'";
       const day = Math.floor(this.now() / 86_400_000);
+      // Drops counts from before yesterday, so the table does not grow with every day the relay runs.
       this.sql.run("delete from ip_day where day < ?", day - 1);
+
       const ip = endpoint ? `e:${ipHash}` : ipHash;
       const used =
         this.sql.all<{ count: number }>("select count from ip_day where ip = ? and day = ?", ip, day)[0]?.count ?? 0;
@@ -434,7 +451,7 @@ export class AdmissionCore {
           ...fail(429, `too many new ${endpoint ? "endpoints" : "groups"} from this address today`, { code: "rate" }),
           retryAfter: 3600,
         };
-      if (this.sql.all<{ n: number }>(`select count(*) as n from groups where ${kind}`)[0]!.n >= limits.max)
+      if (this.sql.all<{ n: number }>(`select count(*) as n from groups where ${kindFilter}`)[0]!.n >= limits.max)
         return fail(507, "this relay is full", { code: "full" });
       this.sql.run("insert into groups values (?, ?)", groupId, this.now());
       this.sql.run("insert or replace into ip_day values (?, ?, ?)", ip, day, used + 1);

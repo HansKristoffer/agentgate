@@ -25,13 +25,13 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
     let g = groups.get(id);
     if (!g) {
       const sql = memorySql();
-      const entry: { core: GroupCore; sql: ReturnType<typeof memorySql>; alarm?: number } = { sql } as never;
-      entry.core = new GroupCore(sql, {
+      let alarm: number | undefined;
+      const core = new GroupCore(sql, {
         admission,
         config: cfg,
         now,
         setAlarm: (at) => {
-          entry.alarm = at;
+          alarm = at;
         },
         // Storage recreation: drop every table, as deleteAll() does in a Durable Object.
         deleteAll: () => {
@@ -39,10 +39,19 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
             name: string;
           }[])
             sql.db.run(`drop table "${name}"`);
-          entry.alarm = undefined;
+          alarm = undefined;
         },
       });
-      groups.set(id, (g = entry));
+      groups.set(
+        id,
+        (g = {
+          core,
+          sql,
+          get alarm() {
+            return alarm;
+          },
+        }),
+      );
     }
     return g.core;
   };
