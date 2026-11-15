@@ -184,7 +184,7 @@ const currentSchema = () => {
 const major = (v: string | undefined) => v?.split(".")[0];
 
 /** Why a saved login cannot go back into this Desktop, or undefined when it can.
- * ponytail: same major version, not the exact build — Desktop updates often, and the cookie schema check catches storage changes. */
+ * ponytail: same major version, not the exact build. Desktop updates often, and the cookie schema check catches storage changes. */
 function incompatible(login: Login, schema: string, version = host.version()): string | undefined {
   if (login.cookieSchema !== schema)
     return "Saved with a Claude Desktop that stores logins differently; connect this account again";
