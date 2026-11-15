@@ -1,4 +1,4 @@
-import { outdatedNodes, type AccountState, type AccountStatus, type Status } from "./index.ts";
+import { outdatedNodes, type AccountState, type AccountStatus, type SharedLogin, type Status } from "./index.ts";
 
 export type Page = "accounts" | "servers" | "skills" | "projects" | "nodes";
 /** `signIn`: signing in to Infisical again, from the daemon's own machine, fixes it. */
@@ -8,7 +8,7 @@ const loginName = {
   infisical: "Infisical",
   "infisical-identity": "Infisical machine identity",
   opencode: "OpenCode",
-};
+} satisfies Record<SharedLogin["id"], string>;
 
 /** The daemon's `state`, or for a daemon too old to send one, the derivation the app used before it did. */
 export const accountState = (a: AccountStatus): AccountState =>
@@ -49,8 +49,8 @@ export function accountProblem(a: AccountStatus) {
 }
 
 /** Everything the user has to fix by hand, each pointing at the page where they fix it. States that clear on their own
- * (a reached limit, an offline laptop, an expired login a machine refreshes by itself) or that the user chose (a disabled account)
- * are left out. */
+ * (a reached limit, an offline laptop, an expired login a machine refreshes by itself) or that the user chose (a
+ * disabled account) are left out. */
 export function problems(
   data: Pick<
     Status,
@@ -67,13 +67,15 @@ export function problems(
   >,
 ): Problem[] {
   const list: Problem[] = [];
-  if (data.localClaudeLogin?.state === "needs-login")
+  if (data.localClaudeLogin?.state === "needs-login") {
+    const who = data.localClaudeLogin.email ? `${data.localClaudeLogin.email}: ` : "";
     list.push({
       key: "claude-code:login",
       page: "accounts",
       title: "Sign in to Claude Code on this machine",
-      detail: `${data.localClaudeLogin.email ? `${data.localClaudeLogin.email}: ` : ""}run agentgate accounts claude-code login, then start a new thread`,
+      detail: `${who}run agentgate accounts claude-code login, then start a new thread`,
     });
+  }
   for (const a of data.accounts) {
     const { kind } = accountState(a);
     if (kind === "needs-login")
@@ -132,12 +134,15 @@ export function problems(
   }
   // In place but not working, e.g. a shared Infisical session that expired on every machine at once.
   for (const l of data.logins.filter((l) => l.problems.length)) {
+    const nodes = l.problems.map((p) => p.node).join(", ");
     const reasons = [...new Set(l.problems.map((p) => p.problem))];
+    // One reason reads once; differing reasons are listed per machine.
+    const why = reasons.length === 1 ? reasons[0] : l.problems.map((p) => `${p.node}: ${p.problem}`).join("; ");
     list.push({
       key: `login:${l.id}`,
       page: "nodes",
-      title: `The ${loginName[l.id]} login doesn't work on ${l.problems.map((p) => p.node).join(", ")}`,
-      detail: `${l.account}: ${reasons.length === 1 ? reasons[0] : l.problems.map((p) => `${p.node}: ${p.problem}`).join("; ")}`,
+      title: `The ${loginName[l.id]} login doesn't work on ${nodes}`,
+      detail: `${l.account}: ${why}`,
       signIn: l.id === "infisical",
     });
   }
