@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.0](https://github.com/HansKristoffer/agentgate/compare/v0.34.0...v0.35.0) (2026-11-15)
+
+
+### Features
+
+* **skills:** one AGENTS.md for every session, shared by all machines ([#158](https://github.com/HansKristoffer/agentgate/issues/158)) ([9182e3a](https://github.com/HansKristoffer/agentgate/commit/9182e3affc88161458efecdc708da48a90bd6cdf))
+
 ## [0.34.0](https://github.com/HansKristoffer/agentgate/compare/v0.33.0...v0.34.0) (2026-11-14)
 
 
