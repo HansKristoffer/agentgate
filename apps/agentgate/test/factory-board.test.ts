@@ -276,6 +276,7 @@ test("an item whose needs_you is corrupt reads as not waiting, and the board sti
 
   expect(items.get(s, "it_1")!.needsYou).toBeUndefined();
   expect(items.get(s, "it_2")!.needsYou).toBeUndefined();
+  // A second read of it_1 logs nothing more: each corrupt value is reported once.
   items.get(s, "it_1");
   expect(errors.mock.calls.map((c) => String(c[0]))).toEqual([
     "factory: the needs_you of it_1 cannot be read, so it reads as unset",
