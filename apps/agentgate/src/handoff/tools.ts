@@ -42,7 +42,7 @@ const agentsMdTools: Tool[] = [
   },
 ];
 
-function server(h: Handoffs, f?: FactoryRuntime): Server {
+function handoffServer(h: Handoffs, f?: FactoryRuntime): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
   server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => {
     const tools: Tool[] = [...agentsMdTools];
@@ -121,4 +121,4 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
  * Built-in gateway tools under the `agentgate` alias, so an agent can read and change the global AGENTS.md and hand
  * its own thread to another machine, and, while the factory is on, the factory's tools.
  */
-export const handoffSource = (h: Handoffs, f?: FactoryRuntime) => inProcessSource(BUILTIN_ALIAS, server(h, f));
+export const handoffSource = (h: Handoffs, f?: FactoryRuntime) => inProcessSource(BUILTIN_ALIAS, handoffServer(h, f));
