@@ -68,8 +68,8 @@ function isMirror(path: string) {
 function exclude(common: string, ids: string[]) {
   const file = join(common, "info", "exclude");
   const text = existsSync(file) ? readFileSync(file, "utf8") : "";
-  const lines = text.split("\n"),
-    start = lines.indexOf(EXCLUDE_HEADER);
+  const lines = text.split("\n");
+  const start = lines.indexOf(EXCLUDE_HEADER);
   let end = start + 1;
   if (start >= 0) while (end < lines.length && /^\/\.(claude|agents)\/skills\//.test(lines[end]!)) end++;
   const body = (start >= 0 ? [...lines.slice(0, start), ...lines.slice(end)] : lines).join("\n").replace(/\n+$/, "");
@@ -179,7 +179,9 @@ export class SkillLinks {
       let names: string[] = [];
       try {
         names = readdirSync(dir);
-      } catch {}
+      } catch {
+        // A missing folder holds no skills.
+      }
       for (const name of names)
         if (!(this.root && this.ours(this.root, join(dir, name))) && existsSync(join(dir, name, "SKILL.md")))
           found.add(name);
@@ -278,8 +280,8 @@ export class SkillLinks {
   sync() {
     if (this.closed || !this.root) return;
     this.errors = [];
-    const attemptedAt = this.s.now(),
-      previous = this.health();
+    const attemptedAt = this.s.now();
+    const previous = this.health();
     const instructions = agentsMdPath(this.root);
     this.attempt(instructions, () => this.writeAgentsMd(instructions));
     this.attempt(this.root, () => {
@@ -327,8 +329,8 @@ export class SkillLinks {
   /** Store → `<root>/<id>/`, swapped in whole, skipped when the folder's marker matches the record revision. */
   private write(root: string) {
     mkdirSync(root, { recursive: true, mode: 0o700 });
-    const rows = this.records(),
-      keep = new Set(rows.map((r) => r.id));
+    const rows = this.records();
+    const keep = new Set(rows.map((r) => r.id));
     const rename = this.io.rename ?? renameSync;
     // Recover a previous copy before attempting publication or cleaning recognized leftovers.
     for (const name of readdirSync(root)) {
@@ -336,8 +338,8 @@ export class SkillLinks {
       const artifact = name.match(/^(.+)\.[0-9a-f-]{36}\.(old|tmp)$/);
       if (!artifact || !SKILL_ID.test(artifact[1]!)) continue;
       this.attempt(join(root, name), () => {
-        const path = join(root, name),
-          dir = join(root, artifact[1]!);
+        const path = join(root, name);
+        const dir = join(root, artifact[1]!);
         if (
           artifact[2] === "old" &&
           keep.has(artifact[1]!) &&
@@ -349,8 +351,8 @@ export class SkillLinks {
       });
     }
     for (const row of rows) {
-      const dir = join(root, row.id),
-        rev = `${row.rev}:${row.node}:${row.updated_at}`;
+      const dir = join(root, row.id);
+      const rev = `${row.rev}:${row.node}:${row.updated_at}`;
       this.attempt(dir, () => {
         let manifest = this.manifests.get(row.id);
         if (manifest?.rev !== rev) {
@@ -387,13 +389,15 @@ export class SkillLinks {
             })
           )
             return;
-        } catch {}
+        } catch {
+          // An unreadable copy is rebuilt below.
+        }
         const skill = this.s.get("skill", row.id);
         if (!skill) return;
-        const temp = `${dir}.${crypto.randomUUID()}.tmp`,
-          old = `${dir}.${crypto.randomUUID()}.old`;
-        let moved = false,
-          published = false;
+        const temp = `${dir}.${crypto.randomUUID()}.tmp`;
+        const old = `${dir}.${crypto.randomUUID()}.old`;
+        let moved = false;
+        let published = false;
         try {
           for (const f of skill.files) {
             const target = resolve(temp, f.path);
@@ -430,27 +434,29 @@ export class SkillLinks {
 
   private link(root: string) {
     const all = new Set(
-        this.records()
-          .filter((r) => existsSync(join(root, r.id, "SKILL.md")) && existsSync(join(root, r.id, MARKER)))
-          .map((r) => r.id),
-      ),
-      conflicts: string[] = [],
-      kept = { asked: new Set(this.kept()), still: [] as string[] };
+      this.records()
+        .filter((r) => existsSync(join(root, r.id, "SKILL.md")) && existsSync(join(root, r.id, MARKER)))
+        .map((r) => r.id),
+    );
+    const conflicts: string[] = [];
+    const kept = { asked: new Set(this.kept()), still: [] as string[] };
     const global = (this.s.get("project", "*")?.skills ?? []).filter((id) => all.has(id));
     const instructions = agentsMdPath(root);
     let written = false;
     try {
       written = !!readFileSync(instructions, "utf8").trim();
-    } catch {}
+    } catch {
+      // A missing or unreadable AGENTS.md counts as not written.
+    }
     for (const [dir, on, file] of this.globalDirs()) {
       this.attempt(dir, () => {
         this.linkDir(root, dir, on ? global : [], conflicts, kept);
       });
       if (file) this.attempt(file, () => this.linkFile(file, instructions, on && written, conflicts, kept));
     }
-    const checkouts = this.checkouts(),
-      live: Record<string, string> = {},
-      watched = new Set<string>();
+    const checkouts = this.checkouts();
+    const live: Record<string, string> = {};
+    const watched = new Set<string>();
     const catalog = this.s.list("project");
     const projects = new Map(catalog.map((p) => [p.id.toLowerCase(), p]));
     const seen = new Set<string>();
@@ -513,13 +519,15 @@ export class SkillLinks {
       [".agents", ".claude"],
     ] as const;
     for (const [from, to] of pairs) {
-      const src = join(tree, from, "skills"),
-        dest = join(tree, to, "skills"),
-        rel = `../../${from}/skills`;
+      const src = join(tree, from, "skills");
+      const dest = join(tree, to, "skills");
+      const rel = `../../${from}/skills`;
       let sources: string[] = [];
       try {
         sources = readdirSync(src);
-      } catch {}
+      } catch {
+        // A missing folder has nothing to mirror.
+      }
       for (const name of sources) {
         const path = join(src, name);
         if (name.startsWith(".") || this.ours(root, path) || isMirror(path) || !existsSync(join(path, "SKILL.md")))
@@ -534,7 +542,9 @@ export class SkillLinks {
       let existing: string[] = [];
       try {
         existing = readdirSync(dest);
-      } catch {}
+      } catch {
+        // A missing folder holds no mirrors to remove.
+      }
       for (const name of existing) {
         const path = join(dest, name);
         if (
@@ -585,8 +595,8 @@ export class SkillLinks {
     for (const name of entries)
       if (!wanted.includes(name) && this.ours(root, join(dir, name))) unlinkSync(join(dir, name));
     for (const id of wanted) {
-      const path = join(dir, id),
-        target = join(root, id);
+      const path = join(dir, id);
+      const target = join(root, id);
       if (lstatSync(path, { throwIfNoEntry: false })) {
         if (!this.ours(root, path)) {
           if (kept.asked.has(path)) kept.still.push(path);
@@ -664,8 +674,8 @@ export class SkillLinks {
     const paths = [common, join(common, "worktrees")].filter((p) => existsSync(p));
     for (const path of paths)
       this.attempt(path, () => {
-        const inode = statSync(path).ino,
-          current = this.watchers.get(path);
+        const inode = statSync(path).ino;
+        const current = this.watchers.get(path);
         if (current?.inode === inode) return;
         current?.watcher.close();
         this.watchers.delete(path);

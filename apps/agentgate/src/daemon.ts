@@ -1,7 +1,11 @@
 import { Hono, type MiddlewareHandler } from "hono";
 import { safeEqual } from "hanzio/crypto";
 import { HTTPException } from "hono/http-exception";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { HEALTH_PATH, projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
+import packageInfo from "../../../package.json";
 import { Credentials, drainRefresh } from "./credentials.ts";
 import { proxy } from "./llm/pool.ts";
 import { providers } from "./llm/providers.ts";
@@ -31,16 +35,12 @@ import {
 } from "./sync.ts";
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
-import { z } from "zod";
-import { HEALTH_PATH, projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import { jsonInput } from "./http.ts";
 import { HealthDashboard } from "./health.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
 import { syncLogins } from "./logins.ts";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { keepMcp, PRIMARY_CLAUDE_DIR, publishRouting } from "./setup.ts";
 import { Handoffs, type HandoffOptions } from "./handoff/jobs.ts";
 import { handoffRoutes, relayedRoutes } from "./handoff/routes.ts";
@@ -55,7 +55,6 @@ import { factoryToolsSource } from "./factory/remote-tools.ts";
 import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import { startLagProbe } from "./lag.ts";
 import { handoffDirs } from "./ops/nodes.ts";
-import packageInfo from "../../../package.json";
 import { localClaudeLogin } from "./claude-local.ts";
 
 export type Listener = "loopback" | "tailnet";
@@ -174,17 +173,15 @@ export function app(ctx: Ctx) {
     console.error(`request failed: ${c.req.method} ${c.req.path}: ${error.name}${detail ? `: ${detail}` : ""}`);
     return c.json({ error: "request failed" }, 500);
   });
+  // Tracks each request so that a stopping daemon waits for it.
   app.use("*", async (_, next) => {
-    let finish!: () => void;
-    const pending = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    ctx.pending.add(pending);
+    const { promise: request, resolve: finish } = Promise.withResolvers<void>();
+    ctx.pending.add(request);
     try {
       await next();
     } finally {
       finish();
-      ctx.pending.delete(pending);
+      ctx.pending.delete(request);
     }
   });
   const cancellable = (req: Request) => new Request(req, { signal: AbortSignal.any([req.signal, ctx.abort.signal]) });
@@ -196,7 +193,7 @@ export function app(ctx: Ctx) {
     return next();
   });
 
-  // Register before every API handler, including the MCP shim's checkout write.
+  // Every control API route: no browser pages, and on the tailnet listener the admin token.
   app.use("/api/*", async (c, next) => {
     c.header("Cache-Control", "no-store");
     if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
@@ -323,7 +320,7 @@ export async function serve(
   let address: string | undefined;
   console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
   ctx.health.reconcile();
-  const schedule = (task: () => Promise<unknown>, interval: number) => {
+  const schedule = (task: () => unknown, interval: number) => {
     const serial = serialTask(async () => {
       if (!stopped) await task();
     });
@@ -360,15 +357,9 @@ export async function serve(
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
   }, 30000);
   schedule(logins, 10 * 60_000);
-  schedule(async () => {
-    ctx.remote.reconcile();
-  }, 30000);
-  schedule(async () => {
-    ctx.skills.sync();
-  }, 30000);
-  schedule(async () => {
-    ctx.files.sync();
-  }, 30000);
+  schedule(() => ctx.remote.reconcile(), 30000);
+  schedule(() => ctx.skills.sync(), 30000);
+  schedule(() => ctx.files.sync(), 30000);
   const skillBackoff = new SkillBackoff(s);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.

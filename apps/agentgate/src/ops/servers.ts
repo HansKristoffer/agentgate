@@ -25,10 +25,10 @@ function server(s: Store, name: string) {
 /** Parse quoted arguments without invoking a shell or expanding variables. */
 function parseCommand(text: string): string[] {
   const args: string[] = [];
-  let current = "",
-    quote = "",
-    escaped = false,
-    started = false;
+  let current = "";
+  let quote = "";
+  let escaped = false;
+  let started = false;
   for (const char of text.trim()) {
     if (escaped) {
       current += char;
@@ -65,27 +65,30 @@ export function createInstance(
   s: Store,
   input: { name: string; target?: string; command?: string; perSession?: boolean; headers?: string | string[] },
 ): McpInstance {
-  const name = input.name.trim(),
-    id = slugify(name);
+  const name = input.name.trim();
+  const id = slugify(name);
   if (!id) throw new Error("name: use at least one letter or digit");
   if (name.length > 100) throw new Error("name: 100 characters at most");
   if (s.get("mcp", id)) throw new Error(`${id} already exists; choose another name`);
+
   const p = input.target ? preset(input.target) : undefined;
   const command = input.command ? parseCommand(input.command) : undefined;
-  const inst = p
-    ? fromPreset(p, id)
-    : command
-      ? newInstance({
-          id,
-          command: command[0],
-          args: command.slice(1),
-          mode: input.perSession ? "perSession" : "shared",
-        })
-      : newInstance({ id, url: input.target });
+  let inst: ReturnType<typeof newInstance>;
+  if (p) inst = fromPreset(p, id);
+  else if (command)
+    inst = newInstance({
+      id,
+      command: command[0],
+      args: command.slice(1),
+      mode: input.perSession ? "perSession" : "shared",
+    });
+  else inst = newInstance({ id, url: input.target });
+
   inst.headers = { ...inst.headers, ...parseHeaders(input.headers) };
   if (name !== id) inst.label = name;
   return s.put("mcp", id, inst);
 }
+
 /** Changes only the name shown in the app; the id and tool prefix stay, so project mappings keep working. */
 export function labelInstance(s: Store, id: string, label: string) {
   const inst = s.get("mcp", id);
@@ -94,6 +97,7 @@ export function labelInstance(s: Store, id: string, label: string) {
   if (!name || name.length > 100) throw new Error("name: 1 to 100 characters");
   s.put("mcp", id, { ...inst, label: name === id ? undefined : name });
 }
+
 /** How a server is offered to agents; a key set to `undefined` goes back to the default. */
 function tuneInstance(
   s: Store,
@@ -104,26 +108,34 @@ function tuneInstance(
   if (!inst) throw new Error(`no MCP server ${id}`);
   s.put("mcp", id, { ...inst, ...change });
 }
+
 /** One tool's result limit or default arguments; a key set to `undefined` goes back to the server's. */
 function tuneTool(s: Store, id: string, tool: string, change: NonNullable<McpInstance["toolOptions"]>[string]) {
   const inst = s.get("mcp", id);
   if (!inst) throw new Error(`no MCP server ${id}`);
   const options = { ...inst.toolOptions, [tool]: { ...inst.toolOptions?.[tool], ...change } };
-  for (const [name, o] of Object.entries(options))
+  // A tool setting with nothing left in it goes away, so the stored record stays as it was before.
+  for (const [name, o] of Object.entries(options)) {
     if (o.maxResultChars === undefined && o.defaults === undefined) delete options[name];
+  }
   s.put("mcp", id, { ...inst, toolOptions: Object.keys(options).length ? options : undefined });
 }
+
 const unmap = (s: Store, p: Project, id: string) =>
   s.put("project", p.id, { ...p, mcp: Object.fromEntries(Object.entries(p.mcp).filter(([, v]) => v !== id)) });
+
 export function deleteInstance(s: Store, id: string) {
   s.transaction(() => {
     s.del("mcp", id);
     s.del("mcpCredential", id);
     s.del("refreshRequest", `mcpCredential:${id}`);
     s.setLocal(`refreshError:mcpCredential:${id}`, undefined);
-    for (const p of s.list("project")) if (Object.values(p.mcp).includes(id)) unmap(s, p, id);
+    for (const p of s.list("project")) {
+      if (Object.values(p.mcp).includes(id)) unmap(s, p, id);
+    }
   });
 }
+
 /** Maps a server into exactly these projects (`*` is Global defaults), or into its current ones with `change`'s
  * additions and removals applied, so a form opened before another machine's change does not undo it. A project that
  * already has it keeps its tool prefix; a new mapping uses the server's id. */
@@ -150,6 +162,7 @@ export function changeServerProjects(s: Store, id: string, change: ProjectChange
     }
   });
 }
+
 export function renameInstance(s: Store, from: string, to: string) {
   s.transaction(() => {
     const inst = s.get("mcp", from);
@@ -417,6 +430,7 @@ controlOp({
       const { values, positionals } = parseWords(args, { tool: { type: "string" } });
       const [name, value, ...extra] = positionals;
       if (!name || !value || extra.length) throw new UserError();
+      // `off` is stored as 0, which means results are never cut; `default` clears the limit.
       const chars = value === "default" ? undefined : value === "off" ? 0 : Number(value);
       if (chars !== undefined && (!Number.isInteger(chars) || chars < 0))
         throw new UserError("limit: a number of characters, off, or default");
@@ -447,7 +461,9 @@ controlOp({
       let defaults: unknown;
       try {
         defaults = JSON.parse(json);
-      } catch {}
+      } catch {
+        // Not JSON at all: the check below names the problem.
+      }
       if (!defaults || typeof defaults !== "object" || Array.isArray(defaults))
         throw new UserError("defaults: a JSON object, such as '{\"limit\": 30}'");
       return { input: { id: name, tool, defaults } };

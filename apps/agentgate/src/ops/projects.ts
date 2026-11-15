@@ -320,6 +320,7 @@ async function inCheckout(s: Store, dir: string, files: string[]) {
   const { project } = await shown(() => checkoutProject(s, top));
   return { top, project, paths: files.map((p) => relative(top, resolve(cwd, p))) };
 }
+
 /** The project a file command acts on and its paths as the project lists them. */
 const filesOf = (s: Store, f: { paths: string[] } & ({ project: string } | { cwd: string })) =>
   "cwd" in f ? inCheckout(s, f.cwd, f.paths) : { project: f.project, paths: f.paths };

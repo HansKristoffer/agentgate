@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { encodeBase64Url, randomToken, sha256 } from "hanzio/crypto";
+import type { ProviderName } from "./llm/provider.ts";
 import { readBody, sleep, Unavailable } from "./runtime.ts";
 import { defineLocal } from "./local-state.ts";
 import { refreshHash, rotatedAway, rotations, type Credential, type Data, type Store, type Stored } from "./store.ts";
@@ -12,19 +13,22 @@ export interface Tokens {
 }
 export class InvalidGrant extends Error {}
 export class NeedsLogin extends Error {}
-export type OwnedKind = "credential" | "mcpCredential";
+type OwnedKind = "credential" | "mcpCredential";
 type Owned = Data<OwnedKind>;
 const MIN = 60_000;
 const EXPIRED_PULL_WAIT = 3_000;
 const flights = new WeakMap<Store, Map<string, Promise<Owned>>>();
-export const accessToken = (c: Owned) => ("accessToken" in c ? c.accessToken : (c.tokens?.access_token ?? ""));
+const accessToken = (c: Owned) => ("accessToken" in c ? c.accessToken : (c.tokens?.access_token ?? ""));
 export const tokenHash = (c: Owned) => new Bun.CryptoHasher("sha256").update(accessToken(c)).digest("hex");
+
+// The tokens and login id: a change in either is a new login, whoever holds it.
 const login = (c: Owned) =>
   JSON.stringify([
     accessToken(c),
     "refreshToken" in c ? c.refreshToken : c.tokens?.refresh_token,
     "loginId" in c ? c.loginId : undefined,
   ]);
+// The login and the holder: a change in either means another machine acted on this credential.
 const identity = (c: Owned) => `${login(c)}${c.holder}`;
 /** How long a failed refresh is not tried again while the token it failed for is still in use. */
 const REFRESH_BACKOFF = MIN;
@@ -37,8 +41,8 @@ const failures = defineLocal(
 /** This node's last failed refresh of a credential, while the credential still has the tokens it failed with. Once
  * newer tokens arrive (another machine refreshed, or a new login), the failure is no longer this credential's. */
 export function refreshFailure(s: Store, kind: OwnedKind, id: string) {
-  const c = s.get(kind, id),
-    failure = failures.get(s, `${kind}:${id}`);
+  const c = s.get(kind, id);
+  const failure = failures.get(s, `${kind}:${id}`);
   return c && failure?.tokenHash === tokenHash(c) ? failure : undefined;
 }
 /** Whether a pull heard from the other machines: syncAll answers with its errors. */
@@ -64,7 +68,7 @@ export function reclaimHolder(s: Store, kind: OwnedKind, id: string, c: Owned) {
   if ((c.expiresAt ?? Infinity) - s.now() > 45 * MIN) s.put(kind, id, { ...c, holder: s.nodeId });
 }
 
-export function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
+function requestRefresh(s: Store, kind: OwnedKind, id: string, c: Owned) {
   const key = `${kind}:${id}`;
   const prev = s.get("refreshRequest", key);
   if (prev?.tokenHash === tokenHash(c) && s.now() - prev.requestedAt < MIN) return;
@@ -80,8 +84,8 @@ export function refreshOwned<K extends OwnedKind>(
   pull: () => Promise<unknown>,
   force = true,
 ): Promise<Data<K> | Stored<Data<K>>> {
-  let active = flights.get(s);
-  if (!active) flights.set(s, (active = new Map()));
+  const active = flights.get(s) ?? new Map<string, Promise<Owned>>();
+  flights.set(s, active);
   const key = `${kind}:${id}`;
   const running = active.get(key);
   if (running) return running as Promise<Data<K> | Stored<Data<K>>>;
@@ -214,7 +218,7 @@ export function refreshOwned<K extends OwnedKind>(
       clearInterval(renew);
       s.releaseLease(leaseKey, owner);
     }
-  })().finally(() => active!.delete(key));
+  })().finally(() => active.delete(key));
   active.set(key, task);
   return task;
 }
@@ -223,7 +227,7 @@ export async function drainRefresh(s: Store) {
   await Promise.allSettled(flights.get(s)?.values() ?? []);
 }
 
-type Refresh = (provider: import("./llm/provider.ts").ProviderName, refreshToken: string) => Promise<Tokens>;
+type Refresh = (provider: ProviderName, refreshToken: string) => Promise<Tokens>;
 export class Credentials {
   constructor(
     private s: Store,
@@ -235,13 +239,10 @@ export class Credentials {
     const c = this.s.get("credential", accountId);
     if (!c || c.needsLogin) throw new NeedsLogin(accountId);
     const requested = this.s.get("refreshRequest", `credential:${accountId}`)?.tokenHash === tokenHash(c);
-    if (this.shouldRefresh(c) || (requested && c.holder === this.s.nodeId)) return this.refresh(accountId, requested);
+    if (canRefresh(this.s, c) || (requested && c.holder === this.s.nodeId)) return this.refresh(accountId, requested);
     // Another machine holds this login and has most likely refreshed it while this one slept: fetch its copy.
     if (c.expiresAt <= this.s.now()) return this.refresh(accountId, false);
     return c;
-  }
-  shouldRefresh(c: Credential) {
-    return canRefresh(this.s, c);
   }
   /** Waits for other machines' copies only briefly, so a request another account could serve is not held up by a slow
    * peer; the pull itself goes on. */
@@ -298,6 +299,7 @@ export async function tokenRequest(url: string, body: Record<string, string>, fo
   });
   const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30000)));
   if (res.ok) return tokenResponse.parse(JSON.parse(text));
+  // The wording providers use for a refresh token that can no longer be used.
   if (/invalid_grant|refresh_token_(reused|expired|invalidated)/.test(text))
     throw new InvalidGrant("refresh token is no longer valid");
   throw new Error(`token endpoint returned ${res.status}`);

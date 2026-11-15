@@ -17,8 +17,8 @@ export const run: Run = async (_cmd, [sub, ...rest]) => {
   }
   if (sub === "ls") {
     for (const i of s.list("mcp")) {
-      const h = serverHealth(s, i.id),
-        state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
+      const h = serverHealth(s, i.id);
+      const state = !h ? "" : h.ok ? "  available" : h.needsLogin ? "  NEEDS LOGIN" : "  UNREACHABLE";
       console.log(
         `${i.id.padEnd(20)} ${i.label ? `${i.label}  ` : ""}${(i.url ? readableEndpoint(i.url) : [i.command, ...(i.args ?? [])].join(" ")).padEnd(48)} ${i.mode}${s.get("mcpCredential", i.id)?.tokens ? "  logged in" : ""}${state}${tuningNotes(i)}`,
       );

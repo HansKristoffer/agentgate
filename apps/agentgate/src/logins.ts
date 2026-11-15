@@ -143,6 +143,7 @@ async function opencodeKeys(): Promise<OpencodeKey[] | undefined> {
   if (!run.ok) throw new Error("opencode auth export failed; sharing API keys needs OpenCode 2 or later");
   let all: unknown;
   try {
+    // Anything the CLI prints before the list is skipped.
     all = JSON.parse(run.out.slice(run.out.indexOf("[")));
   } catch {
     throw new Error("opencode auth export printed something other than JSON");
@@ -296,6 +297,7 @@ async function problem(l: StoredLogin): Promise<string | undefined> {
     sessions = JSON.parse(status!.out.slice(status!.out.indexOf("{"))).sessions;
     if (!Array.isArray(sessions)) return;
   } catch {
+    // Output this check cannot read is no telling, so no problem is reported.
     return;
   }
   const session = sessions.find((x) => x?.principalType === "user" && x.email === l.account);

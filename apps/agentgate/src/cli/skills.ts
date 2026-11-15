@@ -14,13 +14,16 @@ import { die, initialized, management, showHelp, stringOption, type Run } from "
 function controls(s: Store) {
   let here = false;
   return async <N extends keyof ControlOps>(name: N, input: ControlOps[N]["input"]) => {
-    if (!here)
+    if (!here) {
       try {
         return await management<ControlOps[N]["result"]>(`/ops/${encodeURIComponent(name)}`, "POST", input);
       } catch (e) {
         if ((e as { code?: unknown } | null)?.code !== "ECONNREFUSED") throw e;
+        // No daemon answers: this and every later call in the same run goes through this process.
         here = true;
       }
+    }
+
     const op = controlOps.get(name)!;
     try {
       return (await op.run(op.input.parse(input), { s })) as ControlOps[N]["result"];
@@ -66,8 +69,10 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
     return;
   }
   if (sub === "find") {
-    for (const r of await sk.searchSkills(rest.join(" ") || die("skills find <query>")))
-      console.log(`${`${r.source}@${r.skill}`.padEnd(60)} ${r.installs} installs`);
+    for (const r of await sk.searchSkills(rest.join(" ") || die("skills find <query>"))) {
+      const ref = `${r.source}@${r.skill}`;
+      console.log(`${ref.padEnd(60)} ${r.installs} installs`);
+    }
     return;
   }
   if (!sub || sub === "ls") {

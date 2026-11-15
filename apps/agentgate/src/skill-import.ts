@@ -72,8 +72,8 @@ export function readSkill(dir: string): Pick<FetchedSkill, "description" | "file
       if (entry.isDirectory()) walk(path, depth + 1);
       else if (entry.isFile()) {
         if (files.length >= MAX_SKILL_FILES) throw new UserError("skill has too many files");
-        const disk = join(dir, path),
-          stat = lstatSync(disk);
+        const disk = join(dir, path);
+        const stat = lstatSync(disk);
         if (!stat.isFile()) throw new UserError(`skill file changed while reading: ${path}`);
         bytes += Math.ceil(stat.size / 3) * 4;
         if (bytes > MAX_SKILL) throw new UserError("skill exceeds 3 MiB of encoded data (about 2.25 MiB of files)");
@@ -153,13 +153,14 @@ export function runSkillCommand(
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, DISABLE_TELEMETRY: "1", GIT_TERMINAL_PROMPT: "0" },
     });
-    const out: Buffer[] = [],
-      err: Buffer[] = [];
-    let outBytes = 0,
-      errBytes = 0,
-      stopped = false,
-      reason: unknown;
-    let escalation: ReturnType<typeof setTimeout> | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let outBytes = 0;
+    let errBytes = 0;
+    let stopped = false;
+    let reason: unknown;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
     const kill = (sig: "SIGTERM" | "SIGKILL") => {
       try {
         if (process.platform !== "win32" && child.pid) process.kill(-child.pid, sig);
@@ -211,8 +212,8 @@ export function runSkillCommand(
 }
 
 export async function fetchSkills(source: string, selector = "*", signal?: AbortSignal): Promise<FetchedSkill[]> {
-  const npx = Bun.which("npx"),
-    bunx = Bun.which("bunx");
+  const npx = Bun.which("npx");
+  const bunx = Bun.which("bunx");
   const runner = npx ? [npx, "-y"] : bunx ? [bunx] : undefined;
   if (!runner) throw new UserError("adding skills needs Node (npx) or Bun (bunx) on the daemon's machine");
   if (source.startsWith("-")) throw new UserError("a skill source cannot start with a dash");
@@ -273,19 +274,22 @@ export function repoUrl(input: string): string {
 /** Skill folders in `.claude/skills` and `.agents/skills`; the first wins a name, and symlinked folders (one agent's
  * mirror of the other's) are skipped. A skill that cannot be read is reported instead of failing the whole repository. */
 export function readRepoSkills(root: string): { skills: FetchedSkill[]; skipped: string[] } {
-  const skills: FetchedSkill[] = [],
-    skipped: string[] = [],
-    inside = realpathSync(root) + sep;
+  const skills: FetchedSkill[] = [];
+  const skipped: string[] = [];
+  const inside = realpathSync(root) + sep;
   for (const dir of [join(root, ".claude", "skills"), join(root, ".agents", "skills")]) {
     let entries: Dirent[] = [];
     // `.claude/skills` is often a link to `.agents/skills`; one leaving the repository is ignored.
     try {
       if (realpathSync(dir).startsWith(inside)) entries = readdirSync(dir, { withFileTypes: true });
-    } catch {}
+    } catch {
+      // A missing folder or a broken link: there is nothing to read here.
+    }
     for (const entry of entries) {
       const id = skillId(entry.name);
-      if (!entry.isDirectory() || !existsSync(join(dir, entry.name, "SKILL.md")) || skills.some((k) => k.id === id))
-        continue;
+      const isSkillFolder = entry.isDirectory() && existsSync(join(dir, entry.name, "SKILL.md"));
+      const alreadyRead = skills.some((k) => k.id === id);
+      if (!isSkillFolder || alreadyRead) continue;
       try {
         skills.push({ id, ...readSkill(join(dir, entry.name)) });
       } catch (error) {
