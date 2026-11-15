@@ -32,8 +32,7 @@ import {
   withRelay,
 } from "../src/relay.ts";
 import { Store } from "../src/store.ts";
-import { join, peerRoutes, peers, pullPeer } from "../src/sync.ts";
-import { SYNC_PROTOCOL } from "../src/sync.ts";
+import { SYNC_PROTOCOL, join, peerRoutes, peers, pullPeer } from "../src/sync.ts";
 
 const dir = mkdtempSync(path(tmpdir(), "agentgate-relay-"));
 const stores: Store[] = [];
@@ -952,9 +951,9 @@ test("API: pairing methods, single-field join, and loopback-only secrets", async
     await handlerA.fetch(new Request("http://127.0.0.1/api/status", { headers: { host: "127.0.0.1" } }), {
       listener: "loopback",
     })
-  ).json()) as any;
+  ).json()) as { relay: unknown; nodes: { id: string; via?: string[] }[] };
   expect(status.relay).toMatchObject({ url: r.url, hosted: false, reconciling: false });
-  expect(status.nodes.find((n: any) => n.id === "b")?.via).toEqual(["relay"]);
+  expect(status.nodes.find((n) => n.id === "b")?.via).toEqual(["relay"]);
   await ctxA.gateway.close();
   await ctxB.gateway.close();
 });
@@ -1020,8 +1019,8 @@ test("a push with this node's writes pokes the other members through the channel
   for (const s of [b, old, a]) await sync(s);
 
   const channels = [a, b].map((s) => new NodeChannel(s, async () => new Response("", { status: 404 })));
-  // A member from before the poke: its channel hands the call to routes that do not know it. Standing in for that
-  // answer, this socket refuses every call; either way the caller gets no success back.
+  // A member from before the poke: its channel hands the call to routes that do not know it. This socket stands in
+  // for that by answering every call with an empty body, so the caller gets no success back.
   const keys = await deriveKeys(parseInvite(invite).secret);
   const oldSocket = new WebSocket(`${url.replace("http", "ws")}/g/${keys.groupId}/n/old/connect`, {
     headers: { authorization: `Bearer ${keys.authToken}` },

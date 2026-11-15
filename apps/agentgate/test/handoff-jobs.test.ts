@@ -58,8 +58,10 @@ async function until<T>(fn: () => T | undefined | false, what: string | (() => s
   }
 }
 
-/** One node: a store, a fake T3 Code with a project for its checkout, a Claude home, and its peer listener. */
-/** `peer` stands in front of the node's peer routes, to lose or delay answers. */
+/**
+ * One node: a store, a fake T3 Code with a project for its checkout, a Claude home, and its peer listener. `peer`
+ * stands in front of the node's peer routes, to lose or delay answers.
+ */
 async function node(
   name: string,
   main: string,
@@ -917,7 +919,7 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
   const gateway = new Gateway(a.s);
   gateway.builtin = () => handoffSource(a.h);
   cleanup.push(() => gateway.close());
-  const session = async () => {
+  const openSession = async () => {
     const client = new Client({ name: "test", version: "1" });
     await client.connect(
       new StreamableHTTPClientTransport(new URL("http://127.0.0.1/mcp?project=*"), {
@@ -927,11 +929,11 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
     cleanup.push(() => client.close());
     return client;
   };
-  const tools = async () => (await (await session()).listTools()).tools.map((t) => t.name);
+  const tools = async () => (await (await openSession()).listTools()).tools.map((t) => t.name);
   const agentsMd = ["agentgate__agents_md_read", "agentgate__agents_md_write"];
   expect(await tools()).toEqual([...agentsMd, "agentgate__handoff_targets", "agentgate__handoff_thread"]);
   // An agent reads the global AGENTS.md, then replaces it with the revision it read.
-  const client = await session();
+  const client = await openSession();
   const call = async (name: string, args: Record<string, unknown> = {}) =>
     JSON.parse(((await client.callTool({ name, arguments: args })).content as { text: string }[])[0]!.text);
   const read = await call("agentgate__agents_md_read");
