@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { accounts } from "./api/accounts.ts";
 import { desktopRoutes } from "./api/desktop.ts";
 import { ops } from "./api/ops.ts";
@@ -30,7 +30,7 @@ export function management(ctx: Ctx) {
 
 /** Browser-only OAuth landing response, also used by headless CLI MCP logins. */
 export function oauthCallback(ctx: Ctx) {
-  return async (c: import("hono").Context<Env>) => {
+  return async (c: Context<Env>) => {
     c.header("Cache-Control", "no-store");
     const { code, state, error, iss } = c.req.query();
     if (error || !code || !state) return c.text("Login failed. Return to Agentgate and start again.", 400);

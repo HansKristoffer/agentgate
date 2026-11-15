@@ -14,12 +14,13 @@ export function defineLocal<S extends z.ZodType>(prefix: string, schema: S, opts
       const text = s.local(key(id));
       if (text === undefined) return undefined;
       let value: unknown = text;
-      if (!raw)
+      if (!raw) {
         try {
           value = JSON.parse(text);
         } catch {
           return undefined;
         }
+      }
       const parsed = schema.safeParse(value);
       return parsed.success ? parsed.data : undefined;
     },

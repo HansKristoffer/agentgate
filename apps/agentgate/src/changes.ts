@@ -142,12 +142,13 @@ export class Changes {
     if (!this.kinds.size) return;
     const kinds = new Set(this.kinds);
     this.kinds.clear();
-    for (const fn of this.listeners)
+    for (const fn of this.listeners) {
       try {
         fn(kinds);
       } catch (e) {
         console.error(`background task: ${e instanceof Error ? e.name : "failed"}`);
       }
+    }
   }
 
   /** Adds the kinds of records written since the last read; never loads row data (a skill can be megabytes). */
