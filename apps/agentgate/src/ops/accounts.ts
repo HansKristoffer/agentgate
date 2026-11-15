@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { cancelLocalClaudeLogin, finishLocalClaudeLogin, startLocalClaudeLogin } from "../claude-local.ts";
 import { checkRevision, revision } from "../configuration.ts";
 import { pkce } from "../credentials.ts";
 import * as cursor from "../llm/cursor.ts";
@@ -13,7 +14,6 @@ import { resetRouting } from "../llm/routing.ts";
 import { setAccount } from "../operations.ts";
 import type { Account, Store } from "../store.ts";
 import { asUserError, controlOp, parseWords, UserError } from "./registry.ts";
-import { cancelLocalClaudeLogin, finishLocalClaudeLogin, startLocalClaudeLogin } from "../claude-local.ts";
 
 /** The accounts family's control operations. */
 
@@ -259,14 +259,12 @@ controlOp({
 });
 
 /** Browser sign-ins the app started and has not finished, by OAuth state (Cursor: the UUID it polls on). */
-const pending = new WeakMap<
-  Store,
-  Map<string, { provider: z.infer<typeof providerSchema>; verifier: string; label?: string; at: number }>
->();
+type Attempt = { provider: z.infer<typeof providerSchema>; verifier: string; label?: string; at: number };
+const pending = new WeakMap<Store, Map<string, Attempt>>();
 const LOGIN_TTL = 30 * 60_000;
 function attempts(s: Store) {
-  let map = pending.get(s);
-  if (!map) pending.set(s, (map = new Map()));
+  const map = pending.get(s) ?? new Map<string, Attempt>();
+  pending.set(s, map);
   return map;
 }
 
@@ -277,7 +275,9 @@ controlOp({
   needs: "daemon",
   async run(input, { s }) {
     const map = attempts(s);
-    for (const [state, p] of map) if (s.now() - p.at > LOGIN_TTL) map.delete(state);
+    for (const [state, p] of map) {
+      if (s.now() - p.at > LOGIN_TTL) map.delete(state);
+    }
     if (map.size >= 128) throw new UserError("Too many pending logins");
     const { verifier, challenge, state: oauthState } = await pkce();
     // Cursor names the attempt with a UUID that it polls on, rather than an OAuth state.

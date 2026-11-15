@@ -171,10 +171,10 @@ export const run: Run = async (cmd, [sub], opts) => {
       console.log(
         `\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`,
       );
-      const setupMod = await import("../setup.ts"),
-        claude = setupMod.claudeStatus(),
-        codex = setupMod.primaryState().codex,
-        cursor = setupMod.cursorMcpEnabled();
+      const setupMod = await import("../setup.ts");
+      const claude = setupMod.claudeStatus();
+      const codex = setupMod.primaryState().codex;
+      const cursor = setupMod.cursorMcpEnabled();
       const uses = (on: boolean) => (on ? "uses agentgate" : "does not use agentgate");
       console.log(
         `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${cursor === undefined ? "" : `\nCursor MCP servers ${cursor ? "on" : "off"}`}`,
@@ -271,15 +271,17 @@ export const run: Run = async (cmd, [sub], opts) => {
       const { target, version, restart } = await update.updateSelf().catch((e: Error) => die(e.message));
       console.log(version ? `installed agentgate ${version} at ${target}` : "agentgate is up to date");
       // A global npm or bun install that PATH finds first would keep running the old CLI.
-      const copy = update.pathCopy(),
-        latest = version ?? packageInfo.version;
+      const copy = update.pathCopy();
+      const latest = version ?? packageInfo.version;
       if (copy && copy.version !== latest) {
         const command = copy.install(latest);
         console.log(`${copy.path} is agentgate ${copy.version ?? "(unknown)"}; running ${command.join(" ")}`);
         let ok = false;
         try {
           ok = Bun.spawnSync(command, { stdio: ["ignore", "inherit", "inherit"] }).exitCode === 0;
-        } catch {}
+        } catch {
+          // A command that cannot start is a failure, reported below.
+        }
         if (!ok) console.log(`that failed; run it yourself: ${command.join(" ")}`);
       }
       if (!version) return;

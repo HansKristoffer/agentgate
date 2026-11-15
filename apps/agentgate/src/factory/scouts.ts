@@ -26,8 +26,6 @@ type Scout = Extract<FactorySource, { type: "scout" }>;
 export const SLOT_GRACE_MS = 3600_000;
 const DAY = 86_400_000;
 
-// ---- when a scout is due
-
 function wallClock(at: number, timeZone: string) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -115,8 +113,6 @@ export function scheduleText(schedule: ScoutSchedule) {
   return `${schedule.at} ${days} (${schedule.timezone})`;
 }
 
-// ---- the scout's runs and items
-
 const scoutsOf = (folder: LoadedFolder | undefined) =>
   (folder?.config.sources ?? []).filter((s): s is Scout => s.type === "scout");
 
@@ -144,7 +140,7 @@ function scoutOf(f: FactoryRuntime, id: string) {
 }
 
 /** Run now: queues a run whatever the schedule says, unless one is going. */
-export function scoutNow(f: FactoryRuntime, id: string): { run: string } | { skipped: string } {
+function scoutNow(f: FactoryRuntime, id: string): { run: string } | { skipped: string } {
   scoutOf(f, id);
   const going = activeRunOf(f, id);
   if (going) return { skipped: `The ${id} scout's run ${going.id} has not finished yet` };
@@ -178,8 +174,6 @@ function scoutWhenDue(f: FactoryRuntime) {
     });
   }
 }
-
-// ---- the scout run
 
 const SCOUT_BRIEF = `You are a scout of AgentGate's software factory. The maintainer asked you to look into one thing on a schedule, such as performance, errors or dependencies, and report the problems worth fixing. The factory turns each problem you report into a ticket that its own threads triage, fix and review.
 
@@ -306,8 +300,6 @@ const scoutRun = (f: FactoryRuntime) => ({
     f.events.emit({ kind: "note", run: run.id, text: parts.join("; ") });
   },
 });
-
-// ---- the board
 
 function scoutRow(f: FactoryRuntime, scout: Scout) {
   const last = lastRunOf(f, scout.id);

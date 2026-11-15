@@ -12,7 +12,7 @@ export const slugify = (name: string) =>
     .slice(0, 64)
     .replace(/^-+|-+$/g, "");
 /** `*`, a GitHub `owner/repo`, or a virtual project `@name` (GitHub owners can't start with `@`). */
-export const PROJECT_ID = /^(\*|[^/\s@][^/\s]*\/[^/\s]+|@[a-z0-9][a-z0-9-]{0,63})$/;
+const PROJECT_ID = /^(\*|[^/\s@][^/\s]*\/[^/\s]+|@[a-z0-9][a-z0-9-]{0,63})$/;
 export const isVirtual = (project: string) => project.startsWith("@");
 export const MAX_SKILL = 3 * 1024 * 1024; // Encoded payload, about 2.25 MiB decoded.
 export const MAX_SKILL_FILES = 5000;
@@ -20,7 +20,7 @@ export const MAX_RECORD = 4 * 1024 * 1024;
 export const SKILL_MARKER = ".agentgate-rev";
 export const skillIdSchema = z.string().regex(SKILL_ID);
 /** A connected skill repository, normalized to its lowercase https URL. */
-export const SKILL_REPO = /^https:\/\/github\.com\/[a-z0-9-]+\/[a-z0-9._-]+$/;
+const SKILL_REPO = /^https:\/\/github\.com\/[a-z0-9-]+\/[a-z0-9._-]+$/;
 export const skillRepoSchema = z.string().max(256).regex(SKILL_REPO);
 export const projectIdSchema = z.string().max(512).regex(PROJECT_ID);
 export const decodedSize = (data: string) =>
@@ -52,8 +52,8 @@ export const skillSchema = z
     files: z.array(skillFileSchema).min(1).max(MAX_SKILL_FILES),
   })
   .superRefine((skill, ctx) => {
-    const paths = new Set<string>(),
-      directories = new Set<string>();
+    const paths = new Set<string>();
+    const directories = new Set<string>();
     let encoded = 0;
     for (const [index, file] of skill.files.entries()) {
       encoded += file.data.length;
@@ -70,6 +70,7 @@ export const skillSchema = z
     }
     if ([...paths].some((path) => directories.has(path)))
       ctx.addIssue({ code: "custom", path: ["files"], message: "skill file/directory collision" });
+
     const md = skill.files.find((file) => file.path === "SKILL.md");
     if (!md || !md.data || (base64.test(md.data) && !atob(md.data).trim()))
       ctx.addIssue({ code: "custom", path: ["files"], message: "a nonempty root SKILL.md is required" });

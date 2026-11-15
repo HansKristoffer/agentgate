@@ -34,11 +34,11 @@ type JobAt<R extends Role, M extends Steps, K extends keyof M> = K extends strin
       updatedAt: number;
     }
   : never;
-export type SourceStep = keyof typeof sourceSteps;
+type SourceStep = keyof typeof sourceSteps;
 export type DestStep = keyof typeof destinationSteps;
 export type SourceJob<K extends SourceStep = SourceStep> = JobAt<"source", typeof sourceSteps, K>;
 export type DestJob<K extends DestStep = DestStep> = JobAt<"destination", typeof destinationSteps, K>;
-export type Job = SourceJob | DestJob;
+type Job = SourceJob | DestJob;
 type JobOf<R extends Role> = R extends "source" ? SourceJob : DestJob;
 type StepOf<J extends Job> = J extends SourceJob ? SourceStep : DestStep;
 type NewJob = Job extends infer J ? (J extends Job ? Omit<J, "createdAt" | "updatedAt"> : never) : never;
@@ -73,6 +73,7 @@ export const sessionNote = {
   stash: (sessionId: string) => `handoff:stash:${sessionId}`,
   lines: (sessionId: string) => `handoff:lines:${sessionId}`,
 };
+// A prepare whose manifest never arrives is given up after ten minutes.
 const ABANDONED = 10 * 60_000;
 
 export class PeerError extends Error {
@@ -378,6 +379,8 @@ export class Handoffs {
   view(job: Job): HandoffJob {
     if (job.role === "destination") return destinationView(this, job);
     const st = job.state;
+    const status =
+      job.step === "failed" ? "failed" : job.step === "done" ? "done" : job.step === "finish" ? "imported" : "running";
     return {
       id: job.id,
       role: "source",
@@ -387,14 +390,7 @@ export class Handoffs {
       thread: job.thread,
       title: st.title,
       step: job.step,
-      status:
-        job.step === "failed"
-          ? "failed"
-          : job.step === "done"
-            ? "done"
-            : job.step === "finish"
-              ? "imported"
-              : "running",
+      status,
       destThreadId: st.destThreadId,
       warnings: st.warnings,
       error: job.error,

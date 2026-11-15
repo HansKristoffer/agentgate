@@ -121,6 +121,7 @@ async fn send(
     if let Some(body) = body {
         req = req.json(&body);
     }
+
     let response = req.send().await.map_err(|_| {
         "Cannot reach the daemon. Start its service and check the connection address.".to_string()
     })?;
@@ -128,6 +129,7 @@ async fn send(
     let result: Value = response.json().await.map_err(|_| {
         "The daemon did not return JSON. Check the address and Agentgate version.".to_string()
     })?;
+
     if !status.is_success() {
         return Err(result
             .get("error")
@@ -177,6 +179,7 @@ fn private_write(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
     let temp = path.with_extension("tmp");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
+    // The mode is set at creation, so the secrets are never readable by other users, even briefly.
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -268,6 +271,8 @@ fn install_binary() -> Result<PathBuf, String> {
 }
 
 async fn run_cli(binary: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    // A GUI app starts with a minimal PATH, so the CLI's usual install locations are added
+    // in front of the inherited one.
     let mut paths = vec![config_home()?.join("bin")];
     if let Some(home) = std::env::var_os("HOME") {
         let home = PathBuf::from(home);
@@ -284,21 +289,21 @@ async fn run_cli(binary: &std::path::Path, args: &[&str]) -> Result<String, Stri
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").unwrap_or_default(),
     ));
-    let output = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new(binary)
-            .args(args)
-            .env(
-                "PATH",
-                std::env::join_paths(paths).map_err(|e| e.to_string())?,
-            )
-            .stdin(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-    .map_err(|_| "The command timed out; check Agentgate service logs".to_string())?
-    .map_err(|e| e.to_string())?;
+    let path = std::env::join_paths(paths).map_err(|e| e.to_string())?;
+
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .args(args)
+        .env("PATH", path)
+        .stdin(std::process::Stdio::null())
+        // Dropping the command on timeout kills the child instead of leaving it running.
+        .kill_on_drop(true);
+
+    let output = tokio::time::timeout(Duration::from_secs(60), command.output())
+        .await
+        .map_err(|_| "The command timed out; check Agentgate service logs".to_string())?
+        .map_err(|e| e.to_string())?;
+
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }

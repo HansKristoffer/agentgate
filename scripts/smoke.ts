@@ -5,15 +5,20 @@ import { join, resolve } from "node:path";
 const binary = resolve(Bun.argv[2] ?? "dist/agentgate");
 const home = mkdtempSync(join(tmpdir(), "agentgate-smoke-"));
 let daemon: ReturnType<typeof Bun.spawn> | undefined;
+
+// Runs one CLI command against the throwaway home and fails on any non-zero exit.
+function runCli(args: string[]) {
+  const child = Bun.spawnSync([binary, ...args], {
+    env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
+}
+
 try {
-  for (const args of [["--help"], ["init", "--name", "smoke"], ["setup"], ["export", "--no-secrets"]]) {
-    const child = Bun.spawnSync([binary, ...args], {
-      env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
-  }
+  for (const args of [["--help"], ["init", "--name", "smoke"], ["setup"], ["export", "--no-secrets"]]) runCli(args);
+
   const config = Bun.TOML.parse(await Bun.file(join(home, "codex", "config.toml")).text()) as {
     mcp_servers: {
       agentgate: {
@@ -62,14 +67,9 @@ try {
     ["requests", "export"],
     ["settings", "set", "--file", proxyPatch],
     ["settings", "show"],
-  ]) {
-    const child = Bun.spawnSync([binary, ...args], {
-      env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
-  }
+  ])
+    runCli(args);
+
   const configured = (await (await fetch("http://127.0.0.1:19878/api/status")).json()) as {
     settings: { strategy: string; sessionAffinity: boolean; retryLimit: number; threshold: number };
   };
@@ -102,14 +102,9 @@ try {
     ["skills", "new", "smoke-skill", "--file", markdown],
     ["skills", "projects", "smoke-skill", "smoke/repo"],
     ["skills", "prepare", checkout, "--project", "smoke/repo"],
-  ]) {
-    const child = Bun.spawnSync([binary, ...args], {
-      env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (child.exitCode !== 0) throw new Error(`${args.join(" ")}: ${child.stderr}`);
-  }
+  ])
+    runCli(args);
+
   for (const folder of [".agents", ".claude"]) {
     const link = join(checkout, folder, "skills", "smoke-skill");
     if (

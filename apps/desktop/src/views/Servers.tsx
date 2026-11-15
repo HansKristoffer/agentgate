@@ -102,11 +102,7 @@ export function Servers({ data, connection, perform }: ViewProps) {
                     // The test records the result whether or not it connects; the next status poll recolors the dot.
                     onClick={() =>
                       void perform(
-                        () =>
-                          control(connection, "mcp test", { id: server.id }).then(
-                            () => {},
-                            () => {},
-                          ),
+                        () => control(connection, "mcp test", { id: server.id }).catch(() => {}),
                         undefined,
                         `test:${server.id}`,
                       )

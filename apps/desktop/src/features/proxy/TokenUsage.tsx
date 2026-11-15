@@ -16,13 +16,17 @@ const since = (range: Range) =>
   typedSwitch(range, {
     all: () => 0,
     today: () => new Date().setHours(0, 0, 0, 0),
-    "7d": () => Date.now() - 7 * 86400000,
-    "30d": () => Date.now() - 30 * 86400000,
+    "7d": () => Date.now() - 7 * 86_400_000,
+    "30d": () => Date.now() - 30 * 86_400_000,
   });
 /** Slices past this fold into "Other", so a slot's colour always means the same rank. */
 const SLICES = 6;
 const total = (t: ModelTokens) => t.input + t.output + t.cacheRead + t.cacheWrite;
 const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+/** The point on the unit circle at angle `a`, for the pie's arcs. */
+const point = (a: number) => `${Math.sin(a)} ${-Math.cos(a)}`;
+/** The colour slot a slice draws in: its rank, or the shared "other" slot for the folded rest. */
+const slot = (s: { detail?: ModelTokens }, i: number) => `slice-${s.detail ? i + 1 : "other"}`;
 
 export function TokenUsage({ connection }: { connection: Connection }) {
   const [range, setRange] = useState<Range>("today");
@@ -63,11 +67,10 @@ export function TokenUsage({ connection }: { connection: Connection }) {
             {slices.map((s, i) => {
               const start = angle;
               angle += (s.value / sum) * 2 * Math.PI;
-              const point = (a: number) => `${Math.sin(a)} ${-Math.cos(a)}`;
               return (
                 <path
                   key={s.key}
-                  className={`slice-${s.detail ? i + 1 : "other"}`}
+                  className={slot(s, i)}
                   d={
                     slices.length === 1
                       ? "M0 -1 A1 1 0 1 1 0 1 A1 1 0 1 1 0 -1Z"
@@ -82,7 +85,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
           <div className="grow">
             {slices.map((s, i) => (
               <div className="token-row" key={s.key}>
-                <i className={`slice-${s.detail ? i + 1 : "other"}`} />
+                <i className={slot(s, i)} />
                 <div className="grow">
                   <strong>{s.label}</strong>
                   {s.detail && (

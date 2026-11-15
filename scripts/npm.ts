@@ -23,8 +23,9 @@ mkdirSync(artifacts, { recursive: true });
 
 const dirs: string[] = [];
 for (const [os, cpu] of targets) {
-  const name = `agentpool-${os}-${cpu}`,
-    dir = `dist/npm/${name}`;
+  const name = `agentpool-${os}-${cpu}`;
+  const dir = `dist/npm/${name}`;
+
   mkdirSync(`${dir}/bin`, { recursive: true });
   copyFileSync(`dist/agentgate-${os}-${cpu}`, `${dir}/bin/agentgate`);
   chmodSync(`${dir}/bin/agentgate`, 0o755);
@@ -55,6 +56,7 @@ for (const [os, cpu] of targets) {
   dirs.push(dir);
 }
 
+// The main package lists every platform package as optional, so npm installs only the one that matches.
 const main = "dist/npm/agentpool";
 mkdirSync(`${main}/bin`, { recursive: true });
 await Bun.write(
@@ -119,6 +121,7 @@ for (const dir of dirs) {
     continue;
   }
   if (existing.status !== 404) throw new Error(`Cannot check ${name}: registry HTTP ${existing.status}`);
+
   const child = Bun.spawn(
     ["npm", "publish", `${artifacts}/${artifact.filename}`, "--ignore-scripts", "--access", "public", "--provenance"],
     { cwd: dir, stdio: ["inherit", "inherit", "inherit"] },

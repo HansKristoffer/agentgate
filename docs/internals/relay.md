@@ -48,18 +48,18 @@ the relay group. Do not remove it without tagging where records came from.
   `relay:rot:*` keys into `relay:*` in one transaction. Deleting the old group is cleanup, not
   revocation: old members could recreate it.
 - A rotation that fails before the swap is undone (its new group queued for deletion), so `rotate`
-  and `unpair` either show the new join command or changed nothing. Only one cut off by a crash or
-  shutdown stays pending; the daemon finishes it and flags `rotatedAt` in the status until
+  and `unpair` either show the new join command or changed nothing. A rotation cut off by a crash or
+  shutdown stays pending instead. The daemon finishes it and flags `rotatedAt` in the status until
   `pair --relay` shows the command, since nobody has seen it.
 
 ## Node channel
 
-Thread handoff needs request and response between two machines, which the mailbox cannot give: entries persist,
+Thread handoff needs request and response between two machines, which the mailbox cannot give. Its entries persist,
 count against the group quota and reach every member. So a separate `RelayChannel` object per group
 ([`channel.ts`](../../apps/relay/src/channel.ts)) forwards a call over the WebSocket the target keeps open
 ([`channel.ts`](../../apps/agentgate/src/channel.ts) in the daemon) and keeps nothing. The daemon tunnels the same
 `/peer/handoff/*` requests it sends over Tailscale, so handoff code does not know the transport. The channel also
-carries a sync poke with no content: after a push of its own writes, a daemon asks each member seen in the last five
+carries a sync poke with no content. After a push of its own writes, a daemon asks each member seen in the last five
 minutes to pull from the relay now. A member on an older release answers 404 and keeps pulling on its timer.
 
 - The channel object does not know the group's token; it asks the group object once (any authenticated read)

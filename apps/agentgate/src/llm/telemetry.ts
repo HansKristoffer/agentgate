@@ -38,6 +38,7 @@ export class Telemetry {
   private safeModel(value?: string) {
     if (!value) return "";
     const parsed = modelIdSchema.safeParse(value);
+    // A model name that looks like a key, or contains one, is never stored.
     if (
       !parsed.success ||
       /^(sk-|sk_ant|eyJ[A-Za-z0-9_-]+\.)/.test(parsed.data) ||
@@ -145,7 +146,7 @@ function bumpActivity(s: Store) {
     if (opened.again && !s.closed) bumpActivity(s);
   }, 1000).unref();
 }
-export interface RequestFilter {
+interface RequestFilter {
   provider?: string;
   account?: string;
   model?: string;
@@ -160,11 +161,12 @@ export interface RequestFilter {
 export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   const where: string[] = [],
     args: (string | number)[] = [];
-  for (const key of ["provider", "account", "model", "outcome", "failure"] as const)
-    if (filter[key]) {
-      where.push(`${key} = ?`);
-      args.push(filter[key]!);
-    }
+  for (const key of ["provider", "account", "model", "outcome", "failure"] as const) {
+    const value = filter[key];
+    if (!value) continue;
+    where.push(`${key} = ?`);
+    args.push(value);
+  }
   if (filter.since !== undefined) {
     where.push("at >= ?");
     args.push(filter.since);
@@ -175,6 +177,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
   }
   if (filter.search) {
     where.push("(id like ? escape '\\' or model like ? escape '\\' or account like ? escape '\\')");
+    // LIKE wildcards in the text are escaped, so the search matches them literally.
     const search = `%${filter.search.replace(/[\\%_]/g, "\\$&")}%`;
     args.push(search, search, search);
   }
@@ -295,6 +298,7 @@ function cachedTokens<T>(s: Store, name: string, since: number, read: (after: nu
   const value = read(after);
   cache.delete(key);
   cache.set(key, { at: now, seq, value });
+  // A handful of windows is cached; the oldest entry goes first.
   if (cache.size > 8) cache.delete(cache.keys().next().value!);
   return value;
 }
@@ -418,8 +422,10 @@ export function streamObserver(onResponse?: (id: string) => void) {
     },
     tokens,
     chunk(bytes: Uint8Array) {
+      // Decoded in 16 KiB pieces, so one large chunk never becomes one large string.
       for (let offset = 0; offset < bytes.length; offset += 16384) {
         buffer += decoder.decode(bytes.subarray(offset, offset + 16384), { stream: true });
+        // An SSE event ends at a blank line; the text after the last one stays in `buffer`.
         let from = 0;
         for (const match of buffer.matchAll(/\r?\n\r?\n/g)) {
           const event = buffer.slice(from, match.index);

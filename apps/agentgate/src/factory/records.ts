@@ -20,14 +20,16 @@ const HOUR = 3600_000;
 const DAY = 86_400_000;
 const SESSION_ID = /^[\w-]{1,128}$/;
 
-// ---- a thread's sessions
-
-/** The thread's subagents, and theirs, from this machine's mirror. */
+/** The thread's subagents, and theirs, from this machine's mirror. Walks down level by level, starting at the thread
+ * itself (index -1), so every descendant is found once. */
 function subagents(f: FactoryRuntime, thread: string) {
   const mirror = mirrorOf(f);
   const found: string[] = [];
-  for (let i = -1; i < found.length; i++)
-    for (const t of mirror.children(i < 0 ? thread : found[i]!)) if (!found.includes(t.id)) found.push(t.id);
+  for (let i = -1; i < found.length; i++) {
+    for (const t of mirror.children(i < 0 ? thread : found[i]!)) {
+      if (!found.includes(t.id)) found.push(t.id);
+    }
+  }
   return found;
 }
 
@@ -71,8 +73,6 @@ export async function runTokens(f: FactoryRuntime, run: FactoryRun): Promise<num
   return (await measure(f, run))?.tokens ?? 0;
 }
 
-// ---- recording runs
-
 /** Records the run's measurement; the item, whose tokens are its runs' sum, when it has one. */
 function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number, sessions: number) {
   runs.measured(f.s, run.id, tokens, sessions);
@@ -106,7 +106,7 @@ async function record(f: FactoryRuntime, run: FactoryRun) {
 /** An item that just finished: its threads may have kept working after their runs reported (an implement thread owns
  * its PR), so their tokens are read again. */
 async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
-  for (const run of runs.forItem(f.s, item.id))
+  for (const run of runs.forItem(f.s, item.id)) {
     if (run.threadId && run.state === "reported")
       await record(f, run).catch((e) =>
         f.events.emit({
@@ -116,6 +116,7 @@ async function recordItemEnd(f: FactoryRuntime, item: FactoryItem) {
           text: `Reading the tokens of ${run.id} failed: ${shortError(e)}`,
         }),
       );
+  }
 }
 
 /** Per run, its thread and subagent threads when its sessions were read, and those sessions; and the failure the
@@ -171,8 +172,6 @@ async function measureOpen(f: FactoryRuntime) {
   for (const id of m.sessions.keys()) if (!measured.has(id)) m.sessions.delete(id);
   m.failed.keepOnly((id) => measured.has(id));
 }
-
-// ---- outcomes
 
 const prOutcomeSchema = z.object({
   number: z.number(),
@@ -247,8 +246,9 @@ async function refreshOutcomes(f: FactoryRuntime) {
     try {
       const reverts = await revertsSince(repo, Math.min(...mine.map((w) => Date.parse(w.pr.mergedAt))));
       errors.clear(repo);
-      for (const { item, pr } of mine)
+      for (const { item, pr } of mine) {
         if (isRevertOf(reverts, pr)) items.update(s, item.id, { outcome: { ...pr, reverted: true } });
+      }
     } catch (e) {
       note(repo, `Searching ${repo} for reverts failed: ${shortError(e)}`);
     }
@@ -280,8 +280,6 @@ function metrics(f: FactoryRuntime): FactoryBoard["metrics"] {
   };
 }
 
-// ---- setup
-
 export function setup(f: FactoryRuntime): void {
   f.events.on("run.ended", (event) => {
     const run = runs.get(f.s, event.run);
@@ -298,11 +296,11 @@ export function setup(f: FactoryRuntime): void {
   // Read once the step that finished the item has ended.
   f.events.on("item.phase", (event) => {
     const item = isOpenPhase(event.to) ? undefined : items.get(f.s, event.item);
-    if (item)
-      later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
-        const finished = items.get(f.s, item.id);
-        if (finished) await recordItemEnd(f, finished);
-      });
+    if (!item) return;
+    later(f, item.id, `Reading ${item.key}'s tokens`, async () => {
+      const finished = items.get(f.s, item.id);
+      if (finished) await recordItemEnd(f, finished);
+    });
   });
   f.loops.push({ name: "factory-tokens", everyMs: MINUTE, where: "factory-node", run: () => measureOpen(f) });
   f.loops.push({

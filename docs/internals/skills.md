@@ -1,6 +1,6 @@
 # Skills
 
-Skill bundles are records like everything else: SQLite holds the whole bundle, and each daemon writes
+Skill bundles are records like everything else. SQLite holds the whole bundle, and each daemon writes
 its own copy to disk and links it where it is assigned
 ([`skills.ts`](../../apps/agentgate/src/skills.ts), [`skill-links.ts`](../../apps/agentgate/src/skill-links.ts)).
 

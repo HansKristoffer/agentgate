@@ -9,7 +9,7 @@ import { required } from "./http.ts";
 export const tools = async (ctx: Ctx, id: string) => {
   const inst = ctx.s.get("mcp", id);
   required(inst, "server");
-  return toolList(ctx, inst!);
+  return toolList(ctx, inst);
 };
 
 /** The presets servers start from, and the sign-in start. The writes are operations (ops/servers.ts). */

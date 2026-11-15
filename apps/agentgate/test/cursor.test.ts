@@ -11,7 +11,6 @@ import {
   rewriteModel,
 } from "../src/llm/cursor.ts";
 import { proxy } from "../src/llm/pool.ts";
-import { capabilities } from "../src/llm/provider.ts";
 import { tokenUsage } from "../src/llm/telemetry.ts";
 import { app, makeCtx } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
@@ -303,8 +302,7 @@ test("Cursor history walks back a week at a time", async () => {
   }
 });
 
-test("Cursor has the same capabilities as the other providers", () => {
-  expect(capabilities(cursor)).toEqual({ quota: true, models: true, session: true, probe: true });
+test("Cursor's model list, session key, alias rewrite and pooled routes", () => {
   expect(parseModels({ models: [{ modelId: "gpt-5" }, { modelId: "" }, {}] })).toEqual(["gpt-5"]);
   expect(() => parseModels({ models: "no" })).toThrow("Unrecognized model response");
   expect(cursor.session!(new Headers(), { conversationId: "conv-1" })).toBe("conv-1");

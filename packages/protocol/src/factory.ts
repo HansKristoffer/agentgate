@@ -14,8 +14,7 @@ export const T3_THREAD_META_KEY = "dev.agentgate/t3Thread";
 
 const name = z.string().regex(/^[a-z0-9][a-z0-9-]{0,39}$/); // source ids
 /** owner/repo; the daemon canonicalizes the case like canonicalProject. */
-export const factoryRepoSchema = z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/);
-const repo = factoryRepoSchema;
+const repo = z.string().regex(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/);
 export const secretNameSchema = z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/);
 const secretRef = z.string().regex(/^secret:[A-Z][A-Z0-9_]{0,63}$/);
 const template = z.string().min(1).max(2000); // {{body.a.b}} {{headers.x}} {{query.x}} {{body}}
@@ -25,7 +24,7 @@ export const stageNames = ["triage", "spec", "implement", "review"] as const;
 export type StageName = (typeof stageNames)[number];
 
 /** Passed to T3's t3_thread_launch as modelSelection. */
-export const modelSchema = z
+const modelSchema = z
   .object({
     provider: z.string().min(1),
     model: z.string().min(1),
@@ -38,7 +37,7 @@ const intake = z.enum(["auto", "hold"]); // hold: new items wait for `agentgate 
 /** MCP server aliases a factory thread may use besides agentgate's own tools, written as the repository's mapping has
  * them: an alias may have capitals there (`validId` in mcp/templates.ts), and the gateway matches it exactly. */
 const mcpAliases = z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(20);
-export const githubSourceSchema = z
+const githubSourceSchema = z
   .object({
     id: name,
     type: z.literal("github"),
@@ -48,7 +47,7 @@ export const githubSourceSchema = z
     webhook: z.object({ secret: secretRef }).strict().optional(), // a valid delivery triggers a poll
   })
   .strict();
-export const linearSourceSchema = z
+const linearSourceSchema = z
   .object({
     id: name,
     type: z.literal("linear"),
@@ -60,7 +59,7 @@ export const linearSourceSchema = z
     webhook: z.object({ secret: secretRef }).strict().optional(),
   })
   .strict();
-export const webhookSourceSchema = z
+const webhookSourceSchema = z
   .object({
     id: name,
     type: z.literal("webhook"),
@@ -90,7 +89,7 @@ export const webhookSourceSchema = z
 export const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 export type Weekday = (typeof weekdays)[number];
 /** `every` counts from the last run; `at` is a time of day on some weekdays in a timezone. */
-export const scoutScheduleSchema = z.union([
+const scoutScheduleSchema = z.union([
   z.object({ every: duration }).strict(), // the loader refuses less than 1h
   z
     .object({
@@ -107,7 +106,7 @@ export const scoutScheduleSchema = z.union([
 export type ScoutSchedule = z.infer<typeof scoutScheduleSchema>;
 /** A scout: on its schedule, a T3 thread follows `scouts/<id>.md` and reports findings, each of which becomes an item.
  * The file's frontmatter holds these settings (`scoutFileSchema`), its body the prompt, and its name the id. */
-export const scoutSourceSchema = z
+const scoutSourceSchema = z
   .object({
     id: name,
     type: z.literal("scout"),
@@ -123,12 +122,8 @@ export const scoutSourceSchema = z
 /** The frontmatter of `scouts/<id>.md`. */
 export const scoutFileSchema = scoutSourceSchema.omit({ id: true, type: true });
 /** A source as `factory.yaml` lists it; scouts have a file each. */
-export const yamlSourceSchema = z.discriminatedUnion("type", [
-  githubSourceSchema,
-  linearSourceSchema,
-  webhookSourceSchema,
-]);
-export const factorySourceSchema = z.discriminatedUnion("type", [
+const yamlSourceSchema = z.discriminatedUnion("type", [githubSourceSchema, linearSourceSchema, webhookSourceSchema]);
+const factorySourceSchema = z.discriminatedUnion("type", [
   githubSourceSchema,
   linearSourceSchema,
   webhookSourceSchema,
@@ -262,14 +257,14 @@ export const factoryFolderSchema = z
       ctx.addIssue({ code: "custom", path: ["files"], message: "the folder is larger than 900 KiB" });
   });
 /** `folder ls`: the stored folder, or no files when there is none. */
-export const storedFolderViewSchema = z.object({
+const storedFolderViewSchema = z.object({
   commit: z.string().optional(),
   files: z.array(z.object({ path: z.string(), text: z.string() })),
 });
 export type StoredFolderView = z.infer<typeof storedFolderViewSchema>;
 /** `folder put`: files to write by path, `null` to delete one. The daemon checks the folder that results as a whole,
- * its paths and size included, so its refusal names the file. */
-/** `base` is the commit the editor started from; a save over a folder that changed since is refused. */
+ * its paths and size included, so its refusal names the file. `base` is the commit the editor started from; a save
+ * over a folder that changed since is refused. */
 export const storedFolderChangeSchema = z
   .object({ files: z.record(z.string(), z.string().nullable()), base: z.string().optional() })
   .strict();
@@ -281,7 +276,6 @@ export const secretRecordSchema = z.object({
   value: z.string().min(1).max(16384),
   from: z.string().min(1).max(512), // node that set it
 });
-export type SecretRecord = z.infer<typeof secretRecordSchema>;
 
 /** An item that waits for the maintainer keeps its phase and has `needsYou`; only `shipped` and `closed` end it. */
 export const itemPhases = [
@@ -314,11 +308,11 @@ export type RunState = (typeof runStates)[number];
 
 /** What the person must do for an item that waits for them: start it, answer what a stage asks, or decide what happens
  * to work that stopped (retry or drop). */
-export const needsYouKinds = ["start", "answer", "stopped"] as const;
+const needsYouKinds = ["start", "answer", "stopped"] as const;
 export type NeedsYouKind = (typeof needsYouKinds)[number];
 /** Why it waits, for the text and the metrics; the daemon maps each to its kind. `question` is a thread's question card
  * in T3 Code, `deleted` a run's thread deleted there. */
-export const needsYouCauses = [
+const needsYouCauses = [
   "held",
   "decision",
   "blocked",
@@ -370,7 +364,7 @@ const commitSha = z.string().regex(/^[0-9a-f]{7,64}$/);
 const suggestedIssue = z
   .object({ title: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(8000) })
   .strict();
-export const stageResultSchema = z.discriminatedUnion("kind", [
+const stageResultSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("triage"),
@@ -482,13 +476,14 @@ export const stageResultSchema = z.discriminatedUnion("kind", [
             })
             .strict(),
         )
-        .max(50), // a bound on the report's size, not a setting
+        .max(50), // bounds the size of one report
     })
     .strict(),
 ]);
 export type StageResult = z.infer<typeof stageResultSchema>;
 
-/** What a stage thread sends through `factory_report`. The shape only: which fields an outcome requires is the controller's check. */
+/** What a stage thread sends through `factory_report`. The shape only: which fields an outcome requires is the
+ * controller's check. */
 export const factoryReportSchema = z
   .object({
     run: z.string().min(1).max(100),
@@ -548,7 +543,7 @@ export const writeBackMoments = [
 export type Moment = (typeof writeBackMoments)[number];
 /** Every write the outbox sends: a comment for a moment, a reply in a review conversation, an issue the factory files,
  * and a notification to one of the person's outlets. */
-export const writeMoments = [...writeBackMoments, "reply", "issue", "notify"] as const;
+const writeMoments = [...writeBackMoments, "reply", "issue", "notify"] as const;
 export type WriteMoment = (typeof writeMoments)[number];
 
 /**
@@ -575,7 +570,7 @@ export const markerPayloadSchema = z.object({
 });
 export type MarkerPayload = z.infer<typeof markerPayloadSchema>;
 
-export const boardThreadSchema = z.object({
+const boardThreadSchema = z.object({
   id: z.string(),
   title: z.string(),
   project: z.string().optional(),
@@ -592,7 +587,7 @@ export const itemActions = ["approve", "reject", "retry", "drop"] as const;
 export type ItemAction = (typeof itemActions)[number];
 /** One thing a person can do to an item now, as the daemon offers it: the CLI shows it as a command, the app as a
  * button. An action can appear twice, without and with text, such as approve on a decision. */
-export const boardActionSchema = z.object({
+const boardActionSchema = z.object({
   name: z.enum(itemActions),
   label: z.string(),
   /** What it will do, in a sentence. */
@@ -603,11 +598,11 @@ export const boardActionSchema = z.object({
 export type BoardAction = z.infer<typeof boardActionSchema>;
 /** What an item that needs nobody waits for: a free thread, quota, the default branch's CI, its PR's checks, the next
  * review round, or the next try of a launch that failed. */
-export const itemWaitsOn = ["thread", "quota", "default-branch", "checks", "review", "launch"] as const;
-export const itemWaitingSchema = z.object({ on: z.enum(itemWaitsOn), since: z.number(), text: z.string() });
+const itemWaitsOn = ["thread", "quota", "default-branch", "checks", "review", "launch"] as const;
+const itemWaitingSchema = z.object({ on: z.enum(itemWaitsOn), since: z.number(), text: z.string() });
 export type ItemWaiting = z.infer<typeof itemWaitingSchema>;
 
-export const boardItemSchema = z.object({
+const boardItemSchema = z.object({
   id: z.string(),
   key: z.string(),
   repo: z.string(),
@@ -652,7 +647,7 @@ export const waitsForYou = (item: { needsYou?: unknown; phase: ItemPhase }) =>
 
 /** One thing the factory needs, as `agentgate factory doctor` and the board show it. `unknown`: it could not be
  * answered, and `detail` says why. `fix` is the command or step that fixes it. */
-export const factoryCheckSchema = z.object({
+const factoryCheckSchema = z.object({
   id: z.string(),
   title: z.string(),
   state: z.enum(["ok", "warn", "fail", "unknown"]),
@@ -928,7 +923,8 @@ export function operationFor<T extends { name: string }>(operations: Iterable<T>
   let found: T | undefined;
   for (const op of operations) {
     const name = op.name.split(" ");
-    if (name.every((word, i) => words[i] === word) && name.length > (found?.name.split(" ").length ?? 0)) found = op;
+    const matches = name.every((word, i) => words[i] === word);
+    if (matches && name.length > (found?.name.split(" ").length ?? 0)) found = op;
   }
   return found;
 }

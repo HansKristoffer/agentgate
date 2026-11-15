@@ -5,6 +5,8 @@ import type { Perform } from "../../types.ts";
 import { control } from "../../api.ts";
 import { Changes, Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
 import { useGeneration } from "./useGeneration.ts";
+
+/** Model identifiers are typed one per line or comma-separated. */
 const list = (value: FormDataEntryValue | null) =>
   String(value ?? "")
     .split(/[,\n]/)
@@ -120,10 +122,10 @@ export function AccountPolicy({
         {error && <p role="alert">{error}</p>}
         <Button type="submit">Preview changes</Button>
       </form>
-      {patch && (
+      {changes && (
         <div className="policy-preview">
           <h3>Review changes</h3>
-          <Changes rows={changes!} />
+          <Changes rows={changes} />
           <Button onPress={() => void saveChanges()}>Save reviewed changes</Button>
         </div>
       )}

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import {
   agentEnvironment,
+  claudeStatus,
   codexConfig,
   cursorMcp,
   cursorMcpEnabled,
@@ -223,7 +224,6 @@ test("primary Codex sends its own login through agentgate and undoes cleanly", a
 });
 
 test("setup --mcp adds only the MCP server; claudeStatus reports routing and MCP separately", async () => {
-  const { mcp, claudeStatus } = await import("../src/setup.ts");
   const dir = mkdtempSync(join(tmpdir(), "agentgate-mcp-"));
   writeFileSync(join(dir, ".claude.json"), '{"mcpServers":{"other":{"command":"x"}},"keep":1}');
   expect(claudeStatus(dir)).toEqual({ routing: false, mcp: false });

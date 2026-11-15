@@ -10,7 +10,7 @@ and key is kept in `DESKTOP`. The user guide is [Using Agentgate with Claude Des
   `ANTHROPIC_BASE_URL=https://api.anthropic.com` on the CLI it starts. Gateway mode (the `Claude-3p`
   profile with `deploymentMode: "3p"`) exists for that reason.
 - Saved logins are cookie and token values copied as they are, never decrypted; they are encrypted with
-  this Mac's Keychain key. They live only in the `local` table: this Mac only, no sync, no backup.
+  this Mac's Keychain key. They live only in the `local` table. They never sync or go into a backup.
 - Desktop's own Log out ends the session on the server, so "add account" signs out locally only
   (`switchLogin(s, null)`), keeping saved logins valid.
 

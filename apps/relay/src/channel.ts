@@ -99,6 +99,7 @@ export class ChannelCore {
     const limited = this.requests.hit(this.deps.limits.requestsPerMinute, now);
     if (limited)
       return json(429, { error: "too many calls for this group", code: "rate" }, { "retry-after": String(limited) });
+
     if (!relayNode.safeParse(target).success) return json(400, { error: "invalid node", code: "shape" });
     const socket = this.socket(target);
     if (!socket) return json(503, { error: "that machine is not connected to the relay", code: "offline" });
@@ -112,6 +113,7 @@ export class ChannelCore {
     const budget = this.bytes.take(body.length, this.deps.limits.mibPerMinute * MiB, now);
     if (budget)
       return json(429, { error: "too much data for this group", code: "rate" }, { "retry-after": String(budget) });
+
     const id = crypto.randomUUID();
     const response = new Promise<Response>((resolve) => {
       // Never replayed after a timeout or a dropped socket: the target may already have acted on it.
@@ -121,7 +123,7 @@ export class ChannelCore {
       );
       this.pending.set(id, { socket, resolve, timer });
     });
-    req.signal?.addEventListener("abort", () => {
+    req.signal.addEventListener("abort", () => {
       if (!this.pending.has(id)) return;
       try {
         socket.send(JSON.stringify({ t: "cancel", id }));
@@ -140,6 +142,7 @@ export class ChannelCore {
 
   /** A frame from a node's socket. False when the socket must be closed. */
   message(socket: ChannelSocket, text: string): boolean {
+    // The body is sealed text inside a small JSON frame; the slack covers the frame's own fields.
     if (text.length > CHANNEL_LIMITS.bodyBytes + 1024) return false;
     let frame;
     try {

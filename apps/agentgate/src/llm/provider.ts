@@ -63,16 +63,13 @@ export function jwtClaims(jwt: unknown): Record<string, unknown> {
 /** Expiry from `expiresIn` seconds when the provider sends it, else from the access token's JWT `exp`, else an hour. */
 export function toTokens(accessToken: string, refreshToken: string, expiresIn?: number): Tokens {
   const exp = jwtClaims(accessToken).exp;
-  return {
-    accessToken,
-    refreshToken,
-    expiresAt:
-      expiresIn !== undefined
-        ? Date.now() + expiresIn * 1000
-        : typeof exp === "number" && Number.isFinite(exp) && exp > 0
-          ? Math.floor(exp * 1000)
-          : Date.now() + 3600_000,
-  };
+  if (expiresIn !== undefined) {
+    return { accessToken, refreshToken, expiresAt: Date.now() + expiresIn * 1000 };
+  }
+  if (typeof exp === "number" && Number.isFinite(exp) && exp > 0) {
+    return { accessToken, refreshToken, expiresAt: Math.floor(exp * 1000) };
+  }
+  return { accessToken, refreshToken, expiresAt: Date.now() + 3600_000 };
 }
 
 /** Save a login under a stable id: the same account logged in again keeps its settings and gets fresh tokens. */

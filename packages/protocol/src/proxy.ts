@@ -18,7 +18,7 @@ export const modelPolicySchema = z
     excludeModels: z.array(modelIdSchema).max(200).optional(),
   })
   .strict();
-export const aliasSchema = z
+const aliasSchema = z
   .object({
     provider: providerSchema,
     alias: modelIdSchema,
@@ -72,7 +72,8 @@ export const quotaWindowSchema = z.object({
   inferredReset: z.boolean().optional(),
 });
 export type QuotaWindow = z.infer<typeof quotaWindowSchema>;
-/** Interpret legacy window names once, shared by routing and quota presentation. */
+/** Interpret legacy window names once, shared by routing and quota presentation. A name such as `5h`, `7d` or `5h:opus`
+ * carries the duration and the model family; a window without a scope is the whole account. */
 export function normalizeQuotaWindow(window: QuotaWindow): QuotaWindow {
   const [duration = "", family] = window.name.split(":");
   const durationMs =
@@ -130,8 +131,8 @@ export const capabilitiesSchema = z.object({
   probe: z.boolean(),
 });
 export type ProviderCapabilities = z.infer<typeof capabilitiesSchema>;
-export const requestOutcomeSchema = z.enum(["pending", "success", "failed", "interrupted", "cancelled"]);
-export const proxyRequestSchema = z.object({
+const requestOutcomeSchema = z.enum(["pending", "success", "failed", "interrupted", "cancelled"]);
+const proxyRequestSchema = z.object({
   id: z.string(),
   at: z.number(),
   provider: providerSchema,
@@ -151,7 +152,7 @@ export const proxyRequestSchema = z.object({
     .optional(),
 });
 export type ProxyRequest = z.infer<typeof proxyRequestSchema>;
-export const proxyAttemptSchema = z.object({
+const proxyAttemptSchema = z.object({
   id: z.string(),
   requestId: z.string(),
   number: z.number(),
@@ -184,7 +185,7 @@ export interface ModelTokens {
 /** One hour's tokens, all models and machines together: [hour start in ms, tokens]. */
 export type TokenHour = [hour: number, tokens: number];
 /** Why the router passed over an account for a request. */
-export const routeReasonSchema = z.enum([
+const routeReasonSchema = z.enum([
   "disabled",
   "login unavailable",
   "already attempted",
@@ -211,7 +212,7 @@ export interface RouteExplanation {
     inFlight: number;
   }[];
 }
-export const checkSchema = z.object({
+const checkSchema = z.object({
   status: z.enum(["ok", "failed", "unsupported", "obsolete"]),
   message: z.string(),
 });

@@ -25,15 +25,8 @@ import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.t
 /** The hosted relay, used when neither --relay-url nor AGENTGATE_RELAY_URL is given. */
 export const DEFAULT_RELAY_URL: string = "https://agentgate-relay.hanskristoffer.dk";
 export function relayUrlDefault() {
-  const url = process.env.AGENTGATE_RELAY_URL || DEFAULT_RELAY_URL;
-  if (!url)
-    throw new RelayError(
-      "No hosted relay is configured yet. Pass --relay-url <url> or set AGENTGATE_RELAY_URL to your own relay.",
-    );
-  return url;
+  return process.env.AGENTGATE_RELAY_URL || DEFAULT_RELAY_URL;
 }
-
-// ---------------------------------------------------------------- invite and crypto
 
 const SALT = new TextEncoder().encode("agentgate-relay-v1");
 const INVITE = /^agr1\.([A-Za-z0-9_-]{1,2800})\.([A-Za-z0-9_-]{43})$/;
@@ -174,8 +167,6 @@ export async function open(keys: Keys, a: Aad, blob: string): Promise<string> {
   return new TextDecoder().decode(pt);
 }
 
-// ---------------------------------------------------------------- node-local state
-
 /** "active" is the group in use; "rot" is a replacement group being seeded by a rotation. */
 type Target = "active" | "rot";
 type Field =
@@ -268,8 +259,6 @@ const dropGroup = (s: Store, grp: string) => {
   s.db.run("delete from relay_counters where grp = ?", [grp]);
 };
 
-// ---------------------------------------------------------------- coordination
-
 interface Runtime {
   queue: Promise<unknown>;
   abort: AbortController;
@@ -340,8 +329,6 @@ export async function stopRelay(s: Store) {
   await r.running?.catch(() => {});
   await r.queue.catch(() => {});
 }
-
-// ---------------------------------------------------------------- transport
 
 interface Conn {
   invite: Invite;
@@ -423,8 +410,6 @@ function describe(status: number, code?: string) {
 }
 
 const isReset = (e: unknown) => e instanceof RelayError && (e.status === 404 || e.code === "reset");
-
-// ---------------------------------------------------------------- sync steps
 
 /** The identity of a configuration: completions check it before committing anything. */
 const identity = (s: Store, t: Target) => `${get(s, t, "invite") ?? ""}|${get(s, t, "generation") ?? ""}`;
@@ -523,8 +508,8 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
     put(s, t, "pullError", undefined);
   });
   if (full) {
-    const r = rt(s),
-      group = `${c.keys.groupId}|${generation}`;
+    const r = rt(s);
+    const group = `${c.keys.groupId}|${generation}`;
     let has = r.relayHas.get(t);
     if (!since || has?.group !== group) r.relayHas.set(t, (has = { group, versions: new Map() }));
     for (const d of decoded) if (d.node === s.nodeId) has.versions.set(d.key, version(d.rec!));
@@ -576,8 +561,8 @@ async function pushLoop(
       const entries: RelayEnvelope[] = [];
       const counters: [string, number][] = [];
       const oversize = new Set<string>(JSON.parse(get(s, t, "oversize") ?? "[]"));
-      let bytes = 256 + s.nodeId.length * 6,
-        taken = 0;
+      let bytes = 256 + s.nodeId.length * 6;
+      let taken = 0;
       for (const r of snapshot.records) {
         const key = await entryKey(c.keys, r.kind, r.id);
         if (relayHas?.get(key) === version(r)) {
@@ -673,8 +658,8 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
       setPhase(s, t, "upload");
     });
   }
-  const r = rt(s),
-    has = r.relayHas.get(t);
+  const r = rt(s);
+  const has = r.relayHas.get(t);
   await pushLoop(
     s,
     t,
@@ -864,8 +849,6 @@ async function abandonRotation(s: Store) {
 function clearSeen(s: Store) {
   for (const [key] of s.localPrefixed("relaySeen:")) s.setLocal(key, undefined);
 }
-
-// ---------------------------------------------------------------- public operations
 
 /**
  * The relay half of a sync turn. Concurrent callers coalesce into at most one queued run. In the
@@ -1096,7 +1079,9 @@ export function relayStatus(s: Store) {
   let url = "";
   try {
     url = invite ? parseInvite(invite).url : "";
-  } catch {}
+  } catch {
+    // A stored invite that no longer parses shows no URL.
+  }
   const skipped = get(s, "active", "skipped");
   const oversize: string[] = JSON.parse(get(s, "active", "oversize") ?? "[]");
   return {
@@ -1149,8 +1134,8 @@ export const installAndJoin = (args: string, name?: string) =>
  */
 export function parseJoin(text: string): { invite: string; force: boolean } | { url: string; code: string } {
   if (text.length > 4096) throw new RelayError("That pairing command is too long");
-  const all = text.trim().split(/\s+/).filter(Boolean),
-    at = all.indexOf("join");
+  const all = text.trim().split(/\s+/).filter(Boolean);
+  const at = all.indexOf("join");
   const tokens = at < 0 ? all : all.slice(at + 1);
   const force = tokens.includes("--force");
   const rest = tokens.filter((t) => t !== "--force");
@@ -1159,7 +1144,9 @@ export function parseJoin(text: string): { invite: string; force: boolean } | { 
     let u: URL | undefined;
     try {
       u = new URL(rest[0]!);
-    } catch {}
+    } catch {
+      // Not a URL: the refusal below covers it.
+    }
     if (u && (u.protocol === "http:" || u.protocol === "https:")) return { url: rest[0]!, code: rest[1]! };
   }
   throw new RelayError("Paste the whole `agentgate join …` command from the other machine");

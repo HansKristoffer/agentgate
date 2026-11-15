@@ -73,6 +73,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const [skillName, setSkillName] = useState("");
   const [assign, setAssign] = useState<string>();
   const [repoAssign, setRepoAssign] = useState<string>();
+  const assignedRepo = data.skillRepos.find((r) => r.url === repoAssign);
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
   const shown = data.skills.filter((k) => `${k.id} ${k.description}`.toLowerCase().includes(needle));
@@ -544,11 +545,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
             }, "Saved. New sessions pick it up.")
           }
         >
-          <ProjectChecks
-            data={data}
-            skills={data.skillRepos.find((r) => r.url === repoAssign)?.skills}
-            selected={data.skillRepos.find((r) => r.url === repoAssign)?.projects ?? []}
-          />
+          <ProjectChecks data={data} skills={assignedRepo?.skills} selected={assignedRepo?.projects ?? []} />
         </AssignProjects>
       )}
       {preview && (

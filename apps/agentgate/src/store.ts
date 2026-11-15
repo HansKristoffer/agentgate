@@ -75,7 +75,6 @@ export const timerSync = (s: Store, label: string, sync: () => void) => () => {
 
 const id = z.string().min(1).max(512);
 const timestamp = z.number().int().nonnegative();
-const Window = quotaWindowSchema;
 const OAuth = z.object({
   redirectUri: z.string().optional(),
   client: OAuthClientInformationSchema.passthrough().optional(),
@@ -111,7 +110,7 @@ export const schemas = {
     accountId: z.string(),
     observedAt: timestamp,
     observedBy: z.string(),
-    windows: z.array(Window),
+    windows: z.array(quotaWindowSchema),
     status: z.enum(["ok", "limited", "exhausted"]),
     exhaustedUntil: timestamp.optional(),
     source: usageSourceSchema.optional(),
@@ -515,8 +514,8 @@ export class Store {
   }
 
   private cacheOf(kind: Kind) {
-    let cache = this.cache.get(kind);
-    if (!cache) this.cache.set(kind, (cache = new Map()));
+    const cache = this.cache.get(kind) ?? new Map<string, Cached>();
+    this.cache.set(kind, cache);
     return cache;
   }
 
@@ -574,8 +573,8 @@ export class Store {
   ): { records: Rec[]; seq: number; more: boolean } {
     timestamp.parse(since);
     return this.db.transaction(() => {
-      const high = this.seq(),
-        records: Rec[] = [];
+      const high = this.seq();
+      const records: Rec[] = [];
       let bytes = 0;
       const statement = this.db.prepare<Rec, [number, number]>(
         "select * from records where seq > ? and seq <= ? order by seq",
@@ -714,8 +713,8 @@ function staleRotation(s: Store, incoming: Rec) {
   const cur = s.record(incoming.kind, incoming.id);
   if (!cur || cur.deleted) return false;
   const ours = JSON.parse(cur.data);
-  const theirs = refreshHash(incoming.kind, JSON.parse(incoming.data)),
-    mine = refreshHash(cur.kind, ours);
+  const theirs = refreshHash(incoming.kind, JSON.parse(incoming.data));
+  const mine = refreshHash(cur.kind, ours);
   if (!theirs || !mine || theirs === mine || ours.needsLogin) return false;
   const rotated = rotatedAway(s, incoming.kind, incoming.id);
   return rotated.includes(theirs) && !rotated.includes(mine);
@@ -771,11 +770,12 @@ export function exportBackup(s: Store, secrets = true) {
     .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
+      // Endpoint keys, env files and webhook URLs are secrets.
       if (!secrets && r.kind === "project") {
         delete data.remote;
         delete data.files;
         delete data.factoryWebhook;
-      } // endpoint keys, env files and webhook URLs are secrets
+      }
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
   return { agentgate: 4, secrets, exportedAt: new Date(s.now()).toISOString(), from: s.nodeId, records };

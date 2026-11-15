@@ -130,7 +130,7 @@ test("signed out of gh, the preflight says so once and asks nothing else of GitH
   expect(asked).toEqual([["api", "user", "--include"]]);
 });
 
-test("the board never waits for gh: it shows the last answers while the loop asks again", async () => {
+test("the board never waits for gh: it answers with the cheap checks while the loop asks gh, then with gh's answer", async () => {
   const n = await factoryNode(cleanup);
   let release = () => {};
   const gate = new Promise<void>((resolve) => (release = resolve));

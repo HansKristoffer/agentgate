@@ -50,7 +50,8 @@ import {
   type PrView,
 } from "./gh.ts";
 import { defuse, MARKER_PREFIX, markerTag, parseMarkers } from "./markers.ts";
-import { isWorkingStatus, mirrorOf } from "./mirror.ts";
+import { isWorkingStatus } from "../handoff/t3.ts";
+import { mirrorOf } from "./mirror.ts";
 import { claimWrite, fileIssue } from "./outbox.ts";
 import { T3McpError } from "./t3-mcp.ts";
 import { later, operation, SayOnce, shortError, withItem, type Caller, type FactoryRuntime } from "./runtime.ts";
@@ -76,7 +77,7 @@ function failed(f: FactoryRuntime, item: FactoryItem, text: string) {
 }
 
 /** The implement run whose thread owns the item's PR. */
-export const prRun = (f: FactoryRuntime, item: FactoryItem) => (item.pr ? runs.get(f.s, item.pr.run) : undefined);
+const prRun = (f: FactoryRuntime, item: FactoryItem) => (item.pr ? runs.get(f.s, item.pr.run) : undefined);
 
 /** The follower's read of a PR without its reviews and conversations. */
 type Followed = Omit<FollowedPr, "feedback">;
@@ -116,8 +117,9 @@ export async function toReady(
   }
   // Before the item moves, so a restart between the two writes it again: it replaces its own section. A body a person
   // edits meanwhile keeps their text, since it was read just before.
-  await ("body" in view ? Promise.resolve(view.body) : prView(view.url).then((fresh) => fresh.body))
-    .then((body) => prSetBody(view.url, withSummary(body, readySummary(f, item))))
+  const body = "body" in view ? Promise.resolve(view.body) : prView(view.url).then((fresh) => fresh.body);
+  await body
+    .then((text) => prSetBody(view.url, withSummary(text, readySummary(f, item))))
     .catch((e) => failed(f, item, `Writing the summary on ${item.key}'s PR failed: ${shortError(e)}`));
   fileLeftovers(f, item, view.url);
   const text = open.length
@@ -148,10 +150,12 @@ function fileLeftovers(f: FactoryRuntime, item: FactoryItem, prUrl: string) {
       `The factory's review of ${prUrl} found this in code that pull request did not change, so it left it alone.`,
     ),
   );
-  const spec = runs.forItem(f.s, item.id).findLast((r) => r.report?.result?.kind === "spec" && r.report.result.approved)
-    ?.report?.result;
-  const later = spec?.kind === "spec" ? (spec.later ?? []) : [];
-  later.forEach((x, i) =>
+  const approved = runs
+    .forItem(f.s, item.id)
+    .findLast((r) => r.report?.result?.kind === "spec" && r.report.result.approved);
+  const spec = approved?.report?.result;
+  const slices = spec?.kind === "spec" ? (spec.later ?? []) : [];
+  slices.forEach((x, i) =>
     fileIssue(
       f,
       item.id,
@@ -172,7 +176,8 @@ const REACH = {
   data: "reaches stored data",
 };
 
-const SURE = { low: 0, medium: 1, high: 2 };
+/** Least sure first when the summary lists decisions. */
+const CONFIDENCE_RANK = { low: 0, medium: 1, high: 2 };
 
 /** Agents write each claim as a sentence; joined with ": " or "; " its own full stop would read ".:" or ".;". */
 const clause = (text: string) => text.replace(/[\s.;:]+$/, "");
@@ -200,7 +205,7 @@ export function readySummary(f: FactoryRuntime, item: FactoryItem): string {
     for (const c of result.claims) lines.push(`- ${clause(defuse(c.claim, 1000))}: ${defuse(c.evidence, 2000)}`);
     const skipped = result.notChecked.map((n) => clause(defuse(n, 500))).join("; ");
     lines.push("", `**Not checked:** ${skipped || "nothing listed"}`, "");
-    const decided = result.decisions.toSorted((a, b) => SURE[a.confidence] - SURE[b.confidence]);
+    const decided = result.decisions.toSorted((a, b) => CONFIDENCE_RANK[a.confidence] - CONFIDENCE_RANK[b.confidence]);
     if (decided.length)
       lines.push(
         "**Decided where the item was silent**, least sure first:",
@@ -593,8 +598,6 @@ async function followPrs(f: FactoryRuntime) {
   }
 }
 
-// ---- review rounds: what a reported review means for the PR, and when the next round starts
-
 type ReviewResult = Extract<StageResult, { kind: "review" }>;
 type Finding = ReviewResult["findings"][number];
 /** Pre-existing findings are not this PR's to fix: the summary shows them, but they never hold the PR back. */
@@ -612,12 +615,12 @@ const SEVERITY = { important: "Important", nit: "Nit", "pre-existing": "Pre-exis
 export const describe = (finding: Finding) =>
   `**${SEVERITY[finding.severity]}** ${finding.file}${finding.line ? `:${finding.line}` : ""}: ${finding.text}`;
 /** A finding as the PR's summary lists it: its text defused, since GitHub renders it for everyone. */
-export const summaryLine = (finding: Finding) =>
+const summaryLine = (finding: Finding) =>
   `- ${SEVERITY[finding.severity]}, \`${defuse(`${finding.file}${finding.line ? `:${finding.line}` : ""}`, 300)}\`: ${defuse(finding.text, 1000)}`;
 
 /** The last review round that counted, for the PR's summary: how many rounds counted, the head it reviewed, and what it
  * reported. */
-export function lastRound(f: FactoryRuntime, item: FactoryItem) {
+function lastRound(f: FactoryRuntime, item: FactoryItem) {
   const counted = rounds(f, item);
   const last = counted.at(-1);
   const result = last?.report?.result;
@@ -699,7 +702,7 @@ export async function takeReview(f: FactoryRuntime, id: string, read?: Followed)
  * once the PR's head moved past the reviewed commit and its checks pass; a stale report gets a new review; and the
  * PR goes to `ready` when the implement thread sat idle on the findings for `stalledAfter`, or marking it ready failed
  * before. */
-export async function followReview(f: FactoryRuntime, item: FactoryItem, view: Followed, headAt: number) {
+async function followReview(f: FactoryRuntime, item: FactoryItem, view: Followed, headAt: number) {
   const max = limits(f, item).reviewRounds;
   // Review was switched off while the item was in it.
   if (max === 0) {

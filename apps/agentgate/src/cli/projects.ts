@@ -33,14 +33,14 @@ export const run: Run = async (cmd, [sub, ...rest]) => {
   }
 
   if (sub === "ls") {
-    for (const p of s.list("project"))
-      console.log(
-        `${p.id.padEnd(32)} ${Object.entries(p.mcp)
-          .map(([a, i]) => `${a}=${i}`)
-          .join(
-            " ",
-          )}${p.skills.length ? `  skills: ${p.skills.join(",")}` : ""}${p.id !== "*" && !p.inheritDefaults ? "  (no * defaults)" : ""}`,
-      );
+    for (const p of s.list("project")) {
+      const aliases = Object.entries(p.mcp)
+        .map(([a, i]) => `${a}=${i}`)
+        .join(" ");
+      const skills = p.skills.length ? `  skills: ${p.skills.join(",")}` : "";
+      const defaults = p.id !== "*" && !p.inheritDefaults ? "  (no * defaults)" : "";
+      console.log(`${p.id.padEnd(32)} ${aliases}${skills}${defaults}`);
+    }
     return;
   }
   if (sub === "files") {

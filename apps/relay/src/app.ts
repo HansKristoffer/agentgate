@@ -1,17 +1,17 @@
 import { RELAY_LIMITS, relayGroupId } from "@agentgate/protocol/relay";
 import { safeEqual, sha256Hex } from "hanzio/crypto";
 import { remoteKey } from "@agentgate/protocol/remote";
-
-/** What the Worker asks a RemoteEndpoint object to do; workers-only code lives in remote.ts. */
-export type EndpointOp = "mcp" | "hook" | "connect" | "update" | "delete";
-/** What the Worker asks a group's RelayChannel object to do. */
-export type ChannelOp = "call" | "connect";
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { readBounded } from "./body.ts";
 import { type GroupOp, type GroupRequest, type Reply } from "./group.ts";
 
-export interface RelayDeps {
+/** What the Worker asks a RemoteEndpoint object to do; workers-only code lives in remote.ts. */
+export type EndpointOp = "mcp" | "hook" | "connect" | "update" | "delete";
+/** What the Worker asks a group's RelayChannel object to do. */
+type ChannelOp = "call" | "connect";
+
+interface RelayDeps {
   group(groupId: string): { handle(req: GroupRequest): Promise<Reply> };
   /** Remote MCP endpoints; absent in the in-process test relay. */
   endpoint?(key: string): { fetch(req: Request): Promise<Response> };
@@ -109,10 +109,11 @@ export function relayApp(deps: RelayDeps) {
   // webhook senders send nothing the relay could check.
   const endpoint = (op: EndpointOp) => async (c: Context) => {
     const key = c.req.param("key");
-    if (!deps.endpoint || !remoteKey.safeParse(key).success) return c.json({ error: "not found" }, 404);
+    if (!deps.endpoint || !key || !remoteKey.safeParse(key).success) return c.json({ error: "not found" }, 404);
     const passed = await gate(c, { relayKey: op !== "mcp" && op !== "hook", group: false });
     if (passed instanceof Response) return passed;
     const { ipHash } = passed;
+
     // Only the headers the endpoint reads, or for a webhook every header its sender might sign;
     // x-agentgate-* comes from here, never from the caller.
     const headers = new Headers();
@@ -137,11 +138,12 @@ export function relayApp(deps: RelayDeps) {
       }
     }
     headers.set("x-agentgate-op", op);
-    headers.set("x-agentgate-key", key!);
+    headers.set("x-agentgate-key", key);
     headers.set("x-agentgate-ip", ipHash);
+
     const raw = c.req.raw;
     return deps
-      .endpoint(key!)
+      .endpoint(key)
       .fetch(new Request(raw.url, { method: raw.method, headers, body: raw.body, signal: raw.signal }));
   };
   app.post("/mcp/:key", endpoint("mcp"));

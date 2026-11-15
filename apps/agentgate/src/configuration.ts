@@ -9,6 +9,7 @@ export function revision(s: Store, kind: Kind, id: string): string {
     .update(JSON.stringify(r ? [r.rev, r.node, r.updated_at, r.deleted] : null))
     .digest("hex");
 }
+
 export function checkRevision(s: Store, kind: Kind, id: string, expected: string) {
   if (revision(s, kind, id) !== expected) throw new ConfigurationConflict();
 }

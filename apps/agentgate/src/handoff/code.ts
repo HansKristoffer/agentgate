@@ -8,7 +8,7 @@ import { killGroup } from "../runtime.ts";
  * as they are until the destination confirms it took the code. */
 
 /** `plainTree` is the snapshot without its ignored files, what the source compares before stashing. */
-export type Snapshot = { sha: string; uncommitted: boolean; plainTree?: string };
+type Snapshot = { sha: string; uncommitted: boolean; plainTree?: string };
 // A throwaway commit; a fixed identity keeps it from failing where git has none configured.
 const IDENTITY = {
   GIT_AUTHOR_NAME: "agentgate",
@@ -32,6 +32,7 @@ export async function run(cwd: string, args: string[], env: Record<string, strin
     stdout: "pipe",
     stderr: "pipe",
     stdin: input === undefined ? "ignore" : new TextEncoder().encode(input),
+    // Its own process group, so killGroup also stops the helpers git starts.
     detached: true,
     // Never wait on a credential prompt nobody can answer.
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0", ...env },
@@ -128,6 +129,7 @@ async function worktreeTrees(cwd: string, withIgnored = true, skip: string[] = [
     try {
       copyFileSync(resolve(cwd, await git(cwd, ["rev-parse", "--git-path", "index"])), env.GIT_INDEX_FILE);
     } catch {
+      // No index file yet, as in a fresh clone: start from HEAD.
       await git(cwd, ["read-tree", "HEAD"], env);
     }
     await git(cwd, ["add", "--all"], env);
@@ -207,6 +209,7 @@ async function unsaved(cwd: string, sha: string): Promise<string[]> {
   try {
     const env = { GIT_INDEX_FILE: join(dir, "index") };
     await git(cwd, ["read-tree", sha], env);
+    // A name with a newline cannot be one line of hash-object's input, so such a file is left out.
     const changed = (await git(cwd, ["diff", "--name-only", "-z"], env))
       .split("\0")
       .filter((p) => p && !p.includes("\n") && lstatSync(join(cwd, p), { throwIfNoEntry: false })?.isFile());

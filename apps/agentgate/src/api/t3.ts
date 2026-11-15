@@ -14,8 +14,8 @@ import {
 import { jsonInput as json } from "../http.ts";
 import { inputAsync, local, required } from "./http.ts";
 
-/** T3 Code connections, threads and handoffs. Connecting receives a T3 pairing token and a pairing link is one,
- * credentials: local callers only. */
+/** T3 Code connections, threads and handoffs. Connecting takes a T3 pairing token, and a pairing link is a credential,
+ * so both routes take local callers only. */
 export function t3(ctx: Ctx) {
   const { s } = ctx;
   const app = new Hono<Env>();

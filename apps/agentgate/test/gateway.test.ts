@@ -414,7 +414,7 @@ test("a server that cannot be reached is retried with backoff, not on every list
     expect(failures()).toBe(2);
     await client.listTools();
     expect(failures()).toBe(2);
-    // A Test that reached the server ends the wait.
+    // A manual test that reached the server ends the wait.
     g.s.setLocal("mcpHealth:up", JSON.stringify({ ok: true, at: time }));
     await client.listTools();
     expect(failures()).toBe(3);

@@ -17,6 +17,8 @@ export function atomicWrite(file: string, content: string) {
     if (fd !== undefined) closeSync(fd);
     try {
       unlinkSync(temp);
-    } catch {}
+    } catch {
+      // After a rename the temp name is gone; this only removes a file a failed write left behind.
+    }
   }
 }

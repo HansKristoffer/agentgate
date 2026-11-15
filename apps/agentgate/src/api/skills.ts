@@ -20,7 +20,7 @@ export function skills(ctx: Ctx) {
   app.get("/skills/:id", (c) => {
     const detail = skillDetail(s, c.req.param("id"));
     required(detail, "skill");
-    return c.json(detail!);
+    return c.json(detail);
   });
   return app;
 }

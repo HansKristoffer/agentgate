@@ -74,10 +74,13 @@ export function streamBody(
   idle = 5 * 60_000,
   hooks: StreamHooks = {},
 ): ReadableStream<Uint8Array> | null {
+  // A hook that throws must not break the stream it reports on.
   const notify = (reason: Parameters<NonNullable<StreamHooks["end"]>>[0]) => {
     try {
       hooks.end?.(reason);
-    } catch {}
+    } catch {
+      // Ignored on purpose, see above.
+    }
   };
   if (!body) {
     notify("eof");
@@ -102,7 +105,9 @@ export function streamBody(
       .finally(() => {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch {
+          // The lock stays taken while a read is still pending; the stream has failed either way.
+        }
       });
     target.error(reason);
   };
@@ -128,7 +133,9 @@ export function streamBody(
         } else {
           try {
             hooks.chunk?.(value);
-          } catch {}
+          } catch {
+            // A hook that throws must not break the stream, as in `notify`.
+          }
           controller.enqueue(value);
         }
       } catch (e) {

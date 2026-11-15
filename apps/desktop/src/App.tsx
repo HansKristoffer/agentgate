@@ -255,6 +255,7 @@ function Main({
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
+  const onDesktop = !!desktop?.available;
   const counts: Partial<Record<View, number>> = data
     ? {
         accounts: data.accounts.length,
@@ -495,7 +496,7 @@ function Main({
                 <p>Agentgate shows you the right setup. Everything stays available later.</p>
                 <div className="choice-list">
                   {[
-                    ...(desktop?.available
+                    ...(onDesktop
                       ? [
                           {
                             id: "desktop",
@@ -509,7 +510,7 @@ function Main({
                       title: "Terminal, T3 Code or Codex",
                       body: "Claude Code or Codex sessions on this or other machines.",
                     },
-                    ...(desktop?.available
+                    ...(onDesktop
                       ? [
                           {
                             id: "both",

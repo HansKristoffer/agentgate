@@ -23,13 +23,18 @@ export function saveAccount(s: Store, account: Account, credential: Credential) 
     return account.id;
   });
 }
+
 export function setAccount(s: Store, id: string, patch: Partial<Account>) {
   return s.transaction(() => {
     const account = s.get("account", id);
     if (!account) throw new Error(`no account ${id}`);
-    if (patch.pinned)
-      for (const a of s.list("account"))
+
+    // One pinned account per provider: pinning this one unpins the others of its provider.
+    if (patch.pinned) {
+      for (const a of s.list("account")) {
         if (a.pinned && a.provider === account.provider && a.id !== id) s.put("account", a.id, { ...a, pinned: false });
+      }
+    }
     return s.put("account", id, { ...account, ...patch, id });
   });
 }

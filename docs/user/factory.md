@@ -133,7 +133,7 @@ The built-in briefs are a starting point. Triage closes reports that do not come
 
 ### rulings.md
 
-Your standing decisions for the factory, added to every stage's brief. Only you change it. HTML comments (`<!-- -->`) are notes for whoever edits the file and never reach a brief; the file `factory init` writes asks two questions in one: whether the project is greenfield or has live data, and which packages you own, so causes in them are fixed there.
+Your standing decisions for the factory, added to every stage's brief. Only you change it. HTML comments (`<!-- -->`) are notes for whoever edits the file and never reach a brief; the file `factory init` writes asks two questions: whether the project is greenfield or has live data, and which packages you own, so causes in them are fixed there.
 
 ### skills/\<name\>/SKILL.md
 

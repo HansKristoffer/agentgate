@@ -82,8 +82,6 @@ export function keyForProject(id: string) {
   return KEY.test(key) ? key : undefined;
 }
 
-// ---------------------------------------------------------------- the store on disk (buncargo's format)
-
 const entrySchema = z
   .object({ sha256: z.string(), updatedAt: z.string(), machine: z.boolean().default(false) })
   .passthrough();
@@ -218,8 +216,6 @@ export function writeStore(
   }
 }
 
-// ---------------------------------------------------------------- merging the store with the record
-
 const time = (f: CheckoutFile) => Date.parse(f.updatedAt);
 const digest = (f: CheckoutFile) => (f.deleted ? "" : sha256(Buffer.from(f.data ?? "", "base64")));
 const same = (a: readonly CheckoutFile[], b: readonly CheckoutFile[]) => {
@@ -271,8 +267,8 @@ const storedErrors = (s: Store) => errorsLocal.get(s) ?? {};
 /** Why each project's env files are not syncing. An old node blocks every project with files, whether or not a pass
  * has had something to send since. */
 export function filesErrors(s: Store): Record<string, string> {
-  const errors = storedErrors(s),
-    old = oldNodesError(s);
+  const errors = storedErrors(s);
+  const old = oldNodesError(s);
   if (old) for (const p of s.list("project")) if (p.files?.length || p.fileList?.length) errors[p.id] ??= old;
   return errors;
 }
@@ -476,8 +472,6 @@ const createdCheckouts = (s: Store) => createdLocal.get(s) ?? {};
 export const rememberCheckout = (s: Store, path: string, key: string) =>
   createdLocal.set(s, undefined, { ...createdCheckouts(s), [path]: key });
 
-// ---------------------------------------------------------------- inside a checkout
-
 /** The checkout's own buncargo CLI. Not `bunx buncargo`: without `node_modules/.bin` links (a worktree set up without
  * them) bunx falls back to a global buncargo, which can be a version without `files`. */
 function buncargoBin(cwd: string): string | undefined {
@@ -596,8 +590,6 @@ export function placeEdit(root: string | undefined, key: string, cwd: string, pa
   writeFileSync(target, data, { mode: 0o600 });
   return true;
 }
-
-// ---------------------------------------------------------------- `agentgate project files`
 
 /** The project and store key of the checkout at `top`. */
 export async function checkoutProject(s: Store, top: string) {

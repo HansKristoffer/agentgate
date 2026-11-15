@@ -11,6 +11,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { z } from "zod";
+import { agentsMd, setAgentsMd } from "../agents-md.ts";
 import type { Ctx } from "../daemon.ts";
 import { SkillImports } from "../skill-import.ts";
 import {
@@ -31,7 +32,6 @@ import {
   writeSkillMd,
 } from "../skills.ts";
 import type { Store } from "../store.ts";
-import { agentsMd, setAgentsMd } from "../agents-md.ts";
 import { agentsMdPath } from "../skill-links.ts";
 import { asUserError, controlOp, parseWords, plainMessage, shownError, UserError } from "./registry.ts";
 
@@ -81,7 +81,7 @@ const outcome = (changed: boolean) => (changed ? "updated" : "up to date");
 
 async function syncRepos(s: Store, urls: string[], signal: AbortSignal | undefined) {
   const results: { name: string; outcome: string }[] = [];
-  for (const url of urls)
+  for (const url of urls) {
     results.push({
       name: url,
       outcome: await syncSkillRepo(s, url, undefined, signal).then(
@@ -89,6 +89,7 @@ async function syncRepos(s: Store, urls: string[], signal: AbortSignal | undefin
         (error) => `failed: ${shownError(error) || "the sync failed"}`,
       ),
     });
+  }
   return results;
 }
 

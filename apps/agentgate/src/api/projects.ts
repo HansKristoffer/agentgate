@@ -21,8 +21,8 @@ export function projects(ctx: Ctx) {
   const app = new Hono<Env>();
   app.get("/projects/files/content", (c) => {
     local(c.env.listener);
-    const id = projectIdSchema.parse(c.req.query("id")),
-      path = z.string().min(1).max(512).parse(c.req.query("path"));
+    const id = projectIdSchema.parse(c.req.query("id"));
+    const path = z.string().min(1).max(512).parse(c.req.query("path"));
     return c.json(
       input(() => {
         if (!ctx.files.root) throw new Error("Env files are off in this daemon");

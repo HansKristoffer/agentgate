@@ -56,7 +56,7 @@ try {
     version = release.tag_name ?? "";
   }
 } catch {
-  // keep the fallbacks
+  // Offline or rate limited: the download button keeps pointing at the releases page, with no version.
 }
 const mac =
   assets.find((a) => a.name.endsWith(".dmg"))?.browser_download_url ?? RELEASES;
@@ -492,7 +492,7 @@ agentgate login codex --label personal`}</code></pre>
     font-size: 15px;
   }
 
-  /* Dark, the way a terminal is read everywhere else. */
+  /* Stays dark in both color schemes, as terminals do. */
   .terminal {
     border-radius: var(--radius-card);
     background: #1d1d1f;

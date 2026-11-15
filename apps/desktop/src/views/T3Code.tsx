@@ -552,7 +552,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           .map((v) => (
             <div className="item" key={v.node}>
               <small>
-                {v.node}: {v.t3!.projectSyncError}
+                {v.node}: {v.t3?.projectSyncError}
               </small>
             </div>
           ))}

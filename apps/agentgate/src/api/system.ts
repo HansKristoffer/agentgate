@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import packageInfo from "../../../../package.json";
 import { filesErrors } from "../checkout-files.ts";
+import { localClaudeLogin } from "../claude-local.ts";
 import { patchSettings, revision } from "../configuration.ts";
 import { refreshFailure } from "../credentials.ts";
 import type { Ctx, Env } from "../daemon.ts";
@@ -19,7 +20,6 @@ import { skillRepoSummaries, skillSummaries } from "../skills.ts";
 import { exportBackup, importBackup, sent, type Data } from "../store.ts";
 import { lastSeen } from "../sync.ts";
 import { nodeUpdate } from "../update.ts";
-import { localClaudeLogin } from "../claude-local.ts";
 import { input, local } from "./http.ts";
 import { shownProject } from "./projects.ts";
 
@@ -44,7 +44,8 @@ export function system(ctx: Ctx) {
   const app = new Hono<Env>();
   // The app waits here and refreshes when something changed (changes.ts).
   app.get("/changes", async (c) => {
-    const wait = Math.min(25, Math.max(0, Number(c.req.query("wait") ?? 25) || 0));
+    const seconds = Number(c.req.query("wait") ?? 25) || 0;
+    const wait = Math.min(25, Math.max(0, seconds));
     await ctx.changes.wait(c.req.query("after"), wait * 1000, AbortSignal.any([c.req.raw.signal, ctx.abort.signal]));
     return c.json(ctx.changes.snapshot());
   });

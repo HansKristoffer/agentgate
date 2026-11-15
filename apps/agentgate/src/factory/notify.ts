@@ -11,16 +11,17 @@ import { t3Mcp } from "./t3-mcp.ts";
 /**
  * Telling the person, the one place the factory reaches out from. Two moments are told: an item starts waiting for the
  * person (`ask` in controller.ts emits `item.needs-you`), and an item's PR is ready (`item.phase` to `ready`). Each goes
- * to every outlet, a post through the outbox so a failed one is sent again: the person's own notify URL, the webhook of each virtual project that offers the factory's tools
- * (`factoryWebhook`), and, for a question a run's thread asks, that thread marked unread in T3 Code. GitHub cannot be
- * one: the factory comments as the maintainer's own login (D42), and GitHub never notifies you of your own comments.
- * Only the factory machine drives items, so only it has these moments to tell.
+ * to every outlet, as a post through the outbox so a failed one is sent again: the person's own notify URL, the webhook
+ * of each virtual project that offers the factory's tools (`factoryWebhook`), and, for a question a run's thread asks,
+ * that thread marked unread in T3 Code. GitHub cannot be one: the factory comments as the maintainer's own login
+ * (D42), and GitHub never notifies you of your own comments. Only the factory machine drives items, so only it has
+ * these moments to tell.
  */
 
 /** The person's notify URL, set once for every machine. A synced secret, not a setting: a webhook URL carries its
  * receiver's token, so it syncs only encrypted, stays out of `export --no-secrets`, and only its host is shown. */
 const NOTIFY = "~notify";
-export const notifyUrl = (f: FactoryRuntime) => getSecret(f.s, NOTIFY);
+const notifyUrl = (f: FactoryRuntime) => getSecret(f.s, NOTIFY);
 
 /** Replaced in tests; a receiver gets 10 seconds to answer. */
 export const delivery = {

@@ -18,9 +18,10 @@ export function selfCommand(): string[] {
 /** npx, pnpm dlx and bunx run us from a cache they may prune, which would break every config and
  * service written from there. Copy the binary under AGENTGATE_HOME and point at that copy instead. */
 export function stableBinary(path: string, dir = join(CONFIG_DIR, "bin")): string {
+  // The cache folders of npx (`_npx`), pnpm dlx and bunx.
   if (!/\/(_npx|dlx)\/|\/bunx-/.test(path)) return path;
-  const target = join(dir, "agentgate"),
-    temp = `${target}.${crypto.randomUUID()}.tmp`;
+  const target = join(dir, "agentgate");
+  const temp = `${target}.${crypto.randomUUID()}.tmp`;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   // Rename rather than overwrite: the installed service may be running the current copy.
   try {
@@ -37,6 +38,7 @@ export function agentEnvironment() {
 }
 const quote = (s: string) => JSON.stringify(s);
 
+/** Carries a TOML multi-line string's delimiter across lines: returns the delimiter still open at the end of `line`. */
 function multilineState(line: string, state: string): string {
   let single = "";
   for (let i = 0; i < line.length; i++) {
@@ -68,20 +70,19 @@ function withoutAgentgate(existing: string): string {
   Bun.TOML.parse(existing);
   const lines = existing.split("\n");
   const kept: string[] = [];
-  let table = "",
-    multiline = "";
+  let table = "";
+  let multiline = "";
   for (const line of lines) {
     if (!multiline) {
       const header = line.match(/^\s*(\[\[?[^\]]+\]\]?)\s*(?:#.*)?$/);
       if (header) {
         // Parse quoted table names with the same parser that will read the resulting config.
         const shape = Bun.TOML.parse(`${header[1]}\n__agentgate_probe = 1`) as Record<string, unknown>;
-        table =
-          Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate")
-            ? "model_providers.agentgate"
-            : Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate")
-              ? "mcp_servers.agentgate"
-              : "other";
+        if (Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate"))
+          table = "model_providers.agentgate";
+        else if (Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate"))
+          table = "mcp_servers.agentgate";
+        else table = "other";
       }
     }
     const wasMultiline = !!multiline;
@@ -99,12 +100,13 @@ function withoutAgentgate(existing: string): string {
 export function codexConfig(existing = "", command = selfCommand(), env = agentEnvironment(), primary = false): string {
   const kept = withoutAgentgate(existing);
   const [executable, ...args] = [...command, "mcp"];
-  const provider = `[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n${primary ? "requires_openai_auth = true\n" : ""}`;
-  const mcp = `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${Object.entries(
-    env,
-  )
+  // Only the user's own ~/.codex keeps its login as the proxy's last resort (see primaryCodex).
+  const login = primary ? "requires_openai_auth = true\n" : "";
+  const provider = `[model_providers.agentgate]\nname = "agentgate"\nbase_url = ${quote(`${LOCAL_URL}/codex/backend-api/codex`)}\nwire_api = "responses"\n${login}`;
+  const envPairs = Object.entries(env)
     .map(([k, v]) => `${k} = ${quote(v)}`)
-    .join(", ")} }\n`;
+    .join(", ");
+  const mcp = `\n[mcp_servers.agentgate]\ncommand = ${quote(executable!)}\nargs = [${args.map(quote).join(", ")}]\nenv = { ${envPairs} }\n`;
   const text = `model_provider = "agentgate"\n${kept}\n\n${provider}${mcp}`;
   Bun.TOML.parse(text);
   return text;
@@ -137,6 +139,7 @@ const ownClaudeLogin = (dir: string) => {
   try {
     return existsSync(join(dir, ".credentials.json")) || !!json(claudeJsonIn(dir)).oauthAccount;
   } catch {
+    // An unreadable config is not a login of its own.
     return false;
   }
 };
@@ -160,8 +163,8 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
   const settingsFile = join(paths.claude, "settings.json");
   // Read and validate all files before changing any of them.
   const toml = codexConfig(existsSync(codexFile) ? readFileSync(codexFile, "utf8") : "");
-  const cfg = json(claudeFile),
-    settings = json(settingsFile);
+  const cfg = json(claudeFile);
+  const settings = json(settingsFile);
   const [command, ...args] = [...selfCommand(), "mcp"];
   cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   cfg.hasCompletedOnboarding = true;
@@ -252,8 +255,8 @@ type McpEntry = z.infer<typeof mcpEntry> | undefined;
  * from before the choice was recorded, routing is on). After the binary or port moved, point this install's entries at
  * the current ones. An entry naming another AGENTGATE_HOME belongs to another install and stays. Returns what changed. */
 export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
-  const [command, ...args] = [...selfCommand(), "mcp"],
-    env = agentEnvironment();
+  const [command, ...args] = [...selfCommand(), "mcp"];
+  const env = agentEnvironment();
   const stale = (e: McpEntry) =>
     e?.env?.AGENTGATE_HOME === env.AGENTGATE_HOME &&
     (e.command !== command ||
@@ -274,8 +277,8 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
   const claudeJson = claudeJsonIn(dirs.claude);
   // A missing file is Claude Code mid-rewrite or not set up at all; writing one from scratch would lose its state.
   if (existsSync(claudeJson)) {
-    const entry = mcpEntry.safeParse(json(claudeJson).mcpServers?.agentgate).data,
-      choice = s.local("setup:mcp");
+    const entry = mcpEntry.safeParse(json(claudeJson).mcpServers?.agentgate).data;
+    const choice = s.local("setup:mcp");
     if (entry ? stale(entry) : choice ? choice === "on" : claudeStatus(dirs.claude).routing) {
       await mcp(true, dirs.claude);
       if (!entry) s.setLocal(MCP_RESTORED, String(s.now()));
@@ -284,8 +287,8 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
   }
   const codexFile = join(dirs.codex, "config.toml");
   if (existsSync(codexFile)) {
-    const existing = readFileSync(codexFile, "utf8"),
-      cfg = Bun.TOML.parse(existing) as { model_provider?: string; mcp_servers?: { agentgate?: McpEntry } };
+    const existing = readFileSync(codexFile, "utf8");
+    const cfg = Bun.TOML.parse(existing) as { model_provider?: string; mcp_servers?: { agentgate?: McpEntry } };
     // Only while `setup --primary` routes Codex: rewriting would otherwise switch the user's provider back.
     if (cfg.model_provider === "agentgate" && stale(cfg.mcp_servers?.agentgate)) {
       atomicWrite(codexFile, codexConfig(existing, undefined, undefined, true));
@@ -338,7 +341,7 @@ function mcpFile(file: string): { root: Record<string, unknown>; servers: Record
 }
 
 /** The stdio server Cursor stores in `mcp.json`: command, args, and env, with no Claude-only `type`. */
-export function cursorServer(command = selfCommand(), env = agentEnvironment()) {
+function cursorServer(command = selfCommand(), env = agentEnvironment()) {
   const [executable, ...args] = [...command, "mcp"];
   return { command: executable, args, env };
 }
@@ -372,8 +375,8 @@ export function cursorMcpEnabled(file = CURSOR_MCP_FILE): boolean | undefined {
 export async function mcp(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
   if (dir === PRIMARY_CLAUDE_DIR) liveOnly("Changing your own Claude Code config");
   const claudeJson = claudeJsonIn(dir);
-  const cfg = json(claudeJson),
-    [command, ...args] = [...selfCommand(), "mcp"];
+  const cfg = json(claudeJson);
+  const [command, ...args] = [...selfCommand(), "mcp"];
   if (on) cfg.mcpServers = { ...cfg.mcpServers, agentgate: { type: "stdio", command, args, env: agentEnvironment() } };
   else if (cfg.mcpServers?.agentgate) delete cfg.mcpServers.agentgate;
   else return `No agentgate MCP server in ${claudeJson}.`;
@@ -413,8 +416,8 @@ export function codexStatus(dir = PRIMARY_CODEX_DIR): { routing: boolean; mcp: b
 }
 
 export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<string> {
-  const file = join(dir, "settings.json"),
-    undo = `${file}.agentgate-undo`;
+  const file = join(dir, "settings.json");
+  const undo = `${file}.agentgate-undo`;
   await mcp(on, dir);
   const settings = json(file);
   const env = { ...settings.env };
@@ -454,9 +457,9 @@ const PLACEHOLDER_AUTH = JSON.stringify({ OPENAI_API_KEY: PLACEHOLDER_TOKEN }) +
 /** The Codex half of `setup --primary`: point the user's own ~/.codex at the daemon, keeping its login as last resort. */
 export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promise<string> {
   if (dir === PRIMARY_CODEX_DIR) liveOnly("Changing your own Codex config");
-  const file = join(dir, "config.toml"),
-    undo = `${file}.agentgate-undo`,
-    auth = join(dir, "auth.json");
+  const file = join(dir, "config.toml");
+  const undo = `${file}.agentgate-undo`;
+  const auth = join(dir, "auth.json");
   if (!existsSync(dir)) return `No Codex home at ${dir}; skipped Codex.`;
   const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
   const current = (Bun.TOML.parse(existing) as { model_provider?: string }).model_provider;
@@ -478,10 +481,9 @@ export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promis
   const previous = existsSync(undo) ? undoFile(undo) : { hadValue: false, value: undefined };
   const kept = withoutAgentgate(existing);
   if (existsSync(auth) && readFileSync(auth, "utf8") === PLACEHOLDER_AUTH) unlinkSync(auth);
-  atomicWrite(
-    file,
-    `${previous.hadValue && previous.value !== undefined ? `model_provider = ${quote(previous.value)}\n` : ""}${kept}\n`,
-  );
+  const restored =
+    previous.hadValue && previous.value !== undefined ? `model_provider = ${quote(previous.value)}\n` : "";
+  atomicWrite(file, `${restored}${kept}\n`);
   if (existsSync(undo)) unlinkSync(undo);
   return `Restored the previous Codex provider in ${file}; other settings are preserved.`;
 }

@@ -120,7 +120,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
     // Desktop follows once the pin is saved; its own confirmation covers the restart.
     const login = saved && pinned ? loginFor(a.account.id) : undefined;
     const current = app?.mode === "signed-in" ? app.current : undefined;
-    if (usable(login) && current?.accountUuid !== login!.accountUuid) await act.use(login!);
+    if (login && usable(login) && current?.accountUuid !== login.accountUuid) await act.use(login);
   };
   // A provider gets a panel once it has an account, and Claude whenever Claude Desktop is here; the others are a
   // choice in Add account.

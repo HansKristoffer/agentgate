@@ -104,7 +104,9 @@ export async function act(f: FactoryRuntime, id: string, action: ItemAction, rea
     if (frozenHere(f)) {
       // This machine is signed out of T3 Code, so the item's threads are left as they are. And no comment: the issue
       // is the factory machine's to take in again, which a `finished` marker from here would stop.
-      for (const run of runs.forItem(s, item.id)) if (ACTIVE.includes(run.state)) endRun(f, run, "cancelled");
+      for (const run of runs.forItem(s, item.id)) {
+        if (ACTIVE.includes(run.state)) endRun(f, run, "cancelled");
+      }
       await finishItem(f, item, "closed", {
         interrupt: false,
         reason: `${item.key} was dropped while frozen on ${s.nodeId}${because}`,
@@ -196,8 +198,9 @@ function reopen(f: FactoryRuntime, item: FactoryItem) {
  * ends first. */
 function retryStage(f: FactoryRuntime, item: FactoryItem) {
   const { s } = f;
-  for (const run of runs.forItem(s, item.id))
+  for (const run of runs.forItem(s, item.id)) {
     if (run.state === "queued" || run.state === "starting") endRun(f, run, "cancelled", { error: "retried" });
+  }
   stopAsking(f, item.id);
   const target = retryTarget(f, item);
   if ("pr" in target) {
@@ -280,7 +283,7 @@ export function setup(f: FactoryRuntime): void {
     },
   });
 
-  for (const action of itemActions)
+  for (const action of itemActions) {
     operation(f, {
       name: action,
       summary: ACTION_HELP[action].summary,
@@ -302,4 +305,5 @@ export function setup(f: FactoryRuntime): void {
       },
       remote: { description: ACTION_HELP[action].remote, result: ({ message }) => message },
     });
+  }
 }

@@ -56,6 +56,7 @@ export function skillPreview(
     token: artifact.token,
     skills: artifact.skills.map((k) => {
       const existing = s.get("skill", k.id);
+      const origin = existing?.source ? `from ${existing.source}` : "as a handwritten skill";
       return {
         id: k.id,
         description: k.description,
@@ -64,10 +65,7 @@ export function skillPreview(
         hash: k.hash,
         security: k.security,
         installed: !!existing,
-        conflict:
-          existing && existing.source !== artifact.source
-            ? `Already exists ${existing.source ? `from ${existing.source}` : "as a handwritten skill"}`
-            : undefined,
+        conflict: existing && existing.source !== artifact.source ? `Already exists ${origin}` : undefined,
       };
     }),
   };
@@ -110,15 +108,15 @@ function putSkill(s: Store, input: Stored<Omit<z.input<typeof skillSchema>, "upd
   const skill = skillSchema.parse({ ...input, updatedAt: s.now() });
   skill.contentHash = contentHash(skill.files);
   const prev = s.get("skill", skill.id);
-  if (
-    prev &&
+  // An identical write changes nothing, so it does not bump the record's revision or the sync feed.
+  const unchanged =
+    !!prev &&
     contentHash(prev.files) === skill.contentHash &&
     prev.description === skill.description &&
     prev.source === skill.source &&
     prev.selector === skill.selector &&
-    prev.hash === skill.hash
-  )
-    return prev;
+    prev.hash === skill.hash;
+  if (unchanged) return prev;
   return s.put("skill", skill.id, skill);
 }
 
@@ -236,8 +234,8 @@ export function updateSkill(
   fetch: SkillFetcher = fetchSkills,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  let flights = updates.get(s);
-  if (!flights) updates.set(s, (flights = new Map()));
+  const flights = updates.get(s) ?? new Map<string, Promise<boolean>>();
+  updates.set(s, flights);
   const hit = flights.get(id);
   if (hit) return hit;
   const work = (async () => {
@@ -264,7 +262,7 @@ export function updateSkill(
       });
       return s.seq() !== before;
     });
-  })().finally(() => flights!.delete(id));
+  })().finally(() => flights.delete(id));
   flights.set(id, work);
   return work;
 }
@@ -366,8 +364,8 @@ export function skillRepoSummaries(s: Store): SkillRepoSummary[] {
 export function setSkillRepoProjects(s: Store, input: string, projects: string[]) {
   const url = repoUrl(input);
   s.transaction(() => {
-    const targets = projectsFor(s, projects),
-      ids = repoSkills(s, url);
+    const targets = projectsFor(s, projects);
+    const ids = repoSkills(s, url);
     if (!targets.length && !repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
     for (const p of s.list("project"))
       if (p.skillRepos.includes(url) && !targets.includes(p.id)) {
@@ -424,9 +422,9 @@ function applyRepo(s: Store, url: string, fetched: { commit: string; skills: Fet
   return s.transaction(() => {
     const targets = repoProjects(s, url);
     if (!targets.length) return false; // disconnected while fetching
-    const before = s.seq(),
-      skipped = [...fetched.skipped],
-      applied: string[] = [];
+    const before = s.seq();
+    const skipped = [...fetched.skipped];
+    const applied: string[] = [];
     for (const f of fetched.skills) {
       const prev = s.get("skill", f.id);
       if (prev && prev.source !== url) {
@@ -452,14 +450,14 @@ export function syncSkillRepo(
   signal?: AbortSignal,
 ): Promise<boolean> {
   const url = repoUrl(input);
-  let flights = repoFlights.get(s);
-  if (!flights) repoFlights.set(s, (flights = new Map()));
+  const flights = repoFlights.get(s) ?? new Map<string, Promise<boolean>>();
+  repoFlights.set(s, flights);
   const hit = flights.get(url);
   if (hit) return hit;
   const work = (async () => {
     if (!repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
-    const state = repoState(s, url),
-      present = repoSkills(s, url);
+    const state = repoState(s, url);
+    const present = repoSkills(s, url);
     const since = state.skills?.every((id) => present.includes(id)) ? state.commit : undefined;
     try {
       const fetched = await fetch(url, since, signal);
@@ -471,7 +469,7 @@ export function syncSkillRepo(
       if (repoProjects(s, url).length) repoStates.set(s, url, { ...state, error: getErrorMessage(error) });
       throw error;
     }
-  })().finally(() => flights!.delete(url));
+  })().finally(() => flights.delete(url));
   flights.set(url, work);
   return work;
 }

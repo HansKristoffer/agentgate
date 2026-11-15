@@ -30,7 +30,7 @@ held by the serving node ([`remote.ts`](../../apps/agentgate/src/remote.ts), `ha
   ([`factory/remote-tools.ts`](../../apps/agentgate/src/factory/remote-tools.ts)). They are the factory operations
   marked `remote`, which reach the factory machine, so any node can serve the endpoint. Turning it on
   is gated on node protocol 9, since older nodes drop the field when they save the project. Unlike the agent tool
-  `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve: the maintainer chose full
+  `factory_add`, whose items wait in `held`, the endpoint adds at triage and may approve. The maintainer chose full
   control for Grok, accepting that the URL and secret, which the relay reads, can start full-access threads.
 - The endpoint's `factoryWebhook` is one more URL on the factory's notify outlets
   ([`factory/notify.ts`](../../apps/agentgate/src/factory/notify.ts)), beside the person's own `factory notify` URL:

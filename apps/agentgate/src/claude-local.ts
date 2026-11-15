@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import { localClaudeLoginSchema } from "@agentgate/protocol";
+import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 import { killGroup } from "./runtime.ts";
 import { DEV, liveOnly, type Store } from "./store.ts";
@@ -44,9 +44,11 @@ export const host = {
       detached: true,
     });
     const stop = () => killGroup(child);
+    // Stops a sign-in that nobody finishes.
     const timer = setTimeout(stop, 10 * 60_000);
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
+
     let active = true;
     void code
       .then(async (value) => {
@@ -56,17 +58,21 @@ export const host = {
         child.stdin.end();
       })
       .catch(stop);
+
     const read = async (stream: ReadableStream<Uint8Array>) => {
       const decoder = new TextDecoder();
       let text = "";
       for await (const chunk of stream) {
+        // Keep only the tail: a URL split across chunks still matches, and the buffer stays bounded.
         text = (text + decoder.decode(chunk, { stream: true })).slice(-16_384);
+        // The authorize URL the CLI prints, up to the first whitespace or ANSI escape.
         const url = text.match(
           /https:\/\/(?:claude\.com|claude\.ai)\/(?:cai\/)?oauth\/authorize\?[^\s\x1b]+(?=[\s\x1b])/,
         )?.[0];
         if (url) onUrl(url);
       }
     };
+
     try {
       const [exit] = await Promise.all([child.exited, read(child.stdout), read(child.stderr)]);
       return exit === 0;
@@ -87,28 +93,27 @@ async function readLocalClaudeLogin(s: Store) {
   const dir = join(host.home, ".claude");
   let email: string | undefined;
   try {
-    email = z
-      .email()
-      .safeParse(JSON.parse(readFileSync(join(host.home, ".claude.json"), "utf8")).oauthAccount?.emailAddress).data;
+    const config = JSON.parse(readFileSync(join(host.home, ".claude.json"), "utf8"));
+    email = z.email().safeParse(config.oauthAccount?.emailAddress).data;
   } catch {
     /* The terminal marker still matters when the identity file is missing. */
   }
+
   try {
     const file = join(dir, ".credentials.json");
     let raw = existsSync(file) ? readFileSync(file, "utf8") : undefined;
     if (!raw && process.platform === "darwin") {
+      // Claude Code suffixes its Keychain item with a hash of the config folder.
       const hash = createHash("sha256").update(dir).digest("hex").slice(0, 8);
       raw =
         (await host.keychain(`Claude Code-credentials-${hash}`)) ?? (await host.keychain("Claude Code-credentials"));
     }
-    const oauth = raw && credentials.safeParse(JSON.parse(raw)).data?.claudeAiOauth;
+
+    const oauth = raw ? credentials.safeParse(JSON.parse(raw)).data?.claudeAiOauth : undefined;
+    const expiresAt = oauth?.refreshTokenExpiresAt;
+    const refreshExpired = !!expiresAt && expiresAt > 0 && expiresAt <= s.now();
     // An expired access token can still refresh. Only a terminal marker or refresh expiry requires the user.
-    if (
-      oauth &&
-      (oauth.loginEnded ||
-        (oauth.refreshTokenExpiresAt && oauth.refreshTokenExpiresAt > 0 && oauth.refreshTokenExpiresAt <= s.now()))
-    )
-      return { email, state: "needs-login" as const };
+    if (oauth && (oauth.loginEnded || refreshExpired)) return { email, state: "needs-login" as const };
   } catch {
     // Missing, locked or unfamiliar credentials are unknown, not proof that a login failed.
   }
@@ -145,33 +150,26 @@ export async function startLocalClaudeLogin(s: Store, signal: AbortSignal, pendi
   let flight = running.get(s);
   if (!flight) {
     const controller = new AbortController();
-    let resolve!: (url: string) => void, reject!: (error: Error) => void;
-    const ready = new Promise<string>((yes, no) => {
-      resolve = yes;
-      reject = no;
-    });
+    const url = Promise.withResolvers<string>();
+    const pasted = Promise.withResolvers<string>();
     const previous = state.get(s);
-    let submit!: (value: string) => void;
-    const code = new Promise<string>((resolve) => {
-      submit = resolve;
-    });
     state.set(s, undefined, { email: previous?.email, state: "signing-in" });
     const stop = () => controller.abort();
     signal.addEventListener("abort", stop, { once: true });
     if (signal.aborted) stop();
     const timer = setTimeout(() => {
-      reject(new Error("Claude Code did not open its login page. Try again."));
+      url.reject(new Error("Claude Code did not open its login page. Try again."));
       stop();
     }, 15_000);
     const task = (async () => {
       try {
         const ok = await host.signIn(
           controller.signal,
-          (url) => {
+          (found) => {
             clearTimeout(timer);
-            resolve(url);
+            url.resolve(found);
           },
-          code,
+          pasted.promise,
         );
         if (!ok) throw new Error("sign-in did not finish");
       } catch {
@@ -183,14 +181,15 @@ export async function startLocalClaudeLogin(s: Store, signal: AbortSignal, pendi
       } finally {
         clearTimeout(timer);
         signal.removeEventListener("abort", stop);
-        reject(new Error("Claude Code sign-in did not finish. Try again."));
+        // Fails the wait for a URL that never came. Once the URL is out, this does nothing.
+        url.reject(new Error("Claude Code sign-in did not finish. Try again."));
         running.delete(s);
         checks.delete(s);
         // A successful sign-in clears the problem as soon as the CLI finishes.
         if (state.get(s)?.state === "signing-in") await localClaudeLogin(s);
       }
     })();
-    flight = { controller, ready, task, code: submit };
+    flight = { controller, ready: url.promise, task, code: pasted.resolve };
     running.set(s, flight);
     pending.add(task);
     void task.then(

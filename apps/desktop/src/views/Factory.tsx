@@ -114,6 +114,8 @@ function NeedsYouQueue({
 
 function ItemCard({ item, showRepo, open }: { item: BoardItem; showRepo: boolean; open: (id: string) => void }) {
   const link = threadOf(item);
+  // Bound so the button handlers see the narrowed values, which a property check does not carry into a closure.
+  const { pr, url } = item;
   return (
     <Card className="factory-card factory-toned" style={toneStyle(toneOf(item))} onClick={() => open(item.id)}>
       <div className="factory-card-key">
@@ -140,27 +142,27 @@ function ItemCard({ item, showRepo, open }: { item: BoardItem; showRepo: boolean
             </Button>
           </span>
         )}
-        {item.pr && (
+        {pr && (
           <span title="Open the pull request">
             <Button
               isIconOnly
               size="sm"
               variant="ghost"
               aria-label={`Open ${item.key}'s PR`}
-              onPress={() => void openExternal(item.pr!.url)}
+              onPress={() => void openExternal(pr.url)}
             >
               <GitPullRequest size={14} />
             </Button>
           </span>
         )}
-        {item.url && (
+        {url && (
           <span title="Open the issue">
             <Button
               isIconOnly
               size="sm"
               variant="ghost"
               aria-label={`Open ${item.key}'s issue`}
-              onPress={() => void openExternal(item.url!)}
+              onPress={() => void openExternal(url)}
             >
               <ExternalLink size={14} />
             </Button>

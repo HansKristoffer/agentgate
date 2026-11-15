@@ -652,6 +652,7 @@ pre {
   cursor: pointer;
 }
 
+/* Each limit window: name, bar and percent, with its reset underneath. Fixed columns line up across accounts. */
 .mini-quotas {
   position: relative;
   width: 290px;
@@ -681,9 +682,10 @@ pre {
   opacity: 0.35;
   cursor: default;
 }
+/* Room for the icon beside the bars, taken from the name column. */
 .mini-quotas.stale {
   margin-left: 12px;
-} /* room for the icon beside the bars, taken from the name column */
+}
 .mini-quotas > .stale-usage {
   position: absolute;
   left: -22px;
@@ -974,8 +976,6 @@ h3 {
 .quota-details > small {
   overflow-wrap: anywhere;
 }
-/* Each limit window: name, bar and percent, with its reset underneath. Fixed columns line up across accounts. */
-
 .activity-filters {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

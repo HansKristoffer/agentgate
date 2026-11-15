@@ -22,8 +22,11 @@ export const showHelp = (): never => {
 /** A string option's value. */
 export const stringOption = (opts: Opts) => (k: string) => opts[k] as string | undefined;
 
+// Longer than the daemon's 90 s limit on account checks (api/accounts.ts), so the CLI never gives up first.
+const DAEMON_TIMEOUT_MS = 100_000;
+
 export async function management<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-  const signal = AbortSignal.timeout(100000);
+  const signal = AbortSignal.timeout(DAEMON_TIMEOUT_MS);
   const res = await fetchHeaders(
     `${LOCAL_URL}/api${path}`,
     {
@@ -33,7 +36,7 @@ export async function management<T>(path: string, method = "GET", body?: unknown
       headers: body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     },
-    100000,
+    DAEMON_TIMEOUT_MS,
   );
   const result = JSON.parse(new TextDecoder().decode(await readBody(res.body, 2 * 1024 * 1024, signal)));
   if (!res.ok) throw new Error(result.error ?? "Daemon rejected the operation");

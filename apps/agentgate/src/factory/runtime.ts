@@ -27,13 +27,14 @@ import type { FactoryItem, FactoryRun } from "./db.ts";
 
 /**
  * The factory's shared runtime. Each feature file registers its operations, loops, run kinds, sources, board parts and
- * preflight checks here in its own `setup`, so features never edit shared files. An operation is registered once, and the CLI, the
- * control API, the agents' MCP tools and a virtual project's remote endpoint are all made from that one entry.
+ * preflight checks here in its own `setup`, so features never edit shared files. An operation is registered once, and
+ * the CLI, the control API, the agents' MCP tools and a virtual project's remote endpoint are all made from that one
+ * entry.
  */
 
-export { FACTORY_PROTOCOL, requireFactoryProtocol } from "../store.ts";
+export { requireFactoryProtocol } from "../store.ts";
 
-export type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
+type SourceType = "github" | "linear" | "webhook" | "scout" | "manual";
 /**
  * Who calls an operation. `via`: the CLI, the control API (the app), an agent's MCP tool, or a virtual project's
  * remote endpoint. `thread`: `_meta["dev.agentgate/t3Thread"]` of a tool call, a label the shim adds, not proof.
@@ -109,7 +110,7 @@ export function operation<S extends z.ZodType, N extends string, O extends Retur
   f.operations.set(op.name, op);
 }
 
-export interface FactoryLoop {
+interface FactoryLoop {
   name: string;
   everyMs: number;
   /** `factory-node`: only on the machine the pointer names, which alone drives items. `every-node` is for what a
@@ -216,7 +217,7 @@ export interface ForwardOp {
   input: unknown;
   caller: Caller;
 }
-export type Forwarder = (op: ForwardOp) => Promise<unknown>;
+type Forwarder = (op: ForwardOp) => Promise<unknown>;
 
 export interface FactoryRuntime {
   ctx: Ctx;

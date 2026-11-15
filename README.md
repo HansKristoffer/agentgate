@@ -11,7 +11,7 @@ T3 Code (or plain Claude Code / Codex) runs the sessions; agentgate sits underne
 
 ## Using the Claude Desktop app
 
-Agentgate works with Claude Desktop without any terminal: open the Agentgate app, choose **Set up this machine**, then **Accounts**, which has a **Claude Desktop** panel. Choose one of two ways:
+You can set up Claude Desktop without a terminal. Open the Agentgate app, choose **Set up this machine**, then go to **Accounts**, which has a **Claude Desktop** panel. Choose one of two ways:
 
 - **Switch accounts**: Claude Desktop stays signed in to your full Claude account (Chat, Cowork, Code). Agentgate keeps a saved login per account on this Mac and switches with one click, from the app or the menu bar. Desktop restarts when you switch.
 - **Share automatically**: Claude Desktop's Code tab uses whichever subscription has room and moves on by itself. Desktop runs a separate local profile without Chat.
@@ -49,7 +49,7 @@ The first `service install` points the Claude Code, Codex and Cursor you already
 
 You can do every setup step with the CLI. To use the native app, build it with `bun run build:desktop` and open **Agentgate.app**. It connects to `http://127.0.0.1:7878` by default. On a fresh machine, **Set up this machine** installs the bundled CLI in `~/.config/agentgate/bin`, initializes the store, starts a launchd service, and routes your Claude Code, Codex and Cursor the same way. Add that folder to your shell PATH to use the CLI. Closing or removing the app leaves that service and its CLI running.
 
-The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it; `agentgate status` prints the same list. **Settings → Coding tools** routes your own Claude Code and Codex or undoes it, and can generate [separate folders for T3 Code](#or-separate-folders-for-t3-code) instead. The app's service and coding-tool controls apply only to its configured local daemon; remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
+The app has Overview, Accounts, MCP servers, Skills, Projects, Machines, T3 Code, Activity, and Settings screens. Overview lists anything that needs you, such as an account or MCP server to sign in to again, and the sidebar marks the screen where you fix it; `agentgate status` prints the same list. **Settings → Coding tools** routes your own Claude Code and Codex or undoes it, and can generate [separate folders for T3 Code](#or-separate-folders-for-t3-code) instead. The app's service and coding-tool controls apply only to its configured local daemon. Remote setup and services use the CLI on that machine. The one exception is routing: Machines shows whether each machine's own Claude Code and Codex go through agentgate, and its row menu turns that on or off there.
 
 ## A second machine (e.g. an always-on server)
 
@@ -142,7 +142,7 @@ What to expect:
 
 Turn on **Keep projects in sync** on the T3 Code page, or run `agentgate t3 sync on`, and a GitHub project you add in T3 Code on one machine shows up in T3 Code on your other machines. Machines check every 30 seconds, and opening the T3 Code page checks right away. Each machine needs T3 Code connected as above. A machine that already has a checkout of the repository gets a project for that checkout. Otherwise T3 Code clones it into the clone folder (`agentgate t3 dirs`) with that machine's own GitHub login, so `gh` must be signed in there (`agentgate logins share` does that for every machine). It clones over HTTPS, or over SSH when that machine's existing checkouts use SSH. Removing a project only removes it on that machine, and agentgate never adds it back there. A clone that failed is the exception: remove it in T3 Code and agentgate tries again.
 
-The proxy now provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [the proxy guide](docs/user/proxy.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
+The proxy provides quota freshness and reset visibility, searchable **Activity** with request attempts and stream outcomes, bounded retries and local cooldowns, routing strategies and optional session affinity, model discovery/aliases/policies, batch verification, and revision-safe configuration previews. See [the proxy guide](docs/user/proxy.md) for controls, CLI examples, defaults, and upgrade requirements. Codex background usage polling is opt-in pending live endpoint validation.
 
 ## MCP servers per repo
 
@@ -310,7 +310,7 @@ Run `agentgate --help`. A command refuses an option it does not know, so a missp
 
 - **Once imported, a login belongs to agentgate.** Don't keep using the original `~/.claude` or `~/.codex` login: its CLI would refresh the token and log agentgate out. `agentgate login` avoids this by using a throwaway directory.
 - **Secrets are stored in plain text** in `~/.config/agentgate/agentgate.db` (mode 0600) and copied to every paired node. Pair only machines you control. The relay only ever sees them encrypted.
-- **Terms of service.** Pool only your own accounts and keep a person driving the sessions; follow the providers’ applicable terms.
+- **Terms of service.** Pool only your own accounts and keep a person driving the sessions; follow the providers' applicable terms.
 
 ## Development
 

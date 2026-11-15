@@ -170,6 +170,7 @@ async function resolve(h: Handoffs, job: SourceJob<"resolve">) {
   Object.assign(st, found);
   h.advance(job, "stop");
   // B creates its worktree and runs setup while A stops and packs; `start` runs it there if this is lost.
+  // A lost prepare costs only the head start: send prepares again.
   void peerCall(h.s, job.target, `/handoff/${job.id}/prepare`, ignored, { json: prepareInput(found) }).catch(() => {});
 }
 
@@ -220,6 +221,7 @@ export async function runSource(h: Handoffs, id: string) {
         h.save(job);
         return;
       }
+      // Best effort: the destination's copy is removed if it can be reached.
       await peerCall(h.s, job.target, `/handoff/${id}`, ignored, { method: "DELETE" }).catch(() => {});
       await failBeforeImport(h, job, message, true);
       return;
@@ -380,9 +382,9 @@ async function storeFiles(h: Handoffs, job: SourceJob<"package">): Promise<strin
   const root = h.options.filesRoot;
   const repo = parseRemote(job.state.remoteUrl);
   if (!root || !repo) return [];
-  return managedFiles(root, job.state.cwd, h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? []).catch(
-    () => [],
-  );
+  const listed = h.s.get("project", canonicalProject(h.s, repo))?.fileList ?? [];
+  // A checkout the file store cannot list leaves its managed files out of the snapshot.
+  return managedFiles(root, job.state.cwd, listed).catch(() => []);
 }
 
 /** Gitignored files the checkout changed from its file store (checkout-files.ts): the thread's own `.env.local` edits.
@@ -495,6 +497,7 @@ async function wait(h: Handoffs, job: SourceJob<"await">): Promise<boolean> {
         );
         if (aborted) throw new Error(`lost contact with ${job.target}`);
       }
+      // Backs off five poll intervals while the destination is unreachable.
       await sleep(h.pollMs * 5);
       continue;
     }
@@ -576,12 +579,12 @@ export async function cancelHandoff(h: Handoffs, id: string): Promise<HandoffCan
     aborted,
   );
   const queued = current.state.queuedIds?.length ?? 0;
+  const queuedNote = queued ? ` Its queued messages were not queued again on ${h.s.nodeId}.` : "";
   return {
     aborted,
     message: aborted
       ? `Cancelled: the thread stays on ${h.s.nodeId}.`
-      : `Gave up without reaching ${job.target}, which may already have the thread. Check T3 Code on ${job.target}: if the thread is there, continue it there and archive it on ${h.s.nodeId}.` +
-        (queued ? ` Its queued messages were not queued again on ${h.s.nodeId}.` : ""),
+      : `Gave up without reaching ${job.target}, which may already have the thread. Check T3 Code on ${job.target}: if the thread is there, continue it there and archive it on ${h.s.nodeId}.${queuedNote}`,
   };
 }
 

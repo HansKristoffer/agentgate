@@ -24,6 +24,7 @@ export function scrubDevStore(s: Store) {
     for (const table of tables)
       if (["relay_counters", "relay_pending", "session_usage"].includes(table) || table.startsWith("factory_"))
         s.db.run(`delete from ${table}`);
+
     for (const row of s.db.query("select id, data from records where kind = 'mcp' and deleted = 0").all() as {
       id: string;
       data: string;
@@ -34,6 +35,7 @@ export function scrubDevStore(s: Store) {
         row.id,
       ]);
     }
+
     // Every machine posts its factory updates to a virtual project's webhook; a dev daemon must not post to a real one.
     for (const row of s.db.query("select id, data from records where kind = 'project' and deleted = 0").all() as {
       id: string;
@@ -43,6 +45,7 @@ export function scrubDevStore(s: Store) {
       if (factoryWebhook)
         s.db.run("update records set data = ? where kind = 'project' and id = ?", [JSON.stringify(project), row.id]);
     }
+
     const settings = s.db.query("select data from records where kind = 'setting' and id = 'settings'").get() as {
       data: string;
     } | null;
@@ -50,6 +53,7 @@ export function scrubDevStore(s: Store) {
       const { factory: _factory, ...rest } = JSON.parse(settings.data);
       s.db.run("update records set data = ? where kind = 'setting' and id = 'settings'", [JSON.stringify(rest)]);
     }
+
     s.setLocal("node", "dev");
     s.setLocal("adminToken", crypto.randomUUID().replace(/-/g, ""));
     s.put("node", "dev", { id: "dev", alwaysOn: false, protocol: NODE_PROTOCOL });

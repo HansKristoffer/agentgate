@@ -23,11 +23,13 @@ export const CLAUDE = {
 };
 
 /** Claude Code puts the account uuid in metadata.user_id, either as JSON or as `user_…_account_<uuid>_session_…`. */
-export function rewriteUserId(userId: string, uuid: string): string {
+function rewriteUserId(userId: string, uuid: string): string {
   try {
     const o = JSON.parse(userId);
     if (o && typeof o === "object" && "account_uuid" in o) return JSON.stringify({ ...o, account_uuid: uuid });
-  } catch {}
+  } catch {
+    // Not JSON: the textual rewrite below handles it.
+  }
   return userId.replace(/account_[0-9a-f-]*_/, `account_${uuid}_`);
 }
 
@@ -140,7 +142,7 @@ export function parseUsage(body: unknown): { windows: Window[]; status: "ok" | "
   return { windows, status: windows.some((w) => w.usedPct >= 100) ? "exhausted" : "ok" };
 }
 
-export async function fetchUsage(accessToken: string, signal?: AbortSignal) {
+async function fetchUsage(accessToken: string, signal?: AbortSignal) {
   return parseUsage(
     await fetchJson(`${CLAUDE.api}/api/oauth/usage`, accessToken, (status) => `usage request failed (${status})`, {
       headers: { "anthropic-beta": CLAUDE.oauthBeta },
@@ -171,7 +173,7 @@ export async function exchange(s: Store, pasted: string, verifier: string, label
   if (!code || (expectedState && state !== expectedState)) throw new Error("login state does not match; start again");
   const t = await tokenRequest(CLAUDE.tokenUrl, {
     grant_type: "authorization_code",
-    code: code!,
+    code,
     state: state ?? "",
     client_id: CLAUDE.clientId,
     redirect_uri: CLAUDE.redirectUri,
@@ -220,6 +222,7 @@ async function profile(accessToken: string): Promise<Who> {
 async function enrich(s: Store, id: string) {
   const credential = s.get("credential", id);
   if (!credential) return;
+  // The profile only fills in labels: a login without it still saves.
   const who = await profile(credential.accessToken).catch((): Who => ({}));
   s.transaction(() => {
     const current = s.get("credential", id),
@@ -230,12 +233,12 @@ async function enrich(s: Store, id: string) {
   });
 }
 
+/** Claude Code names its keychain item after a short hash of its config dir; the default dir uses the plain name. */
 const keychainNames = (dir: string) => [
   `Claude Code-credentials-${createHash("sha256").update(dir).digest("hex").slice(0, 8)}`,
   "Claude Code-credentials",
 ];
 
-/** Take over a Claude Code login from a config dir (`.credentials.json`, or the macOS Keychain). */
 /** Who Claude Code itself is signed in as on this machine. Reads only ~/.claude.json, never the keychain or tokens. */
 export function detect(dir = join(homedir(), ".claude")): { email: string; plan?: string } | undefined {
   const file = dir === join(homedir(), ".claude") ? join(homedir(), ".claude.json") : join(dir, ".claude.json");
@@ -249,6 +252,7 @@ export function detect(dir = join(homedir(), ".claude")): { email: string; plan?
   }
 }
 
+/** Take over a Claude Code login from a config dir (`.credentials.json`, or the macOS Keychain). */
 export async function importFrom(s: Store, dir: string, label?: string, cleanupKeychain = false) {
   let raw: string | undefined;
   let cleanupName: string | undefined;
@@ -281,6 +285,7 @@ export async function importFrom(s: Store, dir: string, label?: string, cleanupK
     }
   }
   const id = save(s, tokens, who, label);
+  // The login came from a throwaway config dir, so its Keychain copy goes too.
   if (cleanupName)
     Bun.spawnSync(["security", "delete-generic-password", "-a", userInfo().username, "-s", cleanupName], {
       timeout: 10000,

@@ -37,7 +37,7 @@ export function accounts(ctx: Ctx) {
   app.get("/requests/:id", (c) => {
     const result = requestDetail(s, c.req.param("id"));
     required(result, "request");
-    return c.json(result!);
+    return c.json(result);
   });
   const since = z.object({ since: z.coerce.number().int().nonnegative().optional() }).strict();
   app.get("/proxy/tokens", (c) => c.json(tokenUsage(s, since.parse(c.req.query()).since)));

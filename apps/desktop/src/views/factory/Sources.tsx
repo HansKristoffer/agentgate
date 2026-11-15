@@ -25,7 +25,7 @@ const browserZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "U
  * The input of the `source add` operation from the dialog's form. The daemon checks it against the same schema, and
  * leaves out of the folder what equals a default.
  */
-export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): FactorySourceAddInput {
+function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): FactorySourceAddInput {
   const optional = (name: string) => field(form, name) || undefined;
   const base = { id: field(form, "id"), repo: field(form, "repo") };
   if (kind === "scout") {
@@ -50,7 +50,7 @@ export function sourceInput(form: FormData, kind: Kind, when: "every" | "at"): F
   const header = optional("header");
   const secret = optional("secret");
   // Half a signature would be dropped, leaving the URL unsigned while the person thinks it is checked.
-  if (!header !== !secret)
+  if (!!header !== !!secret)
     throw new Error("A signature needs both its header and its secret name; fill in both, or neither for none");
   const body = optional("body");
   const dedupe = optional("dedupe");

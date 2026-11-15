@@ -19,15 +19,16 @@ import { T3PermissionError, t3Client, t3Local, t3State, type T3 } from "./t3.ts"
  * removing a T3 project stays on that machine, and a repository this node had once is never added again. A clone
  * counts once it has arrived: removing a failed clone in T3 lets the next round try again. */
 
-// Renamed from t3:knownRepos, which also held clones that never arrived.
 const KNOWN = defineLocal("t3:repos", z.array(z.string()));
+// The key an earlier version wrote. Cleared on every sync, so the list it kept, which also held clones that never
+// arrived, stays gone.
 const OLD_KNOWN = defineLocal("t3:knownRepos", z.string());
 /** Clones this node started, as lowercase `owner/repo` → destination. Whatever arrives there counts, even when its
  * origin names another repository: GitHub redirects a renamed one, so a clone of `old/name` checks out `new/name`. */
 const CLONES = defineLocal("t3:clones", z.record(z.string(), z.string()));
 
 /** T3 projects on this node, with the GitHub `owner/repo` and origin URL of those whose checkout has one. */
-export async function t3Projects(t3: T3) {
+async function t3Projects(t3: T3) {
   const out: { repo?: string; origin?: string; project: Awaited<ReturnType<T3["shell"]>>["projects"][number] }[] = [];
   for (const project of (await t3.shell()).projects) {
     const origin = await originOf(project.workspaceRoot);
@@ -150,7 +151,8 @@ export async function syncT3Projects(h: Handoffs) {
       }
     }
   }
-  report([...(denied ? [denied] : []), ...[...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`)]);
+  const messages = [...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`);
+  report([...(denied ? [denied] : []), ...messages]);
 }
 
 /** This node's main checkouts by lowercase `owner/repo`: registered ones, then clones in the clone folder. */

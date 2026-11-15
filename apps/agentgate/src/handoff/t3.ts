@@ -54,8 +54,8 @@ const threadShell = z
     settledOverride: z.enum(["settled", "active"]).nullable().optional(),
     latestUserMessageAt: z.string().nullable().optional(),
     activityRunStartedAt: z.string().nullable().optional(),
-    /** Sidebar order (pins and drag order); optional on older servers. */
     createdAt: z.string(),
+    /** Sidebar order (pins and drag order); optional on older servers. */
     unsettledAt: z.string().nullable().optional(),
     pinnedAt: z.string().nullable().optional(),
     pinOrderKey: z.string().nullable().optional(),
@@ -504,6 +504,7 @@ export async function connectT3(s: Store, input: { url: string; token: string },
   const token = z
     .object({ access_token: z.string().min(1), expires_in: z.number().positive() })
     .parse(JSON.parse(text));
+  // The label is for display only: a T3 Code that cannot say it still connects.
   const label = await fetchHeaders(`${url}/.well-known/t3/environment`, { signal: AbortSignal.timeout(5000) }).then(
     async (r) =>
       r.ok

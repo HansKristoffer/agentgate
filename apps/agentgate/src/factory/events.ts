@@ -3,7 +3,7 @@ import type { Store } from "../store.ts";
 import { logError, type PostResult } from "./runtime.ts";
 
 /** What happened in the factory, for the board's event list, and for features that react to each other's changes. */
-export type FactoryEvent =
+type FactoryEvent =
   | { kind: "item.created"; item: string; text: string }
   | { kind: "item.phase"; item: string; from: ItemPhase | null; to: ItemPhase; text: string }
   /** The item started waiting for the maintainer (`ask` in controller.ts). */

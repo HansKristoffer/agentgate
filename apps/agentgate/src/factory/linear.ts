@@ -194,7 +194,7 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
       label: source.label,
       after,
     });
-    for (const issue of issues.nodes)
+    for (const issue of issues.nodes) {
       found.push({
         externalId: issue.identifier,
         key: issue.identifier.toLowerCase(),
@@ -203,6 +203,7 @@ async function poll(f: FactoryRuntime, source: FactorySource) {
         snapshot: { title: issue.title, description: issue.description ?? "", url: issue.url },
         ...(issue.updatedAt && { updatedAt: issue.updatedAt }),
       });
+    }
     more = issues.pageInfo.hasNextPage && !!issues.pageInfo.endCursor;
     if (!more) break;
     after = issues.pageInfo.endCursor!;
