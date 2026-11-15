@@ -27,6 +27,8 @@ import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from 
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 import { UserError } from "./ops/registry.ts";
+import { agentsMd, setAgentsMd } from "./agents-md.ts";
+import { atomicWrite } from "./files.ts";
 
 export const SKILLS_DIR = join(CONFIG_DIR, "skills");
 const EXCLUDE_HEADER = "# agentgate skills (symlinks into ~/.config/agentgate/skills)";
@@ -100,16 +102,21 @@ function ignoreLinks(dir: string, names: string[]) {
   if (text !== current) writeFileSync(file, text);
 }
 
-/** Where `*` skills go: the coding-tool folders `setup` writes, plus your own ~/.claude and ~/.codex while `setup --primary` is on. */
-export function globalSkillDirs(): [dir: string, on: boolean][] {
+/** Where `*` skills and the global AGENTS.md go: the coding-tool folders `setup` writes, plus your own ~/.claude and
+ * ~/.codex while `setup --primary` is on. Claude Code reads the instructions as CLAUDE.md, Codex as AGENTS.md. */
+export function globalSkillDirs(): [dir: string, on: boolean, instructions?: string][] {
   const primary = primaryState();
   return [
-    [join(CLAUDE_DIR, "skills"), true],
-    [join(CODEX_DIR, "skills"), true],
-    [join(PRIMARY_CLAUDE_DIR, "skills"), primary.claude],
-    [join(PRIMARY_CODEX_DIR, "skills"), primary.codex],
+    [join(CLAUDE_DIR, "skills"), true, join(CLAUDE_DIR, "CLAUDE.md")],
+    [join(CODEX_DIR, "skills"), true, join(CODEX_DIR, "AGENTS.md")],
+    [join(PRIMARY_CLAUDE_DIR, "skills"), primary.claude, join(PRIMARY_CLAUDE_DIR, "CLAUDE.md")],
+    [join(PRIMARY_CODEX_DIR, "skills"), primary.codex, join(PRIMARY_CODEX_DIR, "AGENTS.md")],
   ];
 }
+
+/** Where a node keeps the global AGENTS.md, next to its skills: the file to open in an editor. */
+export const agentsMdPath = (root = SKILLS_DIR) => join(dirname(root), "AGENTS.md");
+const digest = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
 
 // What `/status` shows about skills on this node.
 const healthLocal = defineLocal("skillHealth", statusSchema.shape.skillHealth, { topic: "status" });
@@ -119,6 +126,8 @@ const checkoutsLocal = defineLocal("checkouts", z.record(z.string(), z.string())
 export const registeredCheckouts = (s: Store) => checkoutsLocal.get(s) ?? {};
 const conflictsLocal = defineLocal("skillConflicts", z.array(z.string()), { topic: "status" });
 const keptLocal = defineLocal("skillKept", z.array(z.string()), { topic: "status" });
+// The digest of the AGENTS.md text the file and the store last agreed on: a file that differs from it was edited here.
+const agentsSyncedLocal = defineLocal("agentsMdSynced", z.string());
 // Per worktree: the mirror links `mirror` made there, link path → target.
 const mirrorsLocal = defineLocal("skillMirrors:", z.record(z.string(), z.string()));
 
@@ -127,6 +136,7 @@ const mirrorsLocal = defineLocal("skillMirrors:", z.record(z.string(), z.string(
  * worktree list is watched, so a new worktree gets its links while git is still checking it out. */
 export class SkillLinks {
   private watchers = new Map<string, { watcher: FSWatcher; inode: number }>();
+  private agentsWatcher?: FSWatcher;
   private manifests = new Map<
     string,
     { rev: string; files: { path: string; size: number; executable: boolean; digest: string; mtime?: number }[] }
@@ -270,6 +280,8 @@ export class SkillLinks {
     this.errors = [];
     const attemptedAt = this.s.now(),
       previous = this.health();
+    const instructions = agentsMdPath(this.root);
+    this.attempt(instructions, () => this.writeAgentsMd(instructions));
     this.attempt(this.root, () => {
       this.write(this.root!);
       this.link(this.root!);
@@ -299,6 +311,8 @@ export class SkillLinks {
     for (const t of this.timers) clearTimeout(t);
     for (const { watcher } of this.watchers.values()) watcher.close();
     this.watchers.clear();
+    this.agentsWatcher?.close();
+    this.agentsWatcher = undefined;
     this.manifests.clear();
   }
 
@@ -423,10 +437,17 @@ export class SkillLinks {
       conflicts: string[] = [],
       kept = { asked: new Set(this.kept()), still: [] as string[] };
     const global = (this.s.get("project", "*")?.skills ?? []).filter((id) => all.has(id));
-    for (const [dir, on] of this.globalDirs())
+    const instructions = agentsMdPath(root);
+    let written = false;
+    try {
+      written = !!readFileSync(instructions, "utf8").trim();
+    } catch {}
+    for (const [dir, on, file] of this.globalDirs()) {
       this.attempt(dir, () => {
         this.linkDir(root, dir, on ? global : [], conflicts, kept);
       });
+      if (file) this.attempt(file, () => this.linkFile(file, instructions, on && written, conflicts, kept));
+    }
     const checkouts = this.checkouts(),
       live: Record<string, string> = {},
       watched = new Set<string>();
@@ -579,6 +600,63 @@ export class SkillLinks {
       symlinkSync(target, path);
     }
     return wanted.filter((id) => this.ours(root, join(dir, id)));
+  }
+
+  /** The global AGENTS.md file and the store kept equal. A save in an editor since the last pass is the newest version
+   * and goes to every machine; otherwise the store's text is written out, so an empty file waits to be found. */
+  private writeAgentsMd(file: string) {
+    this.watchAgentsMd(file);
+    const stored = agentsMd(this.s),
+      synced = agentsSyncedLocal.get(this.s);
+    let disk: string | undefined;
+    try {
+      disk = readFileSync(file, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    let text = stored;
+    if (disk !== undefined && disk !== stored && digest(disk) !== synced) {
+      setAgentsMd(this.s, disk);
+      text = disk;
+    } else if (disk !== stored) atomicWrite(file, stored);
+    if (digest(text) !== synced) agentsSyncedLocal.set(this.s, undefined, digest(text));
+  }
+
+  /** Editors save by renaming a new file over the old one, so the folder is watched rather than the file. */
+  private watchAgentsMd(file: string) {
+    if (this.agentsWatcher) return;
+    mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+    const watcher = watch(dirname(file), (_, name) => {
+      if (!name || String(name) === basename(file)) this.soon();
+    });
+    watcher.on("error", () => {
+      watcher.close();
+      if (this.agentsWatcher === watcher) this.agentsWatcher = undefined;
+    });
+    this.agentsWatcher = watcher;
+  }
+
+  /** Our link at `path` to the global AGENTS.md while `want`. Something we did not create there is a clash, as in `linkDir`. */
+  private linkFile(
+    path: string,
+    target: string,
+    want: boolean,
+    conflicts: string[],
+    kept: { asked: Set<string>; still: string[] },
+  ) {
+    const found = lstatSync(path, { throwIfNoEntry: false });
+    if (found?.isSymbolicLink() && readlinkSync(path) === target) {
+      if (!want) unlinkSync(path);
+      return;
+    }
+    if (!want) return;
+    if (found) {
+      if (kept.asked.has(path)) kept.still.push(path);
+      else conflicts.push(path);
+      return;
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    symlinkSync(target, path);
   }
 
   /** The git dir itself (to see `worktrees/` appear) and its worktree list. */

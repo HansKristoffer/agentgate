@@ -314,7 +314,7 @@ test("one operation is reached from the terminal, the control API and an agent's
   expect((await op("nonesuch", {})).status).toBe(404);
 
   const builtin = (await ctx.gateway.builtin!()).client;
-  expect((await builtin.listTools()).tools).toEqual([]);
+  expect((await builtin.listTools()).tools.map((t) => t.name)).toEqual(["agents_md_read", "agents_md_write"]);
   await loop();
   expect(loops).toBe(0);
 

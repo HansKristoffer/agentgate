@@ -1,4 +1,11 @@
-import { projectChangeSchema, projectIdSchema, skillIdSchema, type SkillPreviewResponse } from "@agentgate/protocol";
+import {
+  ConfigurationConflict,
+  MAX_AGENTS_MD,
+  projectChangeSchema,
+  projectIdSchema,
+  skillIdSchema,
+  type SkillPreviewResponse,
+} from "@agentgate/protocol";
 import { truncate } from "hanzio";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,7 +31,9 @@ import {
   writeSkillMd,
 } from "../skills.ts";
 import type { Store } from "../store.ts";
-import { controlOp, parseWords, shownError, UserError } from "./registry.ts";
+import { agentsMd, setAgentsMd } from "../agents-md.ts";
+import { agentsMdPath } from "../skill-links.ts";
+import { asUserError, controlOp, parseWords, plainMessage, shownError, UserError } from "./registry.ts";
 
 /** The skills family's control operations. None is loopback-only: the app manages a paired server's skills too. */
 
@@ -352,6 +361,51 @@ controlOp({
     },
     print: ({ backup }, { input }) => [
       backup ? `Linked Agentgate's copy; the old one is in ${backup}` : `Kept ${input.path}; Agentgate leaves it alone`,
+    ],
+  },
+});
+
+controlOp({
+  name: "agents-md",
+  summary: "show the AGENTS.md every Claude Code and Codex session reads, and the file to edit it in",
+  input: z.object({}).strict(),
+  needs: "store",
+  run: (_, { s }) => ({ text: agentsMd(s), path: agentsMdPath() }),
+  terminal: {
+    usage: "agents-md",
+    parse(args) {
+      if (args.length) throw new UserError();
+      return { input: {} };
+    },
+    print: ({ text, path }) => [
+      `${path}  (saving it in any editor updates every machine)`,
+      "",
+      ...(text ? text.replace(/\n$/, "").split("\n") : ["(empty)"]),
+    ],
+  },
+});
+
+controlOp({
+  name: "agents-md set",
+  summary: "replace the global AGENTS.md on every machine; an empty file removes it",
+  input: z.object({ text: z.string().max(MAX_AGENTS_MD), revision: z.string().max(1024).optional() }).strict(),
+  needs: "store",
+  run({ text, revision }, { s }) {
+    asUserError(
+      () => setAgentsMd(s, text, revision),
+      (e) => (e instanceof ConfigurationConflict ? e.message : plainMessage(e)),
+    );
+    return null;
+  },
+  terminal: {
+    usage: "agents-md set --file AGENTS.md",
+    parse(args, _stdin, cwd) {
+      const { values, positionals } = parseWords(args, { file: { type: "string" } });
+      if (positionals.length || !values.file) throw new UserError();
+      return { input: { text: readFile(values.file, cwd) } };
+    },
+    print: (_, { input }) => [
+      input.text.trim() ? `Saved; every machine uses it in new sessions` : "Removed the global AGENTS.md",
     ],
   },
 });

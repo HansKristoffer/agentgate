@@ -156,6 +156,8 @@ async function setup(instance: Partial<McpInstance> = {}, methods: string[] = []
   return { s, ctx, url, cwd, requests, session, done };
 }
 
+/** agentgate's own tools, which every session gets. */
+const BUILTIN = ["agentgate__agents_md_read", "agentgate__agents_md_write"];
 const text = (r: Awaited<ReturnType<Client["callTool"]>>) =>
   (r.content as { type: string; text?: string }[]).map((c) => c.text ?? "").join("");
 
@@ -213,7 +215,7 @@ test("an allowlist, an instructions override and default arguments shape what ag
   });
   try {
     const client = await g.session();
-    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(["up__echo"]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual([...BUILTIN, "up__echo"]);
     expect(client.getInstructions()).toBe("## up\nPass a filter to get-logs.");
     expect(JSON.parse(text(await client.callTool({ name: "up__echo", arguments: {} })))).toEqual({ limit: 30 });
     expect(JSON.parse(text(await client.callTool({ name: "up__echo", arguments: { limit: 5 } })))).toEqual({
@@ -439,7 +441,7 @@ test("background maintenance recovers a failed server without a client listing o
   g.s.now = () => time;
   try {
     const client = await g.session();
-    expect((await client.listTools()).tools).toEqual([]);
+    expect((await client.listTools()).tools.map((t) => t.name)).toEqual(BUILTIN);
     const recovered = Promise.withResolvers<void>();
     client.setNotificationHandler("notifications/tools/list_changed", () => recovered.resolve());
     let failedAttempts = attempts;

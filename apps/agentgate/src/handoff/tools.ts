@@ -5,7 +5,10 @@ import { BUILTIN_ALIAS } from "../mcp/gateway.ts";
 import { inProcessSource } from "../mcp/source.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
-import { T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
+import { MAX_AGENTS_MD, T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
+import { agentsMd, setAgentsMd } from "../agents-md.ts";
+import { revision } from "../configuration.ts";
+import { agentsMdPath } from "../skill-links.ts";
 import { allNodes, requestHandoff } from "./threads.ts";
 import { runOperation, type FactoryRuntime } from "../factory/runtime.ts";
 
@@ -20,10 +23,29 @@ function refused(error: z.ZodError) {
   return `${field ? `${field}: ` : ""}${issue.message}`;
 }
 
+const agentsMdWrite = z
+  .object({ text: z.string().max(MAX_AGENTS_MD), revision: z.string().max(1024).optional() })
+  .strict();
+/** The global AGENTS.md (agents-md.ts), for an agent the user asks to change the instructions every session gets. */
+const agentsMdTools: Tool[] = [
+  {
+    name: "agents_md_read",
+    description:
+      "Read the user's global AGENTS.md: instructions every Claude Code and Codex session reads, in every project, on all of the user's machines. Returns its text, the file it lives in on this machine, and the revision to pass to agents_md_write.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "agents_md_write",
+    description:
+      "Replace the user's global AGENTS.md on all of their machines; new sessions read it. Only when the user asks for a change to it. Call agents_md_read first and send the whole new text with its revision; empty text removes it.",
+    inputSchema: z.toJSONSchema(agentsMdWrite, { io: "input" }) as Tool["inputSchema"],
+  },
+];
+
 function server(h: Handoffs, f?: FactoryRuntime): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
   server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => {
-    const tools: Tool[] = [];
+    const tools: Tool[] = [...agentsMdTools];
     // Only once T3 Code is connected here: other sessions have no thread to hand off.
     if (t3State(h.s).url)
       tools.push(
@@ -73,6 +95,13 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
         });
         return text(op.tool.result ? op.tool.result(result) : result);
       }
+      if (req.params.name === "agents_md_read")
+        return text({ text: agentsMd(h.s), path: agentsMdPath(), revision: revision(h.s, "project", "*") });
+      if (req.params.name === "agents_md_write") {
+        const input = agentsMdWrite.parse(args);
+        setAgentsMd(h.s, input.text, input.revision);
+        return text({ status: input.text ? "saved" : "removed", revision: revision(h.s, "project", "*") });
+      }
       if (req.params.name === "handoff_targets") return text(handoffTargets(await allNodes(h), h.s.nodeId));
       if (req.params.name !== "handoff_thread") return fail(`unknown tool ${req.params.name}`);
       if (typeof args.threadId !== "string" || !args.threadId) return fail("threadId is required");
@@ -89,7 +118,7 @@ function server(h: Handoffs, f?: FactoryRuntime): Server {
 }
 
 /**
- * Built-in gateway tools under the `agentgate` alias, so an agent can hand its own thread to another machine, and,
- * while the factory is on, the factory's tools.
+ * Built-in gateway tools under the `agentgate` alias, so an agent can read and change the global AGENTS.md and hand
+ * its own thread to another machine, and, while the factory is on, the factory's tools.
  */
 export const handoffSource = (h: Handoffs, f?: FactoryRuntime) => inProcessSource(BUILTIN_ALIAS, server(h, f));

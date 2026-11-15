@@ -12,6 +12,9 @@ import { fromPreset, newInstance, preset } from "../src/mcp/templates.ts";
 import { Store } from "../src/store.ts";
 import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 
+/** agentgate's own tools, which every session gets. */
+const BUILTIN = ["agentgate__agents_md_read", "agentgate__agents_md_write"];
+
 test("git remotes normalise to owner/repo", () => {
   expect(parseRemote("git@github.com:Lullu-ai/lullu.git")).toBe("Lullu-ai/lullu");
   expect(parseRemote("https://github.com/Geysier/gey-mono")).toBe("Geysier/gey-mono");
@@ -103,7 +106,7 @@ test("each repo reaches its own instance under the same alias; * servers reach b
   const containerB = await buildShim(cwd, url, { AGENTGATE_PROJECT: "o/b" });
   const shimA = await connectTo(containerA.server);
   const shimB = await connectTo(containerB.server);
-  expect((await shimA.listTools()).tools.map((t) => t.name)).toEqual(["docs__whoami", "posthog__whoami"]);
+  expect((await shimA.listTools()).tools.map((t) => t.name)).toEqual([...BUILTIN, "docs__whoami", "posthog__whoami"]);
   expect(await call(shimA, "posthog__whoami")).toBe("A:1");
   expect(await call(shimB, "posthog__whoami")).toBe("B:2");
   expect(await call(shimB, "docs__whoami")).toBe("docs:0");
@@ -323,11 +326,11 @@ test("sessions list each upstream's tools once, and parallel first calls share t
     Array.from({ length: 10 }, () => firstClient.callTool({ name: "brain__caller", arguments: {} })),
   );
   expect(calls.every((call) => !call.isError)).toBe(true);
-  expect((await firstClient.listTools()).tools.map((tool) => tool.name)).toEqual(["brain__caller"]);
+  expect((await firstClient.listTools()).tools.map((tool) => tool.name)).toEqual([...BUILTIN, "brain__caller"]);
 
   const second = await gateway.shim();
   const secondClient = await connectTo(second.server);
-  expect((await secondClient.listTools()).tools.map((tool) => tool.name)).toEqual(["brain__caller"]);
+  expect((await secondClient.listTools()).tools.map((tool) => tool.name)).toEqual([...BUILTIN, "brain__caller"]);
 
   expect(upstream.seen.lists).toBe(1);
 
@@ -597,7 +600,7 @@ test("per-session children use each worktree, reconcile mappings, and forward ca
     expect(await Bun.file(join(cwd, "cancelled")).text()).toBe("yes");
     s.put("project", "*", { id: "*", mcp: {} });
     ctx.gateway.toolsChanged();
-    expect((await client.listTools()).tools).toEqual([]);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(BUILTIN);
   } finally {
     await client.close();
     await shim.close();

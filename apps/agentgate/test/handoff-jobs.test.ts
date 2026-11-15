@@ -185,7 +185,12 @@ test("a working thread moves to the server with its session and code, continues 
   // Started through the agent's own MCP tool, which returns before the job ends.
   const tools = await handoffSource(a.h);
   cleanup.push(() => tools.client.close());
-  expect((await tools.client.listTools()).tools.map((t) => t.name)).toEqual(["handoff_targets", "handoff_thread"]);
+  expect((await tools.client.listTools()).tools.map((t) => t.name)).toEqual([
+    "agents_md_read",
+    "agents_md_write",
+    "handoff_targets",
+    "handoff_thread",
+  ]);
   const listed = await tools.client.callTool({ name: "handoff_targets", arguments: {} });
   expect(JSON.parse((listed.content as { text: string }[])[0]!.text)).toEqual([
     { node: "b", server: true, available: true },
@@ -920,9 +925,26 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
       }),
     );
     cleanup.push(() => client.close());
-    return (await client.listTools()).tools.map((t) => t.name);
+    return client;
   };
-  expect(await session()).toEqual(["agentgate__handoff_targets", "agentgate__handoff_thread"]);
+  const tools = async () => (await (await session()).listTools()).tools.map((t) => t.name);
+  const agentsMd = ["agentgate__agents_md_read", "agentgate__agents_md_write"];
+  expect(await tools()).toEqual([...agentsMd, "agentgate__handoff_targets", "agentgate__handoff_thread"]);
+  // An agent reads the global AGENTS.md, then replaces it with the revision it read.
+  const client = await session();
+  const call = async (name: string, args: Record<string, unknown> = {}) =>
+    JSON.parse(((await client.callTool({ name, arguments: args })).content as { text: string }[])[0]!.text);
+  const read = await call("agentgate__agents_md_read");
+  expect(read).toMatchObject({ text: "", path: expect.stringMatching(/AGENTS\.md$/) });
+  expect(await call("agentgate__agents_md_write", { text: "Use bun.\n", revision: read.revision })).toMatchObject({
+    status: "saved",
+  });
+  expect(a.s.get("project", "*")!.agentsMd).toBe("Use bun.\n");
+  const stale = await client.callTool({
+    name: "agentgate__agents_md_write",
+    arguments: { text: "x", revision: read.revision },
+  });
+  expect(stale.isError).toBe(true);
   saveProject(a.s, "@grok", { mcp: {} });
   const { response } = await gateway.handleRemote(
     "@grok",
@@ -933,7 +955,7 @@ test("the handoff tools reach local sessions once T3 Code is connected, never a 
   expect(JSON.stringify(await response.json())).not.toContain("handoff");
   expect(() => saveProject(a.s, "o/r", { mcp: { agentgate: "x" } })).toThrow("reserved");
   disconnectT3(a.s);
-  expect(await session()).toEqual([]);
+  expect(await tools()).toEqual(agentsMd);
 });
 
 test("a handoff works through the relay alone; the relay sees only sealed calls and cannot replay one", async () => {

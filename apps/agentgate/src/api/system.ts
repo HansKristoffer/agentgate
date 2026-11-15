@@ -14,6 +14,7 @@ import { listLogins } from "../logins.ts";
 import { serverHealth } from "../mcp/gateway.ts";
 import { readableEndpoint } from "../mcp/templates.ts";
 import { relayStatus, via } from "../relay.ts";
+import { agentsMdPath } from "../skill-links.ts";
 import { skillRepoSummaries, skillSummaries } from "../skills.ts";
 import { exportBackup, importBackup, sent, type Data } from "../store.ts";
 import { lastSeen } from "../sync.ts";
@@ -92,6 +93,7 @@ export function system(ctx: Ctx) {
       skills: skillSummaries(s),
       skillConflicts: ctx.skills.conflicts(),
       skillKept: ctx.skills.kept(),
+      agentsMdPath: agentsMdPath(),
       skillHealth: ctx.skills.health(),
       skillRepos: skillRepoSummaries(s),
       fileErrors: filesErrors(s),
