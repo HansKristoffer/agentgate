@@ -26,6 +26,8 @@ import type { Store } from "./store.ts";
 export const CHANNEL_CHUNK = MiB;
 /** How far a call's time may be from ours; ids seen within it are refused. */
 const SKEW = 5 * 60_000;
+// Base64 turns three bytes into four, so the body limit fits this much plaintext; 4 KiB is left for the header and the
+// nonce and tag.
 const MAX_PLAIN = Math.floor((CHANNEL_LIMITS.bodyBytes * 3) / 4) - 4096;
 
 interface Group {
@@ -236,7 +238,8 @@ export class NodeChannel {
 
   private connect(g: Group, target: string) {
     const socket: RelaySocket = new RelaySocket({
-      // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the group token.
+      // The relay authenticates the upgrade with the group token. Bun reads headers from the options object, which its
+      // typings declare as a protocols list, hence the cast.
       dial: () =>
         new WebSocket(target.replace(/^http/, "ws"), {
           headers: {
@@ -304,12 +307,14 @@ export class NodeChannel {
     const reply = await this.handle(env.from, call, abort.signal).finally(() => inflight.delete(frameId));
     if (abort.signal.aborted) return;
 
+    // An answer over the relay's size limit is replaced by a 413 that the caller can still open.
     const tooLarge = {
       status: 413,
       type: "application/json",
       body: new TextEncoder().encode(JSON.stringify({ error: "the answer is too large for the relay" })),
     };
-    const box = await seal(g.keys, sealedFor("res"), { status: reply.status, type: reply.type }, reply.body).catch(() =>
+    const sealedReply = seal(g.keys, sealedFor("res"), { status: reply.status, type: reply.type }, reply.body);
+    const box = await sealedReply.catch(() =>
       seal(g.keys, sealedFor("res"), { status: tooLarge.status, type: tooLarge.type }, tooLarge.body),
     );
     send(box);

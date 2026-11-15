@@ -72,7 +72,7 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       if (sub && sub !== "export")
         return console.log(JSON.stringify(await management(`/requests/${encodeURIComponent(sub)}`), null, 2));
       const query = new URLSearchParams();
-      for (const key of [
+      const filters = [
         "provider",
         "account",
         "model",
@@ -83,8 +83,11 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         "until",
         "limit",
         "cursor",
-      ])
-        if (str(key)) query.set(key, str(key)!);
+      ];
+      for (const key of filters) {
+        const value = str(key);
+        if (value) query.set(key, value);
+      }
       if (sub !== "export") return console.log(JSON.stringify(await management(`/requests?${query}`), null, 2));
       query.set("limit", "100");
       for (let pages = 0; pages < 1000; pages++) {

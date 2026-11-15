@@ -15,10 +15,11 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       const query = node ? `?node=${encodeURIComponent(node)}` : "";
       if (sub === "connect") {
         // No link: that machine's T3 Code creates one with `t3 pair`.
+        const url = str("url");
         const input = rest[0]
           ? { pairingUrl: rest[0] }
-          : str("url")
-            ? { url: str("url")!, token: str("token") ?? die("--token is required") }
+          : url
+            ? { url, token: str("token") ?? die("--token is required") }
             : { create: true as const };
         const state = node
           ? await management<T3NodeState>(`/t3/connect${query}`, "POST", input)
