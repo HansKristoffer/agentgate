@@ -26,22 +26,23 @@ const numbers = [
 ] as const;
 /** What each provider adapter on this daemon supports. For troubleshooting, so Settings shows it last. */
 export function DaemonCapabilities({ data }: Pick<ViewProps, "data">) {
+  const daemon = data.daemon;
   return (
     <Panel
       title="Daemon capabilities"
       detail={
-        data.daemon
-          ? `Version ${data.daemon.version} · Build ${data.daemon.build} · ${data.node}`
+        daemon
+          ? `Version ${daemon.version} · Build ${daemon.build} · ${data.node}`
           : "This daemon does not advertise optional capabilities."
       }
     >
-      {data.daemon &&
-        typedKeys(data.daemon.providers).map((provider) => (
+      {daemon &&
+        typedKeys(daemon.providers).map((provider) => (
           <div className="item" key={provider}>
             <div className={`provider-icon ${provider}`}>{providerIcon(provider)}</div>
             <strong className="grow">{providerName(provider)}</strong>
             <div className="row wrap">
-              {Object.entries(data.daemon!.providers[provider]).map(([name, supported]) => (
+              {Object.entries(daemon.providers[provider]).map(([name, supported]) => (
                 <Badge key={name} good={supported}>
                   {supported ? name : `${name} unsupported`}
                 </Badge>
@@ -53,7 +54,7 @@ export function DaemonCapabilities({ data }: Pick<ViewProps, "data">) {
   );
 }
 
-export function PoolSettings({ data, connection, perform }: ViewProps) {
+export function PoolSettings({ data, connection, perform }: Pick<ViewProps, "data" | "connection" | "perform">) {
   const [base, setBase] = useState(() => ({
     settings: data.settings,
     revision: data.settingsRevision,

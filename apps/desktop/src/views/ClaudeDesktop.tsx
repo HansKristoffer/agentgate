@@ -13,7 +13,7 @@ export const nameOf = (l: { label?: string; email?: string; accountUuid: string 
   l.label ?? l.email ?? `Account ${l.accountUuid.slice(0, 8)}`;
 
 /** Switching restarts Desktop; say so once, then trust the user. */
-export async function confirmRestart() {
+async function confirmRestart() {
   if (localStorage.getItem("desktopRestartOk")) return true;
   const ok = await confirmDialog(
     "Claude Desktop will restart. Running Cowork and Code sessions stop, and messages you haven't sent are lost. You won't be asked again.",
@@ -52,7 +52,7 @@ export function desktopActions(connection: Connection, perform: Perform) {
 }
 
 /** Which saved login to suggest when Desktop's account runs low. */
-export function suggestion(data: Status, desktop: DesktopStatus) {
+function suggestion(data: Status, desktop: DesktopStatus) {
   if (desktop.mode !== "signed-in" || !desktop.current?.accountId) return undefined;
   const byId = (id?: string) => data.accounts.find((a) => a.account.id === id);
   const now = tightest(byId(desktop.current.accountId));
@@ -104,6 +104,7 @@ export function DesktopAlerts({
   act,
 }: ViewProps & { desktop: DesktopStatus; act: Actions }) {
   const suggest = suggestion(data, desktop);
+  const mismatch = desktop.addMismatch;
   const dismiss = () => void perform(() => request(connection, "/desktop/add", "DELETE"));
   return (
     <>
@@ -123,18 +124,16 @@ export function DesktopAlerts({
           </Button>
         </Alert>
       )}
-      {desktop.addMismatch && (
+      {mismatch && (
         <Alert status="warning" className="callout">
           <Alert.Content>
             <Alert.Title>
-              You signed in as {nameOf(desktop.addMismatch)}, not {desktop.addMismatch.expected}
+              You signed in as {nameOf(mismatch)}, not {mismatch.expected}
             </Alert.Title>
-            <Alert.Description>
-              That login was saved. {desktop.addMismatch.expected} is still not connected.
-            </Alert.Description>
+            <Alert.Description>That login was saved. {mismatch.expected} is still not connected.</Alert.Description>
           </Alert.Content>
-          <Button size="sm" onPress={() => void act.connect(desktop.addMismatch!.expected)}>
-            Connect {desktop.addMismatch.expected}
+          <Button size="sm" onPress={() => void act.connect(mismatch.expected)}>
+            Connect {mismatch.expected}
           </Button>
           <Button size="sm" variant="tertiary" onPress={dismiss}>
             Dismiss

@@ -84,6 +84,7 @@ export function Projects(props: ViewProps) {
     })();
   const defaults = data.projects.find((p) => p.id === "*");
   const repositories = data.projects.filter((p) => p.id !== "*" && !isVirtual(p.id));
+  const virtualProjects = data.projects.filter((p) => isVirtual(p.id));
   const serverName = (id: string) => data.servers.find((s) => s.id === id)?.label ?? id;
   /** Links a repository's own skills between .claude/skills and .agents/skills, so Claude and Codex both see them.
    * Local only: it writes into this machine's checkouts of the repository. */
@@ -207,42 +208,40 @@ export function Projects(props: ViewProps) {
         title="Virtual projects"
         detail="A set of MCP servers and skills at a URL with a secret, for assistants that only take a server URL, like Grok."
       >
-        {data.projects.filter((p) => isVirtual(p.id)).length ? (
-          data.projects
-            .filter((p) => isVirtual(p.id))
-            .map((p) => (
-              <div className="item stack virtual-project" key={p.id}>
-                <div className="item">
-                  <div className="machine-icon">
-                    <Bot size={16} />
-                  </div>
-                  <div className="grow">
-                    <strong>{p.id}</strong>
-                    <Uses project={p} servers={serverName} />
-                  </div>
-                  <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
-                    <Pencil size={15} />
-                  </Button>
-                  <RowMenu
-                    label={`More for ${p.id}`}
-                    items={[
-                      {
-                        label: "Delete",
-                        danger: true,
-                        onAction: async () => {
-                          if (await confirmDelete(p.id))
-                            void perform(
-                              () => control(connection, "project rm", { id: p.id }),
-                              "Virtual project removed",
-                            );
-                        },
-                      },
-                    ]}
-                  />
+        {virtualProjects.length ? (
+          virtualProjects.map((p) => (
+            <div className="item stack virtual-project" key={p.id}>
+              <div className="item">
+                <div className="machine-icon">
+                  <Bot size={16} />
                 </div>
-                <EndpointDetails {...props} project={p} />
+                <div className="grow">
+                  <strong>{p.id}</strong>
+                  <Uses project={p} servers={serverName} />
+                </div>
+                <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit ${p.id}`} onPress={() => setEdit(p)}>
+                  <Pencil size={15} />
+                </Button>
+                <RowMenu
+                  label={`More for ${p.id}`}
+                  items={[
+                    {
+                      label: "Delete",
+                      danger: true,
+                      onAction: async () => {
+                        if (await confirmDelete(p.id))
+                          void perform(
+                            () => control(connection, "project rm", { id: p.id }),
+                            "Virtual project removed",
+                          );
+                      },
+                    },
+                  ]}
+                />
               </div>
-            ))
+              <EndpointDetails {...props} project={p} />
+            </div>
+          ))
         ) : (
           <Empty>
             <Bot size={22} />

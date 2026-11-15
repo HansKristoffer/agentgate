@@ -89,18 +89,20 @@ export function ItemDrawer({
   // write-backs and events.
   const item = board.items.find((i) => i.id === id);
   if (!item) return null;
+  // Bound here so the handlers below see the narrowed values: a property check does not narrow inside a closure.
+  const { url, pr } = item;
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
         <Pill tone={toneOf(item)}>{item.needsYou?.title ?? statusOf(item)}</Pill>
-        {item.url && (
-          <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.url!)}>
+        {url && (
+          <Button size="sm" variant="tertiary" onPress={() => void openExternal(url)}>
             <ExternalLink size={14} />
             Issue
           </Button>
         )}
-        {item.pr && (
-          <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
+        {pr && (
+          <Button size="sm" variant="tertiary" onPress={() => void openExternal(pr.url)}>
             <GitPullRequest size={14} />
             Pull request
           </Button>

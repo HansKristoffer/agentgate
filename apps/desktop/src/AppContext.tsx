@@ -16,7 +16,7 @@ export function useFeed() {
 
 /** What every view needs from the app. `board` is the factory board the app reads once for the sidebar, the
  * notifications and the views, also while the factory is off; undefined until it loads. */
-export type AppValue = {
+type AppValue = {
   connection: Connection;
   local: boolean;
   perform: Perform;

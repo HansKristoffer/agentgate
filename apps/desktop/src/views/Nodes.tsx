@@ -32,7 +32,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const pending = usePending();
   const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
   // The machine the pairing command was for has joined: say so, and the dialog has done its job.
-  const joined = shown?.known && data.nodes.find((n) => !shown.known!.includes(n.id));
+  const known = shown?.known;
+  const joined = known && data.nodes.find((n) => !known.includes(n.id));
   useEffect(() => {
     if (!joined) return;
     toast(`${joined.id} joined`);
