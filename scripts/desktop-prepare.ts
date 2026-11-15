@@ -2,6 +2,9 @@ import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
+
+// Tauri sets TAURI_ENV_TARGET_TRIPLE when it runs this as a before-build command (tauri.conf.json).
+// Run by hand or in CI, the host triple from rustc is the target.
 const target =
   process.env.TAURI_ENV_TARGET_TRIPLE ??
   Bun.spawnSync(["rustc", "-vV"])

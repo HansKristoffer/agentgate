@@ -21,8 +21,10 @@ for (const target of targets) {
     "--outfile",
     `dist/${file}`,
   ]);
+
   if (identity && target.startsWith("darwin-"))
     await run(["codesign", "--force", "--timestamp", "--identifier", "agentgate", "--sign", identity, `dist/${file}`]);
+
   checksums.push(
     `${new Bun.CryptoHasher("sha256").update(await Bun.file(`dist/${file}`).arrayBuffer()).digest("hex")}  ${file}`,
   );

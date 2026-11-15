@@ -144,9 +144,14 @@ const changes: string[] = [];
 for (const [name, raw] of made) {
   const r = cut(name, raw);
   if (CREDENTIAL.test(JSON.stringify(r))) throw new Error(`${name} looks like it holds a credential; nothing written`);
+
+  // Rewritten only when the entry is new or gh.ts asks with other arguments; --refresh rewrites all of them.
   const old = fixture[name];
-  const why = !old ? "new" : !Bun.deepEquals((old as Recording).args, r.args) ? "arguments changed" : "";
+  let why = "";
+  if (!old) why = "new";
+  else if (!Bun.deepEquals((old as Recording).args, r.args)) why = "arguments changed";
   if (!why && !refresh) continue;
+
   fixture[name] = r;
   changes.push(`${name} (${why || "recorded again"})`);
 }

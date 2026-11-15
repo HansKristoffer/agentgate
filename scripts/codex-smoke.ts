@@ -83,7 +83,7 @@ try {
     ["codex", "exec", "--skip-git-repo-check", "--json", "-m", "gpt-5.4", "Reply exactly review OK. Do not use tools."],
     { cwd: configDir, env: { ...process.env, CODEX_HOME: configDir }, stdin: "ignore", stdout: "pipe", stderr: "pipe" },
   );
-  const timer = setTimeout(() => child!.kill(), 20_000);
+  const timer = setTimeout(() => child?.kill(), 20_000);
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
@@ -92,13 +92,14 @@ try {
   clearTimeout(timer);
   if (exitCode !== 0 || !stdout.includes('"type":"turn.completed"') || !stdout.includes("review OK"))
     throw new Error(`Codex smoke failed: ${stderr.slice(-1000)}`);
+
+  // Past the check above the run succeeded, so only the success fields are printed.
   console.log(
     JSON.stringify({
       exitCode,
       observed,
       completed: stdout.includes('"type":"turn.completed"'),
       returnedExpectedText: stdout.includes("review OK"),
-      stdout: exitCode ? stdout.slice(-1500) : undefined,
       stderr: stderr.slice(-1500),
     }),
   );
