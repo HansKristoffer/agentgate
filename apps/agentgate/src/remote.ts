@@ -97,7 +97,7 @@ export function regenerate(s: Store, id: string, servedBy?: string): { url: stri
     const p = virtualProject(s, id);
     if (!p.remote) throw new Error(`${id} has no remote endpoint; enable it first`);
     queueDelete(s, p.remote);
-    const remote = { ...fresh(p.remote.relay, servedBy ?? p.remote.servedBy, p.remote.enabled) };
+    const remote = fresh(p.remote.relay, servedBy ?? p.remote.servedBy, p.remote.enabled);
     s.put("project", id, { ...p, remote });
     return { url: endpointUrl(remote), secret: remote.secret };
   });
@@ -143,8 +143,6 @@ export function queueDelete(s: Store, r: { relay: string; key: string; token: st
   queue.push({ relay: r.relay, key: r.key, token: r.token });
   deletes.set(s, undefined, queue.slice(-100));
 }
-
-// ---------------------------------------------------------------- serving
 
 /** A webhook URL the factory serves on this node: its relay credentials, and what answers a delivery. */
 export interface HookEndpoint {
@@ -342,7 +340,8 @@ export class RemoteEndpoints {
       dial: async () => {
         await this.put(c.remote, c.hook ? "hook" : "mcp");
         const key = serviceKeyFor(this.s, c.remote.relay);
-        // Bun's WebSocket accepts headers; the relay authenticates the upgrade with the endpoint token.
+        // The relay authenticates the upgrade with the endpoint token. Bun reads headers from the options object, which
+        // its typings declare as a protocols list, hence the cast.
         return new WebSocket(`${c.remote.relay.replace(/^http/, "ws")}/e/${c.remote.key}/connect`, {
           headers: {
             authorization: `Bearer ${c.remote.token}`,
@@ -407,9 +406,9 @@ export class RemoteEndpoints {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(c.hook ? { error: message } : { jsonrpc: "2.0", error: { code, message }, id: null }),
     });
-    let status = 500,
-      label = c.hook ? "webhook" : "request";
-    if (!c.hook)
+    let status = 500;
+    let label = c.hook ? "webhook" : "request";
+    if (!c.hook) {
       try {
         const message = JSON.parse(frame.body) as { method?: string; params?: { name?: string } };
         label =
@@ -419,6 +418,7 @@ export class RemoteEndpoints {
       } catch {
         /* the gateway answers with a parse error */
       }
+    }
     try {
       const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(REMOTE_LIMITS.timeoutMs)]);
       let response: Response;
@@ -504,13 +504,14 @@ export function lastRequest(s: Store, id: string): { at: number; status: number 
  * content-length. */
 function hookRequest(frame: RequestFrame, signal: AbortSignal) {
   const headers = new Headers();
-  for (const [name, value] of Object.entries(frame.headers))
-    if (name !== "content-length")
-      try {
-        headers.set(name, value);
-      } catch {
-        /* not a valid header here; a signature never needs it */
-      }
+  for (const [name, value] of Object.entries(frame.headers)) {
+    if (name === "content-length") continue;
+    try {
+      headers.set(name, value);
+    } catch {
+      /* not a valid header here; a signature never needs it */
+    }
+  }
   const query = frame.query ? `?${frame.query}` : "";
   return new Request(`http://hook.invalid/${query}`, { method: "POST", headers, body: frame.body, signal });
 }

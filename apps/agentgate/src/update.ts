@@ -1,13 +1,13 @@
 import { chmodSync, readFileSync, realpathSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { nodeUpdateSchema, type NodeUpdate } from "@agentgate/protocol";
+import { z } from "zod";
 import packageInfo from "../../../package.json";
 import { PeerError, peerCall } from "./handoff/jobs.ts";
+import { defineLocal } from "./local-state.ts";
 import { isServiceProcess, serviceRuns } from "./service.ts";
 import { routeHere, selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, type Store } from "./store.ts";
-import { nodeUpdateSchema, type NodeUpdate } from "@agentgate/protocol";
-import { z } from "zod";
-import { defineLocal } from "./local-state.ts";
 
 const REPO = process.env.AGENTGATE_REPO ?? "HansKristoffer/agentgate";
 const NPM = "@hanskristoffer/agentpool";
@@ -161,13 +161,9 @@ export async function updateTracked(s: Store, node: string) {
   note({ state: "installing" });
   try {
     const result = await updateNode(s, node);
-    note(
-      !result.version
-        ? undefined
-        : result.restarting
-          ? { state: "restarting", version: result.version }
-          : { state: "installed", version: result.version, from: s.get("node", node)?.version ?? null },
-    );
+    if (!result.version) note(undefined);
+    else if (result.restarting) note({ state: "restarting", version: result.version });
+    else note({ state: "installed", version: result.version, from: s.get("node", node)?.version ?? null });
     return result;
   } catch (e) {
     note({ state: "failed", error: failure(e, node) });
@@ -204,13 +200,12 @@ export async function waitForVersion(
  * when it starts; a global npm or bun install earlier on PATH than the installed binary is the usual stale copy. */
 export function versionNotice(daemon: string, mine = packageInfo.version, exec = process.execPath) {
   const older = mine.localeCompare(daemon, "en", { numeric: true }) < 0;
-  const fix = !older
-    ? "restart it with agentgate service restart, or update the copy it runs"
-    : exec.includes("/.bun/install/global/")
-      ? `update this copy with bun add -g ${NPM}@${daemon}`
-      : exec.includes("/node_modules/")
-        ? `update this copy with npm install -g ${NPM}@${daemon}`
-        : "update this copy with agentgate update";
+  let fix = "restart it with agentgate service restart, or update the copy it runs";
+  if (older) {
+    if (exec.includes("/.bun/install/global/")) fix = `update this copy with bun add -g ${NPM}@${daemon}`;
+    else if (exec.includes("/node_modules/")) fix = `update this copy with npm install -g ${NPM}@${daemon}`;
+    else fix = "update this copy with agentgate update";
+  }
   return `this agentgate is ${mine} (${exec}) but the daemon runs ${daemon}; ${fix}`;
 }
 
@@ -226,7 +221,9 @@ export function pathCopy(found = Bun.which("agentgate")) {
   let version: string | undefined;
   try {
     version = JSON.parse(readFileSync(join(dirname(script), "..", "package.json"), "utf8")).version;
-  } catch {}
+  } catch {
+    // An unreadable package.json leaves the version unknown, which the caller prints as such.
+  }
   const manager = script.includes("/.bun/install/global/") ? ["bun", "add", "-g"] : ["npm", "install", "-g"];
   return { path: found!, version, install: (to: string) => [...manager, `${NPM}@${to}`] };
 }

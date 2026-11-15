@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, truncateSync } from "node:fs";
-import { clamp } from "hanzio";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { clamp } from "hanzio";
 import { atomicWrite } from "./files.ts";
 import { agentEnvironment, selfCommand } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL } from "./store.ts";
@@ -18,14 +18,15 @@ const xml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 // The service gets the PATH of the shell that installed it, so stdio MCP servers find npx/uvx.
 export function plist() {
   const args = [...selfCommand(), "serve"].map((a) => `<string>${xml(a)}</string>`).join("");
+  const environment = Object.entries({ PATH: process.env.PATH ?? "", ...agentEnvironment() })
+    .map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`)
+    .join("");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>${LABEL}</string>
   <key>ProgramArguments</key><array>${args}</array>
-  <key>EnvironmentVariables</key><dict>${Object.entries({ PATH: process.env.PATH ?? "", ...agentEnvironment() })
-    .map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`)
-    .join("")}</dict>
+  <key>EnvironmentVariables</key><dict>${environment}</dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>${xml(LOGS)}/agentgate.log</string>
@@ -40,15 +41,16 @@ export function unit(command = selfCommand(), environment = { PATH: process.env.
       .replace(/%/g, "%%")
       .replace(/\$/g, () => "$$");
   const exec = [...command, "serve"].map(systemd).join(" ");
+  const variables = Object.entries(environment)
+    .map(([key, value]) => `Environment=${JSON.stringify(`${key}=${value}`).replace(/%/g, "%%")}`)
+    .join("\n");
   return `[Unit]
 Description=agentgate
 After=network-online.target
 
 [Service]
 ExecStart=${exec}
-${Object.entries(environment)
-  .map(([key, value]) => `Environment=${JSON.stringify(`${key}=${value}`).replace(/%/g, "%%")}`)
-  .join("\n")}
+${variables}
 Restart=always
 RestartSec=3
 
