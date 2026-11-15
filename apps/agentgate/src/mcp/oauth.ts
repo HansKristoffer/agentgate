@@ -29,6 +29,7 @@ export const headerWait = (method: string | undefined, others: number) =>
  * closes it. */
 export const mcpFetch = (url: string | URL, init: RequestInit = {}, others: number) =>
   init.method === "GET" ? fetch(url, init) : fetchHeaders(url, init, headerWait(init.method, others));
+
 const sessionSchema = z.object({
   id: z.string(),
   loginId: z.string(),
@@ -54,7 +55,7 @@ export function expireLogins(s: Store, replaced?: string) {
 }
 
 /** The SDK handles discovery and PKCE; ownership and persistence are controlled here. */
-export class InstanceAuth implements OAuthClientProvider {
+class InstanceAuth implements OAuthClientProvider {
   authUrl?: URL;
   staged: Partial<McpCredential> = {};
   private stateValue?: string;

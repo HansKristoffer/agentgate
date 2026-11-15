@@ -1,13 +1,12 @@
 import { isModelReason, type AccountState, type AccountStatus, type Failure } from "@agentgate/protocol";
 import { clamp, isRecord, raceAbort, safeJsonParse, startTimer, typedSwitch, typedSwitchGroup } from "hanzio";
-import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
 import { z } from "zod";
+import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts";
 import { revision } from "../configuration.ts";
 import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
-import { sent, type Account, type Data, type Store } from "../store.ts";
-import { Budget } from "./policy.ts";
-import { cool, cooldowns, retryAfterMs } from "./policy.ts";
+import { sent, type Account, type Credential, type Data, type Store } from "../store.ts";
+import { Budget, cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { PLACEHOLDER_TOKEN } from "../setup.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
 import { exhausted, recordUsage, normalizedWindow, quotaHealth, QUOTA_STALE, relevant } from "./quota.ts";
@@ -47,7 +46,7 @@ const HOP_HEADERS = [
   "accept-encoding",
 ];
 
-export function exhaustedResponse(provider: ProviderName, resetAt: number | undefined, now: number): Response {
+function exhaustedResponse(provider: ProviderName, resetAt: number | undefined, now: number): Response {
   const secs = resetAt ? Math.max(1, Math.ceil((resetAt - now) / 1000)) : 3600;
   const message = `agentgate: every ${provider} account has reached its usage limit; resets in ${Math.ceil(secs / 60)} min`;
   const body = typedSwitch(provider, {
@@ -90,6 +89,7 @@ export async function proxy(
   limits = { headerTimeout: 30000, streamIdle: 300000, maxBody: MAX_PROXY_BODY },
   options: { accountId?: string } = {},
 ): Promise<Response> {
+  // The client's own credentials: telemetry redacts them from anything it stores.
   const settings = s.settings(),
     sensitive = [
       req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "",
@@ -144,6 +144,7 @@ export async function proxy(
   }
   const headers = new Headers(req.headers);
   for (const key of HOP_HEADERS) headers.delete(key);
+  // A login the client brings itself, unless it is the placeholder agentgate hands its clients.
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
     own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
   // One id serves affinity, which keys on its hash, and session usage, which counts under it as the client named it.
@@ -208,7 +209,7 @@ export async function proxy(
       elapsed = startTimer();
     const up = provider.prepare(path, new Headers(headers), body, {
       accessToken: own,
-    } as import("../store.ts").Credential);
+    } as Credential);
     try {
       const res = await fetchHeaders(
         up.url,
@@ -232,6 +233,7 @@ export async function proxy(
       );
     }
   };
+  // A client's own login goes straight to a path the pool does not manage.
   if (own && !provider.pooled(path)) return passthrough();
   if (previousResponse && !requiredAccount)
     return own ? passthrough() : error(409, "continuation owner is unknown; start a new response", "stateful");
@@ -275,6 +277,7 @@ export async function proxy(
       if (decision.candidates.every((c) => c.reasons.some(isModelReason)))
         return error(400, "no eligible account for this model", "model");
       if (accountCount >= settings.maxAccounts) return error(429, "maximum accounts attempted", "budget");
+      // Waits for the soonest reset, at most ten minutes and within the budget, then the pool is tried again.
       if (
         settings.whenExhausted === "wait" &&
         !waited &&
@@ -284,6 +287,7 @@ export async function proxy(
         try {
           await sleep(Math.max(0, reset - s.now()), budget.signal);
         } catch {
+          // Cancelled during the wait: the budget check at the top of the loop ends the request.
           continue;
         }
         waited = true;
@@ -312,7 +316,7 @@ export async function proxy(
       return response;
     }
     accountCount++;
-    let credential: import("../store.ts").Credential;
+    let credential: Credential;
     // Cancelling stops only this wait; coordinated credential work stays owned and drained by Credentials.
     try {
       credential = await raceAbort(creds.token(account.id), budget.signal);
@@ -360,6 +364,7 @@ export async function proxy(
           if (!quotaUnknown.get(s, provider.name)) quotaUnknown.set(s, provider.name, String(s.now()));
         } else if (observed) quotaUnknown.set(s, provider.name, undefined);
       });
+      // Rejections whose body says why: the failure is read from it.
       if (res.status === 429 || res.status === 401 || res.status === 400 || res.status === 404) {
         let text = "";
         try {
@@ -383,7 +388,9 @@ export async function proxy(
                 credential = next;
                 continue;
               }
-            } catch {}
+            } catch {
+              // A refresh that fails leaves the account to be marked as login-failed below.
+            }
           }
           tried.add(account.id);
           loginFailed.add(account.id);

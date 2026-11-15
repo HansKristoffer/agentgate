@@ -60,9 +60,11 @@ export function parseHeaders(text: string | string[] = ""): Record<string, strin
   for (const line of (Array.isArray(text) ? text : text.split("\n")).map((l) => l.trim()).filter(Boolean)) {
     const m = line.match(/^([^:=\s]+)\s*[:=]\s*(.*)$/);
     if (!m) throw new Error(`bad header: ${line} (use Name: value)`);
-    const valid = new Headers();
-    valid.set(m[1]!, m[2]!);
-    out[m[1]!] = m[2]!;
+    const name = m[1]!;
+    const value = m[2]!;
+    // Headers throws on a name or value HTTP does not allow, which is the check here.
+    new Headers().set(name, value);
+    out[name] = value;
   }
   return out;
 }
@@ -106,7 +108,10 @@ export function readableEndpoint(url?: string) {
 
 // Older instances may use `{{x}}` / `{{secret.x}}` placeholders filled from fields and secrets.
 const fill = (s: string, inst: McpInstance) =>
-  s.replace(/\{\{(secret\.)?(\w+)\}\}/g, (_, secret, k) => (secret ? inst.secrets[k] : inst.fields[k]) ?? "");
+  s.replace(
+    /\{\{(secret\.)?(\w+)\}\}/g,
+    (_, secret: string | undefined, key: string) => (secret ? inst.secrets[key] : inst.fields[key]) ?? "",
+  );
 
 const fillAll = (o: Record<string, string> | undefined, inst: McpInstance) => {
   const out: Record<string, string> = {};

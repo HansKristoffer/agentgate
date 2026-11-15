@@ -34,6 +34,7 @@ import {
 /** Threads on every node, and which node "server", "here" or a node id means. One rule set for the API, CLI,
  * MCP tools and app, so "To server" picks the same machine everywhere. */
 
+// How long T3's Claude homes and environment id are reused between listings.
 const CACHE = 5 * 60_000;
 const RECENT = 10 * 60_000;
 
@@ -194,6 +195,7 @@ export async function peerView(
   h: Handoffs,
   n: { id: string; alwaysOn: boolean },
 ): Promise<NodeThreads & { threads: ViewThread[] }> {
+  // A node heard from within the last minute counts as online.
   const online = h.s.now() - lastSeen(h.s, n.id) < 60_000;
   const base = { node: n.id, server: n.alwaysOn, online, threads: [], jobs: [] };
   if (!transport(h.s, n.id)) return { ...base, error: "not paired with this machine over Tailscale or a relay" };

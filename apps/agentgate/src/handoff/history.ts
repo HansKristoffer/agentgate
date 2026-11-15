@@ -13,7 +13,7 @@ import { splitLines } from "./session.ts";
 
 export class HistoryError extends Error {}
 
-export interface SessionMessage {
+interface SessionMessage {
   role: "user" | "assistant";
   text: string;
   createdAt: string;
@@ -61,7 +61,10 @@ export async function sessionMessages(file: Blob, from: number, now: string): Pr
     for (const line of lines) {
       if (pieces++ < from) continue;
       const message = sessionMessage(line, now);
-      if (message && messages.push(message) > MAX_MESSAGES) messages.shift();
+      if (!message) continue;
+      messages.push(message);
+      // Only the newest MAX_MESSAGES are kept, as T3's own import keeps them.
+      if (messages.length > MAX_MESSAGES) messages.shift();
     }
   // One piece more than records: the one after the last newline.
   return pieces - 1 < from ? undefined : messages;
@@ -75,7 +78,11 @@ function sessionMessage(line: string, now: string): SessionMessage | undefined {
     return; // the empty piece after the last newline
   }
   const r = parsed.data;
-  if (!r || r.isSidechain || r.isMeta || r.isCompactSummary || (r.type !== "user" && r.type !== "assistant")) return;
+  if (!r) return;
+  // Sub-agent, meta and compaction records are not part of the conversation T3 shows.
+  if (r.isSidechain || r.isMeta || r.isCompactSummary) return;
+  if (r.type !== "user" && r.type !== "assistant") return;
+
   const content = r.message?.content;
   let body =
     typeof content === "string"
@@ -85,6 +92,7 @@ function sessionMessage(line: string, now: string): SessionMessage | undefined {
           .map((b) => b.text?.trim() ?? "")
           .filter(Boolean)
           .join("\n");
+  // T3 prefixes a moved thread's first message with its handoff context; the user's own text follows the last marker.
   if (r.type === "user" && body.startsWith(HANDOFF_CONTEXT) && body.includes(USER_MESSAGE)) {
     body = body.slice(body.lastIndexOf(USER_MESSAGE) + USER_MESSAGE.length).trim();
   }
@@ -225,8 +233,10 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
   }
 
   const id = (kind: string, i: number) => `${PREFIX}:${kind}:${threadId}:${key}:${String(i).padStart(6, "0")}`;
+  // The first message's event is written with the rest, so finding it means this copy is in already.
   if (db.query("SELECT 1 FROM orchestration_events WHERE event_id = ?").get(id("message", 0))) return 0;
 
+  // New items continue after the thread's highest ordinal, in either table.
   const last =
     db
       .query<{ ordinal: number | null }, [string, string]>(
@@ -294,6 +304,7 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
         }
       : { ...common, type: "assistant_message", messageId, text: m.text, streaming: false };
 
+    // The event pair goes first, then the projection rows T3 reads.
     insertEvent.get(id("message", i), threadId, "message.updated", at, JSON.stringify(message));
     sequence = insertEvent.get(id("turn-item", i), threadId, "turn-item.updated", at, JSON.stringify(item))!.sequence;
     db.run(

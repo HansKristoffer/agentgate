@@ -38,6 +38,7 @@ export const VERSION = "0.1.0";
 export const BUILTIN_ALIAS = "agentgate";
 /** The tool prefix of the factory's tools on a virtual project's endpoint (`factoryTools`); reserved there. */
 export const FACTORY_ALIAS = "factory";
+// A shared connection nobody has used for ten minutes is closed; the next call reconnects.
 const IDLE_CLOSE = 10 * 60_000;
 const MAX_TOOL_NAME = 64; // Codex's limit
 
@@ -66,6 +67,7 @@ export function aliasesFor(s: Store, project: string): Record<string, string> {
 
 /** Parse `git remote get-url origin` output into `owner/repo`. */
 export function parseRemote(url: string): string | undefined {
+  // Matches `scheme://user@host:port/path` and scp-style `user@host:path`; the repository is the path's last two segments.
   const m = url.trim().match(/^(?:[a-z+]+:\/\/)?(?:[^@/]+@)?[^:/]+(?::\d+)?[:/](.+?)(?:\.git)?\/?$/i);
   const path = m?.[1]?.replace(/^\/+/, "");
   const parts = path?.split("/");
@@ -106,6 +108,7 @@ class ConnectError extends Error {
 /** The error and its causes: the SDK wraps a failed version probe's error, which holds the signal. */
 function causes(e: unknown): unknown[] {
   const chain = [e];
+  // Five levels is enough for the SDK's wrapping, and it also ends a cause chain that loops.
   for (let c = e; c instanceof Error && c.cause !== undefined && chain.length < 5; c = c.cause) chain.push(c.cause);
   return chain;
 }
@@ -381,8 +384,11 @@ export function inScope(scope: SessionScope | undefined, alias: string, tool?: s
   return !scope?.servers || scope.servers.includes(alias);
 }
 
-/** Claude Code keeps the first 4,096 characters of a server's instructions and drops the rest. */
-export const INSTRUCTIONS_BUDGET = 4000;
+/**
+ * Claude Code keeps the first 4,096 characters of a server's instructions and drops the rest. The budget stays under
+ * that, so the merged text, with its headings and cut notes, still fits.
+ */
+const INSTRUCTIONS_BUDGET = 4000;
 const INSTRUCTIONS_CUT = "\n[… agentgate cut the rest to fit the instructions limit]";
 
 /**
@@ -398,6 +404,7 @@ export function mergeInstructions(
     const text = (src.instance?.instructions ?? src.client.getInstructions())?.trim();
     return text ? [{ alias: src.alias, head: src.alias ? `## ${src.alias}\n` : "", text }] : [];
   });
+  // The + 2 is the blank line between parts.
   let left = budget - parts.reduce((n, p) => n + p.head.length + 2, 0);
   const trimmed: string[] = [];
   [...parts]
@@ -406,6 +413,7 @@ export function mergeInstructions(
       const share = Math.max(0, Math.floor(left / (all.length - i)));
       if (p.text.length > share) {
         const room = share - INSTRUCTIONS_CUT.length;
+        // Cut at the last line break in the second half of the room, so the text does not end mid-line.
         const line = p.text.lastIndexOf("\n", room);
         p.text = room > 0 ? p.text.slice(0, line > room / 2 ? line : room).trimEnd() + INSTRUCTIONS_CUT : "";
         trimmed.push(p.alias);
@@ -470,7 +478,7 @@ function offer(src: Source, tools: Tool[], allowed: ((alias: string, tool: strin
 }
 
 /** One forwarded tool call, for the log. Never the arguments or the result. */
-export interface CallRecord {
+interface CallRecord {
   alias: string;
   tool: string;
   ms: number;
@@ -885,7 +893,7 @@ export class Gateway {
           `${c.tool} ${c.ms} ms, ${c.chars} chars${c.cut ? `, cut to ${c.cut}` : ""}${c.failed ? ", failed" : ""}`,
         ),
     });
-    const transport: WebStandardStreamableHTTPServerTransport = new WebStandardStreamableHTTPServerTransport({
+    const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: () => crypto.randomUUID(),
       onsessioninitialized: (id) => {
         this.seen(project);
@@ -1077,8 +1085,8 @@ export class Gateway {
    */
   private seen(project: string) {
     if (project === "*") return;
-    project = canonicalProject(this.s, project);
-    if (!this.s.get("project", project)) this.s.put("project", project, { id: project });
+    const id = canonicalProject(this.s, project);
+    if (!this.s.get("project", id)) this.s.put("project", id, { id });
   }
 
   /** Retry failed mapped servers even when clients have stopped listing their tools. Never replay a tool call. */
@@ -1090,6 +1098,7 @@ export class Gateway {
         this.upstreams.delete(id);
         tasks.push(this.retire(u));
       }
+    // A session nobody has called for half an hour is closed.
     for (const [id, session] of this.sessions)
       if (!session.calls && this.s.now() - session.lastUsed > 30 * 60_000) {
         this.sessions.delete(id);

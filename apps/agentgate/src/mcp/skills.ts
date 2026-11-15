@@ -89,9 +89,13 @@ function skillsServer(s: Store, project: string): Server {
     let out = content.slice(offset, offset + CHUNK);
     if (offset + CHUNK < content.length)
       out += `\n\n[truncated: call skills__read again with offset ${offset + CHUNK}]`;
+
+    // The first read of SKILL.md lists the skill's other files, so an agent can ask for them by name.
     if (path === "SKILL.md" && offset === 0 && skill.files.length > 1) {
       const files = skill.files.map((f) => f.path).filter((p) => p !== "SKILL.md");
-      out += `\n\n---\nFiles in this skill (read with skills__read):\n${files.slice(0, LISTED_FILES).join("\n")}${files.length > LISTED_FILES ? `\n… and ${files.length - LISTED_FILES} more` : ""}`;
+      const listed = files.slice(0, LISTED_FILES).join("\n");
+      const more = files.length > LISTED_FILES ? `\n… and ${files.length - LISTED_FILES} more` : "";
+      out += `\n\n---\nFiles in this skill (read with skills__read):\n${listed}${more}`;
     }
     return text(out);
   });

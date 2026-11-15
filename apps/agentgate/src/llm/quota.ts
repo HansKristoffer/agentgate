@@ -12,7 +12,7 @@ import { defineLocal } from "../local-state.ts";
 import type { Observation, Provider, ProviderName } from "./provider.ts";
 
 /** How often the credential's holder reads an account's usage. */
-export const QUOTA_POLL = 10 * 60_000;
+const QUOTA_POLL = 10 * 60_000;
 /** Usage counts as out of date once a poll round was missed: the holder is asleep or offline, or its poll failed. */
 export const QUOTA_STALE = 2 * QUOTA_POLL;
 export { normalizedWindow, matchesWindow };
@@ -63,6 +63,7 @@ export function recordUsage(
       u.source,
       u.windows.map((w) => [w.name, Math.round(w.usedPct), Math.round((w.resetsAt ?? 0) / 60000), w.scope]),
     ]);
+  // An unchanged observation is skipped, but one is still written every five minutes so observedAt stays fresh.
   if (previous && key(previous) === key(next) && s.now() - previous.observedAt < 300000) return;
   s.put("usage", id, next);
 }
@@ -76,13 +77,13 @@ export class Quotas {
     readonly providers: Partial<Record<ProviderName, Provider>>,
   ) {}
   refresh(id: string, signal: AbortSignal, force = false): Promise<boolean> {
-    let map = flights.get(this.s);
-    if (!map) flights.set(this.s, (map = new Map()));
+    const map = flights.get(this.s) ?? new Map<string, Promise<boolean>>();
+    flights.set(this.s, map);
     const running = map.get(id);
     if (running) return raceAbort(running, signal);
     const task = this.fetch(id, signal, force);
     map.set(id, task);
-    void task.finally(() => map!.delete(id)).catch(() => {});
+    void task.finally(() => map.delete(id)).catch(() => {});
     return task;
   }
   private async fetch(id: string, signal: AbortSignal, force: boolean) {

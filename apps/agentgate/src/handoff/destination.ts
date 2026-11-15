@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs
 import { getErrorMessage, startTimer, sumBy } from "hanzio";
 import { atomicWrite } from "../files.ts";
 import { basename, join } from "node:path";
-import { handoffTimingSchema, type HandoffJob } from "@agentgate/protocol";
+import { handoffTimingSchema, safePath, type HandoffJob } from "@agentgate/protocol";
 import { z } from "zod";
 import { parseRemote } from "../mcp/gateway.ts";
 import { killGroup, sleep } from "../runtime.ts";
@@ -22,7 +22,6 @@ import { sessionNote, timed, type DestJob, type DestStep, type Handoffs } from "
 import { SAFE_ID, safeRelative, sessionProviders } from "./session.ts";
 import { T3Error, TERMINAL, claudeInstance, dispatch, projection, t3Client, t3State, type Call } from "./t3.ts";
 import { HistoryError, appendToThread, sessionMessages, t3Database } from "./history.ts";
-import { safePath } from "@agentgate/protocol";
 import { checkoutKey, fillCheckout, placeEdit, rememberCheckout } from "../checkout-files.ts";
 
 /** The steps on the receiving machine (B). `prepare` (find or clone the repository, make the worktree, start setup)
@@ -401,6 +400,7 @@ function repoSetupCommand(dir: string) {
       scripts: z.array(z.object({ command: z.string(), runOnWorktreeCreate: z.boolean().optional() }).passthrough()),
     })
     .passthrough();
+  // A missing or unreadable t3.json means the repository has no setup script.
   try {
     return t3json
       .parse(JSON.parse(readFileSync(join(dir, "t3.json"), "utf8")))
@@ -458,6 +458,7 @@ function startSetup(h: Handoffs, id: string, command: string | undefined, main: 
             COLORTERM: "",
           },
         });
+        // A setup still running at its timeout (fifteen minutes unless set) is stopped with its group.
         const timer = setTimeout(() => killGroup(child), h.options.setupTimeoutMs ?? 15 * 60_000);
         h.setupProcesses.add(child);
         const stderr = new Response(child.stderr).text();
@@ -514,7 +515,8 @@ async function apply(h: Handoffs, job: DestJob<"apply">) {
       if (edits.length) st.warnings.push(`Your changes to ${edits.join(", ")} stayed on ${st.source} with the code`);
     } else {
       if (replaced.length) {
-        const names = replaced.slice(0, 5).join(", ") + (replaced.length > 5 ? ` and ${replaced.length - 5} more` : "");
+        const more = replaced.length > 5 ? ` and ${replaced.length - 5} more` : "";
+        const names = replaced.slice(0, 5).join(", ") + more;
         st.warnings.push(
           `Replaced ${h.s.nodeId}'s own ${names} in ${cwd} with the versions from ${m.source}; ${h.s.nodeId}'s are in git stash`,
         );
@@ -563,6 +565,7 @@ async function placeEdits(h: Handoffs, job: DestJob<"apply">, cwd: string) {
  * the one an earlier import created. T3's import only knows its own imports, so asking it again would duplicate a
  * thread this node created itself. */
 async function knownThread(h: Handoffs, call: Call, instanceId: string, sessionId: string) {
+  // A candidate counts only while T3 still has its thread; a failed read means it does not.
   for (const id of [h.s.local(sessionNote.thread(sessionId)), `import:${instanceId}:${sessionId}`]) {
     if (
       id &&
@@ -795,7 +798,7 @@ async function turn(h: Handoffs, call: Call, threadId: string, text: string): Pr
   const messageId = await send(call, threadId, text, "start_immediately");
   const deadline = h.s.now() + FIRST_TURN;
   for (;;) {
-    const r = (await projection(call, threadId)).runs.find((run) => run.userMessageId === messageId);
+    const r = (await projection(call, threadId)).runs.find((candidate) => candidate.userMessageId === messageId);
     if (r && TERMINAL.has(r.status)) return r.status;
     if (h.s.now() > deadline || h.closed) return r?.status ?? "unknown";
     await sleep(h.pollMs);

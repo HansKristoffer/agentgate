@@ -8,7 +8,7 @@ import type { Tokens } from "./telemetry.ts";
 const HOUR = 3_600_000,
   DAY = 86_400_000;
 /** The node protocol that understands `tokens` records (see NODE_PROTOCOL in remote.ts). */
-export const TOKENS_PROTOCOL = 3;
+const TOKENS_PROTOCOL = 3;
 /** The Claude Code and Codex homes whose session logs hold this machine's usage: the user's own, and agentgate's. */
 export const LOG_DIRS = { claude: [PRIMARY_CLAUDE_DIR, CLAUDE_DIR], codex: [PRIMARY_CODEX_DIR, CODEX_DIR] };
 
@@ -74,7 +74,8 @@ export async function backfillTokens(s: Store, dirs = LOG_DIRS, signal?: AbortSi
           [h.hour, provider, h.model, h.input, h.output, h.cacheRead, h.cacheWrite],
         );
       s.setLocal(key, String(before));
-      s.setLocal("tokens:published", undefined); // publish the new history too
+      // Clearing the marker makes publishTokens send the backfilled hours.
+      s.setLocal("tokens:published", undefined);
     });
   }
 }
@@ -105,7 +106,7 @@ function foldTokens(s: Store) {
   }
   for (const [month, records] of months) {
     const id = `${prefix}${month}`;
-    if (records.length === 1 && records[0]!.id === id) continue;
+    if (records.length === 1 && records[0]?.id === id) continue;
     // Keyed, so a row in both the month and a day counts once. The month's own record sorts last and is read first: a
     // day that a full republish rewrote is newer.
     const rows = new Map<string, Data<"tokens">["rows"][number]>();
