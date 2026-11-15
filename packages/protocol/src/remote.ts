@@ -32,7 +32,7 @@ export const remoteRequestFrame = z
     query: z.string().max(REMOTE_LIMITS.fieldChars).optional(),
   })
   .strict();
-export const remoteCancelFrame = z.object({ t: z.literal("cancel"), id }).strict();
+const remoteCancelFrame = z.object({ t: z.literal("cancel"), id }).strict();
 export const relayFrame = z.discriminatedUnion("t", [remoteRequestFrame, remoteCancelFrame]);
 
 /** node → relay. `retry` means the node did not start the request (it was at capacity). */

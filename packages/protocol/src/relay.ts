@@ -14,7 +14,7 @@ export const RELAY_LIMITS = {
 } as const;
 
 const b64urlLength = (bytes: number) => Math.ceil((bytes * 4) / 3);
-export const hex128 = z.string().regex(/^[0-9a-f]{32}$/);
+const hex128 = z.string().regex(/^[0-9a-f]{32}$/);
 export const relayGroupId = hex128;
 export const relayGeneration = hex128;
 /** Same bounds as store ids; no control characters so names are safe to print. */
@@ -25,7 +25,8 @@ export const relayNode = z
   .regex(/^[^\u0000-\u001f\u007f]+$/);
 /** base64url HMAC-SHA256 without padding. */
 export const relayKey = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-export const relayBlob = z
+/** A sealed blob at least one nonce and one tag long, and at most `RELAY_LIMITS.blobBytes` decoded. */
+const relayBlob = z
   .string()
   .min(b64urlLength(12 + 16))
   .max(b64urlLength(RELAY_LIMITS.blobBytes))
@@ -33,7 +34,7 @@ export const relayBlob = z
 export const pusherSeq = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const seq = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
-export const relayEnvelope = z.object({ key: relayKey, pusherSeq, blob: relayBlob }).strict();
+const relayEnvelope = z.object({ key: relayKey, pusherSeq, blob: relayBlob }).strict();
 export type RelayEnvelope = z.infer<typeof relayEnvelope>;
 
 export const createRequest = z.object({ protocol: z.literal(RELAY_PROTOCOL) }).strict();
@@ -47,7 +48,7 @@ export const pushRequest = z
   })
   .strict();
 
-export const relayEntry = relayEnvelope.extend({ node: relayNode, seq: seq.min(1) });
+const relayEntry = relayEnvelope.extend({ node: relayNode, seq: seq.min(1) });
 export type RelayEntry = z.infer<typeof relayEntry>;
 export const changesResponse = z.object({
   protocol: z.literal(RELAY_PROTOCOL),
@@ -100,8 +101,8 @@ export const CHANNEL_LIMITS = {
 const channelId = z.string().uuid();
 const sealedText = z.string().max(CHANNEL_LIMITS.bodyBytes);
 /** relay → target */
-export const channelRequestFrame = z.object({ t: z.literal("req"), id: channelId, body: sealedText }).strict();
-export const channelCancelFrame = z.object({ t: z.literal("cancel"), id: channelId }).strict();
+const channelRequestFrame = z.object({ t: z.literal("req"), id: channelId, body: sealedText }).strict();
+const channelCancelFrame = z.object({ t: z.literal("cancel"), id: channelId }).strict();
 export const channelRelayFrame = z.discriminatedUnion("t", [channelRequestFrame, channelCancelFrame]);
 /** target → relay */
 export const channelResponseFrame = z.object({ t: z.literal("res"), id: channelId, body: sealedText }).strict();

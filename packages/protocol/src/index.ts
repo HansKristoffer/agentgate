@@ -31,12 +31,13 @@ export const accountSchema = z.object({
   pinned: z.boolean().optional(),
   policy: modelPolicySchema.optional(),
 });
+/** An unpadded base64url string that encodes `bytes` bytes, such as a key or a secret. */
 const b64url = (bytes: number) =>
   z
     .string()
     .length(Math.ceil((bytes * 4) / 3))
     .regex(/^[A-Za-z0-9_-]+$/);
-export const remoteSchema = z.object({
+const remoteSchema = z.object({
   /** Names the relay endpoint: `/mcp/<key>`. */
   key: b64url(16),
   /** What the client sends as `Authorization: Bearer <secret>`. */
@@ -104,7 +105,7 @@ export const projectSchema = z.object({
   agentsMd: z.string().max(MAX_AGENTS_MD).optional(),
 });
 /** A virtual project's endpoint as the API shows it: no key material, plus the serving node's live state. */
-export const remoteSummarySchema = z.object({
+const remoteSummarySchema = z.object({
   enabled: z.boolean(),
   servedBy: z.string(),
   url: z.string(),
@@ -119,7 +120,7 @@ export const remoteSummarySchema = z.object({
 });
 export type RemoteSummary = z.infer<typeof remoteSummarySchema>;
 /** File contents are secrets: the API shows only which files there are. */
-export const publicProjectSchema = projectSchema.extend({
+const publicProjectSchema = projectSchema.extend({
   remote: remoteSummarySchema.optional(),
   /** The webhook's origin, never its path or query, which may carry the receiver's token. */
   factoryWebhook: z.string().optional(),
@@ -233,7 +234,7 @@ export type Settings = z.infer<typeof settingsSchema>;
 export type SettingsUpdateResult = Settings & { revision: string };
 /** What an account can do right now. The daemon derives it once (`accountStatus` in llm/pool.ts) so every surface labels
  * an account the same way. Login problems come first, then the user's choice, then quota. */
-export const accountStateSchema = z.discriminatedUnion("kind", [
+const accountStateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("ready") }),
   z.object({ kind: z.literal("needs-login") }),
   /** This machine's copy expired; the machine holding the login refreshes it and sync brings it here. */
@@ -276,7 +277,7 @@ export const accountStatusSchema = z.object({
   state: accountStateSchema.optional().catch(undefined),
 });
 export type AccountStatus = z.infer<typeof accountStatusSchema>;
-export const serverSummarySchema = z.object({
+const serverSummarySchema = z.object({
   id: z.string(),
   /** The name the user gave it; `id` is its slug and tool prefix. */
   label: z.string().optional(),
@@ -292,7 +293,7 @@ export const serverSummarySchema = z.object({
   refreshError: z.string().optional(),
 });
 export type ServerSummary = z.infer<typeof serverSummarySchema>;
-export const skillSummarySchema = z.object({
+const skillSummarySchema = z.object({
   id: skillIdSchema,
   description: z.string(),
   /** What `npx skills add` was given; absent for skills written by hand. */
@@ -320,7 +321,7 @@ export interface SkillPreviewResponse {
   skills: SkillPreview[];
 }
 /** A connected GitHub repository; `projects` are where its skills are linked when they first appear. */
-export const skillRepoSummarySchema = z.object({
+const skillRepoSummarySchema = z.object({
   url: z.string(),
   projects: z.array(z.string()),
   skills: z.array(z.string()),
@@ -331,7 +332,7 @@ export const skillRepoSummarySchema = z.object({
   skipped: z.array(z.string()),
 });
 export type SkillRepoSummary = z.infer<typeof skillRepoSummarySchema>;
-export const skillHealthSchema = z.object({
+const skillHealthSchema = z.object({
   attemptedAt: z.number().optional(),
   succeededAt: z.number().optional(),
   errors: z.array(z.object({ path: z.string(), message: z.string() })),
@@ -351,7 +352,7 @@ export interface Preset {
   note?: string;
 }
 export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity", "opencode"]);
-export const sharedLoginSchema = z.object({
+const sharedLoginSchema = z.object({
   id: loginIdSchema,
   account: z.string(),
   from: z.string(),
@@ -370,7 +371,7 @@ export const nodeUpdateSchema = z.object({
   since: z.number(),
 });
 export type NodeUpdate = z.infer<typeof nodeUpdateSchema>;
-export const relayStatusSchema = z.object({
+const relayStatusSchema = z.object({
   url: z.string(),
   hosted: z.boolean(),
   generation: z.string().optional(),
@@ -386,7 +387,6 @@ export const relayStatusSchema = z.object({
   /** Entries that could not be decrypted or validated since the last full read. */
   skipped: z.number().optional(),
 });
-export type RelayStatus = z.infer<typeof relayStatusSchema>;
 export interface LoginStart {
   state: string;
   url: string;

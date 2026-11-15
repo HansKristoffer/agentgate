@@ -92,19 +92,19 @@ export type NodeThreads = z.infer<typeof nodeThreadsSchema>;
 
 type HandoffTargetInfo = { node: string; server: boolean; available: boolean; reason?: string };
 
+/** Why a node's T3 Code cannot take a handoff, or undefined while it is connected. */
+function t3Reason(t3: NodeThreads["t3"]) {
+  if (t3?.connected) return undefined;
+  return t3?.url ? "T3 Code token expired; pair T3 Code again there" : "T3 Code not connected";
+}
+
 /** Where a thread on `threadNode` can go. Available: online, reachable over Tailscale, T3 Code connected with a valid
  * token, and not the thread's own node. Shared by the daemon (API, CLI, MCP tools) and the app. */
 export function handoffTargets(views: NodeThreads[], threadNode: string): HandoffTargetInfo[] {
   return views
     .filter((v) => v.node !== threadNode)
     .map((v) => {
-      const reason =
-        v.error ??
-        (!v.t3?.connected
-          ? v.t3?.url
-            ? "T3 Code token expired; pair T3 Code again there"
-            : "T3 Code not connected"
-          : undefined);
+      const reason = v.error ?? t3Reason(v.t3);
       return { node: v.node, server: v.server, available: !reason, ...(reason && { reason }) };
     })
     .sort((a, b) => a.node.localeCompare(b.node));

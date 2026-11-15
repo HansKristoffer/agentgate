@@ -3,7 +3,7 @@ import { safeEqual } from "hanzio/crypto";
 import { relayNode } from "@agentgate/protocol/relay";
 import type { EndpointOp } from "./app.ts";
 import { readBounded } from "./body.ts";
-import { Window, type Config } from "./group.ts";
+import { Window, type Config, type Reply } from "./group.ts";
 
 /**
  * One remote endpoint: a public POST URL forwarded over the one hibernatable WebSocket its serving node keeps open.
@@ -12,14 +12,10 @@ import { Window, type Config } from "./group.ts";
  * Unlike groups, the relay reads this traffic in the clear.
  */
 
-export interface EndpointDeps {
+interface EndpointDeps {
   config: Config;
   admission: {
-    reserve(
-      id: string,
-      ipHash: string,
-      limits: { max: number; perIpPerDay: number },
-    ): Promise<{ status: number; body: unknown; retryAfter?: number } | undefined>;
+    reserve(id: string, ipHash: string, limits: { max: number; perIpPerDay: number }): Promise<Reply | undefined>;
     release(id: string): Promise<void>;
   };
   limits: { max: number; perIpPerDay: number; requestsPerMinute: number };
@@ -48,7 +44,9 @@ interface Attachment {
   since: number;
 }
 
+/** A create that stopped between recording the endpoint and reserving its slot is deleted by its alarm after this. */
 const PENDING_MS = 10 * 60_000;
+/** A node socket sending more frames than this in a minute is closed. */
 const SOCKET_MESSAGES_PER_MINUTE = 1200;
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), {
@@ -153,6 +151,7 @@ export class EndpointCore {
   }
 
   private async update(req: Request, key: string, tokenHash: string, ipHash: string): Promise<Response> {
+    // An endpoint's update is a few small fields; anything larger is not one.
     const bytes = await readBounded(req, 4096);
     let body: unknown;
     try {
@@ -160,31 +159,35 @@ export class EndpointCore {
     } catch {
       return json(400, { error: "invalid JSON" });
     }
+
     const parsed = endpointUpdate.safeParse(body);
     if (!parsed.success) return json(400, { error: "invalid endpoint update" });
+
     // Serialized: the admission call below awaits another object.
     return this.ctx.blockConcurrencyWhile(async () => {
-      const m = this.meta(),
-        now = Date.now();
+      const m = this.meta();
+      const now = Date.now();
       if (m?.admitted && !safeEqual(m.tokenHash, tokenHash))
         return this.unauthorized(json(401, { error: "unauthorized" }));
+
       // A published URL keeps its kind: a node that omits it must not turn a webhook URL into an MCP endpoint.
       if (m?.admitted && (m.kind ?? "mcp") !== parsed.data.kind)
         return json(409, {
           error: `this endpoint is a ${m.kind ?? "mcp"} endpoint; create a new URL to change its kind`,
         });
+
+      const record = {
+        key,
+        tokenHash,
+        secretHash: parsed.data.secretHash,
+        enabled: parsed.data.enabled ? 1 : 0,
+        lastActive: now,
+        kind: parsed.data.kind,
+      };
       if (!m?.admitted) {
         // Record, then reserve: the alarm deletes a create that stopped between the two.
         await this.ctx.storage.setAlarm(now + PENDING_MS);
-        this.save({
-          key,
-          tokenHash,
-          secretHash: parsed.data.secretHash,
-          enabled: parsed.data.enabled ? 1 : 0,
-          lastActive: now,
-          admitted: 0,
-          kind: parsed.data.kind,
-        });
+        this.save({ ...record, admitted: 0 });
         const refused = await this.deps.admission.reserve(`e:${key}`, ipHash, this.deps.limits);
         if (refused) {
           await this.ctx.storage.deleteAll();
@@ -195,15 +198,8 @@ export class EndpointCore {
           );
         }
       }
-      this.save({
-        key,
-        tokenHash,
-        secretHash: parsed.data.secretHash,
-        enabled: parsed.data.enabled ? 1 : 0,
-        lastActive: now,
-        admitted: 1,
-        kind: parsed.data.kind,
-      });
+
+      this.save({ ...record, admitted: 1 });
       await this.ctx.storage.setAlarm(now + this.deps.config.retentionMs);
       return json(200, { ok: true });
     });
@@ -305,7 +301,7 @@ export class EndpointCore {
       );
       this.pending.set(id, { ws, resolve, timer, fail });
     });
-    req.signal?.addEventListener("abort", () => {
+    req.signal.addEventListener("abort", () => {
       if (!this.pending.has(id)) return;
       try {
         ws.send(JSON.stringify({ t: "cancel", id }));
@@ -332,8 +328,8 @@ export class EndpointCore {
   }
 
   webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
-    let rate = this.socketRates.get(ws);
-    if (!rate) this.socketRates.set(ws, (rate = new Window()));
+    const rate = this.socketRates.get(ws) ?? new Window();
+    this.socketRates.set(ws, rate);
     if (rate.hit(SOCKET_MESSAGES_PER_MINUTE, Date.now())) return ws.close(1008, "too many messages");
     if (typeof message !== "string" || message.length > REMOTE_LIMITS.frameBytes)
       return ws.close(1009, "frame too large");
@@ -365,14 +361,17 @@ export class EndpointCore {
 
   /** Retention counts from the last request or connection; a connected node keeps its endpoint alive. */
   async alarm() {
-    const m = this.meta(),
-      now = Date.now();
+    const m = this.meta();
+    const now = Date.now();
     if (!m) return;
     if (!m.admitted) return this.destroy(m.key);
+
     if (this.socket()) {
       this.touch(now);
-      return void (await this.ctx.storage.setAlarm(now + this.deps.config.retentionMs));
+      await this.ctx.storage.setAlarm(now + this.deps.config.retentionMs);
+      return;
     }
+
     const due = m.lastActive + this.deps.config.retentionMs;
     if (now >= due) return this.destroy(m.key);
     await this.ctx.storage.setAlarm(due);
