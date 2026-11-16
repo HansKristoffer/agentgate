@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { host as claudeLocalHost } from "../src/claude-local.ts";
 import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import {
   agentEnvironment,
@@ -98,6 +99,48 @@ test("primary preserves configured Claude auth tokens and API keys", async () =>
     }
   } finally {
     rmSync(dir, { recursive: true });
+  }
+});
+
+test("a terminal native Claude login falls back to proxy auth until the user signs in again", async () => {
+  const originalKeychain = claudeLocalHost.keychain;
+  for (const storage of process.platform === "darwin" ? ["file", "keychain"] : ["file"]) {
+    const s = new Store(":memory:");
+    const tools = ownTools();
+    const file = join(tools.dirs.claude, "settings.json");
+    const credentials = join(tools.dirs.claude, ".credentials.json");
+    const env = () => JSON.parse(readFileSync(file, "utf8")).env;
+    s.now = () => 1_800_000_000_000;
+    let raw = "";
+    claudeLocalHost.keychain = async () => (storage === "keychain" ? raw : undefined);
+    const write = (oauth: object) => {
+      raw = JSON.stringify({ claudeAiOauth: oauth });
+      if (storage === "file") writeFileSync(credentials, raw);
+    };
+    try {
+      writeFileSync(join(tools.dirs.claude, ".claude.json"), '{"oauthAccount":{"emailAddress":"me@example.com"}}');
+      write({ loginEnded: "lineage_expired" });
+      await primary(true, tools.dirs.claude);
+      expect(env().ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+
+      // A fresh login restores native auth, including the user's Claude connectors.
+      write({ expiresAt: 0, refreshTokenExpiresAt: s.now() + 3_600_000 });
+      await keepMcp(s, tools.dirs);
+      expect(env().ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+
+      // Maintenance must also catch refresh expiry without Claude having written a terminal marker.
+      write({ refreshTokenExpiresAt: s.now() - 1 });
+      await keepMcp(s, tools.dirs);
+      expect(env().ANTHROPIC_AUTH_TOKEN).toBe("agentgate");
+      const saved = storage === "file" ? readFileSync(credentials, "utf8") : await claudeLocalHost.keychain("test");
+      expect(saved).toBe(JSON.stringify({ claudeAiOauth: { refreshTokenExpiresAt: s.now() - 1 } }));
+      await primary(false, tools.dirs.claude);
+      expect(env()).toBeUndefined();
+    } finally {
+      claudeLocalHost.keychain = originalKeychain;
+      s.close();
+      rmSync(tools.dir, { recursive: true });
+    }
   }
 });
 

@@ -88,12 +88,14 @@ export const host = {
   },
 };
 
-async function readLocalClaudeLogin(s: Store) {
-  if (DEV && host.home === homedir()) return undefined;
-  const dir = join(host.home, ".claude");
+/** Read only identity and terminal login health; unknown or refreshable credentials leave native auth in place. */
+export async function readClaudeLogin(dir: string, now: number) {
+  if (DEV && dir === join(homedir(), ".claude")) return undefined;
+  const primary = dir === join(host.home, ".claude");
+  const configFile = primary ? join(host.home, ".claude.json") : join(dir, ".claude.json");
   let email: string | undefined;
   try {
-    const config = JSON.parse(readFileSync(join(host.home, ".claude.json"), "utf8"));
+    const config = JSON.parse(readFileSync(configFile, "utf8"));
     email = z.email().safeParse(config.oauthAccount?.emailAddress).data;
   } catch {
     /* The terminal marker still matters when the identity file is missing. */
@@ -106,12 +108,13 @@ async function readLocalClaudeLogin(s: Store) {
       // Claude Code suffixes its Keychain item with a hash of the config folder.
       const hash = createHash("sha256").update(dir).digest("hex").slice(0, 8);
       raw =
-        (await host.keychain(`Claude Code-credentials-${hash}`)) ?? (await host.keychain("Claude Code-credentials"));
+        (await host.keychain(`Claude Code-credentials-${hash}`)) ??
+        (primary ? await host.keychain("Claude Code-credentials") : undefined);
     }
 
     const oauth = raw ? credentials.safeParse(JSON.parse(raw)).data?.claudeAiOauth : undefined;
     const expiresAt = oauth?.refreshTokenExpiresAt;
-    const refreshExpired = !!expiresAt && expiresAt > 0 && expiresAt <= s.now();
+    const refreshExpired = !!expiresAt && expiresAt > 0 && expiresAt <= now;
     // An expired access token can still refresh. Only a terminal marker or refresh expiry requires the user.
     if (oauth && (oauth.loginEnded || refreshExpired)) return { email, state: "needs-login" as const };
   } catch {
@@ -134,7 +137,7 @@ export async function localClaudeLogin(s: Store) {
     if (!check || check.home !== host.home || s.now() - check.at >= 30_000) {
       check = { home: host.home, at: s.now(), task: Promise.resolve() };
       const current = check;
-      check.task = readLocalClaudeLogin(s).then((value) => {
+      check.task = readClaudeLogin(join(host.home, ".claude"), s.now()).then((value) => {
         if (checks.get(s) === current && !running.has(s)) state.set(s, undefined, value);
       });
       checks.set(s, check);
