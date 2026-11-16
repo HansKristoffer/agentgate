@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.35.1](https://github.com/HansKristoffer/agentgate/compare/v0.35.0...v0.35.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **claude:** use proxy auth when native login expires ([#161](https://github.com/HansKristoffer/agentgate/issues/161)) ([26560ea](https://github.com/HansKristoffer/agentgate/commit/26560ea2e2178dfdea1dca65a321123a5a3eb914))
+
 ## [0.35.0](https://github.com/HansKristoffer/agentgate/compare/v0.34.0...v0.35.0) (2026-11-15)
 
 
