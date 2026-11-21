@@ -21,7 +21,7 @@
         "@modelcontextprotocol/server": "^2.4.0",
         "hanzio": "^3.4.0",
         "hono": "^4.13.12",
-        "llm-usage-extraction": "^0.2.0",
+        "llm-usage-extraction": "^0.5.0",
         "zod": "^4.6.5",
       },
     },
@@ -854,7 +854,7 @@
 
     "lightningcss-win32-x64-msvc": ["lightningcss-win32-x64-msvc@1.33.0", "", { "os": "win32", "cpu": "x64" }, "sha512-OlEICDx/Xl0FqSp4bry8zFnCvGpig3Gl4gCquvYwHuqJKEC1+n9NgDniFvqHGmMv1ZkqDJrDqKKSykTDX+ehuA=="],
 
-    "llm-usage-extraction": ["llm-usage-extraction@0.2.0", "", {}, "sha512-MyLHZhvu4uRE5QBbjm6g4CYVSh5odx2Cmojpuh2apeHUvsiOEdQ5ZNTsUgHqfGRIv7NehuyL8QlLtgG9Ni4Mxg=="],
+    "llm-usage-extraction": ["llm-usage-extraction@0.5.0", "", {}, "sha512-tFAVHJ6WQwTOCbogYxMiLnQIWNhiJCmKP53mSQHRZ5HiPOmKJ+D5/+VRQknmB5iaorcD90gh++gp04BvsgjEkQ=="],
 
     "loose-envify": ["loose-envify@1.4.0", "", { "dependencies": { "js-tokens": "^3.0.0 || ^4.0.0" }, "bin": { "loose-envify": "cli.js" } }, "sha512-lyuxPGr/Wfhrlem2CL/UcnUc1zcqKAImBDzukY7Y5F/yQiNdko6+fRLevlw1HgMySw7f611UIY408EtxRSoK3Q=="],
 

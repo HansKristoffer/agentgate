@@ -10,7 +10,7 @@ import { Credentials, drainRefresh } from "./credentials.ts";
 import { proxy } from "./llm/pool.ts";
 import { providers } from "./llm/providers.ts";
 import { pollTokens } from "./llm/cursor.ts";
-import { LOG_DIRS, backfillTokens, publishTokens } from "./llm/token-history.ts";
+import { LOG_DIRS, backfillTokens, collectAntigravity, publishTokens } from "./llm/token-history.ts";
 import { Quotas } from "./llm/quota.ts";
 import { interruptPending } from "./llm/telemetry.ts";
 import { ProxyOperations } from "./llm/operations.ts";
@@ -383,6 +383,7 @@ export async function serve(
   const backfill = backfillTokens(s, options.logs, ctx.abort.signal).catch(() =>
     console.error("background task: token history backfill failed"),
   );
+  schedule(() => collectAntigravity(s, (options.logs ?? LOG_DIRS).antigravity), 5 * 60_000);
   schedule(async () => {
     await backfill;
     publishTokens(s);

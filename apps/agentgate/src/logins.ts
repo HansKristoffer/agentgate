@@ -2,13 +2,14 @@ import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
+import { z } from "zod";
 import { atomicWrite } from "./files.ts";
 import { killGroup } from "./runtime.ts";
 import { liveOnly, nodesBelow, requireNodeProtocol, type Data, type Store, type Stored } from "./store.ts";
 
 /**
- * The GitHub CLI (gh) and Infisical CLI logins and OpenCode's API keys of one machine, shared with every paired machine
- * so a new server clones, reads secrets and reaches the same models as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
+ * The GitHub CLI (gh), Infisical CLI and Antigravity CLI (agy) logins and OpenCode's API keys of one machine, shared with
+ * every paired machine so a new server clones, reads secrets and reaches the same models as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
  * The sharing node re-reads it each round, so a refreshed or replaced login follows; every other node signs in with it
  * whenever it changes.
  *
@@ -24,11 +25,15 @@ export const LOGINS_PROTOCOL = 4;
 export const IDENTITY_PROTOCOL = 5;
 /** The node protocol that understands the `opencode` login. */
 export const OPENCODE_PROTOCOL = 10;
+/** The node protocol that understands the `antigravity` login. */
+export const ANTIGRAVITY_PROTOCOL = 12;
 type Login = Data<"login">;
 type StoredLogin = Stored<Login>;
 type LoginId = Login["id"];
 /** Logins read from this machine's own tools; the machine identity is entered instead. */
-const SHAREABLE = ["github", "infisical", "opencode"] as const;
+const SHAREABLE = ["github", "infisical", "opencode", "antigravity"] as const;
+/** Logins a node only syncs from this protocol on; older nodes would reject the record. */
+const SINCE: Partial<Record<LoginId, number>> = { opencode: OPENCODE_PROTOCOL, antigravity: ANTIGRAVITY_PROTOCOL };
 const IDENTITY = "infisical-identity";
 
 /** What a `gh` run came to. `exit` and `err` let a caller tell why it failed; `err` is absent when gh printed none. */
@@ -54,9 +59,53 @@ export function ghAnswer(run: { exit: number; stdout: string; stderr: string }):
   return { ok: run.exit === 0, out: run.stdout.trim(), exit: run.exit, ...(err && { err }) };
 }
 
-/** The user's home and the `gh`, `infisical` and `opencode` commands; tests point them elsewhere. */
+/** The user's home, the macOS Keychain and the `gh`, `infisical`, `opencode` and `agy` commands; tests point them elsewhere. */
 export const host = {
   home: homedir(),
+  platform: process.platform as string,
+  /** A macOS Keychain password, or undefined when there is none. */
+  async keychain(service: string, account: string) {
+    const child = Bun.spawn(["security", "find-generic-password", "-s", service, "-a", account, "-w"], {
+      stdout: "pipe",
+      stderr: "ignore",
+      timeout: 5_000,
+    });
+    const [text, exit] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return exit === 0 ? text.trim() : undefined;
+  },
+  /** Saves a macOS Keychain password the way go-keyring does: `security -i` reads it from stdin, out of the process list. */
+  async setKeychain(service: string, account: string, password: string) {
+    const child = Bun.spawn(["security", "-i"], {
+      stdin: new TextEncoder().encode(`add-generic-password -U -s ${service} -a ${account} -w ${password}\n`),
+      stdout: "ignore",
+      stderr: "ignore",
+      timeout: 5_000,
+    });
+    await child.exited;
+  },
+  /** Whether agy is installed, where its installer puts it or on the PATH. */
+  hasAgy: () => !!Bun.which("agy") || existsSync(join(host.home, ".local", "bin", "agy")),
+  /**
+   * Google's installer for agy, which only downloads it, checks its SHA-512 and copies it to ~/.local/bin; it leaves
+   * shell profiles alone. The download is a few hundred MB, and the installer's whole group goes at the deadline.
+   */
+  async installAgy() {
+    const script = await fetch("https://antigravity.google/cli/install.sh", { signal: AbortSignal.timeout(30_000) })
+      .then((r) => (r.ok ? r.text() : undefined))
+      .catch(() => undefined);
+    if (!script) return false;
+    const child = Bun.spawn(["bash", "-s"], {
+      stdin: new TextEncoder().encode(script),
+      stdout: "ignore",
+      stderr: "ignore",
+      env: { ...process.env, HOME: host.home },
+      cwd: host.home,
+      detached: true,
+    });
+    const timer = setTimeout(() => killGroup(child), 10 * 60_000);
+    const exit = await child.exited.finally(() => clearTimeout(timer));
+    return exit === 0;
+  },
   /** Runs the Infisical CLI on `home`. `terminal` hands it this process's terminal; otherwise `stderr` sees its output. */
   async infisical(
     args: string[],
@@ -166,8 +215,48 @@ async function opencodeKeys(): Promise<OpencodeKey[] | undefined> {
     .sort((a, b) => a.id.localeCompare(b.id));
 }
 
+/**
+ * agy keeps a Google OAuth token with go-keyring: in the Keychain on macOS, and in this file on Linux without a D-Bus
+ * session, which is every headless server.
+ * ponytail: a Linux desktop with a keyring keeps it in the Secret Service instead, which is neither read nor written here.
+ */
+const AGY = { service: "gemini", account: "antigravity", prefix: "go-keyring-base64:" };
+const agyFile = () => join(host.home, ".gemini", "antigravity-cli", "antigravity-oauth-token");
+const agyToken = z.object({
+  token: z.object({ access_token: z.string().optional(), refresh_token: z.string().min(1) }),
+  auth_method: z.string().optional(),
+  id_token_email: z.string().optional(),
+});
+
+/** agy's saved login on this machine, or undefined when it has none it can use. */
+async function antigravityToken() {
+  let raw: string | undefined;
+  if (host.platform === "darwin") {
+    raw = await host.keychain(AGY.service, AGY.account);
+    if (raw?.startsWith(AGY.prefix)) raw = Buffer.from(raw.slice(AGY.prefix.length), "base64").toString("utf8");
+  } else if (existsSync(agyFile())) raw = readFileSync(agyFile(), "utf8");
+  try {
+    return raw ? agyToken.parse(JSON.parse(raw)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The Google account an access token belongs to, or undefined when it has expired or Google cannot be reached. */
+async function googleEmail(accessToken?: string) {
+  if (!accessToken) return;
+  const res = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15_000),
+  }).catch(() => undefined);
+  const body = await res?.json().catch(() => undefined);
+  return res?.ok ? z.object({ email: z.email() }).safeParse(body).data?.email : undefined;
+}
+
 /** This machine's login, or why it has none to share. */
 async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | string> {
+  const old = nodesBelow(s, SINCE[id] ?? 0);
+  if (old.length) return `update agentgate on ${old.join(", ")} first`;
   if (id === "github") {
     const token = await host.gh(["auth", "token", "--hostname", "github.com"]);
     if (!token) return "gh is not installed";
@@ -175,9 +264,18 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
     const user = await host.gh(["config", "get", "--host", "github.com", "user"]);
     return { id, from: s.nodeId, account: user?.ok ? user.out : "", token: token.out };
   }
+  if (id === "antigravity") {
+    const login = await antigravityToken();
+    if (!login) return "the Antigravity CLI is not logged in (run agy and sign in)";
+    const refreshToken = login.token.refresh_token;
+    // Only the refresh token is shared: Google keeps it valid while each machine fetches its own access tokens, and the
+    // record stays the same until the user signs in again. Looking up the account once per login is enough.
+    const shared = s.get("login", id);
+    const known = shared?.id === id && shared.refreshToken === refreshToken ? shared.account : undefined;
+    const account = login.id_token_email ?? (known || (await googleEmail(login.token.access_token))) ?? "";
+    return { id, from: s.nodeId, account, refreshToken, authMethod: login.auth_method ?? "consumer" };
+  }
   if (id === "opencode") {
-    const old = nodesBelow(s, OPENCODE_PROTOCOL);
-    if (old.length) return `update agentgate on ${old.join(", ")} first`;
     let credentials;
     try {
       credentials = await opencodeKeys();
@@ -255,6 +353,23 @@ async function apply(l: StoredLogin) {
         if (here.some((h) => h.integrationID === c.integrationID && h.id !== c.id && h.active))
           await run(["auth", "switch", c.integrationID, c.id]);
       }
+    },
+    antigravity: async (l) => {
+      // The user shared it to use it everywhere, so a machine without agy gets it.
+      if (!host.hasAgy() && !(await host.installAgy()))
+        throw new Error(
+          "installing the Antigravity CLI failed; install it with curl -fsSL https://antigravity.google/cli/install.sh | bash",
+        );
+      if ((await antigravityToken())?.token.refresh_token === l.refreshToken) return;
+      // agy fetches an access token with the refresh token the first time it runs.
+      const saved = JSON.stringify({
+        token: { refresh_token: l.refreshToken, token_type: "Bearer" },
+        auth_method: l.authMethod,
+      });
+      if (host.platform !== "darwin") return atomicWrite(agyFile(), saved);
+      await host.setKeychain(AGY.service, AGY.account, AGY.prefix + Buffer.from(saved).toString("base64"));
+      if ((await antigravityToken())?.token.refresh_token !== l.refreshToken)
+        throw new Error("the Antigravity login could not be saved in the Keychain");
     },
     infisical: (l) => {
       const files = infisical();

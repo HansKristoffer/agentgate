@@ -43,6 +43,8 @@ export const run: Run = async (_cmd, [sub, ...rest]) => {
     console.log(`MCP servers in Claude Code / Desktop's Code tab: ${st.mcp ? "on" : "off (agentgate setup --mcp)"}`);
     if (st.cursorMcp !== undefined)
       console.log(`MCP servers in Cursor: ${st.cursorMcp ? "on" : "off (agentgate setup --mcp)"}`);
+    if (st.antigravityMcp !== undefined)
+      console.log(`MCP servers in Antigravity: ${st.antigravityMcp ? "on" : "off (agentgate setup --mcp)"}`);
     return;
   }
   if (sub === "capture") return console.log(`saved ${desktop.capture(s)}`);

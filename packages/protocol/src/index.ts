@@ -351,7 +351,7 @@ export interface Preset {
   args?: string[];
   note?: string;
 }
-export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity", "opencode"]);
+export const loginIdSchema = z.enum(["github", "infisical", "infisical-identity", "opencode", "antigravity"]);
 const sharedLoginSchema = z.object({
   id: loginIdSchema,
   account: z.string(),
@@ -438,6 +438,8 @@ export interface DesktopStatus {
   mcp: boolean;
   /** ~/.cursor/mcp.json has the agentgate MCP server (setup --mcp or --primary). Absent when the machine has no Cursor. */
   cursorMcp?: boolean;
+  /** ~/.gemini/config/mcp_config.json has it. Absent when the machine has no Antigravity CLI. */
+  antigravityMcp?: boolean;
 }
 export const localClaudeLoginSchema = z.object({
   email: z.string().optional(),

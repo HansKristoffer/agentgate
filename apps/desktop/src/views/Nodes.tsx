@@ -560,9 +560,10 @@ const LOGINS = [
   { id: "github", name: "GitHub", tool: "gh" },
   { id: "infisical", name: "Infisical", tool: "the Infisical CLI" },
   { id: "opencode", name: "OpenCode", tool: "OpenCode" },
+  { id: "antigravity", name: "Antigravity", tool: "the Antigravity CLI" },
 ] as const;
 
-/** The gh and Infisical CLI logins and OpenCode API keys one machine shares; every other machine signs in with them. */
+/** The gh, Infisical and Antigravity CLI logins and OpenCode API keys one machine shares; every other machine signs in with them. */
 function SharedLogins({ data, connection, perform, local }: ViewProps) {
   const share = (id: SharedLogin["id"]) =>
     void perform(async () => {
@@ -580,7 +581,7 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
   return (
     <Panel
       title="Shared logins"
-      detail="Sign every machine in to GitHub, Infisical and OpenCode, including servers that join later."
+      detail="Sign every machine in to GitHub, Infisical, OpenCode and Antigravity, including servers that join later."
       foot={
         local
           ? undefined

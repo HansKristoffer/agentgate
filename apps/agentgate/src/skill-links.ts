@@ -22,7 +22,15 @@ import {
 } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { canonicalProject, parseRemote } from "./mcp/gateway.ts";
-import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR, primaryState } from "./setup.ts";
+import {
+  ANTIGRAVITY_DIR,
+  antigravityRouted,
+  CLAUDE_DIR,
+  CODEX_DIR,
+  PRIMARY_CLAUDE_DIR,
+  PRIMARY_CODEX_DIR,
+  primaryState,
+} from "./setup.ts";
 import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from "./store.ts";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
@@ -103,7 +111,8 @@ function ignoreLinks(dir: string, names: string[]) {
 }
 
 /** Where `*` skills and the global AGENTS.md go: the coding-tool folders `setup` writes, plus your own ~/.claude and
- * ~/.codex while `setup --primary` is on. Claude Code reads the instructions as CLAUDE.md, Codex as AGENTS.md. */
+ * ~/.codex while `setup --primary` is on, and Antigravity's ~/.gemini/config while it has agentgate's MCP server.
+ * Claude Code reads the instructions as CLAUDE.md, Codex and Antigravity as AGENTS.md. */
 export function globalSkillDirs(): [dir: string, on: boolean, instructions?: string][] {
   const primary = primaryState();
   return [
@@ -111,6 +120,8 @@ export function globalSkillDirs(): [dir: string, on: boolean, instructions?: str
     [join(CODEX_DIR, "skills"), true, join(CODEX_DIR, "AGENTS.md")],
     [join(PRIMARY_CLAUDE_DIR, "skills"), primary.claude, join(PRIMARY_CLAUDE_DIR, "CLAUDE.md")],
     [join(PRIMARY_CODEX_DIR, "skills"), primary.codex, join(PRIMARY_CODEX_DIR, "AGENTS.md")],
+    // agy also reads ~/.gemini/GEMINI.md, which other tools write, so agentgate's file goes beside its skills.
+    [join(ANTIGRAVITY_DIR, "skills"), antigravityRouted(), join(ANTIGRAVITY_DIR, "AGENTS.md")],
   ];
 }
 

@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.ts";
 import { tokenHours, tokenUsage } from "../src/llm/telemetry.ts";
-import { backfillTokens, publishTokens } from "../src/llm/token-history.ts";
+import { backfillTokens, collectAntigravity, publishTokens } from "../src/llm/token-history.ts";
+import { Database } from "bun:sqlite";
+import { utimesSync } from "node:fs";
 
 const temp = mkdtempSync(join(tmpdir(), "agentgate-tokens-"));
 afterAll(() => rmSync(temp, { recursive: true, force: true }));
@@ -271,4 +273,74 @@ test("token history is reused for a minute, unless another machine's totals arri
   expect(tokenHours(a)).toEqual([[hour, 15]]);
   a.now = () => start + 60_000;
   expect(tokenHours(a)).toEqual([[hour, 17]]);
+});
+
+/** Protobuf for the fields llm-usage-extraction reads from Antigravity's `gen_metadata` rows. */
+const varint = (n: number) => {
+  const out: number[] = [];
+  for (; n >= 0x80; n = Math.floor(n / 128)) out.push((n % 128) | 0x80);
+  return [...out, n];
+};
+const pb = (...fields: [no: number, value: number | string | number[]][]) =>
+  fields.flatMap(([no, v]) => {
+    if (typeof v === "number") return [...varint(no * 8), ...varint(v)];
+    const bytes = typeof v === "string" ? [...new TextEncoder().encode(v)] : v;
+    return [...varint(no * 8 + 2), ...varint(bytes.length), ...bytes];
+  });
+/** A conversation as agy writes it: one row per model call, its usage, model and start time. */
+const conversation = (path: string, calls: { h: number; model: string; input: number; output: number }[]) => {
+  mkdirSync(join(path, ".."), { recursive: true });
+  rmSync(path, { force: true });
+  const db = new Database(path);
+  db.run("create table gen_metadata (idx integer primary key, data blob)");
+  db.run("create table steps (idx integer primary key, step_type integer, metadata blob)");
+  for (const [i, c] of calls.entries()) {
+    const usage = pb([2, c.input], [3, c.output], [5, 100]);
+    const start = pb([4, pb([1, Date.UTC(2026, 9, 1, c.h) / 1000])]);
+    db.run("insert into gen_metadata values (?, ?)", [
+      i,
+      new Uint8Array(pb([1, pb([4, usage], [9, start], [19, c.model])])),
+    ]);
+  }
+  db.close();
+};
+
+test("Antigravity's usage comes from its conversations, a rewind replaces it, and it syncs once every node knows it", async () => {
+  const a = node("a"),
+    b = node("b"),
+    app = join(temp, "agy-app"),
+    cli = join(temp, "agy-cli"),
+    file = join(cli, "conversations", "c1.db");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 11 });
+  conversation(join(app, "conversations", "c0.db"), [{ h: 8, model: "gemini-3-pro", input: 1, output: 1 }]);
+  conversation(file, [
+    { h: 9, model: "gemini-3-pro", input: 10, output: 5 },
+    { h: 10, model: "claude-opus", input: 20, output: 7 },
+  ]);
+  await collectAntigravity(a, [app, cli]);
+  const usage = (s: Store) => tokenUsage(s).filter((r) => r.provider === "antigravity");
+  expect(usage(a)).toEqual([
+    { provider: "antigravity", model: "gemini-3-pro", input: 11, output: 6, cacheRead: 200, cacheWrite: 0 },
+    { provider: "antigravity", model: "claude-opus", input: 20, output: 7, cacheRead: 100, cacheWrite: 0 },
+  ]);
+
+  // Unchanged: read once. Rewound to its first call: that call counts once, the dropped one not at all.
+  await collectAntigravity(a, [app, cli]);
+  conversation(file, [{ h: 9, model: "gemini-3-pro", input: 10, output: 5 }]);
+  utimesSync(file, new Date(), new Date(Date.now() + 5000));
+  await collectAntigravity(a, [app, cli]);
+  // The overview reuses an answer for a minute.
+  a.now = () => Date.UTC(2026, 9, 1, 12, 2);
+  expect(usage(a)).toEqual([
+    { provider: "antigravity", model: "gemini-3-pro", input: 11, output: 6, cacheRead: 200, cacheWrite: 0 },
+  ]);
+
+  // A node on a version that would reject the rows gets none; once every node knows them, the history goes out.
+  publishTokens(a);
+  for (const r of a.changePage(0).records) b.merge(r);
+  expect(usage(b)).toEqual([]);
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 12 });
+  publishTokens(a);
+  for (const r of a.changePage(0).records) b.merge(r);
+  expect(usage(b)).toEqual(usage(a));
 });

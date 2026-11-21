@@ -3,6 +3,9 @@ import { z } from "zod";
 
 export const providerSchema = z.enum(["claude", "codex", "cursor"]);
 export type Provider = z.infer<typeof providerSchema>;
+/** Who used tokens: a pool provider, or Antigravity, whose usage agentgate only reads from its conversations. */
+export const tokenProviderSchema = z.enum([...providerSchema.options, "antigravity"]);
+export type TokenProvider = z.infer<typeof tokenProviderSchema>;
 
 export const modelIdSchema = z
   .string()
@@ -175,7 +178,7 @@ export interface RequestDetail {
 }
 /** Tokens one model used, summed over every account and machine. */
 export interface ModelTokens {
-  provider: Provider;
+  provider: TokenProvider;
   model: string;
   input: number;
   output: number;

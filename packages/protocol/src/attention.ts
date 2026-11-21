@@ -8,6 +8,7 @@ const loginName = {
   infisical: "Infisical",
   "infisical-identity": "Infisical machine identity",
   opencode: "OpenCode",
+  antigravity: "Antigravity",
 } satisfies Record<SharedLogin["id"], string>;
 
 /** The daemon's `state`, or for a daemon too old to send one, the derivation the app used before it did. */

@@ -69,7 +69,11 @@ test("loopback rejects foreign hosts and malformed settings return actionable 40
 test("daemon lifecycle closes listeners and drains work before returning", async () => {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   const url = `http://127.0.0.1:${daemon.loopback.port}`;
   expect((await fetch(`${url}/api/status`)).status).toBe(200);
   await daemon.stop();
@@ -95,7 +99,11 @@ test("stopping mid-clone kills git and returns, leaving the handoff to resume on
       return new Promise<Response>(() => {});
     },
   });
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   try {
     const remoteUrl = `http://127.0.0.1:${remote.port}/test/hang.git`;
     prepare(daemon.ctx.handoffs, "h1", "a", {
@@ -167,7 +175,11 @@ test("shutdown waits for an already-issued refresh to persist before the store c
   });
   const upstream = Bun.serve({ port: 0, fetch: () => new Response("unauthorized", { status: 401 }) });
   CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>((r) => (release = r)),
     start = new Promise<void>((r) => (entered = r));
@@ -229,7 +241,11 @@ test("a model request over the control API body limit still reaches the provider
     },
   });
   CLAUDE.api = `http://127.0.0.1:${upstream.port}`;
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   try {
     // A long Codex session full of screenshots outgrew the old 16 MiB limit.
     const body = JSON.stringify({ model: "sonnet", padding: "x".repeat(20 * 1024 * 1024) });
@@ -283,7 +299,11 @@ test("the daemon's own startup node write pokes peers", async () => {
     },
   });
   s.db.run("insert into peers values ('b', ?, 'peer-token', 0, null)", [`http://127.0.0.1:${peer.port}`]);
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   try {
     await poke;
   } finally {
@@ -296,7 +316,11 @@ test("the daemon's own startup node write pokes peers", async () => {
 test("a project written after start reaches open sessions' tool lists and the skill links at once", async () => {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
-  const daemon = await serve(s, { port: 0, discover: async () => undefined, logs: { claude: [], codex: [] } });
+  const daemon = await serve(s, {
+    port: 0,
+    discover: async () => undefined,
+    logs: { claude: [], codex: [], antigravity: [] },
+  });
   try {
     const tools = new Promise<void>((resolve) =>
       spyOn(daemon.ctx.gateway, "toolsChanged").mockImplementation(() => resolve()),
