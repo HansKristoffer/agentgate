@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.36.0](https://github.com/HansKristoffer/agentgate/compare/v0.35.1...v0.36.0) (2026-11-21)
+
+
+### Features
+
+* **antigravity:** share agy's login and give it agentgate's MCP servers, skills and token counts ([#163](https://github.com/HansKristoffer/agentgate/issues/163)) ([afb6d59](https://github.com/HansKristoffer/agentgate/commit/afb6d59a7cdb334126f9f73e31ef65f0ab4d3133))
+
 ## [0.35.1](https://github.com/HansKristoffer/agentgate/compare/v0.35.0...v0.35.1) (2026-11-16)
 
 
