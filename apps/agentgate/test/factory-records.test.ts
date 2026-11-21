@@ -244,6 +244,8 @@ test("a run whose tokens cannot be measured is noted once, and its item's tokens
 
 test("outcomes come from each item's PR and stay the item's, and the board shows the week's metrics", async () => {
   const n = await prFactory(cleanup);
+  // The fake GitHub's PRs merged at a fixed time; reverts are only searched for within 14 days of it.
+  n.advance(Date.parse(MERGED_AT) + 2 * 86_400_000 - n.s.now());
   // GitHub's revert of PR 104, the only merged PR whose title starts with "Revert".
   const fakeGh = host.gh;
   let searches = 0;
