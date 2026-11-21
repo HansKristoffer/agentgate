@@ -174,10 +174,16 @@ export const run: Run = async (cmd, [sub], opts) => {
       const setupMod = await import("../setup.ts");
       const claude = setupMod.claudeStatus();
       const codex = setupMod.primaryState().codex;
-      const cursor = setupMod.cursorMcpEnabled();
       const uses = (on: boolean) => (on ? "uses agentgate" : "does not use agentgate");
+      const tools = [
+        ["Cursor", setupMod.mcpFileEnabled(setupMod.CURSOR_MCP_FILE)],
+        ["Antigravity", setupMod.mcpFileEnabled(setupMod.ANTIGRAVITY_MCP_FILE)],
+      ] as const;
       console.log(
-        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${cursor === undefined ? "" : `\nCursor MCP servers ${cursor ? "on" : "off"}`}`,
+        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${tools
+          .filter(([, on]) => on !== undefined)
+          .map(([name, on]) => `\n${name} MCP servers ${on ? "on" : "off"}`)
+          .join("")}`,
       );
       if (!claude.routing || !codex) console.log("  to route them: agentgate setup --primary");
       const restored = Number(s.local(setupMod.MCP_RESTORED));

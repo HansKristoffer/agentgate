@@ -213,8 +213,8 @@ export function requestDetail(s: Store, id: string): RequestDetail | undefined {
     : undefined;
 }
 
-/** Every hourly token count this node knows after `?1`, summed by `key`: its own, the `tokens` records other nodes
- * publish (`?2` is this node), and Cursor's account-wide history, which may come from more than one node, once per
+/** Every hourly token count this node knows after `?1`, summed by `key`: its own (Antigravity's read from its
+ * conversations), the `tokens` records other nodes publish (`?2` is this node), and Cursor's account-wide history, which may come from more than one node, once per
  * account and hour. Each source is summed before the union, so the final sort is over groups rather than every row. */
 const tokenSums = (key: string) => {
   const sums =
@@ -222,6 +222,9 @@ const tokenSums = (key: string) => {
   return `select ${key}, ${sums} from (
     select ${key}, ${sums} from token_usage where hour > ?1 group by ${key}
     union all select ${key}, ${sums} from token_records where hour > ?1 and node != ?2 and provider != 'cursor' group by ${key}
+    union all select ${key}, ${sums} from (
+      select hour, 'antigravity' as provider, model, input, output, cache_read, cache_write from antigravity_tokens where hour > ?1
+    ) group by ${key}
     union all select ${key}, ${sums} from (
       select hour, 'cursor' as provider, model, max(input) as input, max(output) as output, max(cache_read) as cache_read, max(cache_write) as cache_write from (
         select account, hour, model, input, output, cache_read, cache_write from cursor_tokens where hour > ?1

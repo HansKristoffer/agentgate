@@ -1,6 +1,18 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { groupBy, typedEntries } from "hanzio";
-import { listClaudeCodeFiles, listCodexFiles, parseClaudeCodeFile, parseCodexFile } from "llm-usage-extraction";
+import {
+  antigravityMtime,
+  listAntigravityFiles,
+  listClaudeCodeFiles,
+  listCodexFiles,
+  parseAntigravityFile,
+  parseClaudeCodeFile,
+  parseCodexFile,
+} from "llm-usage-extraction";
+import { z } from "zod";
+import { defineLocal } from "../local-state.ts";
+import { ANTIGRAVITY_PROTOCOL } from "../logins.ts";
 import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR } from "../setup.ts";
 import { nodesBelow, parseData, type Data, type Rec, type Store } from "../store.ts";
 import type { Tokens } from "./telemetry.ts";
@@ -9,8 +21,13 @@ const HOUR = 3_600_000,
   DAY = 86_400_000;
 /** The node protocol that understands `tokens` records (see NODE_PROTOCOL in remote.ts). */
 const TOKENS_PROTOCOL = 3;
-/** The Claude Code and Codex homes whose session logs hold this machine's usage: the user's own, and agentgate's. */
-export const LOG_DIRS = { claude: [PRIMARY_CLAUDE_DIR, CLAUDE_DIR], codex: [PRIMARY_CODEX_DIR, CODEX_DIR] };
+/** The Claude Code and Codex homes whose session logs hold this machine's usage: the user's own, and agentgate's. Then
+ * Antigravity's data folders: the desktop app's, and the CLI's (agy), which keeps its own. */
+export const LOG_DIRS = {
+  claude: [PRIMARY_CLAUDE_DIR, CLAUDE_DIR],
+  codex: [PRIMARY_CODEX_DIR, CODEX_DIR],
+  antigravity: [join(homedir(), ".gemini", "antigravity"), join(homedir(), ".gemini", "antigravity-cli")],
+};
 
 type Hours = Map<string, Tokens & { hour: number; model: string }>;
 function add(hours: Hours, at: number, model: string, t: Tokens) {
@@ -50,7 +67,11 @@ async function logFile(provider: "claude" | "codex", path: string, before: numbe
 /** The proxy counts tokens from the hour this node started counting them; usage from before that is read once from
  * the session logs, so the history goes back as far as the logs do. */
 // ponytail: a few GiB of logs take seconds and leave the daemon's RSS a few hundred MiB higher; run it in a child process if that matters.
-export async function backfillTokens(s: Store, dirs = LOG_DIRS, signal?: AbortSignal) {
+export async function backfillTokens(
+  s: Store,
+  dirs: Pick<typeof LOG_DIRS, "claude" | "codex"> = LOG_DIRS,
+  signal?: AbortSignal,
+) {
   for (const provider of ["claude", "codex"] as const) {
     const key = `tokens:backfill:${provider}`;
     if (s.local(key)) continue;
@@ -78,6 +99,68 @@ export async function backfillTokens(s: Store, dirs = LOG_DIRS, signal?: AbortSi
       s.setLocal("tokens:published", undefined);
     });
   }
+}
+
+/** When each Antigravity conversation last changed, as last read. A file left out is read next time. */
+const antigravitySeen = defineLocal("tokens:antigravity", z.record(z.string(), z.number()));
+
+/**
+ * Antigravity's model calls never pass the proxy, so its usage comes only from its conversations. A conversation that
+ * changed is read again whole and its hours replaced: agy's rewind drops calls, which an incremental read would count
+ * twice. Rows of a deleted conversation stay, as history. Changed hours older than what was last published send the
+ * history again (`publishTokens`).
+ */
+export async function collectAntigravity(s: Store, dirs = LOG_DIRS.antigravity) {
+  const seen = antigravitySeen.get(s) ?? {},
+    next: Record<string, number> = {};
+  let oldest = Infinity;
+  for (const dir of dirs)
+    for (const path of await listAntigravityFiles(dir)) {
+      if (s.closed) return;
+      const mtime = await antigravityMtime(path);
+      if (mtime === null) continue;
+      if (seen[path] === mtime) {
+        next[path] = mtime;
+        continue;
+      }
+      // An older encrypted `.pb` is read through the desktop app's server; while the app is closed it waits.
+      const read = await parseAntigravityFile({ path, fileMtimeMs: mtime }).catch(() => undefined);
+      if (!read?.cursor) {
+        if (seen[path] !== undefined) next[path] = seen[path];
+        continue;
+      }
+      const hours: Hours = new Map();
+      for (const e of read.events)
+        if (e.messageType !== "user")
+          add(hours, e.timestamp, e.model, {
+            input: e.inputTokens,
+            output: e.outputTokens,
+            cacheRead: e.cacheReadTokens,
+            cacheWrite: e.cacheCreationTokens,
+          });
+      s.transaction(() => {
+        for (const { hour } of s.db
+          .query<{ hour: number }, [string]>("select hour from antigravity_tokens where file = ?")
+          .all(path))
+          oldest = Math.min(oldest, hour);
+        s.db.run("delete from antigravity_tokens where file = ?", [path]);
+        for (const h of hours.values()) {
+          oldest = Math.min(oldest, h.hour);
+          s.db.run("insert into antigravity_tokens values (?,?,?,?,?,?,?)", [
+            path,
+            h.hour,
+            h.model,
+            h.input,
+            h.output,
+            h.cacheRead,
+            h.cacheWrite,
+          ]);
+        }
+      });
+      next[path] = mtime;
+    }
+  antigravitySeen.set(s, undefined, next);
+  if (oldest < Number(s.local("tokens:published") ?? 0)) s.setLocal("tokens:published", undefined);
 }
 
 const FOLD_AFTER = 90 * DAY;
@@ -132,14 +215,22 @@ function foldTokens(s: Store) {
 export function publishTokens(s: Store) {
   // An older daemon stalls its Tailscale sync on a record kind it does not know.
   if (!s.has("node", s.nodeId) || nodesBelow(s, TOKENS_PROTOCOL).length) return;
+  // and rejects a record with Antigravity's rows, which therefore wait. The first round with every node on a version
+  // that knows them sends the whole history with them.
+  const antigravity = !nodesBelow(s, ANTIGRAVITY_PROTOCOL).length;
+  if (antigravity && !s.local("tokens:antigravityPublished")) {
+    s.setLocal("tokens:published", undefined);
+    s.setLocal("tokens:antigravityPublished", "1");
+  }
   const from = Number(s.local("tokens:published") ?? 0);
   const rows = s.db
-    .query<Data<"tokens">["rows"][number] & { account: string | null }, [number]>(
+    .query<Data<"tokens">["rows"][number] & { account: string | null }, [number, number]>(
       `select hour, provider, model, null as account, input, output, cache_read as cacheRead, cache_write as cacheWrite from token_usage where hour >= ?1
      union all select hour, 'cursor', model, account, input, output, cache_read, cache_write from cursor_tokens where hour >= ?1
+     union all select hour, 'antigravity', model, null, sum(input), sum(output), sum(cache_read), sum(cache_write) from antigravity_tokens where hour >= ?1 and ?2 group by hour, model
      order by hour, provider, model, account`,
     )
-    .all(from);
+    .all(from, antigravity ? 1 : 0);
   const tokenRows: Data<"tokens">["rows"] = rows.map(({ account, ...row }) => (account ? { ...row, account } : row));
   const days = groupBy(tokenRows, (row) => new Date(row.hour).toISOString().slice(0, 10));
   for (const [day, dayRows = []] of typedEntries(days)) {

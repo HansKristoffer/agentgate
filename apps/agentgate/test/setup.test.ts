@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { host as claudeLocalHost } from "../src/claude-local.ts";
 import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import {
   agentEnvironment,
+  antigravityRouted,
   claudeStatus,
   codexConfig,
   cursorMcp,
-  cursorMcpEnabled,
+  mcpFileEnabled,
   keepMcp,
   MCP_RESTORED,
   mcp,
@@ -302,7 +303,7 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-cursor-mcp-")),
     file = join(dir, "mcp.json");
   writeFileSync(file, '{"keep":true,"mcpServers":{"grafana":{"command":"grafana"}}}\n');
-  expect(cursorMcpEnabled(file)).toBe(false);
+  expect(mcpFileEnabled(file)).toBe(false);
   expect(await cursorMcp(true, file)).toContain("Cursor");
   const on = JSON.parse(readFileSync(file, "utf8"));
   expect(on.keep).toBe(true);
@@ -310,15 +311,15 @@ test("Cursor MCP setup keeps the other servers in mcp.json", async () => {
   expect(on.mcpServers.agentgate.args.at(-1)).toBe("mcp");
   expect(on.mcpServers.agentgate.env).toEqual(agentEnvironment());
   expect(on.mcpServers.agentgate.type).toBeUndefined();
-  expect(cursorMcpEnabled(file)).toBe(true);
+  expect(mcpFileEnabled(file)).toBe(true);
   await cursorMcp(true, file);
   expect(await cursorMcp(false, file)).toContain("Removed");
   const off = JSON.parse(readFileSync(file, "utf8"));
   expect(off.mcpServers.grafana.command).toBe("grafana");
   expect(off.mcpServers.agentgate).toBeUndefined();
   expect(await cursorMcp(false, file)).toContain("No agentgate MCP server");
-  expect(cursorMcpEnabled(join(dir, "missing.json"))).toBe(false);
-  expect(cursorMcpEnabled(join(dir, "no-cursor", "mcp.json"))).toBeUndefined(); // no Cursor on this machine
+  expect(mcpFileEnabled(join(dir, "missing.json"))).toBe(false);
+  expect(mcpFileEnabled(join(dir, "no-cursor", "mcp.json"))).toBeUndefined(); // no Cursor on this machine
   writeFileSync(file, '{"mcpServers":[]}\n');
   await expect(cursorMcp(true, file)).rejects.toThrow("mcpServers must be an object");
   rmSync(dir, { recursive: true, force: true });
@@ -342,12 +343,18 @@ test("daemon log lines start with an ISO 8601 timestamp", () => {
 });
 
 /** Temporary stand-ins for ~/.claude, ~/.codex and ~/.cursor/mcp.json; Codex and Cursor exist only when asked. */
-function ownTools(installed: { codex?: boolean; cursor?: boolean } = {}) {
+function ownTools(installed: { codex?: boolean; cursor?: boolean; antigravity?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agentgate-own-")),
-    dirs = { claude: join(dir, "claude"), codex: join(dir, "codex"), cursor: join(dir, "cursor", "mcp.json") };
+    dirs = {
+      claude: join(dir, "claude"),
+      codex: join(dir, "codex"),
+      cursor: join(dir, "cursor", "mcp.json"),
+      antigravity: join(dir, "gemini", "config", "mcp_config.json"),
+    };
   mkdirSync(dirs.claude);
   if (installed.codex) mkdirSync(dirs.codex);
   if (installed.cursor) mkdirSync(join(dir, "cursor"));
+  if (installed.antigravity) mkdirSync(dirname(dirs.antigravity), { recursive: true });
   const read = (file: string) => (existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : undefined);
   return {
     dir,
@@ -385,7 +392,7 @@ test("a first routing that fails partway says what it changed and is never retri
   const message = await routeByDefault(s, true, tools.dirs);
   expect(message).toContain("Could not route Codex");
   expect(message).toContain(`New Claude sessions in ${tools.dirs.claude} use agentgate`);
-  expect(message).toContain("Left Cursor unchanged.");
+  expect(message).toContain("Left Cursor and Antigravity unchanged.");
   expect(message).toContain("agentgate setup --primary");
   expect(tools.baseUrl()).toBe(`http://127.0.0.1:${PORT}/anthropic`);
   expect(existsSync(tools.dirs.cursor)).toBe(false);
@@ -428,7 +435,7 @@ test("the daemon puts back an MCP server Claude Code dropped, unless the user tu
   expect(s.local(MCP_RESTORED)).toBeDefined();
   await mcpHere(s, false, tools.dirs);
   expect(s.local(MCP_RESTORED)).toBeUndefined();
-  expect(cursorMcpEnabled(tools.dirs.cursor)).toBe(false);
+  expect(mcpFileEnabled(tools.dirs.cursor)).toBe(false);
   expect(await keepMcp(s, tools.dirs)).toEqual([]);
   expect(tools.claudeMcp()).toBeUndefined();
   // Before the choice was recorded, routing being on is what counts.
@@ -519,4 +526,40 @@ test("after the binary or port moved, the daemon points this install's MCP entri
   );
   expect(await keepMcp(s, tools.dirs)).toEqual([]);
   rmSync(tools.dir, { recursive: true });
+});
+
+test("Antigravity gets the MCP server in agy's empty config, and once agy appears after setup", async () => {
+  const s = new Store(":memory:"),
+    tools = ownTools({ antigravity: true }),
+    file = tools.dirs.antigravity;
+  writeFileSync(file, ""); // as agy ships it
+  expect((await routeHere(s, true, tools.dirs)).message).toContain("New Antigravity sessions");
+  expect(JSON.parse(readFileSync(file, "utf8")).mcpServers.agentgate.env).toEqual(agentEnvironment());
+  // This install's entry is what turns on the global skills and AGENTS.md; another install's does not.
+  expect(antigravityRouted(file)).toBe(true);
+  writeFileSync(
+    file,
+    JSON.stringify({
+      mcpServers: { agentgate: { command: "/x", args: ["mcp"], env: { AGENTGATE_HOME: "/elsewhere" } } },
+    }),
+  );
+  expect(antigravityRouted(file)).toBe(false);
+  await mcpHere(s, false, tools.dirs);
+  expect(antigravityRouted(file)).toBe(false);
+
+  // agy installed later makes its folder on its first run; the daemon then adds the server while MCP is on.
+  const later = ownTools();
+  await mcpHere(s, true, later.dirs);
+  expect(await keepMcp(s, later.dirs)).toEqual([]);
+  mkdirSync(dirname(later.dirs.antigravity), { recursive: true });
+  expect(await keepMcp(s, later.dirs)).toEqual([`Added agentgate's MCP server in ${later.dirs.antigravity}`]);
+  expect(antigravityRouted(later.dirs.antigravity)).toBe(true);
+  expect(await keepMcp(s, later.dirs)).toEqual([]);
+
+  // A machine routed before the choice was recorded gets it too, on this version's first pass.
+  const old = new Store(":memory:"),
+    routed = ownTools({ antigravity: true });
+  await primary(true, routed.dirs.claude);
+  expect(await keepMcp(old, routed.dirs)).toEqual([`Added agentgate's MCP server in ${routed.dirs.antigravity}`]);
+  for (const t of [tools, later, routed]) rmSync(t.dir, { recursive: true });
 });

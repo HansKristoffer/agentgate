@@ -5,7 +5,7 @@ import {
   settingsSchema,
   skillSchema,
   quotaWindowSchema,
-  providerSchema,
+  tokenProviderSchema,
   secretRecordSchema,
   factoryFolderSchema,
   loginIdSchema,
@@ -152,7 +152,7 @@ export const schemas = {
   project: projectSchema,
   node: nodeSchema,
   setting: settingsSchema,
-  /** A GitHub CLI or Infisical CLI login, an Infisical machine identity, or OpenCode's API keys, shared with every node (logins.ts). */
+  /** A GitHub, Infisical or Antigravity CLI login, an Infisical machine identity, or OpenCode's API keys, shared with every node (logins.ts). */
   login: z.discriminatedUnion("id", [
     z.object({
       id: z.literal(loginIdSchema.enum.github),
@@ -212,6 +212,14 @@ export const schemas = {
         .min(1)
         .max(64),
     }),
+    /** The Antigravity CLI's (agy) Google OAuth refresh token; `account` is its Google account when known. */
+    z.object({
+      id: z.literal(loginIdSchema.enum.antigravity),
+      from: id,
+      account: z.string().max(320),
+      refreshToken: z.string().min(1).max(4096),
+      authMethod: z.string().max(64),
+    }),
   ]),
   /** One node's hourly token totals for one UTC day, `<node>:<YYYY-MM-DD>`, written only by that node (llm/token-history.ts). */
   tokens: z.object({
@@ -221,7 +229,8 @@ export const schemas = {
       .array(
         z.object({
           hour: timestamp,
-          provider: providerSchema,
+          // `antigravity` rows only once every node knows them (ANTIGRAVITY_PROTOCOL in logins.ts).
+          provider: tokenProviderSchema,
           model: z.string().max(512),
           account: z.string().max(512).optional(),
           input: timestamp,
@@ -364,6 +373,10 @@ export class Store {
     // Cursor's own usage history per account, replaced window by window when it is read again (llm/cursor.ts).
     this.db.run(
       "create table if not exists cursor_tokens (account text not null, hour integer not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (account, hour, model))",
+    );
+    // Antigravity's usage per conversation file, replaced whenever the file changes (llm/token-history.ts).
+    this.db.run(
+      "create table if not exists antigravity_tokens (file text not null, hour integer not null, model text not null, input integer not null, output integer not null, cache_read integer not null, cache_write integer not null, primary key (file, hour, model))",
     );
     // Node-local settings that are never synced (node name, admin token, pairing code, active account).
     this.db.run("create table if not exists local (key text primary key, value text)");

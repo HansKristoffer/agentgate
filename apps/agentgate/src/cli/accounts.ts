@@ -105,7 +105,7 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         rest[0] === undefined || sub === "identity"
           ? undefined
           : (loginIdSchema.safeParse(rest[0]).data ??
-            die(`${rest[0]}: expected github, infisical, infisical-identity or opencode`));
+            die(`${rest[0]}: expected github, infisical, infisical-identity, opencode or antigravity`));
       try {
         if (sub === "identity") {
           const usage =
@@ -145,7 +145,7 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
           return console.log(`Infisical signed in as ${account} and shared; every machine signs in with it`);
         }
         if (sub === "forget") {
-          lg.forgetLogin(s, id ?? die("logins forget github|infisical|infisical-identity|opencode"));
+          lg.forgetLogin(s, id ?? die("logins forget github|infisical|infisical-identity|opencode|antigravity"));
           return console.log(
             id === "infisical-identity"
               ? "ok; removed from every machine"
@@ -160,7 +160,7 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       const list = lg.listLogins(s);
       if (!list.length)
         return console.log(
-          "No shared logins. Share this machine's gh and Infisical logins and OpenCode API keys with: agentgate logins share",
+          "No shared logins. Share this machine's gh, Infisical and agy logins and OpenCode API keys with: agentgate logins share",
         );
       for (const l of list) {
         const broken = l.error ? undefined : l.problems.find((p) => p.node === s.nodeId)?.problem;

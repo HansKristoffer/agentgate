@@ -30,7 +30,7 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   requests [<request-id>|export] [--provider|--account|--model|--outcome|--failure|--search]
                                              structured local request diagnostics
   tokens [today|7d|30d|all]                  tokens used per model on this machine (default: today)
-  mcp                                         (the stdio shim, started by Claude Code, Codex, or Cursor)
+  mcp                                         (the stdio shim, started by Claude Code, Codex, Cursor or Antigravity)
   mcp ls | presets | login <name>
   skills find <query>                         search skills.sh
   skills add <owner/repo|url|folder> [--skill <name>] [--project <owner/repo|*> ...] [--yes]
@@ -53,15 +53,15 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   handoffs                                    recent handoffs and their state
   handoffs cancel <id> [--node <node>]        give up a handoff stuck waiting for its destination
   factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
-  logins                                      GitHub (gh) and Infisical CLI logins and OpenCode API keys shared with every machine
-  logins share [github|infisical|opencode]    share this machine's logins; every machine signs in with them
+  logins                                      GitHub (gh), Infisical and Antigravity (agy) CLI logins and OpenCode API keys shared with every machine
+  logins share [github|infisical|opencode|antigravity]   share this machine's logins; every machine signs in with them
   logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
-  logins forget github|infisical|opencode     stop sharing (machines stay signed in)
+  logins forget github|infisical|opencode|antigravity   stop sharing (machines stay signed in)
   logins identity --client-id <id> [--site <url>]   an Infisical machine identity for every machine (asks for the secret; the site defaults to the Infisical CLI's)
   logins forget infisical-identity            remove it from every machine
-  setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex (and Cursor's MCP) through agentgate,
+  setup --primary [off] [--node <node>]       route your normal ~/.claude and ~/.codex (and Cursor's and Antigravity's MCP) through agentgate,
                                               here or on a paired node; the first service install does this for you
-  setup --mcp [off]                           only agentgate's MCP servers, in Claude Code, Claude Desktop's Code tab, and Cursor
+  setup --mcp [off]                           only agentgate's MCP servers, in Claude Code, Claude Desktop's Code tab, Cursor and Antigravity
   setup                                       separate Claude/Codex folders for T3 Code instead, and print their T3 settings
   desktop                                     Claude Desktop: mode, account in use, saved logins (macOS)
   desktop add [email] | use <account> | capture | forget <account>

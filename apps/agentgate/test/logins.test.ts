@@ -133,6 +133,7 @@ test("a machine without gh or Infisical shares nothing", async () => {
     { id: "github", skipped: "gh is not logged in to github.com (gh auth login)" },
     { id: "infisical", skipped: "the Infisical CLI is not logged in" },
     { id: "opencode", skipped: "update agentgate on a, b first" },
+    { id: "antigravity", skipped: "update agentgate on a, b first" },
   ]);
   expect(a.list("login")).toEqual([]);
   // Infisical in the system keychain cannot be read; the user is told how to move it.
@@ -483,4 +484,93 @@ test("a machine without OpenCode reports it, and one with no API keys shares non
   on(join(temp, "oc-d"));
   await syncLogins(b);
   expect(listLogins(b)[0]).toMatchObject({ signedIn: false, error: "install OpenCode to use its shared API keys" });
+});
+
+test("agy's login goes from a Mac's Keychain to a server's token file, installing agy there first", async () => {
+  const a = node("a"),
+    b = node("b"),
+    c = node("c"),
+    homeA = join(temp, "agy-a"),
+    homeB = join(temp, "agy-b");
+  for (const s of [a, b, c]) for (const id of ["a", "b", "c"]) s.put("node", id, { id, protocol: 12 });
+  // go-keyring's encoding of agy's login, as the Mac keeps it.
+  const keychain = new Map<string, string>();
+  const saved = (refresh: string) =>
+    "go-keyring-base64:" +
+    Buffer.from(
+      JSON.stringify({ token: { access_token: "ya29.x", refresh_token: refresh }, auth_method: "consumer" }),
+    ).toString("base64");
+  host.keychain = async (service, account) => keychain.get(`${service}/${account}`);
+  host.setKeychain = async (service, account, password) => void keychain.set(`${service}/${account}`, password);
+  let installs = 0;
+  host.hasAgy = () => installs > 0;
+  host.installAgy = async () => !!++installs;
+
+  on(homeA);
+  host.platform = "darwin";
+  expect((await shareLogins(a, "antigravity"))[0]!.skipped).toBe(
+    "the Antigravity CLI is not logged in (run agy and sign in)",
+  );
+  keychain.set("gemini/antigravity", saved("1//refresh-1"));
+  expect((await shareLogins(a, "antigravity"))[0]).toEqual({ id: "antigravity", account: "" });
+  // Only the refresh token travels.
+  expect(a.get("login", "antigravity")).toMatchObject({ refreshToken: "1//refresh-1", authMethod: "consumer" });
+  expect(JSON.stringify(a.get("login", "antigravity"))).not.toContain("ya29");
+
+  // A headless Linux server without agy installs it and gets the token file agy reads there.
+  sync(a, b);
+  on(homeB);
+  host.platform = "linux";
+  await syncLogins(b);
+  expect(installs).toBe(1);
+  const file = join(homeB, ".gemini/antigravity-cli/antigravity-oauth-token");
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({
+    token: { refresh_token: "1//refresh-1", token_type: "Bearer" },
+    auth_method: "consumer",
+  });
+  expect(listLogins(b)[0]).toMatchObject({ id: "antigravity", signedIn: true });
+
+  // agy refreshes its access token into the file; an unchanged login leaves it alone.
+  writeFileSync(file, JSON.stringify({ token: { access_token: "ya29.b", refresh_token: "1//refresh-1" } }));
+  b.setLocal("login:antigravity", undefined);
+  await syncLogins(b);
+  expect(readFileSync(file, "utf8")).toContain("ya29.b");
+
+  // Signing in again on the Mac shares the new token, and another Mac saves it in its Keychain.
+  on(homeA);
+  host.platform = "darwin";
+  keychain.set("gemini/antigravity", saved("1//refresh-2"));
+  await syncLogins(a);
+  keychain.clear();
+  sync(a, c);
+  on(join(temp, "agy-c"));
+  await syncLogins(c);
+  const stored = keychain.get("gemini/antigravity")!;
+  expect(JSON.parse(Buffer.from(stored.slice("go-keyring-base64:".length), "base64").toString())).toEqual({
+    token: { refresh_token: "1//refresh-2", token_type: "Bearer" },
+    auth_method: "consumer",
+  });
+  host.platform = original.platform;
+});
+
+test("a server where agy cannot be installed says how to install it", async () => {
+  const a = node("a"),
+    b = node("b");
+  for (const s of [a, b]) for (const id of ["a", "b"]) s.put("node", id, { id, protocol: 12 });
+  host.platform = "linux";
+  on(join(temp, "agy-d"));
+  mkdirSync(join(temp, "agy-d/.gemini/antigravity-cli"), { recursive: true });
+  writeFileSync(
+    join(temp, "agy-d/.gemini/antigravity-cli/antigravity-oauth-token"),
+    JSON.stringify({ token: { refresh_token: "1//r" }, auth_method: "consumer", id_token_email: "me@example.com" }),
+  );
+  expect((await shareLogins(a, "antigravity"))[0]).toEqual({ id: "antigravity", account: "me@example.com" });
+  sync(a, b);
+  on(join(temp, "agy-e"));
+  host.hasAgy = () => false;
+  host.installAgy = async () => false;
+  await syncLogins(b);
+  expect(listLogins(b)[0]!.error).toStartWith("installing the Antigravity CLI failed");
+  expect(existsSync(join(temp, "agy-e/.gemini"))).toBe(false);
+  host.platform = original.platform;
 });

@@ -19,6 +19,7 @@ const since = (range: Range) =>
     "7d": () => Date.now() - 7 * 86_400_000,
     "30d": () => Date.now() - 30 * 86_400_000,
   });
+const SUFFIX = { cursor: "Cursor", antigravity: "Antigravity" };
 /** Slices past this fold into "Other", so a slot's colour always means the same rank. */
 const SLICES = 6;
 const total = (t: ModelTokens) => t.input + t.output + t.cacheRead + t.cacheWrite;
@@ -35,10 +36,10 @@ export function TokenUsage({ connection }: { connection: Connection }) {
     { topics: ["activity"], deps: [range], every: 60_000, key: `tokens:${range}` },
   );
 
-  // Rows are per provider and model, so the same model name can appear for Cursor and for its own provider.
+  // Rows are per provider and model, so the same model name can appear for Cursor or Antigravity and for its own provider.
   const top = (rows ?? []).slice(0, SLICES).map((r) => ({
     key: `${r.provider}:${r.model}`,
-    label: r.provider === "cursor" ? `${r.model} (Cursor)` : r.model,
+    label: r.provider === "cursor" || r.provider === "antigravity" ? `${r.model} (${SUFFIX[r.provider]})` : r.model,
     value: total(r),
     detail: r,
   }));
@@ -50,7 +51,7 @@ export function TokenUsage({ connection }: { connection: Connection }) {
   return (
     <Panel
       title="Token usage"
-      detail="Every machine and account, by model. Cursor's come from its own usage history."
+      detail="Every machine and account, by model. Cursor's come from its own usage history, Antigravity's from its conversations."
       action={
         <Segmented className="token-range" label="Time range" value={range} onChange={setRange} options={RANGES} />
       }
