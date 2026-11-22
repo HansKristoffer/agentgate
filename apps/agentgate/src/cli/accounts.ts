@@ -2,7 +2,7 @@ import { loginIdSchema, type RequestPage } from "@agentgate/protocol";
 import { buildQueryString, getErrorMessage } from "hanzio";
 import { providerLogins } from "../llm/providers.ts";
 import { store } from "../store.ts";
-import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
+import { die, initialized, management, noDaemon, showHelp, stringOption, type Run } from "./common.ts";
 
 /** login, the account list and checks, proxy, tokens, requests and logins. Account writes are operations
  * (ops/accounts.ts). */
@@ -19,36 +19,34 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       const id = await mod.login(s, str("label"));
       console.log(`added ${id}`);
       await management(`/ops/${encodeURIComponent("accounts signed-in")}`, "POST", { id }).catch((e) => {
-        if ((e as { code?: unknown } | null)?.code !== "ECONNREFUSED")
+        if (!noDaemon(e)) {
           console.warn(`The running daemon may skip ${id} until its backoff ends: ${getErrorMessage(e)}`);
+        }
       });
       return;
     }
 
     case "accounts": {
       if (!sub) {
-        for (const a of s.list("account"))
+        for (const account of s.list("account")) {
+          const disabled = account.enabled ? "" : " (disabled)";
+          const pinned = account.pinned ? " (pinned)" : "";
           console.log(
-            `${a.id.padEnd(24)} ${a.provider.padEnd(7)} ${a.label}${a.enabled ? "" : " (disabled)"}${a.pinned ? " (pinned)" : ""}  priority ${a.priority}`,
+            `${account.id.padEnd(24)} ${account.provider.padEnd(7)} ${account.label}${disabled}${pinned}  priority ${account.priority}`,
           );
+        }
         return;
       }
       const id = rest[0] ?? die(`accounts ${sub} <id>`);
-      if (sub === "verify" && opts.probe)
-        return console.log(
-          JSON.stringify(
-            await management(`/accounts/${encodeURIComponent(id)}/verify`, "POST", {
-              probe: true,
-              model: str("model") ?? die("--model is required for an inference probe"),
-            }),
-            null,
-            2,
-          ),
-        );
-      if (["quota", "verify", "models", "refresh", "reset-cooldown"].includes(sub))
-        return console.log(
-          JSON.stringify(await management("/accounts/batch", "POST", { ids: rest, action: sub }), null, 2),
-        );
+      if (sub === "verify" && opts.probe) {
+        const model = str("model") ?? die("--model is required for an inference probe");
+        const result = await management(`/accounts/${encodeURIComponent(id)}/verify`, "POST", { probe: true, model });
+        return console.log(JSON.stringify(result, null, 2));
+      }
+      if (["quota", "verify", "models", "refresh", "reset-cooldown"].includes(sub)) {
+        const result = await management("/accounts/batch", "POST", { ids: rest, action: sub });
+        return console.log(JSON.stringify(result, null, 2));
+      }
       return showHelp();
     }
 
@@ -57,8 +55,9 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         const st = await management<{ daemon: unknown }>("/status");
         return console.log(JSON.stringify(st.daemon, null, 2));
       }
-      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? ""))
+      if (sub !== "route" || !["claude", "codex", "cursor"].includes(rest[0] ?? "")) {
         die("proxy route claude|codex|cursor [--model <id>]");
+      }
       const query = buildQueryString({ provider: rest[0]!, model: str("model") || undefined });
       return console.log(JSON.stringify(await management(`/proxy/route?${query}`), null, 2));
     }
@@ -158,10 +157,12 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       if (sub !== undefined && sub !== "ls") return showHelp();
 
       const list = lg.listLogins(s);
-      if (!list.length)
+      if (!list.length) {
         return console.log(
           "No shared logins. Share this machine's gh, Infisical and agy logins and OpenCode API keys with: agentgate logins share",
         );
+      }
+
       for (const l of list) {
         const broken = l.error ? undefined : l.problems.find((p) => p.node === s.nodeId)?.problem;
         const here = broken
@@ -174,10 +175,13 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         console.log(
           `${l.id.padEnd(10)} ${(l.account || "-").padEnd(28)} from ${l.from.padEnd(12)} ${here}${l.error ? `: ${l.error}` : ""}`,
         );
-        for (const p of l.problems.filter((p) => p.node !== s.nodeId))
+
+        for (const p of l.problems.filter((p) => p.node !== s.nodeId)) {
           console.log(`${"".padEnd(10)} not working on ${p.node}: ${p.problem}`);
-        if (l.id === "infisical" && l.problems.length)
+        }
+        if (l.id === "infisical" && l.problems.length) {
           console.log(`${"".padEnd(10)} to fix, on a machine with a browser: agentgate logins signin infisical`);
+        }
       }
       return;
     }

@@ -26,15 +26,19 @@ import {
 import { recordSessionUsage, trackedSession } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
+
 /** Rate-limit waits up to this long retry the same account; longer ones move to the next account. */
 const SHORT_RATE_WAIT = 5000;
+
 /** Since when a provider's responses have carried no quota headers, per provider. */
 const quotaUnknown = defineLocal("quotaUnknown:", z.string(), { topic: "status" });
+
 /** `/status`'s `unknownQuota`: for each of `providers` that reports quota in its headers, since when it has not. */
 export const unknownQuota = (s: Store, providers: Provider[]) =>
   Object.fromEntries(
     providers.filter((p) => p.headerQuota !== false).map((p) => [p.name, quotaUnknown.get(s, p.name)]),
   );
+
 const HOP_HEADERS = [
   "host",
   "connection",
@@ -57,10 +61,12 @@ function exhaustedResponse(provider: ProviderName, resetAt: number | undefined, 
   });
   return Response.json(body, { status: 429, headers: { "retry-after": String(secs) } });
 }
+
 /** Bookkeeping on the proxy path (telemetry, the request log, local state, observed quota) is best-effort, as in
  * sessions.ts: a full disk or a busy store must not fail a request the upstream can serve, least of all one it already
  * accepted. Each kind of failure is logged once, by error name and SQLite code only. */
 const bookkeepingFailed = new Set<string>();
+
 function bestEffort<T>(kind: string, write: () => T): T | undefined {
   try {
     return write();
@@ -72,14 +78,17 @@ function bestEffort<T>(kind: string, write: () => T): T | undefined {
     return undefined;
   }
 }
+
 /** Telemetry over a store that reads as closed records nothing: the stand-in when the real one cannot write. */
 const silentTelemetry = (s: Store, provider: ProviderName, sensitive: string[] = []) =>
   new Telemetry(Object.assign(Object.create(s) as Store, { closed: true }), provider, sensitive);
+
 function cleanHeaders(h: Headers): Headers {
   const out = new Headers(h);
   for (const key of ["content-encoding", "content-length", "transfer-encoding", "connection"]) out.delete(key);
   return out;
 }
+
 export async function proxy(
   s: Store,
   creds: Credentials,
@@ -90,15 +99,16 @@ export async function proxy(
   options: { accountId?: string } = {},
 ): Promise<Response> {
   // The client's own credentials: telemetry redacts them from anything it stores.
-  const settings = s.settings(),
-    sensitive = [
-      req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "",
-      req.headers.get("x-api-key") ?? "",
-    ],
-    telemetry =
-      bestEffort("telemetry", () => new Telemetry(s, provider.name, sensitive)) ??
-      silentTelemetry(s, provider.name, sensitive),
-    budget = new Budget(req.signal, settings.bootstrapTimeoutMs);
+  const settings = s.settings();
+  const sensitive = [
+    req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "",
+    req.headers.get("x-api-key") ?? "",
+  ];
+  const telemetry =
+    bestEffort("telemetry", () => new Telemetry(s, provider.name, sensitive)) ??
+    silentTelemetry(s, provider.name, sensitive);
+  const budget = new Budget(req.signal, settings.bootstrapTimeoutMs);
+
   const track = (write: () => void) => bestEffort("telemetry", write);
   const attemptOn = (account: string, selection: string) =>
     bestEffort("telemetry", () => telemetry.attempt(account, selection)) ??
@@ -107,7 +117,8 @@ export async function proxy(
     bestEffort("request log", () => s.log(provider.name, account, telemetry.request.routedModel, status, ms, note));
   const observe = (id: string, observation: Parameters<typeof recordUsage>[2], until?: number) =>
     bestEffort("quota", () => recordUsage(s, id, observation, until));
-  let body: Uint8Array | undefined, json: Record<string, unknown> | undefined;
+  let body: Uint8Array | undefined;
+  let json: Record<string, unknown> | undefined;
   const error = (status: number, message: string, failure: Failure) => {
     budget.close();
     track(() => {
@@ -145,8 +156,8 @@ export async function proxy(
   const headers = new Headers(req.headers);
   for (const key of HOP_HEADERS) headers.delete(key);
   // A login the client brings itself, unless it is the placeholder agentgate hands its clients.
-  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1],
-    own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
+  const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
+  const own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
   // One id serves affinity, which keys on its hash, and session usage, which counts under it as the client named it.
   const clientSession = provider.session?.(req.headers, json);
   const session = clientSession && new Bun.CryptoHasher("sha256").update(clientSession).digest("hex");
@@ -205,8 +216,8 @@ export async function proxy(
     return new Response(stream, { status: res.status, statusText: res.statusText, headers: cleanHeaders(res.headers) });
   };
   const passthrough = async () => {
-    const attempt = attemptOn("", "client login fallback"),
-      elapsed = startTimer();
+    const attempt = attemptOn("", "client login fallback");
+    const elapsed = startTimer();
     const up = provider.prepare(path, new Headers(headers), body, {
       accessToken: own,
     } as Credential);
@@ -242,8 +253,8 @@ export async function proxy(
   const loginFailed = new Set<string>();
   /** The last upstream rate-limit rejection, returned once no other account can take the request. */
   let rateLimited: { text: string; headers: Headers } | undefined;
-  let waited = false,
-    accountCount = 0;
+  let waited = false;
+  let accountCount = 0;
   for (;;) {
     if (budget.signal.aborted)
       return error(408, "request cancelled or bootstrap budget exhausted", req.signal.aborted ? "cancelled" : "budget");
@@ -327,13 +338,13 @@ export async function proxy(
       loginFailed.add(account.id);
       continue;
     }
-    let authRetried = false,
-      rateRetries = 0;
+    let authRetried = false;
+    let rateRetries = 0;
     for (;;) {
       if (budget.signal.aborted) break;
       const up = provider.prepare(path, new Headers(headers), body, credential, json);
-      const attempt = attemptOn(account.id, decision.reason),
-        elapsed = startTimer();
+      const attempt = attemptOn(account.id, decision.reason);
+      const elapsed = startTimer();
       const release = beginRoute(s, provider.name, account.id, session);
       let res: Response;
       try {
@@ -397,8 +408,8 @@ export async function proxy(
           break;
         }
         if (failure === "quota") {
-          const windows = observed?.windows.filter((w) => w.usedPct >= 100) ?? [],
-            global = windows.filter((w) => normalizedWindow(w).scope?.kind === "account");
+          const windows = observed?.windows.filter((w) => w.usedPct >= 100) ?? [];
+          const global = windows.filter((w) => normalizedWindow(w).scope?.kind === "account");
           const until = global.length
             ? Math.max(...global.map((w) => w.resetsAt ?? s.now() + Math.max(1000, retryAfterMs(res.headers))))
             : !windows.length
@@ -465,11 +476,12 @@ export async function proxy(
     }
   }
 }
+
 /** The one reading of an account's flags that the app, the CLI and the factory label it by. A login this machine holds
  * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
 export function accountState(s: Store, account: Account, now = s.now()): AccountState {
-  const c = s.get("credential", account.id),
-    u = s.get("usage", account.id);
+  const c = s.get("credential", account.id);
+  const u = s.get("usage", account.id);
   if (!c || c.needsLogin) return { kind: "needs-login" };
   const expired = c.expiresAt <= now;
   if (expired && c.holder !== s.nodeId) return { kind: "waiting-for-holder", holder: c.holder };
@@ -487,10 +499,11 @@ export function accountState(s: Store, account: Account, now = s.now()): Account
   if (benched) return { kind: "cooling", until: benched.retryAt, reason: benched.reason };
   return { kind: "ready" };
 }
+
 export function accountStatus(s: Store, account: Account): AccountStatus & { state: AccountState } {
-  const now = s.now(),
-    u = s.get("usage", account.id),
-    c = s.get("credential", account.id);
+  const now = s.now();
+  const u = s.get("usage", account.id);
+  const c = s.get("credential", account.id);
   return {
     state: accountState(s, account, now),
     account: sent<Data<"account">>(account),

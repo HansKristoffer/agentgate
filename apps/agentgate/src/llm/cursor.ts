@@ -123,6 +123,7 @@ export const cursor: Provider = {
     return id && id.length <= 128 ? id : undefined;
   },
   probe: { path: "/aiserver.v1.AiService/TestModelStatus", body: (model) => ({ modelName: model }) },
+
   prepare(path, headers, body, cred) {
     headers.set("authorization", `Bearer ${cred.accessToken}`);
     if (!headers.has("connect-protocol-version")) headers.set("connect-protocol-version", "1");
@@ -228,18 +229,19 @@ export async function importFrom(s: Store, dir: string, label?: string) {
 
 /** `agentgate login cursor`: print the sign-in page and wait for it. Works on a headless server too. */
 export async function login(s: Store, label?: string) {
-  const { verifier, challenge } = await pkce(),
-    uuid = crypto.randomUUID();
+  const { verifier, challenge } = await pkce();
+  const uuid = crypto.randomUUID();
   console.log(`Open this page to sign in to Cursor:\n\n  ${authorizeUrl(challenge, uuid)}\n`);
   const id = await finish(s, uuid, verifier, label, AbortSignal.timeout(310_000), 300_000);
   if (!id) throw new Error("Cursor sign-in timed out; start again");
   return id;
 }
 
-const HOUR = 3600_000,
-  DAY = 86400_000,
-  TOKENS_EVERY = 15 * 60_000,
-  LATE = 7 * 86400_000;
+const HOUR = 3600_000;
+const DAY = 86400_000;
+const TOKENS_EVERY = 15 * 60_000;
+const LATE = 7 * 86400_000;
+
 type Hourly = Map<
   string,
   { hour: number; model: string; input: number; output: number; cacheRead: number; cacheWrite: number }
@@ -313,8 +315,8 @@ async function usageHistory(accessToken: string, since: number, until: number, s
   const userId = (text(jwtClaims(accessToken).sub) ?? "").split("|").at(-1);
   if (!userId || !/^[\w-]+$/.test(userId)) throw new Error("Cursor login did not identify the account");
   const cookie = `WorkosCursorSessionToken=${encodeURIComponent(`${userId}::${accessToken}`)}`;
-  const hours: Hourly = new Map(),
-    included = new Map<string, number>();
+  const hours: Hourly = new Map();
+  const included = new Map<string, number>();
   let page = 1;
   // Pages are capped at 1000: a read that would need more is refused, not cut short.
   for (; page <= 1000; page++) {
@@ -337,8 +339,8 @@ async function usageHistory(accessToken: string, since: number, until: number, s
       usageEventsDisplay?: unknown;
       totalUsageEventsCount?: unknown;
     };
-    const rows = body.usageEventsDisplay ?? [],
-      total = count(body.totalUsageEventsCount);
+    const rows = body.usageEventsDisplay ?? [];
+    const total = count(body.totalUsageEventsCount);
     // A short page would silently drop usage, so the window is not saved at all.
     if (
       !Array.isArray(rows) ||
@@ -358,14 +360,14 @@ async function usageHistory(accessToken: string, since: number, until: number, s
       if (!Number.isSafeInteger(at) || typeof row.model !== "string" || !row.model)
         throw new Error("Invalid Cursor usage event");
       if (at < since || at > until) continue;
-      const input = count(row.tokenUsage.inputTokens),
-        output = count(row.tokenUsage.outputTokens);
-      const cacheRead = count(row.tokenUsage.cacheReadTokens),
-        cacheWrite = count(row.tokenUsage.cacheWriteTokens);
+      const input = count(row.tokenUsage.inputTokens);
+      const output = count(row.tokenUsage.outputTokens);
+      const cacheRead = count(row.tokenUsage.cacheReadTokens);
+      const cacheWrite = count(row.tokenUsage.cacheWriteTokens);
       addTokens(hours, at - (at % HOUR), row.model, input, output, cacheRead, cacheWrite);
       if (includedKind(row.kind)) {
-        const day = at - (at % DAY),
-          key = `${day}:${row.model}`;
+        const day = at - (at % DAY);
+        const key = `${day}:${row.model}`;
         included.set(key, (included.get(key) ?? 0) + input + output + cacheRead + cacheWrite);
       }
     }
@@ -428,15 +430,15 @@ export async function pollTokens(s: Store, creds: Pick<Credentials, "token">, si
     if (signal.aborted) return;
     const c = s.get("credential", account.id);
     if (account.provider !== "cursor" || !account.enabled || !c || c.needsLogin || c.holder !== s.nodeId) continue;
-    const key = `cursorTokens:${account.id}`,
-      state = JSON.parse(s.local(key) ?? "{}") as { readAt?: number; triedAt?: number; coveredTo?: number };
+    const key = `cursorTokens:${account.id}`;
+    const state = JSON.parse(s.local(key) ?? "{}") as { readAt?: number; triedAt?: number; coveredTo?: number };
     // A read that saved nothing is retried on the next pass. A finished read waits 15 minutes.
     if (state.coveredTo !== undefined && s.now() - (state.triedAt ?? 0) < TOKENS_EVERY) continue;
     s.setLocal(key, JSON.stringify({ ...state, triedAt: s.now() }));
     // Windows are half-open, [since, until), while usageHistory takes inclusive bounds: hence the -1 below.
-    const end = s.now() + 1,
-      floor = end - CURSOR.historySpan,
-      alignedFloor = floor - (floor % HOUR);
+    const end = s.now() + 1;
+    const floor = end - CURSOR.historySpan;
+    const alignedFloor = floor - (floor % HOUR);
     let older = state.coveredTo ?? end;
     try {
       const token = await creds.token(account.id);

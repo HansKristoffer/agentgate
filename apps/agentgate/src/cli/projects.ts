@@ -13,11 +13,17 @@ export const run: Run = async (cmd, [sub, ...rest]) => {
   const s = initialized(store());
   if (cmd === "remote") {
     if (sub === "ls" || sub === undefined) {
-      for (const p of s.list("project"))
-        if (p.remote)
-          console.log(
-            `${p.id.padEnd(24)} ${p.remote.enabled ? "on " : "off"} served by ${p.remote.servedBy.padEnd(12)} ${endpointUrl(p.remote)}${p.factoryTools ? " +factory" : ""}${p.factoryWebhook ? ` +webhook ${new URL(p.factoryWebhook).origin}` : ""}`,
-          );
+      for (const project of s.list("project")) {
+        const remote = project.remote;
+        if (!remote) continue;
+
+        const enabled = remote.enabled ? "on " : "off";
+        const factory = project.factoryTools ? " +factory" : "";
+        const webhook = project.factoryWebhook ? ` +webhook ${new URL(project.factoryWebhook).origin}` : "";
+        console.log(
+          `${project.id.padEnd(24)} ${enabled} served by ${remote.servedBy.padEnd(12)} ${endpointUrl(remote)}${factory}${webhook}`,
+        );
+      }
       return;
     }
     if (sub !== "show") return showHelp();
@@ -56,10 +62,10 @@ export const run: Run = async (cmd, [sub, ...rest]) => {
     }
     if (action === "ls" || action === undefined) {
       const list = await listFiles(s, FILES_ROOT, top);
-      for (const f of list.files)
-        console.log(
-          `${f.path.padEnd(40)} ${f.stored ? (f.machine ? "this machine only" : f.updatedAt) : "not saved"}${f.listed ? "" : "  (buncargo)"}`,
-        );
+      for (const file of list.files) {
+        const saved = file.stored ? (file.machine ? "this machine only" : file.updatedAt) : "not saved";
+        console.log(`${file.path.padEnd(40)} ${saved}${file.listed ? "" : "  (buncargo)"}`);
+      }
       if (!list.files.length)
         console.log(`no files for ${list.project}; add one with: agentgate project files add .env.local`);
       if (list.error) console.log(`not syncing: ${list.error}`);

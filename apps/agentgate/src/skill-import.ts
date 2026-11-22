@@ -52,8 +52,9 @@ export function description(text: string, expectedName?: string): string {
   }
   try {
     const value = Bun.YAML.parse(match[1]!) as { name?: unknown; description?: unknown } | null;
-    if (expectedName && value?.name !== undefined && value.name !== expectedName)
+    if (expectedName && value?.name !== undefined && value.name !== expectedName) {
       throw new UserError(`Frontmatter name must be ${expectedName}`);
+    }
     return typeof value?.description === "string" ? value.description.trim().slice(0, 8192) : "";
   } catch (error) {
     if (expectedName) throw new UserError(`Invalid SKILL.md frontmatter: ${getErrorMessage(error)}`);
@@ -69,8 +70,9 @@ export function readSkill(dir: string): Pick<FetchedSkill, "description" | "file
     for (const entry of readdirSync(join(dir, rel), { withFileTypes: true })) {
       if (entry.name === ".git" || entry.name === SKILL_MARKER) continue;
       const path = rel ? `${rel}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) walk(path, depth + 1);
-      else if (entry.isFile()) {
+      if (entry.isDirectory()) {
+        walk(path, depth + 1);
+      } else if (entry.isFile()) {
         if (files.length >= MAX_SKILL_FILES) throw new UserError("skill has too many files");
         const disk = join(dir, path);
         const stat = lstatSync(disk);
@@ -82,7 +84,9 @@ export function readSkill(dir: string): Pick<FetchedSkill, "description" | "file
           data: readFileSync(disk).toString("base64"),
           ...(stat.mode & 0o111 ? { executable: true } : {}),
         });
-      } else throw new UserError(`unsupported skill entry ${path}: symlinks and special files cannot be synced`);
+      } else {
+        throw new UserError(`unsupported skill entry ${path}: symlinks and special files cannot be synced`);
+      }
     }
   };
   walk("");
@@ -133,8 +137,9 @@ export function parseSkillOutput(out: string) {
   }
   const parsed = cliResultSchema.safeParse(json);
   if (!parsed.success) throw new UserError(`skills CLI ${SKILLS_CLI_VERSION} returned incompatible JSON`);
-  if (parsed.data.some((row) => row.status === "installed" && !row.path))
+  if (parsed.data.some((row) => row.status === "installed" && !row.path)) {
     throw new UserError("skills CLI omitted an installed skill path");
+  }
   return parsed.data;
 }
 
@@ -266,8 +271,9 @@ export function repoUrl(input: string): string {
   const m = input
     .trim()
     .match(/^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/)?([a-z0-9-]+)\/([a-z0-9._-]+?)(?:\.git)?\/?$/i);
-  if (!m || /^\.+$/.test(m[2]!))
+  if (!m || /^\.+$/.test(m[2]!)) {
     throw new UserError("Enter a public GitHub repository, like https://github.com/owner/repo");
+  }
   return `https://github.com/${m[1]}/${m[2]}`.toLowerCase();
 }
 
@@ -297,10 +303,13 @@ export function readRepoSkills(root: string): { skills: FetchedSkill[]; skipped:
       }
     }
   }
-  if (!skills.length)
-    throw new UserError(
-      skipped.length ? `no usable skills: ${skipped.join("; ")}` : "no skills in .claude/skills or .agents/skills",
-    );
+  if (!skills.length) {
+    const message = skipped.length
+      ? `no usable skills: ${skipped.join("; ")}`
+      : "no skills in .claude/skills or .agents/skills";
+    throw new UserError(message);
+  }
+
   return { skills: validateFetched(skills), skipped };
 }
 
@@ -321,12 +330,13 @@ export const fetchRepo: RepoFetcher = async (url, since, signal) => {
   const bounded = timeoutSignal(120_000, signal);
   const git = async (cwd: string, ...args: string[]) => {
     const { out, err, code } = await runSkillCommand([bin, "-c", "credential.helper=", ...args], cwd, bounded);
-    if (code !== 0)
-      throw new UserError(
+    if (code !== 0) {
+      const message =
         args[0] === "ls-remote"
           ? `${url} was not found or is not public${err.trim() ? ` (${plain(err)})` : ""}`
-          : `git ${args[0]} failed: ${plain(err) || `exit ${code}`}`,
-      );
+          : `git ${args[0]} failed: ${plain(err) || `exit ${code}`}`;
+      throw new UserError(message);
+    }
     return out.trim();
   };
   try {
@@ -378,19 +388,24 @@ export class SkillImports {
   private artifacts = new Map<string, Artifact>();
   private flights = new Map<string, { work: Promise<Artifact>; abort: AbortController; users: number }>();
   private closed = false;
+
   constructor(
     private fetch: SkillFetcher = fetchSkills,
     private now = () => Date.now(),
     private maxBytes = 64 * 1024 * 1024,
     private ttl = 10 * 60_000,
   ) {}
+
   private prune() {
-    for (const [token, artifact] of this.artifacts)
+    for (const [token, artifact] of this.artifacts) {
       if (this.now() - artifact.at >= this.ttl) this.artifacts.delete(token);
+    }
   }
+
   preview(source: string, selector = "*", signal?: AbortSignal): Promise<Artifact> {
     return this.acquire(source, selector, signal, false);
   }
+
   fetchFresh: SkillFetcher = async (source, selector = "*", signal) =>
     (await this.acquire(source, selector, signal, true)).skills;
 
@@ -414,15 +429,20 @@ export class SkillImports {
         const skills = validateFetched(await this.fetch(source, selector, abort.signal));
         abort.signal.throwIfAborted();
         const bytes = Buffer.byteLength(JSON.stringify(skills));
-        if (bytes > this.maxBytes)
+        if (bytes > this.maxBytes) {
           throw new UserError("skill preview exceeds the cache limit; select individual skills");
+        }
+
+        // Evict the oldest previews until this one fits.
         this.prune();
         while (
           !fresh &&
           this.artifacts.size &&
           (this.artifacts.size >= 16 || sumBy([...this.artifacts.values()], "bytes") + bytes > this.maxBytes)
-        )
+        ) {
           this.artifacts.delete(this.artifacts.keys().next().value!);
+        }
+
         const artifact = { token: crypto.randomUUID(), source, selector, at: this.now(), bytes, skills };
         if (!fresh) this.artifacts.set(artifact.token, artifact);
         return artifact;
@@ -438,18 +458,22 @@ export class SkillImports {
       if (--current.users === 0 && this.flights.get(key) === current) current.abort.abort();
     }
   }
+
   get(token: string): Artifact {
     this.prune();
     const artifact = this.artifacts.get(token);
-    if (!artifact)
+    if (!artifact) {
       throw new SkillConflict("This preview expired or was evicted. Preview the source again before installing.");
+    }
     return structuredClone(artifact);
   }
+
   close() {
     this.closed = true;
     this.artifacts.clear();
     for (const flight of this.flights.values()) flight.abort.abort();
   }
+
   async drain() {
     await Promise.allSettled([...this.flights.values()].map((f) => f.work));
   }

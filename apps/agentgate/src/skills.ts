@@ -127,8 +127,9 @@ function projectsFor(s: Store, projects: string[]) {
 function assign(s: Store, project: string, id: string, on: boolean) {
   project = canonicalProject(s, projectIdSchema.parse(project));
   const p = s.get("project", project) ?? s.put("project", project, { id: project });
-  if (p.skills.includes(id) !== on)
+  if (p.skills.includes(id) !== on) {
     s.put("project", project, { ...p, skills: on ? [...p.skills, id] : p.skills.filter((x) => x !== id) });
+  }
 }
 
 export function installSkills(
@@ -149,10 +150,11 @@ export function installSkills(
       .filter((f) => selected.has(f.id))
       .map((f) => {
         const prev = s.get("skill", f.id);
-        if (prev && prev.source !== source)
+        if (prev && prev.source !== source) {
           throw new SkillConflict(
             `a skill named ${f.id} already exists${prev.source ? ` from ${prev.source}` : ""}; remove it first`,
           );
+        }
         putSkill(s, {
           id: f.id,
           description: f.description,
@@ -173,8 +175,9 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
     if (expectedRevision !== undefined && skillRevision(s, id) !== expectedRevision) throw new SkillConflict();
     const prev = s.get("skill", id);
     // It follows its source, which would overwrite any edit on the next update.
-    if (prev?.source)
+    if (prev?.source) {
       throw new SkillConflict(`${id} comes from ${prev.source} and updates from it, so it can't be edited`);
+    }
     if (!text.trim()) throw new UserError("SKILL.md is empty");
     description(text, id);
     const files = [
@@ -187,15 +190,18 @@ export function writeSkillMd(s: Store, id: string, text: string, expectedRevisio
 
 function removeSkill(s: Store, id: string) {
   s.del("skill", id);
-  for (const p of s.list("project")) if (p.skills.includes(id)) assign(s, p.id, id, false);
+  for (const p of s.list("project")) {
+    if (p.skills.includes(id)) assign(s, p.id, id, false);
+  }
 }
 
 export function deleteSkill(s: Store, id: string) {
   s.transaction(() => {
     const source = s.get("skill", id)?.source;
     // The next sync would bring it back.
-    if (source && repoProjects(s, source).length)
+    if (source && repoProjects(s, source).length) {
       throw new SkillConflict(`${id} comes from ${source}. Unlink it from its projects, or disconnect the repository.`);
+    }
     removeSkill(s, id);
   });
 }
@@ -204,7 +210,9 @@ export function setSkillProjects(s: Store, id: string, projects: string[]) {
   s.transaction(() => {
     if (!s.get("skill", id)) throw new UserError(`no skill ${id}`);
     const targets = projectsFor(s, projects);
-    for (const p of s.list("project")) if (!targets.includes(p.id)) assign(s, p.id, id, false);
+    for (const p of s.list("project")) {
+      if (!targets.includes(p.id)) assign(s, p.id, id, false);
+    }
     for (const p of targets) assign(s, p, id, true);
   });
 }
@@ -242,10 +250,11 @@ export function updateSkill(
     const { skill, revision } = s.transaction(() => ({ skill: s.get("skill", id), revision: skillRevision(s, id) }));
     if (!skill) throw new UserError(`no skill ${id}`);
     if (!skill.source) throw new UserError(`${id} was written by hand; edit it instead`);
-    if (isFactorySource(skill.source))
+    if (isFactorySource(skill.source)) {
       throw new UserError(
         `${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`,
       );
+    }
     if (repoProjects(s, skill.source).length) return syncSkillRepo(s, skill.source, fetchRepo, signal);
     const fresh = validateFetched(await fetch(skill.source, skill.selector ?? "*", signal)).find((f) => f.id === id);
     if (!fresh) throw new UserError(`${skill.source} no longer has ${id}`);
@@ -273,12 +282,15 @@ export class SkillBackoff {
   // 10 minutes, doubling up to 6 hours.
   private tries: Backoff;
   private errors = new Map<string, string>();
+
   constructor(s: Store) {
-    this.tries = new Backoff(s, { baseMs: 10 * 60_000, maxMs: 6 * 3600_000 });
+    this.tries = new Backoff(s, { baseMs: 10 * 60_000, maxMs: 6 * 3_600_000 });
   }
+
   due(key: string) {
     return this.tries.due(key);
   }
+
   /** `error` undefined records a success. */
   record(key: string, error?: string) {
     const prev = this.errors.get(key);
@@ -367,11 +379,13 @@ export function setSkillRepoProjects(s: Store, input: string, projects: string[]
     const targets = projectsFor(s, projects);
     const ids = repoSkills(s, url);
     if (!targets.length && !repoProjects(s, url).length) throw new UserError(`${url} is not connected`);
-    for (const p of s.list("project"))
+    for (const p of s.list("project")) {
       if (p.skillRepos.includes(url) && !targets.includes(p.id)) {
         s.put("project", p.id, { ...p, skillRepos: p.skillRepos.filter((r) => r !== url) });
         for (const id of ids) assign(s, p.id, id, false);
       }
+    }
+
     for (const target of targets) {
       const p = s.get("project", target) ?? s.put("project", target, { id: target });
       if (!p.skillRepos.includes(url)) s.put("project", target, { ...p, skillRepos: [...p.skillRepos, url] });
@@ -432,10 +446,14 @@ function applyRepo(s: Store, url: string, fetched: { commit: string; skills: Fet
         continue;
       }
       putSkill(s, { id: f.id, description: f.description, files: f.files, source: url });
-      if (!prev) for (const p of targets) assign(s, p, f.id, true);
+      if (!prev) {
+        for (const p of targets) assign(s, p, f.id, true);
+      }
       applied.push(f.id);
     }
-    for (const id of repoSkills(s, url)) if (!applied.includes(id)) removeSkill(s, id);
+    for (const id of repoSkills(s, url)) {
+      if (!applied.includes(id)) removeSkill(s, id);
+    }
     repoStates.set(s, url, { commit: fetched.commit, syncedAt: s.now(), skills: applied, skipped });
     return s.seq() !== before;
   });

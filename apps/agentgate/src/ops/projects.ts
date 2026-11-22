@@ -190,8 +190,10 @@ controlOp({
     const checkouts = Object.entries(skills.checkouts())
       .filter(([, repo]) => repo.toLowerCase() === wanted)
       .map(([path]) => path);
-    if (!checkouts.length)
+    if (!checkouts.length) {
       throw new UserError(`No checkout of ${project} on this machine; scan its folder or open a session in it first`);
+    }
+
     await shown(() => {
       for (const path of checkouts) skills.setMirroring(path, on);
     });
@@ -255,8 +257,9 @@ controlOp({
     const registered = skills.checkouts();
     for (const r of found) {
       const main = await mainCheckout(r.path, r.worktree).catch(() => undefined);
-      if (main && registered[main]?.toLowerCase() !== canonicalProject(s, r.repo).toLowerCase())
+      if (main && registered[main]?.toLowerCase() !== canonicalProject(s, r.repo).toLowerCase()) {
         skills.register(main, r.repo, false);
+      }
     }
     skills.sync();
     return { repos: found.map(({ repo, path }) => ({ repo, path })) };
@@ -291,9 +294,11 @@ controlOp({
       }
       try {
         if (!inst) throw new Error("missing server");
-        for (const t of await toolList(ctx, inst))
-          if (!inst.tools || inst.tools.includes(t.name))
+        for (const t of await toolList(ctx, inst)) {
+          if (!inst.tools || inst.tools.includes(t.name)) {
             result.push({ name: toolName(alias, t.name), description: t.description });
+          }
+        }
       } catch {
         result.push({ name: `${alias}__*`, error: "Could not connect; test the server or sign in again" });
       }
@@ -341,7 +346,9 @@ controlOp({
     }
     if (!f.paths.every((p) => isAbsolute(p))) throw new UserError("Name each file by its full path");
     let project = f.project;
-    for (const file of f.paths) project = await shown(() => addFileAt(s, root, f.project, file));
+    for (const file of f.paths) {
+      project = await shown(() => addFileAt(s, root, f.project, file));
+    }
     return { project };
   },
   terminal: {

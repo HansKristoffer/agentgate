@@ -68,11 +68,6 @@ async function measure(f: FactoryRuntime, run: FactoryRun) {
   return { tokens: total(sessionUsage(f.s, sessions)), sessions };
 }
 
-/** The run's tokens now, read from T3 and the proxies' counts. */
-export async function runTokens(f: FactoryRuntime, run: FactoryRun): Promise<number> {
-  return (await measure(f, run))?.tokens ?? 0;
-}
-
 /** Records the run's measurement; the item, whose tokens are its runs' sum, when it has one. */
 function saveTokens(f: FactoryRuntime, run: FactoryRun, tokens: number, sessions: number) {
   runs.measured(f.s, run.id, tokens, sessions);

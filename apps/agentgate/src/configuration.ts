@@ -13,6 +13,7 @@ export function revision(s: Store, kind: Kind, id: string): string {
 export function checkRevision(s: Store, kind: Kind, id: string, expected: string) {
   if (revision(s, kind, id) !== expected) throw new ConfigurationConflict();
 }
+
 /** A patch of one setting may leave out `expected`: it writes only that key, so it cannot undo another change. A patch
  * of several is a draft of the whole form and needs it. */
 export function patchSettings(s: Store, patch: unknown, expected?: string): SettingsUpdateResult {

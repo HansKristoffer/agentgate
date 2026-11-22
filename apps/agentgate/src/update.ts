@@ -43,8 +43,9 @@ export async function installLatest(target: string, current = packageInfo.versio
     .map((line) => line.split(/\s+/))
     .find(([, name]) => name === asset)?.[0];
   if (expected?.length !== 64) throw new UpdateError(`${tag} has no checksum for ${asset}`);
-  if (new Bun.CryptoHasher("sha256").update(binary).digest("hex") !== expected)
+  if (new Bun.CryptoHasher("sha256").update(binary).digest("hex") !== expected) {
     throw new UpdateError("checksum verification failed; nothing was changed");
+  }
 
   // Rename over the old file: the running daemon keeps its copy until it restarts.
   const temp = join(dirname(target), `.agentgate-update.${crypto.randomUUID()}`);
@@ -62,16 +63,21 @@ export async function installLatest(target: string, current = packageInfo.versio
  * binary, so restarting it picks up the new version. */
 export async function updateSelf() {
   liveOnly("agentgate update");
-  if (!Bun.main.startsWith("/$bunfs/"))
+  if (!Bun.main.startsWith("/$bunfs/")) {
     throw new UpdateError("agentgate runs from source here; update it with git pull");
+  }
+
   const target = selfCommand()[0]!;
   // The app reinstalls its bundled copy whenever it differs, which would undo this update.
-  if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate"))
+  if (process.platform === "darwin" && target === resolve(CONFIG_DIR, "bin", "agentgate")) {
     throw new UpdateError("This copy belongs to the Agentgate app, which keeps it up to date. Update the app instead.");
-  if (target.includes("/node_modules/"))
+  }
+  if (target.includes("/node_modules/")) {
     throw new UpdateError(
       `agentgate was installed with npm; update it with npm install -g ${NPM}@latest, then agentgate service restart`,
     );
+  }
+
   const version = await installLatest(target);
   return { target, version, restart: !!version && serviceRuns(target) };
 }
@@ -106,10 +112,11 @@ export async function routeNode(s: Store, node: string, on: boolean): Promise<Aw
   try {
     return await peerCall(s, node, "/setup/primary", { json: { on } });
   } catch (e) {
-    if (e instanceof PeerError && e.status === 404)
+    if (e instanceof PeerError && e.status === 404) {
       throw new Error(
         `${node} runs an agentgate too old to switch from here; run agentgate setup --primary on ${node}`,
       );
+    }
     throw e;
   }
 }
@@ -121,8 +128,9 @@ export async function updateNode(s: Store, node: string): Promise<Awaited<Return
   try {
     return await peerCall(s, node, "/update", { method: "POST", timeout: 90_000 });
   } catch (e) {
-    if (e instanceof PeerError && e.status === 404)
+    if (e instanceof PeerError && e.status === 404) {
       throw new UpdateError(`${node} runs an agentgate too old to update from here; run agentgate update on ${node}`);
+    }
     throw e;
   }
 }
@@ -146,8 +154,10 @@ export function nodeUpdate(s: Store, node: string): NodeUpdate | undefined {
   if (u.state === "installed" && from !== undefined && running !== from) return undefined;
   const age = s.now() - u.since;
   if (u.state === "installing" && age > 15 * 60_000) return { ...u, state: "failed", error: `${node} did not answer` };
-  if (u.state === "restarting" && age > 3 * 60_000)
+  if (u.state === "restarting" && age > 3 * 60_000) {
     return { ...u, state: "failed", error: `${node} installed ${u.version} but did not come back on it` };
+  }
+
   // A failure stays visible for a while, then the Update button is all that is left.
   return u.state === "failed" && age > 60 * 60_000 ? undefined : u;
 }
@@ -161,9 +171,13 @@ export async function updateTracked(s: Store, node: string) {
   note({ state: "installing" });
   try {
     const result = await updateNode(s, node);
-    if (!result.version) note(undefined);
-    else if (result.restarting) note({ state: "restarting", version: result.version });
-    else note({ state: "installed", version: result.version, from: s.get("node", node)?.version ?? null });
+    if (!result.version) {
+      note(undefined);
+    } else if (result.restarting) {
+      note({ state: "restarting", version: result.version });
+    } else {
+      note({ state: "installed", version: result.version, from: s.get("node", node)?.version ?? null });
+    }
     return result;
   } catch (e) {
     note({ state: "failed", error: failure(e, node) });

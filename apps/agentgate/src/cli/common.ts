@@ -22,6 +22,9 @@ export const showHelp = (): never => {
 /** A string option's value. */
 export const stringOption = (opts: Opts) => (k: string) => opts[k] as string | undefined;
 
+/** Bun's error when nothing listens on the daemon's port. */
+export const noDaemon = (e: unknown) => (e as { code?: unknown } | null)?.code === "ECONNREFUSED";
+
 // Longer than the daemon's 90 s limit on account checks (api/accounts.ts), so the CLI never gives up first.
 const DAEMON_TIMEOUT_MS = 100_000;
 

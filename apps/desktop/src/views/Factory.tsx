@@ -22,6 +22,7 @@ import {
   ItemActions,
   NeedsYouText,
   OpenInT3,
+  OpenPullRequest,
   Pill,
   STAGE_TONES,
   pendingKey,
@@ -92,12 +93,7 @@ function NeedsYouQueue({
               <NeedsYouText item={item} />
               <div className="row factory-actions">
                 <ItemActions item={item} act={act} ask={ask} />
-                {!item.needsYou && item.pr && (
-                  <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
-                    <GitPullRequest size={14} />
-                    Pull request
-                  </Button>
-                )}
+                {!item.needsYou && item.pr && <OpenPullRequest url={item.pr.url} />}
                 <OpenInT3 link={threadOf(item)} />
               </div>
             </div>
@@ -257,12 +253,7 @@ function Frozen({ board, ask }: { board: FactoryBoard; ask: AskReason }) {
             </strong>
             <small className="muted">{PHASE_TITLES[item.phase]}</small>
           </div>
-          {item.pr && (
-            <Button size="sm" variant="tertiary" onPress={() => void openExternal(item.pr!.url)}>
-              <GitPullRequest size={14} />
-              Pull request
-            </Button>
-          )}
+          {item.pr && <OpenPullRequest url={item.pr.url} />}
           <Button size="sm" variant="tertiary" onPress={() => ask(item, "drop", `Drop ${item.key}`)}>
             Drop…
           </Button>
@@ -596,7 +587,7 @@ export function Factory(props: ViewProps) {
         </>
       )}
       {tab === "history" && <Events board={board} />}
-      {tab === "settings" && <FactorySettings {...props} board={board} run={run} />}
+      {tab === "settings" && <FactorySettings {...props} board={board} pointer={board.factory} run={run} />}
       {selected && (
         <ItemDrawer
           connection={connection}

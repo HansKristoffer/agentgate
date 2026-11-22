@@ -167,8 +167,9 @@ export class ChannelCore {
   }
 
   closed(socket: ChannelSocket) {
-    for (const [id, p] of this.pending)
+    for (const [id, p] of this.pending) {
       if (p.socket === socket) this.settle(id, json(502, { error: "that machine disconnected", code: "offline" }));
+    }
   }
 
   private settle(id: string, res: Response) {

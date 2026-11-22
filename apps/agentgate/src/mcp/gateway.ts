@@ -182,15 +182,18 @@ export class StdioTransport implements Transport {
   readonly stderr = new PassThrough();
   private child?: ChildProcess;
   private buffer = new ReadBuffer();
+
   constructor(
     private command: string,
     private args: string[],
     private env: NodeJS.ProcessEnv,
     private cwd?: string,
   ) {}
+
   get pid() {
     return this.child?.pid;
   }
+
   start() {
     return new Promise<void>((resolve, reject) => {
       const child = spawn(this.command, this.args, { env: this.env, cwd: this.cwd, detached: true });
@@ -217,6 +220,7 @@ export class StdioTransport implements Transport {
       child.stderr.pipe(this.stderr);
     });
   }
+
   send(message: JSONRPCMessage) {
     const stdin = this.child?.stdin;
     if (!stdin) return Promise.reject(new SdkError(SdkErrorCode.NotConnected, "Not connected"));
@@ -225,6 +229,7 @@ export class StdioTransport implements Transport {
       else stdin.once("drain", resolve);
     });
   }
+
   /** Closes stdin, as the SDK does, then sends SIGTERM and then SIGKILL to the whole group, 2 s apart. */
   async close() {
     const child = this.child;
@@ -800,6 +805,7 @@ export class Gateway {
       },
     };
   }
+
   /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. A server
    * outside the scope is not connected for the session. */
   private async sources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
@@ -824,6 +830,7 @@ export class Gateway {
       throw e;
     }));
   }
+
   private async localSources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
     const builtin = await this.builtinTools().catch(() => undefined);
     const out = await this.sources(project, wait, scope);
@@ -1122,6 +1129,7 @@ export class Gateway {
       }),
     );
   }
+
   async close() {
     this.closed = true;
     const tasks: Promise<unknown>[] = [];

@@ -17,7 +17,9 @@ function runCli(args: string[]) {
 }
 
 try {
-  for (const args of [["--help"], ["init", "--name", "smoke"], ["setup"], ["export", "--no-secrets"]]) runCli(args);
+  for (const args of [["--help"], ["init", "--name", "smoke"], ["setup"], ["export", "--no-secrets"]]) {
+    runCli(args);
+  }
 
   const config = Bun.TOML.parse(await Bun.file(join(home, "codex", "config.toml")).text()) as {
     mcp_servers: {
@@ -28,11 +30,11 @@ try {
       };
     };
   };
-  if (
-    realpathSync(config.mcp_servers.agentgate.command) !== realpathSync(binary) ||
-    config.mcp_servers.agentgate.env.AGENTGATE_PORT !== "19878"
-  )
+  const shim = config.mcp_servers.agentgate;
+  if (realpathSync(shim.command) !== realpathSync(binary) || shim.env.AGENTGATE_PORT !== "19878") {
     throw new Error("compiled shim command/config mismatch");
+  }
+
   daemon = Bun.spawn([binary, "serve"], {
     env: { ...process.env, AGENTGATE_HOME: home, AGENTGATE_PORT: "19878" },
     stdout: "ignore",
@@ -67,32 +69,35 @@ try {
     ["requests", "export"],
     ["settings", "set", "--file", proxyPatch],
     ["settings", "show"],
-  ])
+  ]) {
     runCli(args);
+  }
 
   const configured = (await (await fetch("http://127.0.0.1:19878/api/status")).json()) as {
     settings: { strategy: string; sessionAffinity: boolean; retryLimit: number; threshold: number };
   };
+  const { settings } = configured;
   if (
-    configured.settings.strategy !== "round-robin" ||
-    !configured.settings.sessionAffinity ||
-    configured.settings.retryLimit !== 0 ||
-    configured.settings.threshold !== 98
-  )
+    settings.strategy !== "round-robin" ||
+    !settings.sessionAffinity ||
+    settings.retryLimit !== 0 ||
+    settings.threshold !== 98
+  ) {
     throw new Error("compiled proxy configuration patch changed omitted settings");
+  }
+
   if ((await fetch("http://127.0.0.1:19878/")).status !== 404) throw new Error("web UI is still present");
-  if (
-    (
-      await fetch("http://127.0.0.1:19878/api/status", {
-        headers: { origin: "https://example.com" },
-      })
-    ).status !== 403
-  )
-    throw new Error("browser control API access allowed");
+
+  const browserOrigin = await fetch("http://127.0.0.1:19878/api/status", {
+    headers: { origin: "https://example.com" },
+  });
+  if (browserOrigin.status !== 403) throw new Error("browser control API access allowed");
+
   const checkout = join(home, "checkout");
   mkdirSync(checkout);
-  if (Bun.spawnSync(["git", "init", checkout], { stdout: "pipe", stderr: "pipe" }).exitCode !== 0)
-    throw new Error("could not initialize smoke checkout");
+  const gitInit = Bun.spawnSync(["git", "init", checkout], { stdout: "pipe", stderr: "pipe" });
+  if (gitInit.exitCode !== 0) throw new Error("could not initialize smoke checkout");
+
   const markdown = join(home, "SKILL.md");
   await Bun.write(
     markdown,
@@ -102,17 +107,17 @@ try {
     ["skills", "new", "smoke-skill", "--file", markdown],
     ["skills", "projects", "smoke-skill", "smoke/repo"],
     ["skills", "prepare", checkout, "--project", "smoke/repo"],
-  ])
+  ]) {
     runCli(args);
+  }
 
   for (const folder of [".agents", ".claude"]) {
     const link = join(checkout, folder, "skills", "smoke-skill");
-    if (
-      !readlinkSync(link) ||
-      !(await Bun.file(join(link, "SKILL.md")).text()).includes("Compiled CLI skill smoke test.")
-    )
-      throw new Error("compiled skills prepare did not publish skill links");
+    const linked =
+      readlinkSync(link) && (await Bun.file(join(link, "SKILL.md")).text()).includes("Compiled CLI skill smoke test.");
+    if (!linked) throw new Error("compiled skills prepare did not publish skill links");
   }
+
   daemon.kill("SIGTERM");
   await daemon.exited;
   daemon = undefined;

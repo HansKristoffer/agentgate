@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { controlOps, shownError } from "../ops/index.ts";
 import { previewLines, sourceFrom } from "../ops/skills.ts";
 import { LOCAL_URL, store, type Store } from "../store.ts";
-import { die, initialized, management, showHelp, stringOption, type Run } from "./common.ts";
+import { die, initialized, management, noDaemon, showHelp, stringOption, type Run } from "./common.ts";
 
 /**
  * Control operations called one after another through the running daemon, or all in this process when none answers
@@ -18,7 +18,7 @@ function controls(s: Store) {
       try {
         return await management<ControlOps[N]["result"]>(`/ops/${encodeURIComponent(name)}`, "POST", input);
       } catch (e) {
-        if ((e as { code?: unknown } | null)?.code !== "ECONNREFUSED") throw e;
+        if (!noDaemon(e)) throw e;
         // No daemon answers: this and every later call in the same run goes through this process.
         here = true;
       }
@@ -56,8 +56,9 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
       errors?: { path: string; message: string }[];
     };
     if (!response.ok) die(result.error ?? "Could not prepare checkout");
-    if (!result.checkout)
+    if (!result.checkout) {
       die("No repository/project found. Supply --project owner/repo for a repository without an origin.");
+    }
     if (result.errors?.length) die(result.errors.map((e) => `${e.path}: ${e.message}`).join("\n"));
     return console.log(`Prepared ${result.checkout}; start your session now.`);
   }
@@ -76,14 +77,13 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
     return;
   }
   if (!sub || sub === "ls") {
-    for (const k of sk.skillSummaries(s)) {
-      const where = s
+    for (const skill of sk.skillSummaries(s)) {
+      const projectIds = s
         .list("project")
-        .filter((p) => p.skills.includes(k.id))
-        .map((p) => p.id);
-      console.log(
-        `${k.id.padEnd(32)} ${(k.source ?? "(hand-written)").padEnd(40)} ${where.join(" ") || "(no projects)"}`,
-      );
+        .filter((project) => project.skills.includes(skill.id))
+        .map((project) => project.id);
+      const source = skill.source ?? "(hand-written)";
+      console.log(`${skill.id.padEnd(32)} ${source.padEnd(40)} ${projectIds.join(" ") || "(no projects)"}`);
     }
     return;
   }
@@ -109,10 +109,11 @@ export const run: Run = async (_cmd, [sub, ...rest], opts) => {
     return;
   }
   if (sub === "repo" && (!rest[0] || rest[0] === "ls")) {
-    for (const r of sk.skillRepoSummaries(s))
-      console.log(
-        `${r.url.padEnd(48)} ${r.projects.join(" ")}  ${r.skills.length} skills${r.error ? `  error: ${r.error}` : ""}${r.skipped.length ? `\n  skipped: ${r.skipped.join("\n  skipped: ")}` : ""}`,
-      );
+    for (const repo of sk.skillRepoSummaries(s)) {
+      const error = repo.error ? `  error: ${repo.error}` : "";
+      const skipped = repo.skipped.length ? `\n  skipped: ${repo.skipped.join("\n  skipped: ")}` : "";
+      console.log(`${repo.url.padEnd(48)} ${repo.projects.join(" ")}  ${repo.skills.length} skills${error}${skipped}`);
+    }
     return;
   }
   if (sub === "show") {

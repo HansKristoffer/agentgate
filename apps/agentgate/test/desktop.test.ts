@@ -29,10 +29,13 @@ INSERT INTO meta VALUES ('version', '24');`;
 const toChrome = (ms: number) => (ms + 11_644_473_600_000) * 1000;
 const DAY = 86_400_000;
 
-let dir: string, s: Store, running: boolean, events: string[];
-const original = { ...DESKTOP },
-  originalHost = { ...host },
-  originalFiles = { ...files };
+let dir: string;
+let s: Store;
+let running: boolean;
+let events: string[];
+const original = { ...DESKTOP };
+const originalHost = { ...host };
+const originalFiles = { ...files };
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "agentgate-desktop-"));
@@ -456,8 +459,8 @@ test("a failed gateway change keeps the user's own gateway selected", async () =
 
   // A crash after selecting agentgate: the next change puts the user's gateway back first.
   files.write = originalFiles.write;
-  const meta = readFileSync(join(lib, "_meta.json"), "utf8"),
-    conf = readFileSync(join(DESKTOP.data3p, "claude_desktop_config.json"), "utf8");
+  const meta = readFileSync(join(lib, "_meta.json"), "utf8");
+  const conf = readFileSync(join(DESKTOP.data3p, "claude_desktop_config.json"), "utf8");
   s.setLocal("desktop:gatewayBefore", JSON.stringify([conf, meta]));
   writeFileSync(join(lib, "_meta.json"), JSON.stringify({ appliedId: "ours", entries: [] }));
   signIn("aaaa");

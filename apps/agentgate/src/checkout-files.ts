@@ -37,6 +37,8 @@ export const FILES_ROOT = join(DEV ? join(CONFIG_DIR, "home") : homedir(), ".bun
 export const FILES_PROTOCOL = 6;
 const KEY = /^[a-z0-9.-]+(\/[a-z0-9._-]+)+$/;
 const LOCK_STALE = 30_000;
+/** The most one env file may hold, as `files add` and `files set` refuse more. */
+const MAX_FILE_BYTES = 1024 * 1024;
 
 const sha256 = (data: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
 const iso = (ms: number) => new Date(ms).toISOString();
@@ -210,7 +212,9 @@ export function writeStore(
     }
     for (const path of remove) delete manifest.files[path];
     replace(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
-    for (const path of remove) if (safePath(path)) rmSync(join(dir, "data", path), { force: true });
+    for (const path of remove) {
+      if (safePath(path)) rmSync(join(dir, "data", path), { force: true });
+    }
   } finally {
     release();
   }
@@ -269,7 +273,11 @@ const storedErrors = (s: Store) => errorsLocal.get(s) ?? {};
 export function filesErrors(s: Store): Record<string, string> {
   const errors = storedErrors(s);
   const old = oldNodesError(s);
-  if (old) for (const p of s.list("project")) if (p.files?.length || p.fileList?.length) errors[p.id] ??= old;
+  if (old) {
+    for (const p of s.list("project")) {
+      if (p.files?.length || p.fileList?.length) errors[p.id] ??= old;
+    }
+  }
   return errors;
 }
 function report(s: Store, project: string, message: string | undefined) {
@@ -321,8 +329,9 @@ export function reconcile(s: Store, root: string, key: string): boolean {
   // cleaned-up ~/.buncargo, a restore, another HOME) says nothing about its files, so it is refilled from the record
   // instead: only removing a file from a store deletes it everywhere.
   const local: CheckoutFile[] = [];
-  for (const [path, f] of store.files)
+  for (const [path, f] of store.files) {
     if (!f.machine) local.push({ path, updatedAt: f.updatedAt, data: f.data!.toString("base64") });
+  }
   for (const b of store.state === "missing" ? [] : base) {
     if (store.files.has(b.path)) continue;
     local.push(b.deleted ? b : { path: b.path, updatedAt: iso(s.now()), deleted: true });
@@ -337,9 +346,8 @@ export function reconcile(s: Store, root: string, key: string): boolean {
   if (put.length || remove.length) {
     const writes = put.map((f) => ({ path: f.path, data: Buffer.from(f.data!, "base64"), updatedAt: f.updatedAt }));
     writeStore(dir, writes, remove, s.now());
-    console.log(
-      `checkout files: ${project}: this machine's store took ${[...put.map((f) => f.path), ...remove.map((path) => `${path} (removed)`)].join(", ")} from the synced record`,
-    );
+    const took = [...put.map((f) => f.path), ...remove.map((path) => `${path} (removed)`)].join(", ");
+    console.log(`checkout files: ${project}: this machine's store took ${took} from the synced record`);
   }
   dbWrite(s, "saving what this pass reconciled", () =>
     baseLocal.set(
@@ -353,8 +361,9 @@ export function reconcile(s: Store, root: string, key: string): boolean {
   if (merged.length && !same(merged, remote)) {
     const next = { ...(record ?? projectSchema.parse({ id: project })), files: merged };
     error = oldNodesError(s);
-    if (!error && !fitsRelay(s, next))
+    if (!error && !fitsRelay(s, next)) {
       error = "the files are larger than one synced record can carry (about 700 KiB in all); they stay on this machine";
+    }
     if (!error) dbWrite(s, `saving ${project}'s project record`, () => s.put("project", project, next));
   }
   dbWrite(s, "saving the sync error", () => report(s, project, error));
@@ -609,7 +618,7 @@ export async function addFiles(s: Store, root: string, top: string, paths: strin
     if (!safePath(path)) throw new Error(`${path} is not a plain path inside the checkout`);
     const data = regularFile(join(top, path));
     if (!data) throw new Error(`${path} is not a file in ${top}`);
-    if (data.byteLength > 1024 * 1024) throw new Error(`${path} is larger than 1 MiB`);
+    if (data.byteLength > MAX_FILE_BYTES) throw new Error(`${path} is larger than 1 MiB`);
     return { path, data, updatedAt: iso(s.now()) };
   });
   writeStore(join(root, key), put, [], s.now());
@@ -628,8 +637,9 @@ export async function addFileAt(s: Store, root: string, project: string, file: s
   const top = realpathSync(found);
 
   const owner = (await checkoutProject(s, top)).project;
-  if (owner.toLowerCase() !== project.toLowerCase())
+  if (owner.toLowerCase() !== project.toLowerCase()) {
     throw new Error(`That file is in a checkout of ${owner}, not ${project}`);
+  }
   return addFiles(s, root, top, [relative(top, file)]);
 }
 
@@ -641,7 +651,9 @@ export function removeFiles(s: Store, root: string, project: string, paths: stri
   writeStore(join(root, key), [], paths, s.now());
 
   const p = s.get("project", project);
-  if (p?.fileList) s.put("project", project, { ...p, fileList: p.fileList.filter((f) => !paths.includes(f)) });
+  if (p?.fileList) {
+    s.put("project", project, { ...p, fileList: p.fileList.filter((f) => !paths.includes(f)) });
+  }
   reconcile(s, root, key);
   return project;
 }
@@ -690,7 +702,9 @@ async function checkoutsOf(s: Store, project: string, key: string): Promise<stri
   for (const cwd of known) {
     if (!existsSync(cwd)) continue;
     found.add(realpathSync(cwd));
-    for (const w of await worktrees(cwd).catch(() => [])) found.add(realpathSync(w.path));
+    for (const w of await worktrees(cwd).catch(() => [])) {
+      found.add(realpathSync(w.path));
+    }
   }
   return [...found];
 }
@@ -710,12 +724,13 @@ export async function setFileContent(
   expected?: string,
 ) {
   const { project: id, key, f } = storeFile(s, root, project, path);
-  if (expected !== undefined && expected !== (f?.sha256 ?? sha256("")))
+  if (expected !== undefined && expected !== (f?.sha256 ?? sha256(""))) {
     throw new Error(`${path} changed since you opened it; open it again to see the new version`);
+  }
   const old = oldNodesError(s);
   if (old) throw new Error(old);
   const data = Buffer.from(content);
-  if (data.byteLength > 1024 * 1024) throw new Error(`${path} is larger than 1 MiB`);
+  if (data.byteLength > MAX_FILE_BYTES) throw new Error(`${path} is larger than 1 MiB`);
 
   const checkouts = await checkoutsOf(s, id, key);
   const followed = new Map<string, Followed>();
@@ -749,8 +764,9 @@ export async function setFileContent(
   const parts = Object.entries(counts)
     .filter(([, n]) => n)
     .map(([outcome, n]) => `${n} ${outcome}`);
+  const noun = checkouts.length === 1 ? "checkout" : "checkouts";
   console.log(
-    `checkout files: ${id} ${path} saved; followed ${checkouts.length} ${checkouts.length === 1 ? "checkout" : "checkouts"}${parts.length ? ` (${parts.join(", ")})` : ""}`,
+    `checkout files: ${id} ${path} saved; followed ${checkouts.length} ${noun}${parts.length ? ` (${parts.join(", ")})` : ""}`,
   );
   return { project: id, checkouts: counts };
 }

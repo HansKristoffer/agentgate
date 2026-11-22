@@ -1,5 +1,5 @@
 import { Button } from "@heroui/react";
-import { ExternalLink, GitPullRequest } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 import type { Connection, FactoryBoard, WriteMoment } from "@agentgate/protocol";
 import { factoryOp, openExternal } from "../../api.ts";
 import { Badge, Empty, Modal, Panel } from "../../components/ui.tsx";
@@ -9,6 +9,7 @@ import {
   ItemActions,
   NeedsYouText,
   OpenInT3,
+  OpenPullRequest,
   Pill,
   statusOf,
   toneOf,
@@ -89,8 +90,8 @@ export function ItemDrawer({
   // write-backs and events.
   const item = board.items.find((i) => i.id === id);
   if (!item) return null;
-  // Bound here so the handlers below see the narrowed values: a property check does not narrow inside a closure.
-  const { url, pr } = item;
+  // Bound here so the handler below sees the narrowed value: a property check does not narrow inside a closure.
+  const { url } = item;
   return (
     <Modal title={`${item.key} ${item.title}`} close={close} size="lg">
       <div className="row factory-actions">
@@ -101,12 +102,7 @@ export function ItemDrawer({
             Issue
           </Button>
         )}
-        {pr && (
-          <Button size="sm" variant="tertiary" onPress={() => void openExternal(pr.url)}>
-            <GitPullRequest size={14} />
-            Pull request
-          </Button>
-        )}
+        {item.pr && <OpenPullRequest url={item.pr.url} />}
         {/* One that waits for you has its actions with what each does below. */}
         {!item.needsYou && <ItemActions item={item} act={act} ask={ask} />}
       </div>

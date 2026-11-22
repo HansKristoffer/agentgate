@@ -20,6 +20,8 @@ import { OpenInT3 } from "./factory/parts.tsx";
 import { ago, elapsed, field, since } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
 
+type Started = { handoffId: string; node: string };
+
 const STEPS: Record<string, string> = {
   resolve: "Starting",
   stop: "Stopping agent",
@@ -116,10 +118,9 @@ function MachinesDialog({
       });
     });
 
-  const submit = (e: FormEvent<HTMLFormElement>) => {
+  const submit = (e: FormEvent<HTMLFormElement>, node: string) => {
     e.preventDefault();
     const pairingUrl = field(new FormData(e.currentTarget), "pairingUrl");
-    const node = pairingNode!;
     void perform(async () => {
       await request(conn, `/t3/connect?node=${encodeURIComponent(node)}`, "POST", { pairingUrl });
       await connected();
@@ -249,7 +250,7 @@ function MachinesDialog({
             </li>
           </ol>
           <Panel>
-            <form className="item" onSubmit={submit}>
+            <form className="item" onSubmit={(e) => submit(e, pairingNode)}>
               <Field
                 className="field grow"
                 label={`Pairing link from ${pairingNode}`}
@@ -320,7 +321,6 @@ function ThreadRow({
   );
 }
 
-type Started = { handoffId: string; node: string };
 /** The handoffs this app started on each daemon (by URL), until they finish, and their last answers: the node driving
  * one may stop listing it while it runs. Outside the view, so leaving the page and coming back keeps following them. */
 const tracking = new Map<string, { started: Started[]; jobs: Record<string, HandoffJob> }>();
@@ -406,7 +406,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
             void perform(
               async () => {
                 const body = { threadId: t.id, node: t.node, to: toHere ? "here" : "server" };
-                const r = await request<{ handoffId: string; node: string }>(conn, "/handoffs", "POST", body);
+                const r = await request<Started>(conn, "/handoffs", "POST", body);
                 track.started.push({ handoffId: r.handoffId, node: r.node });
                 setFollowing(true);
                 void reload();

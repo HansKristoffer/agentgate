@@ -44,8 +44,8 @@ describe("relay on Durable Objects", () => {
       node: "a",
       entries: entries.map((e) => ({ ...e, key: key(e.pusherSeq * 1000 + Number(e.key.slice(1))) })),
     });
-    let since = 0,
-      total = 0;
+    let since = 0;
+    let total = 0;
     for (;;) {
       const page = (await call(g, "GET", `/changes?generation=${generation}&since=${since}&node=b`)).body;
       total += page.entries.length;
@@ -60,8 +60,9 @@ describe("relay on Durable Objects", () => {
     // Storage is shared by the tests in this file: fill the remaining slots of RELAY_MAX_GROUPS.
     const admission = env.ADMISSION.get(env.ADMISSION.idFromName("global"));
     const free = 6 - (await admission.count());
-    for (let i = 0; i < free; i++)
+    for (let i = 0; i < free; i++) {
       expect((await call(hex(10 + i), "POST", "", { protocol: 1 }, `203.0.113.${i}`)).status).toBe(200);
+    }
     expect((await call(hex(20), "POST", "", { protocol: 1 }, "203.0.113.50")).status).toBe(507);
     const before = (await call(hex(10), "POST", "", { protocol: 1 })).body.generation;
     expect((await call(hex(10), "DELETE")).status).toBe(200);

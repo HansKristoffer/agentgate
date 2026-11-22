@@ -391,9 +391,9 @@ export async function pushNewBranch(
     "api",
     `repos/${repo}/git/commits/${head}`,
   ]);
-  const post = (what: string, path: string, payload: unknown) =>
+  const create = (what: string, path: string, payload: unknown) =>
     ghJson(what, sha, ["api", path, "--method", "POST", "--input", "-"], JSON.stringify(payload));
-  const tree = await post(`write the files to ${repo}`, `repos/${repo}/git/trees`, {
+  const tree = await create(`write the files to ${repo}`, `repos/${repo}/git/trees`, {
     base_tree: parent.tree.sha,
     // A null `sha` removes the file.
     tree: Object.entries(files).map(([path, content]) =>
@@ -402,7 +402,7 @@ export async function pushNewBranch(
         : { path, mode: "100644", type: "blob", content },
     ),
   });
-  const commit = await post(`commit the files to ${repo}`, `repos/${repo}/git/commits`, {
+  const commit = await create(`commit the files to ${repo}`, `repos/${repo}/git/commits`, {
     message,
     tree: tree.sha,
     parents: [head],

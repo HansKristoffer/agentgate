@@ -7,7 +7,6 @@ import {
   StreamableHTTPClientTransport,
   UnauthorizedError,
 } from "@modelcontextprotocol/client";
-import type { FactoryBoard } from "@agentgate/protocol";
 import { z } from "zod";
 import { createPairingLink, parsePairing, t3State, T3Error } from "../handoff/t3.ts";
 import { VERSION } from "../mcp/gateway.ts";
@@ -128,16 +127,12 @@ const launching = (f: FactoryRuntime) =>
 class Refused extends Error {}
 
 /** The machine's one T3 MCP client. */
-export function t3Mcp(f: FactoryRuntime): T3McpClient {
-  return client(f);
-}
-
-function client(f: FactoryRuntime) {
+export function t3Mcp(f: FactoryRuntime) {
   return f.memory("T3 MCP client", () => create(f));
 }
 
 export function setup(f: FactoryRuntime) {
-  const mcp = client(f);
+  const mcp = t3Mcp(f);
   f.events.on("factory.off", () => mcp.signOut());
   f.ctx.abort.signal.addEventListener("abort", () => mcp.disconnect(), { once: true });
   // Every node: `factory off` emits factory.off only where it ran, and other machines learn of it by sync.
@@ -145,9 +140,7 @@ export function setup(f: FactoryRuntime) {
   f.boardParts.push(async () => {
     const { mcp: state, expiresAt, error } = mcp.status();
     // Only the sign-in's fields; the board merges them with the stream state it owns.
-    return { t3: { mcp: state, ...(expiresAt && { mcpExpiresAt: expiresAt }), ...(error && { error }) } } as Partial<
-      Pick<FactoryBoard, "t3">
-    >;
+    return { t3: { mcp: state, ...(expiresAt && { mcpExpiresAt: expiresAt }), ...(error && { error }) } };
   });
   f.checks.push({
     name: "T3 Code's MCP",

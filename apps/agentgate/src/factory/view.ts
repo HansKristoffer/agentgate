@@ -1,10 +1,5 @@
 import { parseArgs } from "node:util";
-import {
-  factoryItemDetailSchema,
-  type BoardItem,
-  type FactoryBoard,
-  type FactoryItemDetail,
-} from "@agentgate/protocol";
+import { factoryItemDetailSchema, type BoardItem, type FactoryItemDetail } from "@agentgate/protocol";
 import { z } from "zod";
 import { findItem, itemRef } from "./actions.ts";
 import { folderFor, limits } from "./config.ts";
@@ -23,7 +18,7 @@ import {
 } from "./controller.ts";
 import { items, runs, type BoardRun, type FactoryItem, type FactoryRun } from "./db.ts";
 import { needsYouLines } from "./needs-you.ts";
-import { operation, UsageError, type FactoryRuntime } from "./runtime.ts";
+import { operation, UsageError, type BoardPart, type FactoryRuntime } from "./runtime.ts";
 
 /**
  * How items read: a board row each, `factory show`'s detail, and what a stage thread reads about its item
@@ -146,7 +141,7 @@ export const frozenItems = (f: FactoryRuntime): BoardItem[] =>
   frozenHere(f) ? boardItems(f, items.list(f.s, { open: true })) : [];
 
 /** The items and capacity part of the board; implement.ts adds `capacity.mainRed`, intake.ts the sources. */
-function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
+function boardPart(f: FactoryRuntime): BoardPart {
   const { s } = f;
   const limit = limits(f);
   const quota = quotaWait(f);
@@ -165,7 +160,7 @@ function boardPart(f: FactoryRuntime): Partial<FactoryBoard> {
       intake: intakeState(f),
       ...(isPaused(f) && { paused: true }),
     },
-  } as Partial<FactoryBoard>;
+  };
 }
 
 /** `agentgate factory show <item>`: the item with its runs, what the factory posted for it, and its events. */

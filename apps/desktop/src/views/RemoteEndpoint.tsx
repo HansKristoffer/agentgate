@@ -7,6 +7,7 @@ import type { ViewProps } from "../types.ts";
 import { control, request } from "../api.ts";
 import { idPath, relative } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
+import { nodeOptions } from "./factory/Init.tsx";
 
 type Endpoint = { url: string; secret: string };
 
@@ -30,10 +31,6 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
   const setWebhook = (url: string | null) =>
     perform(() => control(connection, "remote webhook", { id, url }), url ? "Webhook saved" : "Webhook removed");
   const copy = (text: string, what: string) => perform(() => navigator.clipboard.writeText(text), `${what} copied`);
-  const nodes = data.nodes.map((n) => ({
-    id: n.id,
-    label: `${n.id}${n.alwaysOn ? " (always on)" : ""}${n.online ? "" : " — offline"}`,
-  }));
   const serving = data.nodes.find((n) => n.id === remote?.servedBy);
 
   return (
@@ -139,7 +136,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             <Choice
               label="Served by"
               description="This machine answers Grok. Its MCP servers must work there."
-              options={nodes}
+              options={nodeOptions(data)}
               selectedKey={remote.servedBy}
               isDisabled={!local}
               onSelectionChange={(key) =>

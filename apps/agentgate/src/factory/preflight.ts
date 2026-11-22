@@ -178,17 +178,16 @@ const CLEANUP = { id: "t3-worktrees", title: "T3 Code removes the factory's old 
 
 /** Each stage makes a worktree, and T3 Code keeps every one unless a cleanup rule removes them. */
 function worktreeCleanup(config: unknown): FactoryCheck {
-  const check = CLEANUP;
   const fix = "turn on Settings → Worktree cleanup in T3 Code";
   const parsed = t3Settings.safeParse(config);
   const { worktreeCleanup: own, storageCleanup } = parsed.success ? parsed.data.settings : {};
-  if (own?.mode === "off") return { ...check, state: "warn", detail: "worktree cleanup is off", fix };
+  if (own?.mode === "off") return { ...CLEANUP, state: "warn", detail: "worktree cleanup is off", fix };
   const rules = own?.mode === "custom" ? own.rules : storageCleanup;
   if (!rules)
-    return { ...check, state: "unknown", detail: "T3 Code's settings do not say; each stage makes a worktree", fix };
+    return { ...CLEANUP, state: "unknown", detail: "T3 Code's settings do not say; each stage makes a worktree", fix };
   const { worktreeAfterDays, worktreeOnMerge, worktreeOnDelete, worktreeUnchanged } = rules;
-  if (worktreeAfterDays || worktreeOnMerge || worktreeOnDelete || worktreeUnchanged) return { ...check, state: "ok" };
-  return { ...check, state: "warn", detail: "T3 Code keeps every worktree, and each stage makes one", fix };
+  if (worktreeAfterDays || worktreeOnMerge || worktreeOnDelete || worktreeUnchanged) return { ...CLEANUP, state: "ok" };
+  return { ...CLEANUP, state: "warn", detail: "T3 Code keeps every worktree, and each stage makes one", fix };
 }
 
 /**

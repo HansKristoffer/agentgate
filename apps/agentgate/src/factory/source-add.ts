@@ -99,6 +99,12 @@ function withSource(lines: string[], source: { [key: string]: Json }) {
 
 export const parse = (text: string) => (Bun.YAML.parse(text) ?? {}) as Record<string, unknown>;
 
+/** The repository names factory.yaml lists, and its `sources` entries as far as their id and repo go. */
+export const repositories = (config: Record<string, unknown>) =>
+  Object.keys((config.repositories as object | null) ?? {});
+export const sourcesOf = (config: Record<string, unknown>) =>
+  Array.isArray(config.sources) ? (config.sources as { id?: unknown; repo?: unknown }[]) : [];
+
 /**
  * `text` with `lines` edited, checked by parsing it again: it must parse to `expected` of what it parsed to before.
  * Throws, with what to do by hand, when the file is not laid out in a way this can edit (`lines` gave undefined, saying
@@ -185,10 +191,9 @@ export function withoutDefaults(raw: { [key: string]: Json }, parse: (value: unk
 /** Refuses a source whose id factory.yaml or a scout file has, or whose repository factory.yaml does not list. */
 function checkNew(yaml: string, source: { id: string; repo: string }, scoutExists: boolean) {
   const config = parse(yaml);
-  const sources = Array.isArray(config.sources) ? (config.sources as { id?: unknown }[]) : [];
-  if (sources.some((s) => s.id === source.id)) throw new Error(`The factory already has a source ${source.id}`);
-  const repos = Object.keys((config.repositories as object | undefined) ?? {});
-  if (!repos.some((r) => r.toLowerCase() === source.repo.toLowerCase()))
+  if (sourcesOf(config).some((s) => s.id === source.id))
+    throw new Error(`The factory already has a source ${source.id}`);
+  if (!repositories(config).some((r) => r.toLowerCase() === source.repo.toLowerCase()))
     throw new Error(`${source.repo} is not under repositories in factory.yaml; add it there first`);
   if (scoutExists) throw new Error(`The factory already has a scout ${source.id}`);
 }

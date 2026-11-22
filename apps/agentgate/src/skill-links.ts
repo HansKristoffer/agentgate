@@ -79,7 +79,9 @@ function exclude(common: string, ids: string[]) {
   const lines = text.split("\n");
   const start = lines.indexOf(EXCLUDE_HEADER);
   let end = start + 1;
-  if (start >= 0) while (end < lines.length && /^\/\.(claude|agents)\/skills\//.test(lines[end]!)) end++;
+  if (start >= 0) {
+    while (end < lines.length && /^\/\.(claude|agents)\/skills\//.test(lines[end]!)) end++;
+  }
   const body = (start >= 0 ? [...lines.slice(0, start), ...lines.slice(end)] : lines).join("\n").replace(/\n+$/, "");
   const block = ids.length
     ? `${EXCLUDE_HEADER}\n${[...ids]
@@ -193,9 +195,10 @@ export class SkillLinks {
       } catch {
         // A missing folder holds no skills.
       }
-      for (const name of names)
-        if (!(this.root && this.ours(this.root, join(dir, name))) && existsSync(join(dir, name, "SKILL.md")))
-          found.add(name);
+      for (const name of names) {
+        const isOurLink = !!this.root && this.ours(this.root, join(dir, name));
+        if (!isOurLink && existsSync(join(dir, name, "SKILL.md"))) found.add(name);
+      }
     }
     return [...found].sort();
   }
@@ -230,8 +233,10 @@ export class SkillLinks {
       stderr: "ignore",
       timeout: 10_000,
     });
-    if (tracked.exitCode === 0)
+    if (tracked.exitCode === 0) {
       throw new UserError(`${path} is part of its repository. Rename or remove it there, or keep it.`);
+    }
+
     const backups = join(dirname(this.root), "skill-backups");
     mkdirSync(backups, { recursive: true });
     const backup = join(mkdtempSync(join(backups, `${basename(path)}-`)), basename(path));
@@ -264,8 +269,8 @@ export class SkillLinks {
     project ??= parseRemote(git("remote", "get-url", "origin") ?? "");
     if (!project || project === "*" || isVirtual(project)) return;
     project = canonicalProject(this.s, projectIdSchema.parse(project));
-    const main = realpathSync(dirname(common)),
-      all = this.checkouts();
+    const main = realpathSync(dirname(common));
+    const all = this.checkouts();
     if (all[main] !== project) {
       all[main] = project;
       checkoutsLocal.set(this.s, undefined, all);
@@ -351,13 +356,12 @@ export class SkillLinks {
       this.attempt(join(root, name), () => {
         const path = join(root, name);
         const dir = join(root, artifact[1]!);
-        if (
+        const isRestorable =
           artifact[2] === "old" &&
           keep.has(artifact[1]!) &&
           !lstatSync(dir, { throwIfNoEntry: false }) &&
-          existsSync(join(path, MARKER))
-        )
-          rename(path, dir);
+          existsSync(join(path, MARKER));
+        if (isRestorable) rename(path, dir);
         else rmSync(path, { recursive: true, force: true });
       });
     }
@@ -384,22 +388,22 @@ export class SkillLinks {
           this.manifests.set(row.id, manifest);
         }
         try {
-          if (
+          const isCurrent =
             readFileSync(join(dir, MARKER), "utf8") === rev &&
             manifest.files.every((f) => {
-              const path = join(dir, f.path),
-                st = lstatSync(path, { throwIfNoEntry: false });
+              const path = join(dir, f.path);
+              const st = lstatSync(path, { throwIfNoEntry: false });
               if (!st?.isFile() || st.size !== f.size || !!(st.mode & 0o111) !== f.executable) return false;
-              if (
-                f.mtime !== st.mtimeMs &&
-                new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex") !== f.digest
-              )
+
+              // The digest is only read again when the file was touched since the last pass.
+              const touched = f.mtime !== st.mtimeMs;
+              if (touched && new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex") !== f.digest) {
                 return false;
+              }
               f.mtime = st.mtimeMs;
               return true;
-            })
-          )
-            return;
+            });
+          if (isCurrent) return;
         } catch {
           // An unreadable copy is rebuilt below.
         }
@@ -432,15 +436,19 @@ export class SkillLinks {
         }
       });
     }
-    for (const name of readdirSync(root))
-      if (
+
+    for (const name of readdirSync(root)) {
+      const isStale =
         !keep.has(name) &&
         !/^.+\.[0-9a-f-]{36}\.(old|tmp)$/.test(name) &&
         SKILL_ID.test(name) &&
-        existsSync(join(root, name, MARKER))
-      )
-        this.attempt(join(root, name), () => rmSync(join(root, name), { recursive: true, force: true }));
-    for (const id of this.manifests.keys()) if (!keep.has(id)) this.manifests.delete(id);
+        existsSync(join(root, name, MARKER));
+      if (isStale) this.attempt(join(root, name), () => rmSync(join(root, name), { recursive: true, force: true }));
+    }
+
+    for (const id of this.manifests.keys()) {
+      if (!keep.has(id)) this.manifests.delete(id);
+    }
   }
 
   private link(root: string) {
@@ -473,11 +481,12 @@ export class SkillLinks {
     const seen = new Set<string>();
     for (const p of catalog) {
       const id = p.id.toLowerCase();
-      if (seen.has(id))
+      if (seen.has(id)) {
         this.errors.push({
           path: p.id,
           message: "Case-variant project IDs already exist. Consolidate their assignments before removing one.",
         });
+      }
       seen.add(id);
     }
     for (const [main, project] of Object.entries(checkouts)) {
@@ -491,29 +500,35 @@ export class SkillLinks {
         // Mirror first: the repo's own skills win over agentgate's, and a mirror may create a worktree's .claude/skills.
         const trees = [main, ...worktrees(common)];
         const mirrored: string[] = [];
-        if (this.mirroring(main))
-          for (const tree of trees)
+        if (this.mirroring(main)) {
+          for (const tree of trees) {
             this.attempt(tree, () => {
               mirrored.push(...this.mirror(root, tree));
             });
+          }
+        }
         // Claude Code falls back from a worktree without .claude/skills to the main checkout's; Codex reads only the worktree's own.
         const dirs = trees.flatMap((tree, i) => [
           ...(i === 0 || existsSync(join(tree, ".claude", "skills")) ? [join(tree, ".claude", "skills")] : []),
           join(tree, ".agents", "skills"),
         ]);
-        for (const dir of dirs)
+        for (const dir of dirs) {
           this.attempt(dir, () => ignoreLinks(dir, this.linkDir(root, dir, wanted, conflicts, kept)));
+        }
         // Mirrors stay visible: they are relative, so committing them gives every clone both agents' skills.
         exclude(common, wanted);
-        if (wanted.length || mirrored.length || this.mirroring(main))
+        if (wanted.length || mirrored.length || this.mirroring(main)) {
           for (const path of this.watch(common)) watched.add(path);
+        }
       });
     }
-    for (const [path, { watcher }] of this.watchers)
+    for (const [path, { watcher }] of this.watchers) {
       if (!watched.has(path)) {
         watcher.close();
         this.watchers.delete(path);
       }
+    }
+
     if (Object.keys(live).length !== Object.keys(checkouts).length) checkoutsLocal.set(this.s, undefined, live);
     conflictsLocal.set(this.s, undefined, conflicts.length ? conflicts : undefined);
     // A kept entry that is gone, or no longer clashes, is forgotten, so ours is linked there again once the place is free.
@@ -541,8 +556,9 @@ export class SkillLinks {
       }
       for (const name of sources) {
         const path = join(src, name);
-        if (name.startsWith(".") || this.ours(root, path) || isMirror(path) || !existsSync(join(path, "SKILL.md")))
+        if (name.startsWith(".") || this.ours(root, path) || isMirror(path) || !existsSync(join(path, "SKILL.md"))) {
           continue;
+        }
         if (!lstatSync(join(dest, name), { throwIfNoEntry: false })) {
           mkdirSync(dest, { recursive: true });
           symlinkSync(`${rel}/${name}`, join(dest, name));
@@ -603,8 +619,10 @@ export class SkillLinks {
     } catch {
       if (!wanted.length) return [];
     }
-    for (const name of entries)
+    for (const name of entries) {
       if (!wanted.includes(name) && this.ours(root, join(dir, name))) unlinkSync(join(dir, name));
+    }
+
     for (const id of wanted) {
       const path = join(dir, id);
       const target = join(root, id);
@@ -627,8 +645,8 @@ export class SkillLinks {
    * and goes to every machine; otherwise the store's text is written out, so an empty file waits to be found. */
   private writeAgentsMd(file: string) {
     this.watchAgentsMd(file);
-    const stored = agentsMd(this.s),
-      synced = agentsSyncedLocal.get(this.s);
+    const stored = agentsMd(this.s);
+    const synced = agentsSyncedLocal.get(this.s);
     let disk: string | undefined;
     try {
       disk = readFileSync(file, "utf8");
@@ -639,7 +657,10 @@ export class SkillLinks {
     if (disk !== undefined && disk !== stored && digest(disk) !== synced) {
       setAgentsMd(this.s, disk);
       text = disk;
-    } else if (disk !== stored) atomicWrite(file, stored);
+    } else if (disk !== stored) {
+      atomicWrite(file, stored);
+    }
+
     if (digest(text) !== synced) agentsSyncedLocal.set(this.s, undefined, digest(text));
   }
 
@@ -683,7 +704,7 @@ export class SkillLinks {
   /** The git dir itself (to see `worktrees/` appear) and its worktree list. */
   private watch(common: string): string[] {
     const paths = [common, join(common, "worktrees")].filter((p) => existsSync(p));
-    for (const path of paths)
+    for (const path of paths) {
       this.attempt(path, () => {
         const inode = statSync(path).ino;
         const current = this.watchers.get(path);
@@ -706,6 +727,7 @@ export class SkillLinks {
         });
         this.watchers.set(path, { watcher, inode });
       });
+    }
     return paths;
   }
 }

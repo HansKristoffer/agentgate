@@ -35,10 +35,11 @@ function setup() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "agentgate-agents-md-test-")));
   const s = new Store(":memory:");
   s.setLocal("node", "a");
-  const home = join(dir, "home"),
-    file = join(home, "AGENTS.md"),
-    claude = join(home, "claude", "CLAUDE.md"),
-    codex = join(dir, "own-codex", "AGENTS.md");
+
+  const home = join(dir, "home");
+  const file = join(home, "AGENTS.md");
+  const claude = join(home, "claude", "CLAUDE.md");
+  const codex = join(dir, "own-codex", "AGENTS.md");
   let primary = false;
   const links = new SkillLinks(s, join(home, "skills"), () => [
     [join(home, "claude", "skills"), true, claude],

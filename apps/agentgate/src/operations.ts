@@ -48,13 +48,19 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>, expec
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {
     if (!validId(alias)) throw new Error(`invalid tool prefix ${alias}`);
     if (virtual && alias === "skills") throw new Error("the prefix skills is reserved for the built-in skill tools");
-    if (virtual && alias === FACTORY_ALIAS)
+    if (virtual && alias === FACTORY_ALIAS) {
       throw new Error(`the prefix ${FACTORY_ALIAS} is reserved for the software factory's tools`);
-    if (!virtual && alias === BUILTIN_ALIAS)
+    }
+    if (!virtual && alias === BUILTIN_ALIAS) {
       throw new Error(`the prefix ${BUILTIN_ALIAS} is reserved for agentgate's own tools`);
+    }
     if (!s.get("mcp", target)) throw new Error(`no MCP instance ${target}`);
   }
-  for (const skill of patch.skills ?? []) if (!s.has("skill", skill)) throw new Error(`no skill ${skill}`);
+
+  for (const skill of patch.skills ?? []) {
+    if (!s.has("skill", skill)) throw new Error(`no skill ${skill}`);
+  }
+
   // Virtual projects list their servers explicitly; `*` defaults never leak into a public endpoint.
   return s.put("project", id, {
     ...prev,
@@ -70,8 +76,9 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>, expec
 export function setFactoryWebhook(s: Store, id: string, url: string | undefined) {
   return s.transaction(() => {
     const p = s.get("project", id);
-    if (!isVirtual(id) || !p?.factoryTools)
+    if (!isVirtual(id) || !p?.factoryTools) {
       throw new Error(`${id} does not offer the factory's tools; turn them on first`);
+    }
     const { factoryWebhook: _, ...rest } = p;
     if (!url) return s.put("project", id, rest);
     return s.put("project", id, { ...rest, factoryWebhook: webhookUrl(url) });
@@ -88,8 +95,9 @@ export function webhookUrl(url: string) {
     throw new Error("The webhook must be a URL");
   }
   if (parsed.protocol !== "https:") throw new Error("The webhook must be an https URL");
-  if (parsed.username || parsed.password)
+  if (parsed.username || parsed.password) {
     throw new Error("Put the receiver's token in the webhook's path or query, not before the host");
+  }
   if (url.length > 2000) throw new Error("The webhook URL is too long");
   return parsed.href;
 }

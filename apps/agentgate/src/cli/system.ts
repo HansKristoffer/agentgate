@@ -80,8 +80,8 @@ export const run: Run = async (cmd, [sub], opts) => {
       const name = str("name") ?? s.local("node") ?? hostname().split(".")[0]!.toLowerCase();
       const old = s.local("node");
       if (old && old !== name) {
-        if (peers(s).length || usesRelay(s) || s.list("credential").length || s.list("mcpCredential").length)
-          die("cannot rename a paired node, relay member or credential holder; keep its existing name");
+        const isTied = peers(s).length || usesRelay(s) || s.list("credential").length || s.list("mcpCredential").length;
+        if (isTied) die("cannot rename a paired node, relay member or credential holder; keep its existing name");
         s.del("node", old);
       }
       s.setLocal("node", name);
@@ -109,11 +109,13 @@ export const run: Run = async (cmd, [sub], opts) => {
       initialized(s);
       (await import("../service.ts")).stampLogs();
       // Bun reports these on stderr without the timestamp; the daemon still exits so the service restarts it.
-      for (const event of ["uncaughtException", "unhandledRejection"] as const)
+      for (const event of ["uncaughtException", "unhandledRejection"] as const) {
         process.on(event, (e: unknown) => {
           console.error(`${event}: ${e instanceof Error ? e.stack : String(e)}`);
           process.exit(1);
         });
+      }
+
       const daemon = await (await import("../daemon.ts")).serve(s);
       let shuttingDown = false;
       const shutdown = () => {
@@ -143,10 +145,12 @@ export const run: Run = async (cmd, [sub], opts) => {
           console.log(
             `  ${a.id}  ${a.label}${flags ? `  [${flags}]` : ""}  holder ${st.holder ?? "-"}, token expires in ${mins(st.expiresAt)}`,
           );
-          for (const w of st.windows)
+          for (const w of st.windows) {
             console.log(`    ${w.name.padEnd(10)} ${bar(w.usedPct)}  resets in ${mins(w.resetsAt)}`);
-          if (!st.windows.length && st.state.kind !== "needs-login")
+          }
+          if (!st.windows.length && st.state.kind !== "needs-login") {
             console.log("    no quota data yet (or unrecognised quota headers)");
+          }
         }
       }
       // Some problems (skill links, file sync) only the running daemon knows, so the list needs it.
@@ -156,21 +160,34 @@ export const run: Run = async (cmd, [sub], opts) => {
       if (daemonStatus) for (const line of attentionLines(daemonStatus)) console.log(line);
       console.log("\nnodes");
       for (const n of s.list("node")) {
-        const seen = lastSeen(s, n.id);
-        const peer = peers(s).find((p) => p.node === n.id);
+        const isThis = n.id === s.nodeId;
+        let sync = "";
+        if (!isThis) {
+          const seen = lastSeen(s, n.id);
+          const peer = peers(s).find((p) => p.node === n.id);
+          const when = seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never";
+          sync = `last seen ${when}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`;
+        }
         console.log(
-          `  ${n.id}${n.id === s.nodeId ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${n.id === s.nodeId ? "" : `last seen ${seen ? `${Math.round((Date.now() - seen) / 1000)}s ago` : "never"}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`}`,
+          `  ${n.id}${isThis ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${sync}`,
         );
       }
+
       const relay = relayStatus(s);
-      if (relay)
-        console.log(
-          `\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`,
-        );
+      if (relay) {
+        const state = `${relay.reconciling ? ", reconciling" : ""}${relay.rotating ? ", rotating" : ""}${relay.cleanupPending ? ", cleanup pending" : ""}`;
+        const errors = `${relay.pushError ? `\n  upload: ${relay.pushError}` : ""}${relay.pullError ? `\n  download: ${relay.pullError}` : ""}`;
+        console.log(`\nrelay ${relay.url}${relay.hosted ? " (hosted)" : ""}${state}${errors}`);
+      }
+
       const t3 = (await import("../handoff/t3.ts")).t3State(s);
-      console.log(
-        `\nT3 Code: ${!t3.url ? "not connected (agentgate t3 connect)" : t3.connected ? `${t3.url}${t3.repair ? ", pair again soon" : ""}` : "token expired, pair again"}`,
-      );
+      const t3Line = !t3.url
+        ? "not connected (agentgate t3 connect)"
+        : t3.connected
+          ? `${t3.url}${t3.repair ? ", pair again soon" : ""}`
+          : "token expired, pair again";
+      console.log(`\nT3 Code: ${t3Line}`);
+
       const setupMod = await import("../setup.ts");
       const claude = setupMod.claudeStatus();
       const codex = setupMod.primaryState().codex;
@@ -179,18 +196,20 @@ export const run: Run = async (cmd, [sub], opts) => {
         ["Cursor", setupMod.mcpFileEnabled(setupMod.CURSOR_MCP_FILE)],
         ["Antigravity", setupMod.mcpFileEnabled(setupMod.ANTIGRAVITY_MCP_FILE)],
       ] as const;
+      const toolLines = tools
+        .filter(([, on]) => on !== undefined)
+        .map(([name, on]) => `\n${name} MCP servers ${on ? "on" : "off"}`)
+        .join("");
       console.log(
-        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${tools
-          .filter(([, on]) => on !== undefined)
-          .map(([name, on]) => `\n${name} MCP servers ${on ? "on" : "off"}`)
-          .join("")}`,
+        `\nClaude Code ${uses(claude.routing)}, MCP servers ${claude.mcp ? "on" : "off"}\nCodex ${uses(codex)}${toolLines}`,
       );
       if (!claude.routing || !codex) console.log("  to route them: agentgate setup --primary");
       const restored = Number(s.local(setupMod.MCP_RESTORED));
-      if (claude.mcp && restored > Date.now() - 86_400_000)
+      if (claude.mcp && restored > Date.now() - 86_400_000) {
         console.log(
           `  agentgate put its MCP server back in Claude Code at ${new Date(restored).toLocaleTimeString()}; to remove it for good: agentgate setup --mcp off`,
         );
+      }
       console.log(`\ndaemon: ${up ? `running at ${LOCAL_URL}` : "not running (agentgate service start)"}`);
       const lag = daemonStatus?.daemon?.lag;
       if (lag) console.log(`Event loop: worst ${lag.worstMs} ms, p99 ${lag.p99Ms} ms in the last minute`);
@@ -231,14 +250,11 @@ export const run: Run = async (cmd, [sub], opts) => {
       const setupMod = await import("../setup.ts");
       if (opts.primary && opts.node) {
         initialized(s);
-        return console.log(
-          (
-            await management<{ message: string }>(`/ops/${encodeURIComponent("nodes route")}`, "POST", {
-              node: str("node"),
-              on: sub !== "off",
-            })
-          ).message,
-        );
+        const routed = await management<{ message: string }>(`/ops/${encodeURIComponent("nodes route")}`, "POST", {
+          node: str("node"),
+          on: sub !== "off",
+        });
+        return console.log(routed.message);
       }
       if (opts.primary) return console.log((await setupMod.routeHere(s, sub !== "off")).message);
       if (opts.mcp) return console.log(await setupMod.mcpHere(s, sub !== "off"));
@@ -260,17 +276,14 @@ export const run: Run = async (cmd, [sub], opts) => {
           "POST",
           { node: sub },
         );
-        if (!r.version || !r.restarting)
-          return console.log(
-            !r.version
-              ? `${sub} is up to date`
-              : `${sub} installed agentgate ${r.version}; restart agentgate there to use it`,
-          );
+        if (!r.version) return console.log(`${sub} is up to date`);
+        if (!r.restarting)
+          return console.log(`${sub} installed agentgate ${r.version}; restart agentgate there to use it`);
+
         console.log(`${sub} installed agentgate ${r.version} and is restarting`);
+        const back = await (await import("../update.ts")).waitForVersion(s, sub, r.version);
         return console.log(
-          (await (await import("../update.ts")).waitForVersion(s, sub, r.version))
-            ? `${sub} runs agentgate ${r.version}`
-            : `${sub} is still restarting; check with agentgate nodes`,
+          back ? `${sub} runs agentgate ${r.version}` : `${sub} is still restarting; check with agentgate nodes`,
         );
       }
       const update = await import("../update.ts");
@@ -293,12 +306,12 @@ export const run: Run = async (cmd, [sub], opts) => {
       if (!version) return;
       if (restart) {
         const code = await (await import("../service.ts")).service("restart");
-        if (code === 0 && s.local("node"))
+        if (code === 0 && s.local("node")) {
+          const back = await update.waitForVersion(s, s.nodeId, version);
           console.log(
-            (await update.waitForVersion(s, s.nodeId, version))
-              ? `this node runs agentgate ${version}`
-              : "agentgate is still restarting; check with agentgate nodes",
+            back ? `this node runs agentgate ${version}` : "agentgate is still restarting; check with agentgate nodes",
           );
+        }
         return process.exit(code);
       }
       return console.log("restart agentgate to use it");

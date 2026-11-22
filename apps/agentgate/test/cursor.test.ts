@@ -1,15 +1,6 @@
 import { afterAll, expect, test } from "bun:test";
 import { Credentials, InvalidGrant } from "../src/credentials.ts";
-import {
-  CURSOR,
-  cursor,
-  finish,
-  parseModels,
-  parseQuota,
-  pollTokens,
-  requestedModel,
-  rewriteModel,
-} from "../src/llm/cursor.ts";
+import { CURSOR, cursor, finish, parseModels, parseQuota, pollTokens } from "../src/llm/cursor.ts";
 import { proxy } from "../src/llm/pool.ts";
 import { tokenUsage } from "../src/llm/telemetry.ts";
 import { app, makeCtx } from "../src/daemon.ts";
@@ -17,13 +8,13 @@ import { Store } from "../src/store.ts";
 
 const jwt = (claims: Record<string, unknown>) => `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
 const access = jwt({ sub: "auth0|user_1", exp: 4_000_000_000 });
-let events: { timestamp: string; model: string; kind?: string; tokenUsage: Record<string, number> | null }[] = [],
-  short = false,
-  cookies: string[] = [];
-let includedDaily: { day: string; category: string; totalTokens: string }[] = [],
-  dailyCalls: unknown[] = [];
-let polls = 0,
-  refresh: unknown = { access_token: jwt({ sub: "auth0|user_1", exp: 4_100_000_000 }) };
+let events: { timestamp: string; model: string; kind?: string; tokenUsage: Record<string, number> | null }[] = [];
+let short = false;
+let cookies: string[] = [];
+let includedDaily: { day: string; category: string; totalTokens: string }[] = [];
+let dailyCalls: unknown[] = [];
+let polls = 0;
+let refresh: unknown = { access_token: jwt({ sub: "auth0|user_1", exp: 4_100_000_000 }) };
 let calls: { path: string; authorization: string; body: unknown; connect: string | null }[] = [];
 const server = Bun.serve({
   port: 0,
@@ -123,8 +114,8 @@ test("the control API signs in to Cursor without a pasted code", async () => {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
   s.setLocal("adminToken", "admin-secret");
-  const ctx = makeCtx(s),
-    handler = app(ctx);
+  const ctx = makeCtx(s);
+  const handler = app(ctx);
   const call = (path: string, body: unknown) =>
     handler.fetch(
       new Request(`http://127.0.0.1:7878/api${path}`, {
@@ -160,12 +151,12 @@ test("the control API signs in to Cursor without a pasted code", async () => {
 test("Cursor token usage is read per hour and model, and a later read replaces its window instead of adding to it", async () => {
   const s = new Store(":memory:");
   s.setLocal("node", "n");
-  const hour = Date.UTC(2026, 9, 1, 10),
-    at = (ms: number, model: string, input: number) => ({
-      timestamp: String(hour + ms),
-      model,
-      tokenUsage: { inputTokens: input, outputTokens: 1, cacheReadTokens: 10, cacheWriteTokens: 2 },
-    });
+  const hour = Date.UTC(2026, 9, 1, 10);
+  const at = (ms: number, model: string, input: number) => ({
+    timestamp: String(hour + ms),
+    model,
+    tokenUsage: { inputTokens: input, outputTokens: 1, cacheReadTokens: 10, cacheWriteTokens: 2 },
+  });
   let now = hour + 3600_000 * 5;
   s.now = () => now;
   for (const id of ["mine", "theirs"]) {
@@ -178,8 +169,8 @@ test("Cursor token usage is read per hour and model, and a later read replaces i
       holder: id === "mine" ? "n" : "other",
     });
   }
-  const creds = { token: async (id: string) => s.get("credential", id)! },
-    signal = new AbortController().signal;
+  const creds = { token: async (id: string) => s.get("credential", id)! };
+  const signal = new AbortController().signal;
   const span = CURSOR.historySpan;
   CURSOR.historySpan = 6 * 3600_000;
   try {
@@ -267,8 +258,8 @@ test("Cursor history walks back a week at a time", async () => {
     expiresAt: now + 86400_000,
     holder: "n",
   });
-  const span = CURSOR.historySpan,
-    chunk = CURSOR.historyChunk;
+  const span = CURSOR.historySpan;
+  const chunk = CURSOR.historyChunk;
   CURSOR.historySpan = 10 * 86400_000;
   CURSOR.historyChunk = 7 * 86400_000;
   cookies = [];
@@ -308,14 +299,14 @@ test("Cursor's model list, session key, alias rewrite and pooled routes", () => 
   expect(cursor.session!(new Headers(), { conversationId: "conv-1" })).toBe("conv-1");
   expect(cursor.session!(new Headers(), {})).toBeUndefined();
   expect(cursor.session!(new Headers(), { conversationId: "x".repeat(129) })).toBeUndefined();
-  expect(requestedModel({ modelName: "gpt-5", model: "other" })).toBe("gpt-5");
-  expect(requestedModel({ modelDetails: { modelId: "auto" } })).toBe("auto");
-  expect(requestedModel({ requestedModel: { modelId: "composer" } })).toBe("composer");
-  expect(rewriteModel({ modelName: "alias", conversationId: "c" }, "gpt-5")).toEqual({
+  expect(cursor.requestedModel!({ modelName: "gpt-5", model: "other" })).toBe("gpt-5");
+  expect(cursor.requestedModel!({ modelDetails: { modelId: "auto" } })).toBe("auto");
+  expect(cursor.requestedModel!({ requestedModel: { modelId: "composer" } })).toBe("composer");
+  expect(cursor.rewriteModel!({ modelName: "alias", conversationId: "c" }, "gpt-5")).toEqual({
     modelName: "gpt-5",
     conversationId: "c",
   });
-  expect(rewriteModel({ modelDetails: { modelId: "alias", maxMode: true } }, "gpt-5")).toEqual({
+  expect(cursor.rewriteModel!({ modelDetails: { modelId: "alias", maxMode: true } }, "gpt-5")).toEqual({
     modelDetails: { modelId: "gpt-5", maxMode: true },
   });
   expect(cursor.probe?.body("gpt-5")).toEqual({ modelName: "gpt-5" });

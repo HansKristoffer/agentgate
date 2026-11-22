@@ -73,6 +73,7 @@ export const sessionNote = {
   stash: (sessionId: string) => `handoff:stash:${sessionId}`,
   lines: (sessionId: string) => `handoff:lines:${sessionId}`,
 };
+
 // A prepare whose manifest never arrives is given up after ten minutes.
 const ABANDONED = 10 * 60_000;
 
@@ -205,9 +206,11 @@ export class Handoffs {
   get closed() {
     return this.signal.aborted;
   }
+
   get pollMs() {
     return this.options.pollMs ?? 1000;
   }
+
   dir(id: string) {
     return join(this.options.tempDir, id);
   }
@@ -262,6 +265,7 @@ export class Handoffs {
       .get(role, id);
     return row ? (this.read(row) as JobOf<R>) : undefined;
   }
+
   list<R extends Role = Role>(role?: R): JobOf<R>[] {
     const rows = this.s.db
       .query<Row, [string | null]>(
@@ -270,6 +274,7 @@ export class Handoffs {
       .all(role ?? null);
     return rows.map((r) => this.read(r) as JobOf<R>);
   }
+
   // Jobs are shown with the threads, so every write the user can see marks `threads` changed; `touch` does not.
   create<R extends Role>(job: NewJob & { role: R }): JobOf<R> {
     const { changes } = this.s.db.run("insert or ignore into handoffs values (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
@@ -286,6 +291,7 @@ export class Handoffs {
     if (changes) this.s.bump("threads");
     return this.load(job.role, job.id)!;
   }
+
   /** The job's step loop is the only writer after creation; a job that failed (an abort) is never brought back.
    * Returns false when it had failed already. */
   save(job: Job): boolean {

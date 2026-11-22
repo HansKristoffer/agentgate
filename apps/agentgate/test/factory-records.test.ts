@@ -3,7 +3,7 @@ import { buildBoard } from "../src/factory/board.ts";
 import { makeCtx } from "../src/daemon.ts";
 import { ensureFactoryTables, items, runs } from "../src/factory/db.ts";
 import { claimWrite } from "../src/factory/outbox.ts";
-import { itemOutcome, runTokens } from "../src/factory/records.ts";
+import { itemOutcome } from "../src/factory/records.ts";
 import { loopTask, type FactoryRuntime } from "../src/factory/runtime.ts";
 import { recordSessionUsage } from "../src/llm/sessions.ts";
 import { host } from "../src/logins.ts";
@@ -65,7 +65,6 @@ test("a run that ends records the tokens of its thread and its subagent threads"
   expect(recorded).toMatchObject({ report: { outcome: "done", result: { kind: "implement", prUrl: pr.url } } });
   expect(items.get(n.s, item.id)!.pr).toMatchObject({ url: pr.url, head: pr.headRefOid, run: run.id });
   expect(items.get(n.s, item.id)!.tokens).toBe(6800);
-  expect(await runTokens(n.f, recorded)).toBe(6800);
 });
 
 test("an item over its token budget has its threads interrupted and waits for the maintainer in its phase, and its threads are not read again", async () => {

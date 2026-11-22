@@ -611,7 +611,7 @@ test("a source with more open labelled issues than one poll reads says so on its
   expect((await row()).error).toBe(undefined);
 });
 
-// ---- gh.ts against what gh really answered (fixtures/gh-recorded.json)
+// The gh.ts tests below replay what gh really answered (fixtures/gh-recorded.json).
 
 const SCRATCH = "HansKristoffer/factory-scratch";
 const EMPTY = "aldevvv/zerolabs";

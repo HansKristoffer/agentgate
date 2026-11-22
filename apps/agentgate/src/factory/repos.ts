@@ -5,7 +5,17 @@ import { items } from "./db.ts";
 import { folderStore } from "./folder-store.ts";
 import { ensureLabel } from "./gh.ts";
 import { operation, shortError, UsageError, type FactoryRuntime } from "./runtime.ts";
-import { block, editYaml, entries, hasTopKey, insertSource, parse, scalar } from "./source-add.ts";
+import {
+  block,
+  editYaml,
+  entries,
+  hasTopKey,
+  insertSource,
+  parse,
+  repositories,
+  scalar,
+  sourcesOf,
+} from "./source-add.ts";
 
 /**
  * The repositories a factory works in: `repo add` and `repo remove` edit `repositories` and the sources in
@@ -32,9 +42,6 @@ export const labelWarnings = (repo: string, label: string) =>
   );
 
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
-const repositories = (config: Record<string, unknown>) => Object.keys((config.repositories as object | null) ?? {});
-const sourcesOf = (config: Record<string, unknown>) =>
-  Array.isArray(config.sources) ? (config.sources as { id?: unknown; repo?: unknown }[]) : [];
 
 /** The first of `issues`, `<name>-issues`, `<name>-issues-2`… that no source has. */
 function sourceId(repo: string, taken: Set<unknown>) {

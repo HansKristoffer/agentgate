@@ -53,9 +53,9 @@ export function TokenCalendar({ connection }: { connection: Connection }) {
   const cuts = [0.25, 0.5, 0.75].map((p) => used[Math.floor(p * (used.length - 1))] ?? 0);
   const level = (v: number) => (v ? 1 + cuts.filter((c) => v > c).length : 0);
   const total = sumBy(values, (v) => v);
-  // A month is labelled above the week its first day falls in.
   const describe = (i: number) =>
     `${values[i] ? `${compact.format(values[i]!)} tokens` : "No tokens"} on ${dayLabel.format(days[i]!)}`;
+  // A month is labelled above the week its first day falls in.
   const months = days.flatMap((d, i) =>
     d.getDate() === 1 && Math.floor(i / 7) < WEEKS - 1 ? [{ week: Math.floor(i / 7), label: month.format(d) }] : [],
   );

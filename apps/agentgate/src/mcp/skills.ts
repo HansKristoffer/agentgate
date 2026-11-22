@@ -71,9 +71,9 @@ function skillsServer(s: Store, project: string): Server {
       );
     }
     if (req.params.name !== "read") return fail(`unknown tool ${req.params.name}`);
-    const id = String(args.id ?? ""),
-      path = String(args.path ?? "SKILL.md"),
-      offset = Number(args.offset ?? 0);
+    const id = String(args.id ?? "");
+    const path = String(args.path ?? "SKILL.md");
+    const offset = Number(args.offset ?? 0);
     if (!ids.includes(id)) return fail(`no skill ${id}`);
     if (!safePath(path)) return fail("invalid path");
     if (!Number.isInteger(offset) || offset < 0) return fail("invalid offset");

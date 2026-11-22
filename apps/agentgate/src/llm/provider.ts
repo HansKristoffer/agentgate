@@ -6,9 +6,11 @@ import { join } from "node:path";
 import type { Tokens } from "../credentials.ts";
 import { saveAccount } from "../operations.ts";
 import type { Credential, Store, Usage } from "../store.ts";
+
 export type { ProviderName };
 export type Window = QuotaWindow;
 export type Observation = { windows: Window[]; status: Usage["status"] };
+
 export interface Provider {
   name: ProviderName;
   /** `json` is `body` already parsed, when it is a JSON object; return `body` itself unless the bytes must change. */
@@ -38,6 +40,7 @@ export interface Provider {
   /** When false, a pooled success without quota headers is normal: quota is read another way. */
   headerQuota?: boolean;
 }
+
 export function capabilities(provider: Provider): ProviderCapabilities {
   return {
     quota: !!provider.fetchQuota,
@@ -46,6 +49,7 @@ export function capabilities(provider: Provider): ProviderCapabilities {
     probe: !!provider.probe,
   };
 }
+
 export function classify(provider: Provider, status: number, headers: Headers, body: string): Failure {
   if (status === 429) return provider.classify429(headers, body);
   if (status === 401) return "login";

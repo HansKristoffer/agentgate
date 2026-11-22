@@ -9,6 +9,9 @@ import { requestDetail, requests, tokenHours, tokenUsage } from "../llm/telemetr
 import { forgetLogin, infisicalSite, setInfisicalIdentity, shareLogins, startInfisicalSignIn } from "../logins.ts";
 import { input, inputAsync, local, optionalJson, required, signal } from "./http.ts";
 
+// The CLI's request timeout (cli/common.ts) is longer than this, so it never gives up first.
+const CHECK_TIMEOUT_MS = 90_000;
+
 /** The proxy's diagnostics and account checks (account writes are operations, ops/accounts.ts), and the shared gh and Infisical logins. */
 export function accounts(ctx: Ctx) {
   const { s } = ctx;
@@ -54,13 +57,8 @@ export function accounts(ctx: Ctx) {
       })
       .strict()
       .parse(await json(c.req.raw));
-    return c.json(
-      await ctx.proxyOperations.batch(
-        f.ids,
-        f.action,
-        AbortSignal.any([signal(ctx, c.req.raw), AbortSignal.timeout(90000)]),
-      ),
-    );
+    const deadline = AbortSignal.any([signal(ctx, c.req.raw), AbortSignal.timeout(CHECK_TIMEOUT_MS)]);
+    return c.json(await ctx.proxyOperations.batch(f.ids, f.action, deadline));
   });
   app.post("/accounts/:id/verify", async (c) => {
     required(s.get("account", c.req.param("id")), "account");
@@ -69,13 +67,8 @@ export function accounts(ctx: Ctx) {
       .strict()
       .parse(await optionalJson(c.req.raw));
     if (f.probe && !f.model) throw new HTTPException(400, { message: "Choose a model for the quota-consuming probe" });
-    return c.json(
-      await ctx.proxyOperations.verify(
-        c.req.param("id"),
-        AbortSignal.any([signal(ctx, c.req.raw), AbortSignal.timeout(90000)]),
-        f,
-      ),
-    );
+    const deadline = AbortSignal.any([signal(ctx, c.req.raw), AbortSignal.timeout(CHECK_TIMEOUT_MS)]);
+    return c.json(await ctx.proxyOperations.verify(c.req.param("id"), deadline, f));
   });
   // Sharing reads this machine's own gh and Infisical logins, like coding-tool setup: loopback only.
   app.post("/logins/share", async (c) => {

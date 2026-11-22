@@ -35,13 +35,16 @@ export const PORT = Number(process.env.AGENTGATE_PORT ?? (SANDBOX ? devPort(CHEC
 export const DEV = (SANDBOX !== undefined && CONFIG_DIR === SANDBOX) || process.env.AGENTGATE_DEV === "1";
 /** Guard for changes to this machine's real setup: the user service, ~/.claude, ~/.codex, Claude Desktop. */
 export function liveOnly(what: string) {
-  if (DEV)
+  if (DEV) {
     throw new Error(
       `${what} would change this machine's real setup, which a checkout's dev daemon must not do. Set AGENTGATE_HOME and AGENTGATE_PORT to target an install on purpose.`,
     );
+  }
 }
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535)
+
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   throw new Error("AGENTGATE_PORT must be an integer between 1 and 65535");
+}
 export const LOCAL_URL = `http://127.0.0.1:${PORT}`;
 
 /** SQLite says SQLITE_FULL ("database or disk is full") for a full disk, a short write and a full temporary folder
@@ -269,6 +272,7 @@ export function requireNodeProtocol(s: Store, protocol: number, what: string) {
 /** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
 export const requireFactoryProtocol = (s: Store) =>
   requireNodeProtocol(s, FACTORY_PROTOCOL, "cannot sync factory settings and secrets");
+
 /** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
 export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
 
@@ -311,8 +315,9 @@ export function parseData<K extends Kind>(kind: K, key: string, input: unknown):
   const payloadId = value.id ?? value.accountId ?? value.instanceId;
   if (payloadId !== undefined && payloadId !== key) throw new Error(`${kind}: record ID does not match its data`);
   if (kind === "setting" && key !== "settings") throw new Error("invalid settings ID");
-  if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`)
+  if (kind === "refreshRequest" && key !== `${value.targetKind}:${value.targetId}`) {
     throw new Error("invalid refresh request ID");
+  }
   if (kind === "tokens" && !key.startsWith(`${value.node}:`)) throw new Error("invalid token usage ID");
   return parsed;
 }
@@ -390,6 +395,7 @@ export class Store {
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn).immediate();
   }
+
   close() {
     this.closed = true;
     this.db.close();
@@ -420,10 +426,12 @@ export class Store {
         this.db.run("create index if not exists proxy_requests_time on proxy_requests(at)");
         this.db.run("create index if not exists proxy_attempts_request on proxy_attempts(request_id)");
         // Re-publish existing relay records in the versioned encrypted payload format.
-        for (const [key] of this.localPrefixed("relay:"))
+        for (const [key] of this.localPrefixed("relay:")) {
           if (key.endsWith(":pushed") || key === "relay:pushed") this.setLocal(key, undefined);
-        if (this.db.query("select name from sqlite_master where type='table' and name='relay_pending'").get())
+        }
+        if (this.db.query("select name from sqlite_master where type='table' and name='relay_pending'").get()) {
           this.db.run("delete from relay_pending");
+        }
         this.db.run("pragma user_version = 2");
       }
     });
@@ -457,8 +465,11 @@ export class Store {
 
   setLocal(key: string, value: string | undefined) {
     if (key === "node") this.node = undefined;
-    if (value === undefined) this.db.run("delete from local where key = ?", [key]);
-    else this.db.run("insert or replace into local values (?, ?)", [key, value]);
+    if (value === undefined) {
+      this.db.run("delete from local where key = ?", [key]);
+    } else {
+      this.db.run("insert or replace into local values (?, ?)", [key, value]);
+    }
   }
 
   /** Marks a topic changed. No-op without a listener. */
@@ -492,12 +503,14 @@ export class Store {
         "select seq, deleted from records where kind = ? and id = ?",
       )
       .get(kind, id);
-    if (!row || row.deleted) cache.delete(id);
-    else if (cache.get(id)?.seq !== row.seq) {
+    if (!row || row.deleted) {
+      cache.delete(id);
+    } else if (cache.get(id)?.seq !== row.seq) {
       const r = this.record(kind, id);
       if (r) this.remember(cache, r);
       else cache.delete(id);
     }
+
     return cache.get(id)?.value as Stored<Data<K>> | undefined;
   }
 
@@ -672,6 +685,7 @@ export class Store {
       return true;
     });
   }
+
   releaseLease(key: string, owner: string) {
     this.transaction(() => {
       const raw = this.local(key);
@@ -707,6 +721,7 @@ export function refreshHash(kind: Kind, data: unknown): string | undefined {
   const token = kind === "credential" ? d?.refreshToken : kind === "mcpCredential" ? d?.tokens?.refresh_token : "";
   return typeof token === "string" && token ? new Bun.CryptoHasher("sha256").update(token).digest("hex") : undefined;
 }
+
 /** The topics whose views show records of `kind`. */
 export function topicsOf(kind: Kind): Topic[] {
   if (kind === "tokens") return ["activity"];
@@ -809,7 +824,9 @@ export function importBackup(s: Store, input: unknown) {
         const { oauth, ...config } = r.data as McpInstance;
         s.put("mcp", r.id, config);
         if (oauth) s.put("mcpCredential", r.id, { ...oauth, instanceId: r.id, holder: s.nodeId });
-      } else s.put(r.kind, r.id, r.data);
+      } else {
+        s.put(r.kind, r.id, r.data);
+      }
     }
     return records.length;
   });

@@ -32,8 +32,9 @@ export const host = {
     if (!bin) throw new Error("Claude Code is not installed");
     // This is the primary login, even when the daemon was launched from an isolated agent session.
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: host.home };
-    for (const key of ["CLAUDE_CONFIG_DIR", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"])
+    for (const key of ["CLAUDE_CONFIG_DIR", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
       delete env[key];
+    }
     signal.throwIfAborted();
     const child = Bun.spawn([bin, "auth", "login", "--claudeai"], {
       env,

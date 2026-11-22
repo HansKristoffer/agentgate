@@ -48,8 +48,8 @@ const contents = (dir: string) =>
     [...readStore(dir).files].map(([path, f]) => [path, f.machine ? "(machine)" : f.data!.toString()]),
   );
 
-const stores: Store[] = [],
-  watchers: CheckoutFiles[] = [];
+const stores: Store[] = [];
+const watchers: CheckoutFiles[] = [];
 afterEach(() => {
   for (const w of watchers.splice(0)) w.close();
   for (const s of stores.splice(0)) s.close();
@@ -115,8 +115,8 @@ test("a lock is taken atomically and a stale one (dead process, or over 30 secon
     mkdirSync(join(dir, ".lock"), { recursive: true });
     writeFileSync(join(dir, ".lock", "owner.json"), JSON.stringify({ pid, host, createdAt }));
   };
-  const now = Date.now(),
-    recent = new Date(now - 1000).toISOString();
+  const now = Date.now();
+  const recent = new Date(now - 1000).toISOString();
   owner(2 ** 22 + 17, recent); // no such process here
   lockStore(dir, now)();
   owner(process.pid, new Date(now - 31_000).toISOString());
@@ -149,8 +149,8 @@ test("readers trust the manifest: a mismatched data file is a write in progress,
 });
 
 test("stores sync through the project record, without machine files or machine-bound stores", () => {
-  const a = node("a"),
-    b = node("b");
+  const a = node("a");
+  const b = node("b");
   pair(a, b);
   fixtureStore(join(a.root, KEY), {
     ".env.local": { data: "TOKEN=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
@@ -187,8 +187,8 @@ test("stores sync through the project record, without machine files or machine-b
 });
 
 test("concurrent edits on two machines: each file goes to its newer save, and a deletion survives losing the record", () => {
-  const a = node("a"),
-    b = node("b");
+  const a = node("a");
+  const b = node("b");
   pair(a, b);
   fixtureStore(join(a.root, KEY), {
     ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
@@ -257,8 +257,8 @@ test("a sync that throws in the debounce timer is logged by name, and the daemon
 });
 
 test("a store in a format this agentgate does not know is left alone, and old nodes hold the record back", () => {
-  const a = node("a"),
-    old = node("old", 5);
+  const a = node("a");
+  const old = node("old", 5);
   pair(a, old);
   fixtureStore(join(a.root, KEY), { ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } }, 2);
   const before = readFileSync(join(a.root, KEY, "manifest.json"), "utf8");
@@ -270,8 +270,8 @@ test("a store in a format this agentgate does not know is left alone, and old no
   expect(readFileSync(join(a.root, KEY, "manifest.json"), "utf8")).toBe(before);
   expect(JSON.parse(a.s.local("checkoutFiles:errors")!)["bliss-budget/budget-app"]).toContain("newer format");
 
-  const c = node("c"),
-    other = node("other", 5);
+  const c = node("c");
+  const other = node("other", 5);
   pair(c, other);
   fixtureStore(join(c.root, KEY), { ".env": { data: "V=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   reconcile(c.s, c.root, KEY);
@@ -284,8 +284,8 @@ test("a store in a format this agentgate does not know is left alone, and old no
 });
 
 test("a checkout without buncargo gets missing store files and keeps its own", async () => {
-  const root = tmp(),
-    cwd = tmp();
+  const root = tmp();
+  const cwd = tmp();
   fixtureStore(join(root, KEY), {
     ".env": { data: "STORE=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
     "apps/expo-app/.env": { data: "EXPO=1\n", updatedAt: "2026-10-01T00:00:00.000Z" },
@@ -301,9 +301,9 @@ test("a checkout without buncargo gets missing store files and keeps its own", a
 });
 
 test("in a buncargo checkout, buncargo's status picks what a handoff carries and its pull fills the checkout", async () => {
-  const home = tmp(),
-    root = join(home, ".buncargo", "files"),
-    cwd = tmp();
+  const home = tmp();
+  const root = join(home, ".buncargo", "files");
+  const cwd = tmp();
   const status = {
     version: 1,
     repoKey: KEY,
@@ -327,8 +327,8 @@ test("in a buncargo checkout, buncargo's status picks what a handoff carries and
 });
 
 test("closing stops a running buncargo together with the processes it started", async () => {
-  const root = join(tmp(), ".buncargo", "files"),
-    cwd = tmp();
+  const root = join(tmp(), ".buncargo", "files");
+  const cwd = tmp();
   fakeBuncargo(cwd);
   // This buncargo starts a child of its own, writes both pids once it has, and hangs.
   writeFileSync(
@@ -364,8 +364,8 @@ setInterval(() => {}, 1000);
 });
 
 test("a handed-off file replaces the checkout's copy only when that copy has no edits of its own", () => {
-  const root = tmp(),
-    cwd = tmp();
+  const root = tmp();
+  const cwd = tmp();
   fixtureStore(join(root, KEY), { ".env": { data: "STORE\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   writeFileSync(join(cwd, ".env"), "STORE\n");
   expect(placeEdit(root, KEY, cwd, ".env", Buffer.from("ARRIVED\n"))).toBe(true);
@@ -384,8 +384,8 @@ test("editing a file in the app saves it for every machine and updates this mach
     ".env.machine": { data: "HOST=laptop\n", updatedAt: "2026-10-01T00:00:00.000Z", machine: true },
   });
   files(a).sync();
-  const clean = tmp(),
-    edited = tmp();
+  const clean = tmp();
+  const edited = tmp();
   writeFileSync(join(clean, ".env"), "OLD=1\n");
   writeFileSync(join(edited, ".env"), "MINE=1\n");
   const withBuncargo = tmp();
@@ -446,8 +446,8 @@ test("a save follows into every worktree of a registered checkout, and logs what
   fixtureStore(join(a.root, KEY), { ".env": { data: "OLD=1\n", updatedAt: "2026-10-01T00:00:00.000Z" } });
   files(a).sync();
   // SkillLinks registers only the main checkout; its worktrees live elsewhere, as T3 Code's do.
-  const main = tmp(),
-    trees = tmp();
+  const main = tmp();
+  const trees = tmp();
   sh(main, "init", "-b", "main");
   writeFileSync(join(main, ".gitignore"), ".env\nnode_modules\ncalls.log\ndev.config.ts\n");
   sh(main, "add", "-A");
@@ -478,8 +478,8 @@ test("a save follows into every worktree of a registered checkout, and logs what
 });
 
 test("a SQLite write that fails says which write, which database and what the disks have free", () => {
-  const dir = tmp(),
-    s = new Store(join(dir, "agentgate.db"));
+  const dir = tmp();
+  const s = new Store(join(dir, "agentgate.db"));
   stores.push(s);
   s.setLocal("node", "a");
   s.put("node", "a", { id: "a", protocol: 6 });

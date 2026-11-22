@@ -38,6 +38,21 @@ function detect(provider: keyof typeof providerLogins) {
   return found;
 }
 
+/** The coding tools' logins found on this machine that are not in the pool yet. A Claude login the daemon already
+ * shows as `localClaudeLogin` is left out. */
+function detectedLogins(s: Ctx["s"], hasLocalClaudeLogin: boolean) {
+  return providerSchema.options.flatMap((provider) => {
+    const found = detect(provider);
+    if (!found) return [];
+
+    const email = found.email.toLowerCase();
+    const isPooled = s.list("account").some((a) => a.provider === provider && a.email?.toLowerCase() === email);
+    if (isPooled || (provider === "claude" && hasLocalClaudeLogin)) return [];
+
+    return [{ provider, ...found, source: detectedSource[provider] }];
+  });
+}
+
 /** Status, the change feed, settings and backups. */
 export function system(ctx: Ctx) {
   const { s } = ctx;
@@ -63,17 +78,7 @@ export function system(ctx: Ctx) {
       node: s.nodeId,
       accounts: s.list("account").map((a) => accountStatus(s, a)),
       localClaudeLogin: claudeLogin,
-      detected: providerSchema.options.flatMap((provider) => {
-        const found = detect(provider);
-        const pooled =
-          found &&
-          s
-            .list("account")
-            .some((a) => a.provider === provider && a.email?.toLowerCase() === found.email.toLowerCase());
-        return found && !pooled && !(provider === "claude" && claudeLogin)
-          ? [{ provider, ...found, source: detectedSource[provider] }]
-          : [];
-      }),
+      detected: detectedLogins(s, !!claudeLogin),
       servers: s.list("mcp").map((i) => {
         const health = serverHealth(s, i.id);
         return {

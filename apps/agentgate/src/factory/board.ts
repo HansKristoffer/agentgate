@@ -8,7 +8,7 @@ import { runs } from "./db.ts";
 import { mirrorOf, timing } from "./mirror.ts";
 import { needsYouLines } from "./needs-you.ts";
 import { FACTORY_PAGE } from "./page.ts";
-import { logError, operation, UsageError, type FactoryRuntime } from "./runtime.ts";
+import { logError, operation, UsageError, type BoardPart, type FactoryRuntime } from "./runtime.ts";
 import { preflight, unreachableCheck } from "./preflight.ts";
 import { needsSignIn } from "./t3-mcp.ts";
 import { frozenItems } from "./view.ts";
@@ -160,7 +160,7 @@ const defined = <T extends object>(o: T | undefined) =>
 /** Arrays add up (items by id, the later part winning), sources by id key by key, `t3` and `capacity` merge key by
  * key, and any other key is the later part's. `t3` merges because the mirror and the T3 sign-in each report half of
  * it, and a source row because intake reports its polls and the webhooks its URL. */
-function merge(board: FactoryBoard, part: Partial<FactoryBoard>): FactoryBoard {
+function merge(board: FactoryBoard, part: BoardPart): FactoryBoard {
   const { items, sources, machines, events, t3, capacity, ...rest } = part;
   const byId = new Map(board.sources.map((row) => [row.id, row]));
   for (const row of sources ?? []) byId.set(row.id, { ...byId.get(row.id), ...row });

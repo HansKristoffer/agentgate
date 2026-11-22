@@ -21,9 +21,11 @@ export function scrubDevStore(s: Store) {
     const tables = (s.db.query("select name from sqlite_master where type = 'table'").all() as { name: string }[]).map(
       (t) => t.name,
     );
-    for (const table of tables)
-      if (["relay_counters", "relay_pending", "session_usage"].includes(table) || table.startsWith("factory_"))
+    for (const table of tables) {
+      if (["relay_counters", "relay_pending", "session_usage"].includes(table) || table.startsWith("factory_")) {
         s.db.run(`delete from ${table}`);
+      }
+    }
 
     for (const row of s.db.query("select id, data from records where kind = 'mcp' and deleted = 0").all() as {
       id: string;
@@ -42,8 +44,9 @@ export function scrubDevStore(s: Store) {
       data: string;
     }[]) {
       const { factoryWebhook, ...project } = JSON.parse(row.data);
-      if (factoryWebhook)
+      if (factoryWebhook) {
         s.db.run("update records set data = ? where kind = 'project' and id = ?", [JSON.stringify(project), row.id]);
+      }
     }
 
     const settings = s.db.query("select data from records where kind = 'setting' and id = 'settings'").get() as {
@@ -68,13 +71,12 @@ async function main() {
   if (!DEV) die("Run this from a checkout without AGENTGATE_HOME set; it only writes a checkout's dev store.");
   const live = join(homedir(), ".config", "agentgate", "agentgate.db");
   if (!existsSync(live)) die(`No live store at ${live}.`);
-  if (
-    await fetch(`${LOCAL_URL}/api/status`).then(
-      () => true,
-      () => false,
-    )
-  )
-    die(`Stop the dev daemon at ${LOCAL_URL} first.`);
+  const daemonRunning = await fetch(`${LOCAL_URL}/api/status`).then(
+    () => true,
+    () => false,
+  );
+  if (daemonRunning) die(`Stop the dev daemon at ${LOCAL_URL} first.`);
+
   const target = join(CONFIG_DIR, "agentgate.db");
   if (existsSync(target) && !Bun.argv.includes("--force")) die(`${target} exists; pass --force to replace it.`);
 

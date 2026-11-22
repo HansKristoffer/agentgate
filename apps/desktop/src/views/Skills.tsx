@@ -70,6 +70,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const [instructions, setInstructions] = useState<{ text: string; revision?: string }>();
   const defaults = data.projects.find((p) => p.id === "*");
   const agentsMd = defaults?.agentsMd ?? "";
+  const agentsMdPath = data.agentsMdPath;
   const [skillName, setSkillName] = useState("");
   const [assign, setAssign] = useState<string>();
   const [repoAssign, setRepoAssign] = useState<string>();
@@ -214,7 +215,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
           ))}
         </Panel>
       )}
-      {data.agentsMdPath && (
+      {agentsMdPath && (
         <Panel
           title="AGENTS.md"
           detail="Instructions Claude Code and Codex read in every project, on every machine. Edit them here or in any editor: saving the file updates your other machines."
@@ -225,16 +226,14 @@ export function Skills({ data, connection, perform }: ViewProps) {
             </div>
             <div className="grow">
               <div className="row group">
-                <strong>{data.agentsMdPath}</strong>
+                <strong>{agentsMdPath}</strong>
                 <Button
                   isIconOnly
                   size="sm"
                   variant="ghost"
                   aria-label="Copy path"
                   className="-ml-1.5 size-5 min-w-0 rounded-md text-(--muted) opacity-0 group-hover:opacity-100 hover:text-(--foreground) focus-visible:opacity-100"
-                  onPress={() =>
-                    void navigator.clipboard.writeText(data.agentsMdPath!).then(() => toast("Copied the path"))
-                  }
+                  onPress={() => void navigator.clipboard.writeText(agentsMdPath).then(() => toast("Copied the path"))}
                 >
                   <Copy size={12} />
                 </Button>

@@ -23,8 +23,10 @@ export const skillIdSchema = z.string().regex(SKILL_ID);
 const SKILL_REPO = /^https:\/\/github\.com\/[a-z0-9-]+\/[a-z0-9._-]+$/;
 export const skillRepoSchema = z.string().max(256).regex(SKILL_REPO);
 export const projectIdSchema = z.string().max(512).regex(PROJECT_ID);
-export const decodedSize = (data: string) =>
-  (data.length / 4) * 3 - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+export const decodedSize = (data: string) => {
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
+};
 export const safePath = (path: string) =>
   !path.startsWith("/") &&
   !/[\\\x00-\x1f]/.test(path) &&
@@ -58,30 +60,38 @@ export const skillSchema = z
     for (const [index, file] of skill.files.entries()) {
       encoded += file.data.length;
       const path = file.path.normalize("NFC").toLowerCase();
-      if (paths.has(path))
+      if (paths.has(path)) {
         ctx.addIssue({
           code: "custom",
           path: ["files", index, "path"],
           message: "duplicate or case-colliding skill path",
         });
+      }
       paths.add(path);
+
       const parts = path.split("/");
       for (let i = 1; i < parts.length; i++) directories.add(parts.slice(0, i).join("/"));
     }
-    if ([...paths].some((path) => directories.has(path)))
+    if ([...paths].some((path) => directories.has(path))) {
       ctx.addIssue({ code: "custom", path: ["files"], message: "skill file/directory collision" });
+    }
 
     const md = skill.files.find((file) => file.path === "SKILL.md");
-    if (!md || !md.data || (base64.test(md.data) && !atob(md.data).trim()))
+    if (!md || !md.data || (base64.test(md.data) && !atob(md.data).trim())) {
       ctx.addIssue({ code: "custom", path: ["files"], message: "a nonempty root SKILL.md is required" });
-    if (encoded > MAX_SKILL)
+    }
+
+    if (encoded > MAX_SKILL) {
       ctx.addIssue({
         code: "custom",
         path: ["files"],
         message: "skill exceeds 3 MiB of encoded data (about 2.25 MiB of files)",
       });
-    if (new TextEncoder().encode(JSON.stringify(skill)).byteLength > MAX_RECORD)
+    }
+
+    if (new TextEncoder().encode(JSON.stringify(skill)).byteLength > MAX_RECORD) {
       ctx.addIssue({ code: "custom", message: "skill record exceeds 4 MiB" });
+    }
   })
   .transform((skill) => ({
     ...skill,

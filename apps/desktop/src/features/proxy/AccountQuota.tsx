@@ -6,6 +6,7 @@ import type { AccountStatus } from "@agentgate/protocol";
 import { Badge, Quota } from "../../components/ui.tsx";
 import { ago, resetIn, windowName } from "../../views/utils.ts";
 
+// One shared one-second ticker for every quota on screen, running only while one is mounted.
 const listeners = new Set<() => void>();
 let timer: ReturnType<typeof setInterval> | undefined;
 const subscribe = (listener: () => void) => {
@@ -23,6 +24,7 @@ const subscribe = (listener: () => void) => {
   };
 };
 const snapshot = () => Math.floor(Date.now() / 1000);
+
 /** The account's limits as small bars with their resets, on Overview and Accounts. Stale usage gets a warning icon; `onRefresh` makes it a refresh button. */
 export function AccountQuota({
   account,

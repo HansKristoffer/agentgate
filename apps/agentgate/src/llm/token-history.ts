@@ -17,8 +17,8 @@ import { CLAUDE_DIR, CODEX_DIR, PRIMARY_CLAUDE_DIR, PRIMARY_CODEX_DIR } from "..
 import { nodesBelow, parseData, type Data, type Rec, type Store } from "../store.ts";
 import type { Tokens } from "./telemetry.ts";
 
-const HOUR = 3_600_000,
-  DAY = 86_400_000;
+const HOUR = 3_600_000;
+const DAY = 86_400_000;
 /** The node protocol that understands `tokens` records (see NODE_PROTOCOL in remote.ts). */
 const TOKENS_PROTOCOL = 3;
 /** The Claude Code and Codex homes whose session logs hold this machine's usage: the user's own, and agentgate's. Then
@@ -30,10 +30,11 @@ export const LOG_DIRS = {
 };
 
 type Hours = Map<string, Tokens & { hour: number; model: string }>;
+
 function add(hours: Hours, at: number, model: string, t: Tokens) {
   if (!(t.input + t.output + t.cacheRead + t.cacheWrite)) return;
-  const hour = at - (at % HOUR),
-    key = `${hour}\0${model}`;
+  const hour = at - (at % HOUR);
+  const key = `${hour}\0${model}`;
   const sum = hours.get(key) ?? { hour, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   sum.input += t.input;
   sum.output += t.output;
@@ -78,9 +79,10 @@ export async function backfillTokens(
     const first = s.db
       .query<{ hour: number | null }, [string]>("select min(hour) as hour from token_usage where provider = ?")
       .get(provider)!.hour;
-    const before = first ?? s.now() - (s.now() % HOUR),
-      hours: Hours = new Map(),
-      seen = new Set<number>();
+    const before = first ?? s.now() - (s.now() % HOUR);
+    const hours: Hours = new Map();
+    const seen = new Set<number>();
+
     for (const dir of new Set(dirs[provider])) {
       const root = join(dir, provider === "claude" ? "projects" : "sessions");
       for (const path of await (provider === "claude" ? listClaudeCodeFiles : listCodexFiles)(root)) {
@@ -111,8 +113,8 @@ const antigravitySeen = defineLocal("tokens:antigravity", z.record(z.string(), z
  * history again (`publishTokens`).
  */
 export async function collectAntigravity(s: Store, dirs = LOG_DIRS.antigravity) {
-  const seen = antigravitySeen.get(s) ?? {},
-    next: Record<string, number> = {};
+  const seen = antigravitySeen.get(s) ?? {};
+  const next: Record<string, number> = {};
   let oldest = Infinity;
   for (const dir of dirs)
     for (const path of await listAntigravityFiles(dir)) {
@@ -164,6 +166,7 @@ export async function collectAntigravity(s: Store, dirs = LOG_DIRS.antigravity) 
 }
 
 const FOLD_AFTER = 90 * DAY;
+
 /** Well under the relay's 1 MiB record limit; a month heavier than this stays in days. */
 const MAX_MONTH = 512 * 1024;
 
@@ -173,16 +176,16 @@ const MAX_MONTH = 512 * 1024;
  * for any range that reaches into it. The month's rows are its days' rows, so the totals do not change; the days
  * become tombstones. */
 function foldTokens(s: Store) {
-  const prefix = `${s.nodeId}:`,
-    months = new Map<string, Rec[]>();
+  const prefix = `${s.nodeId}:`;
+  const months = new Map<string, Rec[]>();
   // `;` follows `:`, so the range is every ID with this node's prefix.
   for (const r of s.db
     .query<Rec, [string, string]>("select * from records where kind = 'tokens' and deleted = 0 and id > ? and id < ?")
     .all(prefix, `${s.nodeId};`)) {
     const day = r.id.slice(prefix.length);
     if (!/^\d{4}-\d\d-\d\d$/.test(day)) continue;
-    const date = new Date(day),
-      monthEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1);
+    const date = new Date(day);
+    const monthEnd = Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1);
     if (monthEnd > s.now() - FOLD_AFTER) continue;
     const month = new Date(monthEnd - DAY).toISOString().slice(0, 10);
     months.set(month, [...(months.get(month) ?? []), r]);
@@ -234,8 +237,8 @@ export function publishTokens(s: Store) {
   const tokenRows: Data<"tokens">["rows"] = rows.map(({ account, ...row }) => (account ? { ...row, account } : row));
   const days = groupBy(tokenRows, (row) => new Date(row.hour).toISOString().slice(0, 10));
   for (const [day, dayRows = []] of typedEntries(days)) {
-    const id = `${s.nodeId}:${day}`,
-      data = parseData("tokens", id, { id, node: s.nodeId, rows: dayRows });
+    const id = `${s.nodeId}:${day}`;
+    const data = parseData("tokens", id, { id, node: s.nodeId, rows: dayRows });
     if (s.record("tokens", id)?.data !== JSON.stringify(data)) s.put("tokens", id, data);
   }
   // Recheck the last week each time: Cursor publishes some usage late.

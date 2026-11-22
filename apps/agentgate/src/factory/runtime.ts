@@ -219,6 +219,12 @@ export interface ForwardOp {
 }
 type Forwarder = (op: ForwardOp) => Promise<unknown>;
 
+/** A feature's part of the board. `t3` and `capacity` are reported in pieces and merged key by key (board.ts). */
+export type BoardPart = Partial<Omit<FactoryBoard, "t3" | "capacity">> & {
+  t3?: Partial<FactoryBoard["t3"]>;
+  capacity?: Partial<FactoryBoard["capacity"]>;
+};
+
 export interface FactoryRuntime {
   ctx: Ctx;
   s: Store;
@@ -229,7 +235,7 @@ export interface FactoryRuntime {
   loops: FactoryLoop[];
   runKinds: Map<RunKind, RunKindDefinition>;
   sources: Map<SourceType, SourceAdapter>;
-  boardParts: Array<() => Promise<Partial<FactoryBoard>>>;
+  boardParts: Array<() => Promise<BoardPart>>;
   checks: CheckSource[];
   page?: (req: Request, listener: Listener) => Promise<Response>; // set by the board feature
   forwarder?: Forwarder; // set by the follow feature

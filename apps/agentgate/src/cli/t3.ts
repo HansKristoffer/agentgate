@@ -48,9 +48,8 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         else if (rest[0]) die("t3 sync [on|off]");
         await management("/t3/projects/sync", "POST").catch(() => {}); // a stopped daemon syncs when it starts
         const error = t3.t3State(s).projectSyncError;
-        return console.log(
-          `T3 project sync is ${s.settings().t3ProjectSync ? "on" : "off"} on every machine${error ? `; here: ${error}` : ""}`,
-        );
+        const state = s.settings().t3ProjectSync ? "on" : "off";
+        return console.log(`T3 project sync is ${state} on every machine${error ? `; here: ${error}` : ""}`);
       }
       if (sub === "history") {
         if (rest[0] === "on" || rest[0] === "off") patchSettings(s, { t3HandoffHistory: rest[0] === "on" });
@@ -62,20 +61,28 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
       if (sub && sub !== "status") showHelp();
       const st = t3.t3State(s);
       if (!st.url) return console.log("T3 Code is not connected. With T3 Code running, run: agentgate t3 connect");
-      return console.log(
-        `T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${st.connected ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}` : "token expired"}${st.repair ? "; pair again soon: agentgate t3 connect" : ""}`,
-      );
+
+      const token = st.connected
+        ? `connected, token expires ${new Date(st.expiresAt!).toISOString().slice(0, 10)}`
+        : "token expired";
+      const repair = st.repair ? "; pair again soon: agentgate t3 connect" : "";
+      return console.log(`T3 Code${st.label ? ` ${st.label}` : ""} at ${st.url}: ${token}${repair}`);
     }
     case "threads": {
       const nodes = await management<NodeThreads[]>("/threads");
       for (const n of nodes.filter((n) => !str("node") || n.node === str("node"))) {
-        console.log(
-          `\n${n.node}${n.server ? " (server)" : ""}${n.error ? `  ${n.error}` : !n.t3?.connected ? "  T3 Code not connected" : ""}`,
-        );
-        for (const th of n.threads)
+        const problem = n.error ? `  ${n.error}` : !n.t3?.connected ? "  T3 Code not connected" : "";
+        console.log(`\n${n.node}${n.server ? " (server)" : ""}${problem}`);
+
+        for (const thread of n.threads) {
+          const state = (thread.running ? "running" : "idle").padEnd(8);
+          const branch = thread.branch ? `@${thread.branch}` : "";
+          const notClaude = thread.claude ? "" : "  (not Claude)";
+          const link = thread.link ? `  ${thread.link}` : "";
           console.log(
-            `  ${th.id.padEnd(40)} ${(th.running ? "running" : "idle").padEnd(8)} ${th.project}${th.branch ? `@${th.branch}` : ""}  ${th.title}${th.claude ? "" : "  (not Claude)"}${th.link ? `  ${th.link}` : ""}`,
+            `  ${thread.id.padEnd(40)} ${state} ${thread.project}${branch}  ${thread.title}${notClaude}${link}`,
           );
+        }
       }
       return;
     }
@@ -119,10 +126,14 @@ export const run: Run = async (cmd, [sub, ...rest], opts) => {
         );
         return console.log(r.message);
       }
-      for (const j of await management<HandoffJob[]>("/handoffs"))
+      for (const job of await management<HandoffJob[]>("/handoffs")) {
+        const created = new Date(job.createdAt).toISOString().slice(0, 16);
+        const error = job.error ? `\n    ${job.error}` : "";
+        const warnings = job.warnings.map((warning) => `\n    warning: ${warning}`).join("");
         console.log(
-          `${new Date(j.createdAt).toISOString().slice(0, 16)}  ${j.id}  ${j.from} → ${j.to}  ${j.status.padEnd(8)} ${j.step.padEnd(9)} ${j.title ?? j.thread}${j.error ? `\n    ${j.error}` : ""}${j.warnings.map((w) => `\n    warning: ${w}`).join("")}`,
+          `${created}  ${job.id}  ${job.from} → ${job.to}  ${job.status.padEnd(8)} ${job.step.padEnd(9)} ${job.title ?? job.thread}${error}${warnings}`,
         );
+      }
       return;
     }
   }

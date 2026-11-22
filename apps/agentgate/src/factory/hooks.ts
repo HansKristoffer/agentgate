@@ -24,7 +24,7 @@ import { deleteSecret, getSecret, resolveSecretRef, setSecret } from "./secrets.
 export const http = { fetch: fetchHeaders };
 
 type WebhookSource = Extract<FactorySource, { type: "webhook" }>;
-type HookSource = Extract<FactorySource, { type: "webhook" }> | (FactorySource & { webhook: { secret: string } });
+type HookSource = WebhookSource | (FactorySource & { webhook: { secret: string } });
 
 /** The URL's relay credentials, kept as the synced `~hook:<source>` secret so the URL survives a move. */
 const credentialsSchema = z.object({
