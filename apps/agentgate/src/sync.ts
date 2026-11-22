@@ -93,7 +93,7 @@ export async function join(s: Store, url: string, code: string, selfUrl: string)
     throw new Error(`join failed: ${res.status}`);
   }
   const response = JSON.parse(
-    new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(10000))),
+    new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(10_000))),
   );
   const { node, token } = z
     .object({ node: z.string().min(1), token: z.string().min(32), protocol: z.literal(SYNC_PROTOCOL) })
@@ -210,8 +210,9 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
       const cursor = body.seq < p.cursor ? 0 : body.seq;
       s.db.run("update peers set cursor = ?, last_seen = ? where node = ?", [cursor, s.now(), p.node]);
       // Heartbeats heard second-hand, so a node that is paired only through a middle node is not seen as offline.
-      for (const [node, at] of Object.entries(body.seen ?? {}))
+      for (const [node, at] of Object.entries(body.seen ?? {})) {
         if (node !== s.nodeId && at > lastSeen(s, node)) s.setLocal(`seen:${node}`, String(Math.min(at, s.now())));
+      }
       syncError.set(s, p.node, undefined);
       noteSyncRound(s);
       return taken;
@@ -241,17 +242,20 @@ export async function pullAll(s: Store) {
  * peer whose connection hangs holds back neither the others nor their next round. */
 export function startPulls(s: Store) {
   const running = pulls.get(s);
-  for (const p of peers(s)) if (!running?.has(p.node)) void pullRecordingErrors(s, p).catch(() => {});
+  for (const p of peers(s)) {
+    if (!running?.has(p.node)) void pullRecordingErrors(s, p).catch(() => {});
+  }
 }
 
 /** Nudges each peer to pull now. A missed poke costs nothing: the peer pulls on its own timer. */
 export function poke(s: Store) {
-  for (const p of peers(s))
+  for (const p of peers(s)) {
     fetch(`${p.url}/peer/poke`, {
       method: "POST",
       headers: { authorization: `Bearer ${p.token}` },
       signal: AbortSignal.timeout(5000),
     }).catch(() => {});
+  }
 }
 
 const TOPICS_WAIT = 25_000;
@@ -301,8 +305,11 @@ export function followPeers(
         }
         const body = await readBody(res.body, 64 * 1024, deadline);
         const next = topicsAnswer.parse(JSON.parse(new TextDecoder().decode(body)));
-        if (last)
-          for (const topic of PEER_TOPICS) if (next.versions[topic] !== last.versions[topic]) onMove(node, topic);
+        if (last) {
+          for (const topic of PEER_TOPICS) {
+            if (next.versions[topic] !== last.versions[topic]) onMove(node, topic);
+          }
+        }
         known.set(node, next);
       }
     } catch {
@@ -337,8 +344,9 @@ export function peerRoutes(
       return c.json({ error: "invalid JSON" }, 400);
     }
     const parsed = joinInput.safeParse(body);
-    if (!parsed.success)
+    if (!parsed.success) {
       return c.json({ error: "invalid pairing request; both nodes must use the current agentgate sync protocol" }, 400);
+    }
     const { code, node, url } = parsed.data;
     // A joiner whose answer was lost retries with the same code. Until the code would have expired, the node that used
     // it, from the same URL, gets its token again; anyone else is refused as before.
@@ -349,11 +357,14 @@ export function peerRoutes(
       return c.json({ node: s.nodeId, token: peer.token, protocol: SYNC_PROTOCOL });
     }
     const expected = s.local("pair:code");
-    if (!expected || code !== expected || s.now() > Number(s.local("pair:expires") ?? 0))
+    if (!expected || code !== expected || s.now() > Number(s.local("pair:expires") ?? 0)) {
       return c.json({ error: "bad or expired code" }, 403);
+    }
     if (node === s.nodeId) return c.json({ error: "node name clashes with this node; run init --name" }, 409);
-    if (peers(s).some((p) => p.node === node))
+    if (peers(s).some((p) => p.node === node)) {
       return c.json({ error: "node is already paired; unpair it before pairing again" }, 409);
+    }
+
     const token = randomToken();
     s.transaction(() => {
       s.setLocal("pair:code", undefined);
@@ -379,7 +390,9 @@ export function peerRoutes(
       .safeParse(c.req.query("since") ?? 0);
     if (!cursor.success) return c.json({ error: "invalid cursor" }, 400);
     const seen: Record<string, number> = { [s.nodeId]: s.now() };
-    for (const p of peers(s)) if (p.last_seen) seen[p.node] = p.last_seen;
+    for (const p of peers(s)) {
+      if (p.last_seen) seen[p.node] = p.last_seen;
+    }
     for (const [key, value] of s.localPrefixed("seen:")) seen[key.slice(5)] = Math.min(Number(value), s.now());
     return c.json({
       protocol: SYNC_PROTOCOL,
@@ -388,12 +401,13 @@ export function peerRoutes(
     });
   });
 
-  if (changes)
+  if (changes) {
     app.get("/topics", async (c) => {
       const wait = Math.min(TOPICS_WAIT, Math.max(0, Number(c.req.query("wait") ?? 0) * 1000 || 0));
       await changes.waitPeer(c.req.query("after"), wait, c.req.raw.signal);
       return c.json(changes.peerSnapshot());
     });
+  }
 
   app.post("/poke", (c) => {
     onPoke(c.get("peer"));

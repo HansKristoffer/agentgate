@@ -53,8 +53,9 @@ export function checkRelayUrl(input: string): string {
   }
   const http = u.protocol === "http:" && process.env.AGENTGATE_RELAY_ALLOW_HTTP === "1";
   if (u.protocol !== "https:" && !http) throw new RelayError("The relay URL must use HTTPS");
-  if (u.username || u.password || u.search || u.hash)
+  if (u.username || u.password || u.search || u.hash) {
     throw new RelayError("The relay URL must not contain credentials, a query or a fragment");
+  }
   return trimTrailingSlash(u.toString());
 }
 
@@ -304,8 +305,9 @@ export function withRelay<T>(s: Store, fn: (signal: AbortSignal) => Promise<T>, 
   const run = r.queue.then(async () => {
     const deadline = Date.now() + wait;
     while (!s.acquireLease("relay-lease", r.owner, 60_000)) {
-      if (Date.now() >= deadline)
+      if (Date.now() >= deadline) {
         throw new RelayBusy("Another agentgate process is syncing with the relay; try again shortly");
+      }
       await Bun.sleep(200);
     }
     const renew = setInterval(() => s.acquireLease("relay-lease", r.owner, 60_000), 10_000);
@@ -445,8 +447,9 @@ async function decode(
           e.blob,
         ),
       );
-      if (payload.protocol !== SYNC_PROTOCOL || !payload.record)
+      if (payload.protocol !== SYNC_PROTOCOL || !payload.record) {
         throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
+      }
       // Only the envelope: `merge` parses the data if the record wins.
       const rec = parseEnvelope(payload.record);
       if ((await entryKey(c.keys, rec.kind, rec.id)) !== e.key) throw new Error("entry key mismatch");
@@ -512,7 +515,9 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
     const group = `${c.keys.groupId}|${generation}`;
     let has = r.relayHas.get(t);
     if (!since || has?.group !== group) r.relayHas.set(t, (has = { group, versions: new Map() }));
-    for (const d of decoded) if (d.node === s.nodeId) has.versions.set(d.key, version(d.rec!));
+    for (const d of decoded) {
+      if (d.node === s.nodeId) has.versions.set(d.key, version(d.rec!));
+    }
   }
   return page.data.more;
 }
@@ -585,11 +590,9 @@ async function pushLoop(
           continue;
         }
         const length = JSON.stringify({ key, pusherSeq, blob }).length + 1;
-        if (
-          entries.length &&
-          (entries.length === RELAY_LIMITS.pushEntries || bytes + length > RELAY_LIMITS.messageBytes)
-        )
-          break;
+        const chunkIsFull = entries.length === RELAY_LIMITS.pushEntries || bytes + length > RELAY_LIMITS.messageBytes;
+        if (entries.length && chunkIsFull) break;
+
         oversize.delete(name);
         entries.push({ key, pusherSeq, blob });
         counters.push([key, pusherSeq]);
@@ -608,22 +611,27 @@ async function pushLoop(
       if (!entries.length) continue;
       chunk = { generation, checkpoint, body };
       own ||= snapshot.records.slice(0, taken).some((r) => r.node === s.nodeId);
-    } else own = true;
+    } else {
+      own = true;
+    }
+
     const sent = identity(s, t);
     try {
       await call(c, "POST", "/push", chunk.body, signal);
     } catch (e) {
       // A counter this node no longer knows about is on the relay (e.g. after a restore): re-read first.
-      if (e instanceof RelayError && e.code === "counter")
+      if (e instanceof RelayError && e.code === "counter") {
         s.transaction(() => {
           s.db.run("delete from relay_pending where grp = ?", [grp]);
           setPhase(s, t, "read");
         });
+      }
       throw e;
     }
     s.transaction(() => {
-      if (identity(s, t) !== sent || pending(s, grp)?.body !== chunk!.body)
+      if (identity(s, t) !== sent || pending(s, grp)?.body !== chunk!.body) {
         throw new RelayError("relay configuration changed");
+      }
       put(s, t, "pushed", chunk!.checkpoint);
       s.db.run("delete from relay_pending where grp = ?", [grp]);
     });
@@ -639,12 +647,13 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
   if (phase(s, t) !== "upload") {
     const { json } = await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal);
     const state = groupState.parse(json);
-    if (state.generation !== get(s, t, "generation"))
+    if (state.generation !== get(s, t, "generation")) {
       s.transaction(() => {
         put(s, t, "generation", state.generation);
         for (const f of ["pushed", "cursor", "readCursor"] as const) put(s, t, f, 0);
         s.db.run("delete from relay_pending where grp = ?", [c.keys.groupId]);
       });
+    }
     if (!num(s, t, "readCursor")) put(s, t, "skipped", undefined); // a full re-read retries skipped entries
     for (let more = true; more;) {
       if (budget-- <= 0) return false;
@@ -754,7 +763,9 @@ async function syncTarget(
   // Pulls continue while an upload is blocked, so newer credentials still arrive.
   if (want.pull && phase(s, t) !== "read" && get(s, t, "generation") && ready(s, r, slot("pull"), want.force)) {
     try {
-      for (let pages = 0, more = true; more && pages < 20; pages++) more = await pullPage(s, t, c, signal, false);
+      for (let pages = 0, more = true; more && pages < 20; pages++) {
+        more = await pullPage(s, t, c, signal, false);
+      }
       succeeded(r, slot("pull"));
     } catch (e) {
       if (signal.aborted) throw e;
@@ -768,11 +779,13 @@ async function syncTarget(
 async function runCleanups(s: Store, signal: AbortSignal, force = false) {
   // A group rejoined after its wipe was queued is in use again: drop the job instead of deleting it.
   const live = [get(s, "active", "invite"), get(s, "rot", "invite")];
-  if (cleanups(s).some((j) => live.includes(j.invite)))
+  if (cleanups(s).some((j) => live.includes(j.invite))) {
     setCleanups(
       s,
       cleanups(s).filter((j) => !live.includes(j.invite)),
     );
+  }
+
   for (const job of cleanups(s)) {
     if (!force && job.nextAt > s.now()) continue;
     let done = false;
@@ -787,8 +800,9 @@ async function runCleanups(s: Store, signal: AbortSignal, force = false) {
       const list = cleanups(s);
       const i = list.findIndex((j) => j.invite === job.invite);
       if (i < 0) return;
-      if (done) list.splice(i, 1);
-      else {
+      if (done) {
+        list.splice(i, 1);
+      } else {
         list[i]!.attempts++;
         list[i]!.nextAt =
           s.now() + exponentialBackoff(list[i]!.attempts, { baseMs: 2 * 60_000, maxMs: 6 * 3_600_000, jitter: false });
@@ -805,10 +819,12 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false): Promi
   const newInvite = pending.invite;
   if (get(s, "rot", "invite") !== newInvite) put(s, "rot", "invite", newInvite);
   await syncTarget(s, "rot", signal, { push: false, pull: false, force });
-  if (phase(s, "rot") !== "done")
+  if (phase(s, "rot") !== "done") {
     throw new RelayError(
       get(s, "rot", "pushError") ?? get(s, "rot", "pullError") ?? "The new relay group is not ready yet",
     );
+  }
+
   const active = get(s, "active", "invite");
   const oldGroup = active ? (await conn(s, active)).keys.groupId : undefined;
   s.transaction(() => {
@@ -818,11 +834,12 @@ async function rotationStep(s: Store, signal: AbortSignal, force = false): Promi
       put(s, "rot", f, undefined);
     }
     rotation.set(s, undefined, undefined);
-    if (old)
+    if (old) {
       setCleanups(s, [
         ...cleanups(s).filter((j) => j.invite !== old),
         { invite: old, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 },
       ]);
+    }
     clearSeen(s);
     if (oldGroup) dropGroup(s, oldGroup);
   });
@@ -952,10 +969,11 @@ export function joinRelay(s: Store, text: string, force = false): Promise<{ node
     const c = await conn(s, invite.text);
     try {
       const { json } = await call(c, "GET", "/nodes", undefined, signal);
-      if (!force && nodesResponse.parse(json).nodes.some((n) => n.node === s.nodeId))
+      if (!force && nodesResponse.parse(json).nodes.some((n) => n.node === s.nodeId)) {
         throw new RelayError(
           `A machine named ${s.nodeId} already uses this relay. Rename this machine (\`agentgate init --name <other>\`), or pass --force if it is this same machine rejoining.`,
         );
+      }
     } catch (e) {
       if (!(e instanceof RelayError && e.status === 404)) throw e;
     }
@@ -1030,12 +1048,15 @@ export function leaveRelay(s: Store, wipe = false): Promise<{ cleanupPending: bo
         .map(async (i) => ({ invite: i, grp: (await conn(s, i)).keys.groupId })),
     );
     s.transaction(() => {
-      if (wipe)
+      if (wipe) {
         setCleanups(s, [
           ...cleanups(s).filter((j) => !groups.some((g) => g.invite === j.invite)),
           ...groups.map((g) => ({ invite: g.invite, serviceKey: serviceKey(s), attempts: 0, nextAt: 0 })),
         ]);
-      for (const t of ["active", "rot"] as const) for (const f of FIELDS) put(s, t, f, undefined);
+      }
+      for (const t of ["active", "rot"] as const) {
+        for (const f of FIELDS) put(s, t, f, undefined);
+      }
       rotation.set(s, undefined, undefined);
       rotatedAt.set(s, undefined, undefined);
       for (const g of groups) dropGroup(s, g.grp);
@@ -1072,6 +1093,13 @@ export const serviceKeyFor = (s: Store, url: string) =>
     : undefined;
 export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!rotation.get(s);
 
+/** Why the entries too large for the relay reach no machine, named for the first three. */
+function oversizeError(oversize: string[]) {
+  if (!oversize.length) return undefined;
+  const more = oversize.length > 3 ? ` and ${oversize.length - 3} more` : "";
+  return `${oversize.slice(0, 3).join(", ")}${more}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay`;
+}
+
 /** Sanitized status: never the invite, the service key or a raw relay response. */
 export function relayStatus(s: Store) {
   const invite = get(s, "active", "invite");
@@ -1094,11 +1122,7 @@ export function relayStatus(s: Store) {
     rotating: !!rotation.get(s),
     rotatedAt: Number(rotatedAt.get(s)) || undefined,
     cleanupPending: cleanups(s).length > 0,
-    pushError:
-      get(s, "active", "pushError") ??
-      (oversize.length
-        ? `${oversize.slice(0, 3).join(", ")}${oversize.length > 3 ? ` and ${oversize.length - 3} more` : ""}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay`
-        : undefined),
+    pushError: get(s, "active", "pushError") ?? oversizeError(oversize),
     pullError: get(s, "active", "pullError"),
     skipped: skipped ? (JSON.parse(skipped) as { count: number }).count : undefined,
   };
@@ -1118,8 +1142,9 @@ export const relayNodes = (s: Store) =>
 
 /** The name a pairing command gives the other machine: shell-safe, and not an existing node's (two machines would share records). */
 export function newNodeName(s: Store, name: string) {
-  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name))
+  if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(name)) {
     throw new RelayError("Use lowercase letters, digits and dashes for the machine name");
+  }
   if (s.get("node", name)) throw new RelayError(`A machine named ${name} already exists`);
   return name;
 }

@@ -212,14 +212,11 @@ export type FactoryStore = (typeof factoryStores)[number];
 /** What a board says while `factory move` waits for the factory machine's open items, and after the last one for the
  * comments it has not posted yet. */
 export const movingLabel = ({ to, open }: { to: string; open?: number }) => {
-  const when =
-    open === undefined
-      ? "its open items finish"
-      : open === 0
-        ? "its last comments are posted"
-        : open === 1
-          ? "1 item finishes"
-          : `${open} items finish`;
+  let when = `${open} items finish`;
+  if (open === undefined) when = "its open items finish";
+  else if (open === 0) when = "its last comments are posted";
+  else if (open === 1) when = "1 item finishes";
+
   return `Moving to ${to} once ${when}`;
 };
 
@@ -243,18 +240,24 @@ export const factoryFolderSchema = z
   })
   .superRefine((folder, ctx) => {
     const paths = new Set(folder.files.map((file) => file.path.toLowerCase()));
-    if (paths.size < folder.files.length)
+    if (paths.size < folder.files.length) {
       ctx.addIssue({ code: "custom", path: ["files"], message: "two files share a path" });
+    }
+
     const dirs = [...paths].flatMap((path) =>
       path
         .split("/")
         .slice(0, -1)
         .map((_, i, parts) => parts.slice(0, i + 1).join("/")),
     );
-    if (dirs.some((dir) => paths.has(dir)))
+    if (dirs.some((dir) => paths.has(dir))) {
       ctx.addIssue({ code: "custom", path: ["files"], message: "a file has the path of a folder" });
-    if (folder.files.reduce((n, file) => n + file.text.length + file.path.length, 0) > MAX_STORED_FOLDER)
+    }
+
+    const totalSize = folder.files.reduce((n, file) => n + file.text.length + file.path.length, 0);
+    if (totalSize > MAX_STORED_FOLDER) {
       ctx.addIssue({ code: "custom", path: ["files"], message: "the folder is larger than 900 KiB" });
+    }
   });
 /** `folder ls`: the stored folder, or no files when there is none. */
 const storedFolderViewSchema = z.object({

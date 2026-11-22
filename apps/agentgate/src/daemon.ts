@@ -160,13 +160,13 @@ export function app(ctx: Ctx) {
 
   app.onError((error, c) => {
     if (error instanceof HTTPException) return c.json({ error: error.message || "Request failed" }, error.status);
-    if (error instanceof SkillConflict) return c.json({ error: error.message }, 409);
-    if (error instanceof ConfigurationConflict) return c.json({ error: error.message }, 409);
-    if (error instanceof ZodError)
-      return c.json(
-        { error: "invalid input", issues: error.issues.map((i) => ({ path: i.path, message: i.message })) },
-        400,
-      );
+    if (error instanceof SkillConflict || error instanceof ConfigurationConflict) {
+      return c.json({ error: error.message }, 409);
+    }
+    if (error instanceof ZodError) {
+      const issues = error.issues.map((i) => ({ path: i.path, message: i.message }));
+      return c.json({ error: "invalid input", issues }, 400);
+    }
     if (error instanceof BodyTooLarge) return c.json({ error: error.message }, 413);
     // The path, never the query, and for SQLite the free space; the client only learns that it failed.
     const detail = sqliteDetail(error, s.db.filename);
@@ -188,8 +188,9 @@ export function app(ctx: Ctx) {
   // Loopback needs no token, so a web page must not reach it: reject foreign Host headers (DNS rebinding).
   app.use("*", async (c, next) => {
     const host = c.req.header("host")?.replace(/:\d+$/, "");
-    if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost")
+    if (c.env.listener === "loopback" && host !== "127.0.0.1" && host !== "localhost") {
       return c.text("forbidden host", 403);
+    }
     return next();
   });
 
@@ -199,8 +200,9 @@ export function app(ctx: Ctx) {
     if (fromBrowser(c.req.raw)) return c.json({ error: "Use the Agentgate app or CLI" }, 403);
     if (c.env.listener === "tailnet") {
       const token = s.local("adminToken");
-      if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`))
+      if (!token || !safeEqual(c.req.header("authorization") ?? "", `Bearer ${token}`)) {
         return c.json({ error: "unauthorized" }, 401);
+      }
     }
     return next();
   });
@@ -310,12 +312,14 @@ export async function serve(
   // Tell other nodes which sync features this daemon keeps (see `nodesBelow` in store.ts), and which release it runs,
   // so the app can offer to update the nodes left behind.
   const me = s.get("node", s.nodeId);
-  if (me && (nodesBelow(s, NODE_PROTOCOL).includes(me.id) || me.version !== packageInfo.version))
+  if (me && (nodesBelow(s, NODE_PROTOCOL).includes(me.id) || me.version !== packageInfo.version)) {
     s.put("node", s.nodeId, {
       ...me,
       protocol: Math.max(me.protocol ?? NODE_PROTOCOL, NODE_PROTOCOL),
       version: packageInfo.version,
     });
+  }
+
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
@@ -334,12 +338,14 @@ export async function serve(
     run();
   };
   // The CLI or a hand edit can change routing behind the daemon; a minute late is fine for a status badge.
-  if (!DEV)
+  if (!DEV) {
     schedule(async () => {
       publishRouting(s);
       for (const change of await keepMcp(s)) console.log(change);
     }, 60_000);
-  if (!DEV) schedule(() => localClaudeLogin(s), 30_000);
+    schedule(() => localClaudeLogin(s), 30_000);
+  }
+
   // Discover again after address changes or Tailscale restarts. Never bind a public interface.
   schedule(async () => {
     const ts = await (options.discover ?? tailscale)();
@@ -355,15 +361,16 @@ export async function serve(
     address = ts.ip;
     const self = s.get("node", s.nodeId);
     if (self && self.url !== ts.url) s.put("node", s.nodeId, { ...self, url: ts.url });
-  }, 30000);
+  }, 30_000);
+
   schedule(logins, 10 * 60_000);
-  schedule(() => ctx.remote.reconcile(), 30000);
-  schedule(() => ctx.skills.sync(), 30000);
-  schedule(() => ctx.files.sync(), 30000);
+  schedule(() => ctx.remote.reconcile(), 30_000);
+  schedule(() => ctx.skills.sync(), 30_000);
+  schedule(() => ctx.files.sync(), 30_000);
   const skillBackoff = new SkillBackoff(s);
   schedule(() => syncSkillRepos(s, undefined, ctx.abort.signal, skillBackoff), 10 * 60_000);
   // ponytail: refetches every installed skill through `npx skills` hourly; group by source if that gets heavy.
-  schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3600000);
+  schedule(() => updateSkills(s, undefined, ctx.abort.signal, skillBackoff), 3_600_000);
   // Pulls that get an answer mark sync rounds themselves. A node with no peers and no relay has no one to wait for.
   // Tailscale and the relay run apart, and each peer's pull on its own, so a sleeping machine whose connection hangs
   // delays nobody else.
@@ -376,10 +383,10 @@ export async function serve(
   schedule(async () => {
     await ctx.creds.tick(ctx.abort.signal);
     await tickMcp(s, ctx.abort.signal);
-  }, 60000);
-  schedule(() => ctx.gateway.maintain(), 60000);
-  schedule(() => ctx.quotas.poll(ctx.abort.signal), 60000);
-  schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60000);
+  }, 60_000);
+  schedule(() => ctx.gateway.maintain(), 60_000);
+  schedule(() => ctx.quotas.poll(ctx.abort.signal), 60_000);
+  schedule(() => pollTokens(s, ctx.creds, ctx.abort.signal), 60_000);
   const backfill = backfillTokens(s, options.logs, ctx.abort.signal).catch(() =>
     console.error("background task: token history backfill failed"),
   );
@@ -401,10 +408,10 @@ export async function serve(
     s.trimLog();
     expireLogins(s);
     rotateLogs();
-  }, 3600000);
+  }, 3_600_000);
   // On its own, so a failed trim never skips the login expiry or log rotation above.
-  schedule(async () => trimFactory(s), 3600000);
-  schedule(async () => ctx.handoffs.trim(), 3600000);
+  schedule(async () => trimFactory(s), 3_600_000);
+  schedule(async () => ctx.handoffs.trim(), 3_600_000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);

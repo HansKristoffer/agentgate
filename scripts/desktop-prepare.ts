@@ -40,12 +40,14 @@ const compile = (triple: string) =>
     `${dir}/agentgate-${triple}`,
   ]);
 
-if (!universal) await compile(target);
-else {
+if (!universal) {
+  await compile(target);
+} else {
   // Each arch build needs its own slice and the universal bundle one fat
   // sidecar holding both, joined by lipo.
   const slices = ["aarch64-apple-darwin", "x86_64-apple-darwin"];
   for (const slice of slices) await compile(slice);
+
   await run([
     "lipo",
     "-create",

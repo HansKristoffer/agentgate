@@ -161,6 +161,7 @@ const COLUMNS: Record<string, string[]> = {
   orchestration_v2_projection_metadata: ["projection_name", "schema_version", "last_sequence", "updated_at"],
   orchestration_v2_projection_threads: ["thread_id", "deleted_at"],
 };
+
 /** T3 numbers a run's turn items from `run ordinal × this`; items after the thread's last one stay in its last band. */
 const RUN_BAND = 1_000_000;
 
@@ -210,12 +211,14 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
     );
     if (columns.some((c) => !have.has(c))) throw new HistoryError(`T3 Code's ${table} table has changed`);
   }
+
   const meta = db
     .query<{ schema_version: number; last_sequence: number }, []>(
       "SELECT schema_version, last_sequence FROM orchestration_v2_projection_metadata WHERE projection_name = 'thread-projections'",
     )
     .get();
   if (meta?.schema_version !== 2) throw new HistoryError("T3 Code's thread projections have changed");
+
   const latest = db
     .query<{ sequence: number | null }, []>(
       "SELECT MAX(sequence) AS sequence FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread'",
@@ -224,6 +227,7 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
   // T3 rebuilds its projections at startup when they lag its events; writing now could be lost or replayed out of order.
   if (meta.last_sequence !== (latest?.sequence ?? 0))
     throw new HistoryError("T3 Code's thread projections are behind its events");
+
   if (
     !db
       .query("SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ? AND deleted_at IS NULL")
@@ -254,13 +258,15 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
     VALUES (?1, 'thread', ?2, COALESCE((SELECT MAX(stream_version) + 1 FROM orchestration_events
       WHERE aggregate_kind = 'thread' AND stream_id = ?2), 0), ?3, ?4, NULL, NULL, NULL, 'server', ?5, '{}', 2)
     RETURNING sequence`);
+
   let sequence = 0;
   messages.forEach((m, i) => {
-    const at = m.createdAt,
-      ordinal = last + 1 + i,
-      user = m.role === "user";
-    const messageId = id("msg", i),
-      turnItemId = id("turn-item", i);
+    const at = m.createdAt;
+    const ordinal = last + 1 + i;
+    const user = m.role === "user";
+    const messageId = id("msg", i);
+    const turnItemId = id("turn-item", i);
+
     const message = {
       createdBy: user ? "user" : "agent",
       creationSource: "server",
@@ -323,6 +329,7 @@ function append(db: Database, threadId: string, key: string, messages: SessionMe
       ordinal,
     ]);
   });
+
   db.run(
     "UPDATE orchestration_v2_projection_metadata SET last_sequence = ?, updated_at = ? WHERE projection_name = 'thread-projections'",
     [sequence, now],

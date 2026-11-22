@@ -82,13 +82,11 @@ const outcome = (changed: boolean) => (changed ? "updated" : "up to date");
 async function syncRepos(s: Store, urls: string[], signal: AbortSignal | undefined) {
   const results: { name: string; outcome: string }[] = [];
   for (const url of urls) {
-    results.push({
-      name: url,
-      outcome: await syncSkillRepo(s, url, undefined, signal).then(
-        outcome,
-        (error) => `failed: ${shownError(error) || "the sync failed"}`,
-      ),
-    });
+    const result = await syncSkillRepo(s, url, undefined, signal).then(
+      outcome,
+      (error) => `failed: ${shownError(error) || "the sync failed"}`,
+    );
+    results.push({ name: url, outcome: result });
   }
   return results;
 }
@@ -233,14 +231,12 @@ controlOp({
     const signal = daemon?.abort.signal;
     if (id) return [{ name: id, outcome: outcome(await updateSkill(s, id, fetch, signal)) }];
     const skills = (await updateSkills(s, fetch, signal)).map((r) => ({ name: r.id, outcome: r.outcome }));
-    return [
-      ...skills,
-      ...(await syncRepos(
-        s,
-        skillRepoSummaries(s).map((r) => r.url),
-        signal,
-      )),
-    ];
+    const repos = await syncRepos(
+      s,
+      skillRepoSummaries(s).map((r) => r.url),
+      signal,
+    );
+    return [...skills, ...repos];
   },
   terminal: {
     usage: "skills update [<name>]",
@@ -268,8 +264,9 @@ controlOp({
       const { values, positionals } = parseWords(args, { project: { type: "string", multiple: true } });
       const [url, ...extra] = positionals;
       if (!url || extra.length) throw new UserError();
-      if (!values.project?.length)
+      if (!values.project?.length) {
         throw new UserError("Choose where its skills go: --project '*' for every session, or --project owner/repo");
+      }
       return { input: { url, projects: values.project } };
     },
     print: (r) => [
@@ -285,12 +282,11 @@ controlOp({
   input: z.object({ url: repoSchema.optional() }).strict(),
   needs: "store",
   async run({ url }, { s, daemon }) {
-    if (!url)
-      return syncRepos(
-        s,
-        skillRepoSummaries(s).map((r) => r.url),
-        daemon?.abort.signal,
-      );
+    if (!url) {
+      const urls = skillRepoSummaries(s).map((r) => r.url);
+      return syncRepos(s, urls, daemon?.abort.signal);
+    }
+
     const repo = repoUrl(url);
     return [{ name: repo, outcome: outcome(await syncSkillRepo(s, repo, undefined, daemon?.abort.signal)) }];
   },
@@ -406,7 +402,7 @@ controlOp({
       return { input: { text: readFile(values.file, cwd) } };
     },
     print: (_, { input }) => [
-      input.text.trim() ? `Saved; every machine uses it in new sessions` : "Removed the global AGENTS.md",
+      input.text.trim() ? "Saved; every machine uses it in new sessions" : "Removed the global AGENTS.md",
     ],
   },
 });

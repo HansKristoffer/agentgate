@@ -66,9 +66,10 @@ export async function buildShim(
       (r) => r.body?.cancel(),
       () => {},
     );
-  let daemon: Client | undefined, transport: StreamableHTTPClientTransport | undefined;
-  let closed = false,
-    flight: Promise<void> | undefined;
+  let daemon: Client | undefined;
+  let transport: StreamableHTTPClientTransport | undefined;
+  let closed = false;
+  let flight: Promise<void> | undefined;
   const children = new Map<string, { config: string; instance: McpInstance; client: Client }>();
   const failed = new Map<string, { config: string; failures: number; retryAt: number }>();
   let server: ReturnType<typeof mergedServer> | undefined;
@@ -116,8 +117,8 @@ export async function buildShim(
       }
     await Promise.all(
       config.map(async ({ alias, instance }) => {
-        const serialized = JSON.stringify(instance),
-          prev = children.get(alias);
+        const serialized = JSON.stringify(instance);
+        const prev = children.get(alias);
         if (prev?.config === serialized) return;
         const last = failed.get(alias)?.config === serialized ? failed.get(alias) : undefined;
         if (last && Date.now() < last.retryAt) return;

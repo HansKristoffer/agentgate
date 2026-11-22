@@ -74,15 +74,18 @@ export function createInstance(
   const p = input.target ? preset(input.target) : undefined;
   const command = input.command ? parseCommand(input.command) : undefined;
   let inst: ReturnType<typeof newInstance>;
-  if (p) inst = fromPreset(p, id);
-  else if (command)
+  if (p) {
+    inst = fromPreset(p, id);
+  } else if (command) {
     inst = newInstance({
       id,
       command: command[0],
       args: command.slice(1),
       mode: input.perSession ? "perSession" : "shared",
     });
-  else inst = newInstance({ id, url: input.target });
+  } else {
+    inst = newInstance({ id, url: input.target });
+  }
 
   inst.headers = { ...inst.headers, ...parseHeaders(input.headers) };
   if (name !== id) inst.label = name;
@@ -150,12 +153,16 @@ export function changeServerProjects(s: Store, id: string, change: ProjectChange
         ? change.projects
         : [...mapped.map((p) => p.id).filter((p) => !remove.has(p)), ...change.add];
     const targets = getUniqueValues(projects.map((p) => canonicalProject(s, projectIdSchema.parse(p))));
-    for (const p of mapped) if (!targets.includes(p.id)) unmap(s, p, id);
+    for (const p of mapped) {
+      if (!targets.includes(p.id)) unmap(s, p, id);
+    }
+
     for (const target of targets) {
       const p = s.get("project", target);
       if (p && Object.values(p.mcp).includes(id)) continue;
-      if (isVirtual(target) && inst.mode === "perSession")
+      if (isVirtual(target) && inst.mode === "perSession") {
         throw new Error(`${id} starts in each session's worktree, which ${target} does not have`);
+      }
       const taken = p?.mcp[id];
       if (taken) throw new Error(`${target} already uses the tool prefix ${id} for ${taken}`);
       saveProject(s, target, { mcp: { ...p?.mcp, [id]: id } });
@@ -173,16 +180,18 @@ export function renameInstance(s: Store, from: string, to: string) {
     s.put("mcp", to, { ...inst, id: to });
     const credentials = s.get("mcpCredential", from);
     if (credentials) s.put("mcpCredential", to, { ...credentials, instanceId: to, loginId: undefined });
-    for (const p of s.list("project"))
-      if (Object.values(p.mcp).includes(from)) {
-        const mappings: Record<string, string> = {};
-        for (const [alias, target] of Object.entries(p.mcp)) {
-          const name = target === from && alias === from ? to : alias;
-          if (name in mappings) throw new Error(`rename conflicts with alias ${name} in ${p.id}`);
-          mappings[name] = target === from ? to : target;
-        }
-        s.put("project", p.id, { ...p, mcp: mappings });
+    for (const p of s.list("project")) {
+      if (!Object.values(p.mcp).includes(from)) continue;
+
+      const mappings: Record<string, string> = {};
+      for (const [alias, target] of Object.entries(p.mcp)) {
+        const name = target === from && alias === from ? to : alias;
+        if (name in mappings) throw new Error(`rename conflicts with alias ${name} in ${p.id}`);
+        mappings[name] = target === from ? to : target;
       }
+      s.put("project", p.id, { ...p, mcp: mappings });
+    }
+
     s.del("mcp", from);
     s.del("mcpCredential", from);
     s.del("refreshRequest", `mcpCredential:${from}`);
@@ -432,13 +441,16 @@ controlOp({
       if (!name || !value || extra.length) throw new UserError();
       // `off` is stored as 0, which means results are never cut; `default` clears the limit.
       const chars = value === "default" ? undefined : value === "off" ? 0 : Number(value);
-      if (chars !== undefined && (!Number.isInteger(chars) || chars < 0))
+      if (chars !== undefined && (!Number.isInteger(chars) || chars < 0)) {
         throw new UserError("limit: a number of characters, off, or default");
+      }
       return { input: { id: name, tool: values.tool, chars } };
     },
-    print: (_, { input: { id, tool, chars } }) => [
-      `${tool ? `${id} ${tool}` : id}: ${chars === undefined ? "default limit" : chars ? `results cut past ${chars} characters` : "results never cut"}`,
-    ],
+    print(_, { input: { id, tool, chars } }) {
+      const outcome =
+        chars === undefined ? "default limit" : chars ? `results cut past ${chars} characters` : "results never cut";
+      return [`${tool ? `${id} ${tool}` : id}: ${outcome}`];
+    },
   },
 });
 
@@ -464,8 +476,9 @@ controlOp({
       } catch {
         // Not JSON at all: the check below names the problem.
       }
-      if (!defaults || typeof defaults !== "object" || Array.isArray(defaults))
+      if (!defaults || typeof defaults !== "object" || Array.isArray(defaults)) {
         throw new UserError("defaults: a JSON object, such as '{\"limit\": 30}'");
+      }
       return { input: { id: name, tool, defaults } };
     },
     print: (_, { input: { id, tool, defaults } }) => [

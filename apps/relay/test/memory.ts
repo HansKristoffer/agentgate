@@ -35,10 +35,12 @@ export function memoryRelay(overrides: Partial<Config> & { relayKey?: string; no
         },
         // Storage recreation: drop every table, as deleteAll() does in a Durable Object.
         deleteAll: () => {
-          for (const { name } of sql.db.query("select name from sqlite_master where type = 'table'").all() as {
+          const tables = sql.db.query("select name from sqlite_master where type = 'table'").all() as {
             name: string;
-          }[])
+          }[];
+          for (const { name } of tables) {
             sql.db.run(`drop table "${name}"`);
+          }
           alarm = undefined;
         },
       });

@@ -8,10 +8,11 @@ import { fakeT3 } from "./fixtures/t3.ts";
 
 const request = (path: string, options?: RequestInit) =>
   new Request(`http://127.0.0.1:7878${path}`, { ...options, headers: { host: "127.0.0.1:7878", ...options?.headers } });
+
 test("tailnet administration fails closed without a token and cannot reach local proxy/MCP routes", async () => {
-  const s = new Store(":memory:"),
-    ctx = makeCtx(s),
-    handler = app(ctx);
+  const s = new Store(":memory:");
+  const ctx = makeCtx(s);
+  const handler = app(ctx);
   try {
     expect((await handler.fetch(request("/api/status"), { listener: "tailnet" })).status).toBe(401);
     expect((await handler.fetch(request("/mcp"), { listener: "tailnet" })).status).toBe(404);
@@ -34,9 +35,9 @@ test("tailnet administration fails closed without a token and cannot reach local
 });
 
 test("loopback rejects foreign hosts and malformed settings return actionable 400 responses", async () => {
-  const s = new Store(":memory:"),
-    ctx = makeCtx(s),
-    handler = app(ctx);
+  const s = new Store(":memory:");
+  const ctx = makeCtx(s);
+  const handler = app(ctx);
   try {
     expect(
       (
@@ -89,8 +90,8 @@ test("stopping mid-clone kills git and returns, leaving the handoff to resume on
   const t3 = fakeT3({ claudeDir: tmp() });
   await connectT3(s, { url: t3.url, token: t3.pairingToken() });
   // A remote that takes the connection and never answers, like a dead host or an SSH agent waiting for approval.
-  const reached = Promise.withResolvers<void>(),
-    dropped = Promise.withResolvers<void>();
+  const reached = Promise.withResolvers<void>();
+  const dropped = Promise.withResolvers<void>();
   const remote = Bun.serve({
     port: 0,
     fetch: (req) => {
@@ -127,9 +128,9 @@ test("stopping mid-clone kills git and returns, leaving the handoff to resume on
 });
 
 test("native login expiry is enforced when finishing without another login starting", async () => {
-  const s = new Store(":memory:"),
-    ctx = makeCtx(s),
-    handler = app(ctx);
+  const s = new Store(":memory:");
+  const ctx = makeCtx(s);
+  const handler = app(ctx);
   try {
     const start = await handler.fetch(
       request("/api/ops/accounts%20login%20start", {
@@ -162,8 +163,8 @@ test("native login expiry is enforced when finishing without another login start
 test("shutdown waits for an already-issued refresh to persist before the store can close", async () => {
   const { Credentials } = await import("../src/credentials.ts");
   const { CLAUDE } = await import("../src/llm/claude.ts");
-  const originalApi = CLAUDE.api,
-    s = new Store(":memory:");
+  const originalApi = CLAUDE.api;
+  const s = new Store(":memory:");
   s.setLocal("node", "n");
   s.put("account", "a", { id: "a", provider: "claude", label: "a" });
   s.put("credential", "a", {
@@ -180,9 +181,10 @@ test("shutdown waits for an already-issued refresh to persist before the store c
     discover: async () => undefined,
     logs: { claude: [], codex: [], antigravity: [] },
   });
-  let release!: () => void, entered!: () => void;
-  const gate = new Promise<void>((r) => (release = r)),
-    start = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const start = new Promise<void>((r) => (entered = r));
   daemon.ctx.creds = new Credentials(
     s,
     async () => {
@@ -220,8 +222,8 @@ test("shutdown waits for an already-issued refresh to persist before the store c
 
 test("a model request over the control API body limit still reaches the provider", async () => {
   const { CLAUDE } = await import("../src/llm/claude.ts");
-  const originalApi = CLAUDE.api,
-    s = new Store(":memory:");
+  const originalApi = CLAUDE.api;
+  const s = new Store(":memory:");
   s.setLocal("node", "n");
   s.put("account", "a", { id: "a", provider: "claude", label: "a" });
   s.put("credential", "a", {
@@ -264,8 +266,8 @@ test("a model request over the control API body limit still reaches the provider
 });
 
 test("a SQLite error in a request logs its code, message and free space, and the client gets a generic error", async () => {
-  const s = new Store(":memory:"),
-    handler = app(makeCtx(s));
+  const s = new Store(":memory:");
+  const handler = app(makeCtx(s));
   handler.get("/boom", () => {
     s.db.run("insert into missing values (1)");
     return new Response();

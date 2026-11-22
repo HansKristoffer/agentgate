@@ -9,7 +9,8 @@ import { liveOnly, nodesBelow, requireNodeProtocol, type Data, type Store, type 
 
 /**
  * The GitHub CLI (gh), Infisical CLI and Antigravity CLI (agy) logins and OpenCode's API keys of one machine, shared with
- * every paired machine so a new server clones, reads secrets and reaches the same models as the user. Nothing is shared until `agentgate logins share` runs on a machine that has the login.
+ * every paired machine so a new server clones, reads secrets and reaches the same models as the user. Nothing is
+ * shared until `agentgate logins share` runs on a machine that has the login.
  * The sharing node re-reads it each round, so a refreshed or replaced login follows; every other node signs in with it
  * whenever it changes.
  *
@@ -234,7 +235,9 @@ async function antigravityToken() {
   if (host.platform === "darwin") {
     raw = await host.keychain(AGY.service, AGY.account);
     if (raw?.startsWith(AGY.prefix)) raw = Buffer.from(raw.slice(AGY.prefix.length), "base64").toString("utf8");
-  } else if (existsSync(agyFile())) raw = readFileSync(agyFile(), "utf8");
+  } else if (existsSync(agyFile())) {
+    raw = readFileSync(agyFile(), "utf8");
+  }
   try {
     return raw ? agyToken.parse(JSON.parse(raw)) : undefined;
   } catch {
@@ -350,16 +353,18 @@ async function apply(l: StoredLogin) {
       await run(["auth", "import"], JSON.stringify(value));
       // An imported key does not take over from one this machine already uses for the same provider; the shared one wins.
       for (const c of l.credentials.filter((c) => c.active)) {
-        if (here.some((h) => h.integrationID === c.integrationID && h.id !== c.id && h.active))
+        if (here.some((h) => h.integrationID === c.integrationID && h.id !== c.id && h.active)) {
           await run(["auth", "switch", c.integrationID, c.id]);
+        }
       }
     },
     antigravity: async (l) => {
       // The user shared it to use it everywhere, so a machine without agy gets it.
-      if (!host.hasAgy() && !(await host.installAgy()))
+      if (!host.hasAgy() && !(await host.installAgy())) {
         throw new Error(
           "installing the Antigravity CLI failed; install it with curl -fsSL https://antigravity.google/cli/install.sh | bash",
         );
+      }
       if ((await antigravityToken())?.token.refresh_token === l.refreshToken) return;
       // agy fetches an access token with the refresh token the first time it runs.
       const saved = JSON.stringify({
@@ -368,8 +373,9 @@ async function apply(l: StoredLogin) {
       });
       if (host.platform !== "darwin") return atomicWrite(agyFile(), saved);
       await host.setKeychain(AGY.service, AGY.account, AGY.prefix + Buffer.from(saved).toString("base64"));
-      if ((await antigravityToken())?.token.refresh_token !== l.refreshToken)
+      if ((await antigravityToken())?.token.refresh_token !== l.refreshToken) {
         throw new Error("the Antigravity login could not be saved in the Keychain");
+      }
     },
     infisical: (l) => {
       const files = infisical();
@@ -453,7 +459,9 @@ export function infisicalSite() {
   try {
     const domain = JSON.parse(readFileSync(infisical().config, "utf8"))?.LoggedInUserDomain;
     if (typeof domain === "string" && domain) return new URL(domain).origin;
-  } catch {} // no CLI config
+  } catch {
+    // No CLI config: the default site applies.
+  }
   return "https://app.infisical.com";
 }
 
@@ -488,10 +496,11 @@ export async function setInfisicalIdentity(
 /** What the Infisical MCP server preset signs in with: the machine identity, which is on every node. */
 export function infisicalMcpEnv(s: Store) {
   const l = s.get("login", IDENTITY);
-  if (l?.id !== IDENTITY)
+  if (l?.id !== IDENTITY) {
     throw new Error(
       "Infisical: set an Infisical machine identity first (agentgate logins identity, or Shared logins in the app)",
     );
+  }
   return {
     INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: l.account,
     INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: l.clientSecret,
@@ -518,8 +527,9 @@ function publish(s: Store) {
   }
   const me = s.get("node", s.nodeId);
   const next = Object.keys(problems).length ? problems : undefined;
-  if (me && JSON.stringify(me.loginProblems) !== JSON.stringify(next))
+  if (me && JSON.stringify(me.loginProblems) !== JSON.stringify(next)) {
     s.put("node", s.nodeId, { ...me, loginProblems: next });
+  }
 }
 
 /** One daemon round: the sharing node re-reads its logins, every other node signs in with any that changed. */
@@ -566,7 +576,9 @@ function profileFor(account: string) {
       profiles.find((p) => p?.email === account);
     if (typeof profile?.name === "string") return profile.name;
     if (!profiles.length && config?.loggedInUserEmail === account) return account; // a config from before profiles
-  } catch {} // no CLI config
+  } catch {
+    // No CLI config: reported below as having no login.
+  }
   throw new Error(
     `the Infisical CLI here has no login for ${account}; run infisical login in a terminal, then agentgate logins share infisical`,
   );
@@ -588,8 +600,10 @@ export async function signInInfisical(
   const profile = profileFor(shared.account);
   const help = await host.infisical(["login", "--help"]);
   if (!help) throw new Error("install the Infisical CLI to sign in");
-  if (!help.ok || !/--profile\b/.test(help.out))
+  if (!help.ok || !/--profile\b/.test(help.out)) {
     throw new Error("update the Infisical CLI to sign in from Agentgate; on macOS, run brew upgrade infisical");
+  }
+
   let printed = "";
   let report = o.url;
   const login = await host.infisical(["login", "--profile", profile], {
@@ -623,14 +637,8 @@ export function startInfisicalSignIn(s: Store, signal?: AbortSignal) {
           resolve(undefined);
         },
         (e) => {
-          s.log(
-            "infisical",
-            s.get("login", "infisical")?.account ?? "",
-            "",
-            0,
-            0,
-            `Infisical sign-in failed: ${getErrorMessage(e)}`,
-          );
+          const account = s.get("login", "infisical")?.account ?? "";
+          s.log("infisical", account, "", 0, 0, `Infisical sign-in failed: ${getErrorMessage(e)}`);
           reject(e);
         },
       )

@@ -59,6 +59,7 @@ class InstanceAuth implements OAuthClientProvider {
   authUrl?: URL;
   staged: Partial<McpCredential> = {};
   private stateValue?: string;
+
   constructor(
     private s: Store,
     private id: string,
@@ -73,13 +74,16 @@ class InstanceAuth implements OAuthClientProvider {
     if (!c || !this.s.get("mcp", this.id)) throw new NeedsLogin(`${this.id}: needs a login`);
     return { ...c, ...this.staged };
   }
+
   private update(patch: Partial<McpCredential>) {
     if (this.deferred) this.staged = { ...this.staged, ...patch };
     else this.s.put("mcpCredential", this.id, { ...this.credential(), ...patch });
   }
+
   get redirectUrl() {
     return this.credential().redirectUri;
   }
+
   get clientMetadata(): OAuthClientMetadata {
     return {
       client_name: "agentgate",
@@ -89,12 +93,14 @@ class InstanceAuth implements OAuthClientProvider {
       token_endpoint_auth_method: "none",
     };
   }
+
   /** The SDK starts a new login when a refresh fails for any reason, a network error or a 5xx included. Only a login
    * without a refresh token needs one; a refused refresh token arrives as invalidateCredentials. */
   private noLogin(): never {
     if (this.deferred && this.credential().tokens?.refresh_token) throw new Error(`${this.id}: token refresh failed`);
     throw new NeedsLogin(`${this.id}: needs a login`);
   }
+
   state() {
     if (!this.interactive) this.noLogin();
     const state = crypto.randomUUID();
@@ -111,15 +117,19 @@ class InstanceAuth implements OAuthClientProvider {
     });
     return state;
   }
+
   clientInformation() {
     return this.credential().client as OAuthClientInformationMixed | undefined;
   }
+
   saveClientInformation(client: OAuthClientInformationMixed) {
     this.update({ client });
   }
+
   tokens() {
     return this.credential().tokens as OAuthTokens | undefined;
   }
+
   saveTokens(tokens: OAuthTokens) {
     // The SDK saves stored tokens again once to stamp their issuer; that is not a new login.
     if (tokens.access_token === this.credential().tokens?.access_token) return this.update({ tokens });
@@ -131,27 +141,33 @@ class InstanceAuth implements OAuthClientProvider {
     // A recorded "needs login" (serverHealth in gateway.ts) was about the old tokens.
     recordHealth(this.s, this.id, undefined);
   }
+
   redirectToAuthorization(url: URL) {
     if (!this.interactive) this.noLogin();
     this.authUrl = url;
   }
+
   saveCodeVerifier(verifier: string) {
     if (!this.stateValue) throw new Error("no pending login");
     const pending = pendingLogins.get(this.s, this.stateValue);
     if (!pending) throw new Error("login expired; start it again");
     pendingLogins.set(this.s, this.stateValue, { ...pending, verifier, discovery: this.discovery });
   }
+
   codeVerifier() {
     if (!this.verifier) throw new Error("login expired; start it again");
     return this.verifier;
   }
+
   /** Kept with the pending login, so the code goes to the authorization server the browser was sent to. */
   discoveryState() {
     return this.discovery;
   }
+
   saveDiscoveryState(state: OAuthDiscoveryState) {
     this.discovery = state;
   }
+
   invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier" | "discovery") {
     if (this.deferred && (scope === "all" || scope === "tokens"))
       throw new InvalidGrant("MCP refresh token is no longer valid");

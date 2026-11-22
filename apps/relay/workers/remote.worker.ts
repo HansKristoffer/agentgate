@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 import { relayApp } from "../src/app.ts";
 
 // Remote MCP endpoints on real workerd: hashes set by the node, one hibernatable socket, no replay.
-const TOKEN = "T".repeat(43),
-  SECRET = "S".repeat(43);
+const TOKEN = "T".repeat(43);
+const SECRET = "S".repeat(43);
 const sha = async (s: string) =>
   Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))), (b) =>
     b.toString(16).padStart(2, "0"),
@@ -206,8 +206,9 @@ describe("webhook endpoints", () => {
       "x-custom-thing": "Kept As Sent",
       "content-type": "application/json",
     });
-    for (const name of ["cookie", "connection", "x-per-hop", "keep-alive", "te", "proxy-authorization", "host"])
+    for (const name of ["cookie", "connection", "x-per-hop", "keep-alive", "te", "proxy-authorization", "host"]) {
       expect(req.headers[name]).toBeUndefined();
+    }
     expect(Object.keys(req.headers).filter((n) => n.startsWith("x-agentgate-"))).toEqual([]);
     answer(node, req.id, 202, "queued");
     const res = await pending;
@@ -226,8 +227,8 @@ describe("webhook endpoints", () => {
       relayKey: "service-key",
     });
     const send = (path: string, init: RequestInit = {}) => app.fetch(new Request(`https://relay.test${path}`, init));
-    const hookKey = keyOf(11),
-      mcpKey = keyOf(12);
+    const hookKey = keyOf(11);
+    const mcpKey = keyOf(12);
     expect((await put(hookKey, { kind: "hook" })).status).toBe(200);
     expect((await put(mcpKey, {})).status).toBe(200);
     expect((await put(hookKey, {})).status).toBe(409); // a published URL keeps its kind

@@ -44,9 +44,9 @@ export async function factoryBoard(connection: Connection) {
   return parsed.data;
 }
 export const openExternal = (url: string) => openUrl(url);
-/** Starts the Infisical CLI's browser login on the daemon's own machine, which then shares it with every machine. */
 export const INFISICAL_SIGNIN_STARTED =
   "Finish signing in to Infisical in your browser. Every machine signs in with it once you're done.";
+/** Starts the Infisical CLI's browser login on the daemon's own machine, which then shares it with every machine. */
 export async function signInToInfisical(connection: Connection) {
   const r = await request<{ url?: string; opened: boolean }>(connection, "/logins/infisical/signin", "POST");
   if (r.url && !r.opened) await openExternal(r.url);

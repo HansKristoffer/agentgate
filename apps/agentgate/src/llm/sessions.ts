@@ -23,8 +23,8 @@ const SESSION_ID = /^[\w-]{1,128}$/;
 
 /** Claude Code's session id inside `metadata.user_id`, which is either JSON or `user_…_account_<uuid>_session_<id>`. */
 function claudeMetadataSession(body: unknown) {
-  const metadata = isRecord(body) ? body.metadata : undefined,
-    userId = isRecord(metadata) ? metadata.user_id : undefined;
+  const metadata = isRecord(body) ? body.metadata : undefined;
+  const userId = isRecord(metadata) ? metadata.user_id : undefined;
   if (typeof userId !== "string") return undefined;
   try {
     const parsed = JSON.parse(userId);
@@ -52,6 +52,7 @@ export function trackedSession(provider: ProviderName, id: string | undefined) {
 }
 
 const ready = new WeakSet<Store>();
+
 function table(s: Store) {
   if (ready.has(s)) return;
   s.db.run(

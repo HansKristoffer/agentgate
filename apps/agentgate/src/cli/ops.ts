@@ -1,10 +1,7 @@
 import { ConfigurationConflict, SkillConflict } from "@agentgate/protocol";
 import { runTerminal, shownError, type TerminalOp, type TerminalResult } from "../ops/index.ts";
 import { store } from "../store.ts";
-import { die, initialized, management } from "./common.ts";
-
-/** Bun's error when nothing listens on the daemon's port. */
-const noDaemon = (e: unknown) => (e as { code?: unknown } | null)?.code === "ECONNREFUSED";
+import { die, initialized, management, noDaemon } from "./common.ts";
 
 /**
  * `agentgate <words>` for a registered control operation. It goes through the running daemon, so the daemon's memory

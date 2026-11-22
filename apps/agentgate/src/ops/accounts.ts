@@ -17,7 +17,7 @@ import { asUserError, controlOp, parseWords, UserError } from "./registry.ts";
 
 /** The accounts family's control operations. */
 
-for (const action of ["login", "cancel"] as const)
+for (const action of ["login", "cancel"] as const) {
   controlOp({
     name: `accounts claude-code ${action}`,
     summary: action === "login" ? "sign in to this machine's own Claude Code" : "cancel Claude Code's browser sign-in",
@@ -44,6 +44,7 @@ for (const action of ["login", "cancel"] as const)
           : ["Claude Code sign-in cancelled"],
     },
   });
+}
 
 controlOp({
   name: "accounts claude-code finish",
@@ -162,7 +163,7 @@ for (const [name, patch, summary, done] of [
     "is pinned",
   ],
   ["accounts unpin", { pinned: false }, "go back to choosing the account automatically", "is no longer pinned"],
-] as const)
+] as const) {
   controlOp({
     name,
     summary,
@@ -171,12 +172,14 @@ for (const [name, patch, summary, done] of [
     run: (input, { s }) => change(s, input.id, patch),
     terminal: { usage: `${name} <id>`, parse: justId, print: (a) => [`${a.id} ${done}`] },
   });
+}
 
 /** Removes the account, its login and usage from every machine, and this machine's state about it. */
 export function deleteAccount(s: Store, id: string) {
   s.transaction(() => {
     const provider = s.get("account", id)?.provider;
     for (const kind of ["account", "credential", "usage"] as const) s.del(kind, id);
+
     s.del("refreshRequest", `credential:${id}`);
     s.setLocal(`refreshError:credential:${id}`, undefined);
     for (const key of ["models", "modelError", "quotaHealth"]) s.setLocal(`${key}:${id}`, undefined);

@@ -152,10 +152,12 @@ export function parseFor(argv: string[]) {
     if (!type) throw new Error(`Unknown option ${token.rawName} for ${usage}`);
     // Non-strict parsing takes the next word as the value even when it is a flag: `init --name --always-on`.
     const flagAsValue = !token.inlineValue && token.value?.startsWith("-");
-    if (type === "string" && (token.value === undefined || flagAsValue))
+    if (type === "string" && (token.value === undefined || flagAsValue)) {
       throw new Error(`${token.rawName} needs a value for ${usage}`);
-    if (type === "boolean" && token.value !== undefined)
+    }
+    if (type === "boolean" && token.value !== undefined) {
       throw new Error(`${token.rawName} takes no value for ${usage}`);
+    }
   }
   return { values, positionals };
 }
@@ -197,6 +199,7 @@ async function main() {
   // A registered operation parses its own words (ops/).
   const op = terminalOpFor(argv);
   if (op) return runOp(op, argv);
+
   let parsed;
   try {
     parsed = parseFor(argv);
@@ -214,8 +217,10 @@ async function main() {
   const s = store();
   // The daemon writes its version on its node record when it starts.
   const daemon = s.get("node", s.nodeId)?.version;
-  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd))
+  if (daemon && daemon !== packageInfo.version && !["serve", "init", "update"].includes(cmd)) {
     console.error((await import("./update.ts")).versionNotice(daemon));
+  }
+
   const family = Object.hasOwn(FAMILIES, cmd) ? FAMILIES[cmd]! : die(HELP);
   try {
     await family(cmd, pos.slice(1), opts);

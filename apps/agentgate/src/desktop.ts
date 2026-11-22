@@ -69,8 +69,9 @@ export const host = {
     // daemon would stop serving meanwhile.
     const ask = Bun.spawn(["/usr/bin/osascript", "-e", 'quit app "Claude"'], { stdio: ["ignore", "ignore", "ignore"] });
     try {
-      for (const end = Date.now() + DESKTOP.quitTimeout; Date.now() < end; await Bun.sleep(250))
+      for (const end = Date.now() + DESKTOP.quitTimeout; Date.now() < end; await Bun.sleep(250)) {
         if (!host.running()) return;
+      }
     } finally {
       ask.kill();
     }
@@ -186,10 +187,12 @@ const major = (v: string | undefined) => v?.split(".")[0];
 /** Why a saved login cannot go back into this Desktop, or undefined when it can.
  * ponytail: same major version, not the exact build. Desktop updates often, and the cookie schema check catches storage changes. */
 function incompatible(login: Login, schema: string, version = host.version()): string | undefined {
-  if (login.cookieSchema !== schema)
+  if (login.cookieSchema !== schema) {
     return "Saved with a Claude Desktop that stores logins differently; connect this account again";
-  if (login.desktopVersion && version && major(login.desktopVersion) !== major(version))
+  }
+  if (login.desktopVersion && version && major(login.desktopVersion) !== major(version)) {
     return `Saved with Claude Desktop ${login.desktopVersion}; connect this account again`;
+  }
   return undefined;
 }
 
@@ -279,8 +282,9 @@ function backupOnce(s: Store) {
   for (const [from, to] of [
     [configFile(), "config.json"],
     [DESKTOP.data3p, "Claude-3p"],
-  ] as const)
+  ] as const) {
     if (existsSync(from)) cpSync(from, join(dir, to), { recursive: true });
+  }
   s.setLocal("desktop:backup", dir);
 }
 
@@ -383,8 +387,9 @@ export function capture(s: Store): string {
   const uuid = locked(s, () => {
     if (s.local(JOURNAL)) throw new Error(INTERRUPTED);
     const login = readLogin();
-    if (!login)
+    if (!login) {
       throw new Error("Claude Desktop is not signed in (or has not saved its sign-in yet; wait a few seconds)");
+    }
     return save(s, login);
   });
   if (!uuid) throw new Error("A Claude Desktop change is in progress; try again in a moment");
@@ -399,10 +404,11 @@ function saveOutgoing(s: Store): Login | undefined {
     save(s, current);
     return current;
   }
-  if (unreadable())
+  if (unreadable()) {
     throw new Error(
       "Claude Desktop has a sign-in Agentgate can't read yet, so nothing was changed. If you just signed in, wait half a minute and try again.",
     );
+  }
   return undefined;
 }
 
@@ -410,8 +416,9 @@ function saveOutgoing(s: Store): Login | undefined {
 function usable(s: Store, uuid: string): Login {
   const login = saved(s, uuid);
   if (!login) throw new Error("No saved Claude Desktop login for that account; connect it first");
-  if (login.sessionExpiresAt && login.sessionExpiresAt <= Date.now())
+  if (login.sessionExpiresAt && login.sessionExpiresAt <= Date.now()) {
     throw new Error("That saved login has expired; connect the account again");
+  }
   const problem = incompatible(login, currentSchema());
   if (problem) throw new Error(problem);
   return login;
@@ -507,18 +514,20 @@ export async function pollDesktopLogin(s: Store): Promise<string | undefined> {
     if (!login) return undefined;
     clearAdd(s);
     // A different account than asked for is still a real sign-in: keep it, and say so.
-    if (pending.expected && mismatch(s, pending.expected, login.accountUuid))
+    if (pending.expected && mismatch(s, pending.expected, login.accountUuid)) {
       s.setLocal("desktop:addMismatch", JSON.stringify({ expected: pending.expected, accountUuid: login.accountUuid }));
+    }
     // Whoever saved it (the daemon or a waiting CLI), the other can tell the add finished.
     s.setLocal("desktop:lastAdd", JSON.stringify({ accountUuid: login.accountUuid, at: Date.now() }));
     return save(s, login);
   });
   if (uuid) log(s, uuid, `connected ${nameOf(s, uuid)} to Claude Desktop`);
   // Nobody signed in: put back the account the add signed out (after the lock, which the switch takes itself).
-  if (expired)
+  if (expired) {
     await signBackIn(s, expired.previous).catch(() =>
       log(s, expired!.previous, "could not switch Claude Desktop back after an unfinished add"),
     );
+  }
   return uuid;
 }
 
@@ -582,7 +591,9 @@ function writeGatewayMode(s: Store, on: boolean) {
       entries: [...entries, { id, name: "Agentgate", provider: "gateway" }],
     });
     writeJson(gatewayFile(), { ...config, deploymentMode: "3p" });
-  } else if (config.deploymentMode === "3p") writeJson(gatewayFile(), { ...config, deploymentMode: "1p" });
+  } else if (config.deploymentMode === "3p") {
+    writeJson(gatewayFile(), { ...config, deploymentMode: "1p" });
+  }
 }
 
 /** Gateway mode: Desktop's Code tab sends its requests through the pool. */
@@ -666,8 +677,9 @@ function installedStatus(
   try {
     const uuid = readJson(configFile()).lastKnownAccountUuid;
     signedIn = !!cookies && !!readLogin(cookies);
-    if (signedIn && typeof uuid === "string")
+    if (signedIn && typeof uuid === "string") {
       current = { ...who(uuid), saved: logins.some((l) => l.accountUuid === uuid) };
+    }
   } catch {
     // Unreadable files leave the current account unknown.
   }

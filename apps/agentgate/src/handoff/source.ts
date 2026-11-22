@@ -60,6 +60,7 @@ const begun = z.object({
   timings,
   remoteTimings: timings.optional(),
 });
+
 /** After resolve: the thread, its session and its code. */
 const resolved = begun.required({
   title: true,
@@ -77,10 +78,13 @@ const resolved = begun.required({
   branch: true,
   baseSha: true,
 });
+
 /** After package: what goes to B. */
 const packed = resolved.required({ headSha: true, snapshot: true, bundle: true, files: true });
+
 /** Nothing runs a finished job; one whose state does not parse is still listed, with no warnings or timings. */
 const settled = begun.catch({ warnings: [], timings: [] });
+
 export const sourceSteps = {
   resolve: begun,
   stop: resolved,
@@ -91,6 +95,7 @@ export const sourceSteps = {
   done: settled,
   failed: settled,
 };
+
 type Resolved = z.output<typeof resolved>;
 
 /** Most one handoff may move through the relay; Tailscale has only the destination's 1 GiB cap. */
@@ -169,6 +174,7 @@ async function resolve(h: Handoffs, job: SourceJob<"resolve">) {
   });
   Object.assign(st, found);
   h.advance(job, "stop");
+
   // B creates its worktree and runs setup while A stops and packs; `start` runs it there if this is lost.
   // A lost prepare costs only the head start: send prepares again.
   void peerCall(h.s, job.target, `/handoff/${job.id}/prepare`, ignored, { json: prepareInput(found) }).catch(() => {});
@@ -304,15 +310,17 @@ async function stop(h: Handoffs, job: SourceJob<"stop">) {
 /** The user's queued messages in T3's delivery order, as text. Server-made ones (a child task's result, a notification)
  * belong to this machine's thread. Attachments do not move, nor messages past the cap. */
 function queuedMessages(p: Awaited<ReturnType<typeof projection>>) {
-  const texts: string[] = [],
-    ids: string[] = [];
-  let attachments = 0,
-    overflow = 0,
-    chars = 0;
+  const texts: string[] = [];
+  const ids: string[] = [];
+  let attachments = 0;
+  let overflow = 0;
+  let chars = 0;
+
   const order = (r: (typeof p.runs)[number]) => r.queuePosition ?? r.ordinal ?? 0;
   const runs = p.runs
     .filter((r) => r.status === "queued")
     .sort((x, y) => order(x) - order(y) || (x.ordinal ?? 0) - (y.ordinal ?? 0));
+
   for (const r of runs) {
     const m = p.messages.find((m) => m.id === r.userMessageId);
     if (!m || m.notification !== undefined || m.delegatedCompletion !== undefined) continue;

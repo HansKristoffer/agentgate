@@ -214,8 +214,8 @@ async function profile(accessToken: string): Promise<Who> {
       timeoutMs: 5000,
     },
   );
-  const account = isRecord(p) && isRecord(p.account) ? p.account : {},
-    organization = isRecord(p) && isRecord(p.organization) ? p.organization : {};
+  const account = isRecord(p) && isRecord(p.account) ? p.account : {};
+  const organization = isRecord(p) && isRecord(p.organization) ? p.organization : {};
   return { uuid: text(account.uuid), email: text(account.email), plan: text(organization.organization_type) };
 }
 
@@ -225,8 +225,8 @@ async function enrich(s: Store, id: string) {
   // The profile only fills in labels: a login without it still saves.
   const who = await profile(credential.accessToken).catch((): Who => ({}));
   s.transaction(() => {
-    const current = s.get("credential", id),
-      account = s.get("account", id);
+    const current = s.get("credential", id);
+    const account = s.get("account", id);
     if (!current || !account || current.accessToken !== credential.accessToken) return;
     s.put("credential", id, { ...current, accountUuid: who.uuid ?? current.accountUuid });
     s.put("account", id, { ...account, email: who.email ?? account.email, plan: who.plan ?? account.plan });

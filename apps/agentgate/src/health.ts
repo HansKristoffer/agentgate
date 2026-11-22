@@ -276,17 +276,23 @@ export class HealthDashboard {
   async respond(request: Request, listener: "loopback" | "tailnet") {
     const node = this.s.get("node", this.s.nodeId);
     if (!node?.healthDashboard) return new Response("Not found", { status: 404 });
-    if (listener === "tailnet" && !ownHost(request.headers.get("host"), node.url))
+    if (listener === "tailnet" && !ownHost(request.headers.get("host"), node.url)) {
       return new Response("forbidden host", { status: 403 });
-    if (process.platform !== "linux")
+    }
+    if (process.platform !== "linux") {
       return new Response("The health dashboard reads Linux's /proc, so it runs on Linux machines only.", {
         status: 501,
       });
+    }
+
     await this.watched();
-    if (request.headers.get("accept")?.includes("text/html"))
+    if (request.headers.get("accept")?.includes("text/html")) {
       return new Response(HEALTH_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
-    if (!this.latest)
+    }
+    if (!this.latest) {
       return Response.json({ status: "starting" }, { status: 503, headers: { "cache-control": "no-store" } });
+    }
+
     const body = new URL(request.url).searchParams.has("history")
       ? { ...this.latest, sample_seconds: SAMPLE_MS / 1000, history: this.history }
       : this.latest;

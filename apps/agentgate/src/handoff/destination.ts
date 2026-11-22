@@ -69,10 +69,12 @@ export const manifestSchema = prepareSchema
   })
   .strict();
 type Prepare = z.infer<typeof prepareSchema>;
+
 /** A gitignored file from the source checkout, such as `.env.local` (checkout-files.ts). */
 const CHECKOUT_FILES = "checkout-files/";
 export const checkoutFile = (path: string) =>
   path.startsWith(CHECKOUT_FILES) && safePath(path.slice(CHECKOUT_FILES.length));
+
 /** The checkout file paths a manifest carries, relative to the checkout. */
 const carried = (m: Manifest) =>
   m.files.filter((f) => checkoutFile(f.path)).map((f) => f.path.slice(CHECKOUT_FILES.length));
@@ -124,6 +126,7 @@ const importing = placing.required({ instanceId: true, claudeHome: true, importe
 const continuing = importing.required({ threadId: true });
 /** Nothing runs a finished job; one whose state does not parse is still listed, with no warnings or timings. */
 const settled = begun.partial({ source: true, prepare: true }).catch({ warnings: [], timings: [] });
+
 export const destinationSteps = {
   prepare: begun,
   prepared,
@@ -137,13 +140,16 @@ export const destinationSteps = {
 
 export const READY = 'This thread just moved here from another machine. Reply with only "Ready".';
 export const CONTINUE = "Continue where you left off.";
+
 export const restartTasks = (tasks: string[]) =>
   `These background tasks were running on the other machine and stopped when the thread moved here:\n${tasks.map((t) => `- ${t}`).join("\n")}\nStart again the ones that are still needed.`;
+
 /** A turn still running after this is working, not failing on its first message (T3's import bug fails fast). */
 const FIRST_TURN = 2 * 60_000;
 /** T3 reports the failed first turn while its Claude process is still going down; a Claude process started within a
  * second of that finds no login and answers "Not logged in". The retry waits this long. */
 const RETRY_PAUSE = 10_000;
+
 /** What A sees of each step. */
 const STATUS: Record<DestStep, "preparing" | "running" | "imported" | "failed"> = {
   prepare: "preparing",
@@ -190,6 +196,7 @@ export const peerStatusSchema = z.object({
   timings: timings.optional(),
   error: z.string().optional(),
 });
+
 export function peerStatus(job: DestJob): z.input<typeof peerStatusSchema> {
   const st = job.state;
   return {

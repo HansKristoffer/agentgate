@@ -902,14 +902,13 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
     if (runs.get(s, queued.id)?.failedLaunches) runs.update(s, queued.id, { failedLaunches: undefined });
     return { started: true };
   } catch (e) {
-    const run = queued;
-    const failures = (runs.get(s, run.id)?.failedLaunches ?? 0) + 1;
-    const retryAt = m.launches.failed(run.id, failures);
-    const current = runs.get(s, run.id) ? runs.update(s, run.id, { failedLaunches: failures }) : undefined;
+    const failures = (runs.get(s, queued.id)?.failedLaunches ?? 0) + 1;
+    const retryAt = m.launches.failed(queued.id, failures);
+    const current = runs.get(s, queued.id) ? runs.update(s, queued.id, { failedLaunches: failures }) : undefined;
     // A run without an item has nobody to wait for: after as many failed launches as make an item stuck, it ends, and
     // its schedule (a scout's) queues a fresh one.
     if (current && !current.item && ACTIVE.includes(current.state) && failures >= STUCK_LAUNCHES) {
-      m.launches.ok(run.id);
+      m.launches.ok(queued.id);
       endRun(f, current, "failed", { error: `starting it failed ${failures} times: ${shortError(e)}` });
       return {};
     }
@@ -919,11 +918,11 @@ async function launchRun(f: FactoryRuntime, queued: FactoryRun): Promise<Launch>
       const answered = e instanceof T3McpError && e.answered && !queued.launchSession;
       const error = `starting it failed: ${shortError(e)}`;
       const patch = { ...(answered && { launchSession: undefined }), error };
-      if (current.state === "starting") setRunState(f, run.id, ["starting"], "queued", patch);
-      else runs.update(s, run.id, patch);
+      if (current.state === "starting") setRunState(f, queued.id, ["starting"], "queued", patch);
+      else runs.update(s, queued.id, patch);
       if (current.item) waitFor(f, current.item, "launch", `Waits to try again at ${time(retryAt)}: ${error}`, current);
       else if (current.error !== error)
-        f.events.emit({ kind: "note", run: run.id, text: `${runName(f, run)}: ${error}` });
+        f.events.emit({ kind: "note", run: queued.id, text: `${runName(f, queued)}: ${error}` });
     }
     return {};
   }

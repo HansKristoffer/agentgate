@@ -184,10 +184,10 @@ export function FactorySettings({
   connection,
   local,
   board,
+  pointer,
   run,
-}: ViewProps & { board: FactoryBoard; run: Run }) {
+}: ViewProps & { board: FactoryBoard; pointer: NonNullable<FactoryBoard["factory"]>; run: Run }) {
   const [moving, setMoving] = useState(false);
-  const pointer = board.factory!;
   return (
     <>
       <Panel title="Factory">

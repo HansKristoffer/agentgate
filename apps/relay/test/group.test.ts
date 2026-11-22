@@ -80,16 +80,14 @@ test("upserts: identical retries are no-ops, lower or reused counters conflict, 
 test("pagination covers everything, excludes the caller, and survives concurrent upserts", async () => {
   const c = client();
   const { generation } = (await c.create()).body;
-  for (let i = 0; i < 1200; i += 400)
-    await c.push(
-      generation,
-      "a",
-      Array.from({ length: 400 }, (_, j) => ({ key: key(i + j), pusherSeq: 1, blob: blob(i + j) })),
-    );
+  for (let i = 0; i < 1200; i += 400) {
+    const entries = Array.from({ length: 400 }, (_, j) => ({ key: key(i + j), pusherSeq: 1, blob: blob(i + j) }));
+    await c.push(generation, "a", entries);
+  }
   await c.push(generation, "b", [{ key: key(0), pusherSeq: 1, blob: blob("b0") }]); // a caller-only sequence at the head
   const seen = new Map<string, string>();
-  let since = 0,
-    pages = 0;
+  let since = 0;
+  let pages = 0;
   for (;;) {
     const page = (await c.changes({ generation, since, node: "b" })).body as ChangesResponse;
     expect(checkPage(page, since)).toBeUndefined();
@@ -119,10 +117,12 @@ test("pages stay under the byte limit", async () => {
   const c = client();
   const { generation } = (await c.create()).body;
   const big = Math.ceil((RELAY_LIMITS.blobBytes * 4) / 3) - 10;
-  for (let i = 0; i < 12; i++) await c.push(generation, "a", [{ key: key(i), pusherSeq: 1, blob: blob(i, big) }]);
-  let since = 0,
-    count = 0,
-    pages = 0;
+  for (let i = 0; i < 12; i++) {
+    await c.push(generation, "a", [{ key: key(i), pusherSeq: 1, blob: blob(i, big) }]);
+  }
+  let since = 0;
+  let count = 0;
+  let pages = 0;
   for (;;) {
     const res = await c.relay.fetch(
       `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b`,
@@ -144,14 +144,12 @@ test("pages count UTF-8 bytes, not characters", async () => {
   const c = client();
   const { generation } = (await c.create()).body;
   const node = "界".repeat(512);
-  for (let i = 0; i < 1000; i += 500)
-    await c.push(
-      generation,
-      node,
-      Array.from({ length: 500 }, (_, j) => ({ key: key(i + j), pusherSeq: 1, blob: blob(i + j, 6900) })),
-    );
-  let since = 0,
-    count = 0;
+  for (let i = 0; i < 1000; i += 500) {
+    const entries = Array.from({ length: 500 }, (_, j) => ({ key: key(i + j), pusherSeq: 1, blob: blob(i + j, 6900) }));
+    await c.push(generation, node, entries);
+  }
+  let since = 0;
+  let count = 0;
   for (;;) {
     const res = await c.relay.fetch(
       `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b`,
@@ -225,8 +223,9 @@ test("quota rejects a batch without partial writes; oversize bodies get 413", as
 test("node identities are bounded", async () => {
   const c = client();
   const { generation } = (await c.create()).body;
-  for (let i = 0; i < RELAY_LIMITS.nodes; i++)
+  for (let i = 0; i < RELAY_LIMITS.nodes; i++) {
     expect((await c.changes({ generation, since: 0, node: `n${i}` })).status).toBe(200);
+  }
   expect((await c.changes({ generation, since: 0, node: "one-too-many" })).body.code).toBe("tooManyNodes");
   expect((await c.changes({ generation, since: 0, node: "n0" })).status).toBe(200);
 });

@@ -4,8 +4,9 @@
 import { chmodSync, copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 const version = Bun.argv[2]?.replace(/^v/, "");
-if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version))
+if (!version || !/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) {
   throw new Error("usage: bun scripts/npm.ts <version> [--publish]");
+}
 const publish = Bun.argv.includes("--publish");
 if (version !== (await Bun.file("package.json").json()).version) throw new Error("Release tag must match package.json");
 const repository = { type: "git", url: "git+https://github.com/HansKristoffer/agentgate.git" };
@@ -105,11 +106,9 @@ for (const dir of dirs) {
   });
   if (packed.exitCode !== 0) throw new Error(`Cannot pack ${name}`);
   const [artifact] = JSON.parse(packed.stdout.toString());
-  if (
-    !artifact.files.some((file: { path: string }) => file.path.startsWith("bin/")) ||
-    !artifact.files.some((file: { path: string }) => file.path === "README.md")
-  )
-    throw new Error(`Invalid ${name} artifact`);
+  const hasBinary = artifact.files.some((file: { path: string }) => file.path.startsWith("bin/"));
+  const hasReadme = artifact.files.some((file: { path: string }) => file.path === "README.md");
+  if (!hasBinary || !hasReadme) throw new Error(`Invalid ${name} artifact`);
   console.log(`Packed ${name}@${version}`);
   if (!publish) continue;
   // Skip versions already on npm so a failed release can be rerun.

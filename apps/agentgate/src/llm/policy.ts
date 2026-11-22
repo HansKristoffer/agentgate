@@ -8,6 +8,7 @@ function timers(s: Store) {
   if (!m) state.set(s, (m = new Map()));
   return m;
 }
+
 export function cooldowns(s: Store, accountId: string, model?: string): Cooldown[] {
   const map = timers(s);
   for (const [key, entry] of map) {
@@ -18,6 +19,7 @@ export function cooldowns(s: Store, accountId: string, model?: string): Cooldown
     (c) => c.accountId === accountId && (!model || c.scope === "account" || c.model === model),
   );
 }
+
 export function cool(s: Store, accountId: string, reason: Failure, retryAt: number, model?: string) {
   if (!s.get("account", accountId) || retryAt <= s.now()) return;
   const m = timers(s);
@@ -42,9 +44,10 @@ export function cool(s: Store, accountId: string, reason: Failure, retryAt: numb
   // The app shows the reason and retryAt, and works out the end from retryAt itself.
   if (next.retryAt !== prev?.retryAt || next.reason !== prev.reason) s.bump("status");
 }
+
 export function resetCooldown(s: Store, accountId: string) {
-  const m = timers(s),
-    before = m.size;
+  const m = timers(s);
+  const before = m.size;
   for (const [key, c] of m) if (c.accountId === accountId) m.delete(key);
   if (m.size !== before) s.bump("status");
 }
@@ -52,6 +55,7 @@ export function resetCooldown(s: Store, accountId: string) {
 /** A missing or unreadable Retry-After waits two seconds. */
 export const retryAfterMs = (headers: Headers, now = Date.now()) =>
   parseRetryAfter(headers.get("retry-after"), now) ?? 2000;
+
 /** One wall-clock bootstrap deadline, independent of the provider's stream lifetime. */
 export class Budget {
   private controller = new AbortController();

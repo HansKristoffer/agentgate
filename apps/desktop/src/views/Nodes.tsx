@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { trimTrailingSlash } from "hanzio";
+import { isTruthy, trimTrailingSlash } from "hanzio";
 import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
 import { Button, Spinner, toast } from "@heroui/react";
 import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
@@ -94,7 +94,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       relay.reconciling && "Reconciling",
       relay.rotating && "Rotation pending",
       relay.cleanupPending && "Old group cleanup pending",
-    ].filter(Boolean);
+    ].filter(isTruthy);
   return (
     <>
       <HeaderActions>
@@ -267,11 +267,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
           <div className="item">
             <div className="grow">
               <div className="row">
-                {relayState?.length ? (
-                  relayState.map((s) => <Badge key={String(s)}>{s}</Badge>)
-                ) : (
-                  <Badge good>In sync</Badge>
-                )}
+                {relayState?.length ? relayState.map((s) => <Badge key={s}>{s}</Badge>) : <Badge good>In sync</Badge>}
               </div>
               {relay.pushError && <small>Upload: {relay.pushError}</small>}
               {relay.pullError && <small>Download: {relay.pullError}</small>}

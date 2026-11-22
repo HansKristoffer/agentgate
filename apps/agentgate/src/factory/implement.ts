@@ -1,4 +1,4 @@
-import type { FactoryBoard, FactoryReport } from "@agentgate/protocol";
+import type { FactoryReport } from "@agentgate/protocol";
 import { renderBrief } from "./briefs.ts";
 import { folderFor } from "./config.ts";
 import { defaultBranch, moveOn, originBranches } from "./controller.ts";
@@ -182,5 +182,5 @@ const implement = (f: FactoryRuntime) => ({
 export function setup(f: FactoryRuntime): void {
   f.runKinds.set("implement", implement(f));
   // Capacity merges key by key, so this part adds only `mainRed`.
-  f.boardParts.push(async () => ({ capacity: { mainRed: mainRed(f) } }) as Partial<FactoryBoard>);
+  f.boardParts.push(async () => ({ capacity: { mainRed: mainRed(f) } }));
 }

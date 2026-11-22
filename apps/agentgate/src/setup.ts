@@ -51,7 +51,9 @@ function multilineState(line: string, state: string): string {
       if (line.startsWith(state, i)) {
         state = "";
         i += 2;
-      } else if (state === '"""' && char === "\\") i++;
+      } else if (state === '"""' && char === "\\") {
+        i++;
+      }
     } else if (single) {
       if (single === '"' && char === "\\") i++;
       else if (char === single) single = "";
@@ -62,7 +64,9 @@ function multilineState(line: string, state: string): string {
         if (line.startsWith(triple, i)) {
           state = triple;
           i += 2;
-        } else single = char;
+        } else {
+          single = char;
+        }
       }
     }
   }
@@ -82,11 +86,13 @@ function withoutAgentgate(existing: string): string {
       if (header) {
         // Parse quoted table names with the same parser that will read the resulting config.
         const shape = Bun.TOML.parse(`${header[1]}\n__agentgate_probe = 1`) as Record<string, unknown>;
-        if (Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate"))
+        if (Object.hasOwn(shape, "model_providers") && Object.hasOwn(shape.model_providers as object, "agentgate")) {
           table = "model_providers.agentgate";
-        else if (Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate"))
+        } else if (Object.hasOwn(shape, "mcp_servers") && Object.hasOwn(shape.mcp_servers as object, "agentgate")) {
           table = "mcp_servers.agentgate";
-        else table = "other";
+        } else {
+          table = "other";
+        }
       }
     }
     const wasMultiline = !!multiline;
@@ -156,6 +162,7 @@ async function proxyAuth(env: Record<string, unknown>, dir: string, now = Date.n
   if (env.ANTHROPIC_API_KEY || (env.ANTHROPIC_AUTH_TOKEN && !placeholder)) return false;
   const wanted = !(await ownClaudeLogin(dir, now));
   if (wanted === placeholder) return false;
+
   if (wanted) env.ANTHROPIC_AUTH_TOKEN = PLACEHOLDER_TOKEN;
   else delete env.ANTHROPIC_AUTH_TOKEN;
   return true;
@@ -332,10 +339,11 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
 
 /** Keep this node's record in step with its own config, which the CLI or a hand edit may change behind the daemon. */
 export function publishRouting(s: Store) {
-  const me = s.get("node", s.nodeId),
-    routing = primaryState();
-  if (me && (me.routing?.claude !== routing.claude || me.routing?.codex !== routing.codex))
+  const me = s.get("node", s.nodeId);
+  const routing = primaryState();
+  if (me && (me.routing?.claude !== routing.claude || me.routing?.codex !== routing.codex)) {
     s.put("node", s.nodeId, { ...me, routing });
+  }
 }
 
 /** Whether `setup --primary` currently routes your own ~/.claude and ~/.codex through this daemon. */
@@ -384,6 +392,7 @@ async function jsonMcp(name: string, on: boolean, file: string): Promise<string>
   if (on) servers.agentgate = jsonServer();
   else if (servers.agentgate) delete servers.agentgate;
   else return `No agentgate MCP server in ${file}.`;
+
   if (existsSync(file)) backup(file);
   atomicWrite(file, JSON.stringify({ ...root, mcpServers: servers }, null, 2) + "\n");
   return on
@@ -469,11 +478,10 @@ export async function primary(on: boolean, dir = PRIMARY_CLAUDE_DIR): Promise<st
   const env = { ...settings.env };
   const url = `${LOCAL_URL}/anthropic`;
   if (on) {
-    if (!existsSync(undo))
-      atomicWrite(
-        undo,
-        JSON.stringify({ hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL }),
-      );
+    if (!existsSync(undo)) {
+      const previous = { hadValue: Object.hasOwn(env, "ANTHROPIC_BASE_URL"), value: env.ANTHROPIC_BASE_URL };
+      atomicWrite(undo, JSON.stringify(previous));
+    }
     backup(file);
     env.ANTHROPIC_BASE_URL = url;
     await proxyAuth(env, dir);
@@ -510,14 +518,16 @@ export async function primaryCodex(on: boolean, dir = PRIMARY_CODEX_DIR): Promis
   const existing = existsSync(file) ? readFileSync(file, "utf8") : "";
   const current = (Bun.TOML.parse(existing) as { model_provider?: string }).model_provider;
   if (on) {
-    if (!existsSync(undo))
+    if (!existsSync(undo)) {
       atomicWrite(undo, JSON.stringify({ hadValue: current !== undefined && current !== "agentgate", value: current }));
+    }
     backup(file);
     atomicWrite(file, codexConfig(existing, undefined, undefined, true));
     // Like Claude above: a server set up from scratch has no Codex login, so `codex login status` (which T3 Code
     // checks before offering Codex) says "Not logged in". The proxy swaps this placeholder key for a pool account.
-    if (!existsSync(auth) && !/^\s*cli_auth_credentials_store\s*=\s*"keyring"/m.test(existing))
+    if (!existsSync(auth) && !/^\s*cli_auth_credentials_store\s*=\s*"keyring"/m.test(existing)) {
       atomicWrite(auth, PLACEHOLDER_AUTH);
+    }
     return `New Codex sessions in ${dir} use agentgate. Undo: agentgate setup --primary off.`;
   }
   if (current !== "agentgate") {

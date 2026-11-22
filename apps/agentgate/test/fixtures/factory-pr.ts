@@ -1,6 +1,6 @@
 import type { FactoryReport } from "@agentgate/protocol";
 import { items, runs, type FactoryItem, type FactoryRun } from "../../src/factory/db.ts";
-import { loopTask } from "../../src/factory/runtime.ts";
+import { loopTask, type FactoryRuntime } from "../../src/factory/runtime.ts";
 import { host, type GhAnswer } from "../../src/logins.ts";
 import { factoryNode, idle } from "./t3-mcp.ts";
 
@@ -277,6 +277,13 @@ function fakeGitHub(repo: string, cleanup: (() => unknown)[]) {
   return github;
 }
 
+/** One pass of the named factory loop. */
+export const runLoop = (f: FactoryRuntime, name: string) =>
+  loopTask(
+    f,
+    f.loops.find((l) => l.name === name)!,
+  )();
+
 export const triaged = {
   outcome: "done",
   summary: "Reproduced it.",
@@ -381,10 +388,7 @@ async function prHelpers({ restart: _restart, ...n }: Node, github: ReturnType<t
     implementRuns,
     /** One pass of the PR follower, with what it left to post. */
     pollPrs: async () => {
-      await loopTask(
-        n.f,
-        n.f.loops.find((l) => l.name === "factory-prs")!,
-      )();
+      await runLoop(n.f, "factory-prs");
       await idle(n.f);
     },
     /** Messages the factory sent to a thread after launching it. */

@@ -176,8 +176,11 @@ controlOp({
   async run({ command }, { s }) {
     const target = await relayed(() => parseJoin(command));
     let peer: string | undefined;
-    if ("invite" in target) await relayed(() => joinRelay(s, target.invite, target.force));
-    else peer = await joinPeer(s, target.url, target.code);
+    if ("invite" in target) {
+      await relayed(() => joinRelay(s, target.invite, target.force));
+    } else {
+      peer = await joinPeer(s, target.url, target.code);
+    }
     return { peer, ...counts(s) };
   },
   terminal: {
@@ -201,7 +204,9 @@ controlOp({
   needs: "store",
   loopbackOnly: true,
   async run({ node }, { s, daemon }) {
-    if (!s.get("node", node) && !peers(s).some((p) => p.node === node)) throw new UserError(`No machine named ${node}`);
+    const isKnown = s.get("node", node) || peers(s).some((p) => p.node === node);
+    if (!isKnown) throw new UserError(`No machine named ${node}`);
+
     // Only a new relay secret shuts a relay machine out, and every remote endpoint then gets a URL it has never seen.
     // The rotation goes first, so a failed one changes nothing and can be retried.
     const rotated = relayInvite(s) && via(s, node).includes("relay") ? await relayed(() => rotateRelay(s)) : undefined;
@@ -264,6 +269,7 @@ controlOp({
     const id = node ?? s.nodeId;
     const n = machine(s, id);
     if (on === undefined) return n;
+
     try {
       return setHealthDashboard(s, id, on);
     } catch (e) {
@@ -443,8 +449,9 @@ controlOp({
       ["cloneDir", clones],
     ] as const;
     for (const [, dir] of dirs) {
-      if (dir && !isAbsolute(dir) && !/^~(\/|$)/.test(dir))
+      if (dir && !isAbsolute(dir) && !/^~(\/|$)/.test(dir)) {
         throw new UserError(`Give ${dir} as an absolute folder, or one under ~`);
+      }
     }
     for (const [id, dir] of dirs) {
       if (dir) handoffDirs.set(s, id, resolve(dir.replace(/^~(?=\/|$)/, homedir())));

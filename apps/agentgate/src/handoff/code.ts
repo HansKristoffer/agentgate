@@ -53,6 +53,7 @@ export async function run(cwd: string, args: string[], env: Record<string, strin
     signal?.removeEventListener("abort", kill);
   }
 }
+
 export async function git(
   cwd: string,
   args: string[],
@@ -63,11 +64,13 @@ export async function git(
   if (!r.ok) throw new Error(`git ${args[0]} failed: ${r.err.split("\n").at(-1) || "unknown error"}`);
   return r.out;
 }
+
 const maybe = async (cwd: string, args: string[], env?: Record<string, string>) => {
   const r = await run(cwd, args, env);
   return r.ok ? r.out : undefined;
 };
 const hasCommit = async (cwd: string, sha: string) => (await run(cwd, ["cat-file", "-e", `${sha}^{commit}`])).ok;
+
 const ref = (id: string) => `refs/agentgate/handoff/${id}`;
 
 /** Where the source's code stands. `baseSha` is the newest commit of HEAD already on origin: the destination
@@ -192,6 +195,7 @@ export async function fetchBundle(cwd: string, bundle: string, id: string, signa
   await git(cwd, ["fetch", bundle, `${ref(id)}:${ref(id)}`], undefined, { signal });
   return true;
 }
+
 /** The fetched ref keeps the snapshot commit alive until the code is applied. */
 export const dropRef = (cwd: string, id: string) => run(cwd, ["update-ref", "-d", ref(id)]);
 
@@ -325,6 +329,7 @@ const MANIFESTS = new Set([
   "go.sum",
   "Gemfile.lock",
 ]);
+
 /** Whether dependency manifests or lockfiles differ between two commits, so setup should run again. */
 export async function manifestsChanged(cwd: string, from: string, to: string): Promise<boolean> {
   if (from === to) return false;

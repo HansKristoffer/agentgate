@@ -94,8 +94,9 @@ export async function waitForService(url = `${LOCAL_URL}/api/changes?wait=0`, ti
     const remaining = deadline - Date.now();
     if (remaining > 0) await Bun.sleep(Math.min(100, remaining));
   }
+  const whereToLook = mac ? join(LOGS, "agentgate.log") : "journalctl --user -u agentgate";
   throw new Error(
-    `agentgate did not become ready at ${url}; check ${mac ? join(LOGS, "agentgate.log") : "journalctl --user -u agentgate"}. Claude/Codex cannot connect until the daemon is running.`,
+    `agentgate did not become ready at ${url}; check ${whereToLook}. Claude/Codex cannot connect until the daemon is running.`,
   );
 }
 
@@ -135,8 +136,9 @@ export async function service(action: string) {
       atomicWrite(UNIT, unit());
       if (run(["systemctl", "--user", "daemon-reload"]) !== 0) throw new Error("systemd reload failed");
       // Keeps the user service running with nobody logged in, and across reboots.
-      if (run(["loginctl", "enable-linger", process.env.USER ?? ""]) !== 0)
+      if (run(["loginctl", "enable-linger", process.env.USER ?? ""]) !== 0) {
         throw new Error("could not enable lingering; run loginctl enable-linger for this user, then retry");
+      }
       if (run(["systemctl", "--user", "enable", "agentgate"]) !== 0) throw new Error("systemd enable failed");
       // Reinstalling must apply the new executable/environment to an already running service.
       return ready(run(["systemctl", "--user", "restart", "agentgate"]));
@@ -181,7 +183,10 @@ export function isServiceProcess() {
 export function rotateLogs(dir = LOGS, maxBytes = 5 * 1024 * 1024) {
   const file = join(dir, "agentgate.log");
   if (!existsSync(file) || statSync(file).size < maxBytes) return;
-  for (let i = 4; i >= 1; i--) if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+
+  for (let i = 4; i >= 1; i--) {
+    if (existsSync(`${file}.${i}`)) renameSync(`${file}.${i}`, `${file}.${i + 1}`);
+  }
   copyFileSync(file, `${file}.1`);
   truncateSync(file, 0);
 }

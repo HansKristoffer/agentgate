@@ -24,8 +24,9 @@ function fixture(options: Parameters<typeof makeCtx>[1] = {}) {
   const s = new Store(":memory:");
   s.setLocal("node", "test");
   s.setLocal("adminToken", "admin-secret");
-  const ctx = makeCtx(s, options),
-    handler = app(ctx);
+  const ctx = makeCtx(s, options);
+  const handler = app(ctx);
+
   cleanup.push(async () => {
     ctx.abort.abort();
     await Promise.allSettled([...ctx.pending]);
@@ -197,8 +198,8 @@ test("local Claude sign-in refuses remote calls, stops on cancellation or shutdo
   const write = localClaude();
   write({ loginEnded: "lineage_expired" });
   await call("/api/status");
-  let launches = 0,
-    aborted = 0;
+  let launches = 0;
+  let aborted = 0;
   claudeLocalHost.signIn = async (signal, url) => {
     launches++;
     url("https://claude.ai/oauth/authorize?state=test");
@@ -577,8 +578,8 @@ test("Claude Desktop endpoints are local only", async () => {
 test("signed-in Claude Code and Codex logins are detected by identity only, and pre-selected at sign-in", async () => {
   const { mkdtempSync, writeFileSync } = await import("node:fs");
   const { join } = await import("node:path");
-  const claude = await import("../src/llm/claude.ts"),
-    codex = await import("../src/llm/codex.ts");
+  const claude = await import("../src/llm/claude.ts");
+  const codex = await import("../src/llm/codex.ts");
   const dir = mkdtempSync(join((await import("node:os")).tmpdir(), "agentgate-detect-"));
   writeFileSync(
     join(dir, ".claude.json"),
@@ -701,8 +702,8 @@ test("env files: the app adds one from a local checkout, sees paths only, and re
   const root = join(tmp(), ".buncargo", "files");
   ctx.files = new CheckoutFiles(ctx.s, root);
   cleanup.push(async () => ctx.files.close());
-  const r = repos("a"),
-    other = repos("b");
+  const r = repos("a");
+  const other = repos("b");
   writeFileSync(join(r.a, ".env.local"), "API_KEY=private-value\n");
   writeFileSync(join(other.b, ".env"), "x\n");
   const project = `test/${r.url

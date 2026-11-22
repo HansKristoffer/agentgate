@@ -20,6 +20,7 @@ interface NodeState {
   rotation: Map<string, string>;
   continuations: Map<string, { id: string; expires: number }>;
 }
+
 const states = new WeakMap<Store, NodeState>();
 function state(s: Store) {
   let value = states.get(s);
@@ -35,18 +36,21 @@ function state(s: Store) {
     );
   return value;
 }
+
 export function resetRouting(s: Store, id: string) {
   const node = state(s);
   for (const [key, entry] of node.affinity) if (entry.id === id) node.affinity.delete(key);
   for (const [key, entry] of node.continuations) if (entry.id === id) node.continuations.delete(key);
   for (const [key, last] of node.rotation) if (last === id) node.rotation.delete(key);
 }
+
 /** The account each provider last answered from; the proxy writes it on a successful response. */
 export const activeAccount = defineLocal("active:", z.string(), { topic: "status" });
 /** Each account's last model discovery, and why the latest one failed (llm/operations.ts writes both). */
 export const modelSnapshots = defineLocal("models:", modelSnapshotSchema, { topic: "status" });
 export const modelErrors = defineLocal("modelError:", z.string(), { topic: "status" });
 export const modelsFor = (s: Store, id: string) => modelSnapshots.get(s, id);
+
 export function resolveModel(s: Store, provider: ProviderName, model?: string): string | undefined {
   if (!model) return undefined;
   const map = new Map(
@@ -64,22 +68,25 @@ export function resolveModel(s: Store, provider: ProviderName, model?: string): 
   }
   return next;
 }
+
 /** Accounts whose quota expires within this much of the soonest one's count as level, so the active account keeps
  * serving (and its prompt cache stays warm) rather than flipping on a few seconds of reset jitter. */
 const LEVEL_EXPIRY = 30 * 60_000;
+
 /** When an account's unused quota is lost: the reset of its longest window. That window is the scarce one; a five-hour
  * window resets many times before a weekly one does. A window that has not started, or has already reset, starts a full
  * period with the next request. */
 function quotaExpiry(windows: QuotaWindow[], now: number) {
-  let longest = 0,
-    expiry = Infinity;
+  let longest = 0;
+  let expiry = Infinity;
   for (const w of windows.map(normalizeQuotaWindow)) {
-    const duration = w.durationMs ?? 0,
-      end = w.resetsAt && w.resetsAt > now ? w.resetsAt : duration ? now + duration : Infinity;
+    const duration = w.durationMs ?? 0;
+    const end = w.resetsAt && w.resetsAt > now ? w.resetsAt : duration ? now + duration : Infinity;
     if (duration > longest || (duration === longest && end < expiry)) [longest, expiry] = [duration, end];
   }
   return expiry;
 }
+
 /** Evaluate eligibility and limiting quota from the same account observation. */
 function assess(s: Store, account: Account, model?: string, exclude = new Set<string>(), now = s.now()) {
   const reasons: RouteReason[] = [];
@@ -125,12 +132,15 @@ function assess(s: Store, account: Account, model?: string, exclude = new Set<st
     retryAt: blockers.length ? Math.max(...blockers) : undefined,
   };
 }
+
 export function eligibility(s: Store, account: Account, model?: string, exclude = new Set<string>()) {
   return assess(s, account, model, exclude).reasons;
 }
+
 export function candidates(s: Store, provider: ProviderName, model?: string, exclude = new Set<string>()) {
   return s.list("account").filter((a) => a.provider === provider && !eligibility(s, a, model, exclude).length);
 }
+
 export function route(
   s: Store,
   provider: ProviderName,
@@ -141,10 +151,11 @@ export function route(
     requiredAccount?: string;
   } = {},
 ): RouteExplanation {
-  const routedModel = resolveModel(s, provider, model),
-    settings = s.settings(),
-    node = state(s),
-    now = s.now();
+  const routedModel = resolveModel(s, provider, model);
+  const settings = s.settings();
+  const node = state(s);
+  const now = s.now();
+
   for (const [key, entry] of node.affinity)
     if (entry.expires <= now || !s.get("account", entry.id)) node.affinity.delete(key);
   const evaluated = s
@@ -184,18 +195,19 @@ export function route(
   // Use it or lose it: the account whose quota expires soonest serves first, so quota that would reset unused is spent
   // before quota that keeps. Accounts at the threshold come last.
   if (!selected) {
-    const under = eligible.filter((candidate) => (candidate.window?.usedPct ?? 0) < settings.threshold),
-      pool = under.length ? under : eligible,
-      soonest = [...pool].sort(
-        (a, b) =>
-          a.expiry - b.expiry || b.account.priority - a.account.priority || a.account.id.localeCompare(b.account.id),
-      )[0],
-      active = pool.find((candidate) => candidate.account.id === activeAccount.get(s, provider));
+    const under = eligible.filter((candidate) => (candidate.window?.usedPct ?? 0) < settings.threshold);
+    const pool = under.length ? under : eligible;
+    const soonest = [...pool].sort(
+      (a, b) =>
+        a.expiry - b.expiry || b.account.priority - a.account.priority || a.account.id.localeCompare(b.account.id),
+    )[0];
+    const active = pool.find((candidate) => candidate.account.id === activeAccount.get(s, provider));
     selected = active && soonest && active.expiry <= soonest.expiry + LEVEL_EXPIRY ? active : soonest;
     if (selected)
       reason =
         selected === active ? "active subscription, reset level with the soonest" : "soonest reset, then priority";
   }
+
   return {
     provider,
     requestedModel: model,
@@ -211,6 +223,7 @@ export function route(
     })),
   };
 }
+
 /** Keep upstream model metadata, exposing only models the configured pool can currently serve. */
 export function filterModelList(
   s: Store,
@@ -219,8 +232,8 @@ export function filterModelList(
   shape: { collection: string; id: string },
 ): unknown {
   if (!payload || typeof payload !== "object") return payload;
-  const data = payload as Record<string, unknown>,
-    list = data[shape.collection];
+  const data = payload as Record<string, unknown>;
+  const list = data[shape.collection];
   if (!Array.isArray(list)) return payload;
   const entries = list.filter(
     (entry): entry is Record<string, unknown> =>
@@ -242,6 +255,7 @@ export function filterModelList(
   }
   return { ...data, [shape.collection]: allowed };
 }
+
 export function beginRoute(s: Store, provider: ProviderName, id: string, session?: string) {
   const node = state(s);
   node.rotation.set(provider, id);
@@ -261,11 +275,13 @@ export function beginRoute(s: Store, provider: ProviderName, id: string, session
     else node.counts.delete(id);
   });
 }
+
 export function continuationAccount(s: Store, id: string) {
   const node = state(s);
   for (const [key, value] of node.continuations) if (value.expires <= s.now()) node.continuations.delete(key);
   return node.continuations.get(id)?.id;
 }
+
 export function rememberContinuation(s: Store, responseId: string, accountId: string) {
   // Response ids are word characters and dashes; anything else is not an id to continue from.
   if (!/^[\w-]{1,200}$/.test(responseId)) return;
@@ -273,6 +289,7 @@ export function rememberContinuation(s: Store, responseId: string, accountId: st
   while (map.size >= 2000) map.delete(map.keys().next().value!);
   map.set(responseId, { id: accountId, expires: s.now() + 3600000 });
 }
+
 export function earliestReset(s: Store, provider: ProviderName, model?: string) {
   const now = s.now();
   const times = s

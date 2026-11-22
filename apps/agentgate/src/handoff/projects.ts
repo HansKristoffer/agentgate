@@ -63,6 +63,7 @@ export async function syncT3Projects(h: Handoffs) {
   // T3 Code not running is normal on a laptop, and the T3 connection status already says so: try next round.
   const all = await t3Projects(t3).catch(() => undefined);
   if (!all) return report([]);
+
   const here = all.filter((p): p is typeof p & { repo: string; origin: string } => !!p.repo);
   // Registering spawns git; a checkout already registered for its repository needs none.
   const registered = registeredCheckouts(s);
@@ -75,6 +76,7 @@ export async function syncT3Projects(h: Handoffs) {
   };
   const fresh = here.filter((p) => !isRegistered(p.project.workspaceRoot, p.repo));
   if (fresh.length) h.register(fresh.map((p) => ({ path: p.project.workspaceRoot, project: p.repo })));
+
   if (!s.settings().t3ProjectSync) return report([]);
   OLD_KNOWN.set(s, undefined, undefined);
   const known = new Set(KNOWN.get(s));
@@ -151,6 +153,7 @@ export async function syncT3Projects(h: Handoffs) {
       }
     }
   }
+
   const messages = [...errors].map(([message, repos]) => `${repos.join(", ")}: ${message}`);
   report([...(denied ? [denied] : []), ...messages]);
 }

@@ -16,6 +16,7 @@ export class Telemetry {
   readonly request: ProxyRequest;
   private elapsed = startTimer();
   private ended = false;
+
   constructor(
     readonly s: Store,
     provider: ProviderName,
@@ -35,6 +36,7 @@ export class Telemetry {
     };
     this.save();
   }
+
   private safeModel(value?: string) {
     if (!value) return "";
     const parsed = modelIdSchema.safeParse(value);
@@ -52,11 +54,13 @@ export class Telemetry {
       return "[redacted]";
     return parsed.data;
   }
+
   models(requested?: string, routed?: string) {
     this.request.requestedModel = this.safeModel(requested);
     this.request.routedModel = this.safeModel(routed);
     this.save();
   }
+
   attempt(account: string, selection: string): ProxyAttempt {
     const attempt = {
       id: crypto.randomUUID(),
@@ -74,6 +78,7 @@ export class Telemetry {
     this.saveAttempt(attempt);
     return attempt;
   }
+
   saveAttempt(attempt: ProxyAttempt) {
     if (this.s.closed) return;
     const data = JSON.stringify(attempt);
@@ -85,14 +90,17 @@ export class Telemetry {
       data,
     ]);
   }
+
   headers(status: number) {
     this.request.status = status;
     this.request.headersMs = Math.round(this.elapsed());
     this.save();
   }
+
   firstByte() {
     if (this.request.firstByteMs === undefined) this.request.firstByteMs = Math.round(this.elapsed());
   }
+
   finish(outcome: ProxyRequest["outcome"], failure?: Failure, stream?: ProxyRequest["stream"]) {
     if (this.ended) return;
     this.ended = true;
@@ -107,30 +115,34 @@ export class Telemetry {
     trimTelemetry(this.s);
     bumpActivity(this.s);
   }
+
   /** The model a response's tokens count under. */
   get tokenModel() {
     return this.request.routedModel || this.request.requestedModel || "unknown";
   }
+
   /** Adds a response's token counts to this hour's total for its model. */
   tokens(t: Tokens) {
     if (this.s.closed || !(t.input + t.output + t.cacheRead + t.cacheWrite)) return;
-    const now = this.s.now(),
-      model = this.tokenModel;
+    const now = this.s.now();
+    const model = this.tokenModel;
     this.s.db.run(
       "insert into token_usage values (?,?,?,?,?,?,?) on conflict(hour, provider, model) do update set input=input+excluded.input, output=output+excluded.output, cache_read=cache_read+excluded.cache_read, cache_write=cache_write+excluded.cache_write",
       [now - (now % 3600000), this.request.provider, model, t.input, t.output, t.cacheRead, t.cacheWrite],
     );
   }
+
   private save() {
     if (this.s.closed) return;
-    const r = this.request,
-      data = JSON.stringify(r);
+    const r = this.request;
+    const data = JSON.stringify(r);
     this.s.db.run(
       "insert into proxy_requests (id,at,provider,account,model,outcome,failure,bytes,data) values (?,?,?,?,?,?,?,?,?) on conflict(id) do update set account=excluded.account, model=excluded.model, outcome=excluded.outcome, failure=excluded.failure, bytes=excluded.bytes, data=excluded.data",
       [r.id, r.at, r.provider, r.account, r.routedModel, r.outcome, r.failure ?? null, Buffer.byteLength(data), data],
     );
   }
 }
+
 /** Each store's open throttle window: a busy proxy finishes many requests a second, and the app needs one refresh. */
 const activityWindows = new WeakMap<Store, { again: boolean }>();
 /** Bumps `activity` at once, then at most once a second: a finish inside the window gets one bump at its end, so the
@@ -146,6 +158,7 @@ function bumpActivity(s: Store) {
     if (opened.again && !s.closed) bumpActivity(s);
   }, 1000).unref();
 }
+
 interface RequestFilter {
   provider?: string;
   account?: string;
@@ -158,9 +171,10 @@ interface RequestFilter {
   cursor?: string;
   limit?: number;
 }
+
 export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
-  const where: string[] = [],
-    args: (string | number)[] = [];
+  const where: string[] = [];
+  const args: (string | number)[] = [];
   for (const key of ["provider", "account", "model", "outcome", "failure"] as const) {
     const value = filter[key];
     if (!value) continue;
@@ -200,6 +214,7 @@ export function requests(s: Store, filter: RequestFilter = {}): RequestPage {
     cursorReset: cursor !== undefined && (minimum === null || cursor <= minimum),
   };
 }
+
 export function requestDetail(s: Store, id: string): RequestDetail | undefined {
   const row = s.db.query<{ data: string }, [string]>("select data from proxy_requests where id=?").get(id);
   return row
@@ -233,6 +248,7 @@ const tokenSums = (key: string) => {
     ) group by ${key}
   ) group by ${key}`;
 };
+
 const HOUR = 3600000;
 
 /** The rows of every `tokens` record, kept in a node-local table so a read is an indexed sum rather than a parse of
@@ -253,8 +269,8 @@ function refreshTokenRecords(s: Store) {
   const from = Number(s.local("tokens:table") ?? 0);
   if (!s.db.query("select 1 from records where seq > ? and kind = 'tokens' limit 1").get(from)) return;
   s.transaction(() => {
-    const high = s.seq(),
-      insert = s.db.prepare("insert into token_records values (?,?,?,?,?,?,?,?,?,?)");
+    const high = s.seq();
+    const insert = s.db.prepare("insert into token_records values (?,?,?,?,?,?,?,?,?,?)");
     for (const r of s.db
       .query<Pick<Rec, "id" | "deleted" | "data">, [number, number]>(
         "select id, deleted, data from records where seq > ? and seq <= ? and kind = 'tokens'",
@@ -280,6 +296,7 @@ function refreshTokenRecords(s: Store) {
     s.setLocal("tokens:table", String(high));
   });
 }
+
 /** A read sums every hour of history, about 7 ms for a year from three machines, and the app reads on every activity
  * change, up to once a second while the proxy is busy. An answer is reused for a minute unless a `tokens` record
  * changed since; this node's own counts may lag that minute. */
@@ -287,12 +304,12 @@ const tokenCache = new WeakMap<Store, Map<string, { at: number; seq: number; val
 function cachedTokens<T>(s: Store, name: string, since: number, read: (after: number) => T): T {
   // An hour bucket counts if any of it is after `since`, so every `since` within one hour selects the same buckets and
   // the app's "now minus 7 days" shares one entry an hour.
-  const after = since - HOUR,
-    key = `${name}:${Math.floor(after / HOUR)}`,
-    now = s.now(),
-    seq = s.db
-      .query<{ seq: number }, []>("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'")
-      .get()!.seq;
+  const after = since - HOUR;
+  const key = `${name}:${Math.floor(after / HOUR)}`;
+  const now = s.now();
+  const seq = s.db
+    .query<{ seq: number }, []>("select coalesce(max(seq), 0) as seq from records where kind = 'tokens'")
+    .get()!.seq;
   let cache = tokenCache.get(s);
   if (!cache) tokenCache.set(s, (cache = new Map()));
   const hit = cache.get(key);
@@ -370,20 +387,21 @@ function trimTelemetry(s: Store) {
     s.db.run("delete from proxy_attempts where request_id not in (select id from proxy_requests)");
   });
 }
+
 export type Tokens = Omit<ModelTokens, "provider" | "model">;
 /** An event larger than this keeps only its head (for its name) and tail (for its usage). */
-const EVENT_LIMIT = 65536,
-  HEAD = 4096,
-  TAIL = 8192;
+const EVENT_LIMIT = 65536;
+const HEAD = 4096;
+const TAIL = 8192;
 /** The event's name: its `event:` line, else the leading `type` of its data, which every Claude and Codex event has. */
-const EVENT_NAME = /^event:[ \t]*(\S+)/m,
-  DATA_TYPE = /^data:[ \t]*\{\s*"type"\s*:\s*"([^"]+)"/m;
+const EVENT_NAME = /^event:[ \t]*(\S+)/m;
+const DATA_TYPE = /^data:[ \t]*\{\s*"type"\s*:\s*"([^"]+)"/m;
 /** Bounded SSE observation only; the original bytes continue to the client unchanged. */
 export function streamObserver(onResponse?: (id: string) => void) {
   const decoder = new TextDecoder();
-  let buffer = "",
-    /** The start of the event in progress, once it has outgrown EVENT_LIMIT. */
-    head: string | undefined;
+  let buffer = "";
+  /** The start of the event in progress, once it has outgrown EVENT_LIMIT. */
+  let head: string | undefined;
   let terminal: "completed" | "provider-error" | undefined;
   const tokens: Tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   /** Claude reports usage in message_start and cumulatively in message_delta, Codex once in
@@ -393,8 +411,8 @@ export function streamObserver(onResponse?: (id: string) => void) {
   const readUsage = (event: string) => {
     const at = event.lastIndexOf('"usage":');
     if (at < 0) return;
-    const usage = event.slice(at),
-      field = (name: string) => Number(new RegExp(`"${name}":\\s*(\\d+)`).exec(usage)?.[1] ?? 0);
+    const usage = event.slice(at);
+    const field = (name: string) => Number(new RegExp(`"${name}":\\s*(\\d+)`).exec(usage)?.[1] ?? 0);
     const cached = field("cached_tokens"); // Codex counts cached tokens inside input_tokens
     tokens.input = Math.max(tokens.input, field("input_tokens") - cached);
     tokens.output = Math.max(tokens.output, field("output_tokens"));

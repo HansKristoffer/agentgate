@@ -13,6 +13,7 @@ export interface Tokens {
 }
 export class InvalidGrant extends Error {}
 export class NeedsLogin extends Error {}
+
 type OwnedKind = "credential" | "mcpCredential";
 type Owned = Data<OwnedKind>;
 const MIN = 60_000;
@@ -162,8 +163,9 @@ export function refreshOwned<K extends OwnedKind>(
           const saved = s.put(kind, id, { ...next, holder: s.nodeId, needsLogin: false });
           // Remembered so a copy that still carries the old refresh token cannot overwrite these (Store.merge).
           const away = refreshHash(kind, original);
-          if (away && away !== refreshHash(kind, saved))
+          if (away && away !== refreshHash(kind, saved)) {
             rotations.set(s, key, [...rotatedAway(s, kind, id).filter((h) => h !== away), away].slice(-5));
+          }
           const requested = s.get("refreshRequest", key);
           if (requested?.tokenHash === tokenHash(original)) s.del("refreshRequest", key);
           failures.set(s, key, undefined);
@@ -201,15 +203,12 @@ export function refreshOwned<K extends OwnedKind>(
           tokenHash: tokenHash(original),
           error: "token refresh failed; retrying while the current token is valid",
         });
-        if (first)
-          s.log(
-            kind === "credential" ? "oauth" : "mcp",
-            id,
-            "",
-            0,
-            0,
-            refused ? "refresh token refused; waiting to hear from the other machines" : "token refresh failed",
-          );
+        if (first) {
+          const note = refused
+            ? "refresh token refused; waiting to hear from the other machines"
+            : "token refresh failed";
+          s.log(kind === "credential" ? "oauth" : "mcp", id, "", 0, 0, note);
+        }
         // Forced or not, a token that is still valid serves better than an error.
         if (current.expiresAt && current.expiresAt > s.now()) return current;
         throw new Unavailable(`${id}: token refresh failed`);
@@ -247,6 +246,7 @@ export class Credentials {
   /** Waits for other machines' copies only briefly, so a request another account could serve is not held up by a slow
    * peer; the pull itself goes on. */
   private pullBriefly = () => Promise.race([this.pull(), sleep(EXPIRED_PULL_WAIT).then(() => ["no answer yet"])]);
+
   refresh(accountId: string, force = true, pull = this.pullBriefly): Promise<Credential> {
     return refreshOwned(
       this.s,
@@ -262,6 +262,7 @@ export class Credentials {
       force,
     );
   }
+
   async tick(signal?: AbortSignal) {
     for (const c of this.s.list("credential")) {
       if (signal?.aborted) break;
@@ -278,7 +279,6 @@ export async function pkce() {
   return { verifier, challenge, state: randomToken(32) };
 }
 
-/** POST a token request; maps OAuth errors that mean "this refresh token is dead" to InvalidGrant. */
 const tokenResponse = z.object({
   access_token: z.string().min(1),
   refresh_token: z.string().min(1).optional(),
@@ -287,6 +287,8 @@ const tokenResponse = z.object({
   account_id: z.string().optional(),
   account: z.object({ uuid: z.string().optional(), email_address: z.string().optional() }).optional(),
 });
+
+/** POST a token request; maps OAuth errors that mean "this refresh token is dead" to InvalidGrant. */
 export async function tokenRequest(url: string, body: Record<string, string>, form = false) {
   const res = await fetch(url, {
     method: "POST",
@@ -300,7 +302,8 @@ export async function tokenRequest(url: string, body: Record<string, string>, fo
   const text = new TextDecoder().decode(await readBody(res.body, 1024 * 1024, AbortSignal.timeout(30000)));
   if (res.ok) return tokenResponse.parse(JSON.parse(text));
   // The wording providers use for a refresh token that can no longer be used.
-  if (/invalid_grant|refresh_token_(reused|expired|invalidated)/.test(text))
+  if (/invalid_grant|refresh_token_(reused|expired|invalidated)/.test(text)) {
     throw new InvalidGrant("refresh token is no longer valid");
+  }
   throw new Error(`token endpoint returned ${res.status}`);
 }

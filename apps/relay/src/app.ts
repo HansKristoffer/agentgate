@@ -72,8 +72,8 @@ export function relayApp(deps: RelayDeps) {
       const given = await sha256Hex(c.req.header("x-relay-key") ?? "");
       if (!safeEqual(given, await relayKeyHash)) return c.json({ error: "relay key required", code: "relayKey" }, 401);
     }
-    let groupId = "",
-      authHash = "";
+    let groupId = "";
+    let authHash = "";
     if (need.group) {
       groupId = c.req.param("group") ?? "";
       if (!relayGroupId.safeParse(groupId).success) return c.json({ error: "invalid group", code: "shape" }, 400);

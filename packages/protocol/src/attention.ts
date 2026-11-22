@@ -79,60 +79,75 @@ export function problems(
   }
   for (const a of data.accounts) {
     const { kind } = accountState(a);
-    if (kind === "needs-login")
+    if (kind === "needs-login") {
       list.push({ key: `account:${a.account.id}`, page: "accounts", title: `Sign in to ${a.account.label} again` });
-    else if (kind === "refresh-failed")
+    } else if (kind === "refresh-failed") {
       list.push({
         key: `account:${a.account.id}`,
         page: "accounts",
         title: `${a.account.label} couldn't refresh its login`,
         detail: a.refreshError,
       });
+    }
   }
+
   for (const s of data.servers) {
     const name = s.label ?? s.id;
     const key = `server:${s.id}`;
-    if (s.needsLogin) list.push({ key, page: "servers", title: `Sign in to ${name}` });
-    else if (s.available === false || s.refreshError)
+    if (s.needsLogin) {
+      list.push({ key, page: "servers", title: `Sign in to ${name}` });
+    } else if (s.available === false || s.refreshError) {
       list.push({ key, page: "servers", title: `${name} can't connect`, detail: s.refreshError });
+    }
   }
+
   const skillErrors = data.skillHealth.errors.length + data.skillConflicts.length;
-  if (skillErrors)
+  if (skillErrors) {
     list.push({
       key: "skills",
       page: "skills",
       title: `${skillErrors} ${skillErrors === 1 ? "skill" : "skills"} couldn't be linked`,
       detail: [...data.skillHealth.errors.map((e) => e.path), ...data.skillConflicts].join(", "),
     });
-  for (const r of data.skillRepos.filter((r) => r.error))
+  }
+
+  for (const r of data.skillRepos.filter((r) => r.error)) {
     list.push({
       key: `repo:${r.url}`,
       page: "skills",
       title: `${r.url.replace("https://github.com/", "")} couldn't sync`,
       detail: r.error,
     });
-  for (const [project, error] of Object.entries(data.fileErrors))
+  }
+
+  for (const [project, error] of Object.entries(data.fileErrors)) {
     list.push({
       key: `files:${project}`,
       page: "projects",
       title: `Env files for ${project} aren't syncing`,
       detail: error,
     });
+  }
+
   const outdated = outdatedNodes(data.nodes);
-  if (outdated.length)
+  if (outdated.length) {
     list.push({
       key: "outdated",
       page: "nodes",
       title: `${outdated.length} ${outdated.length === 1 ? "machine" : "machines"} on an older version`,
       detail: `${outdated.map((n) => n.id).join(", ")}. Paired machines work best on the same release.`,
     });
-  for (const n of data.nodes) {
-    if (n.update?.state === "failed")
-      list.push({ key: `update:${n.id}`, page: "nodes", title: `Update failed on ${n.id}`, detail: n.update.error });
-    // An offline machine fails to sync until it is back, which is expected.
-    else if (n.online && n.syncError)
-      list.push({ key: `sync:${n.id}`, page: "nodes", title: `${n.id} isn't syncing`, detail: n.syncError });
   }
+
+  for (const n of data.nodes) {
+    if (n.update?.state === "failed") {
+      list.push({ key: `update:${n.id}`, page: "nodes", title: `Update failed on ${n.id}`, detail: n.update.error });
+    } else if (n.online && n.syncError) {
+      // An offline machine fails to sync until it is back, which is expected.
+      list.push({ key: `sync:${n.id}`, page: "nodes", title: `${n.id} isn't syncing`, detail: n.syncError });
+    }
+  }
+
   // In place but not working, e.g. a shared Infisical session that expired on every machine at once.
   for (const l of data.logins.filter((l) => l.problems.length)) {
     const nodes = l.problems.map((p) => p.node).join(", ");
@@ -149,5 +164,6 @@ export function problems(
   }
   const relay = data.relay?.pushError ?? data.relay?.pullError;
   if (relay) list.push({ key: "relay", page: "nodes", title: "The relay isn't syncing", detail: relay });
+
   return list;
 }

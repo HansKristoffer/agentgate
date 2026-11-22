@@ -16,14 +16,17 @@ const QUOTA_POLL = 10 * 60_000;
 /** Usage counts as out of date once a poll round was missed: the holder is asleep or offline, or its poll failed. */
 export const QUOTA_STALE = 2 * QUOTA_POLL;
 export { normalizedWindow, matchesWindow };
+
 export function relevant(u: Usage | undefined, model: string | undefined, now: number): QuotaWindow[] {
   return (u?.windows ?? [])
     .filter((w) => matchesWindow(w, model))
     .map((w) => (w.resetsAt && w.resetsAt <= now ? { ...w, usedPct: 0 } : w));
 }
+
 export function exhausted(u: Usage | undefined, model: string | undefined, now: number): boolean {
   return !!(u?.exhaustedUntil && u.exhaustedUntil > now) || relevant(u, model, now).some((w) => w.usedPct >= 100);
 }
+
 export function recordUsage(
   s: Store,
   id: string,
@@ -32,8 +35,8 @@ export function recordUsage(
   source: Usage["source"] = "headers",
 ) {
   if (!s.get("account", id)) return;
-  const previous = s.get("usage", id),
-    windows = new Map((previous?.windows ?? []).map((w) => [w.name, normalizedWindow(w)]));
+  const previous = s.get("usage", id);
+  const windows = new Map((previous?.windows ?? []).map((w) => [w.name, normalizedWindow(w)]));
   for (let w of observation.windows) {
     w = normalizedWindow(w);
     if (w.usedPct >= 100 && !w.resetsAt) w = { ...w, resetsAt: until ?? s.now() + 60000, inferredReset: true };
@@ -67,15 +70,19 @@ export function recordUsage(
   if (previous && key(previous) === key(next) && s.now() - previous.observedAt < 300000) return;
   s.put("usage", id, next);
 }
+
 const health = defineLocal("quotaHealth:", quotaHealthSchema, { topic: "status" });
 export const quotaHealth = (s: Store, id: string) => health.get(s, id) ?? {};
+
 const flights = new WeakMap<Store, Map<string, Promise<boolean>>>();
+
 export class Quotas {
   constructor(
     readonly s: Store,
     readonly creds: Pick<Credentials, "token">,
     readonly providers: Partial<Record<ProviderName, Provider>>,
   ) {}
+
   refresh(id: string, signal: AbortSignal, force = false): Promise<boolean> {
     const map = flights.get(this.s) ?? new Map<string, Promise<boolean>>();
     flights.set(this.s, map);
@@ -86,19 +93,21 @@ export class Quotas {
     void task.finally(() => map.delete(id)).catch(() => {});
     return task;
   }
+
   private async fetch(id: string, signal: AbortSignal, force: boolean) {
-    const s = this.s,
-      account = s.get("account", id),
-      credential = s.get("credential", id);
+    const s = this.s;
+    const account = s.get("account", id);
+    const credential = s.get("credential", id);
     if (!account || !credential || credential.needsLogin || !account.enabled)
       throw new Error("Account has no usable login or is disabled");
     const provider = this.providers[account.provider];
     if (!provider?.fetchQuota) throw new Error("Usage refresh is unsupported");
     if (!force && account.provider === "codex" && !s.settings().codexQuotaPolling) return false;
-    const prior = quotaHealth(s, id),
-      usageRev = revision(s, "usage", id),
-      usage = s.get("usage", id),
-      age = s.now() - (usage?.observedAt ?? 0);
+    const prior = quotaHealth(s, id);
+    const usageRev = revision(s, "usage", id);
+    const usage = s.get("usage", id);
+    const age = s.now() - (usage?.observedAt ?? 0);
+
     // The holder polls, and again as soon as a window has reset. Another machine steps in once the holder has missed a
     // round, so usage never waits for a click; only with a token that has long to live, so it never starts a refresh.
     const due =
@@ -125,6 +134,7 @@ export class Quotas {
       throw error;
     }
   }
+
   async poll(signal: AbortSignal) {
     const ids = this.s
       .list("account")

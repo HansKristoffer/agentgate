@@ -69,8 +69,8 @@ s.put("credential", "a", {
   expiresAt: Date.now() + 8 * 3600_000,
   holder: "review",
 });
-const ctx = makeCtx(s),
-  a = app(ctx);
+const ctx = makeCtx(s);
+const a = app(ctx);
 const daemon = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => a.fetch(req, { listener: "loopback" }) });
 const configDir = mkdtempSync(join(tmpdir(), "agentgate-codex-smoke-"));
 await Bun.write(
@@ -90,16 +90,19 @@ try {
     new Response(child.stderr).text(),
   ]);
   clearTimeout(timer);
-  if (exitCode !== 0 || !stdout.includes('"type":"turn.completed"') || !stdout.includes("review OK"))
+  const completed = stdout.includes('"type":"turn.completed"');
+  const returnedExpectedText = stdout.includes("review OK");
+  if (exitCode !== 0 || !completed || !returnedExpectedText) {
     throw new Error(`Codex smoke failed: ${stderr.slice(-1000)}`);
+  }
 
   // Past the check above the run succeeded, so only the success fields are printed.
   console.log(
     JSON.stringify({
       exitCode,
       observed,
-      completed: stdout.includes('"type":"turn.completed"'),
-      returnedExpectedText: stdout.includes("review OK"),
+      completed,
+      returnedExpectedText,
       stderr: stderr.slice(-1500),
     }),
   );

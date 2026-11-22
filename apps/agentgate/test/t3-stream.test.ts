@@ -23,8 +23,8 @@ async function until(fn: () => boolean, what: string) {
   }
 }
 
-async function connected(options: { routes?: (req: Request) => Response | undefined } = {}) {
-  const fake = fakeT3({ claudeDir: tmp(), ...options });
+async function connected() {
+  const fake = fakeT3({ claudeDir: tmp() });
   const s = new Store(":memory:");
   s.setLocal("node", "a");
   stops.push(fake.stop, () => s.close());
@@ -152,14 +152,6 @@ test("a subscription fails when T3 fails it or the socket drops, and stops readi
   aborted.controller.abort();
   await expect(aborted.done).rejects.toThrow("aborted");
   await until(() => fake.server.pendingWebSockets === 0, "the socket to close");
-});
-
-test("routes answer on the fake's own origin before its built-in routes", async () => {
-  const { fake } = await connected({
-    routes: (req) => (new URL(req.url).pathname === "/mcp" ? Response.json({ mcp: true }) : undefined),
-  });
-  expect(await (await fetch(`${fake.url}/mcp`)).json()).toEqual({ mcp: true });
-  expect(await (await fetch(`${fake.url}/.well-known/t3/environment`)).json()).toMatchObject({ label: "fake" });
 });
 
 test("a pairing link asks t3 pair for exactly the scopes given", async () => {

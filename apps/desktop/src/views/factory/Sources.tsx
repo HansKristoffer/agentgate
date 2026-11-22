@@ -310,45 +310,49 @@ export function Sources(props: ViewProps & { board: FactoryBoard; run: Run }) {
   return (
     <Panel title="Sources" detail="Where items come from. Give a webhook URL only to its sender." action={action}>
       {board.sources.length ? (
-        board.sources.map((s) => (
-          <div className="item" key={s.id}>
-            <div className="grow">
-              <div className="row">
-                <strong>{s.id}</strong>
-                <small className="muted">
-                  {s.type} · {s.repo}
-                </small>
-                {s.scout && !s.scout.enabled && <Badge>disabled</Badge>}
+        board.sources.map((s) => {
+          const url = s.webhook?.url;
+
+          return (
+            <div className="item" key={s.id}>
+              <div className="grow">
+                <div className="row">
+                  <strong>{s.id}</strong>
+                  <small className="muted">
+                    {s.type} · {s.repo}
+                  </small>
+                  {s.scout && !s.scout.enabled && <Badge>disabled</Badge>}
+                </div>
+                <small className={s.error || hookDown(s) ? "danger" : "muted"}>{sourceDetail(s)}</small>
               </div>
-              <small className={s.error || hookDown(s) ? "danger" : "muted"}>{sourceDetail(s)}</small>
+              {url && (
+                <Button size="sm" variant="tertiary" onPress={() => void navigator.clipboard.writeText(url)}>
+                  Copy webhook URL
+                </Button>
+              )}
+              {s.scout && <OpenInT3 link={s.scout.lastRun?.threadLink} label="Last run" />}
+              {s.scout && (
+                <ActionButton
+                  size="sm"
+                  variant="tertiary"
+                  pendingKey={`factory:scout:${s.id}`}
+                  onPress={() =>
+                    void run(
+                      async () => {
+                        const r = await factoryOp(connection, "scout", { id: s.id });
+                        if ("skipped" in r) throw new Error(r.skipped);
+                      },
+                      `The ${s.id} scout runs now`,
+                      `factory:scout:${s.id}`,
+                    )
+                  }
+                >
+                  Run now
+                </ActionButton>
+              )}
             </div>
-            {s.webhook?.url && (
-              <Button size="sm" variant="tertiary" onPress={() => void navigator.clipboard.writeText(s.webhook!.url!)}>
-                Copy webhook URL
-              </Button>
-            )}
-            {s.scout && <OpenInT3 link={s.scout.lastRun?.threadLink} label="Last run" />}
-            {s.scout && (
-              <ActionButton
-                size="sm"
-                variant="tertiary"
-                pendingKey={`factory:scout:${s.id}`}
-                onPress={() =>
-                  void run(
-                    async () => {
-                      const r = await factoryOp(connection, "scout", { id: s.id });
-                      if ("skipped" in r) throw new Error(r.skipped);
-                    },
-                    `The ${s.id} scout runs now`,
-                    `factory:scout:${s.id}`,
-                  )
-                }
-              >
-                Run now
-              </ActionButton>
-            )}
-          </div>
-        ))
+          );
+        })
       ) : (
         <Empty>
           <p>No sources yet. Add a webhook or a scout, or list GitHub and Linear sources in factory.yaml.</p>

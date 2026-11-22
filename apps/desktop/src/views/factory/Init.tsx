@@ -21,7 +21,7 @@ const storeOptions = [
   { id: "github", label: "In the repository on GitHub" },
   { id: "agentgate", label: "In agentgate, outside the repository" },
 ];
-const nodeOptions = (data: Status) =>
+export const nodeOptions = (data: Status) =>
   data.nodes.map((n) => ({
     id: n.id,
     label: `${n.id}${n.alwaysOn ? " (always on)" : ""}${n.online ? "" : " (offline)"}`,

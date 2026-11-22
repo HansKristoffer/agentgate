@@ -79,8 +79,7 @@ export class EndpointCore {
   private meta(): Meta | undefined {
     if (!this.sql.exec("select 1 from sqlite_master where type = 'table' and name = 'meta'").toArray().length)
       return undefined;
-    const row = this.sql.exec("select * from meta").toArray()[0] as unknown as Meta | undefined;
-    return row;
+    return this.sql.exec("select * from meta").toArray()[0] as unknown as Meta | undefined;
   }
 
   /** Only when the node changes the endpoint. Endpoints created before webhook URLs have no `kind`, which reads as
@@ -111,8 +110,8 @@ export class EndpointCore {
 
   /** The newest open socket. Older ones are closed on connect, so a late close never affects the current one. */
   private socket(): WebSocket | undefined {
-    let best: WebSocket | undefined,
-      since = -1;
+    let best: WebSocket | undefined;
+    let since = -1;
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
       if (ws.readyState === WebSocket.OPEN && a && a.since > since) {
@@ -306,7 +305,7 @@ export class EndpointCore {
       try {
         ws.send(JSON.stringify({ t: "cancel", id }));
       } catch {
-        /* socket already gone */
+        // The socket is already gone; its close fails the call.
       }
       this.settle(id, fail(499, "client closed the request"));
     });
@@ -355,8 +354,9 @@ export class EndpointCore {
   }
 
   private failSocket(ws: WebSocket) {
-    for (const [id, p] of this.pending)
+    for (const [id, p] of this.pending) {
       if (p.ws === ws) this.settle(id, p.fail(502, "the serving machine disconnected"));
+    }
   }
 
   /** Retention counts from the last request or connection; a connected node keeps its endpoint alive. */

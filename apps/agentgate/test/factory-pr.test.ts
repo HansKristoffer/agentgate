@@ -4,10 +4,10 @@ import { writeBack } from "../src/factory/outbox.ts";
 import { items, runs } from "../src/factory/db.ts";
 import { MARKER_PREFIX, markerTag } from "../src/factory/markers.ts";
 import { withSummary } from "../src/factory/pr.ts";
-import { loopTask, withItem } from "../src/factory/runtime.ts";
+import { withItem } from "../src/factory/runtime.ts";
 import { recordUsage } from "../src/llm/quota.ts";
 import { host } from "../src/logins.ts";
-import { prFactory, type FakeConversation } from "./fixtures/factory-pr.ts";
+import { prFactory, runLoop, type FakeConversation } from "./fixtures/factory-pr.ts";
 import { removeTmp } from "./fixtures/git.ts";
 import { idle } from "./fixtures/t3-mcp.ts";
 
@@ -502,10 +502,7 @@ test("a reply GitHub refused is sent again by the outbox, once; a refused resolv
   expect(member.isResolved).toBe(false);
 
   // The outbox sends the reply again; this pass then has the resolve refused, and nudges about failing checks.
-  await loopTask(
-    n.f,
-    n.f.loops.find((l) => l.name === "factory-outbox")!,
-  )();
+  await runLoop(n.f, "factory-outbox");
   await idle(n.f);
   expect(replies(member)).toHaveLength(1);
   n.github.refuse = { reply: 0, resolve: 1 };
@@ -653,10 +650,7 @@ test("a PR thread deleted while the daemon was down is found by the stuck loop, 
   n.t3.threads.delete(run.threadId!);
   const m = await n.restart();
   await m.until(() => m.mirror.status().stream !== "down", "the mirror to read T3 Code");
-  await loopTask(
-    m.f,
-    m.f.loops.find((l) => l.name === "factory-stuck")!,
-  )();
+  await runLoop(m.f, "factory-stuck");
   await idle(m.f);
   expect(items.get(m.s, item.id)!.needsYou).toMatchObject({ cause: "deleted", run: run.id });
 
@@ -692,10 +686,7 @@ test("a reply GitHub applied but whose gh call failed is uncertain, and never po
   for (let pass = 0; pass < 3; pass++) {
     n.advance(2 * MINUTE);
     await n.pollPrs();
-    await loopTask(
-      n.f,
-      n.f.loops.find((l) => l.name === "factory-outbox")!,
-    )();
+    await runLoop(n.f, "factory-outbox");
     await idle(n.f);
   }
   expect(replies(member)).toHaveLength(1);
@@ -713,10 +704,7 @@ test("a comment claimed just before a restart is posted once by the next daemon,
   writeBack(n.f, items.get(n.s, item.id)!, "waiting", { text: "Which one?", ref: "q1" });
 
   const m = await n.restart();
-  await loopTask(
-    m.f,
-    m.f.loops.find((l) => l.name === "factory-outbox")!,
-  )();
+  await runLoop(m.f, "factory-outbox");
   await idle(m.f);
   expect(m.github.posted(1).filter((c) => c === "The factory waits for the maintainer.")).toHaveLength(1);
 
@@ -734,10 +722,7 @@ test("a comment claimed just before a restart is posted once by the next daemon,
   await sent;
   const later = await m.restart();
   host.gh = realGh;
-  await loopTask(
-    later.f,
-    later.f.loops.find((l) => l.name === "factory-outbox")!,
-  )();
+  await runLoop(later.f, "factory-outbox");
   await idle(later.f);
   const { output } = await later.command("show", n.key(1), "--json");
   expect(JSON.parse(output.at(-1)!).writebacks).toContainEqual(

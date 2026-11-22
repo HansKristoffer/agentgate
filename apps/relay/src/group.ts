@@ -165,8 +165,9 @@ export class GroupCore {
   }
 
   private set(values: Partial<Meta>) {
-    for (const [k, v] of Object.entries(values))
+    for (const [k, v] of Object.entries(values)) {
       this.sql.run("insert or replace into meta values (?, ?)", k, v as SqlValue);
+    }
   }
 
   /** Requests are handled one at a time, so awaits (admission, alarms) never interleave two mutations. */
@@ -181,8 +182,9 @@ export class GroupCore {
       const m = this.meta();
       if (!m) return;
       const until = m.lastActive + (m.admitted ? this.deps.config.retentionMs : PENDING_MS);
-      if (m.deleting || this.now() >= until) await this.destroy(m.groupId);
-      else {
+      if (m.deleting || this.now() >= until) {
+        await this.destroy(m.groupId);
+      } else {
         await this.deps.setAlarm(until);
         this.set({ alarmAt: until });
       }
@@ -352,12 +354,17 @@ export class GroupCore {
     const node = relayNode.safeParse(query.node);
     if (!Number.isSafeInteger(since) || since < 0 || !node.success)
       return fail(400, "invalid query", { code: "shape" });
+
     if (query.generation === undefined) {
       if (since !== 0) return this.reset(m, "generation required");
-    } else if (!relayGeneration.safeParse(query.generation).success)
+    } else if (!relayGeneration.safeParse(query.generation).success) {
       return fail(400, "invalid query", { code: "shape" });
-    else if (query.generation !== m.generation) return this.reset(m, "stale generation");
+    } else if (query.generation !== m.generation) {
+      return this.reset(m, "stale generation");
+    }
+
     if (since > m.head) return this.reset(m, "cursor is ahead of the group");
+
     const includeSelf = query.includeSelf === "1";
     const refused = this.sql.tx(() => this.see(m, node.data, now));
     if (refused) return refused;

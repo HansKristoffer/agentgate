@@ -134,6 +134,7 @@ function readCodex(path: string, credential: Credential, signal: AbortSignal) {
     redirect: "manual",
   });
 }
+
 /** The usage payload's windows: the account's own, then each model family's extra limits. */
 export function parseQuota(payload: unknown): Observation | undefined {
   const object = payload as {
@@ -144,6 +145,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
     }[];
   } | null;
   if (!object || typeof object !== "object") return undefined;
+
   const windows: Window[] = [];
   const add = (raw: unknown, family = "") => {
     const w = raw as {
@@ -179,6 +181,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
       resetsAt: reset,
     });
   };
+
   add(object.rate_limit?.primary_window);
   add(object.rate_limit?.secondary_window);
   for (const entry of Array.isArray(object.additional_rate_limits) ? object.additional_rate_limits : []) {
@@ -187,6 +190,7 @@ export function parseQuota(payload: unknown): Observation | undefined {
     add(entry.rate_limit?.primary_window, entry.limit_name);
     add(entry.rate_limit?.secondary_window, entry.limit_name);
   }
+
   if (!windows.length) return undefined;
   return { windows, status: windows.some((w) => w.usedPct >= 100) ? "exhausted" : "ok" };
 }

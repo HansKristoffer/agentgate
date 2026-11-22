@@ -1,14 +1,15 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Button } from "@heroui/react";
-import { SquareTerminal } from "lucide-react";
+import { GitPullRequest, SquareTerminal } from "lucide-react";
 import type { BoardItem, ItemAction, ItemPhase } from "@agentgate/protocol";
 import { openExternal } from "../../api.ts";
 import { ActionButton } from "../../components/ui.tsx";
+import type { Perform } from "../../types.ts";
 
 /** The pieces the factory view, its drawer, its settings and the T3 Code view share. */
 
 /** An action, then the board as it is after it. */
-export type Run = (task: () => Promise<unknown>, message?: string, key?: string) => Promise<void>;
+export type Run = Perform;
 /** What the view does to an item, for the queue, the cards and the drawer. */
 export type Act = (item: Pick<BoardItem, "id" | "key">, action: ItemAction, reason?: string) => Promise<void>;
 /** Asks for a reason, then acts. */
@@ -49,6 +50,15 @@ export function OpenInT3({ link, label = "Open in T3 Code" }: { link?: string; l
     <Button size="sm" variant="tertiary" onPress={() => void openExternal(link)}>
       <SquareTerminal size={14} />
       {label}
+    </Button>
+  );
+}
+
+export function OpenPullRequest({ url }: { url: string }) {
+  return (
+    <Button size="sm" variant="tertiary" onPress={() => void openExternal(url)}>
+      <GitPullRequest size={14} />
+      Pull request
     </Button>
   );
 }

@@ -14,12 +14,14 @@ import { streamObserver } from "./telemetry.ts";
 
 export class ProxyOperations {
   private discovery = new Map<string, Promise<string[]>>();
+
   constructor(
     readonly s: Store,
     readonly creds: Credentials,
     readonly quotas: Quotas,
     readonly providers: Record<ProviderName, Provider>,
   ) {}
+
   discover(id: string, signal: AbortSignal): Promise<string[]> {
     const existing = this.discovery.get(id);
     if (existing) return raceAbort(existing, signal);
@@ -29,8 +31,8 @@ export class ProxyOperations {
       const adapter = this.providers[a.provider];
       if (!adapter.discoverModels) throw new Error("Model discovery is unsupported");
       const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)]);
-      const token = await raceAbort(this.creds.token(id), combined),
-        before = revision(this.s, "credential", id);
+      const token = await raceAbort(this.creds.token(id), combined);
+      const before = revision(this.s, "credential", id);
       try {
         const models = getUniqueValues(await adapter.discoverModels(token, combined));
         combined.throwIfAborted();
@@ -55,6 +57,7 @@ export class ProxyOperations {
     void task.finally(() => this.discovery.delete(id)).catch(() => {});
     return task;
   }
+
   async verify(
     id: string,
     signal: AbortSignal,
@@ -62,12 +65,13 @@ export class ProxyOperations {
   ): Promise<Verification> {
     const account = this.s.get("account", id);
     if (!account) throw new Error("Account does not exist");
-    const adapter = this.providers[account.provider],
-      checks: Verification["checks"] = {
-        credential: { status: "failed", message: "Login unavailable" },
-        quota: { status: "unsupported", message: "Usage refresh unsupported" },
-        models: { status: "unsupported", message: "Model discovery unsupported" },
-      };
+    const adapter = this.providers[account.provider];
+    const checks: Verification["checks"] = {
+      credential: { status: "failed", message: "Login unavailable" },
+      quota: { status: "unsupported", message: "Usage refresh unsupported" },
+      models: { status: "unsupported", message: "Model discovery unsupported" },
+    };
+
     const checked = async (fn: () => Promise<unknown>, message: string): Promise<Check> => {
       try {
         await fn();
@@ -132,6 +136,7 @@ export class ProxyOperations {
         checks[key] = { status: "obsolete", message: "Account changed; verify again" };
     return { accountId: id, at: this.s.now(), node: this.s.nodeId, checks };
   }
+
   async batch(
     ids: string[],
     action: "quota" | "verify" | "enable" | "disable" | "refresh" | "models" | "reset-cooldown",

@@ -256,9 +256,10 @@ test("a refused refresh token is sent once, and the login needs a sign-in once t
 });
 
 test("a holder change that syncs in during a refresh keeps the freshly rotated tokens", async () => {
-  let release!: () => void, entered!: () => void;
-  const gate = new Promise<void>((r) => (release = r)),
-    started = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
   const task = new Credentials(
     mac,
     async () => {
@@ -301,8 +302,8 @@ test("forced 401 refresh on a non-holder requests its live holder instead of rot
 test("a late refresh cannot overwrite a new login or recreate deleted credentials", async () => {
   let release!: () => void;
   let entered!: () => void;
-  const gate = new Promise<void>((r) => (release = r)),
-    started = new Promise<void>((r) => (entered = r));
+  const gate = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
   const c = new Credentials(
     mac,
     async () => {
@@ -439,9 +440,10 @@ test("a copy still carrying a refresh token this node rotated away from cannot o
 });
 
 test("a 'needs login' for the very tokens being rotated, synced in during the refresh, does not lose the new tokens", async () => {
-  let release!: () => void, entered!: () => void;
-  const gate = new Promise<void>((r) => (release = r)),
-    started = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const started = new Promise<void>((r) => (entered = r));
   const task = new Credentials(
     mac,
     async () => {

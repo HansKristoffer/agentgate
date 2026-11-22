@@ -47,7 +47,6 @@ import {
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { problems } from "@agentgate/protocol/attention";
 import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./desktopTray.ts";
-
 import type { Perform } from "./types.ts";
 import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./components/ui.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
@@ -335,7 +334,7 @@ function Main({
                         className="min-w-0 flex-1 truncate text-left"
                         title={data && !error ? `Connected to ${connection.url}` : "Daemon disconnected"}
                       >
-                        {data && !error ? (data.node ?? "This machine") : "Offline"}
+                        {data && !error ? data.node : "Offline"}
                       </span>
                       {!error && updated !== undefined && (
                         <span className="shrink-0 text-xs text-(--tau-side-fg-2)">Updated {updated} s ago</span>
@@ -423,9 +422,10 @@ function Main({
                           size="sm"
                           isDisabled={busy || !native || !local}
                           onPress={() =>
-                            void perform(async () => {
-                              await localAction("install", connection);
-                            }, "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.")
+                            void perform(
+                              () => localAction("install", connection),
+                              "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.",
+                            )
                           }
                         >
                           {busy ? "Starting Agentgate…" : "Set up this machine"}

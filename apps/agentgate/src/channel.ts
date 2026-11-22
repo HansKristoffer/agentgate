@@ -50,6 +50,7 @@ class ChannelError extends Error {
     super(message);
   }
 }
+
 const envelopeSchema = z
   .object({
     v: z.literal(1),
@@ -87,6 +88,7 @@ async function seal(keys: Keys, data: Uint8Array<ArrayBuffer>, meta: object, bod
   out.set(ct, 12);
   return encodeBase64Url(out);
 }
+
 async function open(
   keys: Keys,
   data: Uint8Array<ArrayBuffer>,
@@ -174,9 +176,11 @@ const POKE_SEEN_WITHIN = 5 * 60_000;
 
 /** Pokes each member seen lately, without waiting for any answer. */
 function pokeMembers(s: Store) {
-  for (const { node, lastSeen } of relayNodes(s))
-    if (s.now() - lastSeen < POKE_SEEN_WITHIN)
+  for (const { node, lastSeen } of relayNodes(s)) {
+    if (s.now() - lastSeen < POKE_SEEN_WITHIN) {
       relayCall(s, node, POKE_PATH, { method: "POST", timeout: 10_000 }).catch(() => {});
+    }
+  }
 }
 
 /** The relay's own refusal, as a message for the user. Its body is a known code at most, never shown raw. */
@@ -188,11 +192,12 @@ function relayFailure(status: number, text: string, node: string) {
     // An answer without a code is described by its status.
   }
   if (status === 404) return new ChannelError("the relay does not support handoffs yet; update it", 404);
-  if (code === "offline")
+  if (code === "offline") {
     return new ChannelError(
       `${node} is not reachable through the relay (offline, or T3 Code is not connected there)`,
       503,
     );
+  }
   if (code === "timeout") return new ChannelError(`${node} did not answer through the relay in time`, 504);
   if (status === 429) return new ChannelError("the relay is rate limiting handoffs; try again in a minute", 429);
   if (status === 413) return new ChannelError("too large for the relay", 413);

@@ -35,14 +35,16 @@ export const aliasesSchema = z
     const map = new Map<string, string>();
     for (const [index, row] of rows.entries()) {
       const key = `${row.provider}:${row.alias}`;
-      if (map.has(key))
+      if (map.has(key)) {
         ctx.addIssue({
           code: "custom",
           path: [index, "alias"],
           message: "Duplicate alias",
         });
+      }
       map.set(key, row.target);
     }
+
     for (const [index, row] of rows.entries()) {
       const seen = new Set<string>();
       let next: string | undefined = row.alias;
@@ -79,14 +81,12 @@ export type QuotaWindow = z.infer<typeof quotaWindowSchema>;
  * carries the duration and the model family; a window without a scope is the whole account. */
 export function normalizeQuotaWindow(window: QuotaWindow): QuotaWindow {
   const [duration = "", family] = window.name.split(":");
-  const durationMs =
-    duration === "5h"
-      ? 5 * 3600000
-      : duration === "7d"
-        ? 7 * 86400000
-        : /^\d+m$/.test(duration)
-          ? Number(duration.slice(0, -1)) * 60000
-          : undefined;
+
+  let durationMs: number | undefined;
+  if (duration === "5h") durationMs = 5 * 3600000;
+  else if (duration === "7d") durationMs = 7 * 86400000;
+  else if (/^\d+m$/.test(duration)) durationMs = Number(duration.slice(0, -1)) * 60000;
+
   return {
     ...window,
     durationMs: window.durationMs ?? durationMs,
