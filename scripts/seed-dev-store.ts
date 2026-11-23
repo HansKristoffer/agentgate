@@ -1,7 +1,7 @@
 // Seeds this checkout's dev store from a scrubbed copy of the live one, so the dev daemon has real
-// accounts, MCP servers, projects, skills and activity to show. Credentials, shared logins, MCP and factory secrets, peers, relay
-// membership, registered checkouts, the factory's pointer and items, and other node-local state stay behind: the dev daemon
-// must never refresh a real token, sync with a real machine, link skills into a real repository, or act on a live PR.
+// accounts, MCP servers, projects, skills and activity to show. Credentials, shared logins, MCP secrets, peers, relay
+// membership, registered checkouts and other node-local state stay behind: the dev daemon must never refresh a real
+// token, sync with a real machine, or link skills into a real repository.
 // Usage, with the dev daemon stopped: bun scripts/seed-dev-store.ts [--force]
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
@@ -10,9 +10,7 @@ import { join } from "node:path";
 import { NODE_PROTOCOL } from "../apps/agentgate/src/remote.ts";
 import { CONFIG_DIR, DEV, type Kind, LOCAL_URL, SECRET_KINDS, Store } from "../apps/agentgate/src/store.ts";
 
-/** Drops everything a dev daemon must not act on: secrets, peers, relay membership, node-local state, MCP secrets, and
- * the factory's pointer, tables and session usage, so a dev daemon never follows the live install's items or PRs
- * through this machine's real `gh` login. */
+/** Drops everything a dev daemon must not act on: secrets, peers, relay membership, node-local state and MCP secrets. */
 export function scrubDevStore(s: Store) {
   s.transaction(() => {
     s.db.run(`delete from records where kind in (${SECRET_KINDS.map(() => "?").join(", ")})`, SECRET_KINDS);
@@ -22,7 +20,7 @@ export function scrubDevStore(s: Store) {
       (t) => t.name,
     );
     for (const table of tables) {
-      if (["relay_counters", "relay_pending", "session_usage"].includes(table) || table.startsWith("factory_")) {
+      if (["relay_counters", "relay_pending"].includes(table)) {
         s.db.run(`delete from ${table}`);
       }
     }
@@ -36,25 +34,6 @@ export function scrubDevStore(s: Store) {
         JSON.stringify({ ...config, secrets: {} }),
         row.id,
       ]);
-    }
-
-    // Every machine posts its factory updates to a virtual project's webhook; a dev daemon must not post to a real one.
-    for (const row of s.db.query("select id, data from records where kind = 'project' and deleted = 0").all() as {
-      id: string;
-      data: string;
-    }[]) {
-      const { factoryWebhook, ...project } = JSON.parse(row.data);
-      if (factoryWebhook) {
-        s.db.run("update records set data = ? where kind = 'project' and id = ?", [JSON.stringify(project), row.id]);
-      }
-    }
-
-    const settings = s.db.query("select data from records where kind = 'setting' and id = 'settings'").get() as {
-      data: string;
-    } | null;
-    if (settings) {
-      const { factory: _factory, ...rest } = JSON.parse(settings.data);
-      s.db.run("update records set data = ? where kind = 'setting' and id = 'settings'", [JSON.stringify(rest)]);
     }
 
     s.setLocal("node", "dev");

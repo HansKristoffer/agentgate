@@ -36,7 +36,7 @@ export interface FetchedSkill {
   security?: Record<string, string>;
 }
 export type SkillFetcher = (source: string, skill?: string, signal?: AbortSignal) => Promise<FetchedSkill[]>;
-export const skillId = (name: string) =>
+const skillId = (name: string) =>
   name
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, "-")

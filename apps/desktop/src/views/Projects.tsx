@@ -2,15 +2,13 @@ import { useState } from "react";
 import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
-import { Button, Input, TextField, toast } from "@heroui/react";
+import { Button, Input, TextField } from "@heroui/react";
 import { Badge, Empty, Field, Modal, Panel, HeaderActions, RowMenu, Segmented } from "../components/ui.tsx";
 import { ProjectForm, type Editing } from "../components/ProjectForm.tsx";
 import type { ViewProps } from "../types.ts";
-import { useApp } from "../AppContext.tsx";
-import { control, factoryOp, openExternal, request } from "../api.ts";
+import { control, openExternal, request } from "../api.ts";
 import { ago, idPath, confirmDelete } from "./utils.ts";
 import { EndpointDetails } from "./RemoteEndpoint.tsx";
-import { InitDialog } from "./factory/Init.tsx";
 
 const FILES_GUIDE = "https://github.com/HansKristoffer/agentgate#env-files-between-machines";
 
@@ -34,32 +32,6 @@ export function Projects(props: ViewProps) {
   const [tools, setTools] = useState<ToolPreview[]>();
   /** The project whose env files are open. */
   const [files, setFiles] = useState<string>();
-  const [factoryRepo, setFactoryRepo] = useState<string>();
-  /** The repositories the factory's folder names, while a factory is on and its folder loaded. */
-  const factoryRepos = useApp().board?.config?.repositories;
-  const factoryOn = !!data.settings.factory;
-  const factoryItem = (repo: string) => {
-    // One factory at a time: while one is on, a repository joins it instead.
-    if (!factoryOn) return { label: "Start a factory", onAction: () => setFactoryRepo(repo) };
-    if (!factoryRepos || factoryRepos.some((r) => r.toLowerCase() === repo.toLowerCase())) return false;
-    return {
-      label: "Add to the factory",
-      onAction: () =>
-        void perform(async () => {
-          const result = await factoryOp(connection, "repo add", { repo });
-          for (const warning of result.warnings) toast(warning);
-          if ("pr" in result) {
-            const { pr } = result;
-            toast(`A PR adds ${repo} to the factory`, {
-              description: "The factory works in it once the PR merges.",
-              actionProps: { children: "Open PR", onPress: () => void openExternal(pr) },
-            });
-          } else {
-            toast(`The factory works in ${repo}`, { description: "It takes in issues labelled factory." });
-          }
-        }),
-    };
-  };
   const filesOf = (id: string) => data.projects.find((p) => p.id === id)?.files ?? [];
   /** The env file whose contents are open for editing, with the text this machine's store has. */
   const [fileEdit, setFileEdit] = useState<{ path: string; content: string; sha256: string }>();
@@ -180,7 +152,6 @@ export function Projects(props: ViewProps) {
                     void perform(async () => setTools(await control(connection, "project tools", { id: p.id }))),
                 },
                 { label: "Env files", onAction: () => setFiles(p.id) },
-                factoryItem(p.id),
                 mirrorItem(p.id),
                 {
                   label: "Delete",
@@ -469,7 +440,6 @@ export function Projects(props: ViewProps) {
           )}
         </Modal>
       )}
-      {factoryRepo && <InitDialog {...props} repo={factoryRepo} close={() => setFactoryRepo(undefined)} />}
       {tools && (
         <Modal title="Tools visible to this project" close={() => setTools(undefined)}>
           <div className="tool-list">

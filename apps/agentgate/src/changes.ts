@@ -2,9 +2,9 @@ import { TOPICS, type Topic } from "@agentgate/protocol";
 import { recordFromKeys } from "hanzio";
 import { topicsOf, type Kind, type Store } from "./store.ts";
 
-/** The topics paired machines follow from each other (`/peer/topics`), so an app on one machine shows the factory and
- * the threads of the others as they change. */
-export const PEER_TOPICS = ["factory", "threads"] as const;
+/** The topics paired machines follow from each other (`/peer/topics`), so an app on one machine shows the threads of
+ * the others as they change. */
+export const PEER_TOPICS = ["threads"] as const;
 export type PeerTopic = (typeof PEER_TOPICS)[number];
 
 interface Waiter {
@@ -49,11 +49,11 @@ export class Changes {
 
   /** Marks a topic changed. Bumps in one tick wake waiters once (queueMicrotask). */
   bump(topic: Topic) {
-    if (topic === "factory" || topic === "threads") this.own[topic]++;
+    if (topic === "threads") this.own[topic]++;
     this.move(topic);
   }
 
-  /** A paired machine's factory or threads changed, which this machine's app shows too. */
+  /** A paired machine's threads changed, which this machine's app shows too. */
   bumpFromPeer(topic: PeerTopic) {
     this.move(topic);
   }
@@ -64,9 +64,9 @@ export class Changes {
     return { token: `${this.bootId}.${sum}`, versions: { ...this.versions } };
   }
 
-  /** What `/peer/topics` serves: this machine's own factory and thread changes. */
+  /** What `/peer/topics` serves: this machine's own thread changes. */
   peerSnapshot() {
-    return { token: `${this.bootId}.${this.own.factory + this.own.threads}`, versions: { ...this.own } };
+    return { token: `${this.bootId}.${this.own.threads}`, versions: { ...this.own } };
   }
 
   /** An app waits: resolves when the token differs from `after`, after `ms`, or when the signal aborts. No polling. */
@@ -178,9 +178,8 @@ export class Changes {
       this.s.externalWrite();
       this.readKinds();
       for (const kind of this.kinds) for (const topic of topicsOf(kind)) this.bump(topic);
-      // The CLI may also have written factory events or node-local state, which have no record kind.
+      // The CLI may also have written node-local state, which has no record kind.
       this.bump("status");
-      this.bump("factory");
     } catch (e) {
       console.error(`change hub: ${e instanceof Error ? e.name : "failed"}`);
     }

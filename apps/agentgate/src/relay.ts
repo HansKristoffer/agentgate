@@ -14,7 +14,7 @@ import { exponentialBackoff, isTruthy, trimTrailingSlash } from "hanzio";
 import { z } from "zod";
 import { defineLocal } from "./local-state.ts";
 import { fetchHeaders, readBody } from "./runtime.ts";
-import { parseEnvelope, type Rec, type Store } from "./store.ts";
+import { isRetired, parseEnvelope, type Rec, type Store } from "./store.ts";
 import { lastSeen, noteSyncRound, peers, pullAll, SYNC_PROTOCOL } from "./sync.ts";
 
 /**
@@ -450,6 +450,8 @@ async function decode(
       if (payload.protocol !== SYNC_PROTOCOL || !payload.record) {
         throw new Error("incompatible encrypted sync payload; update paired nodes and reconcile");
       }
+      // A kind the factory wrote, which an older node may still push: not a failure, just nothing to merge.
+      if (isRetired(payload.record)) continue;
       // Only the envelope: `merge` parses the data if the record wins.
       const rec = parseEnvelope(payload.record);
       if ((await entryKey(c.keys, rec.kind, rec.id)) !== e.key) throw new Error("entry key mismatch");

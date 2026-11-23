@@ -18,14 +18,13 @@ import { nodesBelow, requireNodeProtocol, sent, type Data, type Project, type St
 
 /**
  * Remote endpoints (docs/internals/remote-mcp.md): a virtual project's tools at a public relay URL for clients like
- * Grok, and the factory's webhook URLs (factory/hooks.ts). The serving node keeps a WebSocket open to the relay and
- * answers each request from its gateway, or a webhook delivery from the factory.
+ * Grok. The serving node keeps a WebSocket open to the relay and answers each request from its gateway.
  */
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
  * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
- * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts), 8 the factory setting, `secret`
- * records and the stored factory folder (factory/runtime.ts), 9 `factoryTools` on virtual projects (factory/remote-tools.ts), 10 the
+ * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts), 8 and 9 the software factory, since
+ * removed, 10 the
  * `opencode` login (logins.ts), 11 the global AGENTS.md on Global defaults (agents-md.ts), 12 the `antigravity` login
  * (logins.ts). A feature waits until every node reports its protocol. */
 export const NODE_PROTOCOL = 12;
@@ -144,24 +143,12 @@ export function queueDelete(s: Store, r: { relay: string; key: string; token: st
   deletes.set(s, undefined, queue.slice(-100));
 }
 
-/** A webhook URL the factory serves on this node: its relay credentials, and what answers a delivery. */
-export interface HookEndpoint {
-  source: string;
-  relay: string;
-  key: string;
-  token: string;
-  secret: string;
-  handle(req: Request): Promise<Response>;
-}
-export const hookUrl = (h: Pick<HookEndpoint, "relay" | "key">) => `${h.relay}/hook/${h.key}`;
-
 type RequestFrame = z.infer<typeof remoteRequestFrame>;
 
 interface Conn {
-  /** The project id, or `~hook:<source>` for a webhook. */
+  /** The project id. */
   id: string;
   remote: Remote;
-  hook?: HookEndpoint;
   socket?: RelaySocket;
   connected: boolean;
   error?: string;
@@ -188,39 +175,26 @@ const REQUEST_FAILED = "a request failed";
 export class RemoteEndpoints {
   private conns = new Map<string, Conn>();
   private closed = false;
-  /** The webhook endpoints this node serves now; set by the factory. */
-  hooks: () => HookEndpoint[] = () => [];
 
   constructor(
     private s: Store,
     private gateway: Gateway,
   ) {}
 
-  /** Start, restart or stop sockets to match the project records and the factory's webhooks; also retries queued
-   * deletions. */
+  /** Start, restart or stop sockets to match the project records; also retries queued deletions. */
   reconcile() {
     if (this.closed) return;
     const projects = this.s.list("project");
-    const wanted = new Map<string, { remote: Remote; hook?: HookEndpoint }>(
-      projects
-        .filter((p) => p.remote?.enabled && p.remote.servedBy === this.s.nodeId)
-        .map((p) => [p.id, { remote: p.remote! }]),
+    const wanted = new Map<string, Remote>(
+      projects.filter((p) => p.remote?.enabled && p.remote.servedBy === this.s.nodeId).map((p) => [p.id, p.remote!]),
     );
-    const hooks = this.hooks();
-    for (const hook of hooks) {
-      const { relay, key, token, secret } = hook;
-      const remote = { relay, key, token, secret, enabled: true, servedBy: this.s.nodeId };
-      wanted.set(`~hook:${hook.source}`, { remote, hook });
-    }
-    const used = (key: string) => projects.some((p) => p.remote?.key === key) || hooks.some((h) => h.key === key);
+    const used = (key: string) => projects.some((p) => p.remote?.key === key);
     for (const [id, c] of this.conns) {
-      const next = wanted.get(id)?.remote;
+      const next = wanted.get(id);
       if (!next || next.key !== c.remote.key || next.token !== c.remote.token || next.relay !== c.remote.relay) {
         this.stop(id);
         // No record names this endpoint any more. A start before the change arrived may have recreated it on the relay.
-        // The factory deletes a webhook's URL itself (factory/hooks.ts): one this machine stops serving may have moved
-        // with the factory to another machine.
-        if (!c.hook && !used(c.remote.key)) queueDelete(this.s, c.remote);
+        if (!used(c.remote.key)) queueDelete(this.s, c.remote);
       } else if (next.secret !== c.remote.secret && !c.connected) {
         // Restarted below, e.g. after a deletion.
         this.stop(id);
@@ -229,7 +203,7 @@ export class RemoteEndpoints {
         // pass; `put` sends nothing once the relay has it.
         c.remote = next;
         c.pushing = (c.pushing ?? Promise.resolve()).then(() =>
-          this.put(next, c.hook ? "hook" : "mcp").catch((e) => {
+          this.put(next).catch((e) => {
             this.report(c, c.connected, describe(e, PUSH_FAILED));
           }),
         );
@@ -237,7 +211,7 @@ export class RemoteEndpoints {
     }
 
     for (const [id, next] of wanted) {
-      if (!this.conns.has(id)) this.start(id, next.remote, next.hook);
+      if (!this.conns.has(id)) this.start(id, next);
     }
 
     // A key range rather than LIKE, which ignores case and so cannot use the primary key. ';' sorts right after ':'.
@@ -272,19 +246,12 @@ export class RemoteEndpoints {
     };
   }
 
-  /** A webhook's socket on this node, for the factory's board: undefined when this node does not serve it. */
-  hookState(source: string): { connected: boolean; error?: string } | undefined {
-    const c = this.conns.get(`~hook:${source}`);
-    return c && { connected: c.connected, ...(c.error && { error: c.error }) };
-  }
-
   /** The value stored once the relay acknowledged this secret and state; synchronous so status needn't hash. */
   private pushedValue(r: Remote, enabled: boolean) {
     return `${r.secret.slice(0, 8)}:${enabled}`;
   }
 
-  /** An endpoint's kind never changes at the relay. MCP updates leave it out, as relays from before webhooks expect. */
-  private async put(r: Remote, kind: "mcp" | "hook" = "mcp") {
+  private async put(r: Remote) {
     // The relay deleted this endpoint (another machine made a new URL or deleted the project): pushing it again would
     // recreate it with the old token, so wait for the record to change.
     if (this.s.local(`remote:deleted:${r.key}`) === r.secret.slice(0, 8)) {
@@ -306,28 +273,18 @@ export class RemoteEndpoints {
         body: JSON.stringify({
           secretHash: await sha256Hex(r.secret),
           enabled: r.enabled,
-          ...(kind === "hook" && { kind }),
         }),
       },
       10_000,
     );
     await res.body?.cancel();
     if (res.status === 401) throw new EndpointError("the relay refused this endpoint's token; create a new URL");
-    if (res.status === 409) {
-      throw new EndpointError("the relay holds another kind of endpoint at this URL; create a new URL");
-    }
     if (!res.ok) throw new EndpointError(`the relay answered ${res.status}`);
     this.s.setLocal(`remote:pushed:${r.key}`, marker);
   }
 
-  private start(id: string, remote: Remote, hook?: HookEndpoint) {
-    const c: Conn = {
-      id,
-      remote,
-      ...(hook && { hook }),
-      connected: false,
-      failed: [],
-    };
+  private start(id: string, remote: Remote) {
+    const c: Conn = { id, remote, connected: false, failed: [] };
     this.conns.set(id, c);
     c.socket = this.connect(c);
   }
@@ -351,7 +308,7 @@ export class RemoteEndpoints {
   private connect(c: Conn) {
     const socket: RelaySocket = new RelaySocket({
       dial: async () => {
-        await this.put(c.remote, c.hook ? "hook" : "mcp");
+        await this.put(c.remote);
         const key = serviceKeyFor(this.s, c.remote.relay);
         // The relay authenticates the upgrade with the endpoint token. Bun reads headers from the options object, which
         // its typings declare as a protocols list, hence the cast.
@@ -413,37 +370,29 @@ export class RemoteEndpoints {
     const abort = new AbortController();
     inflight.set(id, abort);
     const started = Date.now();
-    // Webhook senders read plain JSON errors; MCP clients read JSON-RPC ones.
     const failure = (status: number, code: number, message: string): RemoteResponseFrame => ({
       t: "res",
       id,
       status,
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(c.hook ? { error: message } : { jsonrpc: "2.0", error: { code, message }, id: null }),
+      body: JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }),
     });
     let status = 500;
-    let label = c.hook ? "webhook" : "request";
-    if (!c.hook) {
-      try {
-        const message = JSON.parse(frame.body) as { method?: string; params?: { name?: string } };
-        label =
-          message.method === "tools/call"
-            ? `tools/call ${message.params?.name ?? ""}`
-            : String(message.method ?? "request");
-      } catch {
-        /* the gateway answers with a parse error */
-      }
+    let label = "request";
+    try {
+      const message = JSON.parse(frame.body) as { method?: string; params?: { name?: string } };
+      label =
+        message.method === "tools/call"
+          ? `tools/call ${message.params?.name ?? ""}`
+          : String(message.method ?? "request");
+    } catch {
+      /* the gateway answers with a parse error */
     }
     try {
       const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(REMOTE_LIMITS.timeoutMs)]);
-      let response: Response;
-      if (c.hook) {
-        response = await c.hook.handle(hookRequest(frame, signal));
-      } else {
-        const answered = await this.gateway.handleRemote(c.id, frame.body, frame.headers, signal);
-        response = answered.response;
-        c.failed = answered.failed;
-      }
+      const answered = await this.gateway.handleRemote(c.id, frame.body, frame.headers, signal);
+      const response = answered.response;
+      c.failed = answered.failed;
       const text = await response.text();
       status = response.status;
       if (text.length > REMOTE_LIMITS.responseBytes) {
@@ -506,42 +455,14 @@ export class RemoteEndpoints {
   }
 }
 
-/** The last request an endpoint answered, from what `answer` logs: `id` is the project, or `~hook:<source>`. */
-export function lastRequest(s: Store, id: string): { at: number; status: number } | undefined {
-  return (
-    s.db
-      .query<{ at: number; status: number }, [string]>(
-        "select at, status from request_log where provider = 'remote' and account = ? order by rowid desc limit 1",
-      )
-      .get(id) ?? undefined
-  );
-}
-
-/** A delivery as the factory reads it: the relay already dropped hop-by-hop headers, and the Request sets its own
- * content-length. */
-function hookRequest(frame: RequestFrame, signal: AbortSignal) {
-  const headers = new Headers();
-  for (const [name, value] of Object.entries(frame.headers)) {
-    if (name === "content-length") continue;
-    try {
-      headers.set(name, value);
-    } catch {
-      /* not a valid header here; a signature never needs it */
-    }
-  }
-  const query = frame.query ? `?${frame.query}` : "";
-  return new Request(`http://hook.invalid/${query}`, { method: "POST", headers, body: frame.body, signal });
-}
-
 /** Projects as the API shows them: endpoint state without key material. */
 export function publicProject(p: Project, endpoints: RemoteEndpoints): PublicProject {
-  const { remote, files, factoryWebhook, ...rest } = sent<Data<"project">>(p);
+  const { remote, files, ...rest } = sent<Data<"project">>(p);
   const summary = endpoints.summary(p);
   const shown = files && { files: files.filter((f) => !f.deleted).map(({ path, updatedAt }) => ({ path, updatedAt })) };
   return {
     ...rest,
     ...shown,
     ...(summary && { remote: summary }),
-    ...(factoryWebhook && { factoryWebhook: new URL(factoryWebhook).origin }),
   };
 }

@@ -32,6 +32,4 @@ export interface ProjectOps {
   "remote secret": { input: { id: string }; result: Endpoint };
   "remote regenerate": { input: { id: string }; result: Endpoint };
   "remote disable": { input: { id: string }; result: { id: string } };
-  "remote factory": { input: { id: string; on: boolean }; result: { id: string; on: boolean } };
-  "remote webhook": { input: { id: string; url: string | null }; result: { id: string; on: boolean } };
 }

@@ -40,7 +40,7 @@ const RECENT = 10 * 60_000;
 
 /** A thread as `GET /peer/threads` lists it. `needsYou`: T3 holds a pending runtime request (an approval or a question)
  * for it; absent from nodes on older versions. */
-export type ViewThread = T3Thread & { needsYou?: boolean };
+type ViewThread = T3Thread & { needsYou?: boolean };
 
 async function localThreads(h: Handoffs): Promise<ViewThread[]> {
   const t3 = t3Client(h.s);
@@ -191,7 +191,7 @@ export function forgetView(h: Handoffs, node: string) {
 }
 
 /** Another node's view through `GET /peer/threads`, or why it cannot be read. */
-export async function peerView(
+async function peerView(
   h: Handoffs,
   n: { id: string; alwaysOn: boolean },
 ): Promise<NodeThreads & { threads: ViewThread[] }> {

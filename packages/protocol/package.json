@@ -10,8 +10,7 @@
     "./control": "./src/control.ts"
   },
   "scripts": {
-    "typecheck": "bun check",
-    "factory-schema": "bun scripts/factory-schema.ts"
+    "typecheck": "bun check"
   },
   "dependencies": {
     "hanzio": "^3.4.0",

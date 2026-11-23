@@ -15,8 +15,7 @@ import {
 } from "@agentgate/protocol";
 import { Badge, Empty, Field, HeaderActions, Modal, Panel, RowMenu, Toggle, ActionButton } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { request } from "../api.ts";
-import { OpenInT3 } from "./factory/parts.tsx";
+import { openExternal, request } from "../api.ts";
 import { ago, elapsed, field, since } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
 
@@ -315,7 +314,12 @@ function ThreadRow({
           </span>
         </div>
       </div>
-      <OpenInT3 link={t.link} label="Open" />
+      {t.link && (
+        <Button size="sm" variant="tertiary" onPress={() => void openExternal(t.link!)}>
+          <SquareTerminal size={14} />
+          Open
+        </Button>
+      )}
       {action}
     </div>
   );

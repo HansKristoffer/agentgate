@@ -353,7 +353,7 @@ async function doPrepare(h: Handoffs, job: DestJob<"prepare">) {
 }
 
 /** This node's T3 project for the repository, matched by `owner/repo` of its origin. */
-export async function findProject(h: Handoffs, remoteUrl: string) {
+async function findProject(h: Handoffs, remoteUrl: string) {
   if (!parseRemote(remoteUrl)) return undefined;
   for (const project of (await t3Client(h.s).shell()).projects) {
     if (existsSync(project.workspaceRoot) && (await sameRepo(project.workspaceRoot, remoteUrl))) return project;

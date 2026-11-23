@@ -1,10 +1,4 @@
-import {
-  operationFor,
-  statusSchema,
-  type AccountState,
-  type FactoryCommandResult,
-  type FactoryOperationInfo,
-} from "@agentgate/protocol";
+import { statusSchema, type AccountState } from "@agentgate/protocol";
 import { problems } from "@agentgate/protocol/attention";
 import { hostname } from "node:os";
 import packageInfo from "../../../../package.json";
@@ -22,27 +16,6 @@ export function attentionLines(st: Parameters<typeof problems>[0]) {
   return list.length
     ? ["", "needs attention", ...list.map((p) => `  ${p.title}${p.detail ? `: ${p.detail}` : ""}`)]
     : [];
-}
-
-/** `agentgate factory help`: the commands to start with, then the rest, with those that share a first word together. */
-function factoryHelp(operations: FactoryOperationInfo[]) {
-  const start = ["init", "status", "add", "approve", "show"];
-  const rest = operations.filter((op) => !start.includes(op.name));
-  const family = (op: FactoryOperationInfo) => op.name.split(" ")[0]!;
-  const families = Map.groupBy(rest, family);
-  const groups = [
-    start.flatMap((name) => operations.filter((op) => op.name === name)),
-    rest.filter((op) => families.get(family(op))!.length === 1),
-    ...[...families.values()].filter((ops) => ops.length > 1),
-  ];
-  return groups
-    .filter((ops) => ops.length)
-    .map((ops) => {
-      // Aligned, but one long usage does not push every summary off the screen.
-      const width = Math.min(50, Math.max(...ops.map((op) => op.usage.length)));
-      return ops.map((op) => `  factory ${op.usage.padEnd(width)}  ${op.summary}`).join("\n");
-    })
-    .join("\n\n");
 }
 
 const bar = (pct: number) => {
@@ -71,7 +44,7 @@ function stateFlag(state: AccountState) {
   }
 }
 
-/** init, serve, status, settings, factory, setup, service, update, export, import-backup and admin-token. */
+/** init, serve, status, settings, setup, service, update, export, import-backup and admin-token. */
 export const run: Run = async (cmd, [sub], opts) => {
   const s = store();
   const str = stringOption(opts);
@@ -223,27 +196,6 @@ export const run: Run = async (cmd, [sub], opts) => {
       const expected = revision(s, "setting", "settings");
       const patch = await Bun.file(str("file") ?? die("--file patch.json is required")).json();
       return console.log(JSON.stringify(patchSettings(s, patch, expected), null, 2));
-    }
-
-    case "factory": {
-      // The daemon owns every factory operation. The words go as typed, since each operation parses its own.
-      const args = Bun.argv.slice(Bun.argv.indexOf("factory", 2) + 1);
-      const operations = await management<FactoryOperationInfo[]>("/factory/operations");
-      if (!args.length || args[0] === "help") return console.log(factoryHelp(operations));
-      // Stdin is read only for an operation that takes it: any other must answer while its stdin stays open and silent.
-      const stdin = !process.stdin.isTTY && operationFor(operations, args)?.stdin ? await Bun.stdin.text() : undefined;
-      const result = await management<FactoryCommandResult>("/factory/terminal", "POST", {
-        args,
-        ...(stdin !== undefined && { stdin }),
-        cwd: process.cwd(),
-      });
-      for (const line of result.output) console.log(line);
-      // Once the factory is on, the preflight says what it still needs; JSON output stays one document.
-      if (!result.code && ["init", "use"].includes(args[0]!) && !args.includes("--json")) {
-        const checks = await management<FactoryCommandResult>("/factory/terminal", "POST", { args: ["doctor"] });
-        console.log(["", ...checks.output].join("\n"));
-      }
-      process.exit(result.code);
     }
 
     case "setup": {

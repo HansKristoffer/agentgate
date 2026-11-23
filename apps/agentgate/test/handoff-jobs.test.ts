@@ -981,7 +981,7 @@ test("a handoff works through the relay alone; the relay sees only sealed calls 
   await joinRelay(b.s, invite);
   await syncAll(a.s);
   for (const n of [a, b]) {
-    const channel = new NodeChannel(n.s, relayedRoutes(n.h, new Hono()));
+    const channel = new NodeChannel(n.s, relayedRoutes(n.h));
     cleanup.push(() => channel.close());
     await channel.reconcile();
     await until(() => channel.connected, `${n.name}'s relay channel`);

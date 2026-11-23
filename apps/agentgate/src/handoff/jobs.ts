@@ -105,7 +105,7 @@ export async function peerCall<S extends z.ZodType>(
   schema: S,
   init?: PeerInit,
 ): Promise<z.output<S>>;
-/** @deprecated Unchecked answer, kept for factory/board.ts, factory/follow.ts and update.ts; pass a schema instead. */
+/** @deprecated Unchecked answer, kept for update.ts; pass a schema instead. */
 export async function peerCall<T>(s: Store, node: string, path: string, init?: PeerInit): Promise<T>;
 export async function peerCall(
   s: Store,

@@ -23,7 +23,6 @@ import {
   resolveModel,
   route,
 } from "./routing.ts";
-import { recordSessionUsage, trackedSession } from "./sessions.ts";
 import { Telemetry, streamObserver } from "./telemetry.ts";
 export { recordUsage } from "./quota.ts";
 
@@ -158,11 +157,9 @@ export async function proxy(
   // A login the client brings itself, unless it is the placeholder agentgate hands its clients.
   const bearer = req.headers.get("authorization")?.match(/^Bearer\s+(.+)$/i)?.[1];
   const own = bearer && bearer !== PLACEHOLDER_TOKEN ? bearer : undefined;
-  // One id serves affinity, which keys on its hash, and session usage, which counts under it as the client named it.
+  // Affinity keys on the hash of the client's session id.
   const clientSession = provider.session?.(req.headers, json);
   const session = clientSession && new Bun.CryptoHasher("sha256").update(clientSession).digest("hex");
-  // Session usage counts the factory's runs; with the factory off nothing reads it, so nothing is written.
-  const usageSession = settings.factory ? trackedSession(provider.name, clientSession) : undefined;
   const previousResponse = provider.stateful?.(json) ? String(json?.previous_response_id ?? "") : undefined;
   const requiredAccount =
     options.accountId ?? (previousResponse ? continuationAccount(s, previousResponse) : undefined);
@@ -183,14 +180,6 @@ export async function proxy(
       end: (outcome) => {
         release();
         track(() => telemetry.tokens(observer.tokens));
-        if (usageSession)
-          recordSessionUsage(s, {
-            session: usageSession,
-            provider: provider.name,
-            model: telemetry.tokenModel,
-            ...observer.tokens,
-            at: s.now(),
-          });
         const streamOutcome = outcome === "eof" ? (observer.terminal ?? "eof") : outcome;
         track(() =>
           telemetry.finish(
@@ -477,7 +466,7 @@ export async function proxy(
   }
 }
 
-/** The one reading of an account's flags that the app, the CLI and the factory label it by. A login this machine holds
+/** The one reading of an account's flags that the app and the CLI label it by. A login this machine holds
  * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
 export function accountState(s: Store, account: Account, now = s.now()): AccountState {
   const c = s.get("credential", account.id);

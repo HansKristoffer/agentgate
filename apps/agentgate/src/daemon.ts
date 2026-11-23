@@ -14,7 +14,7 @@ import { LOG_DIRS, backfillTokens, collectAntigravity, publishTokens } from "./l
 import { Quotas } from "./llm/quota.ts";
 import { interruptPending } from "./llm/telemetry.ts";
 import { ProxyOperations } from "./llm/operations.ts";
-import { Gateway, aliasesFor, inScope } from "./mcp/gateway.ts";
+import { Gateway, aliasesFor } from "./mcp/gateway.ts";
 import { expireLogins, tickMcp } from "./mcp/oauth.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, serialTask } from "./runtime.ts";
 import { pollDesktopLogin, status as desktopStatus } from "./desktop.ts";
@@ -48,11 +48,6 @@ import { handoffSource } from "./handoff/tools.ts";
 import { forgetView } from "./handoff/threads.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
-import { createFactoryRuntime } from "./factory/features.ts";
-import { loopTask, type FactoryRuntime } from "./factory/runtime.ts";
-import { threadScope } from "./factory/controller.ts";
-import { factoryToolsSource } from "./factory/remote-tools.ts";
-import { ensureFactoryTables, trimFactory } from "./factory/db.ts";
 import { startLagProbe } from "./lag.ts";
 import { handoffDirs } from "./ops/nodes.ts";
 import { localClaudeLogin } from "./claude-local.ts";
@@ -76,8 +71,6 @@ export interface Ctx {
   /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
   health: HealthDashboard;
-  /** The software factory's features and what they registered (factory/runtime.ts). */
-  factory: FactoryRuntime;
   /** What changed, for `/api/changes` and the daemon's reactions to record writes. */
   changes: Changes;
 }
@@ -120,8 +113,7 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
-  ensureFactoryTables(s);
-  const base: Omit<Ctx, "factory" | "channel"> = {
+  const ctx: Ctx = {
     s,
     changes: new Changes(s),
     creds,
@@ -136,19 +128,13 @@ export function makeCtx(
     pending: new Set(),
     handoffs,
     health: new HealthDashboard(s),
+    channel: new NodeChannel(s, relayedRoutes(handoffs)),
   };
-  // Features may keep the context, but none reads ctx.factory or ctx.channel while they set up.
-  const ctx = base as Ctx;
-  ctx.factory = createFactoryRuntime(ctx);
-  // After the features, whose peer routes the relay serves too.
-  ctx.channel = new NodeChannel(s, relayedRoutes(handoffs, ctx.factory.peer));
   followPeers(s, ctx.changes, ctx.abort.signal, (node, topic) => {
-    if (topic === "threads") forgetView(handoffs, node);
+    forgetView(handoffs, node);
     ctx.changes.bumpFromPeer(topic);
   });
-  gateway.builtin = () => handoffSource(handoffs, ctx.factory);
-  gateway.factoryTools = (project) => factoryToolsSource(ctx.factory, project);
-  gateway.scope = (thread) => threadScope(ctx.factory, thread);
+  gateway.builtin = () => handoffSource(handoffs);
   return ctx;
 }
 
@@ -223,9 +209,7 @@ export function app(ctx: Ctx) {
   );
   app.get("/api/shim", loopbackOnly, (c) => {
     const project = c.req.query("project") || "*";
-    const scope = ctx.gateway.scope?.(c.req.query("thread")?.slice(0, 256) || undefined);
     const out = Object.entries(aliasesFor(s, project))
-      .filter(([alias]) => inScope(scope, alias))
       .map(([alias, id]) => ({ alias, instance: s.get("mcp", id) }))
       .filter((x) => x.instance?.mode === "perSession");
     return c.json(out);
@@ -242,15 +226,11 @@ export function app(ctx: Ctx) {
   });
 
   // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route(
-    "/peer",
-    peerRoutes(s, undefined, ctx.changes).route("/", handoffRoutes(ctx.handoffs)).route("/factory", ctx.factory.peer),
-  );
+  app.route("/peer", peerRoutes(s, undefined, ctx.changes).route("/", handoffRoutes(ctx.handoffs)));
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
   app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
-  app.get("/factory", (c) => (ctx.factory.page ? ctx.factory.page(c.req.raw, c.env.listener) : c.notFound()));
   app.route("/api", management(ctx));
   return app;
 }
@@ -319,6 +299,8 @@ export async function serve(
       version: packageInfo.version,
     });
   }
+  // Skills the software factory installed from its folder: since it was removed, nothing updates them.
+  for (const skill of s.list("skill")) if (skill.source?.startsWith("factory:")) s.del("skill", skill.id);
 
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
@@ -409,15 +391,12 @@ export async function serve(
     expireLogins(s);
     rotateLogs();
   }, 3_600_000);
-  // On its own, so a failed trim never skips the login expiry or log rotation above.
-  schedule(async () => trimFactory(s), 3_600_000);
   schedule(async () => ctx.handoffs.trim(), 3_600_000);
   schedule(async () => {
     ctx.handoffs.tick();
   }, 5000);
   schedule(() => ctx.handoffs.syncProjects(), 30_000);
   schedule(() => ctx.channel.reconcile(), 30_000);
-  for (const loop of ctx.factory.loops) schedule(loopTask(ctx.factory, loop), loop.everyMs);
   let stopping: Promise<void> | undefined;
   return {
     ctx,

@@ -1,8 +1,9 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { Hono } from "hono";
+import { join } from "node:path";
 import { Changes } from "../src/changes.ts";
 import { type Rec, Store } from "../src/store.ts";
-import { removeTmp } from "./fixtures/git.ts";
+import { removeTmp, tmp } from "./fixtures/git.ts";
 import { startNodes } from "./fixtures/nodes.ts";
 import {
   listeningFor,
@@ -294,6 +295,58 @@ test("a continuation page cannot skip records by advertising a higher sequence",
   }
 });
 
+test("a pull takes what follows the factory's records an older peer still sends, and drops them", async () => {
+  const s = node("receiver");
+  const record = (kind: string, id: string, seq: number, data: object) => ({
+    kind,
+    id,
+    rev: 1,
+    node: "sender",
+    updated_at: 1,
+    deleted: 0,
+    seq,
+    data: JSON.stringify(data),
+  });
+  const server = Bun.serve({
+    port: 0,
+    fetch: () =>
+      Response.json({
+        protocol: SYNC_PROTOCOL,
+        seq: 3,
+        records: [
+          record("secret", "GITHUB_TOKEN", 1, { name: "GITHUB_TOKEN", value: "x" }),
+          record("account", "a", 2, { id: "a", provider: "claude", label: "a" }),
+          record("factoryFolder", "folder", 3, { files: {} }),
+        ],
+      }),
+  });
+  try {
+    s.db.run("insert into peers values ('sender', ?, 'token', 0, null)", [`http://127.0.0.1:${server.port}`]);
+    await pullPeer(s, peers(s)[0]!);
+    expect(s.get("account", "a")).toBeDefined();
+    expect(peers(s)[0]!.cursor).toBe(3);
+    expect(s.db.query("select kind from records").all()).toEqual([{ kind: "account" }]);
+  } finally {
+    server.stop(true);
+    s.close();
+  }
+});
+
+test("a store drops what the factory left in it when it opens", () => {
+  const path = join(tmp(), "agentgate.db");
+  const old = new Store(path);
+  old.db.run("create table factory_items (id text primary key)");
+  old.db.run("insert into records values ('secret', 'GITHUB_TOKEN', 1, 'n', 1, 0, '{}', 1)");
+  old.db.run("insert into local values ('factory:paused', '1'), ('node', 'n')");
+  old.close();
+
+  const s = new Store(path);
+  expect(s.db.query("select name from sqlite_master where name like 'factory_%'").all()).toEqual([]);
+  expect(s.db.query("select kind from records").all()).toEqual([]);
+  expect(s.db.query("select key from local").all()).toEqual([{ key: "node" }]);
+  s.close();
+});
+
 test("only a pull that gets an answer counts as listening", async () => {
   // An awake node whose sync fails hears nothing: it must not think the holder of a credential has gone quiet.
   const a = node("a");
@@ -416,7 +469,7 @@ test("a pull failure marks status changed once, until the peer recovers", async 
   expect(bumps).toEqual(["status", "status"]);
 });
 
-test("/peer/topics needs the peer token and holds the answer until this machine's own factory or threads change", async () => {
+test("/peer/topics needs the peer token and holds the answer until this machine's own threads change", async () => {
   const s = node("a");
   s.db.run("insert into peers values ('b', 'http://unused', 'tok', 0, null)");
   const changes = new Changes(s);
@@ -438,16 +491,16 @@ test("/peer/topics needs the peer token and holds the answer until this machine'
   await topics();
   // Neither moves what peers follow: a status change, or a change this machine heard from another peer.
   changes.bump("status");
-  changes.bumpFromPeer("factory");
+  changes.bumpFromPeer("threads");
   await topics();
   expect(answered).toBe(false);
 
-  changes.bump("factory");
-  expect(await held).toMatchObject({ versions: { factory: 1, threads: 0 } });
+  changes.bump("threads");
+  expect(await held).toMatchObject({ versions: { threads: 1 } });
   changes.close();
 });
 
-test("a factory change on a paired machine wakes this machine's app, and a machine with no app waiting polls no one", async () => {
+test("a thread change on a paired machine wakes this machine's app, and a machine with no app waiting polls no one", async () => {
   const [a, b] = await startNodes("a", "b");
   const polled: string[] = [];
   let baselineTaken!: () => void;
@@ -465,10 +518,10 @@ test("a factory change on a paired machine wakes this machine's app, and a machi
     const before = a!.ctx.changes.snapshot();
     const woke = a!.ctx.changes.wait(before.token, 60_000, app.signal);
     await baseline;
-    b!.s.bump("factory");
+    b!.s.bump("threads");
     await woke;
     app.abort();
-    expect(a!.ctx.changes.snapshot().versions.factory).toBe(before.versions.factory + 1);
+    expect(a!.ctx.changes.snapshot().versions.threads).toBe(before.versions.threads + 1);
     expect(polled.length).toBeGreaterThan(0);
     expect(polled.every((url) => url.startsWith(`${b!.url}/peer/topics`))).toBe(true);
   } finally {

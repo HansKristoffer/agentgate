@@ -53,7 +53,7 @@ export function ops(ctx: Ctx) {
     const given = await json(c.req.raw);
     return c.json((await shown(async () => op.run(op.input.parse(given), { s, daemon: ctx }))) ?? null);
   });
-  // Loopback only as a whole, like the factory's terminal route: the CLI runs here, and the app sends typed input.
+  // Loopback only as a whole: the CLI runs here, and the app sends typed input.
   app.post("/ops-terminal", async (c) => {
     local(c.env.listener);
     const { words, stdin, cwd } = terminalInput.parse(await json(c.req.raw));

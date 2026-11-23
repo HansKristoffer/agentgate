@@ -42,9 +42,6 @@ export type FakeThread = {
   activeOrderKey?: string | null;
   sessionId: string;
   failNextTurn?: boolean;
-  /** The shell state a turn driven through `/mcp` set (fixtures/t3-mcp.ts), which every view of the shell shows: the
-   * stream, a resumed stream's snapshot and a poll. Without it the status comes from `runs`. */
-  shell?: { status: string; needsYou: boolean; request?: string };
   messages: string[];
   conversation?: Message[];
   background?: { kind: string; description: string }[];
@@ -107,9 +104,7 @@ export function fakeT3(options: {
   };
   const now = () => new Date().toISOString();
   const status = (t: FakeThread) =>
-    t.shell?.status ??
-    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ??
-    "idle";
+    t.runs.find((r) => ["preparing", "starting", "running", "waiting", "queued"].includes(r.status))?.status ?? "idle";
   const shellThread = (t: FakeThread) => ({
     id: t.id,
     projectId: t.projectId,
@@ -118,9 +113,6 @@ export function fakeT3(options: {
     branch: t.branch,
     worktreePath: t.worktreePath,
     status: status(t),
-    ...(t.shell?.needsYou && {
-      pendingRuntimeRequest: { id: "request-1", kind: "user-input", createdAt: t.updatedAt },
-    }),
     archivedAt: t.archivedAt,
     updatedAt: t.updatedAt,
     createdAt: t.createdAt,
@@ -472,9 +464,8 @@ export function fakeT3(options: {
     /** A person deletes the thread: the shell no longer lists it, and every open subscription hears `thread.removed`. */
     removeThread(id: string) {
       threads.delete(id);
-      // T3 numbers its stream items from one counter, while fixtures/t3-mcp.ts and tests number theirs themselves. The
-      // removal takes a number between the last one sent and the next whole one, so a client applies it and whatever
-      // those number next.
+      // T3 numbers its stream items from one counter, while tests number theirs themselves. The removal takes a number
+      // between the last one sent and the next whole one, so a client applies it and whatever those number next.
       const last = Math.max(pushed, commands.length);
       shell.push({ kind: "thread.removed", sequence: (last + Math.floor(last) + 1) / 2, threadId: id });
     },

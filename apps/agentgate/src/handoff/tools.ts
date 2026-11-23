@@ -5,18 +5,17 @@ import { BUILTIN_ALIAS } from "../mcp/gateway.ts";
 import { inProcessSource } from "../mcp/source.ts";
 import type { Handoffs } from "./jobs.ts";
 import { t3State } from "./t3.ts";
-import { MAX_AGENTS_MD, T3_THREAD_META_KEY, handoffTargets } from "@agentgate/protocol";
+import { MAX_AGENTS_MD, handoffTargets } from "@agentgate/protocol";
 import { agentsMd, setAgentsMd } from "../agents-md.ts";
 import { revision } from "../configuration.ts";
 import { agentsMdPath } from "../skill-links.ts";
 import { allNodes, requestHandoff } from "./threads.ts";
-import { runOperation, type FactoryRuntime } from "../factory/runtime.ts";
 
 const text = (value: unknown): CallToolResult => ({
   content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
 });
 const fail = (value: string): CallToolResult => ({ isError: true, content: [{ type: "text", text: value }] });
-/** What an agent is told about arguments a factory tool refuses: the first problem, by its field. */
+/** What an agent is told about arguments a tool refuses: the first problem, by its field. */
 function refused(error: z.ZodError) {
   const issue = error.issues[0]!;
   const field = [...issue.path, ...(issue.code === "unrecognized_keys" ? [issue.keys[0]!] : [])].join(".");
@@ -42,7 +41,7 @@ const agentsMdTools: Tool[] = [
   },
 ];
 
-function handoffServer(h: Handoffs, f?: FactoryRuntime): Server {
+function handoffServer(h: Handoffs): Server {
   const server = new Server({ name: "agentgate-handoff", version: "1" }, { capabilities: { tools: {} } });
   server.setRequestHandler("tools/list", async (): Promise<ListToolsResult> => {
     const tools: Tool[] = [...agentsMdTools];
@@ -72,29 +71,11 @@ function handoffServer(h: Handoffs, f?: FactoryRuntime): Server {
           },
         },
       );
-    if (f?.pointer())
-      for (const { tool, input } of f.operations.values())
-        if (tool)
-          tools.push({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: z.toJSONSchema(input, { io: "input" }) as Tool["inputSchema"],
-          });
     return { tools };
   });
   server.setRequestHandler("tools/call", async (req) => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>;
     try {
-      const op = f?.pointer() ? [...f.operations.values()].find((o) => o.tool?.name === req.params.name) : undefined;
-      if (f && op?.tool) {
-        const thread = req.params._meta?.[T3_THREAD_META_KEY];
-        const result = await runOperation(f, op.name, args, {
-          via: "tool",
-          ...(typeof thread === "string" && thread && { thread }),
-          node: h.s.nodeId,
-        });
-        return text(op.tool.result ? op.tool.result(result) : result);
-      }
       if (req.params.name === "agents_md_read")
         return text({ text: agentsMd(h.s), path: agentsMdPath(), revision: revision(h.s, "project", "*") });
       if (req.params.name === "agents_md_write") {
@@ -119,6 +100,6 @@ function handoffServer(h: Handoffs, f?: FactoryRuntime): Server {
 
 /**
  * Built-in gateway tools under the `agentgate` alias, so an agent can read and change the global AGENTS.md and hand
- * its own thread to another machine, and, while the factory is on, the factory's tools.
+ * its own thread to another machine.
  */
-export const handoffSource = (h: Handoffs, f?: FactoryRuntime) => inProcessSource(BUILTIN_ALIAS, handoffServer(h, f));
+export const handoffSource = (h: Handoffs) => inProcessSource(BUILTIN_ALIAS, handoffServer(h));

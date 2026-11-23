@@ -6,10 +6,9 @@ import { readBounded } from "./body.ts";
 import { Window, type Config, type Reply } from "./group.ts";
 
 /**
- * One remote endpoint: a public POST URL forwarded over the one hibernatable WebSocket its serving node keeps open.
- * An `mcp` endpoint (a virtual project, for clients like Grok) is served at `/mcp/:key` behind a bearer secret; a
- * `hook` endpoint receives webhooks at `/hook/:key` with no secret, and the node checks the sender's signature.
- * Unlike groups, the relay reads this traffic in the clear.
+ * One remote endpoint: a virtual project's tools, for clients like Grok, at a public POST URL (`/mcp/:key`) behind a
+ * bearer secret, forwarded over the one hibernatable WebSocket its serving node keeps open. Unlike groups, the relay
+ * reads this traffic in the clear.
  */
 
 interface EndpointDeps {
@@ -28,10 +27,7 @@ interface Meta {
   enabled: number;
   lastActive: number;
   admitted: number;
-  /** Absent on endpoints created before webhooks, which are all MCP endpoints. */
-  kind?: Kind;
 }
-type Kind = "mcp" | "hook";
 type Fail = (status: number, message: string, headers?: Record<string, string>) => Response;
 interface Pending {
   ws: WebSocket;
@@ -55,7 +51,6 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
   });
 const rpcError: Fail = (status, message, headers = {}) =>
   json(status, { jsonrpc: "2.0", error: { code: -32000, message }, id: null }, headers);
-const hookError: Fail = (status, message, headers = {}) => json(status, { error: message }, headers);
 const bearer = (req: Request) => req.headers.get("authorization")?.match(/^Bearer ([A-Za-z0-9_-]{43})$/)?.[1];
 
 export class EndpointCore {
@@ -82,24 +77,21 @@ export class EndpointCore {
     return this.sql.exec("select * from meta").toArray()[0] as unknown as Meta | undefined;
   }
 
-  /** Only when the node changes the endpoint. Endpoints created before webhook URLs have no `kind`, which reads as
-   * "mcp", so their table gets the column here. */
+  /** Only when the node changes the endpoint. Columns are named: an endpoint from the software factory's time (since
+   * removed) has a `kind` column too. */
   private save(m: Meta) {
     this.sql.exec(
-      "create table if not exists meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer, kind text)",
+      "create table if not exists meta (key text, tokenHash text, secretHash text, enabled integer, lastActive integer, admitted integer)",
     );
-    const columns = this.sql.exec("select name from pragma_table_info('meta')").toArray();
-    if (!columns.some((c) => c.name === "kind")) this.sql.exec("alter table meta add column kind text");
     this.sql.exec("delete from meta");
     this.sql.exec(
-      "insert into meta values (?, ?, ?, ?, ?, ?, ?)",
+      "insert into meta (key, tokenHash, secretHash, enabled, lastActive, admitted) values (?, ?, ?, ?, ?, ?)",
       m.key,
       m.tokenHash,
       m.secretHash,
       m.enabled,
       m.lastActive,
       m.admitted,
-      m.kind ?? "mcp",
     );
   }
 
@@ -127,7 +119,6 @@ export class EndpointCore {
     const key = req.headers.get("x-agentgate-key")!;
     const ipHash = req.headers.get("x-agentgate-ip") ?? "";
     if (op === "mcp") return this.mcp(req);
-    if (op === "hook") return this.hook(req);
     // Node operations: the token is checked against the stored hash; the first PUT stores it.
     const token = bearer(req);
     if (!token) return json(401, { error: "unauthorized" });
@@ -169,19 +160,12 @@ export class EndpointCore {
       if (m?.admitted && !safeEqual(m.tokenHash, tokenHash))
         return this.unauthorized(json(401, { error: "unauthorized" }));
 
-      // A published URL keeps its kind: a node that omits it must not turn a webhook URL into an MCP endpoint.
-      if (m?.admitted && (m.kind ?? "mcp") !== parsed.data.kind)
-        return json(409, {
-          error: `this endpoint is a ${m.kind ?? "mcp"} endpoint; create a new URL to change its kind`,
-        });
-
       const record = {
         key,
         tokenHash,
         secretHash: parsed.data.secretHash,
         enabled: parsed.data.enabled ? 1 : 0,
         lastActive: now,
-        kind: parsed.data.kind,
       };
       if (!m?.admitted) {
         // Record, then reserve: the alarm deletes a create that stopped between the two.
@@ -216,10 +200,9 @@ export class EndpointCore {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  /** A public request reaches only an endpoint of its own kind: a hook URL never opens an MCP endpoint without its secret. */
-  private admit(kind: Kind, fail: Fail): Meta | Response {
+  private admit(fail: Fail): Meta | Response {
     const m = this.meta();
-    if (!m?.admitted || (m.kind ?? "mcp") !== kind) return fail(404, "no such endpoint");
+    if (!m?.admitted) return fail(404, "no such endpoint");
     const limited = this.requests.hit(this.deps.limits.requestsPerMinute, Date.now());
     if (limited) return fail(429, "too many requests", { "retry-after": String(limited) });
     return m;
@@ -236,7 +219,7 @@ export class EndpointCore {
   }
 
   private async mcp(req: Request): Promise<Response> {
-    const m = this.admit("mcp", rpcError);
+    const m = this.admit(rpcError);
     if (m instanceof Response) return m;
     // Authenticate before reading the body.
     const secret = bearer(req);
@@ -254,41 +237,11 @@ export class EndpointCore {
     return this.forward(req, ws, rpcError, { headers, body });
   }
 
-  /** A webhook delivery: no secret here, because the node checks the sender's signature over the exact body and headers. */
-  private async hook(req: Request): Promise<Response> {
-    const m = this.admit("hook", hookError);
-    if (m instanceof Response) return m;
-    const ws = this.open(m, hookError);
-    if (ws instanceof Response) return ws;
-    // The Worker already dropped cookies and hop-by-hop headers; x-agentgate-* are its own.
-    const headers: Record<string, string> = {};
-    for (const [name, value] of req.headers) {
-      if (name.startsWith("x-agentgate-")) continue;
-      if (Math.max(name.length, value.length) > REMOTE_LIMITS.fieldChars)
-        return hookError(431, "a request header is too large");
-      headers[name] = value;
-    }
-
-    const query = new URL(req.url).search.slice(1);
-    if (query.length > REMOTE_LIMITS.fieldChars) return hookError(414, "the query string is too long");
-
-    const bytes = await readBounded(req, REMOTE_LIMITS.hookRequestBytes);
-    if (!bytes) return hookError(413, "request too large");
-    let body: string;
-    try {
-      // A signature covers the exact bytes, so a byte-order mark is kept and anything but UTF-8 is refused.
-      body = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch {
-      return hookError(415, "the body must be UTF-8 text");
-    }
-    return this.forward(req, ws, hookError, { headers, body, ...(query && { query }) });
-  }
-
   private forward(
     req: Request,
     ws: WebSocket,
     fail: Fail,
-    frame: { headers: Record<string, string>; body: string; query?: string },
+    frame: { headers: Record<string, string>; body: string },
   ): Promise<Response> {
     const now = Date.now();
     const id = crypto.randomUUID();

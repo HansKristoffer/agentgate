@@ -22,10 +22,6 @@ describe("parseFor", () => {
     expect(() => parseFor(words("init --always-on=yes"))).toThrow("--always-on takes no value");
   });
 
-  test("factory passes its words through untouched", () => {
-    expect(parseFor(words("factory use --store agentgate"))).toEqual({ values: {}, positionals: ["factory"] });
-  });
-
   // From README.md and docs/user, plus one use of every option the CLI read before options became per command.
   test.each([
     "init --always-on --name srv",

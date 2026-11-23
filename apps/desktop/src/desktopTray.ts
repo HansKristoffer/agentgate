@@ -1,11 +1,5 @@
 import { useEffect, useRef } from "react";
-import {
-  waitsForYou,
-  type DesktopLogin,
-  type DesktopStatus,
-  type FactoryBoard,
-  type Status,
-} from "@agentgate/protocol";
+import type { DesktopLogin, DesktopStatus, Status } from "@agentgate/protocol";
 import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem } from "@tauri-apps/api/menu";
 import { TrayIcon } from "@tauri-apps/api/tray";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -164,41 +158,4 @@ export function useDesktopNotifications(
         );
     }
   }, [data, desktop]);
-}
-
-/**
- * The factory's two moments the person hears about (factory/notify.ts on the daemon): an item starts waiting for them,
- * and a PR is ready, from the board the app reads once. Items already waiting when the app first sees a daemon's board
- * are not announced, so opening the app or switching to another daemon is not a burst of notifications. Returns how
- * many items wait for the person, for the sidebar's attention dot.
- */
-export function useFactoryAttention(connectionUrl: string, board: FactoryBoard | undefined) {
-  // The daemon whose items waiting at its first board were taken as already announced.
-  const primed = useRef<string>(undefined);
-  useEffect(() => {
-    if (!board) return;
-    const moments = board.items.flatMap((i) =>
-      i.needsYou
-        ? [
-            {
-              key: `factory:${i.id}:${i.needsYou.since}`,
-              title: `${i.key} needs you`,
-              body: `${i.needsYou.title}: ${i.needsYou.question}`,
-            },
-          ]
-        : i.phase === "ready"
-          ? [{ key: `factory-ready:${i.id}`, title: `${i.key}'s PR is ready`, body: i.title }]
-          : [],
-    );
-    if (primed.current !== connectionUrl) {
-      primed.current = connectionUrl;
-      localStorage.setItem("desktopNotified", JSON.stringify([...sent(), ...moments.map((m) => m.key)].slice(-50)));
-      return;
-    }
-    // One at a time: each reads and writes the list of what was sent.
-    void (async () => {
-      for (const m of moments) await notify(m.key, m.title, m.body);
-    })();
-  }, [board]);
-  return board?.items.filter(waitsForYou).length ?? 0;
 }

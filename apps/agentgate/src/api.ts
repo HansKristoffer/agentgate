@@ -13,19 +13,15 @@ import { finishLogin } from "./mcp/oauth.ts";
 
 /** JSON control plane, one sub-app per family in api/. Provider/MCP credentials never appear in its status response. */
 export function management(ctx: Ctx) {
-  return (
-    new Hono<Env>()
-      .route("/", system(ctx))
-      .route("/", accounts(ctx))
-      .route("/", servers(ctx))
-      .route("/", skills(ctx))
-      .route("/", projects(ctx))
-      .route("/", t3(ctx))
-      .route("/", desktopRoutes(ctx))
-      .route("/", ops(ctx))
-      // The board and every factory operation (factory/runtime.ts).
-      .route("/factory", ctx.factory.api)
-  );
+  return new Hono<Env>()
+    .route("/", system(ctx))
+    .route("/", accounts(ctx))
+    .route("/", servers(ctx))
+    .route("/", skills(ctx))
+    .route("/", projects(ctx))
+    .route("/", t3(ctx))
+    .route("/", desktopRoutes(ctx))
+    .route("/", ops(ctx));
 }
 
 /** Browser-only OAuth landing response, also used by headless CLI MCP logins. */
