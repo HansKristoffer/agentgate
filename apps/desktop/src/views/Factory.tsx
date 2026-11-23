@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Button, Spinner } from "@heroui/react";
 import {
   ArrowRight,
@@ -11,6 +11,7 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
+import type { Connection } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { factoryEmbedUrl, factoryHealth, openExternal, type FactoryHealth } from "../api.ts";
 import { Badge, HeaderActions, Panel } from "../components/ui.tsx";
@@ -33,10 +34,55 @@ export type FactoryLiveState = {
   repos: string[];
   repoScope: string;
   connected: boolean;
+  loaded: boolean;
   issueTitle: string | null;
 };
 
+export type FactoryHandle = {
+  navigate: (hash: string) => void;
+  prefetch: (hash: string) => void;
+  refresh: () => void;
+};
+
 const STORAGE_MACHINE = "agentgate-factory-machine";
+
+const healthyMachines = new Map<string, FactoryHealth>();
+const healthInflight = new Map<string, Promise<FactoryHealth>>();
+const healthKey = (connection: Connection, machine: string) => `${connection.url}\n${machine}`;
+
+/** Probes Factory health once per `(connection, machine)` with in-flight deduplication and caches healthy results. */
+export function warmFactoryHealth(
+  connection: Connection,
+  machine: string,
+  { force = false }: { force?: boolean } = {},
+): Promise<FactoryHealth> {
+  const key = healthKey(connection, machine);
+  if (!force) {
+    const cached = healthyMachines.get(key);
+    if (cached) return Promise.resolve(cached);
+    const inflight = healthInflight.get(key);
+    if (inflight) return inflight;
+  }
+  const req = factoryHealth(connection, machine)
+    .then((health) => {
+      healthyMachines.set(key, health);
+      return health;
+    })
+    .catch((err) => {
+      healthyMachines.delete(key);
+      throw err;
+    });
+  healthInflight.set(key, req);
+  void req.then(
+    () => {
+      if (healthInflight.get(key) === req) healthInflight.delete(key);
+    },
+    () => {
+      if (healthInflight.get(key) === req) healthInflight.delete(key);
+    },
+  );
+  return req;
+}
 
 function systemTheme(): "light" | "dark" {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
@@ -59,20 +105,26 @@ function isAllowedExternalUrl(raw: string): boolean {
 export function Factory({
   data,
   connection,
+  active,
   machine,
   onMachineChange,
-  targetHash,
+  initialHash,
+  controlRef,
   onStateChange,
   onOpenSkills,
 }: ViewProps & {
+  active: boolean;
   machine: string;
   onMachineChange: (node: string) => void;
-  targetHash: string;
+  initialHash: string;
+  controlRef: RefObject<FactoryHandle | null>;
   onStateChange: (state: FactoryLiveState) => void;
   onOpenSkills: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const loadedFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const pendingHashRef = useRef(initialHash);
+  const frameConnectedRef = useRef(false);
   const [theme, setTheme] = useState<"light" | "dark">(systemTheme);
   const [probeSeq, setProbeSeq] = useState(0);
   const [probe, setProbe] = useState<{
@@ -80,15 +132,19 @@ export function Factory({
     status: "checking" | "ready" | "error";
     health?: FactoryHealth;
     error?: string;
-  }>({ machine, status: "checking" });
+  }>(() => {
+    const cached = machine ? healthyMachines.get(healthKey(connection, machine)) : undefined;
+    return cached ? { machine, status: "ready", health: cached } : { machine, status: "checking" };
+  });
   const [live, setLive] = useState<FactoryLiveState>({
     section: "board",
-    hash: targetHash,
+    hash: initialHash,
     open: 0,
     needsYou: 0,
     repos: [],
     repoScope: "",
     connected: false,
+    loaded: false,
     issueTitle: null,
   });
 
@@ -122,18 +178,33 @@ export function Factory({
     return () => mq.removeEventListener("change", sync);
   }, []);
 
-  // Probe the selected machine's Factory over the connected daemon (locally, Tailscale, or relay).
+  // Probe the selected machine's Factory, mounting immediately when already warmed/cached.
   useEffect(() => {
     if (!machine) return;
     let cancelled = false;
-    setProbe({ machine, status: "checking" });
-    void factoryHealth(connection, machine)
-      .then((health) => {
-        if (!cancelled) setProbe({ machine, status: "ready", health });
-      })
-      .catch((e) => {
-        if (!cancelled) setProbe({ machine, status: "error", error: e instanceof Error ? e.message : String(e) });
-      });
+    frameConnectedRef.current = false;
+    const cached = probeSeq === 0 ? healthyMachines.get(healthKey(connection, machine)) : undefined;
+    if (cached) {
+      setProbe({ machine, status: "ready", health: cached });
+      void warmFactoryHealth(connection, machine, { force: true })
+        .then((health) => {
+          if (!cancelled) setProbe({ machine, status: "ready", health });
+        })
+        .catch((e) => {
+          if (!cancelled && !frameConnectedRef.current) {
+            setProbe({ machine, status: "error", error: e instanceof Error ? e.message : String(e) });
+          }
+        });
+    } else {
+      setProbe({ machine, status: "checking" });
+      void warmFactoryHealth(connection, machine, { force: probeSeq > 0 })
+        .then((health) => {
+          if (!cancelled) setProbe({ machine, status: "ready", health });
+        })
+        .catch((e) => {
+          if (!cancelled) setProbe({ machine, status: "error", error: e instanceof Error ? e.message : String(e) });
+        });
+    }
     return () => {
       cancelled = true;
     };
@@ -143,12 +214,24 @@ export function Factory({
     iframeRef.current?.contentWindow?.postMessage(msg, "*");
   }, []);
 
-  // Navigate inside the already-loaded Factory iframe when the user clicks a sidebar sub-item.
+  // Expose imperative navigation/prefetch/refresh so clicking Board or Done while viewing an issue always fires.
   useEffect(() => {
-    if (probe.status === "ready" && probe.machine === machine) {
-      postToFrame({ type: "factory:navigate", hash: targetHash });
-    }
-  }, [targetHash, probe.status, probe.machine, machine, postToFrame]);
+    controlRef.current = {
+      navigate: (hash) => {
+        pendingHashRef.current = hash;
+        postToFrame({ type: "factory:navigate", hash });
+      },
+      prefetch: (hash) => {
+        postToFrame({ type: "factory:prefetch", hash });
+      },
+      refresh: () => {
+        postToFrame({ type: "factory:action", action: "refresh" });
+      },
+    };
+    return () => {
+      controlRef.current = null;
+    };
+  }, [controlRef, postToFrame]);
 
   // Listen to state updates and external link opens from the embedded Factory page.
   useEffect(() => {
@@ -161,14 +244,19 @@ export function Factory({
         return;
       }
       if (msg.type === "factory:state") {
+        const connected = !!msg.connected;
+        frameConnectedRef.current = connected;
+        const hash = typeof msg.hash === "string" ? msg.hash : "#/";
+        pendingHashRef.current = hash;
         const next: FactoryLiveState = {
           section: sectionFromPage(msg.page),
-          hash: typeof msg.hash === "string" ? msg.hash : "#/",
+          hash,
           open: typeof msg.open === "number" ? msg.open : 0,
           needsYou: typeof msg.needsYou === "number" ? msg.needsYou : 0,
           repos: Array.isArray(msg.repos) ? msg.repos.filter((r: unknown): r is string => typeof r === "string") : [],
           repoScope: typeof msg.repoScope === "string" ? msg.repoScope : "",
-          connected: !!msg.connected,
+          connected,
+          loaded: true,
           issueTitle: typeof msg.title === "string" ? msg.title : null,
         };
         setLive(next);
@@ -180,12 +268,10 @@ export function Factory({
   }, [onStateChange]);
 
   // Initial embed URL is keyed by machine + probeSeq; sub-navigation uses postMessage so the iframe never reloads.
-  const initialHashRef = useRef(targetHash);
   const initialThemeRef = useRef(theme);
   const frameSrc = useMemo(() => {
-    initialHashRef.current = targetHash;
     initialThemeRef.current = theme;
-    return factoryEmbedUrl(machine, initialHashRef.current, initialThemeRef.current);
+    return factoryEmbedUrl(machine, pendingHashRef.current, initialThemeRef.current);
     // Intentionally only rebuild src when machine or explicit retry changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [machine, probeSeq]);
@@ -194,66 +280,78 @@ export function Factory({
   const hasFactorySkill = data.skills.some((s) => s.id === "factory");
   const isLocalMachine = machine === data.node;
   const otherMachines = machines.filter((m) => m.id !== machine);
+  const selectMachine = (next: string) => {
+    if (pendingHashRef.current.startsWith("#/issue/")) pendingHashRef.current = "#/";
+    try {
+      localStorage.setItem(STORAGE_MACHINE, next);
+    } catch {
+      // Ignore storage errors.
+    }
+    onMachineChange(next);
+  };
 
   return (
     <>
-      <HeaderActions>
-        <label className="factory-select-wrap" aria-label="Factory machine">
-          <Monitor size={14} className="muted" />
-          <select
-            className="factory-select"
-            value={machine}
-            onChange={(e) => {
-              const next = e.target.value;
-              try {
-                localStorage.setItem(STORAGE_MACHINE, next);
-              } catch {
-                // Ignore storage errors.
-              }
-              onMachineChange(next);
-            }}
-          >
-            {machines.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.id}
-                {m.id === data.node ? " (this machine)" : ""}
-              </option>
-            ))}
-          </select>
-        </label>
-        {ready && live.repos.length > 1 && (
-          <select
-            className="factory-select"
-            aria-label="Repository scope"
-            value={live.repoScope}
-            onChange={(e) => postToFrame({ type: "factory:scope", repo: e.target.value })}
-          >
-            <option value="">All repos</option>
-            {live.repos.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        )}
-        {ready && (
-          <>
-            <Button
-              size="sm"
-              variant="tertiary"
-              isIconOnly
-              aria-label="Search Factory"
-              onPress={() => postToFrame({ type: "factory:action", action: "cmdk" })}
+      {active && (
+        <HeaderActions>
+          <label className="factory-select-wrap" aria-label="Factory machine">
+            <Monitor size={14} className="muted" />
+            <select className="factory-select" value={machine} onChange={(e) => selectMachine(e.target.value)}>
+              {machines.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id}
+                  {m.id === data.node ? " (this machine)" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+          {ready && live.repos.length > 1 && (
+            <select
+              className="factory-select"
+              aria-label="Repository scope"
+              value={live.repoScope}
+              onChange={(e) => postToFrame({ type: "factory:scope", repo: e.target.value })}
             >
-              <Search size={14} />
-            </Button>
-            <Button size="sm" variant="primary" onPress={() => postToFrame({ type: "factory:action", action: "new" })}>
-              <Plus size={14} />
-              New issue
-            </Button>
-          </>
-        )}
-      </HeaderActions>
+              <option value="">All repos</option>
+              {live.repos.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          )}
+          {ready && (
+            <>
+              <Button
+                size="sm"
+                variant="tertiary"
+                isIconOnly
+                aria-label="Refresh Factory"
+                onPress={() => postToFrame({ type: "factory:action", action: "refresh" })}
+              >
+                <RefreshCw size={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="tertiary"
+                isIconOnly
+                aria-label="Search Factory"
+                onPress={() => postToFrame({ type: "factory:action", action: "cmdk" })}
+              >
+                <Search size={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="primary"
+                onPress={() => postToFrame({ type: "factory:action", action: "new" })}
+              >
+                <Plus size={14} />
+                New issue
+              </Button>
+            </>
+          )}
+        </HeaderActions>
+      )}
 
       {probe.status === "checking" && (
         <div className="factory-state-pane">
@@ -286,19 +384,7 @@ export function Factory({
                   </small>
                 </div>
                 {otherMachines.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="tertiary"
-                    onPress={() => {
-                      const next = otherMachines[0]!.id;
-                      try {
-                        localStorage.setItem(STORAGE_MACHINE, next);
-                      } catch {
-                        // Ignore storage errors.
-                      }
-                      onMachineChange(next);
-                    }}
-                  >
+                  <Button size="sm" variant="tertiary" onPress={() => selectMachine(otherMachines[0]!.id)}>
                     Try {otherMachines[0]!.id}
                   </Button>
                 )}
@@ -403,7 +489,7 @@ export function Factory({
             // each click inside Factory straight back to the sidebar's section. Only a new frame needs it.
             if (loadedFrameRef.current === e.currentTarget) return;
             loadedFrameRef.current = e.currentTarget;
-            postToFrame({ type: "factory:navigate", hash: targetHash });
+            postToFrame({ type: "factory:navigate", hash: pendingHashRef.current });
           }}
         />
       )}

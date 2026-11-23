@@ -89,13 +89,35 @@ function jsonError(status: number, error: string): Response {
   });
 }
 
-function copySafeHeaders(upstream: Response): Headers {
-  const headers = new Headers({ "cache-control": "no-store" });
+const COMPRESSIBLE_RE = /^(text\/|application\/(json|javascript|xml)|image\/svg\+xml)/i;
+const acceptsGzip = (req: Request) => /\bgzip\b/i.test(req.headers.get("accept-encoding") ?? "");
+const isCompressible = (ct: string | null) => !!ct && COMPRESSIBLE_RE.test(ct.split(";")[0]!.trim());
+
+function buildProxiedResponse(req: Request, status: number, payload: Uint8Array, upstream: Response): Response {
+  const etag = upstream.headers.get("etag");
+  const headers = new Headers({ "cache-control": etag || status === 304 ? "no-cache" : "no-store" });
   const ct = upstream.headers.get("content-type");
   if (ct) headers.set("content-type", ct);
   const csp = upstream.headers.get("content-security-policy");
   if (csp) headers.set("content-security-policy", csp);
-  return headers;
+  if (etag) headers.set("etag", etag);
+
+  if (status === 304 || status === 204) {
+    if (etag) headers.set("vary", "accept-encoding");
+    return new Response(null, { status, headers });
+  }
+
+  if (acceptsGzip(req) && payload.byteLength >= 1024 && isCompressible(ct)) {
+    headers.set("content-encoding", "gzip");
+    headers.set("vary", "accept-encoding");
+    const input =
+      payload.buffer instanceof ArrayBuffer
+        ? new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength)
+        : new Uint8Array(payload);
+    return new Response(Bun.gzipSync(input, { level: payload.byteLength >= 8192 ? 4 : 1 }), { status, headers });
+  }
+  if (isCompressible(ct)) headers.set("vary", "accept-encoding");
+  return new Response(payload, { status, headers });
 }
 
 /** Forwards one validated request to this machine's local factory service. */
@@ -115,9 +137,14 @@ export async function proxyLocalFactory(
 
   let body: Uint8Array | undefined;
   const contentType = req.headers.get("content-type");
+  const ifNoneMatch = req.headers.get("if-none-match");
   if (req.method !== "GET" && req.method !== "HEAD") {
     body = await readBody(req.body, MAX_BODY, signal);
   }
+
+  const upstreamHeaders: Record<string, string> = {};
+  if (contentType) upstreamHeaders["content-type"] = contentType;
+  if (ifNoneMatch) upstreamHeaders["if-none-match"] = ifNoneMatch;
 
   let res: Response;
   try {
@@ -127,7 +154,7 @@ export async function proxyLocalFactory(
         method: req.method,
         redirect: "manual",
         signal,
-        headers: contentType ? { "content-type": contentType } : {},
+        headers: upstreamHeaders,
         ...(body && { body }),
       },
       timeout,
@@ -143,7 +170,7 @@ export async function proxyLocalFactory(
   } catch {
     return jsonError(502, "Factory response ended early or exceeded the proxy limit");
   }
-  return new Response(payload, { status: res.status, headers: copySafeHeaders(res) });
+  return buildProxiedResponse(req, res.status, payload, res);
 }
 
 function subPathOf(reqUrl: string, mountPrefix: string): string {
@@ -170,7 +197,7 @@ export function factoryPeerRoutes(baseUrl: string, daemonSignal: AbortSignal) {
 const NO_ROUTE = "404 Not Found";
 
 /** Copies a peer's answer, replacing a missing route with an error that names the fix instead of a plain-text 404. */
-async function fromPeer(ctx: Ctx, node: string, res: Response, signal: AbortSignal): Promise<Response> {
+async function fromPeer(req: Request, ctx: Ctx, node: string, res: Response, signal: AbortSignal): Promise<Response> {
   const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
   if (res.status === 404 && new TextDecoder().decode(bytes) === NO_ROUTE) {
     const version = ctx.s.get("node", node)?.version;
@@ -179,7 +206,7 @@ async function fromPeer(ctx: Ctx, node: string, res: Response, signal: AbortSign
       `${node} runs Agentgate ${version ?? "from before 0.37.0"}, which cannot show its Factory. Update it with \`agentgate update ${node}\`.`,
     );
   }
-  return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+  return buildProxiedResponse(req, res.status, bytes, res);
 }
 
 /** Mounted on `/api/factory-proxy` in the daemon's control API. Routes local or remote via Tailscale/relay. */
@@ -208,6 +235,7 @@ export function factoryProxyApi(ctx: Ctx) {
     const timeout = timeoutFor(parsed.pathname);
     const signal = AbortSignal.any([req.signal, ctx.abort.signal, AbortSignal.timeout(timeout)]);
     const contentType = req.headers.get("content-type") ?? undefined;
+    const ifNoneMatch = req.headers.get("if-none-match") ?? undefined;
     const body = req.method !== "GET" && req.method !== "HEAD" ? await readBody(req.body, MAX_BODY, signal) : undefined;
     const peerPath = `/factory-proxy${parsed.pathname}${parsed.search}`;
 
@@ -223,7 +251,9 @@ export function factoryProxyApi(ctx: Ctx) {
             signal,
             headers: {
               authorization: `Bearer ${direct.token}`,
+              "accept-encoding": "gzip",
               ...(contentType && { "content-type": contentType }),
+              ...(ifNoneMatch && { "if-none-match": ifNoneMatch }),
             },
             ...(body && { body }),
           },
@@ -232,7 +262,7 @@ export function factoryProxyApi(ctx: Ctx) {
       } catch {
         return jsonError(503, `${node} is not reachable`);
       }
-      return fromPeer(ctx, node, res, signal);
+      return fromPeer(req, ctx, node, res, signal);
     }
 
     if (transport(ctx.s, node) === "relay") {
@@ -243,7 +273,7 @@ export function factoryProxyApi(ctx: Ctx) {
           type: contentType,
           timeout,
         });
-        return await fromPeer(ctx, node, res, signal);
+        return await fromPeer(req, ctx, node, res, signal);
       } catch (error) {
         const status =
           error &&
