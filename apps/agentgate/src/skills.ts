@@ -74,9 +74,20 @@ export function skillPreview(
 const contentHash = (files: Skill["files"]) =>
   new Bun.CryptoHasher("sha256").update(JSON.stringify(files)).digest("hex");
 
-/** JSON metadata only; legacy bundles are measured without decoding all contents. */
+const summaryCache = new WeakMap<Store, { key: string; list: SkillSummary[] }>();
+
+/** JSON metadata only; legacy bundles are measured without decoding all contents. Cached per store until any skill
+ * record changes (`seq` or row count), since `/status` and repo summaries both call this on every refresh. */
 export function skillSummaries(s: Store): SkillSummary[] {
-  return s.db
+  const stamp = s.db
+    .query<{ n: number; seq: number }, []>(
+      "select count(*) as n, coalesce(max(seq), 0) as seq from records where kind = 'skill'",
+    )
+    .get()!;
+  const key = `${stamp.n}:${stamp.seq}`;
+  const hit = summaryCache.get(s);
+  if (hit && hit.key === key) return hit.list;
+  const list = s.db
     .query<
       Omit<SkillSummary, "source" | "hash" | "contentHash"> & {
         source: string | null;
@@ -100,6 +111,8 @@ export function skillSummaries(s: Store): SkillSummary[] {
       hash: r.hash ?? undefined,
       contentHash: r.contentHash ?? undefined,
     }));
+  summaryCache.set(s, { key, list });
+  return list;
 }
 
 function putSkill(s: Store, input: Stored<Omit<z.input<typeof skillSchema>, "updatedAt">>) {

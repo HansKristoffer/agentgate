@@ -6,7 +6,7 @@ import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Modal, Panel, Toggle } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { backupFile, localAction, restoreFile, type LocalAction } from "../api.ts";
-import { DaemonCapabilities, PoolSettings } from "../features/proxy/PoolSettings.tsx";
+import { Diagnostics, PoolSettings } from "../features/proxy/PoolSettings.tsx";
 
 export function Settings({ data, connection, perform, local, desktop }: ViewProps) {
   const [output, setOutput] = useState("");
@@ -14,63 +14,73 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
   // cursorMcp and antigravityMcp are absent when the machine lacks that tool (setup skips it), so it does not count then.
   const mcpOn = !!desktop?.mcp && desktop.cursorMcp !== false && desktop.antigravityMcp !== false;
   const others = [desktop?.cursorMcp && "Cursor", desktop?.antigravityMcp && "Antigravity"].filter(Boolean);
+  const selfNode = data.nodes.find((n) => n.id === data.node);
+  const routing = selfNode?.routing;
+  const primaryOn = routing ? routing.claude || routing.codex : !!desktop?.routing;
+  const primaryDetail = routing
+    ? routing.claude && routing.codex
+      ? "On · your Claude Code and Codex settings route through the pool. Claude Desktop is configured on Accounts."
+      : routing.claude || routing.codex
+        ? `On for ${routing.claude ? "Claude Code" : "Codex"} · turn off to restore its own login.`
+        : "Off · turn on to point your existing Claude Code and Codex settings at the pool."
+    : "Points your existing Claude Code and Codex settings at the pool. Claude Desktop is configured on Accounts.";
   const action = (name: LocalAction) =>
     perform(async () => setOutput(await localAction(name, connection)), "Command completed");
   return (
     <>
+      {local && (
+        <Panel title="Coding tools" detail="Provider and MCP setup for Claude Code, Codex, Cursor and Antigravity">
+          <Toggle
+            label="Route your own Claude Code and Codex"
+            description={primaryDetail}
+            isSelected={primaryOn}
+            onChange={(on) =>
+              perform(
+                () => localAction(on ? "primary-on" : "primary-off", connection),
+                on ? "Claude Code and Codex now use Agentgate" : "Claude Code and Codex restored to their own logins",
+                "primary-routing",
+              )
+            }
+          />
+          {desktop && (
+            <Toggle
+              label="Agentgate's MCP servers"
+              description={
+                mcpOn
+                  ? `On for Claude Code, Claude Desktop's Code tab${others.map((t) => `, ${t}`).join("")}.`
+                  : "Off · turn on to expose your MCP servers without routing subscriptions."
+              }
+              isSelected={mcpOn}
+              onChange={(on) =>
+                perform(
+                  () => localAction(on ? "mcp-on" : "mcp-off", connection),
+                  on ? "MCP servers added" : "MCP servers removed",
+                  "mcp-routing",
+                )
+              }
+            />
+          )}
+          <div className="item">
+            <span className="labelled">
+              Separate folders for T3 Code
+              <small>
+                Creates dedicated Claude and Codex config folders and prints their paths instead of changing your own
+                logins.
+              </small>
+            </span>
+            <Button size="sm" variant="tertiary" onPress={() => void action("setup")}>
+              <Terminal size={14} />
+              Configure
+            </Button>
+          </div>
+        </Panel>
+      )}
       <PoolSettings data={data} connection={connection} perform={perform} />
       {local && (
         <>
-          <Panel title="Coding tools" detail="Provider and MCP settings for Claude Code, Codex, and T3 Code.">
-            <div className="item">
-              <span className="labelled">
-                Separate folders for T3 Code
-                <small>
-                  Instead of routing your own logins: creates dedicated Claude and Codex config folders and prints their
-                  paths.
-                </small>
-              </span>
-              <Button size="sm" variant="tertiary" onPress={() => void action("setup")}>
-                <Terminal size={14} />
-                Configure
-              </Button>
-            </div>
-            <div className="item">
-              <span className="labelled">
-                Route your own Claude Code and Codex
-                <small>
-                  Setting up a new machine turns this on. Points your existing Claude Code and Codex settings at the
-                  pool. Claude Desktop isn't affected; it is on Accounts.
-                </small>
-              </span>
-              <Button size="sm" variant="ghost" onPress={() => void action("primary-off")}>
-                Undo
-              </Button>
-              <Button size="sm" variant="tertiary" onPress={() => void action("primary-on")}>
-                Route
-              </Button>
-            </div>
-            {desktop && (
-              <Toggle
-                label="Agentgate's MCP servers"
-                description={
-                  mcpOn
-                    ? `On for Claude Code, Claude Desktop's Code tab${others.map((t) => `, ${t}`).join("")}.`
-                    : "Off. Turn on to use your MCP servers in Claude Code, Cursor and Antigravity without routing the subscriptions."
-                }
-                isSelected={mcpOn}
-                onChange={(on) =>
-                  perform(
-                    () => localAction(on ? "mcp-on" : "mcp-off", connection),
-                    on ? "MCP servers added" : "MCP servers removed",
-                  )
-                }
-              />
-            )}
-          </Panel>
           <Panel
             title="Background service"
-            detail="Installed independently of the app in ~/.config/agentgate/bin."
+            detail="Installed independently of this app in ~/.config/agentgate/bin"
             foot={
               <>
                 Add <code>~/.config/agentgate/bin</code> to your shell PATH to use the bundled CLI.
@@ -112,13 +122,13 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
               </Button>
             </div>
           </Panel>
-          <Panel title="Backup & restore" detail="Backups are written to the file you choose.">
+          <Panel title="Backup & restore" detail="Export or restore your configuration as JSON">
             <Toggle
               label="Include credentials"
               description={
                 secrets
-                  ? "A full backup contains working credentials. Store it somewhere private."
-                  : "An inventory omits logins and transport secrets. Restored servers need configuration again."
+                  ? "Full backup with working credentials. Store it somewhere private."
+                  : "Inventory only (no logins or transport secrets). Restored servers need sign-in again."
               }
               isSelected={secrets}
               onChange={setSecrets}
@@ -170,7 +180,7 @@ export function Settings({ data, connection, perform, local, desktop }: ViewProp
           </Panel>
         </>
       )}
-      <DaemonCapabilities data={data} />
+      <Diagnostics data={data} connection={connection} perform={perform} />
       {output && (
         <Modal title="Agentgate output" close={() => setOutput("")}>
           <pre className="output">{output}</pre>

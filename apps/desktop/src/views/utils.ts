@@ -9,15 +9,29 @@ export const toolName = (p: Provider) => ({ claude: "Claude Code", codex: "Codex
 /** Every provider, for a choice between them. */
 export const providerOptions = providerSchema.options.map((p) => ({ id: p, label: providerName(p) }));
 export const providerIcon = (p: Provider) => ({ claude: "✳", codex: "◎", cursor: "◆" })[p];
-export const relative = (at?: number) =>
-  !at
-    ? "Not yet"
-    : new Date(at).toLocaleString(undefined, {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+
+const relativeFmt = new Intl.DateTimeFormat(undefined, {
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const todayTimeFmt = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+const fullDateTimeFmt = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "medium",
+});
+
+export const relative = (at?: number) => (!at ? "Not yet" : relativeFmt.format(at));
+/** Compact timestamp for Activity rows: `14:32:05` today, `Nov 22, 14:32` for earlier days. */
+export const compactTime = (at: number, todayStart: number) =>
+  at >= todayStart ? todayTimeFmt.format(at) : relativeFmt.format(at);
+export const fullTime = (at: number) => fullDateTimeFmt.format(at);
+
 export const confirmDelete = (name: string) =>
   confirmDialog(`Delete ${name}? This removes it from every paired machine.`, {
     destructive: true,
@@ -59,4 +73,29 @@ export const resetIn = (at: number | undefined, now = Date.now()) => {
 export const planName = (plan: string) => {
   const p = plan.replace(/^claude_/, "");
   return p[0]!.toUpperCase() + p.slice(1);
+};
+/** Human-readable duration hint for millisecond settings, e.g. `660000` → `"11 min"`. */
+export const formatDurationMs = (ms: number) => {
+  if (!Number.isFinite(ms) || ms < 1000) return `${Math.max(0, Math.round(ms))} ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  const remS = s % 60;
+  if (m < 60) return remS ? `${m} min ${remS} s` : `${m} min`;
+  const h = Math.floor(m / 60);
+  const remM = m % 60;
+  return remM ? `${h} h ${remM} min` : `${h} h`;
+};
+/** Human-readable byte budget hint, e.g. `16777216` → `"16 MiB"`. */
+export const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${Math.max(0, Math.round(bytes))} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes % 1024 === 0 ? 0 : 1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes % (1024 * 1024) === 0 ? 0 : 1)} MiB`;
+};
+/** Local midnight 52 weeks before the start of this week (Sunday), matching `TokenCalendar`. */
+export const tokenYearStart = () => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - 52 * 7 - d.getDay());
+  return d.getTime();
 };

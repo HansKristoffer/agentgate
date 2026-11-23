@@ -4,9 +4,20 @@ import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
 import { Button, Spinner, toast } from "@heroui/react";
 import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
-import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
+import {
+  Badge,
+  Disclosure,
+  Field,
+  Modal,
+  Panel,
+  HeaderActions,
+  RowMenu,
+  Working,
+  usePending,
+} from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { INFISICAL_SIGNIN_STARTED, control, openExternal, request, signInToInfisical } from "../api.ts";
+import { useDaemon } from "../useDaemon.ts";
 import { field, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
@@ -106,11 +117,18 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
           Pair a machine
         </Button>
       </HeaderActions>
-      <Panel foot="Each machine serves its own agents and keeps working offline. Always-on machines take care of token refreshes while your laptop is away.">
+      <Panel foot="Each machine serves its own agents and keeps working offline. Always-on machines refresh tokens while your laptop is away.">
         {data.nodes.map((n) => {
           const viaRelay = !!n.via?.includes("relay");
           // This machine's dashboard is opened on loopback, which works without Tailscale; the others at their address.
           const origin = n.id === data.node && local ? trimTrailingSlash(connection.url) : n.url;
+          const secondary = [
+            n.syncError ?? (n.id === data.node ? undefined : `Last seen ${relative(n.lastSeen)}`),
+            n.routing && routingText(n.routing),
+            n.healthDashboard && "Health dashboard on",
+          ]
+            .filter(Boolean)
+            .join(" · ");
           return (
             <div className="item" key={n.id}>
               <div className="machine-icon">
@@ -118,9 +136,13 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               </div>
               <div className="grow">
                 <div className="row">
+                  <span
+                    className={`dot ${n.online ? "online" : "offline"}`}
+                    title={n.online ? "Online" : "Offline"}
+                    aria-label={n.online ? "Online" : "Offline"}
+                  />
                   <strong>{n.id}</strong>
                   {n.id === data.node && <Badge>This machine</Badge>}
-                  <Badge good={n.online}>{n.online ? "Online" : "Offline"}</Badge>
                   {n.alwaysOn && <Badge good>Always on</Badge>}
                   {(pending.has(`alwaysOn:${n.id}`) || pending.has(`dashboard:${n.id}`)) && <Working>Saving</Working>}
                 </div>
@@ -132,20 +154,12 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                         ? "Tailscale"
                         : viaRelay && "Relay",
                     n.url ?? (viaRelay ? undefined : "Tailscale address not available"),
-                    n.version && `Agentgate ${n.version}`,
+                    n.version && `v${n.version}`,
                   ]
                     .filter(Boolean)
                     .join(" · ")}
                 </small>
-                <small className={n.syncError ? "danger" : ""}>
-                  {[
-                    n.syncError ?? (n.id === data.node ? "This daemon" : `Last seen ${relative(n.lastSeen)}`),
-                    n.routing && routingText(n.routing),
-                    n.healthDashboard && "Health dashboard on",
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </small>
+                {secondary && <small className={n.syncError ? "danger" : ""}>{secondary}</small>}
                 {n.update?.state === "failed" && <small className="danger">Update failed: {n.update.error}</small>}
               </div>
               {n.update?.state === "installing" || n.update?.state === "restarting" || pending.has(`update:${n.id}`) ? (
@@ -249,7 +263,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       {relay && (
         <Panel
           title="Relay"
-          detail={`${relay.hosted ? "Agentgate relay" : relay.url || "No active group"}. End-to-end encrypted: the relay can't read your credentials.`}
+          detail={`${relay.hosted ? "Agentgate relay" : relay.url || "No active group"} · end-to-end encrypted`}
           action={
             relay.url && (
               <Button
@@ -269,8 +283,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               <div className="row">
                 {relayState?.length ? relayState.map((s) => <Badge key={s}>{s}</Badge>) : <Badge good>In sync</Badge>}
               </div>
-              {relay.pushError && <small>Upload: {relay.pushError}</small>}
-              {relay.pullError && <small>Download: {relay.pullError}</small>}
+              {relay.pushError && <small className="danger">Upload: {relay.pushError}</small>}
+              {relay.pullError && <small className="danger">Download: {relay.pullError}</small>}
               {!!relay.rotatedAt && (
                 <small>
                   The relay secret was rotated after an interruption. Every other relay machine must join again; add a
@@ -346,21 +360,21 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             onChange={setName}
             placeholder="mac-mini"
           />
-          <p>How will the other machine connect?</p>
+          <p>Choose how the other machine connects.</p>
           {!local && (
             <p className="note">
               A pairing code or relay invite lets whoever has it read every login, so it is only shown on the daemon's
               own machine. Pair from there, or run agentgate pair there.
             </p>
           )}
-          <div className="rows">
+          <div className="rows mb-3.5">
             <div className="item">
               <div className="machine-icon">
                 <Network size={16} />
               </div>
               <div className="grow">
                 <strong>Same network (Tailscale)</strong>
-                <small>Both machines are on your tailnet. The code expires in 10 minutes.</small>
+                <small>Direct peer sync on your tailnet. Expires in 10 minutes.</small>
               </div>
               <Button size="sm" isDisabled={!local} onPress={() => pair("tailnet")}>
                 Use Tailscale
@@ -372,7 +386,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               </div>
               <div className="grow">
                 <strong>Agentgate relay</strong>
-                <small>Works on any network. End-to-end encrypted: the relay can't read your credentials.</small>
+                <small>Works on any network. End-to-end encrypted.</small>
               </div>
               <Button size="sm" isDisabled={!local} onPress={() => pair("relay")}>
                 Use the relay
@@ -380,22 +394,25 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
             </div>
           </div>
           {local && (
-            <>
+            <Disclosure
+              summary="Self-hosted relay"
+              detail="Optional · leave empty for the hosted Agentgate relay"
+              defaultOpen={!!(relayUrl || relayKey)}
+            >
               <Field
-                label="Your own relay"
-                description="Leave empty for the Agentgate relay."
+                label="Relay URL"
                 value={relayUrl}
                 onChange={setRelayUrl}
                 placeholder="https://agentgate-relay.example.workers.dev"
               />
               <Field
                 label="Relay service key"
-                description="Only for your own relay, when it asks for one."
+                description="Only when your own relay asks for one."
                 type="password"
                 value={relayKey}
                 onChange={setRelayKey}
               />
-            </>
+            </Disclosure>
           )}
         </Modal>
       )}
@@ -494,17 +511,19 @@ function RelayKey({ close, connection, perform }: Pick<ViewProps, "connection" |
 
 /** Where handoffs put new worktrees and clones on the connected machine (`agentgate t3 dirs`). */
 function HandoffFolders({ data, connection, perform }: ViewProps) {
-  const [dirs, setDirs] = useState<{ worktreesDir: string; cloneDir: string }>();
+  const dirsRead = useDaemon(() => control(connection, "t3 dirs", {}), {
+    topics: [],
+    key: "t3-dirs",
+    every: 300_000,
+    staleTime: 60_000,
+  });
   const [editing, setEditing] = useState(false);
-  // An empty change only answers the folders. A daemon too old for the operation shows no panel.
-  useEffect(() => {
-    control(connection, "t3 dirs", {}).then(setDirs, () => setDirs(undefined));
-  }, [connection]);
+  const dirs = dirsRead.data;
   if (!dirs) return null;
   return (
     <Panel
       title="Handoff folders"
-      detail={`Where a thread handed to ${data.node} gets its new worktree, and where repositories it has no checkout of are cloned.`}
+      detail={`Where threads handed to ${data.node} place worktrees and cloned repositories`}
       action={
         <Button size="sm" variant="tertiary" onPress={() => setEditing(true)}>
           Change
@@ -530,12 +549,11 @@ function HandoffFolders({ data, connection, perform }: ViewProps) {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               void perform(async () => {
-                setDirs(
-                  await control(connection, "t3 dirs", {
-                    worktrees: field(f, "worktrees"),
-                    clones: field(f, "clones"),
-                  }),
-                );
+                await control(connection, "t3 dirs", {
+                  worktrees: field(f, "worktrees"),
+                  clones: field(f, "clones"),
+                });
+                await dirsRead.reload();
                 setEditing(false);
               }, "Handoff folders saved");
             }}
@@ -553,10 +571,10 @@ function HandoffFolders({ data, connection, perform }: ViewProps) {
 }
 
 const LOGINS = [
-  { id: "github", name: "GitHub", tool: "gh" },
-  { id: "infisical", name: "Infisical", tool: "the Infisical CLI" },
-  { id: "opencode", name: "OpenCode", tool: "OpenCode" },
-  { id: "antigravity", name: "Antigravity", tool: "the Antigravity CLI" },
+  { id: "github", name: "GitHub" },
+  { id: "infisical", name: "Infisical" },
+  { id: "opencode", name: "OpenCode" },
+  { id: "antigravity", name: "Antigravity" },
 ] as const;
 
 /** The gh, Infisical and Antigravity CLI logins and OpenCode API keys one machine shares; every other machine signs in with them. */
@@ -577,14 +595,14 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
   return (
     <Panel
       title="Shared logins"
-      detail="Sign every machine in to GitHub, Infisical, OpenCode and Antigravity, including servers that join later."
+      detail="Share CLI logins across every machine, including servers that join later"
       foot={
         local
           ? undefined
           : "Sharing and signing in use this machine's own logins, so they are only available on the daemon's own machine. To sign in to Infisical on a server without a browser, run agentgate logins signin infisical there in a terminal."
       }
     >
-      {LOGINS.map(({ id, name, tool }) => {
+      {LOGINS.map(({ id, name }) => {
         const login = data.logins.find((l) => l.id === id);
         const fromHere = login?.from === data.node;
         const broken = login?.problems.find((p) => p.node === data.node)?.problem;
@@ -615,11 +633,7 @@ function SharedLogins({ data, connection, perform, local }: ViewProps) {
                   </Badge>
                 )}
               </div>
-              <small>
-                {login
-                  ? `${login.account || "Signed in"} · shared from ${login.from}`
-                  : `Not shared. Share ${tool}'s login from the machine where you are signed in.`}
-              </small>
+              <small>{login ? `${login.account || "Signed in"} · shared from ${login.from}` : "Not shared"}</small>
               {(login?.error ?? broken) && <small className="danger">{login?.error ?? broken}</small>}
               {remoteProblems.map((p) => (
                 <small className="danger" key={p.node}>
@@ -692,9 +706,9 @@ function InfisicalIdentity({ data, connection, perform, local }: ViewProps) {
         <small>
           {identity
             ? `${identity.account} · set from ${identity.from}`
-            : "For unattended tools such as hanzio: a Universal Auth client id and secret that does not expire, kept on every machine."}
+            : "Non-expiring Universal Auth credentials for unattended tools like hanzio"}
         </small>
-        {identity?.error && <small>{identity.error}</small>}
+        {identity?.error && <small className="danger">{identity.error}</small>}
       </div>
       <Button size="sm" variant="tertiary" isDisabled={!local} onPress={() => setOpen(true)}>
         {identity ? "Replace" : "Set"}

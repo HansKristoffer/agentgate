@@ -202,7 +202,29 @@ export function app(ctx: Ctx) {
         return c.json({ error: "unauthorized" }, 401);
       }
     }
-    return next();
+    await next();
+    // Compress large JSON answers (status, token history, activity) over Tailscale when the client accepts gzip.
+    // Factory proxy already handles its own compression and caching headers.
+    if (
+      c.req.method === "GET" &&
+      c.req.path !== "/api/changes" &&
+      !c.req.path.startsWith("/api/factory-proxy") &&
+      /\bgzip\b/i.test(c.req.header("accept-encoding") ?? "") &&
+      !c.res.headers.has("content-encoding") &&
+      c.res.headers.get("content-type")?.startsWith("application/json")
+    ) {
+      const body = new Uint8Array(await c.res.arrayBuffer());
+      if (body.byteLength >= 2048) {
+        const headers = new Headers(c.res.headers);
+        headers.set("content-encoding", "gzip");
+        headers.set("vary", "accept-encoding");
+        headers.delete("content-length");
+        c.res = new Response(Bun.gzipSync(body, { level: 1 }), { status: c.res.status, headers });
+      } else {
+        c.res = new Response(body, { status: c.res.status, headers: c.res.headers });
+      }
+    }
+    return;
   });
 
   // Each node serves its own clients: the proxy, the MCP endpoint and secrets never go out on the tailnet.

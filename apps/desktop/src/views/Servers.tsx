@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { ArrowRight, Boxes, Plus } from "lucide-react";
 import { slugify, type Connection, type Preset, type ServerSummary } from "@agentgate/protocol";
 import type { ControlOps } from "@agentgate/protocol/control";
-import { Button, toast } from "@heroui/react";
+import { Button, Input, TextField, toast } from "@heroui/react";
 import {
   Badge,
   Check,
   Choice,
+  Disclosure,
   Empty,
   Field,
   Modal,
@@ -20,6 +21,7 @@ import {
 import { AssignProjects, ServerProjectChecks } from "../components/Assignments.tsx";
 import type { Perform, ViewProps } from "../types.ts";
 import { control, openExternal, request } from "../api.ts";
+import { useDaemon } from "../useDaemon.ts";
 import { ago, field, idPath, confirmDelete } from "./utils.ts";
 
 // The preset select's "no preset" entry; a list item cannot have an empty id.
@@ -29,35 +31,48 @@ const SIGN_IN = "Complete the sign-in in your browser. The server connects on it
 export function Servers({ data, connection, perform }: ViewProps) {
   const pending = usePending();
   const [add, setAdd] = useState(false);
-  const [presets, setPresets] = useState<Preset[]>([]);
   const [preset, setPreset] = useState("");
   const [mode, setMode] = useState("http");
   const [tools, setTools] = useState<ControlOps["mcp test"]["result"]>();
   const [rename, setRename] = useState<ServerSummary>();
   const [name, setName] = useState("");
+  const [query, setQuery] = useState("");
   /** The server whose projects are being chosen. */
   const [assign, setAssign] = useState<string>();
   const assigning = data.servers.find((s) => s.id === assign);
-  useEffect(() => {
-    let cancelled = false;
-    void request<Preset[]>(connection, "/presets")
-      .then((p) => {
-        if (!cancelled) setPresets(p);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, [connection]);
+  // Presets are static for a daemon build: fetch only when opening the Add modal, and cache for the connection.
+  const presetsRead = useDaemon(add && (() => request<Preset[]>(connection, "/presets")), {
+    topics: [],
+    key: "presets",
+    every: 300_000,
+    staleTime: 300_000,
+  });
+  const presets = presetsRead.data ?? [];
   const startLogin = async (id: string) => {
     const result = await request<{ url?: string }>(connection, `/servers/${idPath(id)}/login`, "POST");
     if (result.url) await openExternal(result.url);
   };
   const signIn = (id: string) => perform(() => startLogin(id), SIGN_IN, `login:${id}`);
-  const projectNames = (id: string) =>
-    data.projects
-      .filter((p) => Object.values(p.mcp).includes(id))
-      .map((p) => (p.id === "*" ? "Global defaults" : p.id));
+  const projectNamesByServer = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const p of data.projects) {
+      const label = p.id === "*" ? "Global defaults" : p.id;
+      for (const id of Object.values(p.mcp)) {
+        const list = map.get(id);
+        if (list) {
+          if (!list.includes(label)) list.push(label);
+        } else {
+          map.set(id, [label]);
+        }
+      }
+    }
+    return map;
+  }, [data.projects]);
+  const needle = query.trim().toLowerCase();
+  const shown = needle
+    ? data.servers.filter((s) => `${s.label ?? ""} ${s.id} ${s.endpoint}`.toLowerCase().includes(needle))
+    : data.servers;
+  const selectedPreset = preset ? presets.find((p) => p.id === preset) : undefined;
   return (
     <>
       <HeaderActions>
@@ -65,6 +80,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
           size="sm"
           onPress={() => {
             setName("");
+            setPreset("");
+            setMode("http");
             setAdd(true);
           }}
         >
@@ -73,15 +90,23 @@ export function Servers({ data, connection, perform }: ViewProps) {
         </Button>
       </HeaderActions>
       <Panel>
+        {data.servers.length > 6 && (
+          <div className="item">
+            <TextField aria-label="Search servers" value={query} onChange={setQuery} className="field grow">
+              <Input type="search" placeholder={`Search ${data.servers.length} servers`} />
+            </TextField>
+          </div>
+        )}
         {!data.servers.length && (
           <Empty>
             <Boxes size={22} />
-            <strong>Connect your first MCP server.</strong>
+            <strong>Connect your first MCP server</strong>
             <p>Use a hosted server, a preset, or a local command.</p>
           </Empty>
         )}
-        {data.servers.map((server) => {
-          const used = projectNames(server.id);
+        {needle && !shown.length && <Empty>Nothing matches "{query}".</Empty>}
+        {shown.map((server) => {
+          const used = projectNamesByServer.get(server.id) ?? [];
           const checked = server.checkedAt ? ` · checked ${ago(server.checkedAt)}` : "";
           const health =
             server.available === undefined
@@ -189,6 +214,18 @@ export function Servers({ data, connection, perform }: ViewProps) {
               });
             }}
           >
+            <Choice
+              label="Preset"
+              value={preset || custom}
+              onChange={(key) => {
+                const next = key === custom ? "" : String(key);
+                const prevLabel = selectedPreset?.label;
+                const nextPreset = presets.find((p) => p.id === next);
+                if (!name.trim() || name === prevLabel) setName(nextPreset?.label ?? "");
+                setPreset(next);
+              }}
+              options={[{ id: custom, label: "Custom server" }, ...presets.map((p) => ({ id: p.id, label: p.label }))]}
+            />
             <Field
               label="Name"
               isRequired
@@ -201,18 +238,8 @@ export function Servers({ data, connection, perform }: ViewProps) {
                   : "Any name. Agents see a short tool prefix made from it."
               }
             />
-            <Choice
-              label="Preset"
-              value={preset || custom}
-              onChange={(key) => setPreset(key === custom ? "" : String(key))}
-              options={[{ id: custom, label: "Custom server" }, ...presets.map((p) => ({ id: p.id, label: p.label }))]}
-            />
             {preset ? (
-              <p className="note">
-                {presets.find((p) => p.id === preset)?.note ??
-                  presets.find((p) => p.id === preset)?.url ??
-                  "Runs a local MCP command."}
-              </p>
+              <p className="note">{selectedPreset?.note ?? selectedPreset?.url ?? "Runs a local MCP command."}</p>
             ) : (
               <>
                 <Choice
@@ -239,12 +266,16 @@ export function Servers({ data, connection, perform }: ViewProps) {
                 )}
               </>
             )}
-            <Field
-              multiline
-              label="Extra headers"
-              name="headers"
-              placeholder={"Authorization: Bearer …\nx-project-id: …"}
-            />
+            {(preset ? !!selectedPreset?.url : mode === "http") && (
+              <Disclosure summary="Extra headers" detail="Optional HTTP headers sent with every request">
+                <Field
+                  multiline
+                  label="Headers"
+                  name="headers"
+                  placeholder={"Authorization: Bearer …\nx-project-id: …"}
+                />
+              </Disclosure>
+            )}
             <Button type="submit" size="sm">
               Connect server
               <ArrowRight size={15} />
@@ -309,11 +340,6 @@ export function Servers({ data, connection, perform }: ViewProps) {
   );
 }
 
-/** A limit field's value: empty is the default, 0 never cuts. */
-const limitOf = (f: FormData, name: string) => {
-  const value = field(f, name);
-  return value === "" ? undefined : Number(value);
-};
 const sameSet = (a: string[] | undefined, b: string[] | undefined) =>
   JSON.stringify(a && [...a].sort()) === JSON.stringify(b && [...b].sort());
 
@@ -327,8 +353,8 @@ function parseDefaults(json: string, tool: string) {
   return Object.fromEntries(Object.entries(value));
 }
 
-/** A server's tools and how agents are offered them. Saving sends each changed setting through its own operation, the
- * one `mcp tools|instructions|limit|defaults` runs. */
+/** A server's tools and how agents are offered them. State is held in React so searching never drops edits to hidden
+ * tools. Saving sends each changed setting through its own operation (`mcp tools|instructions|limit|defaults`). */
 function ToolSettings({
   preview: { tools, tuning },
   connection,
@@ -341,68 +367,126 @@ function ToolSettings({
   close: () => void;
 }) {
   const id = tuning.id;
+  const [query, setQuery] = useState("");
+  const [offered, setOffered] = useState<Set<string>>(
+    () =>
+      new Set(
+        tuning.tools
+          ? tools.filter((t) => tuning.tools!.includes(t.name)).map((t) => t.name)
+          : tools.map((t) => t.name),
+      ),
+  );
+  const [toolLimits, setToolLimits] = useState<Record<string, number | undefined>>(() =>
+    Object.fromEntries(tools.map((t) => [t.name, tuning.toolOptions?.[t.name]?.maxResultChars])),
+  );
+  const [toolDefaults, setToolDefaults] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      tools.map((t) => [
+        t.name,
+        tuning.toolOptions?.[t.name]?.defaults ? JSON.stringify(tuning.toolOptions[t.name]!.defaults) : "",
+      ]),
+    ),
+  );
   const [instructions, setInstructions] = useState(
     tuning.instructions === undefined ? "own" : tuning.instructions ? "replace" : "hide",
   );
+  const [serverLimit, setServerLimit] = useState<number | undefined>(tuning.maxResultChars);
+  const needle = query.trim().toLowerCase();
+  const shown = needle ? tools.filter((t) => `${t.name} ${t.description ?? ""}`.toLowerCase().includes(needle)) : tools;
+
+  const toggleTool = (name: string, on: boolean) =>
+    setOffered((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(name);
+      else next.delete(name);
+      return next;
+    });
+
   const save = (f: FormData) =>
     perform(async () => {
-      const offered = f.getAll("offered") as string[];
-      if (!offered.length) throw new Error("Offer agents at least one tool");
-      const filter = offered.length === tools.length ? undefined : offered;
+      const list = [...offered];
+      if (!list.length) throw new Error("Offer agents at least one tool");
+      const filter = list.length === tools.length ? undefined : list;
       if (!sameSet(filter, tuning.tools)) await control(connection, "mcp tools", { id, tools: filter });
       const text = instructions === "own" ? undefined : instructions === "hide" ? "" : field(f, "instructions");
       if (text !== tuning.instructions) await control(connection, "mcp instructions", { id, instructions: text });
-      const chars = limitOf(f, "limit");
+      const chars = Number.isFinite(serverLimit) ? serverLimit : undefined;
       if (chars !== tuning.maxResultChars) await control(connection, "mcp limit", { id, chars });
       for (const t of tools) {
         const o = tuning.toolOptions?.[t.name];
-        const toolChars = limitOf(f, `limit:${t.name}`);
+        const rawLimit = toolLimits[t.name];
+        const toolChars = typeof rawLimit === "number" && Number.isFinite(rawLimit) ? rawLimit : undefined;
         if (toolChars !== o?.maxResultChars)
           await control(connection, "mcp limit", { id, tool: t.name, chars: toolChars });
-        const json = field(f, `defaults:${t.name}`);
+        const json = (toolDefaults[t.name] ?? "").trim();
         const defaults = json ? parseDefaults(json, t.name) : undefined;
         if (JSON.stringify(defaults) !== JSON.stringify(o?.defaults))
           await control(connection, "mcp defaults", { id, tool: t.name, defaults });
       }
       close();
     }, "Saved. Running sessions pick up the change.");
+
   return (
-    <Modal title={`${id} · ${tools.length} tools`} close={close}>
+    <Modal title={`${id} · ${tools.length} tools`} size="lg" close={close}>
       <form
         onSubmit={(e) => {
           e.preventDefault();
           void save(new FormData(e.currentTarget));
         }}
       >
+        <div className="tool-toolbar">
+          <small>
+            {offered.size} of {tools.length} offered
+          </small>
+          <div className="row">
+            <Button
+              size="sm"
+              variant="ghost"
+              isDisabled={offered.size === tools.length}
+              onPress={() => setOffered(new Set(tools.map((t) => t.name)))}
+            >
+              Select all
+            </Button>
+            <Button size="sm" variant="ghost" isDisabled={offered.size === 0} onPress={() => setOffered(new Set())}>
+              None
+            </Button>
+          </div>
+        </div>
+        {tools.length > 8 && (
+          <TextField aria-label="Search tools" value={query} onChange={setQuery} className="field">
+            <Input type="search" placeholder={`Search ${tools.length} tools`} />
+          </TextField>
+        )}
         <div className="tool-list">
-          {tools.map((t) => {
+          {shown.map((t) => {
             const o = tuning.toolOptions?.[t.name];
+            const hasOverride = o?.maxResultChars !== undefined || !!o?.defaults;
             return (
               <div key={t.name}>
-                <Check name="offered" value={t.name} defaultSelected={!tuning.tools || tuning.tools.includes(t.name)}>
+                <Check isSelected={offered.has(t.name)} onChange={(on) => toggleTool(t.name, on)}>
                   <code>{t.name}</code>
                 </Check>
                 {t.description && <p>{t.description}</p>}
-                <details>
-                  <summary>Limit and default arguments</summary>
+                <Disclosure summary="Limit and default arguments" defaultOpen={hasOverride}>
                   <NumberInput
                     label="Cut results past"
-                    name={`limit:${t.name}`}
                     minValue={0}
-                    defaultValue={o?.maxResultChars}
+                    value={toolLimits[t.name] ?? Number.NaN}
+                    onChange={(v) => setToolLimits((prev) => ({ ...prev, [t.name]: Number.isNaN(v) ? undefined : v }))}
                     description="Characters. Empty: the server's limit. 0: never cut."
                   />
                   <Field
                     label="Default arguments"
-                    name={`defaults:${t.name}`}
-                    defaultValue={o?.defaults ? JSON.stringify(o.defaults) : ""}
+                    value={toolDefaults[t.name] ?? ""}
+                    onChange={(v) => setToolDefaults((prev) => ({ ...prev, [t.name]: v }))}
                     placeholder='{"limit": 30}'
                     description="JSON a call gets unless the agent passes them."
                   />
-                </details>
+                </Disclosure>
               </div>
             );
           })}
+          {!shown.length && <Empty>Nothing matches "{query}".</Empty>}
         </div>
         <Choice
           label="Instructions to agents"
@@ -419,10 +503,10 @@ function ToolSettings({
         )}
         <NumberInput
           label="Cut results past"
-          name="limit"
           minValue={0}
-          defaultValue={tuning.maxResultChars}
-          description="Characters. Empty: 20000. 0: never cut."
+          value={serverLimit ?? Number.NaN}
+          onChange={(v) => setServerLimit(Number.isNaN(v) ? undefined : v)}
+          description="Characters. Empty: 20,000. 0: never cut."
         />
         <Button type="submit" size="sm">
           Save

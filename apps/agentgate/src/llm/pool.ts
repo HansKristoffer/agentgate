@@ -5,7 +5,7 @@ import { type Credentials, NeedsLogin, refreshFailure } from "../credentials.ts"
 import { revision } from "../configuration.ts";
 import { defineLocal } from "../local-state.ts";
 import { BodyTooLarge, MAX_PROXY_BODY, fetchHeaders, readBody, sleep, streamBody } from "../runtime.ts";
-import { sent, type Account, type Credential, type Data, type Store } from "../store.ts";
+import { sent, type Account, type Credential, type Data, type Store, type Usage } from "../store.ts";
 import { Budget, cool, cooldowns, retryAfterMs } from "./policy.ts";
 import { PLACEHOLDER_TOKEN } from "../setup.ts";
 import { classify, type Provider, type ProviderName } from "./provider.ts";
@@ -466,41 +466,66 @@ export async function proxy(
   }
 }
 
-/** The one reading of an account's flags that the app and the CLI label it by. A login this machine holds
- * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
-export function accountState(s: Store, account: Account, now = s.now()): AccountState {
-  const c = s.get("credential", account.id);
-  const u = s.get("usage", account.id);
+function deriveAccountState(
+  nodeId: string,
+  account: Account,
+  c: Credential | undefined,
+  u: Usage | undefined,
+  refreshFailed: boolean,
+  isExhausted: boolean,
+  activeCooldowns: ReturnType<typeof cooldowns>,
+  now: number,
+): AccountState {
   if (!c || c.needsLogin) return { kind: "needs-login" };
   const expired = c.expiresAt <= now;
-  if (expired && c.holder !== s.nodeId) return { kind: "waiting-for-holder", holder: c.holder };
-  if (refreshFailure(s, "credential", account.id)) return { kind: "refresh-failed" };
+  if (expired && c.holder !== nodeId) return { kind: "waiting-for-holder", holder: c.holder };
+  if (refreshFailed) return { kind: "refresh-failed" };
   if (expired) return { kind: "refreshing" };
   if (!account.enabled) return { kind: "disabled" };
-  if (exhausted(u, undefined, now)) {
+  if (isExhausted) {
     const resets = relevant(u, undefined, now).flatMap((w) => (w.usedPct >= 100 && w.resetsAt ? [w.resetsAt] : []));
     if (u?.exhaustedUntil && u.exhaustedUntil > now) resets.push(u.exhaustedUntil);
     return { kind: "exhausted", until: resets.length ? Math.max(...resets) : undefined };
   }
-  const benched = cooldowns(s, account.id)
+  const benched = activeCooldowns
     .filter((cooldown) => cooldown.scope === "account")
     .sort((a, b) => b.retryAt - a.retryAt)[0];
   if (benched) return { kind: "cooling", until: benched.retryAt, reason: benched.reason };
   return { kind: "ready" };
 }
 
+/** The one reading of an account's flags that the app and the CLI label it by. A login this machine holds
+ * refreshes itself on the next request, and a cooldown benches the account even while its quota has room. */
+export function accountState(s: Store, account: Account, now = s.now()): AccountState {
+  const c = s.get("credential", account.id);
+  const u = s.get("usage", account.id);
+  return deriveAccountState(
+    s.nodeId,
+    account,
+    c,
+    u,
+    !!refreshFailure(s, "credential", account.id),
+    exhausted(u, undefined, now),
+    cooldowns(s, account.id),
+    now,
+  );
+}
+
 export function accountStatus(s: Store, account: Account): AccountStatus & { state: AccountState } {
   const now = s.now();
   const u = s.get("usage", account.id);
   const c = s.get("credential", account.id);
+  const refreshFailed = !!refreshFailure(s, "credential", account.id);
+  const isExhausted = exhausted(u, undefined, now);
+  const activeCooldowns = cooldowns(s, account.id);
   return {
-    state: accountState(s, account, now),
+    state: deriveAccountState(s.nodeId, account, c, u, refreshFailed, isExhausted, activeCooldowns, now),
     account: sent<Data<"account">>(account),
     windows: (u?.windows ?? []).map((w) => ({
       ...normalizedWindow(w),
       inferredReset: w.inferredReset || !!(w.resetsAt && w.resetsAt <= now),
     })),
-    exhausted: exhausted(u, undefined, now),
+    exhausted: isExhausted,
     exhaustedUntil: u?.exhaustedUntil && u.exhaustedUntil > now ? u.exhaustedUntil : undefined,
     observedAt: u?.observedAt,
     observedBy: u?.observedBy,
@@ -511,11 +536,11 @@ export function accountStatus(s: Store, account: Account): AccountStatus & { sta
     expiresAt: c?.expiresAt,
     expired: !!c && c.expiresAt <= now,
     waitingFor: c && !c.needsLogin && c.expiresAt <= now && c.holder !== s.nodeId ? c.holder : undefined,
-    refreshError: refreshFailure(s, "credential", account.id) ? "token refresh failed" : undefined,
+    refreshError: refreshFailed ? "token refresh failed" : undefined,
     revision: revision(s, "account", account.id),
     quotaState: !u ? "unknown" : now - u.observedAt >= QUOTA_STALE ? "stale" : "fresh",
     quotaHealth: quotaHealth(s, account.id),
-    cooldowns: cooldowns(s, account.id),
+    cooldowns: activeCooldowns,
     models: modelsFor(s, account.id),
     modelError: modelErrors.get(s, account.id),
   };
