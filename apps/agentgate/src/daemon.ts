@@ -48,6 +48,7 @@ import { handoffSource } from "./handoff/tools.ts";
 import { forgetView } from "./handoff/threads.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
+import { factoryBaseUrl, factoryPeerRoutes } from "./factory-proxy.ts";
 import { startLagProbe } from "./lag.ts";
 import { handoffDirs } from "./ops/nodes.ts";
 import { localClaudeLogin } from "./claude-local.ts";
@@ -68,9 +69,11 @@ export interface Ctx {
   proxyOperations: ProxyOperations;
   remote: RemoteEndpoints;
   handoffs: Handoffs;
-  /** Handoff calls from relay group members, answered by the same peer routes as Tailscale. */
+  /** Handoff and factory proxy calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
   health: HealthDashboard;
+  /** Local skill-factory origin (`http://127.0.0.1:4400` by default). */
+  factoryUrl: string;
   /** What changed, for `/api/changes` and the daemon's reactions to record writes. */
   changes: Changes;
 }
@@ -94,7 +97,13 @@ export function handoffOptions(s: Store): HandoffOptions {
 
 export function makeCtx(
   s: Store,
-  options: { skills?: SkillLinks; files?: CheckoutFiles; imports?: SkillImports; handoffs?: HandoffOptions } = {},
+  options: {
+    skills?: SkillLinks;
+    files?: CheckoutFiles;
+    imports?: SkillImports;
+    handoffs?: HandoffOptions;
+    factoryUrl?: string;
+  } = {},
 ): Ctx {
   const creds = new Credentials(
     s,
@@ -113,6 +122,8 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
+  const abort = new AbortController();
+  const factoryUrl = options.factoryUrl ?? factoryBaseUrl();
   const ctx: Ctx = {
     s,
     changes: new Changes(s),
@@ -124,11 +135,12 @@ export function makeCtx(
     skills,
     files,
     imports: options.imports ?? new SkillImports(),
-    abort: new AbortController(),
+    abort,
     pending: new Set(),
     handoffs,
     health: new HealthDashboard(s),
-    channel: new NodeChannel(s, relayedRoutes(handoffs)),
+    factoryUrl,
+    channel: new NodeChannel(s, relayedRoutes(handoffs, factoryPeerRoutes(factoryUrl, abort.signal))),
   };
   followPeers(s, ctx.changes, ctx.abort.signal, (node, topic) => {
     forgetView(handoffs, node);
@@ -225,8 +237,13 @@ export function app(ctx: Ctx) {
     return c.json({ checkout, errors: ctx.skills.health().errors });
   });
 
-  // Handoff routes sit behind the peer token check that peerRoutes registers first.
-  app.route("/peer", peerRoutes(s, undefined, ctx.changes).route("/", handoffRoutes(ctx.handoffs)));
+  // Handoff and factory proxy routes sit behind the peer token check that peerRoutes registers first.
+  app.route(
+    "/peer",
+    peerRoutes(s, undefined, ctx.changes)
+      .route("/", handoffRoutes(ctx.handoffs))
+      .route("/factory-proxy", factoryPeerRoutes(ctx.factoryUrl, ctx.abort.signal)),
+  );
 
   app.get("/oauth/callback", oauthCallback(ctx));
   // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).

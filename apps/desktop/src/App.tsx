@@ -8,14 +8,20 @@ import { messageOf } from "@hanskristoffer/taurio/runtime";
 import { AppShell, useAppShortcuts, useAppUpdate, useAppVersion } from "@hanskristoffer/taurio/react";
 import {
   Activity,
+  BarChart3,
   Boxes,
+  CheckCircle2,
   ChevronRight,
   CircleHelp,
+  Factory as FactoryIcon,
   FolderGit2,
+  Inbox,
+  Layers,
   LayoutDashboard,
   Monitor,
   Settings as Gear,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   SquareTerminal,
   Users,
@@ -26,6 +32,7 @@ import {
   Accounts,
   ActivityView,
   Dashboard,
+  Factory,
   Nodes,
   Projects,
   Servers,
@@ -33,6 +40,12 @@ import {
   Skills,
   T3Code,
 } from "./views/index.ts";
+import {
+  FACTORY_SECTIONS,
+  loadSavedFactoryMachine,
+  type FactoryLiveState,
+  type FactorySection,
+} from "./views/Factory.tsx";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { problems } from "@agentgate/protocol/attention";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
@@ -48,10 +61,18 @@ const navigation = [
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "t3", title: "T3 Code", icon: SquareTerminal },
+  { id: "factory", title: "Factory", icon: FactoryIcon },
   { id: "activity", title: "Activity", icon: Activity },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
 type View = (typeof navigation)[number]["id"];
+const FACTORY_SUB_ICONS: Record<FactorySection, typeof Layers> = {
+  board: Layers,
+  dashboard: BarChart3,
+  intake: Inbox,
+  done: CheckCircle2,
+  settings: SlidersHorizontal,
+};
 const descriptions: Record<View, string> = {
   overview: "Your agents, connected.",
   accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
@@ -60,6 +81,7 @@ const descriptions: Record<View, string> = {
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   t3: "Hand a thread to another machine and back, with its session and code.",
+  factory: "Issues worked in T3 Code threads, accessed from any paired machine.",
   activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
@@ -126,6 +148,18 @@ function Main({
   loadError: string;
 }) {
   const [view, setView] = useState<View>("overview");
+  const [factoryMachine, setFactoryMachine] = useState("");
+  const [factoryHash, setFactoryHash] = useState("#/");
+  const [factoryState, setFactoryState] = useState<FactoryLiveState>({
+    section: "board",
+    hash: "#/",
+    open: 0,
+    needsYou: 0,
+    repos: [],
+    repoScope: "",
+    connected: false,
+    issueTitle: null,
+  });
   const version = useAppVersion();
   const [welcome, setWelcome] = useState(false);
   // Actions under way, by key: each control shows its own, and the rest of the window stays usable. Only actions
@@ -160,6 +194,9 @@ function Main({
   // tray menu and the notifications depend on them; only their safety interval slows.
   const statusRead = useDaemon(ready && (() => status(connection)), { topics: ["status"], hidden: 60_000 });
   const data = statusRead.data;
+  useEffect(() => {
+    if (data?.node && !factoryMachine) setFactoryMachine(loadSavedFactoryMachine(data.node));
+  }, [data?.node, factoryMachine]);
   // Claude Desktop is per Mac: only the local daemon reports it.
   const desktopRead = useDaemon(ready && local && (() => desktopStatus(connection)), {
     topics: ["desktop"],
@@ -219,6 +256,8 @@ function Main({
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
+  const selectedFactoryMachine = factoryMachine || data?.node || "";
+  const activeFactorySection = FACTORY_SECTIONS.find((s) => s.id === factoryState.section) ?? FACTORY_SECTIONS[0]!;
   const props = data && { data, connection, perform, local, desktop };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
@@ -228,6 +267,18 @@ function Main({
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
+    factory: (
+      <Factory
+        {...props}
+        machine={selectedFactoryMachine}
+        onMachineChange={(node) => {
+          setFactoryMachine(node);
+          setFactoryState((prev) => ({ ...prev, open: 0, needsYou: 0, repos: [], repoScope: "", issueTitle: null }));
+        }}
+        targetHash={factoryHash}
+        onStateChange={setFactoryState}
+      />
+    ),
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
@@ -239,10 +290,12 @@ function Main({
         skills: data.skills.length,
         projects: data.projects.filter((p) => p.id !== "*").length,
         nodes: data.nodes.length,
+        ...(factoryState.needsYou > 0 && { factory: factoryState.needsYou }),
       }
     : {};
   // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
+  if (factoryState.needsYou > 0) attention.add("factory");
   return (
     <BusyContext value={busy}>
       <PendingContext value={pending}>
@@ -255,24 +308,59 @@ function Main({
                   {navigation
                     .filter((n) => n.id !== "settings")
                     .map((n) => (
-                      <button
-                        key={n.id}
-                        aria-current={view === n.id ? "page" : undefined}
-                        className="group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)"
-                        onClick={() => setView(n.id)}
-                      >
-                        <n.icon
-                          size={16}
-                          className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
-                        />
-                        {n.title}
-                        {attention.has(n.id) && (
-                          <span className="dot warning" role="img" aria-label="Needs attention" />
+                      <div key={n.id} className="flex flex-col gap-0.5">
+                        <button
+                          aria-current={view === n.id && n.id !== "factory" ? "page" : undefined}
+                          className={`group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)${view === "factory" && n.id === "factory" ? " bg-(--tau-side-row-hover)" : ""}`}
+                          onClick={() => {
+                            if (n.id === "factory") {
+                              setView("factory");
+                              setFactoryHash("#/");
+                            } else {
+                              setView(n.id);
+                            }
+                          }}
+                        >
+                          <n.icon
+                            size={16}
+                            className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
+                          />
+                          {n.title}
+                          {attention.has(n.id) && (
+                            <span className="dot warning" role="img" aria-label="Needs attention" />
+                          )}
+                          {counts[n.id] !== undefined && (
+                            <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
+                          )}
+                        </button>
+                        {n.id === "factory" && view === "factory" && (
+                          <div className="side-subnav" role="group" aria-label="Factory sections">
+                            {FACTORY_SECTIONS.map((sub) => {
+                              const SubIcon = FACTORY_SUB_ICONS[sub.id];
+                              const active = factoryState.section === sub.id;
+                              return (
+                                <button
+                                  key={sub.id}
+                                  type="button"
+                                  aria-current={active ? "page" : undefined}
+                                  className="group flex h-[30px] cursor-pointer w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13px] font-medium whitespace-nowrap text-(--tau-side-fg-2) hover:bg-(--tau-side-row-hover) hover:text-(--tau-side-fg) aria-[current=page]:bg-(--tau-side-row) aria-[current=page]:text-(--tau-side-fg)"
+                                  onClick={() => {
+                                    setView("factory");
+                                    setFactoryHash(sub.hash);
+                                    setFactoryState((prev) => ({ ...prev, section: sub.id, hash: sub.hash }));
+                                  }}
+                                >
+                                  <SubIcon size={14} className="shrink-0 opacity-80" />
+                                  {sub.label}
+                                  {sub.id === "board" && factoryState.needsYou > 0 && (
+                                    <span className="ml-auto factory-sub-badge">{factoryState.needsYou}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
-                        {counts[n.id] !== undefined && (
-                          <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
-                        )}
-                      </button>
+                      </div>
                     ))}
                 </nav>
                 <div className="flex items-center gap-2 px-3 pt-2.5 pb-3.5">
@@ -312,98 +400,110 @@ function Main({
           >
             <header className="card-header" data-tauri-drag-region="deep">
               <div className="card-title-row">
-                <h1>{selected.title}</h1>
+                <h1>{view === "factory" ? activeFactorySection.label : selected.title}</h1>
                 {!local && <Badge>Remote</Badge>}
                 {pending.size > 0 && <Spinner size="sm" color="current" aria-label="Working" />}
                 {/* Views portal their actions here; blocked like the workspace below. */}
                 <div ref={setActions} className="header-actions" inert={!!error} />
               </div>
-              <p className="card-sub">{descriptions[view]}</p>
+              <p className="card-sub">
+                {view === "factory"
+                  ? selectedFactoryMachine
+                    ? `Factory on ${selectedFactoryMachine}`
+                    : descriptions.factory
+                  : descriptions[view]}
+              </p>
             </header>
-            <ScrollShadow className="pane">
-              <div className="pane-inner">
-                {error && (
-                  <Alert status="danger" className="callout" role="alert">
-                    <Alert.Content>
-                      <Alert.Description>{error}</Alert.Description>
-                    </Alert.Content>
-                    <div className="row">
-                      {native && local && data && (
+            {view === "factory" && props && views && !error ? (
+              <div className="pane-full">
+                <ErrorBoundary key="factory">{views.factory}</ErrorBoundary>
+              </div>
+            ) : (
+              <ScrollShadow className="pane">
+                <div className="pane-inner">
+                  {error && (
+                    <Alert status="danger" className="callout" role="alert">
+                      <Alert.Content>
+                        <Alert.Description>{error}</Alert.Description>
+                      </Alert.Content>
+                      <div className="row">
+                        {native && local && data && (
+                          <Button
+                            size="sm"
+                            variant="tertiary"
+                            isDisabled={busy}
+                            onPress={() => void perform(() => localAction("start", connection), "Service started")}
+                          >
+                            Start service
+                          </Button>
+                        )}
+                        <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
+                          Connection settings
+                        </Button>
+                      </div>
+                    </Alert>
+                  )}
+                  {props && views ? (
+                    <fieldset
+                      key={JSON.stringify([connection.url, connection.token])}
+                      disabled={!!error}
+                      inert={!!error}
+                      className="workspace"
+                    >
+                      <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
+                      {view === "settings" && (
+                        <p className="version-line">
+                          Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
+                        </p>
+                      )}
+                    </fieldset>
+                  ) : (
+                    <div className="welcome">
+                      <div className="welcome-mark">
+                        <ShieldCheck size={26} />
+                      </div>
+                      <h2>A home for your agent setup</h2>
+                      <p>
+                        Pool your subscriptions, connect your tools, and keep every machine in sync. The app is a window
+                        into Agentgate; the daemon keeps things running.
+                      </p>
+                      <div className="welcome-features">
+                        <span>
+                          <Users size={14} />
+                          Claude & Codex accounts
+                        </span>
+                        <span>
+                          <Boxes size={14} />
+                          Tools per repository
+                        </span>
+                        <span>
+                          <Monitor size={14} />
+                          Tailscale machines
+                        </span>
+                      </div>
+                      <div className="row">
                         <Button
                           size="sm"
-                          variant="tertiary"
-                          isDisabled={busy}
-                          onPress={() => void perform(() => localAction("start", connection), "Service started")}
+                          isDisabled={busy || !native || !local}
+                          onPress={() =>
+                            void perform(
+                              () => localAction("install", connection),
+                              "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.",
+                            )
+                          }
                         >
-                          Start service
+                          {busy ? "Starting Agentgate…" : "Set up this machine"}
                         </Button>
-                      )}
-                      <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
-                        Connection settings
-                      </Button>
+                        <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
+                          Connect to a daemon
+                        </Button>
+                      </div>
+                      <small>Already using the CLI? Connect to your existing daemon.</small>
                     </div>
-                  </Alert>
-                )}
-                {props && views ? (
-                  <fieldset
-                    key={JSON.stringify([connection.url, connection.token])}
-                    disabled={!!error}
-                    inert={!!error}
-                    className="workspace"
-                  >
-                    <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
-                    {view === "settings" && (
-                      <p className="version-line">
-                        Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
-                      </p>
-                    )}
-                  </fieldset>
-                ) : (
-                  <div className="welcome">
-                    <div className="welcome-mark">
-                      <ShieldCheck size={26} />
-                    </div>
-                    <h2>A home for your agent setup</h2>
-                    <p>
-                      Pool your subscriptions, connect your tools, and keep every machine in sync. The app is a window
-                      into Agentgate; the daemon keeps things running.
-                    </p>
-                    <div className="welcome-features">
-                      <span>
-                        <Users size={14} />
-                        Claude & Codex accounts
-                      </span>
-                      <span>
-                        <Boxes size={14} />
-                        Tools per repository
-                      </span>
-                      <span>
-                        <Monitor size={14} />
-                        Tailscale machines
-                      </span>
-                    </div>
-                    <div className="row">
-                      <Button
-                        size="sm"
-                        isDisabled={busy || !native || !local}
-                        onPress={() =>
-                          void perform(
-                            () => localAction("install", connection),
-                            "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.",
-                          )
-                        }
-                      >
-                        {busy ? "Starting Agentgate…" : "Set up this machine"}
-                      </Button>
-                      <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
-                        Connect to a daemon
-                      </Button>
-                    </div>
-                    <small>Already using the CLI? Connect to your existing daemon.</small>
-                  </div>
-                )}
-              </div>
-            </ScrollShadow>
+                  )}
+                </div>
+              </ScrollShadow>
+            )}
             <Toast.Provider placement="bottom end" />
           </AppShell>
           {connectOpen && (

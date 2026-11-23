@@ -46,3 +46,23 @@ export const backupFile = (connection: Connection, path: string, secrets: boolea
 export const restoreFile = (connection: Connection, path: string) =>
   invoke<{ restored: number }>("import_backup", { connection, path });
 export const desktopStatus = (connection: Connection) => request<DesktopStatus>(connection, "/desktop");
+
+export type FactoryHealth = {
+  ok: boolean;
+  version?: string;
+  pid?: number;
+  port?: number;
+  tailnet?: { ip: string; name: string | null } | null;
+};
+
+/** Probes a machine's local skill-factory via the connected daemon (locally, over Tailscale, or through the relay). */
+export const factoryHealth = (connection: Connection, node: string) =>
+  request<FactoryHealth>(connection, `/factory-proxy/${encodeURIComponent(node)}/health`);
+
+/** Encodes a node id into the RFC-safe lowercase `n-<hex>` host used by Tauri's `factory://` URI scheme handler. */
+export function factoryEmbedUrl(node: string, hash: string, theme: "light" | "dark"): string {
+  const bytes = new TextEncoder().encode(node);
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  const cleanHash = hash.startsWith("#") ? hash : `#${hash}`;
+  return `factory://n-${hex}/?embed=1&theme=${theme}${cleanHash}`;
+}

@@ -1,6 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{path::PathBuf, sync::OnceLock, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{OnceLock, RwLock},
+    time::Duration,
+};
 use tauri::Manager;
 use taurio::BuilderExt;
 
@@ -9,6 +13,25 @@ pub struct Connection {
     url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     token: Option<String>,
+}
+
+struct ActiveConnection(RwLock<Connection>);
+
+impl ActiveConnection {
+    fn new() -> Self {
+        Self(RwLock::new(default_connection()))
+    }
+    fn get(&self) -> Connection {
+        self.0
+            .read()
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| default_connection())
+    }
+    fn set(&self, next: Connection) {
+        if let Ok(mut guard) = self.0.write() {
+            *guard = next;
+        }
+    }
 }
 
 fn default_connection() -> Connection {
@@ -142,11 +165,13 @@ async fn send(
 
 #[tauri::command]
 async fn api_request(
+    state: tauri::State<'_, ActiveConnection>,
     connection: Connection,
     path: String,
     method: String,
     body: Option<Value>,
 ) -> Result<Value, String> {
+    state.set(connection.clone());
     send(&connection, &path, &method, body).await
 }
 
@@ -164,14 +189,19 @@ fn connection_file(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-async fn load_connection(app: tauri::AppHandle) -> Result<Connection, String> {
+async fn load_connection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ActiveConnection>,
+) -> Result<Connection, String> {
     let file = connection_file(&app)?;
-    match tokio::fs::read(file).await {
+    let loaded = match tokio::fs::read(file).await {
         Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|_| "Connection settings could not be read".into()),
+            .map_err(|_| "Connection settings could not be read".to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default_connection()),
         Err(e) => Err(e.to_string()),
-    }
+    }?;
+    state.set(loaded.clone());
+    Ok(loaded)
 }
 
 fn private_write(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
@@ -198,7 +228,11 @@ fn private_write(path: &std::path::Path, data: &[u8]) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_connection(app: tauri::AppHandle, connection: Connection) -> Result<(), String> {
+fn save_connection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ActiveConnection>,
+    connection: Connection,
+) -> Result<(), String> {
     endpoint(&connection, "/status")?;
     let file = connection_file(&app)?;
     std::fs::create_dir_all(file.parent().ok_or("Invalid config directory")?)
@@ -206,7 +240,9 @@ fn save_connection(app: tauri::AppHandle, connection: Connection) -> Result<(), 
     private_write(
         &file,
         &serde_json::to_vec(&connection).map_err(|e| e.to_string())?,
-    )
+    )?;
+    state.set(connection);
+    Ok(())
 }
 
 #[tauri::command]
@@ -357,10 +393,164 @@ async fn refresh_daemon() -> Result<(), String> {
         .map(drop)
 }
 
+fn decode_hex_node(host: &str) -> Result<String, String> {
+    let hex = host
+        .strip_prefix("n-")
+        .ok_or_else(|| "Invalid factory machine host".to_string())?;
+    let (pairs, rem) = hex.as_bytes().as_chunks::<2>();
+    if pairs.is_empty() || !rem.is_empty() {
+        return Err("Invalid factory machine host".into());
+    }
+    let mut bytes = Vec::with_capacity(pairs.len());
+    for chunk in pairs {
+        let pair = std::str::from_utf8(chunk).map_err(|_| "Invalid factory machine host")?;
+        let b = u8::from_str_radix(pair, 16).map_err(|_| "Invalid factory machine host")?;
+        bytes.push(b);
+    }
+    String::from_utf8(bytes).map_err(|_| "Invalid factory machine name".into())
+}
+
+fn percent_encode_segment(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for byte in input.as_bytes() {
+        let unreserved =
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        if unreserved {
+            out.push(*byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "%{byte:02X}");
+        }
+    }
+    out
+}
+
+fn factory_error_response(status: u16, message: &str) -> tauri::http::Response<Vec<u8>> {
+    let body = serde_json::json!({ "error": message }).to_string();
+    tauri::http::Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header("cache-control", "no-store")
+        .body(body.into_bytes())
+        .unwrap_or_else(|_| tauri::http::Response::new(Vec::new()))
+}
+
+async fn proxy_factory_uri(
+    connection: Connection,
+    method: tauri::http::Method,
+    uri: tauri::http::Uri,
+    content_type: Option<String>,
+    body: Vec<u8>,
+) -> tauri::http::Response<Vec<u8>> {
+    let host = match uri.host() {
+        Some(h) => h,
+        None => return factory_error_response(400, "Missing factory machine"),
+    };
+    let node = match decode_hex_node(host) {
+        Ok(n) => n,
+        Err(e) => return factory_error_response(400, &e),
+    };
+    let path_and_query = uri
+        .path_and_query()
+        .map(|pq| pq.as_str())
+        .unwrap_or("/");
+    let clean_path = if path_and_query.starts_with('/') {
+        path_and_query.to_string()
+    } else {
+        format!("/{path_and_query}")
+    };
+    let daemon_path = format!(
+        "/factory-proxy/{}{clean_path}",
+        percent_encode_segment(&node)
+    );
+    let url = match endpoint(&connection, &daemon_path) {
+        Ok(u) => u,
+        Err(e) => return factory_error_response(400, &e),
+    };
+    let req_method = match reqwest::Method::from_bytes(method.as_str().as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return factory_error_response(405, "Unsupported method"),
+    };
+    let timeout = if url.path().ends_with("/api/changes") {
+        Duration::from_secs(45)
+    } else {
+        Duration::from_secs(35)
+    };
+    let client = match client() {
+        Ok(c) => c,
+        Err(e) => return factory_error_response(500, &e),
+    };
+    let mut req = client.request(req_method, url).timeout(timeout);
+    if let Some(token) = &connection.token {
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+    }
+    if let Some(ct) = content_type {
+        req = req.header("content-type", ct);
+    }
+    if !body.is_empty() {
+        req = req.body(body);
+    }
+
+    let response = match req.send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return factory_error_response(
+                503,
+                "Cannot reach the Agentgate daemon while loading Factory.",
+            )
+        }
+    };
+    let status = response.status().as_u16();
+    let res_ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let res_csp = response
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = match response.bytes().await {
+        Ok(b) => b.to_vec(),
+        Err(_) => return factory_error_response(502, "Factory response failed while reading body."),
+    };
+    let mut builder = tauri::http::Response::builder()
+        .status(status)
+        .header("cache-control", "no-store");
+    if let Some(ct) = res_ct {
+        builder = builder.header("content-type", ct);
+    }
+    if let Some(csp) = res_csp {
+        builder = builder.header("content-security-policy", csp);
+    }
+    builder
+        .body(bytes)
+        .unwrap_or_else(|_| factory_error_response(500, "Could not build Factory response"))
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .manage(ActiveConnection::new())
         .shared_plugins()
         .plugin(tauri_plugin_notification::init())
+        .register_asynchronous_uri_scheme_protocol("factory", |ctx, req, responder| {
+            let connection = ctx.app_handle().state::<ActiveConnection>().get();
+            let method = req.method().clone();
+            let uri = req.uri().clone();
+            let content_type = req
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            let body = req.into_body();
+            tauri::async_runtime::spawn(async move {
+                let res = proxy_factory_uri(connection, method, uri, content_type, body).await;
+                responder.respond(res);
+            });
+        })
         .invoke_handler(tauri::generate_handler![
             api_request,
             load_connection,
@@ -480,5 +670,18 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn hex_node_decoding_handles_utf8_and_rejects_bad_hosts() {
+        assert_eq!(decode_hex_node("n-6d6163626f6f6b").unwrap(), "macbook");
+        assert_eq!(
+            decode_hex_node("n-4d6163426f6f6b2050726f").unwrap(),
+            "MacBook Pro"
+        );
+        assert!(decode_hex_node("macbook").is_err());
+        assert!(decode_hex_node("n-").is_err());
+        assert!(decode_hex_node("n-zz").is_err());
+        assert_eq!(percent_encode_segment("MacBook Pro"), "MacBook%20Pro");
     }
 }
