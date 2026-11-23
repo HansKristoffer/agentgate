@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Button, toast } from "@heroui/react";
 import { isTruthy, typedSwitch, typedSwitchGroup } from "hanzio";
 import { ArrowLeft, ArrowRight, Copy, GitBranch, LoaderCircle, Monitor, SquareTerminal } from "lucide-react";
@@ -146,7 +146,7 @@ function MachinesDialog({
             <div className="grow">
               <div className="row">
                 <strong>{v.node}</strong>
-                {v.node === here && <Badge>This node</Badge>}
+                {v.node === here && <Badge>This machine</Badge>}
                 {v.server && <Badge>Server</Badge>}
               </div>
               <small>
@@ -268,7 +268,7 @@ function MachinesDialog({
   );
 }
 
-/** A thread laid out like T3 Code's sidebar row, so the same thread is easy to find in both apps. */
+/** A thread laid out cleanly with project + status, title, and branch · machine. */
 function ThreadRow({
   thread: t,
   machine,
@@ -290,7 +290,7 @@ function ThreadRow({
           </span>
           {t.running ? (
             <span className="working">
-              <LoaderCircle size={12} />
+              <LoaderCircle size={12} className="spin" />
               Working{t.workingSince ? ` ${elapsed(t.workingSince)}` : ""}
             </span>
           ) : (
@@ -298,13 +298,11 @@ function ThreadRow({
           )}
         </div>
         <strong>{t.title}</strong>
-        <div className="thread-line">
+        <div className="thread-line thread-meta">
           <span>
             <GitBranch size={12} />
             <span>{t.branch ?? "Main checkout"}</span>
           </span>
-        </div>
-        <div className="thread-line">
           <span>
             <Monitor size={12} />
             <span>
@@ -358,7 +356,12 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
     setFollowing(track.started.length > 0);
     return { nodes: parsed.data, jobs: { ...track.jobs } };
   };
-  const threads = useDaemon(read, { topics: ["threads"], key: "threads", every: following ? 1_500 : 15_000 });
+  const threads = useDaemon(read, {
+    topics: ["threads"],
+    key: "threads",
+    every: following ? 1_500 : 15_000,
+    staleTime: following ? 0 : 5_000,
+  });
   const { error, reload } = threads;
   // Opening the page catches T3 Code up with projects added on other machines.
   useEffect(() => {
@@ -381,8 +384,11 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
   const online = views.filter((v) => v.online).length;
   const canConnect = !!self && !cannotConnect(self, local) && needsT3(self);
 
+  // Precompute handoff targets once per node instead of once per thread.
+  const targetsByNode = useMemo(() => new Map(views.map((v) => [v.node, handoffTargets(views, v.node)])), [views]);
+
   const action = (t: T3Thread) => {
-    const list = handoffTargets(views, t.node);
+    const list = targetsByNode.get(t.node) ?? [];
     const toHere = t.node !== here;
     const target = toHere ? list.find((x) => x.node === here) : firstServer(list);
     if (!toHere && !list.some((x) => x.server)) return null; // no other server: nothing to offer
@@ -425,11 +431,11 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           {toHere ? (
             <>
               <ArrowLeft size={14} />
-              To <u>here</u>
+              To here
             </>
           ) : (
             <>
-              To <u>server</u>
+              To server
               <ArrowRight size={14} />
             </>
           )}
@@ -443,7 +449,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       <HeaderActions>
         <Button size="sm" variant="tertiary" onPress={() => setMachinesOpen(true)}>
           <Monitor size={15} />
-          Machines ({online}/{views.length})
+          {threads.data ? `Machines (${online}/${views.length})` : "Machines"}
         </Button>
       </HeaderActions>
       {machinesOpen && (
@@ -505,7 +511,11 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
       )}
       <Panel
         title="Active threads"
-        foot={!servers.length ? "Mark a machine as always on (in its ⋯ menu on Machines) to use To server." : undefined}
+        foot={
+          threads.data && !servers.length
+            ? "Mark a machine as always on (in its ⋯ menu on Machines) to use To server."
+            : undefined
+        }
       >
         {error && (
           <div className="item">
@@ -519,7 +529,7 @@ export function T3Code({ data, connection: conn, perform, local }: ViewProps) {
           <Empty>
             <SquareTerminal size={22} />
             <strong>
-              {self?.t3?.connected ? "No active threads." : "Connect T3 Code on this machine to see its threads."}
+              {self?.t3?.connected ? "No active threads" : "Connect T3 Code on this machine to see its threads"}
             </strong>
             {canConnect && (
               <Button size="sm" variant="tertiary" onPress={() => setMachinesOpen(true)}>

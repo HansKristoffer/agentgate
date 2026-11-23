@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Bot, Boxes, FileKey, FolderGit2, FolderOpen, Globe, Pencil, Plus, Sparkles } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { isVirtual, type PublicProject, type ToolPreview } from "@agentgate/protocol";
@@ -18,6 +18,7 @@ export function Projects(props: ViewProps) {
   const [repos, setRepos] = useState<{ repo: string; path: string }[]>();
   const [dir, setDir] = useState("~/Documents/GitHub");
   const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("");
   // Adding a repository project: type owner/repo, or find it among this machine's checkouts.
   const [find, setFind] = useState(false);
   const [picked, setPicked] = useState("");
@@ -57,7 +58,12 @@ export function Projects(props: ViewProps) {
   const defaults = data.projects.find((p) => p.id === "*");
   const repositories = data.projects.filter((p) => p.id !== "*" && !isVirtual(p.id));
   const virtualProjects = data.projects.filter((p) => isVirtual(p.id));
-  const serverName = (id: string) => data.servers.find((s) => s.id === id)?.label ?? id;
+  const filterNeedle = filter.trim().toLowerCase();
+  const shownRepos = filterNeedle
+    ? repositories.filter((p) => p.id.toLowerCase().includes(filterNeedle))
+    : repositories;
+  const serverNames = useMemo(() => new Map(data.servers.map((s) => [s.id, s.label ?? s.id])), [data.servers]);
+  const serverName = (id: string) => serverNames.get(id) ?? id;
   /** Links a repository's own skills between .claude/skills and .agents/skills, so Claude and Codex both see them.
    * Local only: it writes into this machine's checkouts of the repository. */
   const mirrorItem = (id: string) => {
@@ -79,14 +85,6 @@ export function Projects(props: ViewProps) {
       <HeaderActions>
         <Button
           size="sm"
-          variant="tertiary"
-          onPress={() => setEdit({ id: "", mcp: {}, skills: [], inheritDefaults: false, virtual: true })}
-        >
-          <Bot size={15} />
-          New virtual project
-        </Button>
-        <Button
-          size="sm"
           onPress={() => {
             setFind(false);
             setPicked("");
@@ -99,28 +97,37 @@ export function Projects(props: ViewProps) {
       </HeaderActions>
       <Panel
         title="Repositories"
-        detail="Each repository's MCP servers and skills. Changes reach running sessions automatically."
+        detail="Each repository's MCP servers and skills. Changes reach running sessions automatically"
       >
-        <div className="item">
-          <div className="machine-icon">
-            <Globe size={16} />
+        {repositories.length > 6 && (
+          <div className="item">
+            <TextField aria-label="Search repositories" value={filter} onChange={setFilter} className="field grow">
+              <Input type="search" placeholder={`Search ${repositories.length} repositories`} />
+            </TextField>
           </div>
-          <div className="grow">
-            <strong>Global defaults</strong>
-            <small>Servers every repository includes unless it leaves them out, and skills for every session.</small>
-            <Uses project={defaults} servers={serverName} />
+        )}
+        {!filterNeedle && (
+          <div className="item">
+            <div className="machine-icon">
+              <Globe size={16} />
+            </div>
+            <div className="grow">
+              <strong>Global defaults</strong>
+              <small>Servers every repository includes unless opted out, and skills for every session.</small>
+              <Uses project={defaults} servers={serverName} />
+            </div>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="Edit Global defaults"
+              onPress={() => setEdit(defaults ?? { id: "*", mcp: {}, skills: [], inheritDefaults: true })}
+            >
+              <Pencil size={15} />
+            </Button>
           </div>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label="Edit Global defaults"
-            onPress={() => setEdit(defaults ?? { id: "*", mcp: {}, skills: [], inheritDefaults: true })}
-          >
-            <Pencil size={15} />
-          </Button>
-        </div>
-        {repositories.map((p) => (
+        )}
+        {shownRepos.map((p) => (
           <div className="item" key={p.id}>
             <div className="machine-icon">
               <FolderGit2 size={16} />
@@ -165,10 +172,11 @@ export function Projects(props: ViewProps) {
             />
           </div>
         ))}
+        {filterNeedle && !shownRepos.length && <Empty>Nothing matches "{filter}".</Empty>}
         {!repositories.length && (
           <Empty>
             <FolderGit2 size={22} />
-            <strong>Give your repositories their own tools.</strong>
+            <strong>Give your repositories their own tools</strong>
             <p>
               Add owner/repo identifiers, or scan a local folder. Sessions also discover repositories automatically.
             </p>
@@ -177,7 +185,17 @@ export function Projects(props: ViewProps) {
       </Panel>
       <Panel
         title="Virtual projects"
-        detail="A set of MCP servers and skills at a URL with a secret, for assistants that only take a server URL, like Grok."
+        detail="Expose a set of MCP servers and skills at a secret URL for remote clients like Grok"
+        action={
+          <Button
+            size="sm"
+            variant="tertiary"
+            onPress={() => setEdit({ id: "", mcp: {}, skills: [], inheritDefaults: false, virtual: true })}
+          >
+            <Plus size={14} />
+            New virtual project
+          </Button>
+        }
       >
         {virtualProjects.length ? (
           virtualProjects.map((p) => (
@@ -216,7 +234,7 @@ export function Projects(props: ViewProps) {
         ) : (
           <Empty>
             <Bot size={22} />
-            <strong>Use your MCP servers and skills in Grok.</strong>
+            <strong>Use your MCP servers and skills in Grok</strong>
             <p>Create a virtual project, pick its servers and skills, then paste its URL and secret into Grok.</p>
           </Empty>
         )}
@@ -336,6 +354,7 @@ export function Projects(props: ViewProps) {
       {files && (
         <Modal
           title={fileEdit ? fileEdit.path : `Env files for ${files}`}
+          size={fileEdit ? "lg" : undefined}
           close={() => {
             setFiles(undefined);
             setFileEdit(undefined);
@@ -359,8 +378,8 @@ export function Projects(props: ViewProps) {
               }}
             >
               <p className="muted">
-                Saved for every machine. Checkouts on this machine that have the previous version get this one; a
-                checkout with its own edits to the file keeps them.
+                Saved for every machine. Checkouts with the previous version update automatically; local edits are
+                preserved.
               </p>
               <Field
                 multiline
@@ -382,11 +401,8 @@ export function Projects(props: ViewProps) {
           ) : (
             <>
               <p className="muted">
-                Gitignored files such as <code>.env.local</code> follow this repository to all your machines. A checkout
-                agentgate creates, through a handoff or a clone, gets each file it is missing; a file already in a
-                checkout is never replaced. Repositories that use buncargo get its <code>files pull</code> instead,
-                which keeps your local edits. A handoff also carries the thread's own changes to these files. Files
-                buncargo keeps for one machine stay there.
+                Gitignored files like <code>.env.local</code> sync to new checkouts and handoffs without replacing local
+                edits. Repositories using buncargo pull through <code>buncargo files pull</code> instead.
               </p>
               {local && <p className="muted">Env files are hidden in the file picker; press ⌘⇧. to show them.</p>}
               {data.fileErrors[files] && <small className="danger">Not syncing: {data.fileErrors[files]}</small>}
@@ -420,7 +436,7 @@ export function Projects(props: ViewProps) {
                 ) : (
                   <Empty>
                     <FileKey size={22} />
-                    <strong>No env files yet.</strong>
+                    <strong>No env files yet</strong>
                     <p>Add one from a checkout on this machine, or save one with buncargo.</p>
                   </Empty>
                 )}
@@ -441,7 +457,7 @@ export function Projects(props: ViewProps) {
         </Modal>
       )}
       {tools && (
-        <Modal title="Tools visible to this project" close={() => setTools(undefined)}>
+        <Modal title="Tools visible to this project" size="lg" close={() => setTools(undefined)}>
           <div className="tool-list">
             {tools.length ? (
               tools.map((t) => (

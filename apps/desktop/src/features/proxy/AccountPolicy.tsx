@@ -1,9 +1,9 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent } from "react";
 import { Button } from "@heroui/react";
 import { accountPatchSchema, type AccountStatus, type Connection } from "@agentgate/protocol";
 import type { Perform } from "../../types.ts";
 import { control } from "../../api.ts";
-import { Changes, Choice, Field, Modal, NumberInput } from "../../components/ui.tsx";
+import { Choice, Disclosure, Field, Modal, NumberInput } from "../../components/ui.tsx";
 import { useGeneration } from "./useGeneration.ts";
 
 /** Model identifiers are typed one per line or comma-separated. */
@@ -12,6 +12,7 @@ const list = (value: FormDataEntryValue | null) =>
     .split(/[,\n]/)
     .map((x) => x.trim())
     .filter(Boolean);
+
 export function AccountPolicy({
   account,
   connection,
@@ -23,34 +24,38 @@ export function AccountPolicy({
   perform: Perform;
   close: () => void;
 }) {
-  const [patch, setPatch] = useState<ReturnType<typeof accountPatchSchema.parse>>(),
-    [error, setError] = useState("");
-  const capture = useGeneration(connection);
   const current = account.account;
-  const previewChanges = (event: FormEvent<HTMLFormElement>) => {
+  const [retryMode, setRetryMode] = useState<"inherit" | "custom">(
+    current.policy?.retryLimit === undefined ? "inherit" : "custom",
+  );
+  const [error, setError] = useState("");
+  const capture = useGeneration(connection);
+  const hasAdvanced =
+    current.policy?.retryLimit !== undefined ||
+    !!current.policy?.allowModels?.length ||
+    !!current.policy?.excludeModels?.length;
+
+  const save = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const result = accountPatchSchema.safeParse({
       label: form.get("label"),
       priority: Number(form.get("priority")),
       policy: {
-        retryLimit: form.get("retryMode") === "inherit" ? undefined : Number(form.get("retryLimit")),
+        retryLimit: retryMode === "inherit" ? undefined : Number(form.get("retryLimit")),
         allowModels: list(form.get("allowModels")),
         excludeModels: list(form.get("excludeModels")),
       },
     });
     if (!result.success) {
-      setError("Check the model identifiers and retry count.");
+      setError("Check the label, priority, retry count, and model identifiers.");
       return;
     }
-    setPatch(result.data);
     setError("");
-  };
-  // One operation per field, each passing the revision the one before saved, so a change made elsewhere since this
-  // dialog opened stops the save instead of being overwritten.
-  const saveChanges = () =>
-    perform(async () => {
-      if (!patch) return;
+    const patch = result.data;
+    // One operation per field, each passing the revision the one before saved, so a change made elsewhere since this
+    // dialog opened stops the save instead of being overwritten.
+    void perform(async () => {
       const isCurrent = capture();
       const id = current.id;
       let { revision } = account;
@@ -58,77 +63,77 @@ export function AccountPolicy({
         ({ revision } = await control(connection, "accounts rename", { id, label: patch.label, revision }));
       if (patch.priority !== undefined && patch.priority !== current.priority)
         ({ revision } = await control(connection, "accounts priority", { id, priority: patch.priority, revision }));
-      await control(connection, "accounts policy", { id, policy: patch.policy ?? {}, revision });
+      if (JSON.stringify(patch.policy ?? {}) !== JSON.stringify(current.policy ?? {}))
+        await control(connection, "accounts policy", { id, policy: patch.policy ?? {}, revision });
       if (isCurrent()) close();
-    }, "Account policy saved");
-  const changes: [string, ReactNode, ReactNode][] | undefined = patch && [
-    ["Label", current.label, patch.label],
-    ["Priority", current.priority, patch.priority],
-    ["Retries", current.policy?.retryLimit ?? "Inherit", patch.policy?.retryLimit ?? "Inherit"],
-    [
-      "Allowed models",
-      current.policy?.allowModels?.join(", ") || "Automatic",
-      patch.policy?.allowModels?.join(", ") || "Automatic",
-    ],
-    [
-      "Excluded models",
-      current.policy?.excludeModels?.join(", ") || "None",
-      patch.policy?.excludeModels?.join(", ") || "None",
-    ],
-  ];
+    }, "Account saved");
+  };
+
   return (
     <Modal title={`Edit ${current.label}`} close={close}>
-      <p>These choices sync to paired machines. Empty model lists keep automatic eligibility.</p>
-      <form onChange={() => setPatch(undefined)} onSubmit={previewChanges}>
+      <p>Changes sync to paired machines.</p>
+      <form onSubmit={save}>
         <Field label="Label" name="label" isRequired defaultValue={current.label} />
-        <NumberInput label="Priority" name="priority" defaultValue={current.priority} />
-        <Choice
-          label="Rate-limit retries"
-          name="retryMode"
-          defaultValue={current.policy?.retryLimit === undefined ? "inherit" : "custom"}
-          options={[
-            { id: "inherit", label: "Inherit pool default" },
-            { id: "custom", label: "Use account override" },
-          ]}
-        />
         <NumberInput
-          label="Override retry count"
-          description="Zero disables retries when the override is selected."
-          name="retryLimit"
-          minValue={0}
-          maxValue={10}
-          defaultValue={current.policy?.retryLimit ?? 0}
+          label="Priority"
+          description="Higher numbers are preferred when accounts tie."
+          name="priority"
+          defaultValue={current.priority}
         />
-        <Field
-          label="Allow models"
-          description="Optional. One exact model identifier per line."
-          name="allowModels"
-          multiline
-          defaultValue={current.policy?.allowModels?.join("\n") ?? ""}
-        />
-        <Field
-          label="Exclude models"
-          description="One exact model identifier per line."
-          name="excludeModels"
-          multiline
-          defaultValue={current.policy?.excludeModels?.join("\n") ?? ""}
-        />
-        {account.models && (
-          <p className="note">
-            Discovered models: {account.models.models.join(", ") || "none"}. Checked{" "}
-            {new Date(account.models.at).toLocaleString()}.
+        <Disclosure
+          summary="Advanced routing"
+          detail="Retry overrides and model allow/exclude lists"
+          defaultOpen={hasAdvanced}
+        >
+          <Choice
+            label="Rate-limit retries"
+            value={retryMode}
+            onChange={(key) => setRetryMode(String(key) as "inherit" | "custom")}
+            options={[
+              { id: "inherit", label: "Inherit pool default" },
+              { id: "custom", label: "Use account override" },
+            ]}
+          />
+          {retryMode === "custom" && (
+            <NumberInput
+              label="Override retry count"
+              description="Zero disables retries on rate limits."
+              name="retryLimit"
+              minValue={0}
+              maxValue={10}
+              defaultValue={current.policy?.retryLimit ?? 0}
+            />
+          )}
+          <Field
+            label="Allow models"
+            description="Optional. One exact model identifier per line."
+            name="allowModels"
+            multiline
+            defaultValue={current.policy?.allowModels?.join("\n") ?? ""}
+          />
+          <Field
+            label="Exclude models"
+            description="One exact model identifier per line."
+            name="excludeModels"
+            multiline
+            defaultValue={current.policy?.excludeModels?.join("\n") ?? ""}
+          />
+          {account.models && (
+            <p className="note">
+              Discovered models: {account.models.models.join(", ") || "none"}. Checked{" "}
+              {new Date(account.models.at).toLocaleString()}.
+            </p>
+          )}
+        </Disclosure>
+        {error && (
+          <p className="danger note" role="alert">
+            {error}
           </p>
         )}
-        {error && <p role="alert">{error}</p>}
-        <Button type="submit">Preview changes</Button>
+        <Button type="submit" size="sm">
+          Save
+        </Button>
       </form>
-      {changes && (
-        <div className="policy-preview">
-          <h3>Review changes</h3>
-          <Changes rows={changes} />
-          <Button onPress={() => void saveChanges()}>Save reviewed changes</Button>
-        </div>
-      )}
     </Modal>
   );
 }

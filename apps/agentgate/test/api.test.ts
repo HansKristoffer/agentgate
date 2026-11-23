@@ -759,3 +759,24 @@ test("changes: an old token answers at once, the current one waits for a write a
   expect(next.versions?.status).toBe(1);
   expect(next.versions?.desktop).toBe(0);
 });
+
+test("large GET JSON control responses compress with gzip only when the client accepts it", async () => {
+  const { s, call } = fixture();
+  for (let i = 0; i < 40; i++) {
+    s.put("project", `acme/repo-${i}`, { id: `acme/repo-${i}` });
+  }
+  const plain = await call("/api/status");
+  expect(plain.status).toBe(200);
+  expect(plain.headers.get("content-encoding")).toBeNull();
+  const plainBytes = new Uint8Array(await plain.arrayBuffer());
+  expect(plainBytes.byteLength).toBeGreaterThanOrEqual(2048);
+
+  const gz = await call("/api/status", "GET", undefined, "loopback", { "accept-encoding": "gzip" });
+  expect(gz.status).toBe(200);
+  expect(gz.headers.get("content-encoding")).toBe("gzip");
+  expect(gz.headers.get("vary")).toContain("accept-encoding");
+  const compressed = new Uint8Array(await gz.arrayBuffer());
+  expect(compressed.byteLength).toBeLessThan(plainBytes.byteLength);
+  const decoded = new TextDecoder().decode(Bun.gunzipSync(compressed));
+  expect(statusSchema.parse(JSON.parse(decoded)).projects.length).toBeGreaterThanOrEqual(40);
+});

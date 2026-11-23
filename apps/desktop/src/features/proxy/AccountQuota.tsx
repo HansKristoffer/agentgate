@@ -6,24 +6,31 @@ import type { AccountStatus } from "@agentgate/protocol";
 import { Badge, Quota } from "../../components/ui.tsx";
 import { ago, resetIn, windowName } from "../../views/utils.ts";
 
-// One shared one-second ticker for every quota on screen, running only while one is mounted.
-const listeners = new Set<() => void>();
-let timer: ReturnType<typeof setInterval> | undefined;
-const subscribe = (listener: () => void) => {
-  listeners.add(listener);
-  if (!timer)
-    timer = setInterval(() => {
-      for (const notify of listeners) notify();
-    }, 1000);
-  return () => {
-    listeners.delete(listener);
-    if (!listeners.size) {
-      clearInterval(timer);
-      timer = undefined;
-    }
+function createTicker(ms: number) {
+  const listeners = new Set<() => void>();
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener);
+    if (!timer)
+      timer = setInterval(() => {
+        for (const notify of listeners) notify();
+      }, ms);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
   };
-};
-const snapshot = () => Math.floor(Date.now() / 1000);
+  const snapshot = () => Math.floor(Date.now() / ms) * ms;
+  return { subscribe, snapshot };
+}
+
+// Quota bars display minute-resolution countdowns ("in 3 h 47 min"), so a 30s ticker keeps them fresh with 30x fewer re-renders.
+const minuteClock = createTicker(30_000);
+// Cooldowns count down in seconds, and subscribe only when an account actually has one active.
+const secondClock = createTicker(1_000);
 
 /** The account's limits as small bars with their resets, on Overview and Accounts. Stale usage gets a warning icon; `onRefresh` makes it a refresh button. */
 export function AccountQuota({
@@ -35,7 +42,7 @@ export function AccountQuota({
   onRefresh?: () => void;
   refreshing?: boolean;
 }) {
-  const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
+  const now = useSyncExternalStore(minuteClock.subscribe, minuteClock.snapshot, () => 0);
   const updated = account.observedAt ? `Updated ${ago(account.observedAt)}` : "Usage unknown";
   const stale = account.quotaState === "stale" && account.windows.length > 0;
   const staleNote = `Usage is out of date. ${updated}.${onRefresh ? " Click to refresh." : ""}`;
@@ -81,16 +88,13 @@ export function AccountQuota({
   );
 }
 
-/** Problems the bars can't show: failed usage and backoffs. Nothing when all is well. */
-export function QuotaNotes({ account }: { account: AccountStatus }) {
-  const now = useSyncExternalStore(subscribe, snapshot, () => 0) * 1000;
-  const cooldowns = (account.cooldowns ?? []).filter((c) => c.retryAt > now);
-  if (!account.quotaHealth?.error && !account.modelError && !cooldowns.length) return null;
+function ActiveCooldowns({ cooldowns }: { cooldowns: NonNullable<AccountStatus["cooldowns"]> }) {
+  const now = useSyncExternalStore(secondClock.subscribe, secondClock.snapshot, () => 0);
+  const active = cooldowns.filter((c) => c.retryAt > now);
+  if (!active.length) return null;
   return (
-    <div className="quota-details">
-      {account.quotaHealth?.error && <small>{account.quotaHealth.error}</small>}
-      {account.modelError && <small>{account.modelError}</small>}
-      {cooldowns.map((c) => (
+    <>
+      {active.map((c) => (
         <div className="row" key={`${c.scope}:${c.model ?? ""}`}>
           <Badge>
             {typedSwitch(
@@ -104,6 +108,19 @@ export function QuotaNotes({ account }: { account: AccountStatus }) {
           </small>
         </div>
       ))}
+    </>
+  );
+}
+
+/** Problems the bars can't show: failed usage and backoffs. Nothing when all is well. */
+export function QuotaNotes({ account }: { account: AccountStatus }) {
+  const hasCooldowns = !!account.cooldowns?.some((c) => c.retryAt > Date.now());
+  if (!account.quotaHealth?.error && !account.modelError && !hasCooldowns) return null;
+  return (
+    <div className="quota-details">
+      {account.quotaHealth?.error && <small>{account.quotaHealth.error}</small>}
+      {account.modelError && <small>{account.modelError}</small>}
+      {hasCooldowns && <ActiveCooldowns cooldowns={account.cooldowns!} />}
     </div>
   );
 }

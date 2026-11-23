@@ -1,7 +1,15 @@
 import { createPortal } from "react-dom";
 import { isTruthy } from "hanzio";
-import { Ellipsis } from "lucide-react";
-import { createContext, useContext, useOptimistic, useTransition, type ComponentProps, type ReactNode } from "react";
+import { ChevronRight, Ellipsis } from "lucide-react";
+import {
+  createContext,
+  useContext,
+  useOptimistic,
+  useState,
+  useTransition,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import {
   Button,
   Spinner,
@@ -21,7 +29,6 @@ import {
   ProgressBar,
   Select,
   Switch,
-  Table,
   Tabs,
   TextArea,
   TextField,
@@ -70,10 +77,10 @@ export function Panel({
 }) {
   return (
     <section className="section">
-      {title && (
+      {(title || detail || action) && (
         <div className="section-head">
           <div>
-            <h2>{title}</h2>
+            {title && <h2>{title}</h2>}
             {detail && <p>{detail}</p>}
           </div>
           {action}
@@ -104,8 +111,9 @@ export function Working({ children }: { children: ReactNode }) {
   );
 }
 export function Quota({ value }: { value: number }) {
+  const color = value >= 100 ? "danger" : value >= 85 ? "warning" : "accent";
   return (
-    <ProgressBar aria-label="Quota used" size="sm" value={value}>
+    <ProgressBar aria-label="Quota used" size="sm" color={color} value={Math.min(100, Math.max(0, value))}>
       <ProgressBar.Track>
         <ProgressBar.Fill />
       </ProgressBar.Track>
@@ -316,6 +324,44 @@ export function Check({
   );
 }
 
+/** A clean collapsible disclosure for secondary or advanced controls, keeping default views uncluttered. */
+export function Disclosure({
+  summary,
+  detail,
+  badge,
+  defaultOpen = false,
+  className = "",
+  children,
+}: {
+  summary: ReactNode;
+  detail?: ReactNode;
+  badge?: ReactNode;
+  defaultOpen?: boolean;
+  className?: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <details className={className ? `disclosure ${className}` : "disclosure"} open={open}>
+      <summary
+        className="disclosure-summary"
+        onClick={(e) => {
+          e.preventDefault();
+          setOpen((v) => !v);
+        }}
+      >
+        <ChevronRight size={14} className="disclosure-chevron" />
+        <span className="grow">
+          <strong>{summary}</strong>
+          {detail && <small>{detail}</small>}
+        </span>
+        {badge}
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
+
 type MenuAction = { label: string; onAction: () => void; danger?: boolean };
 /** A row's secondary actions behind "⋯"; falsy entries are skipped. */
 export function RowMenu({ label, items }: { label: string; items: (MenuAction | false | undefined)[] }) {
@@ -340,31 +386,5 @@ export function RowMenu({ label, items }: { label: string; items: (MenuAction | 
         </Dropdown.Menu>
       </Dropdown.Popover>
     </Dropdown>
-  );
-}
-
-/** A before-and-after table for reviewing changes before they are saved. */
-export function Changes({ rows }: { rows: [label: string, before: ReactNode, after: ReactNode][] }) {
-  return (
-    <Table className="changes">
-      <Table.ScrollContainer>
-        <Table.Content aria-label="Changes">
-          <Table.Header>
-            <Table.Column isRowHeader>Setting</Table.Column>
-            <Table.Column>Before</Table.Column>
-            <Table.Column>After</Table.Column>
-          </Table.Header>
-          <Table.Body>
-            {rows.map(([label, before, after]) => (
-              <Table.Row key={label} id={label}>
-                <Table.Cell>{label}</Table.Cell>
-                <Table.Cell>{before}</Table.Cell>
-                <Table.Cell>{after}</Table.Cell>
-              </Table.Row>
-            ))}
-          </Table.Body>
-        </Table.Content>
-      </Table.ScrollContainer>
-    </Table>
   );
 }

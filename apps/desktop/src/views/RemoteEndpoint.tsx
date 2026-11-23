@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button } from "@heroui/react";
+import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import type { PublicProject } from "@agentgate/protocol";
 import { Badge, Choice } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
@@ -29,6 +30,19 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
     }, message);
   const copy = (text: string, what: string) => perform(() => navigator.clipboard.writeText(text), `${what} copied`);
   const serving = data.nodes.find((n) => n.id === remote?.servedBy);
+  const statusDetail = [
+    !remote?.connected &&
+      (serving && !serving.online
+        ? `${remote?.servedBy} is offline`
+        : remote?.servedBy !== data.node
+          ? `Served by ${remote?.servedBy}`
+          : "Connecting to the relay…"),
+    remote?.updating && "Updating the secret at the relay",
+    remote?.error,
+    remote?.lastCall && `Last request ${relative(remote.lastCall)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <>
@@ -47,7 +61,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             isDisabled={!local}
             onPress={() => void changeEndpoint(() => control(connection, "remote enable", { id }), "Endpoint created")}
           >
-            {remote ? "Turn endpoint on" : "Create endpoint for Grok"}
+            {remote ? "Turn endpoint on" : "Create endpoint"}
           </Button>
         </div>
       ) : (
@@ -107,23 +121,13 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
           </div>
           <div className="item">
             <span className="grow">
-              <strong>Status</strong>
-              <small>
-                {remote.connected ? (
-                  <Badge good>Connected</Badge>
-                ) : serving && !serving.online ? (
-                  `${remote.servedBy} is offline`
-                ) : remote.servedBy !== data.node ? (
-                  `Served by ${remote.servedBy}`
-                ) : (
-                  "Connecting to the relay…"
-                )}
-                {remote.updating && " · updating the secret at the relay"}
-                {remote.error && ` · ${remote.error}`}
-                {remote.lastCall && ` · last request ${relative(remote.lastCall)}`}
-              </small>
+              <div className="row">
+                <strong>Status</strong>
+                {remote.connected && <Badge good>Connected</Badge>}
+              </div>
+              {statusDetail && <small>{statusDetail}</small>}
               {remote.failedAliases?.length ? (
-                <small>
+                <small className="danger">
                   Not reachable on {remote.servedBy}: {remote.failedAliases.join(", ")}
                 </small>
               ) : null}
@@ -132,7 +136,7 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
           <div className="item">
             <Choice
               label="Served by"
-              description="This machine answers Grok. Its MCP servers must work there."
+              description="This machine answers requests. Its MCP servers must work there."
               options={data.nodes.map((n) => ({
                 id: n.id,
                 label: `${n.id}${n.alwaysOn ? " (always on)" : ""}${n.online ? "" : " (offline)"}`,
@@ -154,12 +158,18 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="tertiary"
               isDisabled={!local}
-              onPress={() =>
-                void changeEndpoint(
-                  () => control(connection, "remote secret", { id }),
-                  "New secret created; update it in Grok",
+              onPress={async () => {
+                if (
+                  await confirmDialog(
+                    `Create a new secret for ${id}? Clients using the current secret will stop working until updated.`,
+                    { okLabel: "New secret" },
+                  )
                 )
-              }
+                  void changeEndpoint(
+                    () => control(connection, "remote secret", { id }),
+                    "New secret created; update it in your client",
+                  );
+              }}
             >
               New secret
             </Button>
@@ -167,12 +177,18 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               size="sm"
               variant="tertiary"
               isDisabled={!local}
-              onPress={() =>
-                void changeEndpoint(
-                  () => control(connection, "remote regenerate", { id }),
-                  "New URL and secret created; update both in Grok",
+              onPress={async () => {
+                if (
+                  await confirmDialog(
+                    `Create a new URL and secret for ${id}? Clients using the current URL will stop working until updated.`,
+                    { okLabel: "New URL" },
+                  )
                 )
-              }
+                  void changeEndpoint(
+                    () => control(connection, "remote regenerate", { id }),
+                    "New URL and secret created; update both in your client",
+                  );
+              }}
             >
               New URL
             </Button>
@@ -189,8 +205,8 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
       )}
       {remote?.enabled && (
         <p className="note">
-          Requests from Grok, including the secret, are encrypted in transit but readable by the relay. Your logins stay
-          on your machines. Anyone with the URL and secret can use these tools.
+          Requests, including the secret, are encrypted in transit but readable by the relay. Your logins stay on your
+          machines. Anyone with the URL and secret can use these tools.
         </p>
       )}
     </>

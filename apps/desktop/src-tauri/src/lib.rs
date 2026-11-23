@@ -8,7 +8,7 @@ use std::{
 use tauri::Manager;
 use taurio::BuilderExt;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Connection {
     url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,6 +28,9 @@ impl ActiveConnection {
             .unwrap_or_else(|_| default_connection())
     }
     fn set(&self, next: Connection) {
+        if self.0.read().is_ok_and(|c| *c == next) {
+            return;
+        }
         if let Ok(mut guard) = self.0.write() {
             *guard = next;
         }

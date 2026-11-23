@@ -1,3 +1,5 @@
+import { statSync } from "node:fs";
+import { join } from "node:path";
 import { API_VERSION, providerSchema, settingsPatchSchema, type Status } from "@agentgate/protocol";
 import { Hono } from "hono";
 import { z } from "zod";
@@ -53,6 +55,25 @@ function detectedLogins(s: Ctx["s"], hasLocalClaudeLogin: boolean) {
   });
 }
 
+/** Per-checkout `repoSkills` cache: avoids synchronous directory walks across dozens of checkouts on every `/status`. */
+const checkoutSkillCache = new WeakMap<Ctx["skills"], Map<string, { stamp: string; at: number; skills: string[] }>>();
+function cachedRepoSkills(skills: Ctx["skills"], path: string, now: number): string[] {
+  let cache = checkoutSkillCache.get(skills);
+  if (!cache) checkoutSkillCache.set(skills, (cache = new Map()));
+  const stamp = [join(path, ".claude", "skills"), join(path, ".agents", "skills")]
+    .map((dir) => {
+      const st = statSync(dir, { throwIfNoEntry: false });
+      return st ? `${st.mtimeMs}:${st.size}` : "";
+    })
+    .join("|");
+  const hit = cache.get(path);
+  if (hit && hit.stamp === stamp && now - hit.at < 15_000) return hit.skills;
+  const found = skills.repoSkills(path);
+  cache.set(path, { stamp, at: now, skills: found });
+  if (cache.size > 200) cache.delete(cache.keys().next().value!);
+  return found;
+}
+
 /** Status, the change feed, settings and backups. */
 export function system(ctx: Ctx) {
   const { s } = ctx;
@@ -81,6 +102,7 @@ export function system(ctx: Ctx) {
       detected: detectedLogins(s, !!claudeLogin),
       servers: s.list("mcp").map((i) => {
         const health = serverHealth(s, i.id);
+        const cred = s.get("mcpCredential", i.id);
         return {
           id: i.id,
           label: i.label,
@@ -88,8 +110,8 @@ export function system(ctx: Ctx) {
           transport: i.transport,
           mode: i.mode,
           endpoint: readableEndpoint(i.url),
-          loggedIn: !!s.get("mcpCredential", i.id)?.tokens,
-          needsLogin: !!s.get("mcpCredential", i.id)?.needsLogin || !!health?.needsLogin,
+          loggedIn: !!cred?.tokens,
+          needsLogin: !!cred?.needsLogin || !!health?.needsLogin,
           available: health?.ok,
           checkedAt: health?.at,
           refreshError: refreshFailure(s, "mcpCredential", i.id) ? "Token refresh failed" : undefined,
@@ -106,7 +128,7 @@ export function system(ctx: Ctx) {
       checkouts: Object.entries(ctx.skills.checkouts()).map(([path, project]) => ({
         path,
         project,
-        skills: ctx.skills.repoSkills(path),
+        skills: cachedRepoSkills(ctx.skills, path, s.now()),
         mirror: ctx.skills.mirroring(path),
       })),
       settings: sent<Data<"setting">>(s.settings()),

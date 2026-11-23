@@ -35,23 +35,21 @@ import { field, providerIcon, providerName, providerOptions, toolName, confirmDe
 
 /** What a provider's sessions use: Automatic, or the pinned account while it has room. With Claude Desktop on this Mac,
  * pinning an account also moves Desktop to it; Automatic leaves Desktop where it is, since every switch restarts it. */
-function poolSummary(accounts: AccountStatus[], provider: Provider, app?: DesktopStatus) {
-  const tool = toolName(provider);
+function poolSummary(accounts: AccountStatus[], app?: DesktopStatus) {
   const pinned = accounts.find((a) => a.account.pinned);
   if (pinned) {
     const desktop =
-      app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " Claude Desktop uses it too." : "";
-    return `Pinned: ${tool} uses ${pinned.account.label} while it has room.${desktop} Unpin it to go back to automatic.`;
+      app && usable(app.logins.find((l) => l.accountId === pinned.account.id)) ? " · Claude Desktop too" : "";
+    return `Pinned to ${pinned.account.label} while it has room${desktop}`;
   }
   const desktop = !app
     ? ""
     : typedSwitch(app.mode, {
-        pool: () => " Claude Desktop shares your subscriptions in its Code tab.",
-        "other-gateway": () => " Claude Desktop uses another gateway.",
-        "signed-in": () =>
-          app.current ? ` Claude Desktop stays on ${nameOf(app.current)}.` : " Claude Desktop isn't signed in.",
+        pool: () => " · Claude Desktop Code tab shares pool",
+        "other-gateway": () => " · Claude Desktop uses another gateway",
+        "signed-in": () => (app.current ? ` · Claude Desktop on ${nameOf(app.current)}` : ""),
       });
-  return `Automatic: ${tool} uses the account with the most room left. Pin an account to prefer it.${desktop}`;
+  return `Automatic · prefers the account with the most room${desktop}`;
 }
 
 export function Accounts({ data, connection, perform, local, desktop }: ViewProps) {
@@ -153,8 +151,8 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
           title="Claude Code needs sign-in"
           detail={
             local
-              ? "Your local Claude Code login needs attention before it can start a session."
-              : `Sign in on ${data.node} with agentgate accounts claude-code login.`
+              ? "Your local Claude Code login needs attention before it can start a session"
+              : `Sign in on ${data.node} with agentgate accounts claude-code login`
           }
         >
           <div className="item">
@@ -168,8 +166,8 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       )}
       {data.detected.length > 0 && (
         <Panel
-          title={local ? "Signed in on this Mac" : `Signed in on ${data.node}`}
-          detail="Add these accounts to the pool. You confirm once in the browser, so Claude Code and Codex keep their own logins."
+          title={local ? "Signed in on this machine" : `Signed in on ${data.node}`}
+          detail="Confirm once in the browser to add to the pool without touching your local CLI login"
         >
           {data.detected.map((d) => (
             <div className="item" key={d.provider}>
@@ -180,7 +178,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                   {providerName(d.provider)} · {d.source}
                 </small>
               </div>
-              {d.plan && <Badge>{d.plan.replace(/^claude_/, "")}</Badge>}
+              {d.plan && <Badge>{planName(d.plan)}</Badge>}
               <Button size="sm" onPress={() => void start(d.provider, "", d.email)}>
                 Add to pool
                 <ExternalLink size={14} />
@@ -192,7 +190,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
       {!providers.length && (
         <Panel>
           <Empty>
-            <strong>No accounts yet.</strong>
+            <strong>No accounts yet</strong>
             <p>Add a Claude, Codex or Cursor subscription to share it across your sessions.</p>
           </Empty>
         </Panel>
@@ -205,13 +203,12 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             data.accounts.some((a) => a.account.provider === provider)
               ? poolSummary(
                   data.accounts.filter((a) => a.account.provider === provider),
-                  provider,
                   provider === "claude" ? app : undefined,
                 )
               : typedSwitch(provider, {
-                  claude: () => "Claude subscriptions, shared across your sessions.",
-                  codex: () => "ChatGPT subscriptions for your Codex sessions.",
-                  cursor: () => "Cursor subscriptions, shared across sessions pointed at this daemon.",
+                  claude: () => "Claude subscriptions shared across your sessions",
+                  codex: () => "ChatGPT subscriptions for your Codex sessions",
+                  cursor: () => "Cursor subscriptions shared across sessions pointed at this daemon",
                 })
           }
           action={
@@ -229,7 +226,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
         >
           {!data.accounts.some((a) => a.account.provider === provider) &&
           !(provider === "claude" && (desktopOnly.length || unsaved)) ? (
-            <Empty>No {providerName(provider)} accounts yet.</Empty>
+            <Empty>No {providerName(provider)} accounts yet</Empty>
           ) : (
             data.accounts
               .filter((a) => a.account.provider === provider)
@@ -294,7 +291,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
                     <RowMenu
                       label={`More for ${a.account.label}`}
                       items={[
-                        { label: "Edit policy", onAction: () => setEdit(a) },
+                        { label: "Edit", onAction: () => setEdit(a) },
                         // Verify, model discovery, login refresh, backoff reset and probes live in `agentgate accounts`.
                         !!data.daemon?.providers[provider].quota && {
                           label: "Refresh usage",
@@ -446,7 +443,7 @@ export function Accounts({ data, connection, perform, local, desktop }: ViewProp
             )}
             <Button type="submit" size="sm">
               {mode === "login" ? "Continue in browser" : "Import account"}
-              <ExternalLink size={15} />
+              {mode === "login" && <ExternalLink size={14} />}
             </Button>
           </form>
         </Modal>
