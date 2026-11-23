@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { TOPICS } from "@agentgate/protocol";
 import { moved } from "./useChanges.ts";
-import { reuse } from "./useDaemon.ts";
+import { prefetch, reuse, type Answer } from "./useDaemon.ts";
 
 describe("reuse", () => {
   test("an answer equal to the last one is the last one", () => {
@@ -41,6 +41,61 @@ describe("reuse", () => {
     const without = { list: [1, 2] };
     expect(reuse(prev, without)).not.toBe(prev);
     expect(reuse(without, prev)).not.toBe(without);
+  });
+
+  test("arrays keep identity when equal, share unchanged elements on length change, and replace across array/object boundaries", () => {
+    const prev = [
+      { id: 1, v: "a" },
+      { id: 2, v: "b" },
+    ];
+    expect(reuse(prev, structuredClone(prev))).toBe(prev);
+    const grown = reuse(prev, [
+      { id: 1, v: "a" },
+      { id: 2, v: "b" },
+      { id: 3, v: "c" },
+    ]);
+    expect(grown).not.toBe(prev);
+    expect(grown[0]).toBe(prev[0]!);
+    expect(grown[1]).toBe(prev[1]!);
+    expect(reuse(prev, { id: 1 } as unknown)).toEqual({ id: 1 });
+    expect(reuse({ id: 1 }, prev)).toBe(prev);
+  });
+});
+
+describe("prefetch", () => {
+  test("deduplicates in-flight reads, caches fresh values, and isolates different connections", async () => {
+    const cache = new Map<string, unknown>();
+    const connA = { url: "http://127.0.0.1:7878" };
+    const connB = { url: "http://100.64.0.2:7878", token: "tok" };
+    let callsA = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const readA = async () => {
+      callsA++;
+      await gate;
+      return { items: [1, 2] };
+    };
+    const p1 = prefetch(cache, connA, "threads", readA, 10_000);
+    const p2 = prefetch(cache, connA, "threads", readA, 10_000);
+    expect(p1).toBe(p2);
+    release();
+    await p1;
+    expect(callsA).toBe(1);
+    const cached = cache.get("threads") as Answer<{ items: number[] }>;
+    expect(cached.data).toEqual({ items: [1, 2] });
+    expect(cached.connection).toBe(connA);
+
+    // Fresh cache hit skips another read for the same connection.
+    await prefetch(cache, connA, "threads", readA, 10_000);
+    expect(callsA).toBe(1);
+
+    // A different connection bypasses connA's cached entry and replaces it.
+    await prefetch(cache, connB, "threads", async () => ({ items: [9] }), 10_000);
+    const cachedB = cache.get("threads") as Answer<{ items: number[] }>;
+    expect(cachedB.data).toEqual({ items: [9] });
+    expect(cachedB.connection).toBe(connB);
   });
 });
 

@@ -833,3 +833,23 @@ test("background skill syncs back off a failing source and log each failure once
     logs.mockRestore();
   }
 });
+
+test("skillSummaries caches metadata until a skill is written, updated, or deleted", () => {
+  const { s } = setup();
+  const empty = skillSummaries(s);
+  expect(empty).toEqual([]);
+  expect(skillSummaries(s)).toBe(empty);
+
+  writeSkillMd(s, "alpha", md("alpha", "First version."));
+  const afterWrite = skillSummaries(s);
+  expect(afterWrite.map((k) => k.id)).toEqual(["alpha"]);
+  expect(skillSummaries(s)).toBe(afterWrite);
+
+  writeSkillMd(s, "alpha", md("alpha", "Updated longer version."));
+  const afterEdit = skillSummaries(s);
+  expect(afterEdit).not.toBe(afterWrite);
+  expect(afterEdit[0]!.size).toBeGreaterThan(afterWrite[0]!.size);
+
+  deleteSkill(s, "alpha");
+  expect(skillSummaries(s)).toEqual([]);
+});

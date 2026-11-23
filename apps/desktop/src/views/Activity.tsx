@@ -1,12 +1,54 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { pMap } from "hanzio";
 import { Button, Card, DateField, Label } from "@heroui/react";
 import { ChevronRight, Copy, Pause, Play, RefreshCw } from "lucide-react";
 import type { RequestDetail, RequestPage, ProxyRequest } from "@agentgate/protocol";
 import type { ViewProps } from "../types.ts";
 import { request } from "../api.ts";
-import { Badge, Choice, Empty, Field, Modal, Panel } from "../components/ui.tsx";
+import { Badge, Choice, Empty, Field, HeaderActions, Modal, Panel } from "../components/ui.tsx";
 import { useDaemon } from "../useDaemon.ts";
-import { providerOptions } from "./utils.ts";
+import { compactTime, fullTime, providerOptions } from "./utils.ts";
+
+/** Memoized request list so typing in the filter inputs never re-renders up to 1,000 request rows. */
+const RequestRows = memo(function RequestRows({
+  requests,
+  accountLabels,
+  onSelect,
+}: {
+  requests: ProxyRequest[];
+  accountLabels: Map<string, string>;
+  onSelect: (id: string) => void;
+}) {
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  return (
+    <>
+      {requests.map((r) => (
+        <button type="button" className="item activity-request" key={r.id} onClick={() => onSelect(r.id)}>
+          <span className="grow">
+            <strong>
+              {r.routedModel || r.provider} · {(r.account && accountLabels.get(r.account)) || r.account || "No account"}
+            </strong>
+            <small className="activity-meta" title={fullTime(r.at)}>
+              {[
+                compactTime(r.at, todayStart),
+                r.selection,
+                `${r.attempts} ${r.attempts === 1 ? "attempt" : "attempts"}`,
+                r.headersMs !== undefined && `${r.headersMs} ms`,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </small>
+          </span>
+          <Badge good={r.outcome === "success"}>
+            {r.outcome}
+            {r.failure ? ` · ${r.failure}` : ""}
+          </Badge>
+          <ChevronRight size={14} className="muted" />
+        </button>
+      ))}
+    </>
+  );
+});
 
 export function ActivityView({ data, connection, perform }: ViewProps) {
   const [query, setQuery] = useState(""),
@@ -16,28 +58,35 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
     topics: ["activity"],
     deps: [query],
     key: `activity?${query}`,
+    staleTime: 3_000,
   });
   // While paused, the list is held here: it no longer reloads, and older pages are appended to it.
   const [held, setHeld] = useState<{ page?: RequestPage; error: string }>({ error: "" });
   const serial = useRef(0);
-  const loadHeld = async (cursor?: string) => {
-    const generation = ++serial.current;
-    const q = new URLSearchParams(query);
-    if (cursor) q.set("cursor", cursor);
-    try {
-      const result = await request<RequestPage>(connection, `/requests?${q}`);
-      if (generation !== serial.current) return;
-      setHeld((old) => ({
-        error: "",
-        page:
-          cursor && !result.cursorReset
-            ? { ...result, requests: [...(old.page?.requests ?? []), ...result.requests].slice(-1000) }
-            : result,
-      }));
-    } catch (e) {
-      if (generation === serial.current) setHeld((old) => ({ ...old, error: String(e) }));
-    }
-  };
+  const loadHeld = useCallback(
+    async (cursor?: string, seed?: RequestPage) => {
+      const generation = ++serial.current;
+      const q = new URLSearchParams(query);
+      if (cursor) q.set("cursor", cursor);
+      try {
+        const result = await request<RequestPage>(connection, `/requests?${q}`);
+        if (generation !== serial.current) return;
+        setHeld((old) => {
+          const base = seed ?? old.page;
+          return {
+            error: "",
+            page:
+              cursor && !result.cursorReset
+                ? { ...result, requests: [...(base?.requests ?? []), ...result.requests].slice(-1000) }
+                : result,
+          };
+        });
+      } catch (e) {
+        if (generation === serial.current) setHeld((old) => ({ ...old, error: String(e) }));
+      }
+    },
+    [connection, query],
+  );
   useEffect(() => {
     if (!follow) void loadHeld();
   }, [query]);
@@ -48,7 +97,21 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
     setHeld({ page: follow ? latest.data : undefined, error: "" });
     setFollow(!follow);
   };
-  const label = (r: ProxyRequest) => data.accounts.find((a) => a.account.id === r.account)?.account.label ?? r.account;
+  const loadOlder = () => {
+    if (!page?.nextCursor) return;
+    if (follow) {
+      // Automatically pause and append older requests in one click instead of asking the user to pause first.
+      setHeld({ page, error: "" });
+      setFollow(false);
+      void loadHeld(page.nextCursor, page);
+    } else {
+      void loadHeld(page.nextCursor);
+    }
+  };
+  const accountLabels = useMemo(
+    () => new Map(data.accounts.map((a) => [a.account.id, a.account.label])),
+    [data.accounts],
+  );
   // Filters apply as they change; a pause first, so typing doesn't ask the daemon on every letter.
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [more, setMore] = useState(false);
@@ -63,13 +126,21 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
     return () => clearTimeout(timer);
   }, [filters]);
   const extra = ["account", "failure", "model", "since", "until"].filter((key) => filters[key]).length;
-  const showDetail = (id: string) =>
-    perform(async () => setDetail(await request<RequestDetail>(connection, `/requests/${encodeURIComponent(id)}`)));
+  const showDetail = useCallback(
+    (id: string) => {
+      void perform(async () =>
+        setDetail(await request<RequestDetail>(connection, `/requests/${encodeURIComponent(id)}`)),
+      );
+    },
+    [connection, perform],
+  );
   const copyDiagnostics = () =>
     perform(async () => {
-      const rows: RequestDetail[] = [];
-      for (const row of page?.requests ?? [])
-        rows.push(await request<RequestDetail>(connection, `/requests/${encodeURIComponent(row.id)}`));
+      const rows = await pMap(
+        page?.requests ?? [],
+        (row) => request<RequestDetail>(connection, `/requests/${encodeURIComponent(row.id)}`),
+        { concurrency: 8 },
+      );
       await navigator.clipboard.writeText(rows.map((row) => JSON.stringify(row)).join("\n"));
     }, "Loaded diagnostics copied as NDJSON");
   const options = (all: string, ids: string[]) => [
@@ -94,31 +165,26 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
   );
   return (
     <>
-      <Panel
-        title={`Requests on ${data.node}`}
-        detail={follow ? "Updates as requests finish." : "Paused. Refresh to update."}
-        action={
-          <div className="row">
-            <Button
-              size="sm"
-              variant="ghost"
-              isDisabled={!page?.requests.length}
-              onPress={() => void copyDiagnostics()}
-            >
-              <Copy size={14} />
-              Copy diagnostics
-            </Button>
-            <Button size="sm" variant="ghost" onPress={() => void (follow ? latest.reload() : loadHeld())}>
-              <RefreshCw size={14} />
-              Refresh
-            </Button>
-            <Button size="sm" variant="tertiary" onPress={toggleFollow}>
-              {follow ? <Pause size={14} /> : <Play size={14} />}
-              {follow ? "Pause" : "Follow"}
-            </Button>
-          </div>
-        }
-      >
+      <HeaderActions>
+        <Button size="sm" variant="ghost" isDisabled={!page?.requests.length} onPress={() => void copyDiagnostics()}>
+          <Copy size={14} />
+          Copy NDJSON
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          isIconOnly
+          aria-label="Refresh requests"
+          onPress={() => void (follow ? latest.reload() : loadHeld())}
+        >
+          <RefreshCw size={14} />
+        </Button>
+        <Button size="sm" variant="tertiary" onPress={toggleFollow}>
+          {follow ? <Pause size={14} /> : <Play size={14} />}
+          {follow ? "Pause" : "Follow"}
+        </Button>
+      </HeaderActions>
+      <Panel detail={follow ? "Live · updates as requests finish" : "Paused · showing captured page"}>
         <div className="item stack" key={cleared}>
           <div className="activity-filters">
             {choice("provider", "Provider", [{ id: "", label: "All providers" }, ...providerOptions])}
@@ -127,7 +193,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
               "Outcome",
               options("All outcomes", ["pending", "success", "failed", "interrupted", "cancelled"]),
             )}
-            <Field label="Search" onChange={set("search")} placeholder="Request ID, model, or account ID" />
+            <Field label="Search" onChange={set("search")} placeholder="Request ID, model or account" />
           </div>
           {/* Hidden rather than removed, so the fields keep showing the filters they set. */}
           <div className={more ? "activity-filters" : "hidden"}>
@@ -182,32 +248,16 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
             <small>Older activity was removed by retention. Showing the available results.</small>
           </div>
         )}
-        {!page?.requests.length ? (
-          <Empty>No matching requests.</Empty>
+        {!page ? (
+          !error && <Empty>Loading activity…</Empty>
+        ) : !page.requests.length ? (
+          <Empty>No matching requests</Empty>
         ) : (
-          page.requests.map((r) => (
-            <button type="button" className="item activity-request" key={r.id} onClick={() => void showDetail(r.id)}>
-              <span className="grow">
-                <strong>
-                  {r.routedModel || r.provider} · {label(r) || "No account"}
-                </strong>
-                <small>
-                  {new Date(r.at).toLocaleString()} · {r.selection} · {r.attempts}{" "}
-                  {r.attempts === 1 ? "attempt" : "attempts"} · {r.headersMs ?? "—"} ms to headers
-                </small>
-              </span>
-              <Badge good={r.outcome === "success"}>
-                {r.outcome}
-                {r.failure ? ` · ${r.failure}` : ""}
-              </Badge>
-              <ChevronRight size={14} className="muted" />
-            </button>
-          ))
+          <RequestRows requests={page.requests} accountLabels={accountLabels} onSelect={showDetail} />
         )}
         {page?.nextCursor && (
           <div className="item item-actions">
-            {follow && <small className="grow">Pause to load older requests.</small>}
-            <Button size="sm" variant="tertiary" isDisabled={follow} onPress={() => void loadHeld(page.nextCursor)}>
+            <Button size="sm" variant="tertiary" onPress={loadOlder}>
               Load older requests
             </Button>
           </div>
@@ -220,6 +270,8 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
             <dd>
               <code>{detail.request.id}</code>
             </dd>
+            <dt>Time</dt>
+            <dd>{fullTime(detail.request.at)}</dd>
             <dt>Model</dt>
             <dd>
               {detail.request.requestedModel} → {detail.request.routedModel}
@@ -230,7 +282,7 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
             </dd>
             <dt>Timing</dt>
             <dd>
-              {detail.request.headersMs ?? "—"} ms to headers · {detail.request.firstByteMs ?? "—"} ms to first byte ·{" "}
+              {detail.request.headersMs ?? "—"} ms headers · {detail.request.firstByteMs ?? "—"} ms first byte ·{" "}
               {detail.request.durationMs ?? "—"} ms total
             </dd>
             <dt>Stream</dt>
@@ -241,10 +293,9 @@ export function ActivityView({ data, connection, perform }: ViewProps) {
               <div className="item" key={a.id}>
                 <span className="grow">
                   <strong>
-                    Attempt {a.number} ·{" "}
-                    {data.accounts.find((x) => x.account.id === a.account)?.account.label ?? a.account}
+                    Attempt {a.number} · {accountLabels.get(a.account) ?? a.account}
                   </strong>
-                  <small>
+                  <small className="activity-meta">
                     {a.selection} · {a.headersMs} ms
                     {a.failure ? ` · ${a.failure}` : ""}
                   </small>

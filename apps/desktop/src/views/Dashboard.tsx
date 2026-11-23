@@ -25,41 +25,49 @@ export function Dashboard({
   navigate,
 }: ViewProps & { navigate: (view: Page) => void }) {
   const issues = problems(data);
+  const enabledAccounts = data.accounts.filter((a) => a.account.enabled).length;
+  const onlineNodes = data.nodes.filter((n) => n.online).length;
   return (
     <>
       <div className="stats">
         {[
           {
             icon: Users,
-            value: data.accounts.filter((a) => a.account.enabled).length,
+            value: enabledAccounts,
+            total: data.accounts.length,
             label: "Enabled accounts",
             view: "accounts" as const,
           },
           {
             icon: Boxes,
             value: data.servers.length,
+            total: data.servers.length,
             label: "MCP servers",
             view: "servers" as const,
           },
           {
             icon: Monitor,
-            value: data.nodes.filter((n) => n.online).length,
+            value: onlineNodes,
+            total: data.nodes.length,
             label: "Machines online",
             view: "nodes" as const,
           },
         ].map((stat) => (
-          <button key={stat.label} className="stat" onClick={() => navigate(stat.view)}>
+          <button key={stat.label} type="button" className="stat" onClick={() => navigate(stat.view)}>
             <div className="stat-top">
               <stat.icon size={16} />
               <ArrowRight size={14} />
             </div>
-            <strong>{stat.value}</strong>
+            <strong>
+              {stat.value}
+              {stat.total !== stat.value && <span className="stat-total">/ {stat.total}</span>}
+            </strong>
             <span>{stat.label}</span>
           </button>
         ))}
       </div>
       {issues.length > 0 && (
-        <Panel title="Needs attention" detail="Agentgate can't fix these on its own.">
+        <Panel title="Needs attention" detail="Items Agentgate can't resolve on its own">
           {issues.map((p) => (
             <div className="item" key={p.key}>
               <TriangleAlert size={16} className="attention-icon" />
@@ -85,15 +93,25 @@ export function Dashboard({
           ))}
         </Panel>
       )}
-      <Panel title="Subscription pool" detail="Your sessions use the next available account automatically.">
+      <Panel
+        title="Subscription pool"
+        detail="Sessions automatically move to the next available account"
+        action={
+          data.accounts.length > 0 && (
+            <Button size="sm" variant="ghost" onPress={() => navigate("accounts")}>
+              Manage
+              <ArrowRight size={14} />
+            </Button>
+          )
+        }
+      >
         {!data.accounts.length ? (
           <Empty>
             <Users size={22} />
             {data.detected.length ? (
               <>
                 <strong>
-                  You're signed in to {data.detected.map((d) => providerName(d.provider)).join(" and ")} on this
-                  machine.
+                  Signed in to {data.detected.map((d) => providerName(d.provider)).join(" and ")} on this machine
                 </strong>
                 <p>
                   {data.detected
@@ -105,8 +123,8 @@ export function Dashboard({
               </>
             ) : (
               <>
-                <strong>Your pool starts with one account.</strong>
-                <p>Add a Claude or Codex login to route your sessions through Agentgate.</p>
+                <strong>Your pool starts with one account</strong>
+                <p>Add a Claude, Codex or Cursor login to route your sessions through Agentgate.</p>
               </>
             )}
             <Button size="sm" variant="tertiary" onPress={() => navigate("accounts")}>
@@ -115,21 +133,26 @@ export function Dashboard({
             </Button>
           </Empty>
         ) : (
-          data.accounts.map((a) => (
-            <div className="item" key={a.account.id}>
-              <div className={`provider-icon ${a.account.provider}`}>{providerIcon(a.account.provider)}</div>
-              <div className="grow">
-                <strong>{a.account.label}</strong>
-                <small>
-                  {providerName(a.account.provider)} · {a.account.email ?? a.account.plan ?? "Subscription"}
-                </small>
+          data.accounts.map((a) => {
+            const problem = accountProblem(a);
+            return (
+              <div className="item" key={a.account.id}>
+                <div className={`provider-icon ${a.account.provider}`}>{providerIcon(a.account.provider)}</div>
+                <div className="grow">
+                  <strong>{a.account.label}</strong>
+                  <small>
+                    {providerName(a.account.provider)} · {a.account.email ?? a.account.plan ?? "Subscription"}
+                  </small>
+                </div>
+                {problem ? (
+                  <Badge>{problem}</Badge>
+                ) : (
+                  a.active && a.account.enabled && <Badge good>In {toolName(a.account.provider)}</Badge>
+                )}
+                <AccountQuota account={a} />
               </div>
-              <Badge good={!accountProblem(a)}>
-                {accountProblem(a) ?? (a.active ? `In ${toolName(a.account.provider)}` : "Ready")}
-              </Badge>
-              <AccountQuota account={a} />
-            </div>
-          ))
+            );
+          })
         )}
       </Panel>
       {data.accounts.length > 0 && <TokenCalendar connection={connection} />}

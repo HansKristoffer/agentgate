@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useChanges } from "./useChanges.ts";
-import { useDaemon } from "./useDaemon.ts";
+import { prefetch, useDaemon } from "./useDaemon.ts";
 import { Feed } from "./AppContext.tsx";
 import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
@@ -26,8 +26,23 @@ import {
   SquareTerminal,
   Users,
 } from "lucide-react";
-import type { Connection } from "@agentgate/protocol";
-import { desktopStatus, loadConnection, localAction, localConnection, native, saveConnection, status } from "./api.ts";
+import {
+  nodeThreadsSchema,
+  type Connection,
+  type ModelTokens,
+  type RequestPage,
+  type TokenHour,
+} from "@agentgate/protocol";
+import {
+  desktopStatus,
+  loadConnection,
+  localAction,
+  localConnection,
+  native,
+  request,
+  saveConnection,
+  status,
+} from "./api.ts";
 import {
   Accounts,
   ActivityView,
@@ -49,6 +64,7 @@ import {
   type FactorySection,
 } from "./views/Factory.tsx";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
+import { tokenYearStart } from "./views/utils.ts";
 import { problems } from "@agentgate/protocol/attention";
 import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 import type { Perform } from "./types.ts";
@@ -56,17 +72,18 @@ import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
 
 const navigation = [
-  { id: "overview", title: "Overview", icon: LayoutDashboard },
-  { id: "accounts", title: "Accounts", icon: Users },
-  { id: "servers", title: "MCP servers", icon: Boxes },
-  { id: "skills", title: "Skills", icon: Sparkles },
-  { id: "projects", title: "Projects", icon: FolderGit2 },
-  { id: "nodes", title: "Machines", icon: Monitor },
-  { id: "t3", title: "T3 Code", icon: SquareTerminal },
-  { id: "factory", title: "Factory", icon: FactoryIcon },
-  { id: "activity", title: "Activity", icon: Activity },
-  { id: "settings", title: "Settings", icon: Gear },
+  { id: "overview", title: "Overview", icon: LayoutDashboard, group: 0 },
+  { id: "accounts", title: "Accounts", icon: Users, group: 1 },
+  { id: "servers", title: "MCP servers", icon: Boxes, group: 1 },
+  { id: "skills", title: "Skills", icon: Sparkles, group: 1 },
+  { id: "projects", title: "Projects", icon: FolderGit2, group: 1 },
+  { id: "nodes", title: "Machines", icon: Monitor, group: 2 },
+  { id: "t3", title: "T3 Code", icon: SquareTerminal, group: 2 },
+  { id: "factory", title: "Factory", icon: FactoryIcon, group: 2 },
+  { id: "activity", title: "Activity", icon: Activity, group: 3 },
+  { id: "settings", title: "Settings", icon: Gear, group: 4 },
 ] as const;
+const sidebarNav = navigation.filter((n) => n.id !== "settings");
 type View = (typeof navigation)[number]["id"];
 const FACTORY_SUB_ICONS: Record<FactorySection, typeof Layers> = {
   board: Layers,
@@ -76,16 +93,16 @@ const FACTORY_SUB_ICONS: Record<FactorySection, typeof Layers> = {
   settings: SlidersHorizontal,
 };
 const descriptions: Record<View, string> = {
-  overview: "Your agents, connected.",
-  accounts: "One pool for every Claude and Codex session, Claude Desktop included.",
-  servers: "Connect tools once. Use them across your projects.",
-  skills: "Install skills once. Choose which projects use them.",
-  projects: "Give each repository the tools it needs.",
-  nodes: "Your setup, shared across your Tailscale network.",
-  t3: "Hand a thread to another machine and back, with its session and code.",
-  factory: "Issues worked in T3 Code threads, accessed from any paired machine.",
-  activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
-  settings: "Make Agentgate work the way you do.",
+  overview: "Subscription pool, token activity and health",
+  accounts: "Shared pool for Claude, Codex, Cursor and Claude Desktop",
+  servers: "Shared MCP servers across your projects and machines",
+  skills: "Synced skills and global instructions across machines",
+  projects: "Per-repository MCP servers, skills and env files",
+  nodes: "Paired machines, relay sync and shared CLI logins",
+  t3: "Active threads across machines and one-click handoffs",
+  factory: "Issues worked in T3 Code threads across paired machines",
+  activity: "Model requests routed by this daemon · prompts and credentials excluded",
+  settings: "Coding tools, pool policy, background service and backups",
 };
 
 /** Loads the saved connection and follows its change feed, which every read under it uses. */
@@ -127,6 +144,7 @@ export function App() {
     <Feed value={{ connection, versions, cache }}>
       <Main
         connection={connection}
+        cache={cache}
         connect={setConnection}
         local={trimTrailingSlash(connection.url.replace("localhost", "127.0.0.1")) === localUrl}
         ready={ready && native}
@@ -138,12 +156,14 @@ export function App() {
 
 function Main({
   connection,
+  cache,
   connect,
   local,
   ready,
   loadError,
 }: {
   connection: Connection;
+  cache: Map<string, unknown>;
   connect: (c: Connection) => void;
   local: boolean;
   ready: boolean;
@@ -195,6 +215,26 @@ function Main({
   const unkeyed = useRef(new Set<string>());
   const selected = navigation.find((n) => n.id === view)!;
 
+  // Warm Overview's token charts in parallel with /status on launch instead of waiting for /status to resolve first.
+  useEffect(() => {
+    if (!ready) return;
+    const todayStart = new Date().setHours(0, 0, 0, 0);
+    void prefetch(
+      cache,
+      connection,
+      "token-hours",
+      () => request<TokenHour[]>(connection, `/proxy/tokens/hours?since=${tokenYearStart()}`),
+      30_000,
+    );
+    void prefetch(
+      cache,
+      connection,
+      "tokens:today",
+      () => request<ModelTokens[]>(connection, `/proxy/tokens?since=${todayStart}`),
+      30_000,
+    );
+  }, [ready, cache, connection]);
+
   // The two reads the whole app shares. They follow the change feed, also while the window is hidden, because the
   // tray menu and the notifications depend on them; only their safety interval slows.
   const statusRead = useDaemon(ready && (() => status(connection)), { topics: ["status"], hidden: 60_000 });
@@ -227,7 +267,38 @@ function Main({
     });
     return () => toast.close(id);
   }, [updater.update, updater.install, dismissed]);
-  useAppShortcuts({ ",": () => setView("settings") });
+
+  const openView = (id: View) => {
+    if (id === "factory") {
+      setFactoryMounted(true);
+      if (view === "factory") {
+        setFactoryHash("#/");
+        factoryRef.current?.navigate("#/");
+        setFactoryState((prev) => ({
+          ...prev,
+          section: "board",
+          hash: "#/",
+          issueTitle: null,
+        }));
+      } else {
+        setView("factory");
+      }
+    } else {
+      setView(id);
+    }
+  };
+  useAppShortcuts({
+    ",": () => setView("settings"),
+    "1": () => openView("overview"),
+    "2": () => openView("accounts"),
+    "3": () => openView("servers"),
+    "4": () => openView("skills"),
+    "5": () => openView("projects"),
+    "6": () => openView("nodes"),
+    "7": () => openView("t3"),
+    "8": () => openView("factory"),
+    "9": () => openView("activity"),
+  });
   // First run on this Mac: ask where Claude is used, so Claude Desktop users land on their screen.
   useEffect(() => {
     if (local && data && !data.accounts.length && !localStorage.getItem("onboarding")) setWelcome(true);
@@ -269,18 +340,55 @@ function Main({
     if (!data.skills.some((s) => s.id === "factory")) return;
     void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
   }, [connection, data, selectedFactoryMachine]);
+
+  // Warm heavier views on sidebar hover / pointerDown so clicking them renders cached data immediately.
+  const warmView = (id: View) => {
+    if (!ready || !data) return;
+    if (id === "factory" && selectedFactoryMachine) {
+      void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
+    } else if (id === "t3") {
+      void prefetch(
+        cache,
+        connection,
+        "threads",
+        async () => {
+          const parsed = nodeThreadsSchema.array().safeParse(await request(connection, "/threads"));
+          if (!parsed.success) throw new Error("Incompatible thread data");
+          return { nodes: parsed.data, jobs: {} };
+        },
+        8_000,
+      );
+    } else if (id === "activity") {
+      void prefetch(cache, connection, "activity?", () => request<RequestPage>(connection, "/requests?"), 5_000);
+    }
+  };
+
   const activeFactorySection = FACTORY_SECTIONS.find((s) => s.id === factoryState.section) ?? FACTORY_SECTIONS[0]!;
   const props = data && { data, connection, perform, local, desktop };
-  const views = props && {
-    overview: <Dashboard {...props} navigate={setView} />,
-    accounts: <Accounts {...props} />,
-    servers: <Servers {...props} />,
-    skills: <Skills {...props} />,
-    projects: <Projects {...props} />,
-    nodes: <Nodes {...props} />,
-    t3: <T3Code {...props} />,
-    activity: <ActivityView {...props} />,
-    settings: <Settings {...props} />,
+  const renderView = () => {
+    if (!props) return null;
+    switch (view) {
+      case "overview":
+        return <Dashboard {...props} navigate={setView} />;
+      case "accounts":
+        return <Accounts {...props} />;
+      case "servers":
+        return <Servers {...props} />;
+      case "skills":
+        return <Skills {...props} />;
+      case "projects":
+        return <Projects {...props} />;
+      case "nodes":
+        return <Nodes {...props} />;
+      case "t3":
+        return <T3Code {...props} />;
+      case "activity":
+        return <ActivityView {...props} />;
+      case "settings":
+        return <Settings {...props} />;
+      case "factory":
+        return null;
+    }
   };
   const onDesktop = !!desktop?.available;
   const counts: Partial<Record<View, number>> = data
@@ -296,6 +404,23 @@ function Main({
   // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
   if (factoryState.needsYou > 0) attention.add("factory");
+  const subtitle = (() => {
+    if (view === "factory") {
+      if (!selectedFactoryMachine) return descriptions.factory;
+      return factoryState.issueTitle
+        ? `Factory on ${selectedFactoryMachine} · ${factoryState.issueTitle}`
+        : `Factory on ${selectedFactoryMachine}`;
+    }
+    if (view === "overview" && data) {
+      const online = data.nodes.filter((n) => n.online).length;
+      const enabled = data.accounts.filter((a) => a.account.enabled).length;
+      return `${data.node} · ${enabled} ${enabled === 1 ? "account" : "accounts"} · ${online}/${data.nodes.length} ${data.nodes.length === 1 ? "machine" : "machines"} online`;
+    }
+    if (view === "activity" && data) {
+      return `Model requests routed by ${data.node} · prompts and credentials excluded`;
+    }
+    return descriptions[view];
+  })();
   return (
     <BusyContext value={busy}>
       <PendingContext value={pending}>
@@ -305,42 +430,18 @@ function Main({
               <>
                 <div className="tau-drag-strip" />
                 <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                  {navigation
-                    .filter((n) => n.id !== "settings")
-                    .map((n) => (
+                  {sidebarNav.map((n, index) => {
+                    const prev = sidebarNav[index - 1];
+                    const divider = prev && prev.group !== n.group;
+                    return (
                       <div key={n.id} className="flex flex-col gap-0.5">
+                        {divider && <div className="side-divider" role="separator" />}
                         <button
                           aria-current={view === n.id && n.id !== "factory" ? "page" : undefined}
-                          className={`group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)${view === "factory" && n.id === "factory" ? " bg-(--tau-side-row-hover)" : ""}`}
-                          onMouseEnter={() => {
-                            if (n.id === "factory" && selectedFactoryMachine) {
-                              void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
-                            }
-                          }}
-                          onPointerDown={() => {
-                            if (n.id === "factory" && selectedFactoryMachine) {
-                              void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
-                            }
-                          }}
-                          onClick={() => {
-                            if (n.id === "factory") {
-                              setFactoryMounted(true);
-                              if (view === "factory") {
-                                setFactoryHash("#/");
-                                factoryRef.current?.navigate("#/");
-                                setFactoryState((prev) => ({
-                                  ...prev,
-                                  section: "board",
-                                  hash: "#/",
-                                  issueTitle: null,
-                                }));
-                              } else {
-                                setView("factory");
-                              }
-                            } else {
-                              setView(n.id);
-                            }
-                          }}
+                          className={`group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) transition-[background-color,color,transform] duration-150 hover:bg-(--tau-side-row-hover) active:scale-[0.985] aria-[current=page]:bg-(--tau-side-row)${view === "factory" && n.id === "factory" ? " bg-(--tau-side-row-hover)" : ""}`}
+                          onMouseEnter={() => warmView(n.id)}
+                          onPointerDown={() => warmView(n.id)}
+                          onClick={() => openView(n.id)}
                         >
                           <n.icon
                             size={16}
@@ -351,7 +452,9 @@ function Main({
                             <span className="dot warning" role="img" aria-label="Needs attention" />
                           )}
                           {counts[n.id] !== undefined && (
-                            <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
+                            <span className="ml-auto text-xs font-normal tabular-nums text-(--tau-side-fg-2)">
+                              {counts[n.id]}
+                            </span>
                           )}
                         </button>
                         {n.id === "factory" && view === "factory" && (
@@ -364,7 +467,7 @@ function Main({
                                   key={sub.id}
                                   type="button"
                                   aria-current={active ? "page" : undefined}
-                                  className="group flex h-[30px] cursor-pointer w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13px] font-medium whitespace-nowrap text-(--tau-side-fg-2) hover:bg-(--tau-side-row-hover) hover:text-(--tau-side-fg) aria-[current=page]:bg-(--tau-side-row) aria-[current=page]:text-(--tau-side-fg)"
+                                  className="group flex h-[30px] cursor-pointer w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13px] font-medium whitespace-nowrap text-(--tau-side-fg-2) transition-[background-color,color,transform] duration-150 hover:bg-(--tau-side-row-hover) hover:text-(--tau-side-fg) active:scale-[0.985] aria-[current=page]:bg-(--tau-side-row) aria-[current=page]:text-(--tau-side-fg)"
                                   onMouseEnter={() => factoryRef.current?.prefetch(sub.hash)}
                                   onPointerDown={() => factoryRef.current?.prefetch(sub.hash)}
                                   onClick={() => {
@@ -391,7 +494,8 @@ function Main({
                           </div>
                         )}
                       </div>
-                    ))}
+                    );
+                  })}
                 </nav>
                 <div className="flex items-center gap-2 px-3 pt-2.5 pb-3.5">
                   <Button
@@ -415,12 +519,16 @@ function Main({
                     <span className={`dot ${data && !error ? "online" : ""}`} />
                     <span
                       className="min-w-0 flex-1 truncate text-left"
-                      title={data && !error ? `Connected to ${connection.url}` : "Daemon disconnected"}
+                      title={
+                        data && !error
+                          ? `Connected to ${connection.url}${updated !== undefined ? ` · updated ${updated} s ago` : ""}`
+                          : "Daemon disconnected"
+                      }
                     >
                       {data && !error ? data.node : "Offline"}
                     </span>
                     {!error && updated !== undefined && (
-                      <span className="shrink-0 text-xs text-(--tau-side-fg-2)">Updated {updated} s ago</span>
+                      <span className="shrink-0 text-xs tabular-nums text-(--tau-side-fg-2)">{updated}s</span>
                     )}
                     <ChevronRight size={14} className="text-(--tau-side-fg-2)" />
                   </Button>
@@ -437,15 +545,7 @@ function Main({
                 {/* Views portal their actions here; blocked like the workspace below. */}
                 <div ref={setActions} className="header-actions" inert={!!error} />
               </div>
-              <p className="card-sub">
-                {view === "factory"
-                  ? selectedFactoryMachine
-                    ? factoryState.issueTitle
-                      ? `Factory on ${selectedFactoryMachine} · ${factoryState.issueTitle}`
-                      : `Factory on ${selectedFactoryMachine}`
-                    : descriptions.factory
-                  : descriptions[view]}
-              </p>
+              <p className="card-sub">{subtitle}</p>
             </header>
             {factoryMounted && props && !error && (
               <div className="pane-full" hidden={view !== "factory"}>
@@ -500,14 +600,14 @@ function Main({
                       </div>
                     </Alert>
                   )}
-                  {props && views && view !== "factory" ? (
+                  {props && view !== "factory" ? (
                     <fieldset
                       key={JSON.stringify([connection.url, connection.token])}
                       disabled={!!error}
                       inert={!!error}
                       className="workspace"
                     >
-                      <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
+                      <ErrorBoundary key={view}>{renderView()}</ErrorBoundary>
                       {view === "settings" && (
                         <p className="version-line">
                           Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
@@ -527,7 +627,7 @@ function Main({
                       <div className="welcome-features">
                         <span>
                           <Users size={14} />
-                          Claude & Codex accounts
+                          Claude, Codex & Cursor
                         </span>
                         <span>
                           <Boxes size={14} />
@@ -535,7 +635,7 @@ function Main({
                         </span>
                         <span>
                           <Monitor size={14} />
-                          Tailscale machines
+                          Tailscale & relay sync
                         </span>
                       </div>
                       <div className="row">
@@ -623,21 +723,21 @@ function Main({
                         {
                           id: "desktop",
                           title: "The Claude Desktop app",
-                          body: "Chat, Cowork or the Code tab in Claude Desktop.",
+                          body: "Chat, Cowork or the Code tab in Claude Desktop",
                         },
                       ]
                     : []),
                   {
                     id: "terminal",
                     title: "Terminal, T3 Code or Codex",
-                    body: "Claude Code or Codex sessions on this or other machines.",
+                    body: "Claude Code or Codex sessions on this or other machines",
                   },
                   ...(onDesktop
                     ? [
                         {
                           id: "both",
                           title: "Both",
-                          body: "Start with Claude Desktop; the terminal setup is in Settings.",
+                          body: "Start with Claude Desktop; terminal setup is in Settings",
                         },
                       ]
                     : []),
@@ -675,8 +775,8 @@ function Main({
                 <li>
                   <strong>Add your accounts and tools</strong>
                   <p>
-                    Sign in to Claude or Codex in Accounts. Connect MCP servers and install skills, then assign them to
-                    Projects.
+                    Sign in to Claude, Codex or Cursor in Accounts. Connect MCP servers and install skills, then assign
+                    them to Projects.
                   </p>
                 </li>
                 <li>
@@ -695,7 +795,7 @@ function Main({
                 </li>
                 <li>
                   <strong>Share across machines</strong>
-                  <p>Start Tailscale on each machine, then open Machines to pair them.</p>
+                  <p>Open Machines to pair another machine over Tailscale or the encrypted relay.</p>
                 </li>
               </ol>
               <div className="note">

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { truncate, typedSwitch } from "hanzio";
 import { ArrowRight, Copy, FileText, FolderGit2, Plus, Sparkles } from "lucide-react";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
@@ -49,11 +49,12 @@ type Editor = { id?: string; skillMd: string; revision?: string };
 const isInstructions = (path: string) => /[/\\](CLAUDE|AGENTS)\.md$/.test(path);
 const repoName = (url: string) => url.replace("https://github.com/", "");
 /** Where a skill came from: skills.sh installs are recorded as owner/repo, everything else by its repository or folder. */
-const sourceLabel = (source?: string) => {
-  if (!source) return "Hand-written";
-  if (/^[\w.-]+\/[\w.-]+(@.+)?$/.test(source)) return "skills.sh";
-  if (/^[/~.]/.test(source)) return "Local folder";
-  return repoName(source).replace(/\.git$/, "");
+const sourceMeta = (source: string | undefined, bytes: number) => {
+  const sz = size(bytes);
+  if (!source) return `Hand-written · ${sz}`;
+  if (/^[\w.-]+\/[\w.-]+(@.+)?$/.test(source)) return `skills.sh · ${source} · ${sz}`;
+  if (/^[/~.]/.test(source)) return `Local folder · ${sz}`;
+  return `${repoName(source).replace(/\.git$/, "")} · ${sz}`;
 };
 
 export function Skills({ data, connection, perform }: ViewProps) {
@@ -77,9 +78,21 @@ export function Skills({ data, connection, perform }: ViewProps) {
   const assignedRepo = data.skillRepos.find((r) => r.url === repoAssign);
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const shown = data.skills.filter((k) => `${k.id} ${k.description}`.toLowerCase().includes(needle));
-  const usedBy = (id: string) => data.projects.filter((p) => p.skills.includes(id)).map((p) => p.id);
-  const fromRepo = (source?: string) => data.skillRepos.some((r) => r.url === source);
+  const shown = needle
+    ? data.skills.filter((k) => `${k.id} ${k.description}`.toLowerCase().includes(needle))
+    : data.skills;
+  const usedByMap = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const p of data.projects) {
+      for (const id of p.skills) {
+        const list = map.get(id);
+        if (list) list.push(p.id);
+        else map.set(id, [p.id]);
+      }
+    }
+    return map;
+  }, [data.projects]);
+  const repoUrls = useMemo(() => new Set(data.skillRepos.map((r) => r.url)), [data.skillRepos]);
   const load = (source: string, skill?: string) =>
     perform(async () => {
       const fetched = await control(connection, "skills preview", { source, skill });
@@ -167,8 +180,8 @@ export function Skills({ data, connection, perform }: ViewProps) {
           title="Skills need attention"
           detail={
             data.skillConflicts.length
-              ? "Choose which copy to keep. Agentgate retries the rest automatically."
-              : "Agentgate retries these automatically."
+              ? "Choose which copy to keep; Agentgate retries the rest automatically"
+              : "Agentgate retries these automatically"
           }
         >
           {data.skillHealth.errors.map((error, index) => (
@@ -201,7 +214,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Panel>
       )}
       {data.skillKept.length > 0 && (
-        <Panel title="Kept on this machine" detail="You kept these instead of Agentgate's copy of the same skill.">
+        <Panel title="Kept on this machine" detail="Kept instead of Agentgate's copy of the same skill">
           {data.skillKept.map((path) => (
             <div className="item" key={path}>
               <span className="grow">
@@ -216,10 +229,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Panel>
       )}
       {agentsMdPath && (
-        <Panel
-          title="AGENTS.md"
-          detail="Instructions Claude Code and Codex read in every project, on every machine. Edit them here or in any editor: saving the file updates your other machines."
-        >
+        <Panel title="AGENTS.md" detail="Global instructions synced to every machine. Edit here or directly on disk">
           <div className="item">
             <div className="machine-icon">
               <FileText size={16} />
@@ -255,7 +265,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Panel>
       )}
       <Panel
-        foot={`Project skills are linked into ${data.checkouts.length} local ${data.checkouts.length === 1 ? "checkout" : "checkouts"} on this machine. A repository is added when a session starts in it, or when you scan a folder in Projects. New sessions pick up changes.`}
+        foot={`Project skills are linked into ${data.checkouts.length} local ${data.checkouts.length === 1 ? "checkout" : "checkouts"} on this machine. A repository is added when a session starts in it, or when you scan a folder in Projects.`}
       >
         {data.skills.length > 6 && (
           <div className="item">
@@ -268,7 +278,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         {!data.skills.length && (
           <Empty>
             <Sparkles size={22} />
-            <strong>Install your first skill.</strong>
+            <strong>Install your first skill</strong>
             <p>
               Browse skills.sh, add one from a GitHub repository or folder, or write your own. Then choose which
               projects use it.
@@ -294,15 +304,11 @@ export function Skills({ data, connection, perform }: ViewProps) {
                 >
                   <Copy size={12} />
                 </Button>
-                <Badge>{sourceLabel(skill.source)}</Badge>
                 {pending.has(`update:${skill.id}`) && <Working>Updating</Working>}
               </div>
-              {skill.description && <small>{truncate(skill.description, 180)}</small>}
-              <small>
-                {sourceLabel(skill.source) === "skills.sh" && `${skill.source} · `}
-                {size(skill.size)}
-              </small>
-              <Where ids={usedBy(skill.id)} />
+              {skill.description && <small className="clamp-2">{skill.description}</small>}
+              <small>{sourceMeta(skill.source, skill.size)}</small>
+              <Where ids={usedByMap.get(skill.id) ?? []} />
             </div>
             <RowMenu
               label={`More for ${skill.id}`}
@@ -332,7 +338,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                       `update:${skill.id}`,
                     ),
                 },
-                !fromRepo(skill.source) && {
+                !(skill.source && repoUrls.has(skill.source)) && {
                   label: "Delete",
                   danger: true,
                   onAction: async () => {
@@ -348,7 +354,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
       {data.skillRepos.length > 0 && (
         <Panel
           title="GitHub repositories"
-          detail="Every machine checks these for new commits every 10 minutes. New skills are used where the repository is connected, and skills removed from the repository are removed here."
+          detail="Checked every 10 minutes across machines; added and removed skills sync automatically"
         >
           {data.skillRepos.map((repo) => (
             <div className="item" key={repo.url}>
@@ -418,7 +424,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </Panel>
       )}
       {add && (
-        <Modal title="Add skills" close={() => setAdd(undefined)}>
+        <Modal title="Add skills" size={add === "write" ? "lg" : undefined} close={() => setAdd(undefined)}>
           <Segmented
             label="Where the skills come from"
             value={add}
@@ -597,7 +603,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
                               </Badge>
                             ))}
                       </span>
-                      {k.description && <small>{truncate(k.description, 180)}</small>}
+                      {k.description && <small className="clamp-2">{k.description}</small>}
                       <small>
                         {k.files} {k.files === 1 ? "file" : "files"} · {size(k.size)}
                       </small>
@@ -633,12 +639,12 @@ export function Skills({ data, connection, perform }: ViewProps) {
         </AssignProjects>
       )}
       {editor && (
-        <Modal title={`Edit ${editor.id}`} close={() => setEditor(undefined)}>
+        <Modal title={`Edit ${editor.id}`} size="lg" close={() => setEditor(undefined)}>
           {editorForm(editor)}
         </Modal>
       )}
       {instructions && (
-        <Modal title="Edit AGENTS.md" close={() => setInstructions(undefined)}>
+        <Modal title="Edit AGENTS.md" size="lg" close={() => setInstructions(undefined)}>
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -655,7 +661,7 @@ export function Skills({ data, connection, perform }: ViewProps) {
               label="AGENTS.md"
               name="text"
               defaultValue={instructions.text}
-              description="Leave it empty to remove it from every session."
+              description="Leave empty to remove it from every session."
             />
             <Button type="submit" size="sm">
               Save

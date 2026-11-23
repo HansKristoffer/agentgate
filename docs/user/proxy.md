@@ -35,7 +35,7 @@ Account policy supports optional retry overrides, exact model allowlists and exc
 
 Model aliases resolve before selection, scope checks, and upstream preparation. They preserve requested and routed names in diagnostics. Provider IDs are case-sensitive; duplicate mappings, cycles, arbitrary text, and URL targets are rejected. Family scopes match whole identifier segments, preventing names such as `notopus` from matching `opus`.
 
-Settings and account editors preserve drafts, show before/after previews, and save using opaque record revisions. A settings save returns the applied settings and their new `revision` from the same transaction, so the editor can save again without rereading status. Stale saves return 409. Reload current settings and reapply the intended edits. Account overrides and pool policy sync; cooldowns, model snapshots, affinity, and request diagnostics stay local. Revision checks serialize changes to one local record; disconnected replicas still resolve using existing last-writer-wins rules.
+Settings and account editors preserve drafts and save using opaque record revisions. A settings save returns the applied settings and their new `revision` from the same transaction, so the editor can save again without rereading status. Stale saves return 409. Reload current settings and reapply the intended edits. Account overrides and pool policy sync; cooldowns, model snapshots, affinity, and request diagnostics stay local. Revision checks serialize changes to one local record; disconnected replicas still resolve using existing last-writer-wins rules.
 
 ```sh
 agentgate proxy route claude --model claude-sonnet-4-5
@@ -58,7 +58,7 @@ Example settings patch:
 
 ## Activity
 
-Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search, and applies each filter as you change it. Follow refreshes the latest page every five seconds. Pause preserves the current page and enables loading older results; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy diagnostics** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
+Activity filters requests by provider, account, model, outcome, failure, time, and ID/model/account search, and applies each filter as you change it. Follow updates live as requests finish. Pause preserves the current page, and loading older requests pauses automatically; the app keeps at most 1,000 loaded rows. Request detail shows every account attempt and retry. **Copy NDJSON** exports those rows and attempts as NDJSON to the clipboard. Use the CLI for a larger file export:
 
 ```sh
 agentgate requests --provider claude --outcome failed

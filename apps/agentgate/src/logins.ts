@@ -648,12 +648,15 @@ export function startInfisicalSignIn(s: Store, signal?: AbortSignal) {
 
 /** Shared logins, whether this machine uses them, and the machines where they do not work. Never includes the secrets. */
 export function listLogins(s: Store) {
-  return s.list("login").map((l) => {
+  const logins = s.list("login");
+  if (!logins.length) return [];
+  const nodes = s.list("node");
+  return logins.map((l) => {
     const local = state(s, l.id);
     const signedIn = !local.error && local.hash === hash(l);
-    const problems = s
-      .list("node")
-      .flatMap((n) => (n.loginProblems?.[l.id] ? [{ node: n.id, problem: n.loginProblems[l.id]! }] : []));
+    const problems = nodes.flatMap((n) =>
+      n.loginProblems?.[l.id] ? [{ node: n.id, problem: n.loginProblems[l.id]! }] : [],
+    );
     return { id: l.id, account: l.account, from: l.from, signedIn, error: local.error, problems };
   });
 }

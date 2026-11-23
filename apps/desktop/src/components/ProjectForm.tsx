@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Boxes, Sparkles } from "lucide-react";
 import { isVirtual, type Project, type Status } from "@agentgate/protocol";
 import type { ControlOps } from "@agentgate/protocol/control";
@@ -45,32 +45,41 @@ export function ProjectForm({
   const [tab, setTab] = useState<"servers" | "skills">("servers");
   const [query, setQuery] = useState("");
   const global = data.projects.find((p) => p.id === "*");
-  const globalServers = new Set(repository ? Object.values(global?.mcp ?? {}) : []);
+  const globalServers = useMemo(
+    () => new Set(repository ? Object.values(global?.mcp ?? {}) : []),
+    [repository, global],
+  );
   const name = (id: string) => data.servers.find((s) => s.id === id)?.label ?? id;
 
   // Per-session servers start inside a worktree, which a remote client doesn't have. Servers the project already has lead.
-  const serverRows: Row[] = data.servers
-    .filter((s) => !virtual || s.mode === "shared")
-    .toSorted((a, b) => Number(!aliasOf(base, a.id)) - Number(!aliasOf(base, b.id)))
-    .map((s) => {
-      const alias = aliasOf(base, s.id);
-      return {
-        id: s.id,
-        label: s.label ?? s.id,
-        dot: s.available === true ? "online" : s.available === false ? "offline" : "",
-        detail: [
-          alias && alias !== s.id && `Tool prefix ${alias}`,
-          inherit && globalServers.has(s.id) && "Already included from Global defaults",
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      };
-    });
-  const skillChoices = projectSkillChoices(data, edit.id, base.skills);
-  const folded = skillChoices.filter((c) => c.redundant).map((c) => c.id);
-  const skillRows: Row[] = skillChoices
-    .filter((c) => !c.redundant)
-    .map((c) => ({ id: c.id, label: c.id, detail: c.detail }));
+  const serverRows: Row[] = useMemo(
+    () =>
+      data.servers
+        .filter((s) => !virtual || s.mode === "shared")
+        .toSorted((a, b) => Number(!aliasOf(base, a.id)) - Number(!aliasOf(base, b.id)))
+        .map((s) => {
+          const alias = aliasOf(base, s.id);
+          return {
+            id: s.id,
+            label: s.label ?? s.id,
+            dot: s.available === true ? "online" : s.available === false ? "offline" : "",
+            detail: [
+              alias && alias !== s.id && `Tool prefix ${alias}`,
+              inherit && globalServers.has(s.id) && "Already included from Global defaults",
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          };
+        }),
+    [data.servers, virtual, base, inherit, globalServers],
+  );
+  const { skillRows, folded } = useMemo((): { skillRows: Row[]; folded: string[] } => {
+    const skillChoices = projectSkillChoices(data, edit.id, base.skills);
+    return {
+      folded: skillChoices.filter((c) => c.redundant).map((c) => c.id),
+      skillRows: skillChoices.filter((c) => !c.redundant).map((c) => ({ id: c.id, label: c.id, detail: c.detail })),
+    };
+  }, [data, edit.id, base.skills]);
 
   const [rows, chosen, setChosen] =
     tab === "servers" ? ([serverRows, servers, setServers] as const) : ([skillRows, skills, setSkills] as const);
