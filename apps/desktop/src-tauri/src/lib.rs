@@ -439,6 +439,7 @@ async fn proxy_factory_uri(
     method: tauri::http::Method,
     uri: tauri::http::Uri,
     content_type: Option<String>,
+    if_none_match: Option<String>,
     body: Vec<u8>,
 ) -> tauri::http::Response<Vec<u8>> {
     let host = match uri.host() {
@@ -485,6 +486,9 @@ async fn proxy_factory_uri(
     if let Some(ct) = content_type {
         req = req.header("content-type", ct);
     }
+    if let Some(etag) = if_none_match {
+        req = req.header("if-none-match", etag);
+    }
     if !body.is_empty() {
         req = req.body(body);
     }
@@ -509,20 +513,37 @@ async fn proxy_factory_uri(
         .get("content-security-policy")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let bytes = match response.bytes().await {
-        Ok(b) => b.to_vec(),
-        Err(_) => {
-            return factory_error_response(502, "Factory response failed while reading body.")
+    let res_etag = response
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = if status == 304 || status == 204 {
+        Vec::new()
+    } else {
+        match response.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(_) => {
+                return factory_error_response(502, "Factory response failed while reading body.")
+            }
         }
+    };
+    let cache_control = if res_etag.is_some() || status == 304 {
+        "no-cache"
+    } else {
+        "no-store"
     };
     let mut builder = tauri::http::Response::builder()
         .status(status)
-        .header("cache-control", "no-store");
+        .header("cache-control", cache_control);
     if let Some(ct) = res_ct {
         builder = builder.header("content-type", ct);
     }
     if let Some(csp) = res_csp {
         builder = builder.header("content-security-policy", csp);
+    }
+    if let Some(etag) = res_etag {
+        builder = builder.header("etag", etag);
     }
     builder
         .body(bytes)
@@ -543,9 +564,16 @@ pub fn run() {
                 .get("content-type")
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
+            let if_none_match = req
+                .headers()
+                .get("if-none-match")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             let body = req.into_body();
             tauri::async_runtime::spawn(async move {
-                let res = proxy_factory_uri(connection, method, uri, content_type, body).await;
+                let res =
+                    proxy_factory_uri(connection, method, uri, content_type, if_none_match, body)
+                        .await;
                 responder.respond(res);
             });
         })

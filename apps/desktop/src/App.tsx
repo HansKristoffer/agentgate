@@ -43,6 +43,8 @@ import {
 import {
   FACTORY_SECTIONS,
   loadSavedFactoryMachine,
+  warmFactoryHealth,
+  type FactoryHandle,
   type FactoryLiveState,
   type FactorySection,
 } from "./views/Factory.tsx";
@@ -148,8 +150,10 @@ function Main({
   loadError: string;
 }) {
   const [view, setView] = useState<View>("overview");
+  const [factoryMounted, setFactoryMounted] = useState(false);
   const [factoryMachine, setFactoryMachine] = useState("");
   const [factoryHash, setFactoryHash] = useState("#/");
+  const factoryRef = useRef<FactoryHandle | null>(null);
   const [factoryState, setFactoryState] = useState<FactoryLiveState>({
     section: "board",
     hash: "#/",
@@ -158,6 +162,7 @@ function Main({
     repos: [],
     repoScope: "",
     connected: false,
+    loaded: false,
     issueTitle: null,
   });
   const version = useAppVersion();
@@ -257,6 +262,13 @@ function Main({
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
   const selectedFactoryMachine = factoryMachine || data?.node || "";
+  // Pre-warm the Factory health check in the background when the factory skill is installed,
+  // so opening the Factory tab skips the serial /health spinner.
+  useEffect(() => {
+    if (!data || !selectedFactoryMachine) return;
+    if (!data.skills.some((s) => s.id === "factory")) return;
+    void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
+  }, [connection, data, selectedFactoryMachine]);
   const activeFactorySection = FACTORY_SECTIONS.find((s) => s.id === factoryState.section) ?? FACTORY_SECTIONS[0]!;
   const props = data && { data, connection, perform, local, desktop };
   const views = props && {
@@ -267,19 +279,6 @@ function Main({
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
-    factory: (
-      <Factory
-        {...props}
-        machine={selectedFactoryMachine}
-        onMachineChange={(node) => {
-          setFactoryMachine(node);
-          setFactoryState((prev) => ({ ...prev, open: 0, needsYou: 0, repos: [], repoScope: "", issueTitle: null }));
-        }}
-        targetHash={factoryHash}
-        onStateChange={setFactoryState}
-        onOpenSkills={() => setView("skills")}
-      />
-    ),
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
@@ -313,10 +312,31 @@ function Main({
                         <button
                           aria-current={view === n.id && n.id !== "factory" ? "page" : undefined}
                           className={`group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)${view === "factory" && n.id === "factory" ? " bg-(--tau-side-row-hover)" : ""}`}
+                          onMouseEnter={() => {
+                            if (n.id === "factory" && selectedFactoryMachine) {
+                              void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
+                            }
+                          }}
+                          onPointerDown={() => {
+                            if (n.id === "factory" && selectedFactoryMachine) {
+                              void warmFactoryHealth(connection, selectedFactoryMachine).catch(() => {});
+                            }
+                          }}
                           onClick={() => {
                             if (n.id === "factory") {
-                              setView("factory");
-                              setFactoryHash("#/");
+                              setFactoryMounted(true);
+                              if (view === "factory") {
+                                setFactoryHash("#/");
+                                factoryRef.current?.navigate("#/");
+                                setFactoryState((prev) => ({
+                                  ...prev,
+                                  section: "board",
+                                  hash: "#/",
+                                  issueTitle: null,
+                                }));
+                              } else {
+                                setView("factory");
+                              }
                             } else {
                               setView(n.id);
                             }
@@ -345,10 +365,19 @@ function Main({
                                   type="button"
                                   aria-current={active ? "page" : undefined}
                                   className="group flex h-[30px] cursor-pointer w-full items-center gap-2 rounded-[8px] px-2.5 text-left text-[13px] font-medium whitespace-nowrap text-(--tau-side-fg-2) hover:bg-(--tau-side-row-hover) hover:text-(--tau-side-fg) aria-[current=page]:bg-(--tau-side-row) aria-[current=page]:text-(--tau-side-fg)"
+                                  onMouseEnter={() => factoryRef.current?.prefetch(sub.hash)}
+                                  onPointerDown={() => factoryRef.current?.prefetch(sub.hash)}
                                   onClick={() => {
+                                    setFactoryMounted(true);
                                     setView("factory");
                                     setFactoryHash(sub.hash);
-                                    setFactoryState((prev) => ({ ...prev, section: sub.id, hash: sub.hash }));
+                                    factoryRef.current?.navigate(sub.hash);
+                                    setFactoryState((prev) => ({
+                                      ...prev,
+                                      section: sub.id,
+                                      hash: sub.hash,
+                                      issueTitle: null,
+                                    }));
                                   }}
                                 >
                                   <SubIcon size={14} className="shrink-0 opacity-80" />
@@ -403,6 +432,7 @@ function Main({
               <div className="card-title-row">
                 <h1>{view === "factory" ? activeFactorySection.label : selected.title}</h1>
                 {!local && <Badge>Remote</Badge>}
+                {view === "factory" && factoryState.loaded && !factoryState.connected && <Badge>Reconnecting</Badge>}
                 {pending.size > 0 && <Spinner size="sm" color="current" aria-label="Working" />}
                 {/* Views portal their actions here; blocked like the workspace below. */}
                 <div ref={setActions} className="header-actions" inert={!!error} />
@@ -410,16 +440,42 @@ function Main({
               <p className="card-sub">
                 {view === "factory"
                   ? selectedFactoryMachine
-                    ? `Factory on ${selectedFactoryMachine}`
+                    ? factoryState.issueTitle
+                      ? `Factory on ${selectedFactoryMachine} · ${factoryState.issueTitle}`
+                      : `Factory on ${selectedFactoryMachine}`
                     : descriptions.factory
                   : descriptions[view]}
               </p>
             </header>
-            {view === "factory" && props && views && !error ? (
-              <div className="pane-full">
-                <ErrorBoundary key="factory">{views.factory}</ErrorBoundary>
+            {factoryMounted && props && !error && (
+              <div className="pane-full" hidden={view !== "factory"}>
+                <ErrorBoundary key={`factory:${connection.url}:${connection.token ?? ""}`}>
+                  <Factory
+                    {...props}
+                    active={view === "factory"}
+                    machine={selectedFactoryMachine}
+                    onMachineChange={(node) => {
+                      setFactoryMachine(node);
+                      setFactoryState((prev) => ({
+                        ...prev,
+                        open: 0,
+                        needsYou: 0,
+                        repos: [],
+                        repoScope: "",
+                        connected: false,
+                        loaded: false,
+                        issueTitle: null,
+                      }));
+                    }}
+                    initialHash={factoryHash}
+                    controlRef={factoryRef}
+                    onStateChange={setFactoryState}
+                    onOpenSkills={() => setView("skills")}
+                  />
+                </ErrorBoundary>
               </div>
-            ) : (
+            )}
+            {(view !== "factory" || !props || !!error) && (
               <ScrollShadow className="pane">
                 <div className="pane-inner">
                   {error && (
@@ -444,7 +500,7 @@ function Main({
                       </div>
                     </Alert>
                   )}
-                  {props && views ? (
+                  {props && views && view !== "factory" ? (
                     <fieldset
                       key={JSON.stringify([connection.url, connection.token])}
                       disabled={!!error}

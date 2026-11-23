@@ -78,6 +78,9 @@ pre {
   font-size: 13px;
   color: var(--muted);
   margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pane {
@@ -92,6 +95,9 @@ pre {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+.pane-full[hidden] {
+  display: none;
 }
 .side-subnav {
   display: flex;

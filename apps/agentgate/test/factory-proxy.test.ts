@@ -11,26 +11,49 @@ afterEach(() => {
 });
 
 function startMockFactory() {
-  const seen: { method: string; path: string; body: string; origin: string | null }[] = [];
+  const seen: {
+    method: string;
+    path: string;
+    body: string;
+    origin: string | null;
+    ifNoneMatch: string | null;
+  }[] = [];
+  const bigHtml = `<!doctype html><h1>Factory</h1><p>${"fast-embed ".repeat(200)}</p>`;
+  const htmlEtag = 'W/"v-test-1"';
   const server: ReturnType<typeof Bun.serve> = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
     async fetch(req): Promise<Response> {
       const url = new URL(req.url);
       const body = req.method === "GET" || req.method === "HEAD" ? "" : await req.text();
-      seen.push({ method: req.method, path: url.pathname + url.search, body, origin: req.headers.get("origin") });
+      seen.push({
+        method: req.method,
+        path: url.pathname + url.search,
+        body,
+        origin: req.headers.get("origin"),
+        ifNoneMatch: req.headers.get("if-none-match"),
+      });
       if (url.pathname === "/health") return Response.json({ ok: true, version: "test", port: server.port });
       if (url.pathname === "/") {
-        return new Response("<!doctype html><h1>Factory</h1>", {
-          headers: { "content-type": "text/html; charset=utf-8" },
+        if (req.headers.get("if-none-match") === htmlEtag) {
+          return new Response(null, {
+            status: 304,
+            headers: { etag: htmlEtag, "cache-control": "no-cache" },
+          });
+        }
+        return new Response(bigHtml, {
+          headers: { "content-type": "text/html; charset=utf-8", etag: htmlEtag, "cache-control": "no-cache" },
         });
       }
       if (url.pathname === "/api/board") return Response.json({ open: 2, needsYou: 1, issues: [], done: [] });
+      if (url.pathname === "/api/issues/batch") {
+        return Response.json({ issues: { t1: { id: "t1", pad: "x".repeat(2000) } } });
+      }
       if (url.pathname === "/api/issues/t1/answers" && req.method === "POST") {
         return Response.json({ ok: true, received: JSON.parse(body) });
       }
       if (url.pathname === "/evidence/t1/shot.png") {
-        return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { "content-type": "image/png" } });
+        return new Response(new Uint8Array(2048).fill(137), { headers: { "content-type": "image/png" } });
       }
       if (url.pathname === "/overview/t1") {
         return new Response("<main>PR overview</main>", {
@@ -41,7 +64,7 @@ function startMockFactory() {
     },
   });
   cleanups.push(() => server.stop(true));
-  return { url: `http://127.0.0.1:${server.port}`, seen };
+  return { url: `http://127.0.0.1:${server.port}`, seen, htmlEtag };
 }
 
 describe("factory proxy", () => {
@@ -50,6 +73,7 @@ describe("factory proxy", () => {
     expect(allowedFactoryPath("GET", "/health")).toBe(true);
     expect(allowedFactoryPath("GET", "/api/board")).toBe(true);
     expect(allowedFactoryPath("GET", "/api/changes")).toBe(true);
+    expect(allowedFactoryPath("GET", "/api/issues/batch")).toBe(true);
     expect(allowedFactoryPath("POST", "/api/issues/t1/answers")).toBe(true);
     expect(allowedFactoryPath("PUT", "/api/settings/repo:acme/api")).toBe(true);
     expect(allowedFactoryPath("GET", "/evidence/t1/a.png")).toBe(true);
@@ -95,10 +119,40 @@ describe("factory proxy", () => {
     // Origin is never forwarded to local Factory.
     expect(mock.seen.at(-1)?.origin).toBeNull();
 
-    const png = await call("/api/factory-proxy/laptop/evidence/t1/shot.png");
+    const png = await call("/api/factory-proxy/laptop/evidence/t1/shot.png", {
+      headers: { "accept-encoding": "gzip" },
+    });
     expect(png.status).toBe(200);
     expect(png.headers.get("content-type")).toBe("image/png");
-    expect(new Uint8Array(await png.arrayBuffer())).toEqual(new Uint8Array([137, 80, 78, 71]));
+    // Binary images are not gzipped even when the caller accepts gzip.
+    expect(png.headers.get("content-encoding")).toBeNull();
+    expect(new Uint8Array(await png.arrayBuffer())).toEqual(new Uint8Array(2048).fill(137));
+
+    // Compressible HTML/JSON preserves ETag, honors If-None-Match (304), and gzips when accepted.
+    const gzipHtml = await call("/api/factory-proxy/laptop/?embed=1", {
+      headers: { "accept-encoding": "gzip" },
+    });
+    expect(gzipHtml.status).toBe(200);
+    expect(gzipHtml.headers.get("content-encoding")).toBe("gzip");
+    expect(gzipHtml.headers.get("etag")).toBe(mock.htmlEtag);
+    expect(gzipHtml.headers.get("cache-control")).toBe("no-cache");
+    const decodedHtml = new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await gzipHtml.arrayBuffer())));
+    expect(decodedHtml).toContain("<h1>Factory</h1>");
+
+    const notMod = await call("/api/factory-proxy/laptop/?embed=1", {
+      headers: { "accept-encoding": "gzip", "if-none-match": mock.htmlEtag },
+    });
+    expect(notMod.status).toBe(304);
+    expect(notMod.headers.get("etag")).toBe(mock.htmlEtag);
+    expect(await notMod.text()).toBe("");
+
+    const batch = await call("/api/factory-proxy/laptop/api/issues/batch?ids=t1", {
+      headers: { "accept-encoding": "gzip" },
+    });
+    expect(batch.status).toBe(200);
+    expect(batch.headers.get("content-encoding")).toBe("gzip");
+    const batchJson = JSON.parse(new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await batch.arrayBuffer()))));
+    expect(batchJson.issues.t1.id).toBe("t1");
 
     const overview = await call("/api/factory-proxy/laptop/overview/t1");
     expect(overview.status).toBe(200);
@@ -161,6 +215,30 @@ describe("factory proxy", () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ open: 2, needsYou: 1 });
+
+    // Peer forwarding preserves ETag, gzip compression, and 304 Not Modified end-to-end.
+    const peerHtml = await localApp.fetch(
+      new Request("http://127.0.0.1:7878/api/factory-proxy/server/?embed=1", {
+        headers: { host: "127.0.0.1:7878", "accept-encoding": "gzip" },
+      }),
+      { listener: "loopback" },
+    );
+    expect(peerHtml.status).toBe(200);
+    expect(peerHtml.headers.get("content-encoding")).toBe("gzip");
+    expect(peerHtml.headers.get("etag")).toBe(remoteFactory.htmlEtag);
+    expect(new TextDecoder().decode(Bun.gunzipSync(new Uint8Array(await peerHtml.arrayBuffer())))).toContain(
+      "<h1>Factory</h1>",
+    );
+
+    const peerNotMod = await localApp.fetch(
+      new Request("http://127.0.0.1:7878/api/factory-proxy/server/?embed=1", {
+        headers: { host: "127.0.0.1:7878", "accept-encoding": "gzip", "if-none-match": remoteFactory.htmlEtag },
+      }),
+      { listener: "loopback" },
+    );
+    expect(peerNotMod.status).toBe(304);
+    expect(peerNotMod.headers.get("etag")).toBe(remoteFactory.htmlEtag);
+    expect(remoteFactory.seen.at(-1)?.ifNoneMatch).toBe(remoteFactory.htmlEtag);
 
     // 2. Through relayedRoutes (same handler NodeChannel runs for E2E-encrypted relay calls)
     const relayHandler = relayedRoutes(
