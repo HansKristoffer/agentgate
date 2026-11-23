@@ -413,8 +413,7 @@ fn decode_hex_node(host: &str) -> Result<String, String> {
 fn percent_encode_segment(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     for byte in input.as_bytes() {
-        let unreserved =
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
+        let unreserved = byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~');
         if unreserved {
             out.push(*byte as char);
         } else {
@@ -450,10 +449,7 @@ async fn proxy_factory_uri(
         Ok(n) => n,
         Err(e) => return factory_error_response(400, &e),
     };
-    let path_and_query = uri
-        .path_and_query()
-        .map(|pq| pq.as_str())
-        .unwrap_or("/");
+    let path_and_query = uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
     let clean_path = if path_and_query.starts_with('/') {
         path_and_query.to_string()
     } else {
@@ -515,7 +511,9 @@ async fn proxy_factory_uri(
         .map(str::to_string);
     let bytes = match response.bytes().await {
         Ok(b) => b.to_vec(),
-        Err(_) => return factory_error_response(502, "Factory response failed while reading body."),
+        Err(_) => {
+            return factory_error_response(502, "Factory response failed while reading body.")
+        }
     };
     let mut builder = tauri::http::Response::builder()
         .status(status)
