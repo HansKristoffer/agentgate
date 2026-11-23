@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.37.1](https://github.com/HansKristoffer/agentgate/compare/v0.37.0...v0.37.1) (2026-11-23)
+
+
+### Bug Fixes
+
+* **factory:** issues open in the desktop app and old peers name the update ([#169](https://github.com/HansKristoffer/agentgate/issues/169)) ([2b167ad](https://github.com/HansKristoffer/agentgate/commit/2b167adacca07a1d0c6a25249cda23fb99ac0910))
+
 ## [0.37.0](https://github.com/HansKristoffer/agentgate/compare/v0.36.0...v0.37.0) (2026-11-23)
 
 
