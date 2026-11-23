@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.37.0](https://github.com/HansKristoffer/agentgate/compare/v0.36.0...v0.37.0) (2026-11-23)
+
+
+### Features
+
+* **factory:** embed skill-factory in desktop app over Tailscale and relay ([#168](https://github.com/HansKristoffer/agentgate/issues/168)) ([4a489b0](https://github.com/HansKristoffer/agentgate/commit/4a489b05ff621aea8df3a14984bb7a91478f7b42))
+* remove the software factory from agentgate ([#166](https://github.com/HansKristoffer/agentgate/issues/166)) ([9668139](https://github.com/HansKristoffer/agentgate/commit/9668139ed435d80a17dc1a242ccc7f256096eeb0))
+
 ## [0.36.0](https://github.com/HansKristoffer/agentgate/compare/v0.35.1...v0.36.0) (2026-11-21)
 
 
