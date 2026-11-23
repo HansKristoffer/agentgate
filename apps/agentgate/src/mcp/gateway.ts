@@ -36,8 +36,6 @@ import { resolve } from "./templates.ts";
 export const VERSION = "0.1.0";
 /** The tool prefix of agentgate's own tools in local sessions (thread handoff); reserved in project mappings. */
 export const BUILTIN_ALIAS = "agentgate";
-/** The tool prefix of the factory's tools on a virtual project's endpoint (`factoryTools`); reserved there. */
-export const FACTORY_ALIAS = "factory";
 // A shared connection nobody has used for ten minutes is closed; the next call reconnects.
 const IDLE_CLOSE = 10 * 60_000;
 const MAX_TOOL_NAME = 64; // Codex's limit
@@ -372,24 +370,6 @@ export interface Source {
 }
 
 /**
- * What one shim session may use, from the T3 Code thread its shim names (`/mcp?thread=`). The daemon narrows the
- * sessions of factory threads with it (`threadScope` in factory/controller.ts). The thread id is a label the shim
- * sends, so a scope narrows a default and is no boundary.
- */
-export interface SessionScope {
-  /** The project's servers the session may use, by alias; every mapped one when absent. */
-  servers?: readonly string[];
-  /** agentgate's own tools the session does not see. */
-  hidden?: readonly string[];
-}
-
-/** Whether a session with this scope may use the source `alias`, or its tool `tool`. */
-export function inScope(scope: SessionScope | undefined, alias: string, tool?: string): boolean {
-  if (alias === BUILTIN_ALIAS) return tool === undefined || !scope?.hidden?.includes(tool);
-  return !scope?.servers || scope.servers.includes(alias);
-}
-
-/**
  * Claude Code keeps the first 4,096 characters of a server's instructions and drops the rest. The budget stays under
  * that, so the merged text, with its headings and cut notes, still fits.
  */
@@ -470,12 +450,11 @@ export function capResult(result: CallToolResult, max: number): CallToolResult {
 const callTool = (client: Client, params: CallToolRequest["params"], options: RequestOptions) =>
   client.request({ method: "tools/call", params }, options) as Promise<CallToolResult>;
 
-/** A source's tools as the session sees them: past its allowlist and the session's scope, under their full names. */
-function offer(src: Source, tools: Tool[], allowed: ((alias: string, tool: string) => boolean) | undefined) {
+/** A source's tools as the session sees them: past its allowlist, under their full names. */
+function offer(src: Source, tools: Tool[]) {
   const offered = src.instance?.tools && new Set(src.instance.tools);
   return tools.flatMap(({ outputSchema: _, ...t }) => {
     if (offered && !offered.has(t.name)) return [];
-    if (allowed && !allowed(src.alias, t.name)) return [];
     const name = toolName(src.alias, t.name);
     // No output schema: results pass through unchecked, so a client must not check them against one either.
     return [{ name, tool: t.name, listed: { ...t, name } }];
@@ -500,7 +479,6 @@ export function mergedServer(
     onError = () => {},
     resolveSource,
     callError,
-    allow,
     activity,
     signal,
     onCall,
@@ -510,9 +488,6 @@ export function mergedServer(
     resolveSource?: (alias: string) => Promise<Source | undefined>;
     /** What a failed call throws to the client instead of the source's error; the error passes through without it. */
     callError?: (alias: string, e: unknown) => Error;
-    /** Whether the session may list and call a source's tool now: asked once per listing and once per call, and
-     * answers for every tool of that listing or call. */
-    allow?: () => (alias: string, tool: string) => boolean;
     activity?: (change: number) => void;
     signal?: AbortSignal;
     onCall?: (call: CallRecord) => void;
@@ -536,7 +511,6 @@ export function mergedServer(
   }
 
   async function listSources(options: { fresh?: boolean }): Promise<Tool[]> {
-    const allowed = allow?.();
     const next = new Map<string, { alias: string; tool: string }>();
     const all: Tool[] = [];
     const pages = await Promise.all(
@@ -551,7 +525,7 @@ export function mergedServer(
       }),
     );
     for (const { src, tools } of pages)
-      for (const t of offer(src, tools, allowed)) {
+      for (const t of offer(src, tools)) {
         if (next.has(t.name)) throw new Error(`duplicate MCP tool name ${t.name}`);
         next.set(t.name, { alias: src.alias, tool: t.tool });
         all.push(t.listed);
@@ -573,7 +547,7 @@ export function mergedServer(
       const src = await resolveSource(alias);
       if (!src) return;
       const tools = await listAllTools(src.client, { fresh: !src.keepTools });
-      const found = offer(src, tools, allow?.()).find((t) => t.name === name);
+      const found = offer(src, tools).find((t) => t.name === name);
       if (found) routes.set(name, { alias, tool: found.tool });
     } catch (e) {
       throw callError ? callError(alias, e) : e;
@@ -587,7 +561,7 @@ export function mergedServer(
     // A kept list can miss a tool a server added without saying so; ask again once before giving up.
     if (!routes.has(req.params.name)) await list({ fresh: true });
     const route = routes.get(req.params.name);
-    if (!route || (allow && !allow()(route.alias, route.tool)))
+    if (!route)
       return { isError: true, content: [{ type: "text", text: `agentgate: unavailable tool ${req.params.name}` }] };
     activity?.(1);
     const started = performance.now();
@@ -693,8 +667,6 @@ export class Gateway {
       project: string;
       lastUsed: number;
       calls: number;
-      /** The T3 Code thread the session's shim named, which decides its scope. */
-      thread?: string;
       /** What the session's tool list depends on (`toolsKey`), as of its last notice. */
       tools: string;
     }
@@ -705,11 +677,6 @@ export class Gateway {
   /** agentgate's own tools for local sessions, set by the daemon. Never offered on a virtual project's public endpoint. */
   builtin?: () => Promise<Source>;
   private builtinSource?: Promise<Source>;
-  /** The software factory's tools for a virtual project's endpoint that offers them, set by the daemon. */
-  factoryTools?: (project: string) => Promise<Source>;
-  /** A session's scope from the T3 Code thread its shim names, if any; set by the daemon. Without it, or without a
-   * scope, a session uses every server its project maps. */
-  scope?: (thread: string | undefined) => SessionScope | undefined;
 
   constructor(private s: Store) {}
 
@@ -806,19 +773,16 @@ export class Gateway {
     };
   }
 
-  /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. A server
-   * outside the scope is not connected for the session. */
-  private async sources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
+  /** With `wait`, the sources that connected within it; the others keep connecting for the next listing. */
+  private async sources(project: string, wait?: number): Promise<Source[]> {
     const out = await Promise.all(
-      Object.keys(aliasesFor(this.s, project))
-        .filter((alias) => inScope(scope, alias))
-        .map((alias) => {
-          const source = this.source(project, alias).catch((e) => {
-            if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
-            return undefined;
-          });
-          return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
-        }),
+      Object.keys(aliasesFor(this.s, project)).map((alias) => {
+        const source = this.source(project, alias).catch((e) => {
+          if (!(e instanceof Backoff)) this.s.log("mcp", alias, "", 0, 0, `connect failed: ${e}`);
+          return undefined;
+        });
+        return wait === undefined ? source : Promise.race([source, sleep(wait).then(() => undefined)]);
+      }),
     );
     return out.filter(isTruthy);
   }
@@ -831,9 +795,9 @@ export class Gateway {
     }));
   }
 
-  private async localSources(project: string, wait?: number, scope?: SessionScope): Promise<Source[]> {
+  private async localSources(project: string, wait?: number): Promise<Source[]> {
     const builtin = await this.builtinTools().catch(() => undefined);
-    const out = await this.sources(project, wait, scope);
+    const out = await this.sources(project, wait);
     return builtin ? [...out.filter((src) => src.alias !== BUILTIN_ALIAS), builtin] : out;
   }
 
@@ -864,27 +828,20 @@ export class Gateway {
     const project = params.get("project") || "*";
     if (project !== "*" && !projectIdSchema.safeParse(project).success)
       return new Response("invalid project", { status: 400 });
-    const thread = params.get("thread") || undefined;
-    if (thread && thread.length > 256) return new Response("invalid thread", { status: 400 });
-    const scope = () => this.scope?.(thread);
     // The shim gives up on the handshake after 5 s: one slow or hung server must not cost the session every tool.
-    const instructions = mergeInstructions(await this.localSources(project, 3000, scope()), (aliases) => {
+    const instructions = mergeInstructions(await this.localSources(project, 3000), (aliases) => {
       const key = `${project} ${aliases.join(" ")}`;
       if (this.trimmed.has(key)) return;
       this.trimmed.add(key);
       this.s.log("mcp", "", "", 0, 0, `${project}: instructions of ${aliases.join(", ")} cut to fit`);
     });
-    const tools = this.toolsKey(project, thread);
+    const tools = this.toolsKey(project);
     const usage = { lastUsed: this.s.now(), calls: 0 };
-    const server = mergedServer(instructions, () => this.localSources(project, undefined, scope()), {
+    const server = mergedServer(instructions, () => this.localSources(project), {
       onError: (alias, e) => this.s.log("mcp", alias, "", 0, 0, this.failure(project, alias, e)),
       resolveSource: async (alias) => {
         if (alias === BUILTIN_ALIAS && this.builtin) return this.builtinTools();
-        return inScope(scope(), alias) ? this.source(project, alias) : undefined;
-      },
-      allow: () => {
-        const now = scope();
-        return (alias, tool) => inScope(now, alias, tool);
+        return this.source(project, alias);
       },
       activity: (delta) => {
         usage.calls += delta;
@@ -908,7 +865,6 @@ export class Gateway {
           transport,
           server,
           project,
-          ...(thread && { thread }),
           tools,
           get lastUsed() {
             return usage.lastUsed;
@@ -940,8 +896,7 @@ export class Gateway {
 
   /**
    * The endpoint of a virtual project, for remote clients through the relay: stateless JSON, one server and
-   * transport per POST, shared instances plus the built-in skill tools, and the factory's tools when the project offers
-   * them. Never reachable through an HTTP listener.
+   * transport per POST, shared instances plus the built-in skill tools. Never reachable through an HTTP listener.
    */
   async handleRemote(
     project: string,
@@ -954,7 +909,7 @@ export class Gateway {
       failed: [],
     });
     if (this.closed) return error(503, -32000, "agentgate is stopping");
-    // The relay frame allows webhook-sized bodies; MCP requests keep their own limit, whatever the relay enforces.
+    // MCP requests keep their own limit, whatever the relay enforces.
     if (Buffer.byteLength(body) > REMOTE_LIMITS.requestBytes) return error(413, -32000, "request too large");
     let message: unknown;
     try {
@@ -965,11 +920,7 @@ export class Gateway {
     if (Array.isArray(message)) return error(400, -32600, "JSON-RPC batches are not supported");
     const failed = new Set<string>();
     const skills = await skillsSource(this.s, project);
-    // Read once per request, like the skills: a switch turned off stops the next request.
-    const factory =
-      this.s.get("project", project)?.factoryTools && this.factoryTools ? await this.factoryTools(project) : undefined;
-    const builtins = [skills, ...(factory ? [factory] : [])];
-    const builtin = (alias: string) => builtins.find((src) => src.alias === alias);
+    const builtin = (alias: string) => (alias === skills.alias ? skills : undefined);
     const sources = async (): Promise<Source[]> => {
       const out = await Promise.all(
         Object.keys(aliasesFor(this.s, project))
@@ -984,7 +935,7 @@ export class Gateway {
             }
           }),
       );
-      return [...out.filter(isTruthy), ...builtins];
+      return [...out.filter(isTruthy), skills];
     };
     // Instructions only matter to `initialize`; skip connecting every upstream twice for other requests.
     const instructions =
@@ -1044,7 +995,7 @@ export class Gateway {
       };
     } finally {
       await server.close().catch(() => {});
-      for (const src of builtins) await src.client.close().catch(() => {});
+      await skills.client.close().catch(() => {});
     }
   }
 
@@ -1054,22 +1005,21 @@ export class Gateway {
     return `${project}: ${errorText(e, inst ? secretValues(inst, this.s) : [])}`;
   }
 
-  /** What a session's tool list depends on: its project's mapping, the mapped servers' settings, which are signed
-   * in, and its thread's scope. */
-  private toolsKey(project: string, thread: string | undefined): string {
-    return JSON.stringify([
+  /** What a session's tool list depends on: its project's mapping, the mapped servers' settings and which are signed
+   * in. */
+  private toolsKey(project: string): string {
+    return JSON.stringify(
       Object.entries(aliasesFor(this.s, project)).map(([alias, id]) => [
         alias,
         this.s.get("mcp", id) ?? null,
         !!this.s.get("mcpCredential", id)?.tokens,
       ]),
-      this.scope?.(thread) ?? null,
-    ]);
+    );
   }
 
   /**
-   * Tells the sessions whose tools may have changed to list them again: after a store change or a factory run's
-   * change, those whose mapping, servers, sign-ins or scope differ; with `instance`, those using that server, which
+   * Tells the sessions whose tools may have changed to list them again: after a store change, those whose mapping,
+   * servers or sign-ins differ; with `instance`, those using that server, which
    * said its tools changed. A client re-lists on every notice, and store changes that leave tools alone (a session
    * being recorded, a token refresh) are frequent.
    */
@@ -1078,7 +1028,7 @@ export class Gateway {
       if (instance) {
         if (!Object.values(aliasesFor(this.s, session.project)).includes(instance)) continue;
       } else {
-        const key = this.toolsKey(session.project, session.thread);
+        const key = this.toolsKey(session.project);
         if (key === session.tools) continue;
         session.tools = key;
       }

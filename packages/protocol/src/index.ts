@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { getUniqueValues, isTruthy } from "hanzio";
 import { projectIdSchema, safePath, skillFileSchema, skillIdSchema, skillRepoSchema } from "./skills.ts";
-import { factoryPointerSchema } from "./factory.ts";
 import {
   aliasesSchema,
   modelPolicySchema,
@@ -17,7 +16,6 @@ import {
 export * from "./skills.ts";
 export * from "./proxy.ts";
 export * from "./handoff.ts";
-export * from "./factory.ts";
 
 export const API_VERSION = 5;
 export const accountSchema = z.object({
@@ -79,13 +77,6 @@ export const projectSchema = z.object({
   inheritDefaults: z.boolean().default(true),
   /** Virtual projects only: the public endpoint on the relay. Secrets never leave the daemon in API responses. */
   remote: remoteSchema.optional(),
-  /** Virtual projects only: the endpoint also offers the software factory's tools (factory/remote-tools.ts). Written
-   * only once every node runs node protocol 9, since older daemons drop it when they save the project. */
-  factoryTools: z.boolean().optional(),
-  /** Virtual projects with `factoryTools` only: where every machine posts the factory updates it makes
-   * (factory/notify.ts). A capability like the endpoint's secret: the API shows only its origin. Same protocol as
-   * `factoryTools`. */
-  factoryWebhook: z.string().url().max(2000).optional(),
   seenAt: z.number().int().nonnegative().optional(),
   seenOn: z.string().optional(),
   /** A T3 Code project for this repo exists on some node, under this title; set once by T3 project sync. Older daemons
@@ -122,8 +113,6 @@ export type RemoteSummary = z.infer<typeof remoteSummarySchema>;
 /** File contents are secrets: the API shows only which files there are. */
 const publicProjectSchema = projectSchema.extend({
   remote: remoteSummarySchema.optional(),
-  /** The webhook's origin, never its path or query, which may carry the receiver's token. */
-  factoryWebhook: z.string().optional(),
   files: z.array(z.object({ path: z.string(), updatedAt: z.string() })).optional(),
   /** `PUT /projects` takes it back, so a form opened before another machine's change cannot save over it. */
   revision: z.string().optional(),
@@ -137,7 +126,7 @@ export const projectChangeSchema = z.union([
 ]);
 export type ProjectChange = z.infer<typeof projectChangeSchema>;
 /** What the app fetches, one topic each, so a change refetches only what moved. */
-export const TOPICS = ["status", "desktop", "factory", "threads", "activity"] as const;
+export const TOPICS = ["status", "desktop", "threads", "activity"] as const;
 export type Topic = (typeof TOPICS)[number];
 /** GET /api/changes: answers once the token differs from `after`, or after `wait` seconds (at most 25). */
 export const changesSchema = z.object({
@@ -196,8 +185,6 @@ export const settingsSchema = z.object({
   t3ProjectSync: z.boolean().default(false),
   /** A thread that comes back to a machine gets the messages it had elsewhere written into T3 Code's own database. */
   t3HandoffHistory: z.boolean().default(true),
-  /** The factory's folder and the machine that runs it; absent while the factory is off. */
-  factory: factoryPointerSchema.optional(),
 });
 /** Remove defaults before making patches optional: omission must never reset a field. */
 export const accountPatchSchema = z

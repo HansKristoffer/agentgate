@@ -6,7 +6,6 @@ import { accountStatus, proxy, recordUsage, unknownQuota } from "../src/llm/pool
 import { Quotas } from "../src/llm/quota.ts";
 import { providers } from "../src/llm/providers.ts";
 import { activeAccount, route } from "../src/llm/routing.ts";
-import { sessionUsage } from "../src/llm/sessions.ts";
 import { Telemetry, interruptPending, requests } from "../src/llm/telemetry.ts";
 import { Store } from "../src/store.ts";
 
@@ -145,12 +144,11 @@ test("a body whose user_id already names the account is forwarded byte for byte"
   expect(bodies).toEqual([body]);
 });
 
-test("a Claude session's affinity and usage both follow its X-Claude-Code-Session-Id", async () => {
+test("a Claude session's affinity follows its X-Claude-Code-Session-Id", async () => {
   s.put("setting", "settings", {
     ...s.settings(),
     strategy: "round-robin",
     sessionAffinity: true,
-    factory: { store: "github", repo: "acme/factory", path: "", node: "n1" },
   });
   // Each request's metadata names a different session; only the header is the same.
   for (const metadata of ["first", "second"])
@@ -161,7 +159,6 @@ test("a Claude session's affinity and usage both follow its X-Claude-Code-Sessio
       )
     ).text();
   expect(seen).toEqual(["tok-a", "tok-a"]);
-  expect(sessionUsage(s, ["header-session"])).toMatchObject([{ session: "header-session", requests: 2 }]);
 });
 
 test("a quota 429 is retried on the next account; the client never sees it", async () => {

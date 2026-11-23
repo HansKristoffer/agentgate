@@ -2,12 +2,11 @@ import { useState } from "react";
 import { Copy, Eye, EyeOff } from "lucide-react";
 import { Button } from "@heroui/react";
 import type { PublicProject } from "@agentgate/protocol";
-import { Badge, Choice, Field, Toggle } from "../components/ui.tsx";
+import { Badge, Choice } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
 import { control, request } from "../api.ts";
 import { idPath, relative } from "./utils.ts";
 import { useDaemon } from "../useDaemon.ts";
-import { nodeOptions } from "./factory/Init.tsx";
 
 type Endpoint = { url: string; secret: string };
 
@@ -28,8 +27,6 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
       await change();
       await secret.reload();
     }, message);
-  const setWebhook = (url: string | null) =>
-    perform(() => control(connection, "remote webhook", { id, url }), url ? "Webhook saved" : "Webhook removed");
   const copy = (text: string, what: string) => perform(() => navigator.clipboard.writeText(text), `${what} copied`);
   const serving = data.nodes.find((n) => n.id === remote?.servedBy);
 
@@ -136,7 +133,10 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
             <Choice
               label="Served by"
               description="This machine answers Grok. Its MCP servers must work there."
-              options={nodeOptions(data)}
+              options={data.nodes.map((n) => ({
+                id: n.id,
+                label: `${n.id}${n.alwaysOn ? " (always on)" : ""}${n.online ? "" : " (offline)"}`,
+              }))}
               selectedKey={remote.servedBy}
               isDisabled={!local}
               onSelectionChange={(key) =>
@@ -149,53 +149,6 @@ export function EndpointDetails({ project, data, connection, perform, local }: V
               }
             />
           </div>
-          <Toggle
-            label="Software factory"
-            description="Grok sees the factory's board and items, adds tasks in its repositories, approves, rejects, retries or drops items, and pauses or resumes it."
-            isSelected={!!project.factoryTools}
-            onChange={(on) =>
-              perform(
-                () => control(connection, "remote factory", { id, on }),
-                on ? "Grok can steer the factory" : "Factory tools removed",
-              )
-            }
-          />
-          {project.factoryTools &&
-            (project.factoryWebhook ? (
-              <div className="item">
-                <span className="grow">
-                  <strong>Updates webhook</strong>
-                  <small>
-                    The factory posts items that wait for you or have a ready PR to{" "}
-                    <code>{project.factoryWebhook}</code>
-                  </small>
-                </span>
-                <Button size="sm" variant="ghost" className="delete" onPress={() => void setWebhook(null)}>
-                  Remove
-                </Button>
-              </div>
-            ) : (
-              <form
-                className="inline-form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void setWebhook(String(new FormData(e.currentTarget).get("url") ?? "").trim());
-                }}
-              >
-                <Field
-                  className="field grow"
-                  name="url"
-                  type="url"
-                  isRequired
-                  label="Updates webhook"
-                  description="An https URL that gets each item added, moved or waiting for you. Grok can also set it."
-                  placeholder="https://"
-                />
-                <Button type="submit" size="sm" variant="tertiary">
-                  Save
-                </Button>
-              </form>
-            ))}
           <div className="item item-actions">
             <Button
               size="sm"

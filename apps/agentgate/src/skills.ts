@@ -71,8 +71,6 @@ export function skillPreview(
   };
 }
 
-/** Skills the software factory installs from its folder (factory/skills.ts); only a folder load changes them. */
-const isFactorySource = (source: string) => source.startsWith("factory:");
 const contentHash = (files: Skill["files"]) =>
   new Bun.CryptoHasher("sha256").update(JSON.stringify(files)).digest("hex");
 
@@ -250,11 +248,6 @@ export function updateSkill(
     const { skill, revision } = s.transaction(() => ({ skill: s.get("skill", id), revision: skillRevision(s, id) }));
     if (!skill) throw new UserError(`no skill ${id}`);
     if (!skill.source) throw new UserError(`${id} was written by hand; edit it instead`);
-    if (isFactorySource(skill.source)) {
-      throw new UserError(
-        `${id} follows the factory folder ${skill.source.slice(8)}; it updates when the folder loads`,
-      );
-    }
     if (repoProjects(s, skill.source).length) return syncSkillRepo(s, skill.source, fetchRepo, signal);
     const fresh = validateFetched(await fetch(skill.source, skill.selector ?? "*", signal)).find((f) => f.id === id);
     if (!fresh) throw new UserError(`${skill.source} no longer has ${id}`);
@@ -315,7 +308,7 @@ export async function updateSkills(
 ) {
   const repos = new Set(skillRepoSummaries(s).map((r) => r.url));
   const results: { id: string; outcome: string }[] = [];
-  for (const k of skillSummaries(s).filter((k) => k.source && !repos.has(k.source) && !isFactorySource(k.source))) {
+  for (const k of skillSummaries(s).filter((k) => k.source && !repos.has(k.source))) {
     if (signal?.aborted) break;
     if (backoff && !backoff.due(k.id)) continue;
     const outcome = await updateSkill(s, k.id, fetch, signal).then(

@@ -3,7 +3,7 @@ import { getUniqueValues } from "hanzio";
 import type { Account, Credential, Project, Store } from "./store.ts";
 import { isVirtual, projectIdSchema } from "@agentgate/protocol";
 import { checkRevision } from "./configuration.ts";
-import { BUILTIN_ALIAS, FACTORY_ALIAS, canonicalProject } from "./mcp/gateway.ts";
+import { BUILTIN_ALIAS, canonicalProject } from "./mcp/gateway.ts";
 import { resetCooldown } from "./llm/policy.ts";
 import { resetRouting } from "./llm/routing.ts";
 
@@ -48,9 +48,6 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>, expec
   for (const [alias, target] of Object.entries(patch.mcp ?? {})) {
     if (!validId(alias)) throw new Error(`invalid tool prefix ${alias}`);
     if (virtual && alias === "skills") throw new Error("the prefix skills is reserved for the built-in skill tools");
-    if (virtual && alias === FACTORY_ALIAS) {
-      throw new Error(`the prefix ${FACTORY_ALIAS} is reserved for the software factory's tools`);
-    }
     if (!virtual && alias === BUILTIN_ALIAS) {
       throw new Error(`the prefix ${BUILTIN_ALIAS} is reserved for agentgate's own tools`);
     }
@@ -69,35 +66,4 @@ export function saveProject(s: Store, id: string, patch: Partial<Project>, expec
     ...(virtual && { inheritDefaults: false }),
     id,
   });
-}
-
-/** Sets or clears the URL every machine posts the factory's updates to (factory/notify.ts). Only `https`, without
- * credentials in the authority: a token belongs in the path or query, which the API never shows. */
-export function setFactoryWebhook(s: Store, id: string, url: string | undefined) {
-  return s.transaction(() => {
-    const p = s.get("project", id);
-    if (!isVirtual(id) || !p?.factoryTools) {
-      throw new Error(`${id} does not offer the factory's tools; turn them on first`);
-    }
-    const { factoryWebhook: _, ...rest } = p;
-    if (!url) return s.put("project", id, rest);
-    return s.put("project", id, { ...rest, factoryWebhook: webhookUrl(url) });
-  });
-}
-
-/** A webhook URL the factory may post to (factory/notify.ts): `https`, without credentials in the authority, since
- * only the path and query are kept out of what agentgate shows. Errors never repeat the URL. */
-export function webhookUrl(url: string) {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("The webhook must be a URL");
-  }
-  if (parsed.protocol !== "https:") throw new Error("The webhook must be an https URL");
-  if (parsed.username || parsed.password) {
-    throw new Error("Put the receiver's token in the webhook's path or query, not before the host");
-  }
-  if (url.length > 2000) throw new Error("The webhook URL is too long");
-  return parsed.href;
 }

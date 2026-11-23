@@ -6,14 +6,12 @@ import {
   skillSchema,
   quotaWindowSchema,
   tokenProviderSchema,
-  secretRecordSchema,
-  factoryFolderSchema,
   loginIdSchema,
   usageSourceSchema,
   MAX_RECORD,
   type Topic,
 } from "@agentgate/protocol";
-import { getErrorMessage, nonEmpty, typedKeys } from "hanzio";
+import { getErrorMessage, isRecord, nonEmpty, typedKeys } from "hanzio";
 export { SKILL_ID, safePath } from "@agentgate/protocol";
 import { OAuthClientInformationSchema, OAuthTokensSchema } from "@modelcontextprotocol/core";
 import { Database } from "bun:sqlite";
@@ -244,15 +242,13 @@ export const schemas = {
       )
       .max(20000),
   }),
-  /** A factory secret by name, or one of agentgate's own (`~hook:<source>`, `~notify`), shared with every node (factory/secrets.ts). */
-  secret: secretRecordSchema,
-  /** The factory folder agentgate stores (id `folder`), for a factory whose pointer says `store: agentgate` (factory/stored.ts). */
-  factoryFolder: factoryFolderSchema,
 };
 
-/** Every node must advertise this before `settings.factory`, a `secret` or the `factoryFolder` record is written: older
- * nodes drop the setting when they save settings, and stall on an unknown record kind. */
-export const FACTORY_PROTOCOL = 8;
+/** Record kinds the software factory wrote before it was removed. Older peers and backups may still carry them: sync
+ * and import skip them, and a store drops its own when it opens. */
+const RETIRED_KINDS = ["secret", "factoryFolder"];
+export const isRetired = (record: unknown) =>
+  isRecord(record) && typeof record.kind === "string" && RETIRED_KINDS.includes(record.kind);
 
 /** The nodes whose daemon does not advertise `protocol` yet, the gate before writing a field or record kind they would
  * drop or stall on. A node record without one comes from a daemon older than protocols. */
@@ -269,12 +265,8 @@ export function requireNodeProtocol(s: Store, protocol: number, what: string) {
   if (old.length) throw new Error(`Update agentgate on ${old.join(", ")} first: older versions ${what}`);
 }
 
-/** Throws, naming the nodes too old to sync `settings.factory`, factory secrets and the stored factory folder. */
-export const requireFactoryProtocol = (s: Store) =>
-  requireNodeProtocol(s, FACTORY_PROTOCOL, "cannot sync factory settings and secrets");
-
 /** Kinds whose data is a credential through and through: `export --no-secrets` and the seeded dev store leave them out. */
-export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login", "secret"];
+export const SECRET_KINDS: Kind[] = ["credential", "mcpCredential", "refreshRequest", "login"];
 
 export type Kind = keyof typeof schemas;
 export type Data<K extends Kind> = z.infer<(typeof schemas)[K]>;
@@ -390,6 +382,7 @@ export class Store {
       "create table if not exists handoffs (id text not null, role text not null, thread text not null, target text not null, step text not null, state text not null, error text, created_at integer not null, updated_at integer not null, primary key (role, id))",
     );
     this.migrate();
+    this.dropFactory();
   }
 
   transaction<T>(fn: () => T): T {
@@ -399,6 +392,17 @@ export class Store {
   close() {
     this.closed = true;
     this.db.close();
+  }
+
+  /** What the software factory kept before it was removed. Not a migration, so an older agentgate still opens the store. */
+  private dropFactory() {
+    this.transaction(() => {
+      for (const table of ["factory_items", "factory_runs", "factory_events", "factory_writebacks", "session_usage"]) {
+        this.db.run(`drop table if exists ${table}`);
+      }
+      this.db.run(`delete from records where kind in (${RETIRED_KINDS.map((k) => `'${k}'`).join(", ")})`);
+      this.db.run("delete from local where key = 'factoryFolder' or key like 'factory:%'");
+    });
   }
 
   private migrate() {
@@ -725,7 +729,6 @@ export function refreshHash(kind: Kind, data: unknown): string | undefined {
 /** The topics whose views show records of `kind`. */
 export function topicsOf(kind: Kind): Topic[] {
   if (kind === "tokens") return ["activity"];
-  if (kind === "node" || kind === "setting" || kind === "project") return ["status", "factory"];
   return ["status"];
 }
 
@@ -798,11 +801,10 @@ export function exportBackup(s: Store, secrets = true) {
     .filter((r) => secrets || !SECRET_KINDS.includes(r.kind))
     .map((r) => {
       const data = JSON.parse(r.data);
-      // Endpoint keys, env files and webhook URLs are secrets.
+      // Endpoint keys and env files are secrets.
       if (!secrets && r.kind === "project") {
         delete data.remote;
         delete data.files;
-        delete data.factoryWebhook;
       }
       return { kind: r.kind, id: r.id, data: !secrets && r.kind === "mcp" ? publicMcp(data) : data };
     });
@@ -813,11 +815,14 @@ export function importBackup(s: Store, input: unknown) {
   const backup = z
     .object({
       agentgate: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
-      records: z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() })).max(100000),
+      records: z
+        .array(z.object({ kind: z.string(), id, data: z.unknown() }))
+        .max(100000)
+        .transform((rs) => rs.filter((r) => !isRetired(r)))
+        .pipe(z.array(z.object({ kind: recordSchema.shape.kind, id, data: z.unknown() }))),
     })
     .parse(input);
   const records = backup.records.map((r) => ({ ...r, data: parseData(r.kind, r.id, r.data) }));
-  if (records.some((r) => r.kind === "secret" || r.kind === "factoryFolder")) requireFactoryProtocol(s);
   return s.transaction(() => {
     for (const r of records) {
       if (r.kind === "mcp") {

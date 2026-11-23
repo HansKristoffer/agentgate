@@ -10,3 +10,15 @@ import type { SkillOps } from "./control-skills.ts";
  * `controlOp` checks the ones named here against these types. Each family keeps its entries in its own file.
  */
 export interface ControlOps extends AccountOps, ServerOps, NodeOps, SkillOps, ProjectOps {}
+
+/** The operation `words` name: the one with the longest name they start with, so `remote enable X` is `remote enable`
+ * and not `remote`. */
+export function operationFor<T extends { name: string }>(operations: Iterable<T>, words: readonly string[]) {
+  let found: T | undefined;
+  for (const op of operations) {
+    const name = op.name.split(" ");
+    const matches = name.every((word, i) => words[i] === word);
+    if (matches && name.length > (found?.name.split(" ").length ?? 0)) found = op;
+  }
+  return found;
+}

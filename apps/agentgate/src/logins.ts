@@ -38,7 +38,7 @@ const SINCE: Partial<Record<LoginId, number>> = { opencode: OPENCODE_PROTOCOL, a
 const IDENTITY = "infisical-identity";
 
 /** What a `gh` run came to. `exit` and `err` let a caller tell why it failed; `err` is absent when gh printed none. */
-export interface GhAnswer {
+interface GhAnswer {
   ok: boolean;
   out: string;
   exit?: number;
@@ -50,7 +50,7 @@ export interface GhAnswer {
  * there (`gh: Not Found (HTTP 404)`, a dial error), never its arguments or environment; the line is still capped, and
  * anything shaped like a GitHub token or a URL's credentials is taken out, so it can go into an error message.
  */
-export function ghAnswer(run: { exit: number; stdout: string; stderr: string }): GhAnswer {
+function ghAnswer(run: { exit: number; stdout: string; stderr: string }): GhAnswer {
   const line = run.stderr.split("\n").find((l) => l.trim()) ?? "";
   const err = line
     .trim()

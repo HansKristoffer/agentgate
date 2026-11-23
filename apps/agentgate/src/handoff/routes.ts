@@ -6,7 +6,6 @@ import { gunzip as gunzipCallback } from "node:zlib";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { CHANNEL_CHUNK } from "../channel.ts";
-import type { Env } from "../daemon.ts";
 import { jsonInput } from "../http.ts";
 import { MAX_BODY, readBody } from "../runtime.ts";
 import type { Peer } from "../sync.ts";
@@ -156,16 +155,14 @@ export function handoffRoutes(h: Handoffs, maxTotal = MAX_TOTAL) {
   return app;
 }
 
-/** The same routes for calls through the relay, with the factory's (`/peer/factory/*`): the sender is the node the
- * sealed call authenticates. */
-export function relayedRoutes(h: Handoffs, factory: Hono<Env>) {
+/** The same routes for calls through the relay: the sender is the node the sealed call authenticates. */
+export function relayedRoutes(h: Handoffs) {
   const app = new Hono<{ Bindings: { from: string }; Variables: { peer: Peer } }>()
     .use("*", async (c, next) => {
       c.set("peer", { node: c.env.from } as Peer);
       await next();
     })
-    .route("/", handoffRoutes(h))
-    .route("/factory", factory);
+    .route("/", handoffRoutes(h));
   return async (from: string, req: Request) => app.fetch(req, { from });
 }
 

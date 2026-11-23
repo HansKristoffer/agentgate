@@ -515,23 +515,19 @@ test("a relay socket that never opens is closed at the deadline and connects aga
 });
 
 test("a failed request shows a fixed message in status, never the error's text", async () => {
-  const { relay, serve } = serving();
-  const { endpoints } = serve();
-  const project = await relay.connected();
-  endpoints.hooks = () => [
-    {
-      source: "github",
-      relay: relay.url,
-      key: "hook-key",
-      token: "hook-token",
-      secret: "hook-secret",
-      handle: () => Promise.reject(new Error("upstream said: Bearer fake-token-123")),
-    },
-  ];
+  const { s, relay } = serving();
+  const gateway = new Gateway(s);
+  cleanup.push(() => gateway.close());
+  gateway.handleRemote = () => Promise.reject(new Error("upstream said: Bearer fake-token-123"));
+  const endpoints = new RemoteEndpoints(s, gateway);
+  cleanup.push(() => endpoints.close());
   endpoints.reconcile();
-  let hook = project;
-  while (hook === project) hook = await Bun.sleep(5).then(relay.connected);
-  hook.send(JSON.stringify({ t: "req", id: "1", headers: {}, body: "{}" }));
-  expect(JSON.parse((await relay.next()).body)).toEqual({ error: "agentgate failed to handle the request" });
-  expect(endpoints.hookState("github")).toEqual({ connected: true, error: "a request failed" });
+  const socket = await relay.connected();
+  socket.send(JSON.stringify({ t: "req", id: "1", headers: {}, body: "{}" }));
+  expect(JSON.parse((await relay.next()).body)).toEqual({
+    jsonrpc: "2.0",
+    error: { code: -32603, message: "agentgate failed to handle the request" },
+    id: null,
+  });
+  expect(endpoints.summary(s.get("project", "@grok")!)).toMatchObject({ connected: true, error: "a request failed" });
 });

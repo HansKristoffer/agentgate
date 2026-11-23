@@ -52,7 +52,6 @@ const HELP = `agentgate — pooled Claude, Codex and Cursor subscriptions and pe
   handoff <thread> [--to server|here|<node>] [--no-wait]   move a thread with its Claude session and code
   handoffs                                    recent handoffs and their state
   handoffs cancel <id> [--node <node>]        give up a handoff stuck waiting for its destination
-  factory [help]                              the software factory that works GitHub issues and other sources in T3 Code
   logins                                      GitHub (gh), Infisical and Antigravity (agy) CLI logins and OpenCode API keys shared with every machine
   logins share [github|infisical|opencode|antigravity]   share this machine's logins; every machine signs in with them
   logins signin infisical                     sign the Infisical CLI here in again (browser, or paste its token), then share it
@@ -130,11 +129,10 @@ const COMMAND_OPTIONS: Record<string, (keyof typeof OPTIONS)[]> = {
 
 /**
  * Parses argv against only the options its command reads, so a misspelt flag fails instead of being ignored
- * (`export --no-secret` once exported secrets). Throws the message to show; `factory` parses its own words.
+ * (`export --no-secret` once exported secrets). Throws the message to show.
  */
 export function parseFor(argv: string[]) {
   const command = argv.find((a) => !a.startsWith("-"));
-  if (command === "factory") return { values: {}, positionals: [command] };
   const options: ParseArgsOptionsConfig = { help: OPTIONS.help };
   for (const key of COMMAND_OPTIONS[command ?? ""] ?? []) options[key] = OPTIONS[key];
   // Not strict, so the tokens can be checked here with messages that name the command.
@@ -185,7 +183,6 @@ const FAMILIES: Record<string, Run> = {
   serve: system.run,
   status: system.run,
   settings: system.run,
-  factory: system.run,
   setup: system.run,
   service: system.run,
   update: system.run,

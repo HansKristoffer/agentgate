@@ -1,10 +1,4 @@
-import {
-  ConfigurationConflict,
-  isVirtual,
-  projectIdSchema,
-  skillIdSchema,
-  type ToolPreview,
-} from "@agentgate/protocol";
+import { ConfigurationConflict, projectIdSchema, skillIdSchema, type ToolPreview } from "@agentgate/protocol";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -21,9 +15,9 @@ import {
 import { revision } from "../configuration.ts";
 import type { Ctx } from "../daemon.ts";
 import { aliasesFor, canonicalProject, parseRemote, toolName } from "../mcp/gateway.ts";
-import { saveProject, setFactoryWebhook } from "../operations.ts";
+import { saveProject } from "../operations.ts";
 import { deleteProject, disableRemote, enableRemote, regenerate, rotateSecret } from "../remote.ts";
-import { requireNodeProtocol, type Store } from "../store.ts";
+import type { Store } from "../store.ts";
 import { asUserError, controlOp, onOff, UserError } from "./registry.ts";
 import { toolList } from "./servers.ts";
 
@@ -500,67 +494,5 @@ controlOp({
     usage: "remote disable @name",
     parse: (args) => ({ input: { id: virtualWords(args) } }),
     print: ({ id }) => [`${id}'s endpoint is off`],
-  },
-});
-
-/** The node protocol that keeps `factoryTools` on project records (see NODE_PROTOCOL in remote.ts). */
-const FACTORY_TOOLS_PROTOCOL = 9;
-
-/** Offers the software factory's tools on a virtual project's endpoint, or stops offering them
- * (factory/remote-tools.ts). Turning them on waits until every node keeps the field; turning them off needs no wait,
- * since a dropped field reads as off. */
-export function setFactoryTools(s: Store, id: string, on: boolean) {
-  return s.transaction(() => {
-    if (!isVirtual(id)) throw new Error("Only virtual projects (@name) can offer the factory's tools");
-    const p = s.get("project", id);
-    if (!p) throw new Error(`no project ${id}`);
-    if (on) requireNodeProtocol(s, FACTORY_TOOLS_PROTOCOL, "drop the factory tools setting");
-    // Turning the tools off drops the webhook too: it was set for them, and turning them on again must not resume posting.
-    const { factoryTools: _, factoryWebhook: __, ...rest } = p;
-    return s.put("project", id, on ? { ...p, factoryTools: true } : rest);
-  });
-}
-
-controlOp({
-  name: "remote factory",
-  summary: "let the endpoint see and steer the software factory: its board, items and tasks",
-  input: z.object({ id: virtualId, on: z.boolean() }).strict(),
-  needs: "store",
-  async run({ id, on }, { s }) {
-    await shown(() => setFactoryTools(s, id, on));
-    return { id, on };
-  },
-  terminal: {
-    usage: "remote factory @name on|off",
-    parse([project, state, ...extra]) {
-      if (!project || extra.length) throw new UserError();
-      return { input: { id: project, on: onOff(state) } };
-    },
-    print: ({ id, on }) => [
-      on
-        ? `${id} offers the factory's tools. Anyone with its URL and secret can add tasks and approve, retry or drop items.`
-        : `${id} no longer offers the factory's tools.`,
-    ],
-  },
-});
-
-controlOp({
-  name: "remote webhook",
-  summary: "post the factory's updates (items added, moved, waiting for you) to an https URL",
-  input: z.object({ id: virtualId, url: z.string().max(2000).nullable() }).strict(),
-  needs: "store",
-  async run({ id, url }, { s }) {
-    await shown(() => setFactoryWebhook(s, id, url ?? undefined));
-    return { id, on: !!url };
-  },
-  terminal: {
-    usage: "remote webhook @name <https-url>|off",
-    parse([project, url, ...extra]) {
-      if (!project || !url || extra.length) throw new UserError();
-      return { input: { id: project, url: url === "off" ? null : url } };
-    },
-    print: ({ on }) => [
-      on ? "The factory posts there when an item waits for you or a PR is ready." : "Updates are no longer posted.",
-    ],
   },
 });

@@ -51,13 +51,13 @@ describe("moved", () => {
   });
 
   test("only the topics whose counter changed move, and unknown topics are ignored", () => {
-    const before = { status: 1, desktop: 1, factory: 1, threads: 1, activity: 1, someday: 1 };
-    expect(moved(before, { ...before, factory: 2, someday: 2 })).toEqual(["factory"]);
+    const before = { status: 1, desktop: 1, threads: 1, activity: 1, someday: 1 };
+    expect(moved(before, { ...before, threads: 2, someday: 2 })).toEqual(["threads"]);
     expect(moved(before, { ...before, someday: 2 })).toEqual([]);
   });
 
   test("a topic the daemon does not report always moves", () => {
-    const before = { status: 1, desktop: 1, factory: 1, threads: 1 };
+    const before = { status: 1, desktop: 1, threads: 1 };
     expect(moved(before, { ...before, status: 2 })).toEqual(["status", "activity"]);
   });
 });

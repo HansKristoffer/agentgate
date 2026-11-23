@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useChanges } from "./useChanges.ts";
 import { useDaemon } from "./useDaemon.ts";
-import { AppContext, boardEvery, Feed, useFeed } from "./AppContext.tsx";
+import { Feed } from "./AppContext.tsx";
 import { trimTrailingSlash } from "hanzio";
 import { Alert, Button, ScrollShadow, Spinner, Toast, toast } from "@heroui/react";
 import { messageOf } from "@hanskristoffer/taurio/runtime";
@@ -11,7 +11,6 @@ import {
   Boxes,
   ChevronRight,
   CircleHelp,
-  Factory as FactoryIcon,
   FolderGit2,
   LayoutDashboard,
   Monitor,
@@ -22,21 +21,11 @@ import {
   Users,
 } from "lucide-react";
 import type { Connection } from "@agentgate/protocol";
-import {
-  desktopStatus,
-  factoryBoard,
-  loadConnection,
-  localAction,
-  localConnection,
-  native,
-  saveConnection,
-  status,
-} from "./api.ts";
+import { desktopStatus, loadConnection, localAction, localConnection, native, saveConnection, status } from "./api.ts";
 import {
   Accounts,
   ActivityView,
   Dashboard,
-  Factory,
   Nodes,
   Projects,
   Servers,
@@ -46,7 +35,7 @@ import {
 } from "./views/index.ts";
 import { desktopActions } from "./views/ClaudeDesktop.tsx";
 import { problems } from "@agentgate/protocol/attention";
-import { useDesktopNotifications, useDesktopTray, useFactoryAttention } from "./desktopTray.ts";
+import { useDesktopNotifications, useDesktopTray } from "./desktopTray.ts";
 import type { Perform } from "./types.ts";
 import { Badge, BusyContext, PendingContext, Field, HeaderSlot, Modal } from "./components/ui.tsx";
 import { ErrorBoundary } from "./components/ErrorBoundary.tsx";
@@ -59,7 +48,6 @@ const navigation = [
   { id: "projects", title: "Projects", icon: FolderGit2 },
   { id: "nodes", title: "Machines", icon: Monitor },
   { id: "t3", title: "T3 Code", icon: SquareTerminal },
-  { id: "factory", title: "Factory", icon: FactoryIcon },
   { id: "activity", title: "Activity", icon: Activity },
   { id: "settings", title: "Settings", icon: Gear },
 ] as const;
@@ -72,7 +60,6 @@ const descriptions: Record<View, string> = {
   projects: "Give each repository the tools it needs.",
   nodes: "Your setup, shared across your Tailscale network.",
   t3: "Hand a thread to another machine and back, with its session and code.",
-  factory: "Issues worked in T3 Code threads, up to a PR ready for you. See what waits for you and steer it.",
   activity: "Model requests this daemon routed. Prompts, responses, credentials and session IDs are left out.",
   settings: "Make Agentgate work the way you do.",
 };
@@ -168,9 +155,8 @@ function Main({
   const running = useRef(new Set<string>());
   const unkeyed = useRef(new Set<string>());
   const selected = navigation.find((n) => n.id === view)!;
-  const { versions } = useFeed();
 
-  // The three reads the whole app shares. They follow the change feed, also while the window is hidden, because the
+  // The two reads the whole app shares. They follow the change feed, also while the window is hidden, because the
   // tray menu and the notifications depend on them; only their safety interval slows.
   const statusRead = useDaemon(ready && (() => status(connection)), { topics: ["status"], hidden: 60_000 });
   const data = statusRead.data;
@@ -180,13 +166,6 @@ function Main({
     hidden: 60_000,
   });
   const desktop = desktopRead.data;
-  // Read while the factory is off too: the Factory page shows the way to turn it on from the same board.
-  const boardRead = useDaemon(ready && (() => factoryBoard(connection)), {
-    topics: ["factory"],
-    every: data && boardEvery(data),
-    hidden: 60_000,
-  });
-  const board = boardRead.data;
   // One failed read, such as during a daemon restart, leaves the window usable while someone types; two in a row
   // block it. With nothing shown yet, the first error is all there is to show.
   const down = statusRead.failures >= 2 || (!data && !!statusRead.error);
@@ -240,7 +219,6 @@ function Main({
   const desktopAct = desktopActions(connection, perform);
   useDesktopTray(local ? data : undefined, desktop, desktopAct.use, desktopAct.pool);
   useDesktopNotifications(local ? data : undefined, desktop, local && !!error);
-  const factoryWaiting = useFactoryAttention(connection.url, board);
   const props = data && { data, connection, perform, local, desktop };
   const views = props && {
     overview: <Dashboard {...props} navigate={setView} />,
@@ -250,7 +228,6 @@ function Main({
     projects: <Projects {...props} />,
     nodes: <Nodes {...props} />,
     t3: <T3Code {...props} />,
-    factory: <Factory {...props} />,
     activity: <ActivityView {...props} />,
     settings: <Settings {...props} />,
   };
@@ -266,325 +243,311 @@ function Main({
     : {};
   // Pages with something the user has to fix, marked in the sidebar; Overview lists them.
   const attention = new Set<string>(data ? problems(data).map((p) => p.page) : []);
-  if (factoryWaiting) attention.add("factory");
   return (
-    <AppContext
-      value={{
-        connection,
-        local,
-        perform,
-        versions,
-        board,
-        boardError: boardRead.error,
-        reloadBoard: boardRead.reload,
-      }}
-    >
-      <BusyContext value={busy}>
-        <PendingContext value={pending}>
-          <HeaderSlot value={actions}>
-            <AppShell
-              sidebar={
-                <>
-                  <div className="tau-drag-strip" />
-                  <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
-                    {navigation
-                      .filter((n) => n.id !== "settings")
-                      .map((n) => (
-                        <button
-                          key={n.id}
-                          aria-current={view === n.id ? "page" : undefined}
-                          className="group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)"
-                          onClick={() => setView(n.id)}
-                        >
-                          <n.icon
-                            size={16}
-                            className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
-                          />
-                          {n.title}
-                          {attention.has(n.id) && (
-                            <span className="dot warning" role="img" aria-label="Needs attention" />
-                          )}
-                          {counts[n.id] !== undefined && (
-                            <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
-                          )}
-                        </button>
-                      ))}
-                  </nav>
-                  <div className="flex items-center gap-2 px-3 pt-2.5 pb-3.5">
-                    <Button
-                      isIconOnly
-                      variant="tertiary"
-                      aria-label="Settings"
-                      aria-current={view === "settings" ? "page" : undefined}
-                      className="aria-[current=page]:bg-(--tau-side-row)"
-                      onPress={() => setView("settings")}
-                    >
-                      <Gear size={16} />
-                    </Button>
-                    <Button isIconOnly variant="tertiary" aria-label="Getting started" onPress={() => setHelp(true)}>
-                      <CircleHelp size={16} />
-                    </Button>
-                    <Button
-                      variant="tertiary"
-                      className="min-w-0 flex-1 justify-start"
-                      onPress={() => setConnectOpen(true)}
-                    >
-                      <span className={`dot ${data && !error ? "online" : ""}`} />
-                      <span
-                        className="min-w-0 flex-1 truncate text-left"
-                        title={data && !error ? `Connected to ${connection.url}` : "Daemon disconnected"}
+    <BusyContext value={busy}>
+      <PendingContext value={pending}>
+        <HeaderSlot value={actions}>
+          <AppShell
+            sidebar={
+              <>
+                <div className="tau-drag-strip" />
+                <nav className="flex flex-1 flex-col gap-0.5 overflow-x-hidden overflow-y-auto px-2 pb-2">
+                  {navigation
+                    .filter((n) => n.id !== "settings")
+                    .map((n) => (
+                      <button
+                        key={n.id}
+                        aria-current={view === n.id ? "page" : undefined}
+                        className="group flex h-[34px] cursor-pointer w-full items-center gap-2.5 rounded-[10px] px-2.5 text-left text-sm font-medium whitespace-nowrap text-(--tau-side-fg) hover:bg-(--tau-side-row-hover) aria-[current=page]:bg-(--tau-side-row)"
+                        onClick={() => setView(n.id)}
                       >
-                        {data && !error ? data.node : "Offline"}
-                      </span>
-                      {!error && updated !== undefined && (
-                        <span className="shrink-0 text-xs text-(--tau-side-fg-2)">Updated {updated} s ago</span>
-                      )}
-                      <ChevronRight size={14} className="text-(--tau-side-fg-2)" />
-                    </Button>
-                  </div>
-                </>
-              }
-            >
-              <header className="card-header" data-tauri-drag-region="deep">
-                <div className="card-title-row">
-                  <h1>{selected.title}</h1>
-                  {!local && <Badge>Remote</Badge>}
-                  {pending.size > 0 && <Spinner size="sm" color="current" aria-label="Working" />}
-                  {/* Views portal their actions here; blocked like the workspace below. */}
-                  <div ref={setActions} className="header-actions" inert={!!error} />
-                </div>
-                <p className="card-sub">{descriptions[view]}</p>
-              </header>
-              <ScrollShadow className="pane">
-                <div className="pane-inner">
-                  {error && (
-                    <Alert status="danger" className="callout" role="alert">
-                      <Alert.Content>
-                        <Alert.Description>{error}</Alert.Description>
-                      </Alert.Content>
-                      <div className="row">
-                        {native && local && data && (
-                          <Button
-                            size="sm"
-                            variant="tertiary"
-                            isDisabled={busy}
-                            onPress={() => void perform(() => localAction("start", connection), "Service started")}
-                          >
-                            Start service
-                          </Button>
+                        <n.icon
+                          size={16}
+                          className="shrink-0 text-(--tau-side-fg-2) group-aria-[current=page]:text-(--tau-side-fg)"
+                        />
+                        {n.title}
+                        {attention.has(n.id) && (
+                          <span className="dot warning" role="img" aria-label="Needs attention" />
                         )}
-                        <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
-                          Connection settings
-                        </Button>
-                      </div>
-                    </Alert>
-                  )}
-                  {props && views ? (
-                    <fieldset
-                      key={JSON.stringify([connection.url, connection.token])}
-                      disabled={!!error}
-                      inert={!!error}
-                      className="workspace"
+                        {counts[n.id] !== undefined && (
+                          <span className="ml-auto text-xs font-normal text-(--tau-side-fg-2)">{counts[n.id]}</span>
+                        )}
+                      </button>
+                    ))}
+                </nav>
+                <div className="flex items-center gap-2 px-3 pt-2.5 pb-3.5">
+                  <Button
+                    isIconOnly
+                    variant="tertiary"
+                    aria-label="Settings"
+                    aria-current={view === "settings" ? "page" : undefined}
+                    className="aria-[current=page]:bg-(--tau-side-row)"
+                    onPress={() => setView("settings")}
+                  >
+                    <Gear size={16} />
+                  </Button>
+                  <Button isIconOnly variant="tertiary" aria-label="Getting started" onPress={() => setHelp(true)}>
+                    <CircleHelp size={16} />
+                  </Button>
+                  <Button
+                    variant="tertiary"
+                    className="min-w-0 flex-1 justify-start"
+                    onPress={() => setConnectOpen(true)}
+                  >
+                    <span className={`dot ${data && !error ? "online" : ""}`} />
+                    <span
+                      className="min-w-0 flex-1 truncate text-left"
+                      title={data && !error ? `Connected to ${connection.url}` : "Daemon disconnected"}
                     >
-                      <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
-                      {view === "settings" && (
-                        <p className="version-line">
-                          Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
-                        </p>
-                      )}
-                    </fieldset>
-                  ) : (
-                    <div className="welcome">
-                      <div className="welcome-mark">
-                        <ShieldCheck size={26} />
-                      </div>
-                      <h2>A home for your agent setup</h2>
-                      <p>
-                        Pool your subscriptions, connect your tools, and keep every machine in sync. The app is a window
-                        into Agentgate; the daemon keeps things running.
-                      </p>
-                      <div className="welcome-features">
-                        <span>
-                          <Users size={14} />
-                          Claude & Codex accounts
-                        </span>
-                        <span>
-                          <Boxes size={14} />
-                          Tools per repository
-                        </span>
-                        <span>
-                          <Monitor size={14} />
-                          Tailscale machines
-                        </span>
-                      </div>
-                      <div className="row">
+                      {data && !error ? data.node : "Offline"}
+                    </span>
+                    {!error && updated !== undefined && (
+                      <span className="shrink-0 text-xs text-(--tau-side-fg-2)">Updated {updated} s ago</span>
+                    )}
+                    <ChevronRight size={14} className="text-(--tau-side-fg-2)" />
+                  </Button>
+                </div>
+              </>
+            }
+          >
+            <header className="card-header" data-tauri-drag-region="deep">
+              <div className="card-title-row">
+                <h1>{selected.title}</h1>
+                {!local && <Badge>Remote</Badge>}
+                {pending.size > 0 && <Spinner size="sm" color="current" aria-label="Working" />}
+                {/* Views portal their actions here; blocked like the workspace below. */}
+                <div ref={setActions} className="header-actions" inert={!!error} />
+              </div>
+              <p className="card-sub">{descriptions[view]}</p>
+            </header>
+            <ScrollShadow className="pane">
+              <div className="pane-inner">
+                {error && (
+                  <Alert status="danger" className="callout" role="alert">
+                    <Alert.Content>
+                      <Alert.Description>{error}</Alert.Description>
+                    </Alert.Content>
+                    <div className="row">
+                      {native && local && data && (
                         <Button
                           size="sm"
-                          isDisabled={busy || !native || !local}
-                          onPress={() =>
-                            void perform(
-                              () => localAction("install", connection),
-                              "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.",
-                            )
-                          }
+                          variant="tertiary"
+                          isDisabled={busy}
+                          onPress={() => void perform(() => localAction("start", connection), "Service started")}
                         >
-                          {busy ? "Starting Agentgate…" : "Set up this machine"}
+                          Start service
                         </Button>
-                        <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
-                          Connect to a daemon
-                        </Button>
-                      </div>
-                      <small>Already using the CLI? Connect to your existing daemon.</small>
+                      )}
+                      <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
+                        Connection settings
+                      </Button>
                     </div>
-                  )}
-                </div>
-              </ScrollShadow>
-              <Toast.Provider placement="bottom end" />
-            </AppShell>
-            {connectOpen && (
-              <Modal title="Connect to Agentgate" close={() => setConnectOpen(false)}>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const f = new FormData(e.currentTarget);
-                    const c: Connection = {
-                      url: trimTrailingSlash(String(f.get("url")).trim()),
-                      token: String(f.get("token")).trim() || undefined,
-                    };
-                    void perform(async () => {
-                      await status(c);
-                      await saveConnection(c);
-                      connect(c);
-                      setConnectOpen(false);
-                    }, "Connected");
-                  }}
-                >
-                  <p className="muted">Connect to this machine or a node on your Tailscale network.</p>
-                  <Field
-                    label="Daemon address"
-                    name="url"
-                    type="url"
-                    isRequired
-                    defaultValue={connection.url}
-                    placeholder="http://127.0.0.1:7878"
-                  />
-                  <Field
-                    label="Admin token"
-                    name="token"
-                    type="password"
-                    autoComplete="off"
-                    defaultValue={connection.token}
-                    placeholder="Required for remote machines"
-                  />
-                  <p className="note">
-                    On the remote machine, run <code>agentgate admin-token</code>. Your connection is saved locally.
-                  </p>
-                  <Button type="submit" size="sm" isDisabled={busy || !native}>
-                    Connect
-                  </Button>
-                </form>
-              </Modal>
-            )}
-            {welcome && (
-              <Modal
-                title="Where do you use Claude?"
-                close={() => {
-                  localStorage.setItem("onboarding", "skipped");
-                  setWelcome(false);
+                  </Alert>
+                )}
+                {props && views ? (
+                  <fieldset
+                    key={JSON.stringify([connection.url, connection.token])}
+                    disabled={!!error}
+                    inert={!!error}
+                    className="workspace"
+                  >
+                    <ErrorBoundary key={view}>{views[view]}</ErrorBoundary>
+                    {view === "settings" && (
+                      <p className="version-line">
+                        Agentgate{version ? ` ${version}` : ""} · The daemon keeps running when you close this app.
+                      </p>
+                    )}
+                  </fieldset>
+                ) : (
+                  <div className="welcome">
+                    <div className="welcome-mark">
+                      <ShieldCheck size={26} />
+                    </div>
+                    <h2>A home for your agent setup</h2>
+                    <p>
+                      Pool your subscriptions, connect your tools, and keep every machine in sync. The app is a window
+                      into Agentgate; the daemon keeps things running.
+                    </p>
+                    <div className="welcome-features">
+                      <span>
+                        <Users size={14} />
+                        Claude & Codex accounts
+                      </span>
+                      <span>
+                        <Boxes size={14} />
+                        Tools per repository
+                      </span>
+                      <span>
+                        <Monitor size={14} />
+                        Tailscale machines
+                      </span>
+                    </div>
+                    <div className="row">
+                      <Button
+                        size="sm"
+                        isDisabled={busy || !native || !local}
+                        onPress={() =>
+                          void perform(
+                            () => localAction("install", connection),
+                            "Agentgate is running, and your Claude Code and Codex now use it. Add an account to get started.",
+                          )
+                        }
+                      >
+                        {busy ? "Starting Agentgate…" : "Set up this machine"}
+                      </Button>
+                      <Button size="sm" variant="tertiary" onPress={() => setConnectOpen(true)}>
+                        Connect to a daemon
+                      </Button>
+                    </div>
+                    <small>Already using the CLI? Connect to your existing daemon.</small>
+                  </div>
+                )}
+              </div>
+            </ScrollShadow>
+            <Toast.Provider placement="bottom end" />
+          </AppShell>
+          {connectOpen && (
+            <Modal title="Connect to Agentgate" close={() => setConnectOpen(false)}>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const f = new FormData(e.currentTarget);
+                  const c: Connection = {
+                    url: trimTrailingSlash(String(f.get("url")).trim()),
+                    token: String(f.get("token")).trim() || undefined,
+                  };
+                  void perform(async () => {
+                    await status(c);
+                    await saveConnection(c);
+                    connect(c);
+                    setConnectOpen(false);
+                  }, "Connected");
                 }}
               >
-                <p>Agentgate shows you the right setup. Everything stays available later.</p>
-                <div className="choice-list">
-                  {[
-                    ...(onDesktop
-                      ? [
-                          {
-                            id: "desktop",
-                            title: "The Claude Desktop app",
-                            body: "Chat, Cowork or the Code tab in Claude Desktop.",
-                          },
-                        ]
-                      : []),
-                    {
-                      id: "terminal",
-                      title: "Terminal, T3 Code or Codex",
-                      body: "Claude Code or Codex sessions on this or other machines.",
-                    },
-                    ...(onDesktop
-                      ? [
-                          {
-                            id: "both",
-                            title: "Both",
-                            body: "Start with Claude Desktop; the terminal setup is in Settings.",
-                          },
-                        ]
-                      : []),
-                  ].map((o) => (
-                    <button
-                      key={o.id}
-                      className="choice"
-                      onClick={() => {
-                        localStorage.setItem("onboarding", o.id);
-                        setWelcome(false);
-                        if (o.id === "terminal") setHelp(true);
-                        else setView("accounts");
-                      }}
-                    >
-                      <strong>{o.title}</strong>
-                      <span>{o.body}</span>
-                    </button>
-                  ))}
-                </div>
-              </Modal>
-            )}
-            {help && (
-              <Modal title="Getting started" close={() => setHelp(false)}>
-                <p>
-                  Agentgate runs as an independent background service. Install it here or use the CLI on macOS and
-                  Linux.
+                <p className="muted">Connect to this machine or a node on your Tailscale network.</p>
+                <Field
+                  label="Daemon address"
+                  name="url"
+                  type="url"
+                  isRequired
+                  defaultValue={connection.url}
+                  placeholder="http://127.0.0.1:7878"
+                />
+                <Field
+                  label="Admin token"
+                  name="token"
+                  type="password"
+                  autoComplete="off"
+                  defaultValue={connection.token}
+                  placeholder="Required for remote machines"
+                />
+                <p className="note">
+                  On the remote machine, run <code>agentgate admin-token</code>. Your connection is saved locally.
                 </p>
-                <ol className="steps">
-                  <li>
-                    <strong>Start your daemon</strong>
-                    <p>
-                      Use “Set up this machine”, or run <code>agentgate init</code> and{" "}
-                      <code>agentgate service install</code>.
-                    </p>
-                  </li>
-                  <li>
-                    <strong>Add your accounts and tools</strong>
-                    <p>
-                      Sign in to Claude or Codex in Accounts. Connect MCP servers and install skills, then assign them
-                      to Projects.
-                    </p>
-                  </li>
-                  <li>
-                    <strong>Connect your coding tools</strong>
-                    <p>
-                      Setting up this machine routes your own Claude Code, Codex and Cursor through Agentgate, so T3
-                      Code needs no settings. Settings → Coding tools undoes it.
-                    </p>
-                  </li>
-                  <li>
-                    <strong>Using the Claude Desktop app?</strong>
-                    <p>
-                      Open Accounts. Pinning a Claude account moves Claude Code and Claude Desktop to it together. The
-                      menu bar shares your subscriptions in Desktop's Code tab instead.
-                    </p>
-                  </li>
-                  <li>
-                    <strong>Share across machines</strong>
-                    <p>Start Tailscale on each machine, then open Machines to pair them.</p>
-                  </li>
-                </ol>
-                <div className="note">
-                  <Activity size={15} /> Closing this app leaves the service, provider proxies, and MCP servers running.
-                </div>
-              </Modal>
-            )}
-          </HeaderSlot>
-        </PendingContext>
-      </BusyContext>
-    </AppContext>
+                <Button type="submit" size="sm" isDisabled={busy || !native}>
+                  Connect
+                </Button>
+              </form>
+            </Modal>
+          )}
+          {welcome && (
+            <Modal
+              title="Where do you use Claude?"
+              close={() => {
+                localStorage.setItem("onboarding", "skipped");
+                setWelcome(false);
+              }}
+            >
+              <p>Agentgate shows you the right setup. Everything stays available later.</p>
+              <div className="choice-list">
+                {[
+                  ...(onDesktop
+                    ? [
+                        {
+                          id: "desktop",
+                          title: "The Claude Desktop app",
+                          body: "Chat, Cowork or the Code tab in Claude Desktop.",
+                        },
+                      ]
+                    : []),
+                  {
+                    id: "terminal",
+                    title: "Terminal, T3 Code or Codex",
+                    body: "Claude Code or Codex sessions on this or other machines.",
+                  },
+                  ...(onDesktop
+                    ? [
+                        {
+                          id: "both",
+                          title: "Both",
+                          body: "Start with Claude Desktop; the terminal setup is in Settings.",
+                        },
+                      ]
+                    : []),
+                ].map((o) => (
+                  <button
+                    key={o.id}
+                    className="choice"
+                    onClick={() => {
+                      localStorage.setItem("onboarding", o.id);
+                      setWelcome(false);
+                      if (o.id === "terminal") setHelp(true);
+                      else setView("accounts");
+                    }}
+                  >
+                    <strong>{o.title}</strong>
+                    <span>{o.body}</span>
+                  </button>
+                ))}
+              </div>
+            </Modal>
+          )}
+          {help && (
+            <Modal title="Getting started" close={() => setHelp(false)}>
+              <p>
+                Agentgate runs as an independent background service. Install it here or use the CLI on macOS and Linux.
+              </p>
+              <ol className="steps">
+                <li>
+                  <strong>Start your daemon</strong>
+                  <p>
+                    Use “Set up this machine”, or run <code>agentgate init</code> and{" "}
+                    <code>agentgate service install</code>.
+                  </p>
+                </li>
+                <li>
+                  <strong>Add your accounts and tools</strong>
+                  <p>
+                    Sign in to Claude or Codex in Accounts. Connect MCP servers and install skills, then assign them to
+                    Projects.
+                  </p>
+                </li>
+                <li>
+                  <strong>Connect your coding tools</strong>
+                  <p>
+                    Setting up this machine routes your own Claude Code, Codex and Cursor through Agentgate, so T3 Code
+                    needs no settings. Settings → Coding tools undoes it.
+                  </p>
+                </li>
+                <li>
+                  <strong>Using the Claude Desktop app?</strong>
+                  <p>
+                    Open Accounts. Pinning a Claude account moves Claude Code and Claude Desktop to it together. The
+                    menu bar shares your subscriptions in Desktop's Code tab instead.
+                  </p>
+                </li>
+                <li>
+                  <strong>Share across machines</strong>
+                  <p>Start Tailscale on each machine, then open Machines to pair them.</p>
+                </li>
+              </ol>
+              <div className="note">
+                <Activity size={15} /> Closing this app leaves the service, provider proxies, and MCP servers running.
+              </div>
+            </Modal>
+          )}
+        </HeaderSlot>
+      </PendingContext>
+    </BusyContext>
   );
 }

@@ -10,14 +10,14 @@ be exclusive across processes takes a lease. Terms are defined in the [glossary]
 
 ## Change feed
 
-The app waits on `/api/changes`, which answers when one of five topics changes: `status`, `desktop`, `factory`,
-`threads` and `activity` ([changes.ts](../../apps/agentgate/src/changes.ts)). State the app shows must mark its topic
+The app waits on `/api/changes`, which answers when one of four topics changes: `status`, `desktop`, `threads`
+and `activity` ([changes.ts](../../apps/agentgate/src/changes.ts)). State the app shows must mark its topic
 changed, or the app never sees it. A record write does this through `topicsOf` (`store.ts`), a node-local key does it
 when its `defineLocal` family has a `topic` ([local-state.ts](../../apps/agentgate/src/local-state.ts)), and anything
 else calls `Store.bump`. The CLI writes from its own process, so the daemon learns of those writes from
-`PRAGMA data_version` and bumps the written records' topics plus `status` and `factory`. Node-local state the CLI writes
-under any other topic stays unseen until something else bumps it. Paired machines follow each other's `factory` and
-`threads` topics over `/peer/topics` while an app waits.
+`PRAGMA data_version` and bumps the written records' topics plus `status`. Node-local state the CLI writes under any
+other topic stays unseen until something else bumps it. Paired machines follow each other's `threads` topic over
+`/peer/topics` while an app waits.
 
 ## MCP gateway
 

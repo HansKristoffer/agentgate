@@ -18,10 +18,8 @@ export const run: Run = async (cmd, [sub, ...rest]) => {
         if (!remote) continue;
 
         const enabled = remote.enabled ? "on " : "off";
-        const factory = project.factoryTools ? " +factory" : "";
-        const webhook = project.factoryWebhook ? ` +webhook ${new URL(project.factoryWebhook).origin}` : "";
         console.log(
-          `${project.id.padEnd(24)} ${enabled} served by ${remote.servedBy.padEnd(12)} ${endpointUrl(remote)}${factory}${webhook}`,
+          `${project.id.padEnd(24)} ${enabled} served by ${remote.servedBy.padEnd(12)} ${endpointUrl(remote)}`,
         );
       }
       return;

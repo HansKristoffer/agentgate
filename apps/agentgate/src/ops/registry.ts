@@ -1,12 +1,11 @@
-import { operationFor } from "@agentgate/protocol";
+import { operationFor, type ControlOps } from "@agentgate/protocol/control";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
-import type { ControlOps } from "@agentgate/protocol/control";
 import { z } from "zod";
 import type { Ctx } from "../daemon.ts";
 import type { Store } from "../store.ts";
 
 /**
- * The control plane's operation registry, modelled on the factory's (factory/runtime.ts). Each family registers its
+ * The control plane's operation registry. Each family registers its
  * operations from its own file in this folder, and the CLI words, the app's typed call (`POST /api/ops/<name>`) and
  * the CLI's call through the daemon (`POST /api/ops-terminal`) are all made from that one entry (api/ops.ts).
  */

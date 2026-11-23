@@ -5,7 +5,7 @@ import { z } from "zod";
 import { PEER_TOPICS, type Changes, type PeerTopic } from "./changes.ts";
 import { defineLocal } from "./local-state.ts";
 import { MAX_BODY, fetchHeaders, readBody } from "./runtime.ts";
-import { parseEnvelope, PORT, type Rec, type Store } from "./store.ts";
+import { isRetired, parseEnvelope, PORT, type Rec, type Store } from "./store.ts";
 
 export const PULL_INTERVAL = 15_000;
 // 4: byte-bounded pages with explicit continuation, plus validated skill bundles.
@@ -32,6 +32,7 @@ const joinInput = z.object({
   url: peerUrl,
   protocol: z.literal(SYNC_PROTOCOL),
 });
+const retiredSeq = z.object({ seq: z.number().int().nonnegative() });
 const batchSchema = z.object({
   protocol: z.literal(SYNC_PROTOCOL),
   records: z.array(z.unknown()).max(100000),
@@ -189,8 +190,11 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
     const body = batchSchema.parse(
       JSON.parse(new TextDecoder().decode(await readBody(res.body, 16 * 1024 * 1024, signal))),
     );
-    // Only the envelope here: `merge` parses a record's data once it knows the record wins.
-    const records: Rec[] = body.records.map(parseEnvelope);
+    // Only the envelope here: `merge` parses a record's data once it knows the record wins. A kind the factory wrote
+    // (an older peer still sends them) keeps its place in the sequence but is never merged.
+    const records: (Rec | { seq: number; retired: true })[] = body.records.map((r) =>
+      isRetired(r) ? { seq: retiredSeq.parse(r).seq, retired: true } : parseEnvelope(r),
+    );
     // Records must climb from the cursor to the page's seq, and a page that says more must end on that seq.
     const outOfOrder = records.some(
       (r, index) => r.seq === undefined || r.seq > body.seq || r.seq <= (index ? records[index - 1]!.seq! : p.cursor),
@@ -205,7 +209,7 @@ async function doPull(s: Store, requested: Peer): Promise<number> {
         return 0;
       }
       let taken = 0;
-      for (const r of records) if (s.merge(r)) taken++;
+      for (const r of records) if (!("retired" in r) && s.merge(r)) taken++;
       // A peer that rolled its db back (seq < cursor) is re-read from the start next time.
       const cursor = body.seq < p.cursor ? 0 : body.seq;
       s.db.run("update peers set cursor = ?, last_seen = ? where node = ?", [cursor, s.now(), p.node]);
@@ -265,9 +269,9 @@ const topicsAnswer = z.object({
 });
 
 /** While an app waits on this daemon's `/api/changes`, one long-poll to each peer seen in the last minute turns a
- * change to that peer's factory or threads into a local one, so the app shows it within a second. With no app open
+ * change to that peer's threads into a local one, so the app shows it within a second. With no app open
  * nothing runs; after the last app leaves, each poll ends with its peer's next answer. Relay-only machines have no
- * such feed; the app's slower board poll covers them. */
+ * such feed; the app's slower poll covers them. */
 export function followPeers(
   s: Store,
   changes: Changes,

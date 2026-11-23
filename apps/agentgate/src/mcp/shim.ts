@@ -1,5 +1,4 @@
 import { Client, StreamableHTTPClientTransport, type CallToolResult } from "@modelcontextprotocol/client";
-import { T3_THREAD_META_KEY } from "@agentgate/protocol";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { exponentialBackoff } from "hanzio";
 import { z } from "zod";
@@ -51,10 +50,7 @@ export async function buildShim(
   // The handshake and session reads fail fast, so a hung daemon costs the session its tools, not its start.
   const handshake = options.handshakeMs ?? 5000;
   const project = detectProject(cwd, env);
-  // A T3 Code thread names itself: the daemon narrows a factory thread's tools by it, and tells which thread a
-  // factory report came from.
-  const thread = env.T3CODE_THREAD_ID;
-  const q = `project=${encodeURIComponent(project)}${thread ? `&thread=${encodeURIComponent(thread)}` : ""}`;
+  const q = `project=${encodeURIComponent(project)}`;
   // Too late for this session's skills (agents read them before starting MCP servers), but it lets the
   // daemon link project skills into this repo's worktrees ahead of the next session.
   if (project !== "*")
@@ -188,13 +184,7 @@ export async function buildShim(
   };
   await ensure().catch(() => {});
   const call = (client: Client, ...[params, callOptions]: Parameters<NonNullable<Source["invoke"]>>) =>
-    client.request(
-      {
-        method: "tools/call",
-        params: thread ? { ...params, _meta: { [T3_THREAD_META_KEY]: thread, ...params._meta } } : params,
-      },
-      callOptions,
-    ) as Promise<CallToolResult>;
+    client.request({ method: "tools/call", params }, callOptions) as Promise<CallToolResult>;
   const toDaemon = (client: Client): Source => ({
     alias: "",
     client,

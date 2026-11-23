@@ -81,6 +81,22 @@ test("public inventories omit OAuth, headers, environment, arguments, and URL cr
   s.close();
 });
 
+test("a backup from before the factory was removed restores without the factory's records", () => {
+  const s = new Store(":memory:");
+  s.setLocal("node", "n");
+  importBackup(s, {
+    agentgate: 4,
+    records: [
+      { kind: "account", id: "a", data: { id: "a", provider: "claude", label: "a" } },
+      { kind: "secret", id: "GITHUB_TOKEN", data: { name: "GITHUB_TOKEN", value: "x" } },
+      { kind: "factoryFolder", id: "folder", data: { files: {} } },
+    ],
+  });
+  expect(s.get("account", "a")).toBeDefined();
+  expect(s.db.query("select kind from records where kind != 'node'").all()).toEqual([{ kind: "account" }]);
+  s.close();
+});
+
 test("restore validates every record before applying and preserves sequence on failure", () => {
   const s = new Store(":memory:");
   const before = s.seq();
