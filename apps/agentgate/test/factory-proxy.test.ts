@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { Hono } from "hono";
 import { app, makeCtx } from "../src/daemon.ts";
 import { allowedFactoryPath, factoryPeerRoutes } from "../src/factory-proxy.ts";
 import { relayedRoutes } from "../src/handoff/routes.ts";
@@ -169,5 +170,21 @@ describe("factory proxy", () => {
     const relayed = await relayHandler("laptop", new Request("http://relay/factory-proxy/health"));
     expect(relayed.status).toBe(200);
     expect(await relayed.json()).toMatchObject({ ok: true, version: "test" });
+  });
+
+  test("names the update when the remote daemon predates the factory proxy", async () => {
+    // A bare Hono app answers like a pre-0.37.0 daemon with no /peer/factory-proxy route.
+    const oldDaemon = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => new Hono().fetch(req) });
+    cleanups.push(() => oldDaemon.stop(true));
+    const s = new Store(":memory:");
+    s.setLocal("node", "laptop");
+    cleanups.push(() => s.close());
+    s.db.run("insert into peers values ('server', ?, 'token', 0, ?)", [`http://127.0.0.1:${oldDaemon.port}`, s.now()]);
+    const res = await app(makeCtx(s, { factoryUrl: "http://127.0.0.1:1" })).fetch(
+      new Request("http://127.0.0.1:7878/api/factory-proxy/server/health", { headers: { host: "127.0.0.1:7878" } }),
+      { listener: "loopback" },
+    );
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain("agentgate update server");
   });
 });

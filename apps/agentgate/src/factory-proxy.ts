@@ -166,6 +166,22 @@ export function factoryPeerRoutes(baseUrl: string, daemonSignal: AbortSignal) {
   return app;
 }
 
+/** Hono's default 404 body: the peer's daemon has no `/factory-proxy` route, so it runs a version from before 0.37.0. */
+const NO_ROUTE = "404 Not Found";
+
+/** Copies a peer's answer, replacing a missing route with an error that names the fix instead of a plain-text 404. */
+async function fromPeer(ctx: Ctx, node: string, res: Response, signal: AbortSignal): Promise<Response> {
+  const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
+  if (res.status === 404 && new TextDecoder().decode(bytes) === NO_ROUTE) {
+    const version = ctx.s.get("node", node)?.version;
+    return jsonError(
+      502,
+      `${node} runs Agentgate ${version ?? "from before 0.37.0"}, which cannot show its Factory. Update it with \`agentgate update ${node}\`.`,
+    );
+  }
+  return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+}
+
 /** Mounted on `/api/factory-proxy` in the daemon's control API. Routes local or remote via Tailscale/relay. */
 export function factoryProxyApi(ctx: Ctx) {
   const app = new Hono<Env>();
@@ -216,8 +232,7 @@ export function factoryProxyApi(ctx: Ctx) {
       } catch {
         return jsonError(503, `${node} is not reachable`);
       }
-      const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
-      return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+      return fromPeer(ctx, node, res, signal);
     }
 
     if (transport(ctx.s, node) === "relay") {
@@ -228,8 +243,7 @@ export function factoryProxyApi(ctx: Ctx) {
           type: contentType,
           timeout,
         });
-        const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
-        return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+        return await fromPeer(ctx, node, res, signal);
       } catch (error) {
         const status =
           error &&
