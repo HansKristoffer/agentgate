@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Spinner } from "@heroui/react";
-import { Monitor, Plus, RefreshCw, Search } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  GitPullRequest,
+  Layers,
+  Monitor,
+  Plus,
+  RefreshCw,
+  Search,
+  Sparkles,
+} from "lucide-react";
 import type { ViewProps } from "../types.ts";
 import { factoryEmbedUrl, factoryHealth, openExternal, type FactoryHealth } from "../api.ts";
-import { Empty, HeaderActions, Panel } from "../components/ui.tsx";
+import { Badge, HeaderActions, Panel } from "../components/ui.tsx";
 
 export type FactorySection = "board" | "dashboard" | "intake" | "done" | "settings";
 
@@ -53,11 +63,13 @@ export function Factory({
   onMachineChange,
   targetHash,
   onStateChange,
+  onOpenSkills,
 }: ViewProps & {
   machine: string;
   onMachineChange: (node: string) => void;
   targetHash: string;
   onStateChange: (state: FactoryLiveState) => void;
+  onOpenSkills: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(systemTheme);
@@ -178,6 +190,9 @@ export function Factory({
   }, [machine, probeSeq]);
 
   const ready = probe.status === "ready" && probe.machine === machine;
+  const hasFactorySkill = data.skills.some((s) => s.id === "factory");
+  const isLocalMachine = machine === data.node;
+  const otherMachines = machines.filter((m) => m.id !== machine);
 
   return (
     <>
@@ -247,22 +262,130 @@ export function Factory({
       )}
 
       {probe.status === "error" && (
-        <div className="factory-state-wrap">
-          <Panel>
-            <Empty>
-              <strong>Factory is not reachable on {machine}</strong>
-              <p>{probe.error || "Start the factory service on that machine, or pick another machine above."}</p>
-              <p className="muted">
-                The factory runs on port <code>4400</code> on each machine that uses the <code>factory</code> skill.
-              </p>
-              <div className="row" style={{ marginTop: 12 }}>
+        <div className="factory-guide-scroll">
+          <div className="factory-guide">
+            <Panel
+              title={`Factory is not reachable on ${machine}`}
+              detail={probe.error || "Start the factory service on that machine, or pick another machine above."}
+              action={
                 <Button size="sm" variant="primary" onPress={() => setProbeSeq((n) => n + 1)}>
                   <RefreshCw size={14} />
                   Retry
                 </Button>
+              }
+            >
+              <div className="item">
+                <div className="grow">
+                  <strong>Expected service address</strong>
+                  <small>
+                    Listens on <code>http://127.0.0.1:4400</code> on {machine} (override with <code>FACTORY_PORT</code>
+                    ).
+                    {!isLocalMachine &&
+                      " Agentgate tunnels directly over Tailscale or through your encrypted relay when it is running."}
+                  </small>
+                </div>
+                {otherMachines.length > 0 && (
+                  <Button
+                    size="sm"
+                    variant="tertiary"
+                    onPress={() => {
+                      const next = otherMachines[0]!.id;
+                      try {
+                        localStorage.setItem(STORAGE_MACHINE, next);
+                      } catch {
+                        // Ignore storage errors.
+                      }
+                      onMachineChange(next);
+                    }}
+                  >
+                    Try {otherMachines[0]!.id}
+                  </Button>
+                )}
               </div>
-            </Empty>
-          </Panel>
+            </Panel>
+
+            <Panel
+              title={`Set up Factory on ${machine}`}
+              detail="Factory runs as a skill-backed local service. No extra ports or tunnels are needed."
+            >
+              <div className="item">
+                <span className="factory-step-num">1</span>
+                <div className="grow">
+                  <div className="row">
+                    <strong>Install the factory skill</strong>
+                    {hasFactorySkill && <Badge good>Installed</Badge>}
+                  </div>
+                  <small>
+                    {hasFactorySkill
+                      ? "The factory skill is already in Agentgate and synced to your machines. Make sure it is linked to your projects or global defaults."
+                      : "Add the HansKristoffer/hanzio-skills repository (or the factory skill) in Skills so Agentgate links it into your coding sessions on every machine."}
+                  </small>
+                </div>
+                <Button size="sm" variant="tertiary" onPress={onOpenSkills}>
+                  <Sparkles size={14} />
+                  {hasFactorySkill ? "View in Skills" : "Open Skills"}
+                  <ArrowRight size={13} />
+                </Button>
+              </div>
+              <div className="item">
+                <span className="factory-step-num">2</span>
+                <div className="grow">
+                  <strong>Start your first Factory issue in T3 Code</strong>
+                  <small>
+                    Open a T3 Code thread on {machine} and ask it to work an issue with the <code>factory</code> skill.
+                    The first command starts the local Factory service automatically and keeps it running in the
+                    background.
+                  </small>
+                </div>
+              </div>
+              <div className="item">
+                <span className="factory-step-num">3</span>
+                <div className="grow">
+                  <strong>Come back here and press Retry</strong>
+                  <small>
+                    Once running on {machine}, this view shows live issues, approvals, visual proof, and settings right
+                    inside Agentgate. You can switch between machines any time from the selector above.
+                  </small>
+                </div>
+              </div>
+            </Panel>
+
+            <Panel
+              title="How the Factory works"
+              detail="Each issue runs as one T3 Code orchestrator thread with staged subagents."
+            >
+              <div className="item">
+                <Layers size={16} className="muted shrink-0" />
+                <div className="grow">
+                  <strong>Research & Plan</strong>
+                  <small>
+                    Reproduces bugs, sizes the change, drafts an implementation plan, and collects only the open
+                    decisions that need your answer.
+                  </small>
+                </div>
+              </div>
+              <div className="item">
+                <GitPullRequest size={16} className="muted shrink-0" />
+                <div className="grow">
+                  <strong>Implement & Blind Review</strong>
+                  <small>
+                    Runs each stage on the model your settings pick, reviews the diff in an isolated worktree, and
+                    attaches screenshots, benchmarks, and a PR overview.
+                  </small>
+                </div>
+              </div>
+              <div className="item">
+                <CheckCircle2 size={16} className="muted shrink-0" />
+                <div className="grow">
+                  <strong>Decide & Ship from anywhere</strong>
+                  <small>
+                    Approve plans, answer questions, spin up a preview, and decide merges from this window, whether the
+                    factory runs on this Mac or a remote server behind the relay.
+                  </small>
+                </div>
+              </div>
+            </Panel>
+          </div>
         </div>
       )}
 

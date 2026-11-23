@@ -277,6 +277,7 @@ function Main({
         }}
         targetHash={factoryHash}
         onStateChange={setFactoryState}
+        onOpenSkills={() => setView("skills")}
       />
     ),
     activity: <ActivityView {...props} />,
