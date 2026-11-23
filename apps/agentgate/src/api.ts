@@ -8,6 +8,7 @@ import { skills } from "./api/skills.ts";
 import { system } from "./api/system.ts";
 import { t3 } from "./api/t3.ts";
 import type { Ctx, Env } from "./daemon.ts";
+import { factoryProxyApi } from "./factory-proxy.ts";
 import { serverTools } from "./mcp/gateway.ts";
 import { finishLogin } from "./mcp/oauth.ts";
 
@@ -21,7 +22,8 @@ export function management(ctx: Ctx) {
     .route("/", projects(ctx))
     .route("/", t3(ctx))
     .route("/", desktopRoutes(ctx))
-    .route("/", ops(ctx));
+    .route("/", ops(ctx))
+    .route("/factory-proxy", factoryProxyApi(ctx));
 }
 
 /** Browser-only OAuth landing response, also used by headless CLI MCP logins. */

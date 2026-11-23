@@ -6,4 +6,5 @@ export { Nodes } from "./Nodes.tsx";
 export { Settings } from "./Settings.tsx";
 export { Skills } from "./Skills.tsx";
 export { T3Code } from "./T3Code.tsx";
+export { Factory } from "./Factory.tsx";
 export { ActivityView } from "./Activity.tsx";

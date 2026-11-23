@@ -1,0 +1,252 @@
+import { getErrorMessage } from "hanzio";
+import { Hono } from "hono";
+import { MiB } from "@agentgate/protocol/relay";
+import { relayCall } from "./channel.ts";
+import type { Ctx, Env } from "./daemon.ts";
+import { transport } from "./handoff/jobs.ts";
+import { fetchHeaders, MAX_BODY, readBody } from "./runtime.ts";
+import { peers } from "./sync.ts";
+
+/**
+ * Proxies the standalone skill-factory web app (http://127.0.0.1:4400 by default) so the desktop app can embed it
+ * natively for any machine in the user's Tailscale or relay group. Only client-safe routes are forwarded; CLI-only
+ * routes (/api/issue/*, /api/runs/*, /api/shutdown, /mcp) are refused.
+ */
+
+const DEFAULT_FACTORY_PORT = 4400;
+const MAX_RESPONSE_BYTES = 16 * MiB;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const CHANGES_TIMEOUT_MS = 40_000;
+
+export function factoryPort(): number {
+  const raw = process.env.FACTORY_PORT;
+  if (!raw) return DEFAULT_FACTORY_PORT;
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return DEFAULT_FACTORY_PORT;
+  return port;
+}
+
+export const factoryBaseUrl = () => `http://127.0.0.1:${factoryPort()}`;
+
+/** Allowlist of browser/app routes on the factory service. Blocks CLI-only and shutdown routes. */
+export function allowedFactoryPath(method: string, pathname: string): boolean {
+  if (!pathname.startsWith("/") || pathname.startsWith("//") || pathname.includes("\\")) return false;
+  if (pathname.split("/").some((p) => p === ".." || p === "." || p.toLowerCase().includes("%2e"))) return false;
+
+  if (method === "GET") {
+    if (
+      pathname === "/" ||
+      pathname === "/health" ||
+      pathname === "/api/board" ||
+      pathname === "/api/changes" ||
+      pathname === "/api/settings" ||
+      pathname === "/api/history" ||
+      pathname === "/api/intake" ||
+      pathname === "/api/intake/linear/teams" ||
+      pathname === "/api/mcp" ||
+      pathname === "/api/webhook"
+    ) {
+      return true;
+    }
+    if (/^\/api\/issues\/[^/]+(\/preview)?$/.test(pathname)) return true;
+    if (/^\/api\/intake\/sources\/[^/]+\/items$/.test(pathname)) return true;
+    if (pathname.startsWith("/evidence/") || pathname.startsWith("/overview/")) return true;
+    return false;
+  }
+
+  if (method === "POST") {
+    if (pathname === "/api/threads" || pathname === "/api/github/fetch" || pathname === "/api/webhook/test") {
+      return true;
+    }
+    if (pathname === "/api/intake/sources") return true;
+    if (/^\/api\/intake\/sources\/[^/]+\/start$/.test(pathname)) return true;
+    if (/^\/api\/issues\/[^/]+\/(answers|message|drop|preview|deliver)$/.test(pathname)) return true;
+    return false;
+  }
+
+  if (method === "PUT") {
+    if (pathname === "/api/intake/linear" || pathname === "/api/webhook") return true;
+    if (/^\/api\/intake\/sources\/[^/]+$/.test(pathname)) return true;
+    if (pathname.startsWith("/api/settings/") && pathname.length > "/api/settings/".length) return true;
+    return false;
+  }
+
+  if (method === "DELETE") {
+    if (pathname === "/api/intake/linear") return true;
+    if (/^\/api\/intake\/sources\/[^/]+$/.test(pathname)) return true;
+    return false;
+  }
+
+  return false;
+}
+
+const timeoutFor = (pathname: string) => (pathname === "/api/changes" ? CHANGES_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+
+function jsonError(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), {
+    status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
+}
+
+function copySafeHeaders(upstream: Response): Headers {
+  const headers = new Headers({ "cache-control": "no-store" });
+  const ct = upstream.headers.get("content-type");
+  if (ct) headers.set("content-type", ct);
+  const csp = upstream.headers.get("content-security-policy");
+  if (csp) headers.set("content-security-policy", csp);
+  return headers;
+}
+
+/** Forwards one validated request to this machine's local factory service. */
+export async function proxyLocalFactory(
+  req: Request,
+  pathAndQuery: string,
+  baseUrl: string,
+  daemonSignal: AbortSignal,
+): Promise<Response> {
+  const normalized = pathAndQuery.startsWith("/") ? pathAndQuery : `/${pathAndQuery}`;
+  const parsed = new URL(normalized, "http://127.0.0.1");
+  if (!allowedFactoryPath(req.method, parsed.pathname)) {
+    return jsonError(403, `Factory proxy refused ${req.method} ${parsed.pathname}`);
+  }
+  const timeout = timeoutFor(parsed.pathname);
+  const signal = AbortSignal.any([req.signal, daemonSignal, AbortSignal.timeout(timeout)]);
+
+  let body: Uint8Array | undefined;
+  const contentType = req.headers.get("content-type");
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    body = await readBody(req.body, MAX_BODY, signal);
+  }
+
+  let res: Response;
+  try {
+    res = await fetchHeaders(
+      `${baseUrl}${parsed.pathname}${parsed.search}`,
+      {
+        method: req.method,
+        redirect: "manual",
+        signal,
+        headers: contentType ? { "content-type": contentType } : {},
+        ...(body && { body }),
+      },
+      timeout,
+    );
+  } catch {
+    const port = new URL(baseUrl).port || String(DEFAULT_FACTORY_PORT);
+    return jsonError(503, `Factory is not running on this machine (expected on port ${port})`);
+  }
+
+  let payload: Uint8Array;
+  try {
+    payload = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
+  } catch {
+    return jsonError(502, "Factory response ended early or exceeded the proxy limit");
+  }
+  return new Response(payload, { status: res.status, headers: copySafeHeaders(res) });
+}
+
+function subPathOf(reqUrl: string, mountPrefix: string): string {
+  const url = new URL(reqUrl);
+  const rest = url.pathname.startsWith(mountPrefix) ? url.pathname.slice(mountPrefix.length) : url.pathname;
+  const clean = rest.startsWith("/") ? rest : `/${rest}`;
+  return `${clean}${url.search}`;
+}
+
+/** Mounted on `/peer/factory-proxy` (both Tailscale peer routes and encrypted relay channel). */
+export function factoryPeerRoutes(baseUrl: string, daemonSignal: AbortSignal) {
+  const app = new Hono();
+  const handle = (req: Request) => {
+    const url = new URL(req.url);
+    const prefix = url.pathname.startsWith("/peer/factory-proxy") ? "/peer/factory-proxy" : "/factory-proxy";
+    return proxyLocalFactory(req, subPathOf(req.url, prefix), baseUrl, daemonSignal);
+  };
+  app.all("/", (c) => handle(c.req.raw));
+  app.all("/*", (c) => handle(c.req.raw));
+  return app;
+}
+
+/** Mounted on `/api/factory-proxy` in the daemon's control API. Routes local or remote via Tailscale/relay. */
+export function factoryProxyApi(ctx: Ctx) {
+  const app = new Hono<Env>();
+
+  const forward = async (req: Request, rawNode: string) => {
+    let node: string;
+    try {
+      node = decodeURIComponent(rawNode);
+    } catch {
+      return jsonError(400, "Invalid machine name");
+    }
+    const prefix = `/api/factory-proxy/${rawNode}`;
+    const pathAndQuery = subPathOf(req.url, prefix);
+    const parsed = new URL(pathAndQuery, "http://127.0.0.1");
+
+    if (!allowedFactoryPath(req.method, parsed.pathname)) {
+      return jsonError(403, `Factory proxy refused ${req.method} ${parsed.pathname}`);
+    }
+
+    if (node === ctx.s.nodeId) {
+      return proxyLocalFactory(req, pathAndQuery, ctx.factoryUrl, ctx.abort.signal);
+    }
+
+    const timeout = timeoutFor(parsed.pathname);
+    const signal = AbortSignal.any([req.signal, ctx.abort.signal, AbortSignal.timeout(timeout)]);
+    const contentType = req.headers.get("content-type") ?? undefined;
+    const body = req.method !== "GET" && req.method !== "HEAD" ? await readBody(req.body, MAX_BODY, signal) : undefined;
+    const peerPath = `/factory-proxy${parsed.pathname}${parsed.search}`;
+
+    const direct = peers(ctx.s).find((p) => p.node === node);
+    if (direct) {
+      let res: Response;
+      try {
+        res = await fetchHeaders(
+          `${direct.url}/peer${peerPath}`,
+          {
+            method: req.method,
+            redirect: "manual",
+            signal,
+            headers: {
+              authorization: `Bearer ${direct.token}`,
+              ...(contentType && { "content-type": contentType }),
+            },
+            ...(body && { body }),
+          },
+          timeout,
+        );
+      } catch {
+        return jsonError(503, `${node} is not reachable`);
+      }
+      const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
+      return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+    }
+
+    if (transport(ctx.s, node) === "relay") {
+      try {
+        const res = await relayCall(ctx.s, node, peerPath, {
+          method: req.method,
+          body,
+          type: contentType,
+          timeout,
+        });
+        const bytes = await readBody(res.body, MAX_RESPONSE_BYTES, signal);
+        return new Response(bytes, { status: res.status, headers: copySafeHeaders(res) });
+      } catch (error) {
+        const status =
+          error &&
+          typeof error === "object" &&
+          "status" in error &&
+          typeof error.status === "number" &&
+          error.status >= 400
+            ? error.status
+            : 503;
+        return jsonError(status, getErrorMessage(error));
+      }
+    }
+
+    return jsonError(404, `${node} is not paired with ${ctx.s.nodeId} over Tailscale or a relay`);
+  };
+
+  app.all("/:node", (c) => forward(c.req.raw, c.req.param("node")));
+  app.all("/:node/*", (c) => forward(c.req.raw, c.req.param("node")));
+  return app;
+}
