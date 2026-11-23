@@ -72,6 +72,7 @@ export function Factory({
   onOpenSkills: () => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const loadedFrameRef = useRef<HTMLIFrameElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(systemTheme);
   const [probeSeq, setProbeSeq] = useState(0);
   const [probe, setProbe] = useState<{
@@ -396,8 +397,12 @@ export function Factory({
           className="factory-frame"
           src={frameSrc}
           title={`Factory on ${machine}`}
-          onLoad={() => {
+          onLoad={(e) => {
             postToFrame({ type: "factory:theme", theme });
+            // WebKit fires `load` on the iframe for in-page hash changes too, so navigating on every load would send
+            // each click inside Factory straight back to the sidebar's section. Only a new frame needs it.
+            if (loadedFrameRef.current === e.currentTarget) return;
+            loadedFrameRef.current = e.currentTarget;
             postToFrame({ type: "factory:navigate", hash: targetHash });
           }}
         />
