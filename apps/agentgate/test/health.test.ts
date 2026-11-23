@@ -1,9 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
+import { Hono } from "hono";
 import { hostname } from "node:os";
-import { HEALTH_PATH, statusSchema } from "@agentgate/protocol";
+import { machineHealthSchema } from "@agentgate/protocol";
 import { app, makeCtx } from "../src/daemon.ts";
 import { startLagProbe } from "../src/lag.ts";
-import { setHealthDashboard } from "../src/ops/nodes.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { Store } from "../src/store.ts";
 
@@ -12,13 +12,13 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-/** This machine, named mac, with the daemon's routes. */
-function machine() {
+/** A machine with the daemon's routes. */
+function machine(name = "mac") {
   const s = new Store(":memory:");
-  s.setLocal("node", "mac");
+  s.setLocal("node", name);
   s.setLocal("adminToken", "admin-secret");
-  s.put("node", "mac", { id: "mac", url: "http://mac.tail123.ts.net:7878", protocol: NODE_PROTOCOL });
-  const ctx = makeCtx(s),
+  s.put("node", name, { id: name, url: `http://${name}.tail123.ts.net:7878`, protocol: NODE_PROTOCOL });
+  const ctx = makeCtx(s, { factoryUrl: "http://127.0.0.1:1" }),
     handler = app(ctx);
   cleanup.push(async () => {
     ctx.health.stop();
@@ -29,108 +29,118 @@ function machine() {
     await ctx.gateway.close();
     s.close();
   });
-  const call = (
-    path: string,
-    options: {
-      method?: string;
-      body?: unknown;
-      listener?: "loopback" | "tailnet";
-      headers?: Record<string, string>;
-    } = {},
-  ) => {
-    const { method = "GET", body, listener = "loopback", headers = {} } = options;
-    return handler.fetch(
-      new Request(`http://127.0.0.1:7878${path}`, {
-        method,
+  /** The `health` operation, as the app calls it. */
+  const health = (body: { node?: string }, options: { listener?: "loopback" | "tailnet"; token?: string } = {}) =>
+    handler.fetch(
+      new Request("http://127.0.0.1:7878/api/ops/health", {
+        method: "POST",
         headers: {
-          host: "127.0.0.1:7878",
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...headers,
+          host: options.listener === "tailnet" ? `${name}.tail123.ts.net:7878` : "127.0.0.1:7878",
+          "content-type": "application/json",
+          ...(options.token && { authorization: `Bearer ${options.token}` }),
         },
-        body: body === undefined ? undefined : JSON.stringify(body),
+        body: JSON.stringify(body),
       }),
-      { listener },
+      { listener: options.listener ?? "loopback" },
     );
+  /** Starts sampling the way the first read does, and takes the baseline and the first sample without waiting for
+   * the timer. */
+  const firstRead = async () => {
+    const reading = ctx.health.read();
+    await ctx.health.sample();
+    await ctx.health.sample();
+    return reading;
   };
-  return { s, ctx, call };
+  return { s, ctx, handler, health, firstRead };
 }
 
-test("the dashboard is off until a machine turns it on, and turning it on waits for every machine's version", async () => {
-  const { s, call } = machine();
-  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(404);
+const errorOf = async (response: Response) => ((await response.json()) as { error: string }).error;
 
-  s.put("node", "old", { id: "old", protocol: 6 });
-  expect(() => setHealthDashboard(s, "mac", true)).toThrow("Update agentgate on old first");
-  expect(s.get("node", "mac")!.healthDashboard).toBe(false);
-  expect(() => setHealthDashboard(s, "nobody", true)).toThrow("no machine nobody");
+test("health needs the admin token on the tailnet, and names a machine that is not there", async () => {
+  const { health } = machine();
+  expect((await health({}, { listener: "tailnet" })).status).toBe(401);
 
-  // Protocol 7 brought the dashboard setting; a later protocol must not make turning it on wait.
-  s.put("node", "old", { id: "old", protocol: 7 });
-  expect(setHealthDashboard(s, "mac", true).healthDashboard).toBe(true);
-  // Linux serves the page; any other machine answers with a note instead.
-  expect((await call(HEALTH_PATH, { headers: { accept: "text/html" } })).status).toBe(
-    process.platform === "linux" ? 200 : 501,
-  );
-
-  // Turning it off needs no wait: a machine that drops the field reads it as off.
-  s.put("node", "old", { id: "old", protocol: 6 });
-  expect(setHealthDashboard(s, "mac", false).healthDashboard).toBe(false);
+  const unknown = await health({ node: "nobody" });
+  expect(unknown.status).toBe(400);
+  expect(await errorOf(unknown)).toContain("No machine named nobody");
 });
 
-test("the API turns another machine's dashboard on and off, shows it in status, and needs the admin token on the tailnet", async () => {
-  const { s, call } = machine();
-  s.put("node", "b", { id: "b", protocol: NODE_PROTOCOL });
-  const tailnet = { listener: "tailnet" as const, headers: { host: "mac.tail123.ts.net:7878" } };
+test("another machine's health is asked of its own daemon, and one from before the route names the update", async () => {
+  // A bare Hono app answers like a daemon from before /peer/health.
+  const oldDaemon = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: (req) => new Hono().fetch(req) });
+  cleanup.push(() => oldDaemon.stop(true));
+  const { s, health } = machine("laptop");
+  s.put("node", "server", { id: "server", protocol: NODE_PROTOCOL });
+  s.put("node", "lonely", { id: "lonely", protocol: NODE_PROTOCOL });
+  s.db.run("insert into peers values ('server', ?, 'token', 0, ?)", [`http://127.0.0.1:${oldDaemon.port}`, s.now()]);
 
-  expect((await call("/api/ops/dashboard", { ...tailnet, method: "POST", body: { node: "b", on: true } })).status).toBe(
-    401,
-  );
-  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "b", on: true } })).status).toBe(200);
-  expect(s.get("node", "b")!.healthDashboard).toBe(true);
-  expect((await call("/api/ops/dashboard", { method: "POST", body: { node: "nobody", on: true } })).status).toBe(400);
+  const old = await health({ node: "server" });
+  expect(old.status).toBe(400);
+  expect(await errorOf(old)).toContain("agentgate update server");
 
-  const status = statusSchema.parse(await (await call("/api/status")).json());
-  expect(status.nodes.find((n) => n.id === "b")?.healthDashboard).toBe(true);
-
-  const off = await call("/api/ops/dashboard", {
-    ...tailnet,
-    method: "POST",
-    body: { node: "b", on: false },
-    headers: { ...tailnet.headers, authorization: "Bearer admin-secret" },
-  });
-  expect(off.status).toBe(200);
-  expect(s.get("node", "b")!.healthDashboard).toBe(false);
+  const unpaired = await health({ node: "lonely" });
+  expect(await errorOf(unpaired)).toContain("lonely is not paired with laptop");
 });
 
 test.skipIf(process.platform === "linux")("a machine that is not Linux says so and never samples", async () => {
-  const { s, ctx, call } = machine();
-  setHealthDashboard(s, "mac", true);
-  ctx.health.reconcile();
-  expect((await call(HEALTH_PATH, { headers: { accept: "application/json" } })).status).toBe(501);
+  const { health } = machine();
+  const response = await health({});
+  expect(response.status).toBe(400);
+  expect(await errorOf(response)).toContain("not a Linux machine");
 });
 
 test.skipIf(process.platform !== "linux")(
-  "the dashboard reports T3 Code only while agentgate is connected to it, and whether it answers",
+  "the first read waits for the first sample, and the API answers with this machine's health",
   async () => {
-    const { s, ctx, call } = machine();
+    const { health, firstRead } = machine();
+    const probe = startLagProbe();
+    cleanup.push(() => probe.stop());
+
+    expect((await firstRead()).history).toHaveLength(1);
+    const response = await health({});
+    expect(response.status).toBe(200);
+    const data = machineHealthSchema.parse(await response.json());
+    expect(data.host).toBe(hostname());
+    // The sample reads /proc asynchronously, so the probe may tick, with a millisecond of jitter, while it runs.
+    expect(data.daemon_lag).toEqual({ worstMs: expect.any(Number), p99Ms: expect.any(Number) });
+    expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "the daemon samples only while someone watches: from the first read until a minute after the last",
+  async () => {
+    const { s, ctx, firstRead } = machine();
+    let now = Date.now();
+    s.now = () => now;
+
+    // Unwatched, the timer's ticks take nothing.
+    await ctx.health.sample();
+    expect((await firstRead()).history).toHaveLength(1);
+    await ctx.health.sample();
+    expect((await ctx.health.read()).history).toHaveLength(2);
+
+    // A minute without a read: the next tick stops sampling and drops what it had, and the next read starts over.
+    now += 60_000;
+    await ctx.health.sample();
+    await ctx.health.sample();
+    expect((await firstRead()).history).toHaveLength(1);
+  },
+);
+
+test.skipIf(process.platform !== "linux")(
+  "health reports T3 Code only while agentgate is connected to it, and whether it answers",
+  async () => {
+    const { s, ctx, firstRead } = machine();
     const t3 = Bun.serve({ port: 0, fetch: () => new Response("ok") });
     cleanup.push(() => t3.stop(true));
     s.setLocal("t3:url", `http://127.0.0.1:${t3.port}`);
     s.setLocal("t3:token", "t3-token");
-    setHealthDashboard(s, "mac", true);
-    ctx.health.reconcile();
-    const services = async () =>
-      (
-        (await (await call(HEALTH_PATH, { headers: { accept: "application/json" } })).json()) as {
-          services: Record<string, boolean>;
-        }
-      ).services;
     let now = Date.now();
     s.now = () => now;
+    const services = async () => (await ctx.health.read()).services;
 
-    await call(HEALTH_PATH, { headers: { accept: "text/html" } });
-    await ctx.health.sample();
-    expect(await services()).toMatchObject({ t3_code: true });
+    expect((await firstRead()).services).toMatchObject({ t3_code: true });
     t3.stop(true);
     // Services are asked every 30 seconds, not on every sample.
     await ctx.health.sample();
@@ -142,76 +152,31 @@ test.skipIf(process.platform !== "linux")(
 );
 
 test.skipIf(process.platform !== "linux")(
-  "the daemon samples only while someone watches: from the first request until a minute after the last",
+  "a paired machine's health comes over its peer route, behind the peer token",
   async () => {
-    const { s, ctx, call } = machine();
-    let now = Date.now();
-    s.now = () => now;
-    setHealthDashboard(s, "mac", true);
-    ctx.health.reconcile();
-    const history = async () => {
-      const response = await call(`${HEALTH_PATH}?history=1`, { headers: { accept: "application/json" } });
-      return response.status === 503 ? "starting" : ((await response.json()) as { history: unknown[] }).history.length;
-    };
-
-    // On but unwatched: the timer's ticks take nothing.
-    await ctx.health.sample();
-    expect(await history()).toBe("starting");
-
-    await ctx.health.sample();
-    await ctx.health.sample();
-    expect(await history()).toBe(2);
-
-    // A minute without a request: the next tick stops sampling and drops what it had.
-    now += 60_000;
-    await ctx.health.sample();
-    expect(await history()).toBe("starting");
-    await ctx.health.sample();
-    expect(await history()).toBe(1);
-  },
-);
-
-test.skipIf(process.platform !== "linux")(
-  "while on, the daemon samples this machine: the page and JSON answer, and the tailnet listener answers only this node's names",
-  async () => {
-    const { s, ctx, call } = machine();
-    setHealthDashboard(s, "mac", true);
-    ctx.health.reconcile();
-    const json = { headers: { accept: "application/json" } };
-    expect((await call(`${HEALTH_PATH}?history=1`, json)).status).toBe(503); // no sample yet
-
-    const probe = startLagProbe();
-    cleanup.push(() => probe.stop());
-    await ctx.health.sample();
-    const data = (await (await call(`${HEALTH_PATH}?history=1`, json)).json()) as {
-      status: string;
-      host: string;
-      history: unknown[];
-      services: Record<string, boolean>;
-    };
-    expect(data).toMatchObject({
-      status: "ok",
-      host: hostname(),
-      // The sample reads /proc asynchronously, so the probe may tick, with a millisecond of jitter, while it runs.
-      daemon_lag: { worstMs: expect.any(Number), p99Ms: expect.any(Number) },
+    const remote = machine("server");
+    const token = "peer-secret-token";
+    remote.s.db.run("insert into peers values ('laptop', 'http://127.0.0.1:1', ?, 0, ?)", [token, remote.s.now()]);
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (req) => remote.handler.fetch(req, { listener: "tailnet" }),
     });
-    expect(data.history).toHaveLength(1);
-    expect(data.services).not.toHaveProperty("t3_code"); // not connected to T3 Code here
+    cleanup.push(() => server.stop(true));
+    await remote.firstRead();
 
-    const page = await call(HEALTH_PATH, { headers: { accept: "text/html" } });
-    expect(page.headers.get("content-type")).toContain("text/html");
-    expect(await page.text()).toContain("<title>Machine dashboard</title>");
+    const local = machine("laptop");
+    local.s.put("node", "server", { id: "server", protocol: NODE_PROTOCOL });
+    local.s.db.run("insert into peers values ('server', ?, ?, 0, ?)", [
+      `http://127.0.0.1:${server.port}`,
+      token,
+      local.s.now(),
+    ]);
+    const response = await local.health({ node: "server" });
+    expect(response.status).toBe(200);
+    expect(machineHealthSchema.parse(await response.json()).history).toHaveLength(1);
 
-    // A page on another site reaches the tailnet address by DNS rebinding under its own name: refused. An address or this
-    // node's own name is what the app and the browser use.
-    const tailnetHost = (host: string) =>
-      call(HEALTH_PATH, { listener: "tailnet", headers: { host, accept: "application/json" } });
-    expect((await tailnetHost("evil.example:7878")).status).toBe(403);
-    expect((await tailnetHost("mac.tail123.ts.net:7878")).status).toBe(200);
-    expect((await tailnetHost("100.89.253.6:7878")).status).toBe(200);
-
-    setHealthDashboard(s, "mac", false);
-    ctx.health.reconcile();
-    expect((await call(HEALTH_PATH, json)).status).toBe(404);
+    // Without the peer token the route is closed.
+    expect((await fetch(`http://127.0.0.1:${server.port}/peer/health`)).status).toBe(401);
   },
 );

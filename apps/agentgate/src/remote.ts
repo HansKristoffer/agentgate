@@ -23,7 +23,7 @@ import { nodesBelow, requireNodeProtocol, sent, type Data, type Project, type St
 
 /** Sync features this daemon understands: 2 keeps remote endpoints intact, 3 knows `tokens` records (llm/token-history.ts),
  * 4 knows `login` records, 5 the Infisical machine identity login (logins.ts), 6 checkout files on project records
- * (checkout-files.ts), 7 the health dashboard setting on node records (health.ts), 8 and 9 the software factory, since
+ * (checkout-files.ts), 7 the health dashboard setting on node records, since removed, 8 and 9 the software factory, since
  * removed, 10 the
  * `opencode` login (logins.ts), 11 the global AGENTS.md on Global defaults (agents-md.ts), 12 the `antigravity` login
  * (logins.ts). A feature waits until every node reports its protocol. */

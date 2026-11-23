@@ -243,7 +243,7 @@ describe("factory proxy", () => {
     // 2. Through relayedRoutes (same handler NodeChannel runs for E2E-encrypted relay calls)
     const relayHandler = relayedRoutes(
       remoteCtx.handoffs,
-      factoryPeerRoutes(remoteFactory.url, remoteCtx.abort.signal),
+      new Hono().route("/factory-proxy", factoryPeerRoutes(remoteFactory.url, remoteCtx.abort.signal)),
     );
     const relayed = await relayHandler("laptop", new Request("http://relay/factory-proxy/health"));
     expect(relayed.status).toBe(200);

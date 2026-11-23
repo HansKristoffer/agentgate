@@ -41,7 +41,7 @@ describe("parseFor", () => {
     "pair --name srv --tailnet",
     "pair --relay --relay-url https://relay.example",
     "join agr1.x --force",
-    "dashboard on --node srv",
+    "health --node srv --json",
     "relay leave --wipe",
     "relay cleanup --abandon",
     "relay key --clear",

@@ -1,11 +1,12 @@
-// The machine health dashboard at HEALTH_PATH, sampled while this node's healthDashboard setting is on and someone has
-// requested it in the last minute. It reads /proc, /sys and pressure stall files as the daemon's own user, so it runs on
-// Linux only.
+// This machine's health, which the app's Machines view and `agentgate health` show (the `health` operation in
+// ops/nodes.ts). It is sampled only while someone has asked for it in the last minute. It reads /proc, /sys and pressure
+// stall files as the daemon's own user, so it runs on Linux only.
 import { access, readdir, readFile, statfs } from "node:fs/promises";
+import type { MachineHealth } from "@agentgate/protocol";
 import { sortBy, sumBy } from "hanzio";
+import { Hono } from "hono";
 import os from "node:os";
 import { t3State } from "./handoff/t3.ts";
-import { HEALTH_PAGE } from "./health-page.ts";
 import { lag } from "./lag.ts";
 import type { Store } from "./store.ts";
 
@@ -210,14 +211,6 @@ async function tailscaleRunning() {
   }
 }
 
-/** The tailnet listener answers without a token, so a page on another site must not reach it by DNS rebinding: only an
- * address, or this node's own tailnet name, is accepted as the Host. */
-function ownHost(host: string | null, url: string | undefined) {
-  const name = host?.replace(/:\d+$/, "");
-  if (!name) return false;
-  return /^\d+\.\d+\.\d+\.\d+$/.test(name) || (!!url && URL.canParse(url) && name === new URL(url).hostname);
-}
-
 /** One point of the last hour, as the charts plot it. */
 type Point = {
   t: number;
@@ -232,33 +225,29 @@ type Point = {
   oom_kills: number;
 };
 
-/** Samples this machine while its dashboard is on and watched: a request starts sampling, and it stops a minute after the
- * last one. Rates are deltas between two samples, so one timer takes them all and keeps the last hour. Stopping drops the
- * history, so the charts never draw a line across a time nobody watched. */
-export class HealthDashboard {
+/** Samples this machine while it is watched: a read starts sampling, and it stops a minute after the last one. Rates are
+ * deltas between two samples, so one timer takes them all and keeps the last hour. Stopping drops the history, so the
+ * charts never draw a line across a time nobody watched. */
+export class HealthSampler {
   private timer?: ReturnType<typeof setInterval>;
   private dockerTimer?: ReturnType<typeof setInterval>;
-  private running = false;
+  private stopped = false;
   private lastRequest = 0;
   private pending?: Promise<void>;
   private disks: string[] = [];
   private iface = "";
-  private previous?: Awaited<ReturnType<HealthDashboard["counters"]>>;
+  private previous?: Awaited<ReturnType<HealthSampler["counters"]>>;
   private docker: ReturnType<typeof dockerDisk> = null;
   private checked?: { at: number; tailscale: boolean; t3: boolean | undefined };
   private latest?: Sample;
   private history: Point[] = [];
+  /** Settles when the next sample lands, for a read that started sampling. */
+  private landed = Promise.withResolvers<void>();
 
   constructor(private readonly s: Store) {}
 
-  /** Follows this node's setting. Called at startup and whenever a node record changes. */
-  reconcile() {
-    this.running = process.platform === "linux" && this.s.get("node", this.s.nodeId)?.healthDashboard === true;
-    if (!this.running) this.pause();
-  }
-
   stop() {
-    this.running = false;
+    this.stopped = true;
     this.pause();
   }
 
@@ -272,37 +261,26 @@ export class HealthDashboard {
     this.docker = null;
   }
 
-  /** GET HEALTH_PATH on either listener: the page for a browser, JSON for everything else (`?history=1` adds the hour). */
-  async respond(request: Request, listener: "loopback" | "tailnet") {
-    const node = this.s.get("node", this.s.nodeId);
-    if (!node?.healthDashboard) return new Response("Not found", { status: 404 });
-    if (listener === "tailnet" && !ownHost(request.headers.get("host"), node.url)) {
-      return new Response("forbidden host", { status: 403 });
-    }
+  /** The latest sample and the hour before it. The first read starts sampling and waits for its first sample, which
+   * lands one interval later; a read meanwhile keeps sampling going. */
+  async read(): Promise<MachineHealth> {
     if (process.platform !== "linux") {
-      return new Response("The health dashboard reads Linux's /proc, so it runs on Linux machines only.", {
-        status: 501,
-      });
+      throw new Error(`${this.s.nodeId} is not a Linux machine: its health is read from Linux's /proc.`);
     }
-
     await this.watched();
-    if (request.headers.get("accept")?.includes("text/html")) {
-      return new Response(HEALTH_PAGE, { headers: { "content-type": "text/html; charset=utf-8" } });
-    }
     if (!this.latest) {
-      return Response.json({ status: "starting" }, { status: 503, headers: { "cache-control": "no-store" } });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([this.landed.promise, new Promise((done) => (timer = setTimeout(done, 3 * SAMPLE_MS)))]);
+      clearTimeout(timer);
     }
-
-    const body = new URL(request.url).searchParams.has("history")
-      ? { ...this.latest, sample_seconds: SAMPLE_MS / 1000, history: this.history }
-      : this.latest;
-    return Response.json(body, { headers: { "cache-control": "no-store" } });
+    if (!this.latest) throw new Error(`${this.s.nodeId} has not measured its health yet; try again in a few seconds.`);
+    return { ...this.latest, sample_seconds: SAMPLE_MS / 1000, history: [...this.history] };
   }
 
-  /** A request keeps sampling going; the first one starts it and waits for the baseline the first sample needs. */
+  /** A read keeps sampling going; the first one starts it and waits for the baseline the first sample needs. */
   private watched() {
     this.lastRequest = this.s.now();
-    if (!this.running || this.timer) return;
+    if (this.stopped || this.timer) return;
     this.timer = setInterval(() => void this.sample(), SAMPLE_MS);
     this.dockerTimer = setInterval(() => void this.refreshDocker(), DOCKER_MS);
     void this.refreshDocker();
@@ -325,6 +303,8 @@ export class HealthDashboard {
           this.latest = sample;
           this.history.push(point(sample));
           if (this.history.length > HISTORY_SAMPLES) this.history.shift();
+          this.landed.resolve();
+          this.landed = Promise.withResolvers();
         }
       } else {
         [this.disks, this.iface] = await Promise.all([physicalDisks(), publicInterface()]);
@@ -351,7 +331,7 @@ export class HealthDashboard {
     this.docker = dockerDisk(await output(["docker", "system", "df", "--format", "{{json .}}"], 120_000));
   }
 
-  /** What the dashboard reports as up: Tailscale, Docker when it is installed, and the T3 Code agentgate is connected to.
+  /** What the health reports as up: Tailscale, Docker when it is installed, and the T3 Code agentgate is connected to.
    * Tailscale and T3 Code are asked every SERVICES_MS, not every sample. */
   private async services(dockerRunning: boolean) {
     if (!this.checked || this.s.now() - this.checked.at >= SERVICES_MS) {
@@ -409,7 +389,6 @@ export class HealthDashboard {
       this.services(count("dockerd") > 0),
     ]);
     const sample = {
-      status: "ok",
       host: os.hostname(),
       checked_at: new Date().toISOString(),
       uptime_hours: round(os.uptime() / 3600),
@@ -455,7 +434,7 @@ export class HealthDashboard {
   }
 }
 
-type Sample = Awaited<ReturnType<HealthDashboard["measure"]>>;
+type Sample = Awaited<ReturnType<HealthSampler["measure"]>>;
 
 function point(sample: Sample): Point {
   return {
@@ -470,4 +449,20 @@ function point(sample: Sample): Point {
     runners_busy: sample.workload.runners.busy,
     oom_kills: sample.workload.oom_kills.since_boot,
   };
+}
+
+/** `GET /health` among a node's `/peer` routes, over Tailscale and through the relay: what the health operation asks of
+ * another machine. Never a 404, which the asking machine reads as a version without this route. */
+export function healthPeerRoutes(health: HealthSampler) {
+  return new Hono().get("/health", async (c) => {
+    try {
+      return c.json(await health.read());
+    } catch (e) {
+      // read() words its own errors; anything else says only that it failed.
+      return c.json(
+        { error: e instanceof Error && e.constructor === Error ? e.message : "could not read health" },
+        503,
+      );
+    }
+  });
 }

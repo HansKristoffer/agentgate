@@ -155,15 +155,16 @@ export function handoffRoutes(h: Handoffs, maxTotal = MAX_TOTAL) {
   return app;
 }
 
-/** The same routes for calls through the relay: the sender is the node the sealed call authenticates. */
-export function relayedRoutes(h: Handoffs, factoryProxy?: Hono) {
+/** The same routes for calls through the relay: the sender is the node the sealed call authenticates. `more`: the other
+ * `/peer` routes the relay reaches, such as the factory proxy and health. */
+export function relayedRoutes(h: Handoffs, more?: Hono) {
   const app = new Hono<{ Bindings: { from: string }; Variables: { peer: Peer } }>()
     .use("*", async (c, next) => {
       c.set("peer", { node: c.env.from } as Peer);
       await next();
     })
     .route("/", handoffRoutes(h));
-  if (factoryProxy) app.route("/factory-proxy", factoryProxy);
+  if (more) app.route("/", more);
   return async (from: string, req: Request) => app.fetch(req, { from });
 }
 

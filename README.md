@@ -79,14 +79,14 @@ An Infisical login expires after a few days and can't be renewed, so you have to
 
 To control the server from the native app over Tailscale, open the connection settings at the bottom of the sidebar, enter `http://srv.<tailnet>.ts.net:7878`, and paste the token printed by `agentgate admin-token` on the server. Remote management uses bearer authentication over Tailscale. The relay carries sync only, not remote management.
 
-## Machine dashboard
+## Machine health
 
-Each machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and charts of the last hour. In **Machines**, choose **Turn on health dashboard** in a machine's ⋯ menu, then **Open health dashboard** opens it in your browser. The page is `/health` on the machine's address, and `agentgate dashboard on|off [--node <node>]` switches it from the CLI.
+Each Linux machine can show its own health: CPU, load, memory, disk, time spent waiting for CPU, memory or disk, disk and network traffic, the agents and CI runners it is running, Docker's disk use and containers, the programs using the most CPU, and charts of the last hour. In **Machines**, choose **Show health** in a machine's ⋯ menu. `agentgate health [--node <node>]` prints the same numbers in a terminal, and `--json` prints them for a script.
 
-- It runs on Linux machines only, since it reads `/proc`. On a Mac, opening it only says so.
-- Anyone on your tailnet can open it without signing in, as they could the server health page before. It shows program names and resource use, never command lines, credentials or accounts. Turn it off on machines you don't want it on.
-- Turning it on waits until every machine runs this release, because older releases drop the setting when they save a machine's record.
-- It measures only while someone has the page open. The charts start when the page is first opened and stop a minute after the last view; the next view, like a restart, starts them over.
+- It works on Linux machines only, because it reads `/proc`. A Mac says so.
+- It takes the same sign-in as the rest of the app and reaches other machines over Tailscale or the relay. Nothing is served on your tailnet without a token. It shows program names and resource use, never command lines, credentials or accounts.
+- A machine on an older release can't report its health until you update it.
+- It measures only while someone is looking. The charts start when you first open it and stop a minute after the last view; the next view, like a restart, starts them over.
 
 ## T3 Code
 
@@ -259,7 +259,7 @@ Unlike sync, this traffic is readable by the relay (your logins stay on your mac
 
 ## Commands
 
-Run `agentgate --help`. A command refuses an option it does not know, so a misspelt flag fails instead of being ignored. Useful ones: `status` (also how late the daemon's event loop ran in the last minute), `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `dashboard on|off`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
+Run `agentgate --help`. A command refuses an option it does not know, so a misspelt flag fails instead of being ignored. Useful ones: `status` (also how late the daemon's event loop ran in the last minute), `accounts`, `accounts exhaust <id> [min]` (pretend an account hit its limit, for testing), `nodes`, `health [--node <node>]`, `unpair <node>`, `relay status|reconcile|rotate|leave`, `export [--no-secrets]`, `import-backup <file>`, `service logs`.
 
 ## Things to know
 

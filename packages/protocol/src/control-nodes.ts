@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import type { MachineHealth } from "./health.ts";
 import type { nodeSchema } from "./index.ts";
 
 type Node = z.output<typeof nodeSchema>;
@@ -23,7 +24,8 @@ export interface NodeOps {
     input: { node: string };
     result: { endpoints: { project: string; url: string }[]; rotated?: Relayed };
   };
-  dashboard: { input: { node: string; on: boolean }; result: Node };
+  /** A Linux machine's latest health sample and its last hour. The first call starts sampling and waits for a sample. */
+  health: { input: { node: string }; result: MachineHealth };
   "nodes update": { input: { node: string }; result: { node: string; version?: string; restarting: boolean } };
   "nodes route": { input: { node: string; on: boolean }; result: { node: string; message: string } };
   "relay reconcile": { input: Record<string, never>; result: { ok: true } };

@@ -1361,6 +1361,378 @@ h3 {
   }
 }
 
+/* Machine health (views/MachineHealth.tsx), in the embedded Factory's palette and shapes so the two read as one app.
+   Prefixed, so HeroUI's own variables stay untouched inside it. */
+.pane-inner:has(.health) {
+  max-width: 1200px;
+}
+.health {
+  --h-panel: #ffffff;
+  --h-hover: #f1f1f4;
+  --h-border: #e8e8ec;
+  --h-fg: #17171c;
+  --h-fg-muted: #55555f;
+  --h-fg-subtle: #6e6e79;
+  --h-ok: #188050;
+  --h-ok-soft: #ebf7f0;
+  --h-warn: #9a5a09;
+  --h-warn-dot: #d97706;
+  --h-warn-soft: #fdf4e3;
+  --h-warn-line: rgba(154, 90, 9, 0.28);
+  --h-bad: #cc3340;
+  --h-bad-soft: #fdeeef;
+  --h-series-1: #2a78d6;
+  --h-series-2: #eb6834;
+  --h-series-3: #1baf7a;
+  --h-grid: #ececf0;
+  --h-axis: #d6d6dc;
+  --h-shadow: 0 0 0 1px rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.05), 0 2px 4px rgb(0 0 0 / 0.03);
+  container-type: inline-size;
+  color: var(--h-fg);
+  font-variant-numeric: tabular-nums;
+}
+.dark .health {
+  --h-panel: #131316;
+  --h-hover: #1d1d22;
+  --h-border: #26262c;
+  --h-fg: #ececf0;
+  --h-fg-muted: #a0a0ab;
+  --h-fg-subtle: #8a8a96;
+  --h-ok: #4cc38a;
+  --h-ok-soft: rgb(76 195 138 / 0.12);
+  --h-warn: #e5a54a;
+  --h-warn-dot: #f0a35c;
+  --h-warn-soft: rgb(229 165 74 / 0.12);
+  --h-warn-line: rgb(229 165 74 / 0.3);
+  --h-bad: #f0717b;
+  --h-bad-soft: rgb(240 113 123 / 0.12);
+  --h-series-1: #3987e5;
+  --h-series-2: #d95926;
+  --h-series-3: #199e70;
+  --h-grid: #222228;
+  --h-axis: #34343c;
+  --h-shadow: 0 0 0 1px rgb(255 255 255 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.4), 0 2px 4px rgb(0 0 0 / 0.3);
+}
+.health-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--h-fg-subtle);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.health-back:hover {
+  color: var(--h-fg);
+}
+.health-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-bottom: 4px;
+}
+.health-head h2 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.health-head p {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--h-fg-muted);
+}
+.health-head p.health-stale {
+  color: var(--h-bad);
+}
+.health-services {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.health-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.health-chip i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.health-chip.ok {
+  background: var(--h-ok-soft);
+  color: var(--h-ok);
+}
+.health-chip.bad {
+  background: var(--h-bad-soft);
+  color: var(--h-bad);
+}
+.health-notice {
+  margin-top: 12px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--h-warn-line);
+  background: var(--h-warn-soft);
+  color: var(--h-warn);
+  font-size: 13px;
+}
+.health-section {
+  margin: 24px 0 10px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.health-card {
+  background: var(--h-panel);
+  border-radius: 12px;
+  box-shadow: var(--h-shadow);
+}
+.health-waiting {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--h-fg-muted);
+}
+/* The Factory's stat strip: tiles joined by hairlines. */
+.health-strip {
+  display: grid;
+  grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--h-border);
+  box-shadow: var(--h-shadow);
+}
+@container (max-width: 820px) {
+  .health-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.health-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 13px 16px;
+  background: var(--h-panel);
+}
+.health-tile-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--h-fg-muted);
+  white-space: nowrap;
+}
+.health-tile-label .grow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--h-ok);
+}
+.health-dot.warn {
+  background: var(--h-warn-dot);
+}
+.health-dot.bad {
+  background: var(--h-bad);
+}
+.health-word {
+  font-size: 11px;
+  font-weight: 600;
+}
+.health-word.warn,
+.health-tile-value.warn {
+  color: var(--h-warn);
+}
+.health-word.bad,
+.health-tile-value.bad {
+  color: var(--h-bad);
+}
+.health-tile-value {
+  margin-top: 2px;
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-tile-sub {
+  font-size: 11.5px;
+  color: var(--h-fg-subtle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+@container (max-width: 760px) {
+  .health-charts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.health-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 15px 16px;
+}
+.health-chart h3 {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.health-chart p {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--h-fg-muted);
+}
+.health-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 11.5px;
+  color: var(--h-fg-muted);
+}
+.health-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.health-legend i,
+.health-tip i {
+  width: 10px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+}
+.health-plot {
+  position: relative;
+  height: 150px;
+}
+.health-plot-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--h-fg-subtle);
+}
+.health-plot svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.health-plot text {
+  fill: var(--h-fg-subtle);
+  font-size: 11px;
+}
+.health-grid {
+  stroke: var(--h-grid);
+}
+.health-axis {
+  stroke: var(--h-axis);
+}
+.health-reference line {
+  stroke: var(--h-fg-muted);
+  stroke-dasharray: 4 4;
+}
+.health-reference text {
+  fill: var(--h-fg-muted);
+  stroke: var(--h-panel);
+  stroke-width: 3px;
+  paint-order: stroke;
+}
+.health-line {
+  fill: none;
+  stroke-width: 2px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+.health-cross {
+  stroke: var(--h-fg-muted);
+}
+.health-mark {
+  stroke: var(--h-panel);
+  stroke-width: 2px;
+}
+.health-tip {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--h-fg);
+  color: var(--h-panel);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 10px));
+}
+.health-tip span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.health-table {
+  overflow: hidden;
+}
+.health-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 110px 110px;
+  column-gap: 16px;
+  align-items: center;
+  padding: 9px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--h-border);
+}
+.health-row:last-child {
+  border-bottom: 0;
+}
+.health-row > :not(:first-child) {
+  text-align: right;
+}
+.health-row-head {
+  padding-top: 0;
+  padding-bottom: 0;
+  height: 34px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--h-fg-subtle);
+}
+.health-program {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .stat,
   .stat-top svg:last-child,
