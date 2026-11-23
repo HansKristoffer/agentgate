@@ -4,7 +4,7 @@ import { HTTPException } from "hono/http-exception";
 import { z, ZodError } from "zod";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { HEALTH_PATH, projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
+import { projectIdSchema, SkillConflict, ConfigurationConflict } from "@agentgate/protocol";
 import packageInfo from "../../../package.json";
 import { Credentials, drainRefresh } from "./credentials.ts";
 import { proxy } from "./llm/pool.ts";
@@ -36,7 +36,7 @@ import {
 import { management, oauthCallback } from "./api.ts";
 import { SkillBackoff, SkillLinks, syncSkillRepos, updateSkills } from "./skills.ts";
 import { jsonInput } from "./http.ts";
-import { HealthDashboard } from "./health.ts";
+import { HealthSampler, healthPeerRoutes } from "./health.ts";
 import { SkillImports } from "./skill-import.ts";
 import { relaySync, stopRelay, syncAll } from "./relay.ts";
 import { NODE_PROTOCOL, RemoteEndpoints } from "./remote.ts";
@@ -69,9 +69,9 @@ export interface Ctx {
   proxyOperations: ProxyOperations;
   remote: RemoteEndpoints;
   handoffs: Handoffs;
-  /** Handoff and factory proxy calls from relay group members, answered by the same peer routes as Tailscale. */
+  /** Handoff, factory proxy and health calls from relay group members, answered by the same peer routes as Tailscale. */
   channel: NodeChannel;
-  health: HealthDashboard;
+  health: HealthSampler;
   /** Local skill-factory origin (`http://127.0.0.1:4400` by default). */
   factoryUrl: string;
   /** What changed, for `/api/changes` and the daemon's reactions to record writes. */
@@ -124,6 +124,7 @@ export function makeCtx(
   });
   const abort = new AbortController();
   const factoryUrl = options.factoryUrl ?? factoryBaseUrl();
+  const health = new HealthSampler(s);
   const ctx: Ctx = {
     s,
     changes: new Changes(s),
@@ -138,9 +139,17 @@ export function makeCtx(
     abort,
     pending: new Set(),
     handoffs,
-    health: new HealthDashboard(s),
+    health,
     factoryUrl,
-    channel: new NodeChannel(s, relayedRoutes(handoffs, factoryPeerRoutes(factoryUrl, abort.signal))),
+    channel: new NodeChannel(
+      s,
+      relayedRoutes(
+        handoffs,
+        new Hono()
+          .route("/factory-proxy", factoryPeerRoutes(factoryUrl, abort.signal))
+          .route("/", healthPeerRoutes(health)),
+      ),
+    ),
   };
   followPeers(s, ctx.changes, ctx.abort.signal, (node, topic) => {
     forgetView(handoffs, node);
@@ -237,17 +246,16 @@ export function app(ctx: Ctx) {
     return c.json({ checkout, errors: ctx.skills.health().errors });
   });
 
-  // Handoff and factory proxy routes sit behind the peer token check that peerRoutes registers first.
+  // Handoff, factory proxy and health routes sit behind the peer token check that peerRoutes registers first.
   app.route(
     "/peer",
     peerRoutes(s, undefined, ctx.changes)
       .route("/", handoffRoutes(ctx.handoffs))
-      .route("/factory-proxy", factoryPeerRoutes(ctx.factoryUrl, ctx.abort.signal)),
+      .route("/factory-proxy", factoryPeerRoutes(ctx.factoryUrl, ctx.abort.signal))
+      .route("/", healthPeerRoutes(ctx.health)),
   );
 
   app.get("/oauth/callback", oauthCallback(ctx));
-  // A page for people, not a client: no token, but only while the node's healthDashboard setting is on (health.ts).
-  app.get(HEALTH_PATH, (c) => ctx.health.respond(c.req.raw, c.env.listener));
   app.route("/api", management(ctx));
   return app;
 }
@@ -287,7 +295,6 @@ export async function serve(
     if (any("project")) ctx.remote.reconcile();
     // A store arrived from another machine, or the last old node updated so stores may sync.
     if (any("project", "node")) ctx.files.soon();
-    if (any("node")) ctx.health.reconcile();
     // A project another machine's T3 Code has, or the sync switch, arrived: add it now rather than next round.
     if (any("project", "setting")) void ctx.handoffs.syncProjects().catch(() => {});
     if (any("login")) void logins().catch(() => {});
@@ -322,7 +329,6 @@ export async function serve(
   let tailnet: ReturnType<typeof listen> | undefined;
   let address: string | undefined;
   console.log(`agentgate ${packageInfo.version} ${s.nodeId}: http://127.0.0.1:${loopback.port}`);
-  ctx.health.reconcile();
   const schedule = (task: () => unknown, interval: number) => {
     const serial = serialTask(async () => {
       if (!stopped) await task();

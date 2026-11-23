@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
-import { isTruthy, trimTrailingSlash } from "hanzio";
+import { isTruthy } from "hanzio";
 import { Copy, Globe, KeyRound, Monitor, Network, Plus } from "lucide-react";
 import { Button, Spinner, toast } from "@heroui/react";
-import { HEALTH_PATH, outdatedNodes, type SharedLogin } from "@agentgate/protocol";
+import { outdatedNodes, type SharedLogin } from "@agentgate/protocol";
 import { confirmDialog } from "@hanskristoffer/taurio/runtime";
 import { Badge, Field, Modal, Panel, HeaderActions, RowMenu, Working, usePending } from "../components/ui.tsx";
 import type { ViewProps } from "../types.ts";
-import { INFISICAL_SIGNIN_STARTED, control, openExternal, request, signInToInfisical } from "../api.ts";
+import { INFISICAL_SIGNIN_STARTED, control, request, signInToInfisical } from "../api.ts";
+import { MachineHealth } from "./MachineHealth.tsx";
 import { field, relative } from "./utils.ts";
 
 type Method = "tailnet" | "relay";
@@ -28,6 +29,8 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
   const [relayUrl, setRelayUrl] = useState("");
   const [relayKey, setRelayKey] = useState("");
   const [keyOpen, setKeyOpen] = useState(false);
+  /** The machine whose health is shown in place of the list. */
+  const [healthOf, setHealthOf] = useState<string>();
   const relay = data.relay;
   const pending = usePending();
   const outdated = new Set(outdatedNodes(data.nodes).map((n) => n.id));
@@ -95,6 +98,17 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       relay.rotating && "Rotation pending",
       relay.cleanupPending && "Old group cleanup pending",
     ].filter(isTruthy);
+  if (healthOf && data.nodes.some((n) => n.id === healthOf))
+    return (
+      <MachineHealth
+        key={healthOf}
+        data={data}
+        connection={connection}
+        node={healthOf}
+        onNode={setHealthOf}
+        onBack={() => setHealthOf(undefined)}
+      />
+    );
   return (
     <>
       <HeaderActions>
@@ -109,8 +123,6 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
       <Panel foot="Each machine serves its own agents and keeps working offline. Always-on machines take care of token refreshes while your laptop is away.">
         {data.nodes.map((n) => {
           const viaRelay = !!n.via?.includes("relay");
-          // This machine's dashboard is opened on loopback, which works without Tailscale; the others at their address.
-          const origin = n.id === data.node && local ? trimTrailingSlash(connection.url) : n.url;
           return (
             <div className="item" key={n.id}>
               <div className="machine-icon">
@@ -122,7 +134,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   {n.id === data.node && <Badge>This machine</Badge>}
                   <Badge good={n.online}>{n.online ? "Online" : "Offline"}</Badge>
                   {n.alwaysOn && <Badge good>Always on</Badge>}
-                  {(pending.has(`alwaysOn:${n.id}`) || pending.has(`dashboard:${n.id}`)) && <Working>Saving</Working>}
+                  {pending.has(`alwaysOn:${n.id}`) && <Working>Saving</Working>}
                 </div>
                 <small>
                   {[
@@ -141,7 +153,6 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
                   {[
                     n.syncError ?? (n.id === data.node ? "This daemon" : `Last seen ${relative(n.lastSeen)}`),
                     n.routing && routingText(n.routing),
-                    n.healthDashboard && "Health dashboard on",
                   ]
                     .filter(Boolean)
                     .join(" · ")}
@@ -166,21 +177,7 @@ export function Nodes({ data, connection, perform, local }: ViewProps) {
               <RowMenu
                 label={`More for ${n.id}`}
                 items={[
-                  n.healthDashboard &&
-                    !!origin &&
-                    (n.online || n.id === data.node) && {
-                      label: "Open health dashboard",
-                      onAction: () => void perform(() => openExternal(`${origin}${HEALTH_PATH}`)),
-                    },
-                  {
-                    label: n.healthDashboard ? "Turn off health dashboard" : "Turn on health dashboard",
-                    onAction: () =>
-                      void perform(
-                        () => control(connection, "dashboard", { node: n.id, on: !n.healthDashboard }),
-                        `Health dashboard ${n.healthDashboard ? "off" : "on"} for ${n.id}`,
-                        `dashboard:${n.id}`,
-                      ),
-                  },
+                  (n.online || n.id === data.node) && { label: "Show health", onAction: () => setHealthOf(n.id) },
                   {
                     label: n.alwaysOn ? "No longer always on" : "Mark as always on",
                     onAction: () =>

@@ -17,7 +17,6 @@ const node = (id: string, online: boolean, state: object) => ({
   id,
   online,
   alwaysOn: false,
-  healthDashboard: false,
   lastSeen: 1,
   ...state,
 });

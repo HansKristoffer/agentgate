@@ -1,9 +1,10 @@
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
-import { HEALTH_PATH } from "@agentgate/protocol";
+import { machineHealthSchema, type MachineHealth } from "@agentgate/protocol";
 import { getErrorMessage } from "hanzio";
 import { z } from "zod";
-import { PeerError } from "../handoff/jobs.ts";
+import type { Ctx } from "../daemon.ts";
+import { PeerError, peerCall } from "../handoff/jobs.ts";
 import { defineLocal } from "../local-state.ts";
 import {
   cleanupRelay,
@@ -23,7 +24,7 @@ import {
   via,
 } from "../relay.ts";
 import { regenerateAfterUnpair } from "../remote.ts";
-import { requireNodeProtocol, type Store } from "../store.ts";
+import type { Store } from "../store.ts";
 import { join, pairCode, peers, tailscale, unpair } from "../sync.ts";
 import { nodeUpdate, routeNode, updateTracked } from "../update.ts";
 import { asUserError, controlOp, onOff, parseWords, UserError } from "./registry.ts";
@@ -243,52 +244,74 @@ controlOp({
   },
 });
 
-/** The node protocol that keeps `healthDashboard` on node records (see NODE_PROTOCOL in remote.ts). Pinned, not
- * NODE_PROTOCOL: later protocol bumps add nothing the dashboard needs, and must not make turning it on wait for them. */
-const HEALTH_PROTOCOL = 7;
-
-/** Turns a machine's health dashboard on or off (health.ts). Older daemons drop a field they do not know when they edit a
- * node record, so turning it on waits until every node reports HEALTH_PROTOCOL. Turning it off needs no wait: a dropped
- * field reads as off. */
-export function setHealthDashboard(s: Store, node: string, on: boolean) {
-  return s.transaction(() => {
-    const n = s.get("node", node);
-    if (!n) throw new Error(`no machine ${node}`);
-    if (on) requireNodeProtocol(s, HEALTH_PROTOCOL, "drop the dashboard setting");
-    return s.put("node", node, { ...n, healthDashboard: on });
-  });
+/** A machine's health, from its own daemon (health.ts): this one's directly, another's over Tailscale or the relay. */
+async function machineHealth(s: Store, daemon: Ctx, node: string) {
+  if (node === s.nodeId) return asUserError(() => daemon.health.read());
+  machine(s, node);
+  try {
+    return await peerCall(s, node, "/health", machineHealthSchema);
+  } catch (e) {
+    // Its /health route never answers 404, so a 404 is a daemon from before it.
+    if (e instanceof PeerError && e.status === 404) {
+      throw new UserError(
+        `${node} runs an older Agentgate that cannot report its health. Update it with \`agentgate update ${node}\`.`,
+      );
+    }
+    throw new UserError(getErrorMessage(e));
+  }
 }
 
-// Not loopback-only, like always-on: any paired machine's dashboard is turned on from here.
-controlOp({
-  name: "dashboard",
-  summary: "a machine's health dashboard at <address>/health (Linux): its state, or turn it on or off",
-  input: z.object({ node: nodeId.optional(), on: z.boolean().optional() }).strict(),
-  needs: "store",
-  run({ node, on }, { s }) {
-    const id = node ?? s.nodeId;
-    const n = machine(s, id);
-    if (on === undefined) return n;
+const gb = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(2)} TB` : `${value.toFixed(0)} GB`);
+const upDown = (up: boolean) => (up ? "up" : "down");
 
-    try {
-      return setHealthDashboard(s, id, on);
-    } catch (e) {
-      throw new UserError(getErrorMessage(e)); // the machine exists, so this is the older-machine refusal it words
-    }
+/** What `agentgate health` prints: the numbers the app's health view shows, without the charts. */
+function printHealth(h: MachineHealth) {
+  const { load, memory, disk, pressure, disk_io: io, network, workload: w } = h;
+  const services = [
+    `Tailscale ${upDown(h.services.tailscale)}`,
+    h.services.docker !== undefined && `Docker ${upDown(h.services.docker)}`,
+    h.services.t3_code !== undefined && `T3 Code ${upDown(h.services.t3_code)}`,
+  ].filter(Boolean);
+  return [
+    `${h.host}: up ${Math.round(h.uptime_hours)} h, ${services.join(", ")}`,
+    `CPU        ${h.cpu_used_percent.toFixed(0)}% of ${h.cpus} cores, load per core ${load.per_cpu_1m.toFixed(2)} (${load["1m"]} ${load["5m"]} ${load["15m"]})`,
+    `Memory     ${memory.used_percent.toFixed(0)}%, ${gb(memory.used_gb)} of ${gb(memory.total_gb)}`,
+    `Disk       ${disk.used_percent.toFixed(0)}%, ${gb(disk.used_gb)} of ${gb(disk.total_gb)}, ${gb(disk.free_gb)} free`,
+    `Pressure   CPU ${pressure.cpu.toFixed(1)}%, memory ${pressure.memory.toFixed(1)}%, I/O ${pressure.io.toFixed(1)}% (last 10 s)`,
+    `Disk I/O   ${io.busy_percent.toFixed(0)}% busy, read ${io.read_mb_s.toFixed(1)} MB/s, write ${io.write_mb_s.toFixed(1)} MB/s`,
+    `Network    ${network.in_mbit_s.toFixed(1)} Mbit/s in, ${network.out_mbit_s.toFixed(1)} Mbit/s out (${network.interface})`,
+    `Agents     ${w.agents.claude + w.agents.codex} (Claude Code ${w.agents.claude}, Codex ${w.agents.codex})`,
+    `CI runners ${w.runners.busy} of ${w.runners.total} busy`,
+    `Containers ${w.containers.running} running`,
+    `OOM kills  ${w.oom_kills.last_hour} in the last hour, ${w.oom_kills.since_boot} since boot`,
+    ...(h.daemon_lag ? [`Agentgate  event loop ${h.daemon_lag.worstMs} ms worst, p99 ${h.daemon_lag.p99Ms} ms`] : []),
+    "",
+    "Top programs by CPU",
+    ...h.top_processes.map(
+      (p) =>
+        `  ${p.program.padEnd(24)} ${String(p.processes).padStart(4)} proc  ${p.cpu_cores.toFixed(2).padStart(6)} cores  ${p.memory_gb.toFixed(2).padStart(6)} GB`,
+    ),
+  ];
+}
+
+// Not loopback-only: watching your server from the laptop you are on is the point.
+controlOp({
+  name: "health",
+  summary: "a Linux machine's CPU, memory, disk, pressure and agents; the app also charts its last hour",
+  input: z.object({ node: nodeId.optional() }).strict(),
+  needs: "daemon",
+  run({ node }, { s, daemon }) {
+    return machineHealth(s, daemon!, node ?? s.nodeId);
   },
   terminal: {
-    usage: "dashboard [on|off] [--node <node>]",
+    usage: "health [--node <node>] [--json]",
     parse(args) {
-      const { values, positionals } = parseWords(args, { node: { type: "string" } });
-      const [state, ...extra] = positionals;
-      if (extra.length) throw new UserError();
-      return {
-        input: { ...(values.node !== undefined && { node: values.node }), ...(state && { on: onOff(state) }) },
-      };
+      const { values, positionals } = parseWords(args, { node: { type: "string" }, json: { type: "boolean" } });
+      if (positionals.length) throw new UserError();
+      return { input: values.node !== undefined ? { node: values.node } : {}, json: values.json };
     },
-    print(n) {
-      const on = n.healthDashboard;
-      return [`${n.id}: health dashboard ${on ? "on" : "off"}${on && n.url ? `, ${n.url}${HEALTH_PATH}` : ""}`];
+    print(health, { json }) {
+      return json ? [JSON.stringify(health, null, 2)] : printHealth(health);
     },
   },
 });

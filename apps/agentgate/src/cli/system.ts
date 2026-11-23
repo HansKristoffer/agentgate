@@ -67,7 +67,6 @@ export const run: Run = async (cmd, [sub], opts) => {
         id: name,
         url: ts?.url ?? prev?.url,
         alwaysOn: !!opts["always-on"] || !!prev?.alwaysOn,
-        healthDashboard: !!prev?.healthDashboard,
         protocol: NODE_PROTOCOL,
       });
       console.log(`node ${name}${opts["always-on"] ? " (always on)" : ""}, store ${s.db.filename}`);
@@ -142,7 +141,7 @@ export const run: Run = async (cmd, [sub], opts) => {
           sync = `last seen ${when}, cursor ${peer?.cursor ?? "-"}${s.local(`syncError:${n.id}`) ? ", sync failed" : ""}`;
         }
         console.log(
-          `  ${n.id}${isThis ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}${n.healthDashboard ? " dashboard" : ""}  ${n.url ?? ""}  ${sync}`,
+          `  ${n.id}${isThis ? " (this node)" : ""}${n.alwaysOn ? " always-on" : ""}  ${n.url ?? ""}  ${sync}`,
         );
       }
 
