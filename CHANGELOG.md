@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.39.0](https://github.com/HansKristoffer/agentgate/compare/v0.38.0...v0.39.0) (2026-11-23)
+
+
+### Features
+
+* **desktop:** simplify UI flows and speed up app and daemon refreshes ([#174](https://github.com/HansKristoffer/agentgate/issues/174)) ([92f8253](https://github.com/HansKristoffer/agentgate/commit/92f82537221843a90c2bca0f95380d935e808614))
+* **health:** machine health shows in the app instead of a web page ([#173](https://github.com/HansKristoffer/agentgate/issues/173)) ([bd52b7e](https://github.com/HansKristoffer/agentgate/commit/bd52b7ee3d1b1f1bc3c3e9106e5cde1eaf4c1a0d))
+
 ## [0.38.0](https://github.com/HansKristoffer/agentgate/compare/v0.37.1...v0.38.0) (2026-11-23)
 
 
