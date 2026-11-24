@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -z "$staged" ]; then
+  exit 0
+fi
+
+# Prevent any child tool from inheriting git's hook environment variables.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+fmt_files=()
+has_ts=0
+has_rs=0
+
+while IFS= read -r file; do
+  case "$file" in
+    *.ts|*.tsx|*.js|*.jsx|*.mjs|*.cjs|*.json|*.css|*.md|*.astro)
+      fmt_files+=("$file")
+      ;;
+  esac
+  case "$file" in
+    *.ts|*.tsx)
+      has_ts=1
+      ;;
+    apps/desktop/src-tauri/*.rs|apps/desktop/src-tauri/**/*.rs)
+      has_rs=1
+      ;;
+  esac
+done <<< "$staged"
+
+if [ ${#fmt_files[@]} -gt 0 ]; then
+  if ! bun fmt --no-script --check "${fmt_files[@]}"; then
+    echo "Pre-commit failed: run 'bun fmt --no-script ${fmt_files[*]}' and re-stage." >&2
+    exit 1
+  fi
+fi
+
+if [ "$has_ts" -eq 1 ]; then
+  bun run typecheck
+fi
+
+if [ "$has_rs" -eq 1 ] && command -v cargo >/dev/null 2>&1; then
+  cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --check
+fi

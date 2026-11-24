@@ -8,12 +8,15 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentsMd, setAgentsMd, AGENTS_MD_PROTOCOL } from "../src/agents-md.ts";
 import { revision } from "../src/configuration.ts";
+import { antigravityMcp } from "../src/setup.ts";
+import { globalSkillDirs } from "../src/skill-links.ts";
 import { SkillLinks } from "../src/skills.ts";
 import { Store } from "../src/store.ts";
 
@@ -146,4 +149,44 @@ test("saving the file is noticed without waiting for the periodic pass", async (
   writeFileSync(file, "Saved in an editor.\n");
   await saved.promise;
   expect(agentsMd(s)).toBe("Saved in an editor.\n");
+});
+
+test("T3 Antigravity instances get global AGENTS.md when routed and leave a symlinked skills dir alone", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agentgate-t3-agy-")));
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  const primaryAgy = join(dir, "gemini-config");
+  const t3Providers = join(dir, "t3-antigravity");
+  const instanceConfig = join(t3Providers, "inst-1", "config");
+  mkdirSync(join(primaryAgy, "skills"), { recursive: true });
+  mkdirSync(instanceConfig, { recursive: true });
+  // Matches how T3 Code symlinks each Antigravity instance's skills directory to ~/.gemini/config/skills.
+  symlinkSync(join(primaryAgy, "skills"), join(instanceConfig, "skills"));
+
+  const home = join(dir, "home");
+  const file = join(home, "AGENTS.md");
+  const links = new SkillLinks(s, join(home, "skills"), () =>
+    globalSkillDirs(primaryAgy, t3Providers).filter(([, , instructions]) => instructions?.startsWith(dir)),
+  );
+  fixtures.push({ dir, s, links });
+
+  setAgentsMd(s, "Global steering.\n");
+  // Primary routed, T3 instance not routed yet: primary gets AGENTS.md, shared skills symlink is untouched.
+  await antigravityMcp(true, join(primaryAgy, "mcp_config.json"));
+  links.sync();
+  expect(link(join(primaryAgy, "AGENTS.md"))).toBe(file);
+  expect(exists(join(instanceConfig, "AGENTS.md"))).toBe(false);
+  expect(link(join(instanceConfig, "skills"))).toBe(join(primaryAgy, "skills"));
+
+  // Routing both via antigravityMcp gives the T3 instance AGENTS.md too.
+  await antigravityMcp(true, join(primaryAgy, "mcp_config.json"), t3Providers);
+  links.sync();
+  expect(link(join(instanceConfig, "AGENTS.md"))).toBe(file);
+
+  // Turning off removes AGENTS.md from both without breaking the skills symlink.
+  await antigravityMcp(false, join(primaryAgy, "mcp_config.json"), t3Providers);
+  links.sync();
+  expect(exists(join(primaryAgy, "AGENTS.md"))).toBe(false);
+  expect(exists(join(instanceConfig, "AGENTS.md"))).toBe(false);
+  expect(link(join(instanceConfig, "skills"))).toBe(join(primaryAgy, "skills"));
 });

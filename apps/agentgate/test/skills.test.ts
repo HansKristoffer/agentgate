@@ -853,3 +853,37 @@ test("skillSummaries caches metadata until a skill is written, updated, or delet
   deleteSkill(s, "alpha");
   expect(skillSummaries(s)).toEqual([]);
 });
+
+test("SkillLinks invokes onWritten only when a skill's files are written or updated on disk", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agentgate-skills-hook-")));
+  const s = new Store(":memory:");
+  s.setLocal("node", "a");
+  const root = join(dir, "skills");
+  const events: { ids: string[]; root: string }[] = [];
+  const links = new SkillLinks(
+    s,
+    root,
+    () => [],
+    {},
+    (ids, writtenRoot) => {
+      events.push({ ids, root: writtenRoot });
+    },
+  );
+  fixtures.push({ dir, s, links });
+
+  installSkills(s, "owner/pack", [fetched("factory", "v1")]);
+  links.sync();
+  expect(events).toEqual([{ ids: ["factory"], root }]);
+
+  // Repeat sync when files already match on disk does not fire onWritten again.
+  links.sync();
+  expect(events).toHaveLength(1);
+
+  // Updating the skill writes new files and fires onWritten again.
+  installSkills(s, "owner/pack", [fetched("factory", "v2")]);
+  links.sync();
+  expect(events).toEqual([
+    { ids: ["factory"], root },
+    { ids: ["factory"], root },
+  ]);
+});

@@ -4,7 +4,7 @@ import { UserError } from "./ops/registry.ts";
 import { requireNodeProtocol, type Store } from "./store.ts";
 
 /** The global AGENTS.md: text on the Global defaults project that every machine writes to its agentgate home and
- * links in as Claude Code's CLAUDE.md and Codex's AGENTS.md (`SkillLinks`). */
+ * links in as Claude Code's CLAUDE.md and Codex and Antigravity's AGENTS.md (`SkillLinks`). */
 
 /** The node protocol that keeps `agentsMd` on the Global defaults project (see NODE_PROTOCOL in remote.ts). */
 export const AGENTS_MD_PROTOCOL = 11;

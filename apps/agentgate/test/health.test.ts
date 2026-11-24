@@ -1,8 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { Hono } from "hono";
-import { hostname } from "node:os";
+import { hostname, tmpdir } from "node:os";
+import { join } from "node:path";
 import { machineHealthSchema } from "@agentgate/protocol";
 import { app, makeCtx } from "../src/daemon.ts";
+import { countWorktrees, dockerDisk } from "../src/health.ts";
 import { startLagProbe } from "../src/lag.ts";
 import { NODE_PROTOCOL } from "../src/remote.ts";
 import { Store } from "../src/store.ts";
@@ -13,12 +16,12 @@ afterEach(async () => {
 });
 
 /** A machine with the daemon's routes. */
-function machine(name = "mac") {
+function machine(name = "mac", options: { worktreesDir?: () => string } = {}) {
   const s = new Store(":memory:");
   s.setLocal("node", name);
   s.setLocal("adminToken", "admin-secret");
   s.put("node", name, { id: name, url: `http://${name}.tail123.ts.net:7878`, protocol: NODE_PROTOCOL });
-  const ctx = makeCtx(s, { factoryUrl: "http://127.0.0.1:1" }),
+  const ctx = makeCtx(s, { factoryUrl: "http://127.0.0.1:1", worktreesDir: options.worktreesDir }),
     handler = app(ctx);
   cleanup.push(async () => {
     ctx.health.stop();
@@ -178,5 +181,63 @@ test.skipIf(process.platform !== "linux")(
 
     // Without the peer token the route is closed.
     expect((await fetch(`http://127.0.0.1:${server.port}/peer/health`)).status).toBe(401);
+  },
+);
+
+test("dockerDisk parses volume counts, active volumes and reclaimable space from docker system df JSON", () => {
+  const df = [
+    '{"Active":"9","Reclaimable":"20.15GB (84%)","Size":"23.89GB","TotalCount":"39","Type":"Images"}',
+    '{"Active":"29","Reclaimable":"143.8GB (63%)","Size":"227.3GB","TotalCount":"4848","Type":"Local Volumes"}',
+    '{"Active":"0","Reclaimable":"16.48GB","Size":"39.39GB","TotalCount":"304","Type":"Build Cache"}',
+  ].join("\n");
+  expect(dockerDisk(df)).toEqual({
+    images: "23.89GB",
+    images_reclaimable: "20.15GB (84%)",
+    volumes: "227.3GB",
+    volumes_count: 4848,
+    volumes_active: 29,
+    volumes_reclaimable: "143.8GB (63%)",
+    build_cache: "39.39GB",
+    build_cache_reclaimable: "16.48GB",
+  });
+  expect(dockerDisk("")).toBeNull();
+  expect(dockerDisk("not-json")).toBeNull();
+});
+
+test("countWorktrees counts nested repo worktrees and direct worktrees, and omits missing directories", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentgate-wt-health-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  expect(await countWorktrees(join(dir, "missing"))).toBeUndefined();
+
+  const root = join(dir, "worktrees");
+  mkdirSync(join(root, "agentgate", "wt-1"), { recursive: true });
+  mkdirSync(join(root, "agentgate", "wt-2"), { recursive: true });
+  mkdirSync(join(root, "agentgate", ".hidden"), { recursive: true });
+  mkdirSync(join(root, "hellu", "wt-a"), { recursive: true });
+  mkdirSync(join(root, "direct-wt"), { recursive: true });
+  writeFileSync(join(root, "direct-wt", ".git"), "gitdir: /tmp/fake\n");
+  writeFileSync(join(root, "README.txt"), "ignore files");
+  expect(await countWorktrees(root)).toEqual({ count: 4, path: root });
+});
+
+test.skipIf(process.platform !== "linux")(
+  "health reports root inode usage and worktrees count when present, and omits worktrees when absent",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentgate-health-hygiene-"));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    const wtRoot = join(dir, "worktrees");
+    mkdirSync(join(wtRoot, "repo-a", "wt-1"), { recursive: true });
+    mkdirSync(join(wtRoot, "repo-a", "wt-2"), { recursive: true });
+
+    const withWt = machine("worker", { worktreesDir: () => wtRoot });
+    const sample = machineHealthSchema.parse(await withWt.firstRead());
+    expect(sample.disk.inodes_used_percent).toBeGreaterThanOrEqual(0);
+    expect(sample.disk.inodes_used_percent).toBeLessThanOrEqual(100);
+    expect(sample.disk.inodes_total).toBeGreaterThan(0);
+    expect(sample.workload.worktrees).toEqual({ count: 2, path: wtRoot });
+
+    const withoutWt = machine("worker-no-wt", { worktreesDir: () => join(dir, "absent") });
+    const sampleNoWt = machineHealthSchema.parse(await withoutWt.firstRead());
+    expect(sampleNoWt.workload.worktrees).toBeUndefined();
   },
 );
