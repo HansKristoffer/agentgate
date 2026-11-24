@@ -30,6 +30,8 @@ import {
   PRIMARY_CLAUDE_DIR,
   PRIMARY_CODEX_DIR,
   primaryState,
+  T3_ANTIGRAVITY_DIR,
+  t3AntigravityDirs,
 } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, SKILL_ID, timerSync, type Rec, type Store } from "./store.ts";
 import { z } from "zod";
@@ -113,18 +115,38 @@ function ignoreLinks(dir: string, names: string[]) {
 }
 
 /** Where `*` skills and the global AGENTS.md go: the coding-tool folders `setup` writes, plus your own ~/.claude and
- * ~/.codex while `setup --primary` is on, and Antigravity's ~/.gemini/config while it has agentgate's MCP server.
- * Claude Code reads the instructions as CLAUDE.md, Codex and Antigravity as AGENTS.md. */
-export function globalSkillDirs(): [dir: string, on: boolean, instructions?: string][] {
+ * ~/.codex while `setup --primary` is on, and Antigravity's ~/.gemini/config plus any T3 Code Antigravity provider
+ * instances while they have agentgate's MCP server. Claude Code reads the instructions as CLAUDE.md, Codex and
+ * Antigravity as AGENTS.md. */
+export function globalSkillDirs(
+  primaryAntigravity = ANTIGRAVITY_DIR,
+  t3Antigravity = T3_ANTIGRAVITY_DIR,
+): [dir: string | undefined, on: boolean, instructions?: string][] {
   const primary = primaryState();
-  return [
+  const entries: [dir: string | undefined, on: boolean, instructions?: string][] = [
     [join(CLAUDE_DIR, "skills"), true, join(CLAUDE_DIR, "CLAUDE.md")],
     [join(CODEX_DIR, "skills"), true, join(CODEX_DIR, "AGENTS.md")],
     [join(PRIMARY_CLAUDE_DIR, "skills"), primary.claude, join(PRIMARY_CLAUDE_DIR, "CLAUDE.md")],
     [join(PRIMARY_CODEX_DIR, "skills"), primary.codex, join(PRIMARY_CODEX_DIR, "AGENTS.md")],
     // agy also reads ~/.gemini/GEMINI.md, which other tools write, so agentgate's file goes beside its skills.
-    [join(ANTIGRAVITY_DIR, "skills"), antigravityRouted(), join(ANTIGRAVITY_DIR, "AGENTS.md")],
+    [
+      join(primaryAntigravity, "skills"),
+      antigravityRouted(join(primaryAntigravity, "mcp_config.json")),
+      join(primaryAntigravity, "AGENTS.md"),
+    ],
   ];
+  for (const dir of t3AntigravityDirs(t3Antigravity)) {
+    const skillsDir = join(dir, "skills");
+    // T3 Code symlinks each instance's skills folder to ~/.gemini/config/skills; leave that symlink target to the
+    // primary Antigravity entry above so an unrouted instance never unlinks the shared skills folder.
+    const linkedElsewhere = lstatSync(skillsDir, { throwIfNoEntry: false })?.isSymbolicLink();
+    entries.push([
+      linkedElsewhere ? undefined : skillsDir,
+      antigravityRouted(join(dir, "mcp_config.json")),
+      join(dir, "AGENTS.md"),
+    ]);
+  }
+  return entries;
 }
 
 /** Where a node keeps the global AGENTS.md, next to its skills: the file to open in an editor. */
@@ -162,8 +184,9 @@ export class SkillLinks {
   constructor(
     private s: Store,
     private root: string | null = SKILLS_DIR,
-    private globalDirs = globalSkillDirs,
+    private globalDirs: () => [dir: string | undefined, on: boolean, instructions?: string][] = globalSkillDirs,
     private io: { rename?: typeof renameSync; watch?: typeof watch } = {},
+    private onWritten?: (ids: string[], root: string) => void,
   ) {}
 
   health(): SkillHealth {
@@ -348,6 +371,7 @@ export class SkillLinks {
     const rows = this.records();
     const keep = new Set(rows.map((r) => r.id));
     const rename = this.io.rename ?? renameSync;
+    const written: string[] = [];
     // Recover a previous copy before attempting publication or cleaning recognized leftovers.
     for (const name of readdirSync(root)) {
       if (keep.has(name)) continue;
@@ -427,6 +451,7 @@ export class SkillLinks {
           }
           rename(temp, dir);
           published = true;
+          written.push(row.id);
         } catch (error) {
           if (moved && !lstatSync(dir, { throwIfNoEntry: false })) rename(old, dir);
           throw error;
@@ -449,6 +474,14 @@ export class SkillLinks {
     for (const id of this.manifests.keys()) {
       if (!keep.has(id)) this.manifests.delete(id);
     }
+
+    if (written.length && this.onWritten) {
+      try {
+        this.onWritten(written, root);
+      } catch (error) {
+        console.error(`skills: post-write hook failed: ${error instanceof Error ? error.name : "error"}`);
+      }
+    }
   }
 
   private link(root: string) {
@@ -468,9 +501,11 @@ export class SkillLinks {
       // A missing or unreadable AGENTS.md counts as not written.
     }
     for (const [dir, on, file] of this.globalDirs()) {
-      this.attempt(dir, () => {
-        this.linkDir(root, dir, on ? global : [], conflicts, kept);
-      });
+      if (dir) {
+        this.attempt(dir, () => {
+          this.linkDir(root, dir, on ? global : [], conflicts, kept);
+        });
+      }
       if (file) this.attempt(file, () => this.linkFile(file, instructions, on && written, conflicts, kept));
     }
     const checkouts = this.checkouts();

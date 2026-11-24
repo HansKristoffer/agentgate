@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Hono } from "hono";
 import { app, makeCtx } from "../src/daemon.ts";
-import { allowedFactoryPath, factoryPeerRoutes } from "../src/factory-proxy.ts";
+import { allowedFactoryPath, factoryPeerRoutes, reloadFactoryService } from "../src/factory-proxy.ts";
 import { relayedRoutes } from "../src/handoff/routes.ts";
 import { Store } from "../src/store.ts";
 
@@ -264,5 +267,47 @@ describe("factory proxy", () => {
     );
     expect(res.status).toBe(502);
     expect(((await res.json()) as { error: string }).error).toContain("agentgate update server");
+  });
+
+  test("reloadFactoryService skips when factory is stopped or from another checkout, and invokes cli when matching", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "agentgate-factory-reload-"));
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+    const appDir = join(dir, "app");
+    const marker = join(dir, "invoked.json");
+    mkdirSync(appDir, { recursive: true });
+    writeFileSync(
+      join(appDir, "cli.ts"),
+      `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ argv: process.argv.slice(2), port: process.env.FACTORY_PORT }));
+`,
+    );
+
+    const abort = new AbortController();
+    // Not running on port 1: never starts it.
+    expect(await reloadFactoryService(dir, "http://127.0.0.1:1", abort.signal)).toBe("skipped");
+
+    // Running from another checkout: leaves that server alone.
+    let reportedAppDir = join(dir, "other-checkout");
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json({ ok: true, version: "v1", appDir: reportedAppDir }),
+    });
+    cleanups.push(() => server.stop(true));
+    const url = `http://127.0.0.1:${server.port}`;
+
+    expect(await reloadFactoryService(dir, url, abort.signal)).toBe("skipped");
+
+    // Running from this synced skill dir: runs cli.ts board with FACTORY_PORT set.
+    reportedAppDir = appDir;
+    expect(await reloadFactoryService(dir, url, abort.signal)).toBe("reloaded");
+    expect(JSON.parse(readFileSync(marker, "utf8"))).toEqual({
+      argv: ["board"],
+      port: String(server.port),
+    });
+
+    // Hanging reload hits its deadline and fails cleanly.
+    writeFileSync(join(appDir, "cli.ts"), "await Bun.sleep(60_000);\n");
+    await expect(reloadFactoryService(dir, url, abort.signal, { timeoutMs: 150 })).rejects.toThrow("timed out");
   });
 });

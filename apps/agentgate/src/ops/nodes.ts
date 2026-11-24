@@ -272,17 +272,30 @@ function printHealth(h: MachineHealth) {
     h.services.docker !== undefined && `Docker ${upDown(h.services.docker)}`,
     h.services.t3_code !== undefined && `T3 Code ${upDown(h.services.t3_code)}`,
   ].filter(Boolean);
+  const inodes = disk.inodes_used_percent !== undefined ? `, inodes ${disk.inodes_used_percent.toFixed(0)}%` : "";
+  const dockerDisk = w.containers.disk;
+  const volumes =
+    dockerDisk && (dockerDisk.volumes_count != null || dockerDisk.volumes)
+      ? ` (${[
+          dockerDisk.volumes_count != null && `${dockerDisk.volumes_count} volumes`,
+          dockerDisk.volumes,
+          dockerDisk.volumes_reclaimable && `${dockerDisk.volumes_reclaimable} reclaimable`,
+        ]
+          .filter(Boolean)
+          .join(", ")})`
+      : "";
   return [
     `${h.host}: up ${Math.round(h.uptime_hours)} h, ${services.join(", ")}`,
     `CPU        ${h.cpu_used_percent.toFixed(0)}% of ${h.cpus} cores, load per core ${load.per_cpu_1m.toFixed(2)} (${load["1m"]} ${load["5m"]} ${load["15m"]})`,
     `Memory     ${memory.used_percent.toFixed(0)}%, ${gb(memory.used_gb)} of ${gb(memory.total_gb)}`,
-    `Disk       ${disk.used_percent.toFixed(0)}%, ${gb(disk.used_gb)} of ${gb(disk.total_gb)}, ${gb(disk.free_gb)} free`,
+    `Disk       ${disk.used_percent.toFixed(0)}%, ${gb(disk.used_gb)} of ${gb(disk.total_gb)}, ${gb(disk.free_gb)} free${inodes}`,
     `Pressure   CPU ${pressure.cpu.toFixed(1)}%, memory ${pressure.memory.toFixed(1)}%, I/O ${pressure.io.toFixed(1)}% (last 10 s)`,
     `Disk I/O   ${io.busy_percent.toFixed(0)}% busy, read ${io.read_mb_s.toFixed(1)} MB/s, write ${io.write_mb_s.toFixed(1)} MB/s`,
     `Network    ${network.in_mbit_s.toFixed(1)} Mbit/s in, ${network.out_mbit_s.toFixed(1)} Mbit/s out (${network.interface})`,
     `Agents     ${w.agents.claude + w.agents.codex} (Claude Code ${w.agents.claude}, Codex ${w.agents.codex})`,
     `CI runners ${w.runners.busy} of ${w.runners.total} busy`,
-    `Containers ${w.containers.running} running`,
+    `Containers ${w.containers.running} running${volumes}`,
+    ...(w.worktrees ? [`Worktrees  ${w.worktrees.count} in ${w.worktrees.path}`] : []),
     `OOM kills  ${w.oom_kills.last_hour} in the last hour, ${w.oom_kills.since_boot} since boot`,
     ...(h.daemon_lag ? [`Agentgate  event loop ${h.daemon_lag.worstMs} ms worst, p99 ${h.daemon_lag.p99Ms} ms`] : []),
     "",

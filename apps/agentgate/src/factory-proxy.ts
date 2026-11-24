@@ -1,10 +1,13 @@
+import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { getErrorMessage } from "hanzio";
 import { Hono } from "hono";
 import { MiB } from "@agentgate/protocol/relay";
 import { relayCall } from "./channel.ts";
 import type { Ctx, Env } from "./daemon.ts";
 import { transport } from "./handoff/jobs.ts";
-import { fetchHeaders, MAX_BODY, readBody } from "./runtime.ts";
+import { fetchHeaders, killGroup, MAX_BODY, readBody } from "./runtime.ts";
 import { peers } from "./sync.ts";
 
 /**
@@ -27,6 +30,91 @@ export function factoryPort(): number {
 }
 
 export const factoryBaseUrl = () => `http://127.0.0.1:${factoryPort()}`;
+
+const RELOAD_HEALTH_MS = 2000;
+const RELOAD_TIMEOUT_MS = 25_000;
+
+function findBun(): string | undefined {
+  const onPath = Bun.which("bun");
+  if (onPath) return onPath;
+  if (!Bun.main.startsWith("/$bunfs/")) return process.execPath;
+  const homeBun = join(homedir(), ".bun", "bin", "bun");
+  return existsSync(homeBun) ? homeBun : undefined;
+}
+
+const realpathOrSame = (path: string) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+
+/**
+ * Reloads a running local skill-factory service after agentgate syncs updated files for the `factory` skill.
+ * Does nothing when factory is not running on this machine, or when the running service comes from another checkout.
+ * Delegates the stop/restart handshake to the synced `app/cli.ts` (`ensureServer`), which handles both persistent
+ * systemd/launchd services and transient units.
+ */
+export async function reloadFactoryService(
+  skillDir: string,
+  baseUrl: string,
+  daemonSignal: AbortSignal,
+  options: { bun?: string; timeoutMs?: number } = {},
+): Promise<"reloaded" | "skipped"> {
+  const appDir = join(skillDir, "app");
+  const cli = join(appDir, "cli.ts");
+  if (!existsSync(cli)) return "skipped";
+
+  let runningAppDir: string | undefined;
+  try {
+    const res = await fetchHeaders(`${baseUrl}/health`, { signal: daemonSignal }, RELOAD_HEALTH_MS);
+    if (!res.ok) {
+      await res.body?.cancel();
+      return "skipped";
+    }
+    const body = (await res.json()) as { appDir?: unknown };
+    if (typeof body.appDir === "string") runningAppDir = body.appDir;
+  } catch {
+    // Factory is not running on this machine; never start it unasked.
+    return "skipped";
+  }
+
+  if (runningAppDir && realpathOrSame(runningAppDir) !== realpathOrSame(appDir)) {
+    return "skipped";
+  }
+
+  const bun = options.bun ?? findBun();
+  if (!bun) return "skipped";
+
+  const port = new URL(baseUrl).port || String(DEFAULT_FACTORY_PORT);
+  const timeoutMs = options.timeoutMs ?? RELOAD_TIMEOUT_MS;
+  const child = Bun.spawn([bun, cli, "board"], {
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    detached: true,
+    env: { ...process.env, FACTORY_PORT: port },
+  });
+
+  let timedOut = false;
+  const stop = () => killGroup(child);
+  const timer = setTimeout(() => {
+    timedOut = true;
+    stop();
+  }, timeoutMs);
+  daemonSignal.addEventListener("abort", stop, { once: true });
+  try {
+    const code = await child.exited;
+    if (daemonSignal.aborted) return "skipped";
+    if (timedOut) throw new Error(`factory reload timed out after ${timeoutMs} ms`);
+    if (code !== 0) throw new Error(`factory reload exited with code ${code}`);
+    return "reloaded";
+  } finally {
+    clearTimeout(timer);
+    daemonSignal.removeEventListener("abort", stop);
+  }
+}
 
 /** Allowlist of browser/app routes on the factory service. Blocks CLI-only and shutdown routes. */
 export function allowedFactoryPath(method: string, pathname: string): boolean {

@@ -1,7 +1,17 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+} from "node:fs";
 import { getErrorMessage } from "hanzio";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { z } from "zod";
 import { atomicWrite } from "./files.ts";
 import { readClaudeLogin } from "./claude-local.ts";
@@ -16,6 +26,46 @@ export const CURSOR_MCP_FILE = join(homedir(), ".cursor", "mcp.json");
 /** The Antigravity CLI (agy) reads its global MCP servers, skills and rules (AGENTS.md) from this folder. */
 export const ANTIGRAVITY_DIR = join(homedir(), ".gemini", "config");
 export const ANTIGRAVITY_MCP_FILE = join(ANTIGRAVITY_DIR, "mcp_config.json");
+/** T3 Code keeps per-instance Antigravity configs under `<T3CODE_HOME>/userdata/providers/antigravity/<id>/config`. */
+export const T3_ANTIGRAVITY_DIR = join(
+  process.env.T3CODE_HOME || join(homedir(), ".t3"),
+  "userdata",
+  "providers",
+  "antigravity",
+);
+
+/** Each Antigravity provider config directory managed by T3 Code on this machine. */
+export function t3AntigravityDirs(dir = T3_ANTIGRAVITY_DIR): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir).sort();
+  } catch {
+    return [];
+  }
+  const dirs: string[] = [];
+  for (const name of entries) {
+    const configDir = join(dir, name, "config");
+    if (existsSync(configDir)) dirs.push(configDir);
+  }
+  return dirs;
+}
+
+/** Every Antigravity `mcp_config.json` target whose parent config directory exists on this machine: agy's own
+ * `~/.gemini/config/mcp_config.json` plus any T3 Code Antigravity provider instances. */
+export function antigravityMcpFiles(
+  primaryFile = ANTIGRAVITY_MCP_FILE,
+  t3ProvidersDir = primaryFile === ANTIGRAVITY_MCP_FILE ? T3_ANTIGRAVITY_DIR : undefined,
+): string[] {
+  const files: string[] = [];
+  if (existsSync(dirname(primaryFile))) files.push(primaryFile);
+  if (t3ProvidersDir) {
+    for (const dir of t3AntigravityDirs(t3ProvidersDir)) {
+      const file = join(dir, "mcp_config.json");
+      if (!files.includes(file)) files.push(file);
+    }
+  }
+  return files;
+}
 export function selfCommand(): string[] {
   return Bun.main.startsWith("/$bunfs/") ? [stableBinary(process.execPath)] : [process.execPath, Bun.main];
 }
@@ -192,21 +242,30 @@ export async function setup(paths = { claude: CLAUDE_DIR, codex: CODEX_DIR }): P
 }
 
 /** This machine's own coding tools, which `setup --primary` routes. */
-const OWN = {
+export type OwnDirs = {
+  claude: string;
+  codex: string;
+  cursor: string;
+  antigravity: string;
+  t3Antigravity?: string;
+};
+
+const OWN: OwnDirs = {
   claude: PRIMARY_CLAUDE_DIR,
   codex: PRIMARY_CODEX_DIR,
   cursor: CURSOR_MCP_FILE,
   antigravity: ANTIGRAVITY_MCP_FILE,
+  t3Antigravity: T3_ANTIGRAVITY_DIR,
 };
 
 /** `setup --primary [off]` on this machine: Claude Code, Codex, and the MCP servers of Cursor and Antigravity. Records the choice, so a later
  * `service install` or the daemon never undoes it, and the result on this node, so every machine's Machines view shows it. */
-export async function routeHere(s: Store, on: boolean, dirs = OWN) {
+export async function routeHere(s: Store, on: boolean, dirs: OwnDirs = OWN) {
   const steps = [
     ["Claude Code", () => primary(on, dirs.claude)],
     ["Codex", () => primaryCodex(on, dirs.codex)],
     ["Cursor", () => cursorMcp(on, dirs.cursor)],
-    ["Antigravity", () => antigravityMcp(on, dirs.antigravity)],
+    ["Antigravity", () => antigravityMcp(on, dirs.antigravity, dirs.t3Antigravity)],
   ] as const;
   const done: string[] = [];
   try {
@@ -237,11 +296,11 @@ export async function routeHere(s: Store, on: boolean, dirs = OWN) {
 }
 
 /** `setup --mcp [off]`: only the MCP server, in Claude Code, Cursor and Antigravity. Recorded for `keepMcp`. */
-export async function mcpHere(s: Store, on: boolean, dirs = OWN) {
+export async function mcpHere(s: Store, on: boolean, dirs: OwnDirs = OWN) {
   const message = [
     await mcp(on, dirs.claude),
     await cursorMcp(on, dirs.cursor),
-    await antigravityMcp(on, dirs.antigravity),
+    await antigravityMcp(on, dirs.antigravity, dirs.t3Antigravity),
   ].join("\n");
   s.setLocal("setup:mcp", on ? "on" : "off");
   s.setLocal(MCP_RESTORED, undefined);
@@ -251,7 +310,7 @@ export async function mcpHere(s: Store, on: boolean, dirs = OWN) {
 /** `init` marks a new store "pending"; its first `service install` then routes this machine's own tools, once the
  * daemon answers, so Claude Code and Codex never point at a port nobody listens on. Stores from before, and users who
  * chose either way with `setup --primary [off]` or `--no-routing`, are left alone. */
-export async function routeByDefault(s: Store, on = true, dirs = OWN): Promise<string | undefined> {
+export async function routeByDefault(s: Store, on = true, dirs: OwnDirs = OWN): Promise<string | undefined> {
   if (s.local("setup:routing") !== "pending") return;
   if (!on) {
     s.setLocal("setup:routing", "off");
@@ -275,7 +334,7 @@ type McpEntry = z.infer<typeof mcpEntry> | undefined;
  * from a stale copy and drop agentgate's server: put it back while the user wants it (they turned it on, or, on stores
  * from before the choice was recorded, routing is on). After the binary or port moved, point this install's entries at
  * the current ones. An entry naming another AGENTGATE_HOME belongs to another install and stays. Returns what changed. */
-export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
+export async function keepMcp(s: Store, dirs: OwnDirs = OWN): Promise<string[]> {
   const [command, ...args] = [...selfCommand(), "mcp"];
   const env = agentEnvironment();
   const stale = (e: McpEntry) =>
@@ -321,13 +380,14 @@ export async function keepMcp(s: Store, dirs = OWN): Promise<string[]> {
       changed.push(`Updated agentgate's MCP server in ${codexFile}`);
     }
   }
-  for (const [name, file] of [
+  const jsonTargets: [string, string][] = [
     ["Cursor", dirs.cursor],
-    ["Antigravity", dirs.antigravity],
-  ] as const) {
+    ...antigravityMcpFiles(dirs.antigravity, dirs.t3Antigravity).map((file): [string, string] => ["Antigravity", file]),
+  ];
+  for (const [name, file] of jsonTargets) {
     const entry = mcpEntry.safeParse(mcpFile(file).servers.agentgate).data;
-    // A tool that arrived after `setup` (agy makes its folder on its first run), or one this version added, such as
-    // Antigravity on a machine set up before, gets the server while the user wants it.
+    // A tool that arrived after `setup` (agy or a T3 Antigravity instance makes its folder on its first run), or one
+    // this version added, gets the server while the user wants it.
     const missing = !entry && existsSync(dirname(file)) && wanted();
     if (stale(entry) || missing) {
       await jsonMcp(name, true, file);
@@ -383,10 +443,12 @@ function jsonServer(command = selfCommand(), env = agentEnvironment()) {
   return { command: executable, args, env };
 }
 
+const isRealAntigravity = (file: string) => file === ANTIGRAVITY_MCP_FILE || file.startsWith(T3_ANTIGRAVITY_DIR + sep);
+
 /** The agentgate MCP shim in a tool's `mcpServers` JSON file. Other servers in the file stay put. A machine without
  * the tool's folder has no such tool and is skipped. */
 async function jsonMcp(name: string, on: boolean, file: string): Promise<string> {
-  if (file === CURSOR_MCP_FILE || file === ANTIGRAVITY_MCP_FILE) liveOnly(`Changing your own ${name} config`);
+  if (file === CURSOR_MCP_FILE || isRealAntigravity(file)) liveOnly(`Changing your own ${name} config`);
   if (on && !existsSync(dirname(file))) return `No ${name} at ${dirname(file)}; skipped ${name}.`;
   const { root, servers } = mcpFile(file);
   if (on) servers.agentgate = jsonServer();
@@ -402,8 +464,28 @@ async function jsonMcp(name: string, on: boolean, file: string): Promise<string>
 
 /** Cursor, the Cursor CLI, and T3's Cursor. */
 export const cursorMcp = (on: boolean, file = CURSOR_MCP_FILE) => jsonMcp("Cursor", on, file);
-/** The Antigravity CLI (agy). */
-export const antigravityMcp = (on: boolean, file = ANTIGRAVITY_MCP_FILE) => jsonMcp("Antigravity", on, file);
+
+/** The Antigravity CLI (agy) and any T3 Code Antigravity provider instances on this machine. */
+export async function antigravityMcp(
+  on: boolean,
+  file = ANTIGRAVITY_MCP_FILE,
+  t3ProvidersDir = file === ANTIGRAVITY_MCP_FILE ? T3_ANTIGRAVITY_DIR : undefined,
+): Promise<string> {
+  if (isRealAntigravity(file) || t3ProvidersDir === T3_ANTIGRAVITY_DIR) {
+    liveOnly("Changing your own Antigravity config");
+  }
+  const files = antigravityMcpFiles(file, t3ProvidersDir);
+  if (!files.length) return jsonMcp("Antigravity", on, file);
+  const removed: string[] = [];
+  for (const target of files) {
+    const result = await jsonMcp("Antigravity", on, target);
+    if (!on && result.startsWith("Removed")) removed.push(target);
+  }
+  if (on) return "New Antigravity sessions get agentgate's MCP servers. Undo: agentgate setup --mcp off.";
+  return removed.length
+    ? `Removed the agentgate MCP server from ${removed.join(", ")}.`
+    : `No agentgate MCP server in ${files.join(", ")}.`;
+}
 
 /** Whether a tool's JSON config has agentgate's MCP server; undefined when this machine has no such tool, which `jsonMcp` skips. */
 export function mcpFileEnabled(file: string): boolean | undefined {
@@ -413,6 +495,17 @@ export function mcpFileEnabled(file: string): boolean | undefined {
   } catch {
     return false;
   }
+}
+
+/** Whether every Antigravity config on this machine (agy and T3 Code instances) has agentgate's MCP server;
+ * undefined when Antigravity is not present. */
+export function antigravityMcpEnabled(
+  primaryFile = ANTIGRAVITY_MCP_FILE,
+  t3ProvidersDir = primaryFile === ANTIGRAVITY_MCP_FILE ? T3_ANTIGRAVITY_DIR : undefined,
+): boolean | undefined {
+  const files = antigravityMcpFiles(primaryFile, t3ProvidersDir);
+  if (!files.length) return undefined;
+  return files.every((file) => mcpFileEnabled(file) === true);
 }
 
 /** Whether Antigravity's config has this install's MCP server, so it also gets the global skills and AGENTS.md. Another

@@ -48,7 +48,7 @@ import { handoffSource } from "./handoff/tools.ts";
 import { forgetView } from "./handoff/threads.ts";
 import { NodeChannel } from "./channel.ts";
 import { CheckoutFiles, FILES_ROOT } from "./checkout-files.ts";
-import { factoryBaseUrl, factoryPeerRoutes } from "./factory-proxy.ts";
+import { factoryBaseUrl, factoryPeerRoutes, reloadFactoryService } from "./factory-proxy.ts";
 import { startLagProbe } from "./lag.ts";
 import { handoffDirs } from "./ops/nodes.ts";
 import { localClaudeLogin } from "./claude-local.ts";
@@ -103,6 +103,8 @@ export function makeCtx(
     imports?: SkillImports;
     handoffs?: HandoffOptions;
     factoryUrl?: string;
+    worktreesDir?: () => string;
+    onSkillWritten?: (ids: string[], root: string) => void;
   } = {},
 ): Ctx {
   const creds = new Credentials(
@@ -113,8 +115,31 @@ export function makeCtx(
   const quotas = new Quotas(s, creds, providers);
   const gateway = new Gateway(s);
   const memory = s.db.filename === ":memory:";
+  const abort = new AbortController();
+  const factoryUrl = options.factoryUrl ?? factoryBaseUrl();
+  const pending = new Set<Promise<void>>();
+  let factorySkillDir: string | undefined;
+  const reloadFactory = serialTask(async () => {
+    const dir = factorySkillDir;
+    if (!dir || abort.signal.aborted) return;
+    const outcome = await reloadFactoryService(dir, factoryUrl, abort.signal);
+    if (outcome === "reloaded") console.log("factory: reloaded after skill sync");
+  });
+  const onSkillWritten =
+    options.onSkillWritten ??
+    (!DEV && !memory
+      ? (ids: string[], root: string) => {
+          if (!ids.includes("factory")) return;
+          factorySkillDir = join(root, "factory");
+          const task = reloadFactory().catch((e) =>
+            console.error(`factory: reload failed: ${e instanceof Error ? e.message : "error"}`),
+          );
+          pending.add(task);
+          void task.finally(() => pending.delete(task));
+        }
+      : undefined);
   const files = options.files ?? new CheckoutFiles(s, memory ? null : undefined);
-  const skills = options.skills ?? new SkillLinks(s, memory ? null : undefined);
+  const skills = options.skills ?? new SkillLinks(s, memory ? null : undefined, undefined, undefined, onSkillWritten);
   // A dev daemon connected to the real T3 Code must not link its skills into real repositories.
   const handoffs = new Handoffs(s, options.handoffs ?? handoffOptions(s), (checkouts) => {
     if (DEV) return;
@@ -122,9 +147,10 @@ export function makeCtx(
     for (const c of checkouts) skills.register(c.path, c.project, false);
     if (JSON.stringify(skills.checkouts()) !== before) skills.sync();
   });
-  const abort = new AbortController();
-  const factoryUrl = options.factoryUrl ?? factoryBaseUrl();
-  const health = new HealthSampler(s);
+  const health = new HealthSampler(s, {
+    worktreesDir:
+      options.worktreesDir ?? (() => handoffDirs.get(s, "worktreesDir") ?? join(homedir(), ".t3", "worktrees")),
+  });
   const ctx: Ctx = {
     s,
     changes: new Changes(s),
@@ -137,7 +163,7 @@ export function makeCtx(
     files,
     imports: options.imports ?? new SkillImports(),
     abort,
-    pending: new Set(),
+    pending,
     handoffs,
     health,
     factoryUrl,
@@ -368,7 +394,9 @@ export async function serve(
   if (!DEV) {
     schedule(async () => {
       publishRouting(s);
-      for (const change of await keepMcp(s)) console.log(change);
+      const changes = await keepMcp(s);
+      for (const change of changes) console.log(change);
+      if (changes.length) ctx.skills.soon();
     }, 60_000);
     schedule(() => localClaudeLogin(s), 30_000);
   }

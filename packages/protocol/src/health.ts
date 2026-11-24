@@ -27,7 +27,13 @@ export const machineHealthSchema = z.object({
   cpu_used_percent: z.number(),
   load: z.object({ "1m": z.number(), "5m": z.number(), "15m": z.number(), per_cpu_1m: z.number() }),
   memory: z.object({ ...usage, available_gb: z.number() }),
-  disk: z.object({ ...usage, free_gb: z.number() }),
+  disk: z.object({
+    ...usage,
+    free_gb: z.number(),
+    inodes_total: z.number().optional(),
+    inodes_used: z.number().optional(),
+    inodes_used_percent: z.number().optional(),
+  }),
   /** Share of the last 10 seconds that some task waited for the resource (Linux PSI). */
   pressure: z.object({ cpu: z.number(), memory: z.number(), io: z.number() }),
   disk_io: z.object({ busy_percent: z.number(), read_mb_s: z.number(), write_mb_s: z.number() }),
@@ -43,10 +49,16 @@ export const machineHealthSchema = z.object({
           images: z.string().nullable(),
           images_reclaimable: z.string().nullable(),
           volumes: z.string().nullable(),
+          volumes_count: z.number().nullable().optional(),
+          volumes_active: z.number().nullable().optional(),
+          volumes_reclaimable: z.string().nullable().optional(),
           build_cache: z.string().nullable(),
+          build_cache_reclaimable: z.string().nullable().optional(),
         })
         .nullable(),
     }),
+    /** Worktree count under the machine's T3 worktrees folder; omitted when that folder is absent. */
+    worktrees: z.object({ count: z.number(), path: z.string() }).optional(),
     oom_kills: z.object({ since_boot: z.number(), last_hour: z.number() }),
   }),
   /** Docker only when it is installed, T3 Code only while agentgate is connected to it. */

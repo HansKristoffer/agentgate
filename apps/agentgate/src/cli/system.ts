@@ -166,7 +166,7 @@ export const run: Run = async (cmd, [sub], opts) => {
       const uses = (on: boolean) => (on ? "uses agentgate" : "does not use agentgate");
       const tools = [
         ["Cursor", setupMod.mcpFileEnabled(setupMod.CURSOR_MCP_FILE)],
-        ["Antigravity", setupMod.mcpFileEnabled(setupMod.ANTIGRAVITY_MCP_FILE)],
+        ["Antigravity", setupMod.antigravityMcpEnabled()],
       ] as const;
       const toolLines = tools
         .filter(([, on]) => on !== undefined)

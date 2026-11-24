@@ -19,10 +19,47 @@ function severity(share: number, high = 0.7, critical = 0.9): { level: Level; wo
 }
 
 const gb = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(2)} TB` : `${value.toFixed(0)} GB`);
+const compactCount = (value: number) => {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 100_000_000 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}K`;
+  return String(value);
+};
 // Docker prints "783.1MB"; the rest of the view puts a space before the unit.
-const dockerSize = (text: string | null) => String(text ?? "?").replace(/([0-9.])([kKMGT]?B)/, "$1 $2");
+const dockerSize = (text: string | null | undefined) => String(text ?? "?").replace(/([0-9.])([kKMGT]?B)/, "$1 $2");
 const clock = (t: number) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 const stalled = (value: number) => severity(value / 100, 0.1, 0.25); // PSI: a few percent is noticeable, 25% painful
+
+/** Parses the leading size in a Docker df string ("143.8GB (63%)") into gigabytes for warning thresholds. */
+function dockerSizeGb(text: string | null | undefined): number {
+  const match = text?.match(/([\d.]+)\s*([kKMGT]?B)/);
+  if (!match) return 0;
+  const n = Number(match[1]);
+  if (!Number.isFinite(n)) return 0;
+  switch (match[2]!.toUpperCase()) {
+    case "TB":
+      return n * 1000;
+    case "GB":
+      return n;
+    case "MB":
+      return n / 1000;
+    case "KB":
+      return n / 1e6;
+    default:
+      return n / 1e9;
+  }
+}
+
+/** Warns before Docker local volume buildup degrades disk, inodes, or `docker system df`. */
+function dockerVolumeSeverity(disk: NonNullable<Health["workload"]["containers"]["disk"]>): {
+  level: Level;
+  word: string;
+} {
+  const count = disk.volumes_count ?? 0;
+  const reclaimableGb = dockerSizeGb(disk.volumes_reclaimable);
+  if (count >= 500 || reclaimableGb >= 50) return { level: "bad", word: "Critical" };
+  if (count >= 100 || reclaimableGb >= 20) return { level: "warn", word: "High" };
+  return { level: "", word: "" };
+}
 
 type Tile = { label: string; value: string; sub: string; level?: { level: Level; word: string } };
 
@@ -203,6 +240,51 @@ function Sections({ health: h }: { health: Health }) {
   const { load, memory, disk, pressure, disk_io: io, network: net, workload: w, history } = h;
   const lag = h.daemon_lag;
   const one = (key: Series["key"]): Series[] => [{ key, label: "", color: "var(--h-series-1)" }];
+  const dockerDisk = w.containers.disk;
+  const hygieneTiles: Tile[] = [
+    ...(disk.inodes_used_percent !== undefined
+      ? [
+          {
+            label: "Inodes used",
+            value: `${disk.inodes_used_percent.toFixed(0)}%`,
+            sub:
+              disk.inodes_used !== undefined && disk.inodes_total !== undefined
+                ? `${compactCount(disk.inodes_used)} of ${compactCount(disk.inodes_total)}`
+                : "Root filesystem",
+            level: severity(disk.inodes_used_percent / 100, 0.35, 0.75),
+          },
+        ]
+      : []),
+    ...(w.worktrees !== undefined
+      ? [
+          {
+            label: "T3 worktrees",
+            value: w.worktrees.count.toLocaleString(),
+            sub: w.worktrees.path,
+            level: severity(w.worktrees.count, 50, 200),
+          },
+        ]
+      : []),
+    ...(dockerDisk && (dockerDisk.volumes_count != null || dockerDisk.volumes)
+      ? [
+          {
+            label: "Docker volumes",
+            value:
+              dockerDisk.volumes_count != null
+                ? dockerDisk.volumes_count.toLocaleString()
+                : dockerSize(dockerDisk.volumes),
+            sub: [
+              dockerDisk.volumes_active != null && `${dockerDisk.volumes_active} active`,
+              dockerDisk.volumes_count != null && dockerDisk.volumes && dockerSize(dockerDisk.volumes),
+              dockerDisk.volumes_reclaimable && `${dockerSize(dockerDisk.volumes_reclaimable)} reclaimable`,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+            level: dockerVolumeSeverity(dockerDisk),
+          },
+        ]
+      : []),
+  ];
   return (
     <>
       <h2 className="health-section">Resources</h2>
@@ -234,6 +316,13 @@ function Sections({ health: h }: { health: Health }) {
           },
         ]}
       />
+
+      {hygieneTiles.length > 0 && (
+        <>
+          <h2 className="health-section">Storage hygiene</h2>
+          <StatStrip tiles={hygieneTiles} />
+        </>
+      )}
 
       <h2 className="health-section">Workload</h2>
       <StatStrip

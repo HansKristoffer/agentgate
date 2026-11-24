@@ -5,7 +5,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, statSyn
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { atomicWrite } from "./files.ts";
-import { ANTIGRAVITY_MCP_FILE, claudeStatus, CURSOR_MCP_FILE, mcpFileEnabled, PRIMARY_CLAUDE_DIR } from "./setup.ts";
+import { antigravityMcpEnabled, claudeStatus, CURSOR_MCP_FILE, mcpFileEnabled, PRIMARY_CLAUDE_DIR } from "./setup.ts";
 import { CONFIG_DIR, liveOnly, LOCAL_URL, type Store } from "./store.ts";
 
 /** Claude Desktop's undocumented storage, kept in one place (docs/internals/claude-desktop.md). Mutable so tests can use fixtures.
@@ -624,7 +624,7 @@ export function status(s: Store): DesktopStatus {
     routing,
     mcp,
     cursorMcp: mcpFileEnabled(CURSOR_MCP_FILE),
-    antigravityMcp: mcpFileEnabled(ANTIGRAVITY_MCP_FILE),
+    antigravityMcp: antigravityMcpEnabled(),
     logins: [] as DesktopLogin[],
     signedOut: false,
   };

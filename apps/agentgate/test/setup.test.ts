@@ -6,6 +6,8 @@ import { host as claudeLocalHost } from "../src/claude-local.ts";
 import { plist, rotateLogs, service, stampLogs, unit, waitForService } from "../src/service.ts";
 import {
   agentEnvironment,
+  antigravityMcp,
+  antigravityMcpEnabled,
   antigravityRouted,
   claudeStatus,
   codexConfig,
@@ -295,6 +297,7 @@ test.skipIf(!!process.env.AGENTGATE_HOME)(
     await expect(service("install")).rejects.toThrow("real setup");
     await expect(mcp(true)).rejects.toThrow("real setup");
     await expect(cursorMcp(true)).rejects.toThrow("real setup");
+    await expect(antigravityMcp(true)).rejects.toThrow("real setup");
     await expect(primaryCodex(true)).rejects.toThrow("real setup");
   },
 );
@@ -562,4 +565,45 @@ test("Antigravity gets the MCP server in agy's empty config, and once agy appear
   await primary(true, routed.dirs.claude);
   expect(await keepMcp(old, routed.dirs)).toEqual([`Added agentgate's MCP server in ${routed.dirs.antigravity}`]);
   for (const t of [tools, later, routed]) rmSync(t.dir, { recursive: true });
+});
+
+test("T3 Code's Antigravity provider instances get MCP config alongside ~/.gemini/config and stay synced", async () => {
+  const s = new Store(":memory:");
+  const tools = ownTools({ antigravity: true });
+  const t3Antigravity = join(tools.dir, "t3-providers", "antigravity");
+  const inst1 = join(t3Antigravity, "hash-one", "config", "mcp_config.json");
+  const inst2 = join(t3Antigravity, "hash-two", "config", "mcp_config.json");
+  mkdirSync(dirname(inst1), { recursive: true });
+  writeFileSync(tools.dirs.antigravity, "");
+  writeFileSync(inst1, ""); // 0-byte file as T3 creates it
+  const dirs = { ...tools.dirs, t3Antigravity };
+
+  try {
+    expect(antigravityMcpEnabled(dirs.antigravity, t3Antigravity)).toBe(false);
+    await routeHere(s, true, dirs);
+    expect(antigravityRouted(dirs.antigravity)).toBe(true);
+    expect(antigravityRouted(inst1)).toBe(true);
+    expect(antigravityMcpEnabled(dirs.antigravity, t3Antigravity)).toBe(true);
+
+    // A second T3 Antigravity instance added later shows as missing until keepMcp adds it.
+    mkdirSync(dirname(inst2), { recursive: true });
+    writeFileSync(inst2, '{"mcpServers":{"other":{"command":"other"}}}\n');
+    expect(antigravityMcpEnabled(dirs.antigravity, t3Antigravity)).toBe(false);
+    expect(await keepMcp(s, dirs)).toEqual([`Added agentgate's MCP server in ${inst2}`]);
+    const inst2Cfg = JSON.parse(readFileSync(inst2, "utf8"));
+    expect(inst2Cfg.mcpServers.other.command).toBe("other");
+    expect(inst2Cfg.mcpServers.agentgate.env).toEqual(agentEnvironment());
+    expect(antigravityMcpEnabled(dirs.antigravity, t3Antigravity)).toBe(true);
+
+    // Turning MCP off removes agentgate from all Antigravity configs without touching other servers.
+    await mcpHere(s, false, dirs);
+    expect(antigravityRouted(dirs.antigravity)).toBe(false);
+    expect(antigravityRouted(inst1)).toBe(false);
+    expect(antigravityRouted(inst2)).toBe(false);
+    expect(JSON.parse(readFileSync(inst2, "utf8")).mcpServers.other.command).toBe("other");
+    expect(antigravityMcpEnabled(dirs.antigravity, t3Antigravity)).toBe(false);
+  } finally {
+    s.close();
+    rmSync(tools.dir, { recursive: true, force: true });
+  }
 });

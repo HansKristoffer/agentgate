@@ -6,6 +6,7 @@ import type { MachineHealth } from "@agentgate/protocol";
 import { sortBy, sumBy } from "hanzio";
 import { Hono } from "hono";
 import os from "node:os";
+import { join } from "node:path";
 import { t3State } from "./handoff/t3.ts";
 import { lag } from "./lag.ts";
 import type { Store } from "./store.ts";
@@ -55,11 +56,19 @@ async function disk(path: string) {
   const stats = await statfs(path);
   const total = stats.blocks * stats.bsize;
   const free = stats.bavail * stats.bsize;
+  const inodesTotal = Number(stats.files);
+  const inodesFree = Number(stats.ffree);
+  const inodesUsed = Math.max(0, inodesTotal - inodesFree);
   return {
     total_gb: round(total / GB),
     used_gb: round((total - free) / GB),
     free_gb: round(free / GB),
     used_percent: percent(total - free, total),
+    ...(inodesTotal > 0 && {
+      inodes_total: inodesTotal,
+      inodes_used: inodesUsed,
+      inodes_used_percent: percent(inodesUsed, inodesTotal),
+    }),
   };
 }
 
@@ -154,20 +163,73 @@ async function runningContainers() {
   return (await listIfThere("/sys/fs/cgroup/system.slice")).filter((name) => /^docker-.+\.scope$/.test(name)).length;
 }
 
+/** Counts worktree directories under `dir` (typically `~/.t3/worktrees/<repo>/<worktree>`). Returns undefined when
+ * `dir` does not exist so machines without T3 worktrees omit the signal. */
+export async function countWorktrees(dir: string): Promise<{ count: number; path: string } | undefined> {
+  let repos;
+  try {
+    repos = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+  let count = 0;
+  for (const entry of repos) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const entryPath = join(dir, entry.name);
+    const isDirectWorktree = await access(join(entryPath, ".git"))
+      .then(() => true)
+      .catch(() => false);
+    if (isDirectWorktree) {
+      count += 1;
+      continue;
+    }
+    try {
+      const children = await readdir(entryPath, { withFileTypes: true });
+      for (const child of children) {
+        if (child.isDirectory() && !child.name.startsWith(".")) count += 1;
+      }
+    } catch {
+      // A folder that vanished during the scan contributes nothing.
+    }
+  }
+  return { count, path: dir };
+}
+
+const intOrNull = (value?: string) => {
+  if (value === undefined || !value.trim()) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
 /** `docker system df --format '{{json .}}'`, one JSON row per kind of disk use; null when there is no answer. */
-function dockerDisk(text: string) {
+export function dockerDisk(text: string) {
   if (!text) return null;
   try {
     const rows = text
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { Type: string; Size: string; Reclaimable: string });
-    const size = (type: string) => rows.find((row) => row.Type === type);
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            Type: string;
+            Size: string;
+            Reclaimable: string;
+            TotalCount?: string;
+            Active?: string;
+          },
+      );
+    const row = (type: string) => rows.find((item) => item.Type === type);
+    const volumes = row("Local Volumes");
+    const buildCache = row("Build Cache");
     return {
-      images: size("Images")?.Size ?? null,
-      images_reclaimable: size("Images")?.Reclaimable ?? null,
-      volumes: size("Local Volumes")?.Size ?? null,
-      build_cache: size("Build Cache")?.Size ?? null,
+      images: row("Images")?.Size ?? null,
+      images_reclaimable: row("Images")?.Reclaimable ?? null,
+      volumes: volumes?.Size ?? null,
+      volumes_count: intOrNull(volumes?.TotalCount),
+      volumes_active: intOrNull(volumes?.Active),
+      volumes_reclaimable: volumes?.Reclaimable ?? null,
+      build_cache: buildCache?.Size ?? null,
+      build_cache_reclaimable: buildCache?.Reclaimable ?? null,
     };
   } catch {
     return null;
@@ -238,13 +300,24 @@ export class HealthSampler {
   private iface = "";
   private previous?: Awaited<ReturnType<HealthSampler["counters"]>>;
   private docker: ReturnType<typeof dockerDisk> = null;
-  private checked?: { at: number; tailscale: boolean; t3: boolean | undefined };
+  private checked?: {
+    at: number;
+    tailscale: boolean;
+    t3: boolean | undefined;
+    worktrees?: { count: number; path: string };
+  };
   private latest?: Sample;
   private history: Point[] = [];
   /** Settles when the next sample lands, for a read that started sampling. */
   private landed = Promise.withResolvers<void>();
+  private readonly worktreesDir: () => string;
 
-  constructor(private readonly s: Store) {}
+  constructor(
+    private readonly s: Store,
+    options: { worktreesDir?: () => string } = {},
+  ) {
+    this.worktreesDir = options.worktreesDir ?? (() => join(os.homedir(), ".t3", "worktrees"));
+  }
 
   stop() {
     this.stopped = true;
@@ -331,18 +404,25 @@ export class HealthSampler {
     this.docker = dockerDisk(await output(["docker", "system", "df", "--format", "{{json .}}"], 120_000));
   }
 
-  /** What the health reports as up: Tailscale, Docker when it is installed, and the T3 Code agentgate is connected to.
-   * Tailscale and T3 Code are asked every SERVICES_MS, not every sample. */
-  private async services(dockerRunning: boolean) {
+  /** What the health reports as up: Tailscale, Docker when it is installed, and the T3 Code agentgate is connected to,
+   * plus the worktree count under `worktreesDir`. Asked every SERVICES_MS, not every sample. */
+  private async slowChecks(dockerRunning: boolean) {
     if (!this.checked || this.s.now() - this.checked.at >= SERVICES_MS) {
       const t3 = t3State(this.s).url;
-      const [tailscale, t3Answers] = await Promise.all([tailscaleRunning(), t3 ? answers(t3) : undefined]);
-      this.checked = { at: this.s.now(), tailscale, t3: t3Answers };
+      const [tailscale, t3Answers, worktrees] = await Promise.all([
+        tailscaleRunning(),
+        t3 ? answers(t3) : undefined,
+        countWorktrees(this.worktreesDir()),
+      ]);
+      this.checked = { at: this.s.now(), tailscale, t3: t3Answers, worktrees };
     }
     return {
-      tailscale: this.checked.tailscale,
-      ...(Bun.which("docker") !== null && { docker: dockerRunning }),
-      ...(this.checked.t3 !== undefined && { t3_code: this.checked.t3 }),
+      services: {
+        tailscale: this.checked.tailscale,
+        ...(Bun.which("docker") !== null && { docker: dockerRunning }),
+        ...(this.checked.t3 !== undefined && { t3_code: this.checked.t3 }),
+      },
+      worktrees: this.checked.worktrees,
     };
   }
 
@@ -378,7 +458,7 @@ export class HealthSampler {
     const cpus = os.cpus().length;
     const [one = 0, five = 0, fifteen = 0] = os.loadavg();
     const busyTicks = now.cpu.total - previous.cpu.total - (now.cpu.idle - previous.cpu.idle);
-    const [oom, memoryUse, diskUse, pressureCpu, pressureMemory, pressureIo, containers, services] = await Promise.all([
+    const [oom, memoryUse, diskUse, pressureCpu, pressureMemory, pressureIo, containers, slow] = await Promise.all([
       oomKills(),
       memory(),
       disk("/"),
@@ -386,7 +466,7 @@ export class HealthSampler {
       pressure("memory"),
       pressure("io"),
       runningContainers(),
-      this.services(count("dockerd") > 0),
+      this.slowChecks(count("dockerd") > 0),
     ]);
     const sample = {
       host: os.hostname(),
@@ -413,9 +493,10 @@ export class HealthSampler {
         agents: { claude: agents("claude"), codex: agents("codex") },
         runners: { total: count("Runner.Listener"), busy: count("Runner.Worker") },
         containers: { running: containers, disk: this.docker },
+        ...(slow.worktrees && { worktrees: slow.worktrees }),
         oom_kills: { since_boot: oom, last_hour: oom - (this.history[0]?.oom_kills ?? oom) },
       },
-      services,
+      services: slow.services,
       daemon_lag: lag() ?? null,
       top_processes: sortBy(
         [...byProgram].map(([program, group]) => ({
