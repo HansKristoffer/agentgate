@@ -1,4 +1,5 @@
 import {
+  MiB,
   RELAY_LIMITS,
   RELAY_PROTOCOL,
   changesResponse,
@@ -180,7 +181,8 @@ type Field =
   | "pushError"
   | "pullError"
   | "skipped"
-  | "oversize";
+  | "oversize"
+  | "blobBytes";
 /** Reconciliation: "read" everything (this node's entries included), then "upload" what the relay lacks, then "done",
  * after which pushes and pulls only move cursors. */
 type Phase = "read" | "upload" | "done";
@@ -189,6 +191,9 @@ const get = (s: Store, t: Target, f: Field) => s.local(k(t, f));
 const phase = (s: Store, t: Target) => get(s, t, "phase") as Phase | undefined;
 const setPhase = (s: Store, t: Target, p: Phase) => put(s, t, "phase", p);
 const num = (s: Store, t: Target, f: Field) => Number(get(s, t, f) ?? 0);
+/** The largest blob the group's relay stores, as it said in its last `groupState`; older relays say nothing. */
+const blobLimit = (s: Store, t: Target) =>
+  Math.min(num(s, t, "blobBytes") || RELAY_LIMITS.legacyBlobBytes, RELAY_LIMITS.blobBytes);
 // The active group's fields `relayStatus` shows; cursors and counters move every turn and mark nothing.
 const STATUS_FIELDS = new Set<Field>(["invite", "phase", "pushError", "pullError", "skipped", "oversize"]);
 function put(s: Store, t: Target, f: Field, v: string | number | undefined) {
@@ -208,6 +213,7 @@ const FIELDS: Field[] = [
   "pullError",
   "skipped",
   "oversize",
+  "blobBytes",
 ];
 
 const cleanupList = defineLocal(
@@ -484,7 +490,13 @@ async function pullPage(s: Store, t: Target, c: Conn, signal: AbortSignal, full:
   const before = identity(s, t);
   const generation = get(s, t, "generation")!;
   const since = num(s, t, full ? "readCursor" : "cursor");
-  const q = new URLSearchParams({ generation, since: String(since), node: s.nodeId, includeSelf: full ? "1" : "0" });
+  const q = new URLSearchParams({
+    generation,
+    since: String(since),
+    node: s.nodeId,
+    includeSelf: full ? "1" : "0",
+    blobBytes: String(RELAY_LIMITS.blobBytes),
+  });
   const { json } = await call(c, "GET", `/changes?${q}`, undefined, signal);
   const page = changesResponse.safeParse(json);
   if (!page.success || page.data.generation !== generation) throw new RelayError("The relay returned an invalid page");
@@ -586,7 +598,7 @@ async function pushLoop(
         const name = `${r.kind} ${r.id}`;
         // Too large for the relay. Holding the feed at it would stop every later record for every relay machine,
         // refreshed credentials included, so it is left out and reported until it changes.
-        if (Math.floor((blob.length * 3) / 4) > RELAY_LIMITS.blobBytes) {
+        if (Math.floor((blob.length * 3) / 4) > blobLimit(s, t)) {
           oversize.add(name);
           taken++;
           continue;
@@ -649,6 +661,7 @@ async function reconcile(s: Store, t: Target, c: Conn, signal: AbortSignal, budg
   if (phase(s, t) !== "upload") {
     const { json } = await call(c, "POST", "", { protocol: RELAY_PROTOCOL }, signal);
     const state = groupState.parse(json);
+    put(s, t, "blobBytes", state.blobBytes);
     if (state.generation !== get(s, t, "generation")) {
       s.transaction(() => {
         put(s, t, "generation", state.generation);
@@ -1096,10 +1109,10 @@ export const serviceKeyFor = (s: Store, url: string) =>
 export const usesRelay = (s: Store) => !!get(s, "active", "invite") || !!rotation.get(s);
 
 /** Why the entries too large for the relay reach no machine, named for the first three. */
-function oversizeError(oversize: string[]) {
+function oversizeError(oversize: string[], limit: number) {
   if (!oversize.length) return undefined;
   const more = oversize.length > 3 ? ` and ${oversize.length - 3} more` : "";
-  return `${oversize.slice(0, 3).join(", ")}${more}: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay`;
+  return `${oversize.slice(0, 3).join(", ")}${more}: larger than the relay's ${limit / MiB} MiB record limit, so it reaches no machine through the relay`;
 }
 
 /** Sanitized status: never the invite, the service key or a raw relay response. */
@@ -1124,7 +1137,7 @@ export function relayStatus(s: Store) {
     rotating: !!rotation.get(s),
     rotatedAt: Number(rotatedAt.get(s)) || undefined,
     cleanupPending: cleanups(s).length > 0,
-    pushError: get(s, "active", "pushError") ?? oversizeError(oversize),
+    pushError: get(s, "active", "pushError") ?? oversizeError(oversize, blobLimit(s, "active")),
     pullError: get(s, "active", "pullError"),
     skipped: skipped ? (JSON.parse(skipped) as { count: number }).count : undefined,
   };

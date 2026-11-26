@@ -1,6 +1,7 @@
 import {
   RELAY_LIMITS,
   RELAY_PROTOCOL,
+  b64urlLength,
   createRequest,
   pushRequest,
   relayGeneration,
@@ -32,7 +33,8 @@ export interface Config {
 
 export const defaults: Config = {
   maxGroups: 1000,
-  maxGroupBytes: 50 * 1024 * 1024,
+  // Every machine stores its own copy of each record, so a few large skills on a few machines take tens of MiB.
+  maxGroupBytes: 128 * 1024 * 1024,
   retentionMs: 180 * 86_400_000,
   groupsPerIpPerDay: 5,
   groupRequestsPerMinute: 600,
@@ -110,6 +112,12 @@ interface Meta {
 // Stored sizes include a fixed per-row overhead so tiny entries still count against the quota.
 const entrySize = (node: string, key: string, blob: string) => node.length + key.length + blob.length + 64;
 const nodeSize = (node: string) => node.length + 32;
+/**
+ * A blob is stored in rows of at most this many characters: its first part in `entries`, the rest in `parts`.
+ * Durable Object SQLite refuses a value much over 2 MB (workerd 2026-10). One part is exactly a blob of the legacy
+ * limit, so an entry with parts is one an older daemon cannot take.
+ */
+const PART = b64urlLength(RELAY_LIMITS.legacyBlobBytes);
 // Room left for the response envelope and the seen map (64 nodes of at most 512 escaped characters).
 const PAGE_BUDGET = RELAY_LIMITS.messageBytes - 512 * 1024;
 const utf8 = new TextEncoder();
@@ -120,6 +128,7 @@ export class GroupCore {
   private queue: Promise<unknown> = Promise.resolve();
   private requests = new Window();
   private failures = new Window();
+  private initialized = false;
 
   constructor(
     private sql: Sql,
@@ -139,6 +148,9 @@ export class GroupCore {
       "create table if not exists entries (node text not null, key text not null, seq integer not null, pusher_seq integer not null, blob text not null, size integer not null, primary key (node, key))",
     );
     this.sql.run("create index if not exists entries_seq on entries(seq)");
+    this.sql.run(
+      "create table if not exists parts (node text not null, key text not null, idx integer not null, data text not null, primary key (node, key, idx))",
+    );
     this.sql.run("create table if not exists nodes (node text primary key, last_seen integer not null)");
   }
 
@@ -199,6 +211,10 @@ export class GroupCore {
     if (limited) return { ...fail(429, "too many requests for this group"), retryAfter: limited };
 
     let m = this.meta();
+    if (m && !this.initialized) {
+      this.init(); // a group created before a table was added gets it here
+      this.initialized = true;
+    }
     if (m?.deleting) {
       await this.destroy(m.groupId);
       m = undefined;
@@ -238,7 +254,12 @@ export class GroupCore {
       }
 
       await this.touch(m, now);
-      return ok({ protocol: RELAY_PROTOCOL, generation: m.generation, headSeq: m.head });
+      return ok({
+        protocol: RELAY_PROTOCOL,
+        generation: m.generation,
+        headSeq: m.head,
+        blobBytes: RELAY_LIMITS.blobBytes,
+      });
     }
 
     if (!m?.admitted) return fail(404, "no such group", { code: "missing" });
@@ -320,7 +341,7 @@ export class GroupCore {
           )[0];
           if (cur) {
             // The same entry again: a push retried after its reply was lost changes nothing.
-            if (e.pusherSeq === cur.pusher_seq && e.blob === cur.blob) continue;
+            if (e.pusherSeq === cur.pusher_seq && e.blob === this.blob(node, e.key, cur.blob)) continue;
             if (e.pusherSeq <= cur.pusher_seq) throw fail(409, "counter conflict", { code: "counter" });
           }
 
@@ -332,9 +353,19 @@ export class GroupCore {
             e.key,
             ++head,
             e.pusherSeq,
-            e.blob,
+            e.blob.slice(0, PART),
             size,
           );
+          this.sql.run("delete from parts where node = ? and key = ?", node, e.key);
+          for (let i = 1; i * PART < e.blob.length; i++) {
+            this.sql.run(
+              "insert into parts values (?, ?, ?, ?)",
+              node,
+              e.key,
+              i,
+              e.blob.slice(i * PART, (i + 1) * PART),
+            );
+          }
         }
 
         if (bytes > this.deps.config.maxGroupBytes) throw fail(507, "group storage quota exceeded", { code: "quota" });
@@ -352,8 +383,15 @@ export class GroupCore {
   private changes(m: Meta, query: Record<string, string | undefined>, now: number): Reply {
     const since = Number(query.since ?? "0");
     const node = relayNode.safeParse(query.node);
-    if (!Number.isSafeInteger(since) || since < 0 || !node.success)
+    // A daemon that does not name the blob size it takes is older, and rejects a page holding a larger blob, so it gets
+    // only entries that fit one part. So does one that names less than the whole limit.
+    const accepts = Number(query.blobBytes ?? RELAY_LIMITS.legacyBlobBytes);
+    if (!Number.isSafeInteger(since) || since < 0 || !node.success || !(accepts >= RELAY_LIMITS.legacyBlobBytes))
       return fail(400, "invalid query", { code: "shape" });
+    const onePart =
+      accepts < RELAY_LIMITS.blobBytes
+        ? "and not exists (select 1 from parts p where p.node = entries.node and p.key = entries.key)"
+        : "";
 
     if (query.generation === undefined) {
       if (since !== 0) return this.reset(m, "generation required");
@@ -371,7 +409,7 @@ export class GroupCore {
 
     // One synchronous read: nothing can write between these queries.
     const rows = this.sql.all<{ node: string; key: string; seq: number; pusher_seq: number; blob: string }>(
-      `select node, key, seq, pusher_seq, blob from entries where seq > ? ${includeSelf ? "" : "and node != ?"} order by seq limit ?`,
+      `select node, key, seq, pusher_seq, blob from entries where seq > ? ${includeSelf ? "" : "and node != ?"} ${onePart} order by seq limit ?`,
       ...(includeSelf ? [since] : [since, node.data]),
       RELAY_LIMITS.pullEntries + 1,
     );
@@ -379,9 +417,15 @@ export class GroupCore {
     let size = 0;
     let more = false;
     for (const r of rows) {
-      const e = { node: r.node, key: r.key, seq: r.seq, pusherSeq: r.pusher_seq, blob: r.blob };
+      const e = {
+        node: r.node,
+        key: r.key,
+        seq: r.seq,
+        pusherSeq: r.pusher_seq,
+        blob: this.blob(r.node, r.key, r.blob),
+      };
       // Node names may be non-ASCII, so they are measured in bytes; a blob is base64url, one byte per character.
-      const length = utf8.encode(JSON.stringify({ ...e, blob: "" })).length + r.blob.length + 1;
+      const length = utf8.encode(JSON.stringify({ ...e, blob: "" })).length + e.blob.length + 1;
       const pageIsFull =
         entries.length === RELAY_LIMITS.pullEntries || (entries.length > 0 && size + length > PAGE_BUDGET);
       if (pageIsFull) {
@@ -405,10 +449,22 @@ export class GroupCore {
     return ok(page);
   }
 
+  /** A stored blob whole again, from its first part and any further parts. */
+  private blob(node: string, key: string, first: string) {
+    if (first.length < PART) return first;
+    const rest = this.sql.all<{ data: string }>(
+      "select data from parts where node = ? and key = ? order by idx",
+      node,
+      key,
+    );
+    return first + rest.map((r) => r.data).join("");
+  }
+
   /** Data first, then the admission slot, then the remaining metadata. A failed release is retried by the alarm. */
   private async destroy(groupId: string) {
     this.sql.tx(() => {
       this.sql.run("delete from entries");
+      this.sql.run("delete from parts");
       this.sql.run("delete from nodes");
       this.set({ deleting: 1, bytes: 0 });
     });

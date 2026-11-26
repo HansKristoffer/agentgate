@@ -241,7 +241,8 @@ function mergeFiles(a: readonly CheckoutFile[], b: readonly CheckoutFile[]): Che
   return sortBy([...out.values()], "path");
 }
 
-/** Whether a project record still fits one relay entry (1 MiB sealed), where the files make it largest. */
+/** Whether a project record, where the files make it largest, still fits one relay entry of the 1 MiB older relays and
+ * daemons take, so the files reach every machine. */
 function fitsRelay(s: Store, project: Stored<z.input<typeof projectSchema>>) {
   const record = {
     kind: "project",
@@ -253,7 +254,7 @@ function fitsRelay(s: Store, project: Stored<z.input<typeof projectSchema>>) {
     data: JSON.stringify(project),
   };
   const NONCE_AND_TAG = 28;
-  return Buffer.byteLength(JSON.stringify({ protocol: 999, record })) + NONCE_AND_TAG <= RELAY_LIMITS.blobBytes;
+  return Buffer.byteLength(JSON.stringify({ protocol: 999, record })) + NONCE_AND_TAG <= RELAY_LIMITS.legacyBlobBytes;
 }
 
 /** Why `files` and `fileList` cannot be written yet: a node whose daemon would drop them when it saves a project.

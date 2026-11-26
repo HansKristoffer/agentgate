@@ -7,7 +7,7 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.toml" },
       miniflare: {
-        bindings: { RELAY_GROUPS_PER_IP_PER_DAY: "3", RELAY_MAX_GROUPS: "6", RELAY_GROUP_MAX_BYTES: "200000" },
+        bindings: { RELAY_GROUPS_PER_IP_PER_DAY: "3", RELAY_MAX_GROUPS: "6", RELAY_GROUP_MAX_BYTES: "20000000" },
       },
     }),
   ],

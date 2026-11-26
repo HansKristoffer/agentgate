@@ -113,6 +113,27 @@ test("pagination covers everything, excludes the caller, and survives concurrent
   expect(self.seen).toEqual({ a: expect.any(Number), b: expect.any(Number) });
 });
 
+test("an older daemon gets no entry over the legacy limit; one that names the larger limit gets all", async () => {
+  const c = client();
+  const { generation, blobBytes } = (await c.create()).body;
+  expect(blobBytes).toBe(RELAY_LIMITS.blobBytes);
+  const large = Math.ceil((RELAY_LIMITS.legacyBlobBytes * 4) / 3) + 10;
+  await c.push(generation, "a", [{ key: key(1), pusherSeq: 1, blob: blob(1) }]);
+  await c.push(generation, "a", [{ key: key(2), pusherSeq: 1, blob: blob(2, large) }]);
+  await c.push(generation, "a", [{ key: key(3), pusherSeq: 1, blob: blob(3) }]);
+
+  const old = (await c.changes({ generation, since: 0, node: "b" })).body as ChangesResponse;
+  expect(old.entries.map((e) => e.key)).toEqual([key(1), key(3)]);
+  expect(checkPage(old, 0)).toBeUndefined();
+  const current = (await c.changes({ generation, since: 0, node: "b", blobBytes: RELAY_LIMITS.blobBytes })).body;
+  expect(current.entries.map((e: { key: string }) => e.key)).toEqual([key(1), key(2), key(3)]);
+  expect(current.entries[1].blob).toBe(blob(2, large));
+  // A retried push of a large entry is recognized as the same entry.
+  const retry = await c.push(generation, "a", [{ key: key(2), pusherSeq: 1, blob: blob(2, large) }]);
+  expect(retry.body.headSeq).toBe(3);
+  expect((await c.changes({ generation, since: 0, node: "b", blobBytes: 1024 })).status).toBe(400);
+});
+
 test("pages stay under the byte limit", async () => {
   const c = client();
   const { generation } = (await c.create()).body;
@@ -125,7 +146,7 @@ test("pages stay under the byte limit", async () => {
   let pages = 0;
   for (;;) {
     const res = await c.relay.fetch(
-      `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b`,
+      `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b&blobBytes=${RELAY_LIMITS.blobBytes}`,
       { headers: { authorization: `Bearer ${T}` } },
     );
     const text = await res.text();
@@ -152,7 +173,7 @@ test("pages count UTF-8 bytes, not characters", async () => {
   let count = 0;
   for (;;) {
     const res = await c.relay.fetch(
-      `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b`,
+      `https://relay.test/g/${G}/changes?generation=${generation}&since=${since}&node=b&blobBytes=${RELAY_LIMITS.blobBytes}`,
       { headers: { authorization: `Bearer ${T}` } },
     );
     const bytes = new Uint8Array(await res.arrayBuffer());
