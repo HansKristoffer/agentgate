@@ -191,6 +191,41 @@ test("other machines sign in with a shared login once, and again when the sharin
   expect(listLogins(b).map((l) => l.id)).toEqual(["github"]);
 });
 
+test("an Infisical CLI with profiles shares its active profile's session", async () => {
+  const a = node("a"),
+    b = node("b"),
+    homeA = join(temp, "profiles-a"),
+    homeB = join(temp, "profiles-b");
+  on(homeA);
+  mkdirSync(join(homeA, ".infisical"), { recursive: true });
+  mkdirSync(join(homeA, "infisical-keyring"), { recursive: true });
+  // Since 0.44 the CLI leaves loggedInUserEmail empty and names the keyring file after the active profile.
+  writeFileSync(
+    join(homeA, ".infisical/infisical-config.json"),
+    JSON.stringify({
+      loggedInUserEmail: "",
+      loggedInUsers: [{ email: "me@example.com" }, { email: "other@example.com" }],
+      vaultBackendType: "file",
+      activeProfile: "me@example.com--org",
+      profiles: [
+        { name: "me@example.com", email: "me@example.com" },
+        { name: "other@example.com", email: "other@example.com" },
+        { name: "me@example.com--org", email: "me@example.com" },
+      ],
+    }),
+  );
+  writeFileSync(join(homeA, "infisical-keyring/me@example.com"), "session-old");
+  writeFileSync(join(homeA, "infisical-keyring/me@example.com--org"), "session-org");
+  expect((await shareLogins(a, "infisical"))[0]).toMatchObject({ account: "me@example.com" });
+
+  sync(a, b);
+  on(homeB);
+  await syncLogins(b);
+  expect(readFileSync(join(homeB, "infisical-keyring/me@example.com--org"), "utf8")).toBe("session-org");
+  const config = JSON.parse(readFileSync(join(homeB, ".infisical/infisical-config.json"), "utf8"));
+  expect(config.profiles).toEqual([{ name: "me@example.com--org", email: "me@example.com" }]);
+});
+
 test("a machine without gh reports it and signs in once gh is installed", async () => {
   const a = node("a"),
     b = node("b");
