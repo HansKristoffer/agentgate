@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.40.0](https://github.com/HansKristoffer/agentgate/compare/v0.39.0...v0.40.0) (2026-11-26)
+
+
+### Features
+
+* support T3 Antigravity MCP/AGENTS.md, auto-reload factory on skill sync, and add Machine Health hygiene signals ([#176](https://github.com/HansKristoffer/agentgate/issues/176)) ([ff8b213](https://github.com/HansKristoffer/agentgate/commit/ff8b213491dc922553dd3575b35e8f8a0bcbc9b7))
+
+
+### Bug Fixes
+
+* **logins:** detect Infisical profile sessions ([#178](https://github.com/HansKristoffer/agentgate/issues/178)) ([febd745](https://github.com/HansKristoffer/agentgate/commit/febd7452f3756fbaacc8e22d9a8756e720c2a233))
+
 ## [0.39.0](https://github.com/HansKristoffer/agentgate/compare/v0.38.0...v0.39.0) (2026-11-23)
 
 
