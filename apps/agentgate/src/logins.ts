@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { getErrorMessage, typedSwitch } from "hanzio";
 import { z } from "zod";
 import { atomicWrite } from "./files.ts";
@@ -299,20 +299,38 @@ async function read(s: Store, id: (typeof SHAREABLE)[number]): Promise<Login | s
   } catch {
     return "the Infisical CLI config could not be read";
   }
-  const email = config?.loggedInUserEmail;
-  if (typeof email !== "string" || !email) return "the Infisical CLI is not logged in";
+  const { profile, email } = activeInfisical(config);
+  if (!profile || !email) return "the Infisical CLI is not logged in";
   if (config.vaultBackendType !== "file") {
     return "the Infisical CLI keeps its login in the system keychain; run `infisical vault set file`, then `infisical login`";
   }
-  const entry = join(files.keyring, email);
+  const entry = join(files.keyring, profile);
   if (!existsSync(entry)) return "the Infisical login file is missing; run `infisical login`";
 
   // Only the signed-in user: other machines get no keyring files for the rest.
   const users = Array.isArray(config.loggedInUsers)
     ? config.loggedInUsers.filter((u: { email?: unknown }) => u?.email === email)
     : [];
-  const shared = JSON.stringify({ ...config, loggedInUsers: users }, null, 2);
+  const profiles = Array.isArray(config.profiles)
+    ? config.profiles.filter((p: { name?: unknown }) => p?.name === profile)
+    : undefined;
+  const shared = JSON.stringify({ ...config, loggedInUsers: users, profiles }, null, 2);
   return { id, from: s.nodeId, account: email, config: shared, keyring: readFileSync(entry, "utf8") };
+}
+
+/**
+ * The profile the Infisical CLI signs in with and its email. Since profiles (0.44) the CLI leaves `loggedInUserEmail`
+ * empty and keeps the session in the keyring file named after `activeProfile`; older configs name it by email.
+ */
+function activeInfisical(config: { activeProfile?: unknown; profiles?: unknown; loggedInUserEmail?: unknown }) {
+  const name = config?.activeProfile;
+  if (typeof name === "string" && name) {
+    const profiles: { name?: unknown; email?: unknown }[] = Array.isArray(config.profiles) ? config.profiles : [];
+    const email = profiles.find((p) => p?.name === name)?.email;
+    return { profile: name, email: typeof email === "string" ? email : undefined };
+  }
+  const email = typeof config?.loggedInUserEmail === "string" ? config.loggedInUserEmail : undefined;
+  return { profile: email, email };
 }
 
 /** Sign this machine in with a login another machine shared. */
@@ -379,7 +397,16 @@ async function apply(l: StoredLogin) {
     },
     infisical: (l) => {
       const files = infisical();
-      const entry = join(files.keyring, l.account);
+      let profile = l.account;
+      try {
+        profile = activeInfisical(JSON.parse(l.config)).profile || profile;
+      } catch {
+        // A config that does not parse still names its session by the account, as before profiles.
+      }
+      // The name comes from another machine and becomes a file name here.
+      if (basename(profile) !== profile || profile.startsWith("."))
+        throw new Error("the shared Infisical profile name is not a file name");
+      const entry = join(files.keyring, profile);
       for (const file of [files.config, entry]) {
         const backup = `${file}.before-agentgate`;
         if (existsSync(file) && !existsSync(backup)) copyFileSync(file, backup);
