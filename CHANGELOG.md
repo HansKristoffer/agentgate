@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.40.1](https://github.com/HansKristoffer/agentgate/compare/v0.40.0...v0.40.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* **relay:** records up to 5 MiB sync through the relay ([#179](https://github.com/HansKristoffer/agentgate/issues/179)) ([4b1ab97](https://github.com/HansKristoffer/agentgate/commit/4b1ab976b8239c3a912d8e6189bceee0a5ee0ff2))
+
 ## [0.40.0](https://github.com/HansKristoffer/agentgate/compare/v0.39.0...v0.40.0) (2026-11-26)
 
 
