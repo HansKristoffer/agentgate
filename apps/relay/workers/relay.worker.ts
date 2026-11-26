@@ -1,5 +1,6 @@
 import { env, exports } from "cloudflare:workers";
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { RELAY_LIMITS, b64urlLength } from "@agentgate/protocol/relay";
 import { describe, expect, it } from "vitest";
 
 // Real workerd + SQLite-backed Durable Objects: transactions, retries, pagination, admission and recreation.
@@ -54,6 +55,24 @@ describe("relay on Durable Objects", () => {
     }
     expect(total).toBe(1000);
     expect(since).toBe(1000); // the conflicting batch wrote nothing
+  });
+
+  it("stores and serves a blob at the size limit", async () => {
+    const g = hex(2);
+    const { generation, blobBytes } = (await call(g, "POST", "", { protocol: 1 })).body;
+    expect(blobBytes).toBe(RELAY_LIMITS.blobBytes);
+    const big = "b".repeat(b64urlLength(RELAY_LIMITS.blobBytes));
+    const pushed = await call(g, "POST", "/push", {
+      protocol: 1,
+      generation,
+      node: "a",
+      entries: [{ key: key(1), pusherSeq: 1, blob: big }],
+    });
+    expect(pushed.status).toBe(200);
+    const page = (
+      await call(g, "GET", `/changes?generation=${generation}&since=0&node=b&blobBytes=${RELAY_LIMITS.blobBytes}`)
+    ).body;
+    expect(page.entries[0].blob).toBe(big);
   });
 
   it("caps live groups and recreates deleted storage with a new generation", async () => {

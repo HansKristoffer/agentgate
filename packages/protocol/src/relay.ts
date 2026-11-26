@@ -6,14 +6,23 @@ export const MiB = 1024 * 1024;
 export const RELAY_LIMITS = {
   pushEntries: 500,
   pullEntries: 1000,
-  /** Decoded sealed blob: nonce + ciphertext + tag. */
-  blobBytes: MiB,
+  /**
+   * Decoded sealed blob: nonce + ciphertext + tag. Room for a 4 MiB store record once its JSON is escaped again;
+   * as base64url it still fits one message. The relay stores it over several rows.
+   */
+  blobBytes: 5 * MiB,
+  /**
+   * The blob limit of older relays and daemons. An older daemon rejects a whole page holding a larger blob, so the relay
+   * sends one only to a daemon that asks with `blobBytes` on `/changes`, and a daemon uploads one only to a relay that
+   * names its limit in `groupState`.
+   */
+  legacyBlobBytes: MiB,
   /** Serialized JSON per request or response, base64 expansion included. */
   messageBytes: 8 * MiB,
   nodes: 64,
 } as const;
 
-const b64urlLength = (bytes: number) => Math.ceil((bytes * 4) / 3);
+export const b64urlLength = (bytes: number) => Math.ceil((bytes * 4) / 3);
 const hex128 = z.string().regex(/^[0-9a-f]{32}$/);
 export const relayGroupId = hex128;
 export const relayGeneration = hex128;
@@ -38,7 +47,13 @@ const relayEnvelope = z.object({ key: relayKey, pusherSeq, blob: relayBlob }).st
 export type RelayEnvelope = z.infer<typeof relayEnvelope>;
 
 export const createRequest = z.object({ protocol: z.literal(RELAY_PROTOCOL) }).strict();
-export const groupState = z.object({ protocol: z.literal(RELAY_PROTOCOL), generation: relayGeneration, headSeq: seq });
+export const groupState = z.object({
+  protocol: z.literal(RELAY_PROTOCOL),
+  generation: relayGeneration,
+  headSeq: seq,
+  /** The largest blob this relay stores. Older relays leave it out, and take `legacyBlobBytes`. */
+  blobBytes: z.number().int().positive().optional(),
+});
 export const pushRequest = z
   .object({
     protocol: z.literal(RELAY_PROTOCOL),

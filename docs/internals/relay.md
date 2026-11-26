@@ -41,9 +41,14 @@ the relay group. Do not remove it without tagging where records came from.
   the process and under the cross-process `relay-lease`. Completion handlers re-check `identity()`
   before committing, because a rotation may have happened meanwhile.
 - Pulling continues while uploads are blocked (quota), so newer credentials still arrive. A record over
-  the relay's 1 MiB limit (stricter than the store's 4 MiB) is left out and named in the upload error
-  until it changes. Holding the feed at it instead stopped every later record for every relay machine,
-  refreshed credentials included, and a connected skill repository can bring such a skill in unattended.
+  the relay's limit is left out and named in the upload error until it changes. Holding the feed at it
+  instead stopped every later record for every relay machine, refreshed credentials included, and a
+  connected skill repository can bring such a skill in unattended.
+- The blob limit grew from 1 MiB to 5 MiB. A daemon before that rejects a whole `/changes` page holding a larger
+  blob and would stop pulling, so the relay leaves larger entries out for a daemon that does not ask with `blobBytes`.
+  An older relay rejects a whole push chunk holding one, so a daemon uploads them only to a relay whose `groupState`
+  names its limit. Durable Object SQLite refuses a value much over 2 MB, so the Worker stores a larger blob in
+  parts of one legacy blob each; an entry with parts is exactly one an older daemon cannot take.
 - Rotation records the new invite before anything else, seeds the new group, then swaps the
   `relay:rot:*` keys into `relay:*` in one transaction. Deleting the old group is cleanup, not
   revocation: old members could recreate it.

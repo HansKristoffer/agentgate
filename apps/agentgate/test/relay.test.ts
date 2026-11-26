@@ -79,6 +79,8 @@ function relay(overrides: Parameters<typeof memoryRelay>[0] = {}) {
     beforePush: undefined as undefined | (() => void),
     pushes: 0,
     blocked: undefined as string | undefined,
+    /** Answer like a relay from before the larger blob limit, which never named its limit. */
+    legacy: false,
   };
   const server = Bun.serve({
     port: 0,
@@ -95,6 +97,10 @@ function relay(overrides: Parameters<typeof memoryRelay>[0] = {}) {
         ctl.beforePush?.();
       }
       const res = await r.app.fetch(req);
+      if (ctl.legacy && req.method === "POST" && !url.pathname.endsWith("/push")) {
+        const { blobBytes: _, ...state } = (await res.json()) as Record<string, unknown>;
+        return Response.json(state, { status: res.status });
+      }
       if (ctl.mode === "drop" && url.pathname.endsWith("/push")) {
         ctl.mode = "ok";
         return new Response("lost", { status: 502 });
@@ -858,12 +864,13 @@ test("an oversized record is left out and reported, and the records after it sti
     template: "custom-http",
     transport: "http",
     url: "https://x",
-    headers: { pad: "p".repeat(1_200_000) },
+    // Under the store's 4 MiB, but each quote is escaped twice more on the way to the relay.
+    headers: { pad: '"'.repeat(1_900_000) },
   });
   seed(a);
   await sync(a);
   await sync(b);
-  expect(relayStatus(a)!.pushError).toContain("mcp big");
+  expect(relayStatus(a)!.pushError).toContain("mcp big: larger than the relay's 5 MiB record limit");
   expect(b.get("credential", "acc")?.accessToken).toBe("sk-ant-secret-token");
   expect(b.get("mcp", "big")).toBeUndefined();
   // Once it fits again, it goes up and the report clears.
@@ -872,6 +879,35 @@ test("an oversized record is left out and reported, and the records after it sti
   await sync(b);
   expect(relayStatus(a)!.pushError).toBeUndefined();
   expect(b.get("mcp", "big")).toBeDefined();
+});
+
+test("a record over the old 1 MiB limit syncs, except through a relay from before it", async () => {
+  const big = {
+    id: "big",
+    template: "custom-http",
+    transport: "http",
+    url: "https://x",
+    headers: { pad: "p".repeat(2_000_000) },
+  } as const;
+  for (const legacy of [false, true]) {
+    const r = relay();
+    r.ctl.legacy = legacy;
+    const a = node("a"),
+      b = node("b");
+    const invite = await createRelay(a, r.url);
+    await joinRelay(b, invite);
+    a.put("mcp", "big", big);
+    seed(a);
+    await sync(a);
+    await sync(b);
+    expect(b.get("credential", "acc")?.accessToken).toBe("sk-ant-secret-token");
+    expect(!!b.get("mcp", "big")).toBe(!legacy);
+    expect(relayStatus(a)!.pushError).toBe(
+      legacy
+        ? "mcp big: larger than the relay's 1 MiB record limit, so it reaches no machine through the relay"
+        : undefined,
+    );
+  }
 });
 
 test("a deployment key is required, configured separately, and never exposed", async () => {

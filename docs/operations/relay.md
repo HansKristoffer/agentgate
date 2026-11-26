@@ -20,8 +20,9 @@ On every daemon start, on `join`, after a group reset and on `agentgate relay re
 
 ## Limits and errors
 
-- One record can be at most 1 MiB once encrypted. That is stricter than the local store's 4 MiB, so a larger record does not reach machines through the relay, and is named in the upload error until it shrinks. Everything else keeps syncing.
-- Each group holds at most 64 machines and 50 MiB. A full group returns "out of storage"; downloads keep working while uploads are rejected.
+- One record can be at most 5 MiB once encrypted, enough for any record the local store holds (4 MiB) unless its content is unusually heavy in quotes and backslashes. A larger record does not reach machines through the relay, and is named in the upload error until it shrinks. Everything else keeps syncing.
+- Relays and daemons before this limit took 1 MiB. A daemon learns the limit from its relay, so it sends an older relay nothing larger, and a relay sends an older daemon no entry over 1 MiB; those records reach that machine only over Tailscale. Deploy a self-hosted relay before updating its machines to sync larger records.
+- Each group holds at most 64 machines and 128 MiB. Every machine stores its own copy of each record, so the space a group uses grows with the number of machines. A full group returns "out of storage"; downloads keep working while uploads are rejected.
 - Upload and download errors are reported separately. Uploads are retried with exponential backoff (and `Retry-After`), and every unacknowledged chunk is resent byte for byte.
 
 ## Deploying and self-hosting
@@ -35,15 +36,15 @@ agentgate pair --relay --relay-url https://agentgate-relay.<account>.workers.dev
 
 Settings are `[vars]` in `apps/relay/wrangler.toml`:
 
-| Variable                          | Default  | Meaning                                                               |
-| --------------------------------- | -------- | --------------------------------------------------------------------- |
-| `RELAY_MAX_GROUPS`                | 1000     | Live groups in total (reserved atomically on creation)                |
-| `RELAY_GROUP_MAX_BYTES`           | 52428800 | Storage per group                                                     |
-| `RELAY_RETENTION_DAYS`            | 180      | Delete a group after this long without an authenticated request       |
-| `RELAY_GROUPS_PER_IP_PER_DAY`     | 5        | New groups per source address per day                                 |
-| `RELAY_GROUP_REQUESTS_PER_MINUTE` | 600      | Requests per group                                                    |
-| `RELAY_FAILED_AUTH_PER_MINUTE`    | 20       | Failed authentications per group                                      |
-| `RELAY_DISABLE_NEW_GROUPS`        | 0        | Operator switch: `1` refuses new groups; existing groups keep working |
+| Variable                          | Default   | Meaning                                                               |
+| --------------------------------- | --------- | --------------------------------------------------------------------- |
+| `RELAY_MAX_GROUPS`                | 1000      | Live groups in total (reserved atomically on creation)                |
+| `RELAY_GROUP_MAX_BYTES`           | 134217728 | Storage per group                                                     |
+| `RELAY_RETENTION_DAYS`            | 180       | Delete a group after this long without an authenticated request       |
+| `RELAY_GROUPS_PER_IP_PER_DAY`     | 5         | New groups per source address per day                                 |
+| `RELAY_GROUP_REQUESTS_PER_MINUTE` | 600       | Requests per group                                                    |
+| `RELAY_FAILED_AUTH_PER_MINUTE`    | 20        | Failed authentications per group                                      |
+| `RELAY_DISABLE_NEW_GROUPS`        | 0         | Operator switch: `1` refuses new groups; existing groups keep working |
 
 - The `IP_LIMITER` rate-limit binding throttles each address to 1200 requests per minute.
 - Set usage alerts on the Cloudflare account as well; the caps above bound storage, not every request cost.

@@ -167,7 +167,7 @@ export async function collectAntigravity(s: Store, dirs = LOG_DIRS.antigravity) 
 
 const FOLD_AFTER = 90 * DAY;
 
-/** Well under the relay's 1 MiB record limit; a month heavier than this stays in days. */
+/** Well under the 1 MiB record limit of older relays and daemons; a month heavier than this stays in days. */
 const MAX_MONTH = 512 * 1024;
 
 /** Days older than 90 fold into one record per month, so the synced history stops growing by a record a day. A month
